@@ -6,6 +6,7 @@ No scheduler, retry, route discovery, new task/session identity or goal check.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from contextlib import suppress
 import hashlib
 import json
 import math
@@ -14,6 +15,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import tempfile
 import time
 from typing import Callable, Mapping
 
@@ -102,16 +104,24 @@ def _sync(p):
 
 
 def _write(p, data):
+    """Atomically publish complete fsynced bytes without replacing an owner.
+
+    The hard link is a no-clobber publication. Failure after publication stays
+    uncertain; a partial temporary file is never exposed as a receipt.
+    """
     if not isinstance(data, bytes):
         data = (json.dumps(data, sort_keys=True, ensure_ascii=False) + "\n").encode()
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd, temporary = tempfile.mkstemp(prefix="." + p.name + ".", dir=p.parent)
     try:
-        with os.fdopen(fd, "wb", closefd=False) as f:
-            f.write(data)
+        with os.fdopen(fd, "wb") as f:
+            if f.write(data) != len(data):
+                raise OSError("short_receipt_write")
             f.flush()
-            os.fsync(fd)
+            os.fsync(f.fileno())
+        os.link(temporary, p, follow_symlinks=False)
     finally:
-        os.close(fd)
+        with suppress(OSError):
+            os.unlink(temporary)
     _sync(p.parent)
 
 
@@ -204,13 +214,13 @@ class NativeEvents:
             else:
                 raise ValueError()
             self.rows += 1
-        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
             raise AdapterError("malformed_native_events") from exc
 
 
 # Host-only teardown receipt survives successful unit collection and crashes
 # before the opening session event. systemd supplies these actual fields.
-_FINALIZE = b'''import os,sys,json\nfrom pathlib import Path\np=Path(sys.argv[1]); d={k:os.environ.get(k,"") for k in ("INVOCATION_ID","SERVICE_RESULT","EXIT_CODE","EXIT_STATUS")}\nf=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)\nb=(json.dumps(d)+"\\n").encode(); os.write(f,b); os.fsync(f); os.close(f)\nf=os.open(p.parent,os.O_RDONLY|os.O_DIRECTORY); os.fsync(f); os.close(f)\n'''
+_FINALIZE = b'''import os,sys,json,tempfile\nfrom pathlib import Path\nfrom contextlib import suppress\np=Path(sys.argv[1]); d={k:os.environ.get(k,"") for k in ("INVOCATION_ID","SERVICE_RESULT","EXIT_CODE","EXIT_STATUS")}\nf,t=tempfile.mkstemp(prefix=".terminal.",dir=p.parent)\ntry:\n with os.fdopen(f,"wb") as s:\n  b=(json.dumps(d)+"\\n").encode()\n  if s.write(b)!=len(b): raise OSError("short_terminal_write")\n  s.flush(); os.fsync(s.fileno())\n os.link(t,p,follow_symlinks=False)\nfinally:\n with suppress(OSError): os.unlink(t)\nf=os.open(p.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\ntry: os.fsync(f)\nfinally: os.close(f)\n'''
 
 
 class DshAdapter:
@@ -218,6 +228,7 @@ class DshAdapter:
         self.config = config
         self.supervisor = supervisor or NativeSupervisor()
         self.clock = clock
+        self._invocations = {}
         for p in (config.workspace_root, config.payload_root, config.toolchain_root):
             _directory(p)
         for value, maximum in ((config.memory_bytes, 2*1024**3), (config.cpu_percent, 400),
@@ -243,9 +254,16 @@ class DshAdapter:
         return row, root
 
     def _admit(self, row):
-        if (row["stop_intent"] is not None or self.clock() >= row["deadline_unix"]
-                or row["elapsed_seconds"] >= row["budget_seconds"]):
+        if self._retained_stop(row):
             raise AdapterError("stopped_or_expired")
+
+    def _retained_stop(self, row):
+        return (row["stop_intent"] is not None or self.clock() >= row["deadline_unix"]
+                or row["elapsed_seconds"] >= row["budget_seconds"])
+
+    def _remaining(self, row):
+        return min(row["deadline_unix"] - self.clock(),
+                   row["budget_seconds"] - row["elapsed_seconds"]) - self.config.shutdown_seconds - 5
 
     def _pins(self):
         c = self.config
@@ -313,11 +331,16 @@ class DshAdapter:
         _sync(root)
         return PreparedNative(str(root/"home"), str(control/"preparation.json"))
 
-    def _prepared(self, row, prepared, brief=None, inputs=None, *, verify_files=True):
+    def _control(self, row, prepared):
+        """Read-only stop identity; does not authorize a fresh launch."""
         root = _private(row["workspace_reference"])
         control = _private(root / ".dsh-adapter")
         if prepared != PreparedNative(str(root/"home"), str(control/"preparation.json")):
             raise AdapterError("foreign_preparation")
+        return root, control
+
+    def _prepared(self, row, prepared, brief=None, inputs=None, *, verify_files=True):
+        root, control = self._control(row, prepared)
         receipt = _json(control/"preparation.json")
         if (set(receipt) != {"schema", "identity", "pins", "files", "inputs", "reference"}
                 or receipt["schema"] != 1 or receipt["identity"] != _identity(row)
@@ -359,25 +382,92 @@ class DshAdapter:
         return {"PATH": "/usr/bin:/bin", "XDG_RUNTIME_DIR": runtime,
                 "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus", "LC_ALL": "C"}
 
-    def _known(self, row, control):
-        p = control / "invocation.json"
-        native = dict(row)
-        # Native ExecStopPost is outside the worker mount. Its actual manager
-        # identity survives a crash before invocation/session persistence.
-        if not p.exists() and (control/"terminal.json").exists():
-            end = _json(control/"terminal.json")
-            inv = end.get("INVOCATION_ID")
-            if not isinstance(inv, str) or not re.fullmatch(r"[0-9a-f]{32}", inv):
-                raise AdapterError("invalid_terminal_identity")
-            _write(p, {"invocation_id": inv})
-        if p.exists():
-            inv = _json(p)
-            if set(inv) != {"invocation_id"} or not re.fullmatch(r"[0-9a-f]{32}", inv["invocation_id"]):
+    @staticmethod
+    def _key(row):
+        return json.dumps(_identity(row), sort_keys=True)
+
+    @staticmethod
+    def _auxiliary_invocation(control, name, *, strict=False):
+        try:
+            value = _json(control / name)
+            fields = ({"invocation_id"} if name == "invocation.json" else
+                      {"INVOCATION_ID", "SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS"})
+            key = "invocation_id" if name == "invocation.json" else "INVOCATION_ID"
+            if (not isinstance(value, dict) or set(value) != fields
+                    or not isinstance(value[key], str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", value[key])):
                 raise AdapterError("invalid_invocation_receipt")
-            if row["native"] is not None and row["native"]["invocation_id"] != inv["invocation_id"]:
-                raise AdapterError("native_invocation_changed")
-            native["native"] = {"invocation_id": inv["invocation_id"], "worker_reference": row["workspace_reference"]}
+            return value[key]
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, TypeError, AdapterError, RecursionError):
+            if strict:
+                raise
+            # Auxiliary corruption cannot prevent exact-owned supervision.
+            # Valid but contradictory identities are still refused below.
+            return None
+
+    def _known(self, row, control, *, strict=False):
+        """Read checked identity without writing or trusting partial JSON."""
+        native = dict(row)
+        candidates = [(row["native"] or {}).get("invocation_id"),
+                      self._invocations.get(self._key(row)),
+                      *(self._auxiliary_invocation(control, name, strict=strict)
+                        for name in ("invocation.json", "terminal.json"))]
+        identities = {v for v in candidates if v}
+        if len(identities) > 1:
+            raise AdapterError("native_invocation_changed")
+        if identities:
+            native["native"] = {"invocation_id": identities.pop(),
+                                "worker_reference": (row["native"] or {}).get("worker_reference", "")}
         return native
+
+    def _remember(self, row, control, invocation):
+        if not re.fullmatch(r"[0-9a-f]{32}", invocation):
+            raise AdapterError("invalid_native_invocation")
+        known = self._known(row, control)
+        if known["native"] is not None and known["native"]["invocation_id"] != invocation:
+            raise AdapterError("native_invocation_changed")
+        self._invocations[self._key(row)] = invocation
+
+    def _persist_invocation(self, row, control):
+        known = self._known(row, control, strict=True)
+        if known["native"] is not None and not (control/"invocation.json").exists():
+            _write(control/"invocation.json", {"invocation_id": known["native"]["invocation_id"]})
+
+    def _stop_owned(self, row, control):
+        known = self._known(row, control)
+        before = self.supervisor.observe(known)
+        if before.invocation_id:
+            self._remember(row, control, before.invocation_id)
+            known = self._known(row, control)
+        unit = self.supervisor.stop(known)
+        if not unit.quiescent:
+            raise AdapterError("native_stop_unconfirmed")
+        if unit.invocation_id:
+            self._remember(row, control, unit.invocation_id)
+        return unit
+
+    def _cleanup(self, row, control, error):
+        """Keep the initiating error even when exact-owned stop fails."""
+        try:
+            unit = self._stop_owned(row, control)
+        except BaseException as stop_error:
+            error.stop_confirmed = False
+            error.stop_error = stop_error
+            error.add_note("STOP_UNCONFIRMED: " + type(stop_error).__name__)
+        else:
+            error.stop_confirmed = True
+            error.stop_observation = unit
+            error.add_note("Owned native boundary quiescence confirmed")
+
+    def _reference(self, row, session):
+        prior = (row["native"] or {}).get("worker_reference")
+        if prior and not re.fullmatch(r"session-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", prior):
+            raise AdapterError("invalid_native_session")
+        if prior and session and prior != session:
+            raise AdapterError("native_session_changed")
+        return session or prior or ""
 
     def _events(self, control, *, terminal=False):
         p = _regular(control / "events.ndjson")
@@ -426,7 +516,7 @@ class DshAdapter:
         # crash anywhere after it requires reconciliation and never replay.
         # Reserve both the bounded launch RPC and native shutdown. RPC time
         # never becomes a hidden deadline extension or a fresh task budget.
-        remaining = row["deadline_unix"] - self.clock() - self.config.shutdown_seconds - 5
+        remaining = self._remaining(row)
         if not math.isfinite(remaining) or remaining <= 0:
             raise AdapterError("stopped_or_expired")
         env = self._environment()
@@ -443,7 +533,7 @@ class DshAdapter:
         try:
             current, _ = self._row(row)
             self._admit(current)
-            remaining = current["deadline_unix"] - self.clock() - c.shutdown_seconds - 5
+            remaining = self._remaining(current)
             if remaining <= 0:
                 raise AdapterError("stopped_or_expired")
             argv = self._launch_argv(current, root, control, remaining, grant, command)
@@ -451,30 +541,33 @@ class DshAdapter:
                                                 "deadline_unix": current["deadline_unix"], "at_unix": self.clock()})
             # One bounded native launch. Timeout is uncertain, never retry.
             r = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False)
+            ids = re.findall(rb"invocation ID: ([0-9a-f]{32})", r.stderr)
+            if len(ids) == 1:
+                self._remember(row, control, ids[0].decode())
+            observed = self.supervisor.observe(self._known(row, control))
+            if observed.invocation_id:
+                self._remember(row, control, observed.invocation_id)
             _write(control/"launch.json", {"returncode": r.returncode, "stdout": r.stdout.decode(errors="replace"),
                                            "stderr": r.stderr.decode(errors="replace")})
-            ids = re.findall(rb"invocation ID: ([0-9a-f]{32})", r.stderr)
-            observed = self.supervisor.observe(row)
-            inv = observed.invocation_id or (ids[0].decode() if len(ids)==1 else "")
-            if not re.fullmatch(r"[0-9a-f]{32}", inv):
+            if self._known(row, control)["native"] is None:
                 raise AdapterError("submission_unknown")
-            _write(control/"invocation.json", {"invocation_id": inv})
+            self._persist_invocation(row, control)
             if r.returncode != 0:
                 raise AdapterError("native_launch_failed")
             while True:
                 current, _ = self._row(row)
                 known = self._known(current, control)
                 unit = self.supervisor.observe(known)
-                events = self._events(control, terminal=unit.quiescent)
-                if current["stop_intent"] is not None or self.clock() >= current["deadline_unix"]:
-                    self.supervisor.stop(known)
+                if self._retained_stop(current):
+                    self._stop_owned(current, control)
                     raise AdapterError("stopped_or_expired")
+                events = self._events(control, terminal=unit.quiescent)
                 if events.session:
                     value = self.observe(current, prepared)
                     on_native_observed(value)
                     # Re-read retained intent immediately after durable callback.
                     current, _ = self._row(row)
-                    if current["stop_intent"] is not None or self.clock() >= current["deadline_unix"]:
+                    if self._retained_stop(current):
                         return self.stop(current, prepared, current["stop_intent"] or "deadline")
                     return value
                 if unit.quiescent:
@@ -482,29 +575,32 @@ class DshAdapter:
                 # Finite local opening-event read, bounded by original native
                 # timer. No mailbox, peer, model or service-health polling.
                 time.sleep(.02)
-        except BaseException:
-            self.supervisor.stop(self._known(row, control))
+        except BaseException as error:
+            self._cleanup(row, control, error)
             raise
 
     def observe(self, association, prepared):
         row, _ = self._row(association)
-        _, control = self._prepared(row, prepared)
+        _, control = self._control(row, prepared)
         known = self._known(row, control)
         unit = self.supervisor.observe(known)
-        if unit.invocation_id and not (control/"invocation.json").exists():
-            _write(control/"invocation.json", {"invocation_id": unit.invocation_id})
-            known = self._known(row, control)
-        if (row["stop_intent"] is not None or self.clock() >= row["deadline_unix"]) and not unit.quiescent:
-            unit = self.supervisor.stop(known)
+        if unit.invocation_id:
+            self._remember(row, control, unit.invocation_id)
+        if self._retained_stop(row):
+            return self.stop(row, prepared, row["stop_intent"] or "deadline")
         try:
+            self._prepared(row, prepared)
+            self._persist_invocation(row, control)
             events = self._events(control, terminal=unit.quiescent)
-        except AdapterError:
-            self.supervisor.stop(known)
+            return self._observation(row, control, unit, events)
+        except BaseException as error:
+            self._cleanup(row, control, error)
             raise
+
+    def _observation(self, row, control, unit, events):
+        known = self._known(row, control)
         inv = unit.invocation_id or (known.get("native") or {}).get("invocation_id", "")
-        reference = events.session or prepared.reference
-        if row["native"] is not None and row["native"]["worker_reference"] != reference:
-            raise AdapterError("native_session_changed")
+        reference = self._reference(row, events.session)
         state = "running" if not unit.quiescent and events.session else "unknown"
         terminal = control/"terminal.json"
         if unit.quiescent and terminal.exists():
@@ -515,7 +611,7 @@ class DshAdapter:
             state = "failed"
             if end["SERVICE_RESULT"] == "success" and end["EXIT_CODE"] == "exited" and end["EXIT_STATUS"] == "0" and events.completed and events.final and not events.failed:
                 state = "completed"
-        if row["stop_intent"] is not None or self.clock() >= row["deadline_unix"]:
+        if self._retained_stop(row):
             state = "stopped" if unit.quiescent else "unknown"
         value = NativeObservation(inv, reference, str(control/"events.ndjson"),
                                   max(row["elapsed_seconds"], self.clock()-row["created_at_unix"]), state)
@@ -525,20 +621,20 @@ class DshAdapter:
         if intent not in {"cancel", "pause", "deadline"}:
             raise AdapterError("invalid_stop_intent")
         row, _ = self._row(association)
-        _, control = self._prepared(row, prepared, verify_files=False)
+        _, control = self._control(row, prepared)
         if intent == "deadline":
-            if self.clock() < row["deadline_unix"]:
+            if self.clock() < row["deadline_unix"] and row["elapsed_seconds"] < row["budget_seconds"]:
                 raise AdapterError("deadline_not_reached")
         elif row["stop_intent"] not in ({"pause", "cancel"} if intent == "pause" else {"cancel"}):
             raise AdapterError("durable_stop_required")
+        unit = self._stop_owned(row, control)
         known = self._known(row, control)
-        unit = self.supervisor.stop(known)
         inv = unit.invocation_id or (known.get("native") or {}).get("invocation_id", "")
         # Malformed output cannot prevent a confirmed owned native stop.
         try:
             session = self._events(control, terminal=True).session
-        except AdapterError:
+        except (AdapterError, OSError, ValueError, RecursionError):
             session = None
-        reference = (row["native"] or {}).get("worker_reference") or session or prepared.reference
+        reference = self._reference(row, session)
         return NativeObservation(inv, reference, str(control/"events.ndjson"),
                                  max(row["elapsed_seconds"], self.clock()-row["created_at_unix"]), "stopped")

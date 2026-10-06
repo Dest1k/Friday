@@ -253,7 +253,7 @@ class AdapterTests(unittest.TestCase):
             observed=self.adapter.observe(self.row,p)
             self.assertEqual(observed.invocation_id,INV)
             self.assertEqual(observed.state,"unknown")
-            self.assertEqual(observed.worker_reference,p.reference)
+            self.assertEqual(observed.worker_reference,"")
             self.assertEqual(_json(Path(p.receipt_reference).parent/"invocation.json"),{"invocation_id":INV})
             launch.assert_not_called()
 
@@ -304,6 +304,188 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter.observe(self.row,p).state,"unknown")
         self.sup.running=False
         with self.assertRaises(AdapterError):self.adapter.observe(self.row,p)
+
+    def _receipt_failure(self, mode, phase):
+        from friday_dsh_adapter_test.adapters import dsh
+        case=AdapterTests();case.setUp()
+        try:
+            prep=case.prep();control=Path(prep.receipt_reference).parent
+            case.row["submission_observation"]="UNKNOWN"
+            problem=OSError(28,"identity storage fault "+phase)
+            original=dsh._write
+            def fail(path,value):
+                if path.name!="invocation.json":return original(path,value)
+                if phase=="before_open":raise problem
+                if phase=="partial_write":
+                    fdopen=dsh.os.fdopen
+                    class Partial:
+                        def __init__(self,stream):self.stream=stream
+                        def __enter__(self):return self
+                        def __exit__(self,*args):return self.stream.__exit__(*args)
+                        def write(self,data):self.stream.write(data[:1]);self.stream.flush();raise problem
+                    with patch.object(dsh.os,"fdopen",side_effect=lambda *a,**kw:Partial(fdopen(*a,**kw))):
+                        return original(path,value)
+                if phase=="file_fsync":
+                    with patch.object(dsh.os,"fsync",side_effect=problem):return original(path,value)
+                if phase=="publication":
+                    with patch.object(dsh.os,"link",side_effect=problem):return original(path,value)
+                if phase=="after_publication":
+                    link=dsh.os.link
+                    def after(*a,**kw):link(*a,**kw);raise problem
+                    with patch.object(dsh.os,"link",side_effect=after):return original(path,value)
+                if phase=="directory_barrier":
+                    with patch.object(dsh,"_sync",side_effect=problem):return original(path,value)
+                original(path,value);raise problem
+            with patch.object(dsh,"_write",side_effect=fail):
+                with self.assertRaises(OSError) as raised:
+                    if mode=="submit":
+                        with patch("subprocess.run",side_effect=case.launch):
+                            case.adapter.submit(case.row,case.brief,(),prep,lambda o:None)
+                    else:
+                        case.sup.launched=True;case.sup.running=True
+                        case.adapter.observe(case.row,prep)
+            self.assertIs(raised.exception,problem)
+            self.assertTrue(problem.stop_confirmed)
+            self.assertFalse(case.sup.running);self.assertGreaterEqual(case.sup.stops,1)
+            self.assertEqual(case.row["submission_observation"],"UNKNOWN")
+            self.assertIsNone(case.row["native"])
+            # A failed write exposes either nothing or the whole published file.
+            if (control/"invocation.json").exists():
+                self.assertEqual(_json(control/"invocation.json"),{"invocation_id":INV})
+            self.assertEqual(list(control.glob(".invocation.json.*")),[])
+            case.row["stop_intent"]="cancel"
+            restarted=DshAdapter(case.config,supervisor=case.sup,clock=lambda:case.now)
+            stopped=restarted.stop(case.row,prep,"cancel")
+            self.assertEqual(stopped.state,"stopped")
+            self.assertEqual(stopped.invocation_id,INV)
+        finally:case.doCleanups()
+
+    def test_identity_publication_failpoints_stop_and_preserve_original_error(self):
+        for mode in ("submit","observe"):
+            for phase in ("before_open","partial_write","file_fsync","publication",
+                          "after_publication","directory_barrier","post_write"):
+                with self.subTest(mode=mode,phase=phase):self._receipt_failure(mode,phase)
+
+    def test_atomic_receipt_never_overwrites_foreign_complete_file(self):
+        p=self.root/"identity.json";_write(p,{"invocation_id":"f"*32})
+        before=p.read_bytes()
+        with self.assertRaises(FileExistsError):_write(p,{"invocation_id":INV})
+        self.assertEqual(p.read_bytes(),before)
+        self.assertEqual(list(self.root.glob(".identity.json.*")),[])
+
+    def test_restart_stop_survives_corrupt_or_missing_auxiliary_and_preparation(self):
+        p=self.prep();c=Path(p.receipt_reference).parent
+        self.sup.launched=True;self.sup.running=True;self.row["stop_intent"]="cancel"
+        for data in (None,b"{",b"{}",b'{"invocation_id":"bad"}'):
+            with self.subTest(data=data):
+                self.sup.running=True
+                if data is not None:(c/"invocation.json").write_bytes(data)
+                else:(c/"invocation.json").unlink(missing_ok=True)
+                (c/"preparation.json").write_bytes(b"{")
+                restarted=DshAdapter(self.config,supervisor=self.sup,clock=lambda:self.now)
+                with patch("subprocess.run") as launch,patch("friday_dsh_adapter_test.adapters.dsh._write",side_effect=AssertionError("stop is read-only")):
+                    o=restarted.stop(self.row,p,"cancel")
+                    self.assertEqual(o.invocation_id,INV);self.assertEqual(o.worker_reference,"")
+                    self.assertEqual(o.state,"stopped");self.assertFalse(self.sup.running)
+                    launch.assert_not_called()
+
+    def test_corrupt_recovery_reports_original_error_after_confirmed_stop(self):
+        p=self.prep();c=Path(p.receipt_reference).parent
+        (c/"invocation.json").write_bytes(b"{");self.sup.launched=True;self.sup.running=True
+        with self.assertRaises(json.JSONDecodeError) as ex:self.adapter.observe(self.row,p)
+        self.assertTrue(ex.exception.stop_confirmed);self.assertFalse(self.sup.running)
+        self.assertEqual((c/"invocation.json").read_bytes(),b"{")
+
+    def test_retained_intent_precedes_all_launch_files_and_never_writes_identity(self):
+        p=self.prep();c=Path(p.receipt_reference).parent
+        self.config.node.path.write_bytes(b"drift");(c/"preparation.json").write_bytes(b"{")
+        self.sup.launched=True
+        for intent in ("cancel","pause"):
+            self.sup.running=True;self.row["stop_intent"]=intent
+            with patch("friday_dsh_adapter_test.adapters.dsh._write",side_effect=AssertionError("stop must not persist")):
+                o=self.adapter.observe(self.row,p)
+            self.assertEqual(o.state,"stopped");self.assertEqual(o.worker_reference,"")
+            self.assertFalse(self.sup.running)
+
+    def test_consumed_original_budget_precedes_wall_clock_and_drift(self):
+        p=self.prep();self.sup.launched=True;self.sup.running=True
+        self.row["native"]={"invocation_id":INV,"worker_reference":SESSION}
+        self.row["submission_observation"]="OBSERVED";self.row["elapsed_seconds"]=60
+        self.row["execution_observation"]="retained evidence"
+        self.config.node.path.write_bytes(b"drift")
+        self.assertLess(self.now,self.row["deadline_unix"])
+        o=self.adapter.observe(self.row,p)
+        self.assertEqual(o.state,"stopped");self.assertEqual(o.worker_reference,SESSION)
+        self.assertEqual(o.elapsed_seconds,60);self.assertFalse(self.sup.running)
+        self.assertEqual(self.adapter.stop(self.row,p,"deadline").state,"stopped")
+
+    def test_launch_timer_preserves_consumed_budget_after_clock_rewind(self):
+        p=self.prep();self.row["submission_observation"]="UNKNOWN"
+        # UNKNOWN cannot legally have elapsed time without native identity;
+        # directly inspect the timer arithmetic on a retained checked row.
+        row=copy.deepcopy(self.row);row["elapsed_seconds"]=50
+        self.now-=10
+        self.assertEqual(self.adapter._remaining(row),3)
+
+    def test_stop_failure_does_not_hide_initiating_error_or_claim_settled(self):
+        from friday_dsh_adapter_test.adapters import dsh
+        p=self.prep();self.row["submission_observation"]="UNKNOWN"
+        original=dsh._write;problem=OSError(28,"original storage failure")
+        def fail(path,value):
+            if path.name=="invocation.json":raise problem
+            return original(path,value)
+        stop_error=AdapterError("native_stop_unconfirmed")
+        with patch.object(dsh,"_write",side_effect=fail),patch.object(self.sup,"stop",side_effect=stop_error),patch("subprocess.run",side_effect=self.launch):
+            with self.assertRaises(OSError) as ex:self.adapter.submit(self.row,self.brief,(),p,lambda o:None)
+        self.assertIs(ex.exception,problem);self.assertFalse(problem.stop_confirmed)
+        self.assertIs(problem.stop_error,stop_error);self.assertTrue(self.sup.running)
+        self.assertEqual(self.row["submission_observation"],"UNKNOWN")
+        self.row["stop_intent"]="cancel";self.adapter.stop(self.row,p,"cancel")
+
+    def test_callback_store_unreadable_stops_with_last_checked_row(self):
+        p=self.prep();self.row["submission_observation"]="UNKNOWN"
+        problem=OSError("association unavailable")
+        def unreadable():
+            self.adapter.config=replace(self.config,current_association=lambda a:(_ for _ in ()).throw(problem))
+            raise problem
+        with patch("subprocess.run",side_effect=self.launch):
+            with self.assertRaises(OSError) as ex:self.adapter.submit(self.row,self.brief,(),p,lambda o:unreadable())
+        self.assertIs(ex.exception,problem);self.assertTrue(problem.stop_confirmed)
+        self.assertFalse(self.sup.running)
+        self.adapter.config=self.config
+        self.row["stop_intent"]="cancel";self.adapter.stop(self.row,p,"cancel")
+
+    def test_actual_session_retained_on_empty_crash_output(self):
+        p=self.prep();self.sup.launched=True;self.sup.running=True
+        self.row["native"]={"invocation_id":INV,"worker_reference":SESSION}
+        self.row["submission_observation"]="OBSERVED"
+        self.assertEqual(self.adapter.observe(self.row,p).worker_reference,SESSION)
+        self.row["stop_intent"]="cancel"
+        self.assertEqual(self.adapter.stop(self.row,p,"cancel").worker_reference,SESSION)
+
+    def test_valid_contradictory_auxiliary_identity_refuses_stop_and_is_not_overwritten(self):
+        p=self.prep();c=Path(p.receipt_reference).parent
+        self.sup.launched=True;self.sup.running=True
+        self.adapter._remember(self.row,c,INV)
+        _write(c/"invocation.json",{"invocation_id":"f"*32})
+        before=(c/"invocation.json").read_bytes();self.row["stop_intent"]="cancel"
+        with self.assertRaisesRegex(AdapterError,"native_invocation_changed"):
+            self.adapter.stop(self.row,p,"cancel")
+        self.assertEqual(self.sup.stops,0);self.assertTrue(self.sup.running)
+        self.assertEqual((c/"invocation.json").read_bytes(),before)
+
+    def test_unknown_launch_exception_keeps_original_and_stops_without_identity_write(self):
+        p=self.prep();self.row["submission_observation"]="UNKNOWN"
+        problem=subprocess.TimeoutExpired("systemd-run",5)
+        def uncertain(*args,**kwargs):
+            self.sup.launched=True;self.sup.running=True;raise problem
+        with patch("subprocess.run",side_effect=uncertain):
+            with self.assertRaises(subprocess.TimeoutExpired) as ex:self.adapter.submit(self.row,self.brief,(),p,lambda o:None)
+        self.assertIs(ex.exception,problem);self.assertTrue(problem.stop_confirmed)
+        self.assertFalse(self.sup.running)
+        self.assertFalse((Path(p.receipt_reference).parent/"invocation.json").exists())
+        self.assertEqual(self.row["submission_observation"],"UNKNOWN")
+
 
 
 if __name__ == "__main__":unittest.main()
