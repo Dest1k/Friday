@@ -34,7 +34,10 @@ def status(row):
             "execution": (host["terminal"] or host["observation"] or {"state": "unresolved"})["state"],
             "quiescent": host["quiescence"] is not None,
             "goal_verification": row["goal_verification"], "delivery": row["delivery"],
-            "deadline_unix": row["deadline_unix"], "elapsed_seconds": row["elapsed_seconds"]}
+            "deadline_unix": row["deadline_unix"], "elapsed_seconds": row["elapsed_seconds"],
+            **({"root_reference": host['continuation']['root'], "continuation_mode": host['continuation']['mode']}
+               if host.get('continuation') else {}),
+            **({"successor_reference": host["successor"]} if host.get("successor") else {})}
 
 
 class WorkerHost:
@@ -49,6 +52,26 @@ class WorkerHost:
         self._a0_admissions = set()
         self._closed = False
         self._cleanup_future = None
+
+    def _cached_stage(self, reference):
+        """Last checked custody permits immediate stop if durable storage fails."""
+        current = self._owned.get(reference)
+        seen = set()
+        while current is not None:
+            successor = current['host'].get('successor')
+            if successor is None:
+                known = [v for v in self._owned.values()
+                         if v['host'].get('continuation', {}).get('predecessor') == current['existing_task_id']]
+                if len(known) > 1:
+                    return None
+                successor = known[0]['existing_task_id'] if known else None
+            if successor is None:
+                break
+            if current['existing_task_id'] in seen or len(seen) >= 16:
+                return None
+            seen.add(current['existing_task_id'])
+            current = self._owned.get(successor)
+        return copy.deepcopy(current) if current is not None else None
 
     def _controller(self, row):
         if row['worker_kind'] == 'a0':
@@ -99,6 +122,10 @@ class WorkerHost:
                         or binding.get("brief") != vars(brief)):
                     raise AssociationError("admission_conflict")
                 return json.dumps(status(old))
+            if getattr(brief, 'from_result', None):
+                from .result_tool import owned_result
+                predecessor = owned_result(self, brief.from_result['reference'], kwargs)
+                self._prove_departure(predecessor)
             configured = self.ctx.get_config("runtime")
             if not isinstance(configured, dict) or configured.get("enabled") is not True:
                 return json.dumps({"accepted": False, "error": "worker_not_admitted"})
@@ -117,9 +144,7 @@ class WorkerHost:
             if scope is not None:
                 host_binding["user_authority"] = {"principal_id": scope.key,
                                                   "generation": scope.admission_generation}
-            acceptance = None
-            if brief.worker == 'a0':
-                acceptance = {'accepted_unix': self.store.clock(), 'accepted_monotonic_ns': time.monotonic_ns(),
+            acceptance = {'accepted_unix': self.store.clock(), 'accepted_monotonic_ns': time.monotonic_ns(),
                               'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
             row, fresh = self.store.claim(
                 task_id=address, admission_key=address, owner=owner, brief=brief,
@@ -127,11 +152,14 @@ class WorkerHost:
                 supervisor={"scope": "user", "unit": "friday-rework-worker-" + address[7:39] + ".service"},
                 budget_seconds=runtime["budget_seconds"],
                 deadline_unix=(acceptance['accepted_unix'] if acceptance else self.store.clock()) + runtime["budget_seconds"],
-                acceptance=acceptance,
+                acceptance=acceptance, continuation=getattr(brief, "from_result", {}).get("reference"),
                 host_binding=host_binding)
             if not fresh:
                 return json.dumps(status(row))
             self._owned[address] = copy.deepcopy(row)
+            if row['host'].get('continuation'):
+                previous = row['host']['continuation']['predecessor']
+                self._remember(self.store.snapshot()[previous])
             if brief.worker == 'a0': self._a0_admissions.add(address)
             # No fallback to a shared directory, no clobber of earlier artifacts.
             workspace = Path(row["workspace_reference"])
@@ -141,11 +169,16 @@ class WorkerHost:
                 directory.mkdir(mode=0o700)
                 private_directory(directory)
                 _sync_directory(directory.parent)
-            inputs = stage_inputs(
-                matched_ingress=ingress, admitted_reference="association:" + address + "#ingress",
-                cache_roots=runtime["cache_roots"], staging_root=staging,
-                worker_input_root="/job-input/verified", max_file_bytes=runtime["max_file_bytes"],
-                max_total_bytes=runtime["max_total_bytes"])
+            if getattr(brief, 'from_result', None):
+                from .continuation import stage_retained
+                parent = self.store.snapshot()[brief.from_result['reference']]
+                inputs = stage_retained(parent, row)
+            else:
+                inputs = stage_inputs(
+                    matched_ingress=ingress, admitted_reference="association:" + address + "#ingress",
+                    cache_roots=runtime["cache_roots"], staging_root=staging,
+                    worker_input_root="/job-input/verified", max_file_bytes=runtime["max_file_bytes"],
+                    max_total_bytes=runtime["max_total_bytes"])
             if brief.worker == 'a0':
                 from .adapters.a0 import input_path
                 if len(inputs) > 16 or sum(v.size_bytes for v in inputs) > runtime['max_file_bytes']:
@@ -156,7 +189,8 @@ class WorkerHost:
             # A0 reserves immutable clocks/identity first. A separately authorized
             # current producer attaches once, then uses this existing scheduler.
             if brief.worker != 'a0':
-                self.ctx.schedule_gateway_work(self._run(row), route=route, name="friday:" + address)
+                from .continuation import origin_ingress
+                self.ctx.schedule_gateway_work(self._run(row), route=delivery_route(origin_ingress(row)), name="friday:" + address)
             return json.dumps(status(row))
         except (ValueError, RuntimeError, OSError, TypeError):
             # Any admitted partial setup remains reserved and non-replayable.
@@ -166,6 +200,24 @@ class WorkerHost:
             if row is not None:
                 answer["reference"] = row["existing_task_id"]
             return json.dumps(answer)
+
+    def _prove_departure(self, row):
+        """Fresh native cessation check before transferring writer custody."""
+        if (row['host'].get('successor') or row['host']['quiescence'] is None or row['host']['terminal'] is None
+                or row['submission_observation'] != 'OBSERVED' or row['stop_intent']):
+            raise HostUnavailable('departure_not_quiescent')
+        if row['worker_kind'] == 'a0':
+            session = self._controller(row).bindings['a0'].adapter
+            unit = session.emergency_stop(row)
+            quiet = session.quiescence(row)
+            if quiet is None or quiet['kind'] != 'a0':
+                raise HostUnavailable('departure_not_quiescent')
+        else:
+            unit = NativeSupervisor().observe(row)
+        if (not isinstance(unit, UnitObservation) or not unit.quiescent
+                or unit.unit != row['supervisor']['unit']
+                or unit.invocation_id not in {'', row['native']['invocation_id']}):
+            raise HostUnavailable('departure_not_quiescent')
 
     def attach_a0_capability(self, task_id, owner, pin):
         """Host/operator-only entry; never exported as a worker/model tool.
@@ -257,7 +309,8 @@ class WorkerHost:
         controller = self._controller(row)
         if self._closed or row["stop_intent"]:
             return self._stop(row, row["stop_intent"] or "cancel")
-        if self.store.clock() >= row["deadline_unix"]:
+        from .continuation import remaining, seed_workspace
+        if remaining(row, self.store.clock()) <= 0:
             # Withdrawal precedes prepare; expiry never gets a fresh budget.
             return self._stop(row, "cancel")
         runtime = row["host"]["binding"]["runtime"]
@@ -266,6 +319,7 @@ class WorkerHost:
         check_runtime(runtime, self.store)
         brief = parse_brief(row["host"]["binding"]["brief"])
         inputs = tuple(VerifiedInput(**v) for v in row["host"]["inputs"])
+        seed_workspace(row, inputs)
         controller.prepare(row["existing_task_id"], row["owner"], brief, inputs)
         return self._settle(row, controller.start(row["existing_task_id"], row["owner"], brief, inputs))
 
@@ -306,6 +360,7 @@ class WorkerHost:
             if Path(self.store.state.data_dir) != self._state_directory:
                 raise HostUnavailable("foreign_runtime_home")
             row = self._remember(self.store.request_stop(row["existing_task_id"], row["owner"], intent))
+            row = self._remember(self.store.current_stage(row["existing_task_id"], row["owner"]))
             if (row["submission_observation"] == "NOT_SUBMITTED"
                     and (row['worker_kind'] != 'a0' or row['host']['a0']['launch'] is None)):
                 return self._settle(row, NativeObservation("", "", "association:" + row["existing_task_id"] + "#stop_intent",
@@ -399,7 +454,7 @@ class WorkerHost:
             except (ValueError, RuntimeError, OSError) as error:
                 # An authenticated exact stop cannot wait for damaged metadata.
                 # This is the existing host's checked cache, not new authority.
-                cached = self._owned.get(reference)
+                cached = self._cached_stage(reference)
                 if (action in ("pause", "cancel") and cached is not None
                         and (cached["owner"]["profile"] or "default") == profile):
                     validate_host_record(cached)
@@ -418,6 +473,7 @@ class WorkerHost:
             from hermes_cli.plugins_state import PluginState
             if Path(PluginState("friday_rework").data_dir) != self._state_directory:
                 raise PermissionError("foreign_host_home")
+            row = self.store.current_stage(row["existing_task_id"], row["owner"])
             self._remember(row)
             verify()  # Expiry/revocation after store acquisition cannot authorize stop.
             if row["host"]["quiescence"] is not None:
@@ -444,8 +500,9 @@ class WorkerHost:
             if not isinstance(raw_args, str) or (builtin and raw_args != ""):
                 raise HostUnavailable("unproved_control")
             reference = raw_args.strip()
-            candidates = [r for r in tuple(self._owned.values())
-                          if (not reference or r["existing_task_id"] == reference)
+            cached_target = self._cached_stage(reference) if reference else None
+            candidates = [r for r in ([cached_target] if cached_target is not None else tuple(self._owned.values()))
+                          if (not reference or cached_target is not None or r["existing_task_id"] == reference)
                           and self._matches_control(r, principal, receipt)]
             if len(candidates) == 1:
                 cached = copy.deepcopy(candidates[0])
@@ -466,6 +523,7 @@ class WorkerHost:
             if (row["host"]["binding"]["ingress"]["transport_profile"]
                     != receipt["admitted_ingress"]["transport_profile"]):
                 raise HostUnavailable("foreign_control_profile")
+            row = self.store.current_stage(row["existing_task_id"], row["owner"])
             self._remember(row)
             cached = row
             if self.ctx.get_command_context() != receipt:

@@ -154,7 +154,8 @@ class A0Adapter:
 
     def _remaining(self, row):
         require(row["stop_intent"] is None and self.clock() >= row["created_at_unix"], "stopped_or_clock_rollback")
-        seconds = min(row["deadline_unix"] - self.clock(), row["budget_seconds"] - row["elapsed_seconds"]) - 10
+        from ..continuation import remaining
+        seconds = remaining(row, self.clock()) - 10
         require(seconds > 2, "stopped_or_expired")
         return seconds
 
@@ -285,6 +286,20 @@ class A0Adapter:
                 require(all(len(actual[v.worker_path]) == v.size_bytes
                             and hashlib.sha256(actual[v.worker_path]).hexdigest() == v.sha256
                             for v, _ in values), "uploaded_input_missing_or_changed")
+            if row.get('host', {}).get('continuation'):
+                from ..continuation import materialize, verify_seed, a0_seed_root
+                self.boundary.admit(row)  # Exact owned mount/environment, bootstrap returned.
+                base = _private(self.boundary.config.state_dir)
+                workdir = base / 'workdir'
+                workdir.mkdir(mode=0o700, exist_ok=True); _private(workdir)
+                job = workdir / job_prefix(row)
+                job.mkdir(mode=0o700, exist_ok=True); _private(job)
+                materialize(job / 'seed', row, inputs)
+                verify_seed(job / 'seed', row, inputs)
+                paths = tuple(a0_seed_root(row) + '/' + p for p in row['host']['continuation']['paths'])
+                seeded = self._verified_files(row, paths)
+                require(all(len(seeded[p]) == v.size_bytes and hashlib.sha256(seeded[p]).hexdigest() == v.sha256
+                            for p, v in zip(paths, inputs)), 'native_seed_workspace_changed')
             _write(root / "inputs-verified.json", {"receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()})
             current, _ = self._row(row); self._remaining(current)
             return PreparedNative(context, str(receipt))
@@ -320,14 +335,23 @@ class A0Adapter:
                 require(all(len(actual[v.worker_path]) == v.size_bytes
                             and hashlib.sha256(actual[v.worker_path]).hexdigest() == v.sha256
                             for v in inputs), "uploaded_input_missing_or_changed")
+            if row.get('host', {}).get('continuation'):
+                from ..continuation import a0_seed_root, verify_seed
+                verify_seed(self.boundary.config.state_dir / 'workdir' / job_prefix(row) / 'seed', row, inputs)
+                paths = tuple(a0_seed_root(row) + '/' + p for p in row['host']['continuation']['paths'])
+                seeded = self._verified_files(row, paths)
+                require(all(len(seeded[p]) == v.size_bytes and hashlib.sha256(seeded[p]).hexdigest() == v.sha256
+                            for p, v in zip(paths, inputs)), 'native_seed_workspace_changed')
             _write(root / "task-post-intent.json", {"context_id": prepared.reference,
                    "brief_sha256": row["brief_sha256"], "deadline_unix": row["deadline_unix"],
                    "container_id": self.boundary.grant.container_id, "invocation_id": self.boundary.grant.invocation_id})
             self.inflight = True
+            from ..continuation import seed_description
             message = ("Existing job: " + row["existing_task_id"] + "\nGoal: " + brief.brief
                        + "\nCheck: " + brief.goal_check + "\nOriginal deadline: " + str(row["deadline_unix"])
                        + "\nVerified inputs: " + json.dumps([v.worker_path for v in inputs])
-                       + "\nWrite these exact output files: " + json.dumps([v["worker_path"] for v in receipt["outputs"]]))
+                       + "\nWrite these exact output files: " + json.dumps([v["worker_path"] for v in receipt["outputs"]])
+                       + seed_description(row, inputs))
             response = self._request(row, "POST", "/api/api_message", {"context_id": prepared.reference,
                        "message": message, "lifetime_hours": self.config.lifetime_hours})
             require(isinstance(response, dict) and response.get("context_id") == prepared.reference

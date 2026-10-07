@@ -13,8 +13,14 @@ class WorkBrief:
     goal_check: str
 
 
+@dataclass(frozen=True)
+class ContinuationBrief(WorkBrief):
+    from_result: dict
+
+
 def parse_brief(args):
-    if not isinstance(args, dict) or set(args) != {"worker", "brief", "goal_check"}:
+    fields = {"worker", "brief", "goal_check"}
+    if not isinstance(args, dict) or set(args) not in (fields, fields | {"from_result"}):
         raise ValueError("invalid_fields")
     if args["worker"] not in ("dsh", "a0"):
         raise ValueError("unsupported_worker")
@@ -28,6 +34,9 @@ def parse_brief(args):
             raise ValueError("invalid_task_text") from exc
         if size > limit:
             raise ValueError("task_text_too_large")
+    if "from_result" in args:
+        from .continuation import parse_source
+        return ContinuationBrief(**{**args, "from_result": parse_source(args["from_result"])})
     return WorkBrief(**args)
 
 

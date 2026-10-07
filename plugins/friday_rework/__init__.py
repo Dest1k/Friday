@@ -19,14 +19,21 @@ def register(ctx):
             "description": (
                 "Request a coding (dsh) or engineering (a0) worker. "
                 "A request is not accepted until supervised execution is available. "
-                "Describe the goal and its check; never supply credentials or routing IDs."
+                "Describe the goal and its check; never supply credentials or routing IDs. "
+                "To continue a finished owned task, use from_result with its exact reference and "
+                "retained source_paths. This inherits the original budget and goal check after native "
+                "quiescence; it does not resume a warm context or stopped/unknown task."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "worker": {"type": "string", "enum": ["dsh", "a0"]},
                     "brief": {"type": "string", "description": "Bounded task brief."},
-                    "goal_check": {"type": "string", "description": "Observable completion check."},
+                    "goal_check": {"type": "string", "description": "Observable completion check; unchanged on continuation."},
+                    "from_result": {"type": "object", "properties": {
+                        "reference": {"type": "string"},
+                        "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 16}},
+                        "required": ["reference", "paths"], "additionalProperties": False},
                 },
                 "required": ["worker", "brief", "goal_check"],
                 "additionalProperties": False,

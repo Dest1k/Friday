@@ -12,6 +12,7 @@ from pathlib import Path
 import stat
 
 from .admission import CALL_FIELDS, _call, delivery_route
+from .continuation import origin_ingress
 from .associations import AssociationError
 from .boundary import bound_owner
 from .host_runtime import private_directory
@@ -45,6 +46,7 @@ async def notify_finished(host, row):
     content = json.dumps({"friday_worker_result": row["existing_task_id"],
                           "execution": terminal["state"] if terminal else "unknown", "stop_intent": row["stop_intent"],
                           "original_task_content": row["host"]["binding"]["brief"],
+                          "root_reference": row['host'].get('continuation', {}).get('root', row['existing_task_id']),
                           "instructions": "Use friday_result list/inspect for this original task, independently assess the goal and deliver checked files. Worker completion is not goal verification. Do not start the worker again."})
     try:
         scheduled = host.ctx.inject_message(content, session_key=row["owner"]["session_key"],
@@ -149,6 +151,10 @@ class ResultTool:
                 raise AssociationError("invalid_result_request")
             row = owned_result(self.host, args.get("reference"), kwargs)
             action = args["action"]
+            if action in {'status', 'assess', 'deliver'}:
+                row = self.host.store.current_stage(row['existing_task_id'], row['owner'])
+                from hermes_cli.friday_user_scope import check_retained_job
+                check_retained_job(row)
             if action == "list":
                 return json.dumps({**status(row), "files": list_outputs(row, self.host.store)})
             if action == "inspect":
@@ -168,7 +174,7 @@ class ResultTool:
                     raise AssociationError("result_not_collected")
                 self.host.ctx.schedule_gateway_work(
                     self.deliver(row, retry=args.get("retry", False)),
-                    route=delivery_route(row["host"]["binding"]["ingress"]),
+                    route=delivery_route(origin_ingress(row)),
                     name="friday-result:" + row["existing_task_id"])
                 return json.dumps({**status(row), "delivery_requested": True})
             return json.dumps({**status(row), "artifacts": row.get("result", {}).get("artifacts", []),
