@@ -60,7 +60,7 @@ def argv(binary, command):
     # Keep current installation filesystem/network semantics. This boundary
     # supplies process lifetime custody, not a new filesystem or network grant.
     return [binary, '--unshare-pid', '--die-with-parent', '--new-session',
-            '--bind', '/', '/', '--proc', '/proc', '--', *command]
+            '--bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--', *command]
 
 
 class Containment:
@@ -69,19 +69,30 @@ class Containment:
         self.binary = budget.call(checked_binary, pin)
 
     def run(self, command, cwd, *, timeout=1800):
-        from scripts.dsh_prepare import run
+        from scripts.dsh_prepare import run, CommandFailed, StopUnconfirmed
         self.budget.call(checked_binary, self.pin)
         # Reserve cleanup *inside* the original deadline; no fresh grace clock.
         limit = min(timeout, self.budget.check(reserve=1))
-        result = run(argv(self.binary, command), cwd, timeout=limit, env=self.env,
-                     deadline=self.budget.deadline)
+        try:
+            result = run(argv(self.binary, command), cwd, timeout=limit, env=self.env,
+                         deadline=self.budget.deadline)
+        except CommandFailed as exc:
+            # Internal native helpers reserve exit 3 for uncertain custody.
+            # Reaping this wrapper cannot prove external native units stopped.
+            if exc.observation['returncode'] == 3:
+                stopped = StopUnconfirmed('STOP_UNCONFIRMED: native helper custody')
+                stopped.observation = exc.observation
+                raise stopped from exc
+            raise
         self.budget.check()
         return result
 
     def probe(self, python, cwd):
         outer = os.readlink('/proc/self/ns/pid')
         code = ('import os; assert os.readlink("/proc/self/ns/pid") != ' + repr(outer)
-                + '; print("FRIDAY_PID_NAMESPACE_OK")')
+                + '; fd=os.open("/dev/null",os.O_RDWR); '
+                  'assert os.read(fd,1)==b""; assert os.write(fd,b"probe")==5; '
+                  'os.close(fd); print("FRIDAY_PID_NAMESPACE_OK")')
         result = self.run([python, '-B', '-c', code], cwd, timeout=5)[0]
         if result != 'FRIDAY_PID_NAMESPACE_OK':
             raise ValueError('required_pid_namespace_unavailable')
