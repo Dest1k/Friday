@@ -70,6 +70,8 @@ def validate_a0_record(row):
             or a['schema'] != 'friday.a0.host.v2'):
         raise ValueError()
     validate_acceptance(a['acceptance'])
+    if 'acceptance' in row['host'] and row['host']['acceptance'] != a['acceptance']:
+        raise ValueError()
     if (a['acceptance']['accepted_unix'] != row['created_at_unix']
             or type(row['budget_seconds']) is not int
             or row['deadline_unix'] != row['created_at_unix'] + row['budget_seconds']
@@ -164,8 +166,27 @@ def validate_host_record(row):
         expected_host = {"binding", "inputs", "observation", "terminal", "quiescence"}
         if row['worker_kind'] == 'a0':
             expected_host.add('a0')
-        if not isinstance(host, dict) or set(host) != expected_host:
+        if not isinstance(host, dict) or set(host) - {'acceptance', 'continuation', 'successor'} != expected_host:
             raise ValueError()
+        if 'acceptance' in host:
+            validate_acceptance(host['acceptance'])
+            if host['acceptance']['accepted_unix'] != row['created_at_unix']:
+                raise ValueError()
+        if 'successor' in host:
+            if not re.fullmatch('native-[0-9a-f]{64}', host['successor']) or host['quiescence'] is None or host['terminal'] is None:
+                raise ValueError()
+        link = host.get('continuation')
+        if link is not None:
+            from .continuation import parse_source
+            if (not isinstance(link, dict) or set(link) != {'root', 'predecessor', 'mode', 'paths',
+                    'source_sha256', 'terminal_sha256', 'quiescence_sha256', 'elapsed_high_water', 'original_ingress'}
+                    or link['mode'] != 'cold_retained_artifacts' or 'acceptance' not in host
+                    or any(not re.fullmatch('native-[0-9a-f]{64}', link[k]) for k in ('root', 'predecessor'))
+                    or any(not re.fullmatch('[0-9a-f]{64}', link[k]) for k in ('source_sha256', 'terminal_sha256', 'quiescence_sha256'))):
+                raise ValueError()
+            parse_source({'reference': link['predecessor'], 'paths': link['paths']})
+            _number(link['elapsed_high_water'])
+            _snapshot(link['original_ingress'])
         binding = host["binding"]
         fields = {"correlation", "ingress", "brief", "runtime"}
         if not isinstance(binding, dict) or set(binding) not in (fields, fields | {"user_authority"}):
@@ -187,6 +208,8 @@ def validate_host_record(row):
                         ingress["message"]["bot_id"], ingress["message"]["user_id"])):
                 raise ValueError()
         brief = parse_brief(binding["brief"])
+        if (getattr(brief, 'from_result', None) is not None) != (link is not None):
+            raise ValueError()
         runtime = validate_runtime(binding["runtime"])
         if row['worker_kind'] == 'a0':
             if 'a0' not in runtime:
@@ -201,20 +224,23 @@ def validate_host_record(row):
                 or row["workspace_reference"] != str(Path(runtime["workspace_root"]) / address)
                 or row["supervisor"] != {"scope": "user", "unit": "friday-rework-worker-" + address[7:39] + ".service"}
                 or runtime["runtime_profile"] != ingress["runtime_profile"]
-                or row["budget_seconds"] != runtime["budget_seconds"]):
+                or link is None and row["budget_seconds"] != runtime["budget_seconds"]):
             raise ValueError()
         if host["inputs"] is not None:
             if not isinstance(host["inputs"], list):
                 raise ValueError()
             inputs = tuple(VerifiedInput(**item) for item in host["inputs"])
             _inputs_digest(inputs)
+            if link is not None and len(inputs) != len(link['paths']):
+                raise ValueError()
             staging = Path(runtime["staging_root"]) / address
             from .adapters.a0 import input_path
             for index, item in enumerate(inputs):
                 if (Path(item.host_path).parent != staging
                         or item.worker_path != (input_path(row, index) if row['worker_kind'] == 'a0'
                                                else "/job-input/verified/" + Path(item.host_path).name)
-                        or item.receipt_reference != "association:" + address + "#ingress"):
+                        or (link is None and item.receipt_reference != "association:" + address + "#ingress")
+                        or (link is not None and not re.fullmatch('association:' + link['predecessor'] + r'#result:[0-9a-f]{32}\.[A-Za-z0-9]{1,12}', item.receipt_reference))):
                     raise ValueError()
         observation = host["observation"]
         if observation is not None:

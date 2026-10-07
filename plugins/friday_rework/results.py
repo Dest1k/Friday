@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 
 from .artifacts import StagedArtifact, read_staged, stage_file
+from .continuation import origin_ingress
 from .associations import AssociationError, _number, _text
 
 MAX_ARTIFACTS = 16
@@ -42,7 +43,7 @@ def _file_name(value):
 
 
 def _expected_receipt(row, artifact):
-    message = row["host"]["binding"]["ingress"]["message"]
+    message = origin_ingress(row)["message"]
     return {"kind": "document", "sha256": artifact["sha256"],
             "bytes": artifact["size_bytes"], "file_name": artifact["logical_name"],
             "bot_id": message["bot_id"], "chat_id": message["chat_id"],
@@ -458,7 +459,7 @@ async def deliver_artifact(ctx, store, row, reference, *, retry=False):
              "FAIL": "Проверка цели не пройдена.", "PASS": "Проверено чтением файлов; запуск тестов этим не подтверждается."}[row["goal_verification"]]
     caption = ("Частичный результат. " if partial else "Результат исполнителя. ") + check
     try:
-        receipt = await ctx.deliver_gateway_document(route=delivery_route(row["host"]["binding"]["ingress"]),
+        receipt = await ctx.deliver_gateway_document(route=delivery_route(origin_ingress(row)),
                     data=payload, file_name=artifact["logical_name"], caption=caption, timeout=30)
     except Exception:
         receipt = {"state": "UNKNOWN"}

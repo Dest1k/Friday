@@ -258,6 +258,8 @@ class Associations:
                 data = {"schema_version": 1, "jobs": {}}
                 self._save(data)
             _validate_store(data)
+            from .continuation import validate_links
+            validate_links(data)
             if not marker:
                 if os.pwrite(fd, b"v1\n", 0) != 3:
                     raise OSError("short_admission_marker_write")
@@ -273,6 +275,8 @@ class Associations:
 
     def _save(self, data):
         _validate_store(data)
+        from .continuation import validate_links
+        validate_links(data)
         self.state_set(KEY, data)
         # PluginState fsyncs its temporary file, but not the replacement's
         # directory. Keep its native writer/store; finish the commit under our
@@ -289,7 +293,7 @@ class Associations:
 
     def claim(self, *, task_id, admission_key, owner, brief: WorkBrief,
               workspace_reference, supervisor, budget_seconds, deadline_unix, host_binding=None,
-              acceptance=None):
+              acceptance=None, continuation=None):
         """Save trusted launch intent. Duplicate input returns the old grant.
 
         A replay with a later deadline cannot replenish its original budget.
@@ -322,10 +326,16 @@ class Associations:
                     row.get("host", {}).get("quiescence") is None for row in data["jobs"].values()):
                 raise AssociationError("worker_capacity_reserved")
             now = _number(self.clock())
+            link = None
+            parent = None
+            if continuation is not None:
+                from .continuation import admit
+                root, parent, acceptance, link = admit(data['jobs'], continuation, owner, brief, host_binding, now)
+                budget_seconds, deadline_unix = root['budget_seconds'], root['deadline_unix']
             if acceptance is not None:
                 from .host_record import validate_acceptance
                 validate_acceptance(acceptance)
-                if (brief.worker != 'a0' or host_binding is None
+                if (host_binding is None
                         or acceptance['accepted_monotonic_ns'] > time.monotonic_ns()
                         or acceptance['boot_id'] != Path('/proc/sys/kernel/random/boot_id').read_text().strip()
                         or not acceptance['accepted_unix'] <= now < deadline_unix
@@ -344,6 +354,11 @@ class Associations:
             if host_binding is not None:
                 row["host"] = {"binding": copy.deepcopy(host_binding), "inputs": None,
                                "observation": None, "terminal": None, "quiescence": None}
+                if acceptance is not None:
+                    row['host']['acceptance'] = copy.deepcopy(acceptance)
+                if link is not None:
+                    row['host']['continuation'] = link
+                    parent['host']['successor'] = task_id
                 if brief.worker == 'a0':
                     if acceptance is None:
                         raise AssociationError('original_acceptance_missing')
@@ -476,11 +491,18 @@ class Associations:
                 raise AssociationError("unknown_or_foreign_task")
             return copy.deepcopy(row)
 
+    def current_stage(self, task_id, owner):
+        with self._locked() as data:
+            row = self._owned(data, task_id, owner)
+            from .continuation import chain
+            return copy.deepcopy(chain(data['jobs'], row)[-1])
+
     def begin_submission(self, task_id, owner):
         """Persist uncertainty BEFORE the external native submission call."""
         with self._locked() as data:
             row = self._owned(data, task_id, owner)
-            if (row["stop_intent"] is not None or row["deadline_unix"] <= _number(self.clock())
+            from .continuation import remaining
+            if (row["stop_intent"] is not None or remaining(row, _number(self.clock())) <= 0
                     or row["elapsed_seconds"] >= row["budget_seconds"]):
                 raise AssociationError("submission_stopped_or_expired")
             if row["submission_observation"] != "NOT_SUBMITTED":
@@ -508,8 +530,11 @@ class Associations:
             raise AssociationError("invalid_stop_intent")
         with self._locked() as data:
             row = self._owned(data, task_id, owner)
-            if row["stop_intent"] != "cancel":
-                row["stop_intent"] = intent
+            from .continuation import chain
+            members = chain(data['jobs'], row) if 'host' in row else [row]
+            effective = 'cancel' if any(v['stop_intent'] == 'cancel' for v in members) else intent
+            for member in members:
+                member['stop_intent'] = effective
             self._save(data)
             return copy.deepcopy(row)
 
@@ -519,6 +544,8 @@ class Associations:
         elapsed_seconds = _number(elapsed_seconds)
         with self._locked() as data:
             row = self._owned(data, task_id, owner)
+            if row.get("host", {}).get("successor"):
+                raise AssociationError("writer_custody_already_transferred")
             if row["native"] is None or native != row["native"]:
                 raise AssociationError("native_reference_conflict")
             row["elapsed_seconds"] = max(row["elapsed_seconds"], elapsed_seconds)
