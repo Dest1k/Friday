@@ -379,3 +379,41 @@ Worker health preserves administrator/scope admission failures. Inside an
 already authorized profile, missing or malformed configuration produces a
 redacted unverified row while the other authorized profiles remain inspectable.
 This diagnostic never grants worker readiness or clears the A0 acceptance stops.
+# Explicit pre-compose continuation
+
+`friday_install.py continue --input CURRENT --original-input ORIGINAL
+--continuation AUTHORIZATION --continuation-sha256 OPERATOR_PIN` is the narrow
+continuation of the independently reconciled FIRST attempt. It uses the same
+ordinary installer loop and original monotonic deadline on the same boot.
+`ORIGINAL` contains the exact immutable original input bytes. No destination,
+donor, product setting, worker map, credential reference or seconds field may
+change. Only explicitly reviewed hashes in the five installer repair scripts
+and the corresponding composer path/pin may change; the source inventory set
+must stay identical. Generic `install` continues to refuse PARTIAL homes.
+
+The private immutable authorization has schema
+`friday.pre-compose-continuation.v1`, exact `original_claim_sha256`,
+`original_input_sha256`, `current_input_sha256`, and `cessation_review` /
+`repair_review` path/SHA pins. Its digest is supplied out of band by the
+operator after independent review; a user-owned file or `READY` label alone
+does not grant admission. The pinned custody review must establish cessation
+of `FRW032-NORMAL-INSTALL-FIRST-ATTEMPT#1` with the exact original claim.
+The separate immutable repair review has schema
+`friday.pre-compose-repair-review.v1`, reviewer `Astra`, explicit decision
+`ALLOW_PRECOMPOSE_CONTINUATION`, stage `BEFORE_COMPOSE`, the same three hashes,
+`cessation_review_sha256`, and exact `source_changes` mapping each changed
+source name to its `before` and `after` hash. This review is still a missing
+runtime prerequisite until independently produced; source fixtures manufacture
+only isolated test authority, never authorization for the retained real home.
+
+Admission exclusively locks the existing claim, verifies that the home still
+contains only that original marker, checks current source pins and namespace
+capability, then durably preserves exact original claim/input/authorization
+bytes as mode-0400 history before replacing the active claim. The continued
+claim binds the current input, original deadline/boot and immutable history.
+Native completion validates that same lineage. Any retained work, failure,
+pause/cancel record, incomplete transition history, conflicting writer,
+unreviewed delta, changed boot or expired original clock refuses. No automatic
+replay, fresh-clock fallback, home deletion or alternate destination is offered.
+An interruption after history publication remains retained for independent
+reconciliation. Installation and all seven live journeys remain unaccepted.

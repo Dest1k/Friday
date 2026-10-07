@@ -7,6 +7,7 @@ never install dependencies, read credentials or grant worker admission.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import ipaddress
 import importlib.util
@@ -26,6 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = 'friday.native-install.v1'
 MARKER = 'FRIDAY-INSTALL.json'
 FAILURE = 'FRIDAY-INSTALL.failure.json'
+HISTORY = {'claim': 'FRIDAY-INSTALL.original.json',
+           'input': 'FRIDAY-INSTALL.original-input.json',
+           'authorization': 'FRIDAY-INSTALL.continuation.json'}
+REPAIR_FILES = {'scripts/friday_install.py', 'scripts/friday_native.py',
+                'scripts/hermes_prepare.py', 'scripts/install_containment.py',
+                'scripts/dsh_prepare.py'}
 
 
 class SafeParser(argparse.ArgumentParser):
@@ -452,6 +459,215 @@ def reconcile(value, input_hash):
             'next': 'Independent lead review of original attempt, current cessation, repaired source pins and original clock; no replay admission'}
 
 
+def immutable_bytes(path):
+    raw = owned_file(path, private=True)
+    require(stat.S_IMODE(Path(path).stat().st_mode) == 0o400,
+            'immutable_continuation_evidence_required')
+    return raw
+
+
+def continuation_evidence(value, input_hash, authorization, authorization_hash,
+                          original_raw, original_input_raw):
+    """Operator-pinned independent reviews, never a self-reported ready flag.
+
+    The out-of-band authorization digest is the operator trust anchor. File
+    ownership alone does not establish that a review happened.
+    """
+    require(digest(authorization) == authorization_hash,
+            'continuation_authorization_changed')
+    auth = json.loads(authorization, object_pairs_hook=unique)
+    require(isinstance(auth, dict) and set(auth) == {'schema', 'original_claim_sha256', 'original_input_sha256',
+                         'current_input_sha256', 'cessation_review', 'repair_review'}
+            and auth['schema'] == 'friday.pre-compose-continuation.v1'
+            and auth['original_claim_sha256'] == digest(original_raw)
+            and auth['original_input_sha256'] == digest(original_input_raw)
+            and auth['current_input_sha256'] == input_hash,
+            'exact_continuation_authority_required')
+    original = json.loads(original_raw, object_pairs_hook=unique)
+    old = json.loads(original_input_raw, object_pairs_hook=unique)
+    require(isinstance(old, dict) and isinstance(original, dict) and set(original) ==
+            {'schema', 'state', 'input_sha256', 'deadline_mono', 'boot_id'}
+            and original['schema'] == SCHEMA and original['state'] == 'PARTIAL'
+            and original['input_sha256'] == digest(original_input_raw),
+            'exact_original_partial_claim_required')
+    require(original['boot_id'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+            'original_install_boot_changed')
+    deadline = original['deadline_mono']
+    require(type(deadline) in (int, float) and math.isfinite(deadline) and deadline > time.monotonic(),
+            'original_install_budget_exhausted')
+    # Immutable settings include destinations, donor lock, clocks, runtime,
+    # worker map and credential *references*. No secret file is opened here.
+    require(set(old) == set(value) and all(old[k] == value[k] for k in old
+            if k not in ('project_files', 'hermes_prepare')),
+            'continuation_settings_changed')
+    previous, current = old['project_files'], value['project_files']
+    require(isinstance(previous, dict) and isinstance(current, dict)
+            and set(previous) == set(current), 'continuation_inventory_changed')
+    changes = {k: {'before': previous[k], 'after': current[k]} for k in previous
+               if previous[k] != current[k]}
+    require(changes and set(changes).issubset(REPAIR_FILES), 'unreviewable_continuation_delta')
+    require(set(old['hermes_prepare']) == set(value['hermes_prepare']) == {'path', 'sha256'}
+            and value['hermes_prepare']['path'] == str(ROOT / 'scripts/hermes_prepare.py')
+            and value['hermes_prepare']['sha256'] == current['scripts/hermes_prepare.py']
+            and old['hermes_prepare']['sha256'] == previous['scripts/hermes_prepare.py'],
+            'continuation_composer_changed')
+    cessation_path = pin(auth['cessation_review'])
+    cessation_raw = immutable_bytes(cessation_path)
+    require(digest(cessation_raw) == auth['cessation_review']['sha256'], 'cessation_review_changed')
+    cessation = json.loads(cessation_raw, object_pairs_hook=unique)
+    require(isinstance(cessation, dict), 'independent_first_cessation_required')
+    first = cessation.get('first_attempt', {})
+    require(isinstance(first, dict), 'independent_first_cessation_required')
+    require(cessation.get('assignment') == 'FRW032-INSTALL-CUSTODY-REVIEW'
+            and cessation.get('generation') == 1
+            and first.get('assignment') == 'FRW032-NORMAL-INSTALL-FIRST-ATTEMPT#1'
+            and first.get('cessation_established') is True
+            and first.get('claim_preserved') == original
+            and first.get('original_installer_seconds') == old['seconds']
+            and first.get('resume_granted') is False,
+            'independent_first_cessation_required')
+    refs = cessation.get('exact_refs', {})
+    require(cessation.get('verdict') ==
+            'FIRST_ATTEMPT_CESSATION_ESTABLISHED_RETROSPECTIVELY_AT_CENSUS; GENERAL_CONTAINMENT_COMPLETION_BARRIER_INSUFFICIENT'
+            and refs.get('marker', {}).get('sha256') == digest(original_raw),
+            'reviewed_first_census_required')
+    census_path = pin(refs.get('census'))
+    census_raw = immutable_bytes(census_path)
+    require(digest(census_raw) == refs['census']['sha256'], 'cessation_census_changed')
+    census = json.loads(census_raw, object_pairs_hook=unique)
+    rows, interval = census.get('rows'), census.get('inclusive_candidate_starttime_ticks')
+    require(census.get('schema') == 'friday.readonly-namespace-init-census.v1'
+            and census.get('assignment') == 'FRW032-INSTALL-CUSTODY-REVIEW#1'
+            and census.get('boot_id') == census.get('boot_id_after') == original['boot_id']
+            and census.get('original_boot_matches') is True
+            and census.get('completed_msk') == first.get('established_as_of_msk')
+            and census.get('returned_sha256') == refs.get('returned', {}).get('sha256')
+            and isinstance(rows, list) and rows
+            and type(census.get('listed_count')) is int
+            and census['listed_count'] == census.get('read_count') == len(rows)
+            and census.get('read_errors') == census.get('vanished_during_read') == census.get('candidate_processes') == []
+            and isinstance(interval, list) and len(interval) == 2
+            and all(type(n) is int and n >= 0 for n in interval) and interval[0] <= interval[1]
+            and all(isinstance(r, dict) and type(r.get('pid')) is int and r['pid'] > 0
+                    and type(r.get('starttime_ticks')) is int
+                    and not interval[0] <= r['starttime_ticks'] <= interval[1] for r in rows)
+            and len({r['pid'] for r in rows}) == len(rows),
+            'complete_reviewed_cessation_census_required')
+    review_path = pin(auth['repair_review'])
+    review_raw = immutable_bytes(review_path)
+    require(digest(review_raw) == auth['repair_review']['sha256'], 'repair_review_changed')
+    review = json.loads(review_raw, object_pairs_hook=unique)
+    require(isinstance(review, dict) and set(review) == {'schema', 'reviewer', 'decision', 'stage',
+                           'original_claim_sha256', 'original_input_sha256',
+                           'current_input_sha256', 'cessation_review_sha256', 'source_changes'}
+            and review['schema'] == 'friday.pre-compose-repair-review.v1'
+            and review['reviewer'] == 'Astra'
+            and review['decision'] == 'ALLOW_PRECOMPOSE_CONTINUATION'
+            and review['stage'] == 'BEFORE_COMPOSE'
+            and all(review[k] == auth[k] for k in
+                    ('original_claim_sha256', 'original_input_sha256', 'current_input_sha256'))
+            and review['cessation_review_sha256'] == auth['cessation_review']['sha256']
+            and review['source_changes'] == changes,
+            'independent_exact_repair_review_required')
+    return original
+
+
+def active_claim_checked(value, input_hash, budget):
+    """Shared host/native consumer; continued claims retain the original clock."""
+    home = Path(value['home']); claim = read_json(home / MARKER)
+    expected = partial_claim(input_hash, budget)
+    if claim == expected:
+        return claim
+    require(set(claim) == set(expected) | {'continuation'}
+            and all(claim[k] == expected[k] for k in expected), 'fresh_install_claim_required')
+    lineage = claim['continuation']
+    require(isinstance(lineage, dict) and set(lineage) ==
+            {'original_claim_sha256', 'original_input_sha256', 'authorization_sha256'},
+            'continued_claim_lineage_required')
+    raw = immutable_bytes(home / HISTORY['claim'])
+    old_input = immutable_bytes(home / HISTORY['input'])
+    auth = immutable_bytes(home / HISTORY['authorization'])
+    require(digest(raw) == lineage['original_claim_sha256']
+            and digest(old_input) == lineage['original_input_sha256'], 'continued_history_changed')
+    original = continuation_evidence(value, input_hash, auth, lineage['authorization_sha256'], raw, old_input)
+    require(original['deadline_mono'] == budget.deadline and original['boot_id'] == claim['boot_id'],
+            'continued_original_clock_changed')
+    return claim
+
+
+def preserve_bytes(path, raw, budget):
+    budget.check()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+    with os.fdopen(fd, 'wb') as stream:
+        budget.call(stream.write, raw); budget.call(stream.flush); budget.call(os.fsync, stream.fileno())
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try: budget.call(os.fsync, fd)
+    finally: os.close(fd)
+
+
+def continue_install(value, input_path, authorization_path, authorization_hash, original_input_path, *, started):
+    """Only exact independently admitted, empty pre-compose FIRST continuation.
+
+    No generic recovery: interrupted transition/history or any retained work or
+    stop record requires independent reconciliation and cannot replay here.
+    """
+    from scripts.install_containment import Budget, Containment
+    home = canonical(value['home']); directory(home)
+    fd = os.open(home / MARKER, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise Refused('continuation_writer_busy') from None
+        raw = owned_file(home / MARKER, private=True)
+        claim = json.loads(raw, object_pairs_hook=unique)
+        require(isinstance(claim, dict) and type(claim.get('deadline_mono')) in (int, float), 'original_install_deadline_required')
+        budget = Budget(value.get('seconds'), started=started, deadline=claim['deadline_mono'])
+        input_raw = budget.call(owned_file, input_path, private=True)
+        require(json.loads(input_raw, object_pairs_hook=unique) == value, 'install_input_changed')
+        auth = budget.call(immutable_bytes, authorization_path)
+        old_input = budget.call(immutable_bytes, original_input_path)
+        original = budget.call(continuation_evidence, value, digest(input_raw), auth,
+                               authorization_hash, raw, old_input)
+        require(list(sorted(p.name for p in home.iterdir())) == [MARKER],
+                'precompose_home_not_pristine')
+        home, donors = budget.call(spec_checked, value)
+        argv = budget.call(commands, value)
+        containment = Containment(value['containment'], budget, clean_environment(home))
+        # Capability failure still leaves the original marker untouched.
+        containment.probe(value['bootstrap_python']['path'], ROOT)
+        require(os.fstat(fd).st_ino == (home / MARKER).stat().st_ino
+                and owned_file(home / MARKER, private=True) == raw,
+                'original_claim_changed_before_transition')
+        budget.call(continuation_evidence, value, digest(input_raw), auth,
+                    authorization_hash, raw, old_input)
+        require(sorted(p.name for p in home.iterdir()) == [MARKER], 'precompose_home_not_pristine')
+        require(budget.call(owned_file, input_path, private=True) == input_raw, 'install_input_changed')
+        budget.call(spec_checked, value)
+        for key, data in [('claim', raw), ('input', old_input), ('authorization', auth)]:
+            preserve_bytes(home / HISTORY[key], data, budget)
+        retained_names = sorted([MARKER, *HISTORY.values()])
+        require(sorted(p.name for p in home.iterdir()) == retained_names,
+                'precompose_home_changed_during_transition')
+        continued = partial_claim(digest(input_raw), budget)
+        continued['continuation'] = {'original_claim_sha256': digest(raw),
+                                    'original_input_sha256': digest(old_input),
+                                    'authorization_sha256': authorization_hash}
+        pending = home / (MARKER + '.continued')
+        publish(pending, continued, budget=budget)
+        require(owned_file(home / MARKER, private=True) == raw, 'original_claim_changed_before_transition')
+        require(sorted(p.name for p in home.iterdir()) == sorted([*retained_names, pending.name]),
+                'precompose_home_changed_during_transition')
+        budget.call(os.replace, pending, home / MARKER)
+        sync = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
+        try: budget.call(os.fsync, sync)
+        finally: os.close(sync)
+        budget.call(active_claim_checked, value, digest(input_raw), budget)
+        require(sorted(p.name for p in home.iterdir()) == retained_names,
+                'precompose_home_changed_during_transition')
+        return _install_claimed(value, input_path, home, donors, argv, containment, budget, continued), budget
+    finally:
+        os.close(fd)
+
+
 def install(value, input_path, *, budget=None):
     """One original clock includes intake, execution, IO and final admission."""
     from scripts.install_containment import Budget, Containment
@@ -480,6 +696,11 @@ def install(value, input_path, *, budget=None):
     budget.call(home.mkdir, mode=0o700)
     claim = partial_claim(input_hash, budget)
     publish(home / MARKER, claim, budget=budget)
+    return _install_claimed(value, input_path, home, donors, argv, containment, budget, claim)
+
+
+def _install_claimed(value, input_path, home, donors, argv, containment, budget, claim):
+    input_hash = claim['input_sha256']
     def execute(phase, command, cwd, timeout=1800):
         try:
             return containment.run(command, cwd, timeout=timeout)[0]
@@ -610,8 +831,11 @@ def start(value, input_hash, *, budget=None, input_path=None):
 def main():
     started = time.monotonic()  # before parser/input IO; never reset on dispatch
     parser = SafeParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument('phase', choices=('plan', 'install', 'check', 'dashboard-check', 'start', 'reconcile'))
+    parser.add_argument('phase', choices=('plan', 'install', 'continue', 'check', 'dashboard-check', 'start', 'reconcile'))
     parser.add_argument('--input', required=True, type=Path, help='Private pinned JSON, no credential values')
+    parser.add_argument('--continuation', type=Path, help='Immutable independently reviewed operator authorization')
+    parser.add_argument('--continuation-sha256', help='Out-of-band operator pin for the exact authorization')
+    parser.add_argument('--original-input', type=Path, help='Immutable exact original input bytes')
     args = parser.parse_args(); os.umask(0o077)
     sys.path.insert(0, str(ROOT))
     from scripts.dsh_prepare import StopUnconfirmed
@@ -620,9 +844,21 @@ def main():
         value = json.loads(raw, object_pairs_hook=unique); sha = digest(raw)
         from scripts.install_containment import Budget
         require(isinstance(value, dict), 'explicit_install_fields_required')
-        budget = Budget(value.get('seconds'), started=started)
-        budget.check()
-        if args.phase == 'reconcile':
+        require((args.phase == 'continue' and args.continuation is not None
+                 and args.original_input is not None and args.continuation_sha256 is not None
+                 and re.fullmatch('[0-9a-f]{64}', args.continuation_sha256))
+                or (args.phase != 'continue' and args.continuation is None
+                    and args.original_input is None and args.continuation_sha256 is None),
+                'explicit_continuation_arguments_required')
+        if args.phase == 'continue':
+            result, budget = continue_install(value, args.input, args.continuation,
+                                             args.continuation_sha256, args.original_input, started=started)
+        else:
+            budget = Budget(value.get('seconds'), started=started)
+            budget.check()
+        if args.phase == 'continue':
+            pass
+        elif args.phase == 'reconcile':
             result = reconcile(value, sha)
         elif args.phase == 'plan':
             result = {'state': 'PLANNED_NOT_EXECUTED', 'ready': False,

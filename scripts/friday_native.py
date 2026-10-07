@@ -234,10 +234,9 @@ def main():
     from scripts.install_containment import Budget
     budget = Budget(value.get('seconds'), started=started, deadline=args.deadline)
     home, donors = budget.call(spec_checked, value); budget.call(directory, home)
-    from scripts.friday_install import MARKER, digest, owned_file, require, partial_claim
+    from scripts.friday_install import MARKER, digest, owned_file, require, active_claim_checked
     if args.phase == 'install':
-        require(read_json(home / MARKER) == partial_claim(digest(owned_file(args.input, private=True)), budget),
-                'fresh_install_claim_required')
+        budget.call(active_claim_checked, value, digest(owned_file(args.input, private=True)), budget)
     else:
         from scripts.friday_install import inspect
         budget.call(inspect, value, digest(owned_file(args.input, private=True)))
