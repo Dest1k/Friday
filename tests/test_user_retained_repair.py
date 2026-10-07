@@ -236,7 +236,7 @@ def test_advertised_coding_entry_reaches_actual_workerhost_owned_admission(users
                 key_name='SYNTHETIC_UNUSED_KEY',profile='headless',memory_bytes=2*1024**3,cpu_percent=200,tasks=64,shutdown_seconds=2,tmp_bytes=64*1024**2))
         evidence=home/'synthetic-proof.json';evidence.write_text('{"offline_admission_only":true}')
         receipt=home/'synthetic-receipt.json';receipt.write_text(json.dumps(dict(schema='friday-rework.dsh-runtime.v1',ready=True,
-            runtime_sha256=record.digest(runtime),adapter_sha256=pin(ROOT/'adapters/dsh.py')['sha256'],evidence=[pin(evidence)])))
+            runtime_sha256=record.digest(runtime),adapter_sha256=pin(ROOT/'adapters/dsh.py')['sha256'],continuation_sha256=pin(ROOT/'continuation.py')['sha256'],evidence=[pin(evidence)])))
         runtime['runtime_receipt']=pin(receipt)
         scheduled=[]
         def schedule(coro,**kw):scheduled.append(kw);coro.close()  # no scheduler/worker execution

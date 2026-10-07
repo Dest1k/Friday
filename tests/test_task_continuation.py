@@ -193,14 +193,18 @@ async def test_retained_chain_rejects_foreign_owner_at_atomic_claim(setup,monkey
 
 
 @pytest.mark.asyncio
-async def test_dsh_to_a0_to_dsh_cold_handoff_uses_actual_native_input_and_cwd_interfaces(setup, monkeypatch, tmp_path):
+@pytest.mark.parametrize('worker_map',[False,True])
+async def test_dsh_to_a0_to_dsh_cold_handoff_uses_actual_native_input_and_cwd_interfaces(setup, monkeypatch, tmp_path,worker_map):
     import test_a0_host as a0_fixture
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     module,parent,_=await retained(setup,monkeypatch,('src/main.py','README.md'))
     call={**CALL,'tool_call_id':'a0-continuation'}
     # Configure actual A0 route. Only its Docker/systemd/API boundaries are fake.
     monkeypatch.setattr(a0_fixture,'CALL',call)
-    state=a0_fixture.configure_a0(setup,parent['host']['binding']['ingress'],tmp_path,monkeypatch)
+    state=a0_fixture.configure_a0(setup,parent['host']['binding']['ingress'],tmp_path,monkeypatch,separate_roots=worker_map)
+    if worker_map:
+        configured={'enabled':True,'workers':{'dsh':setup.runtime,'a0':state.runtime}}
+        setup.configure(configured)
     args=source_args(parent,worker='a0')
     result=invoke(setup,parent['host']['binding']['ingress'],call=call,args=args)
     assert result['accepted'],result
@@ -225,8 +229,9 @@ async def test_dsh_to_a0_to_dsh_cold_handoff_uses_actual_native_input_and_cwd_in
     assert len(state.posts)==2 and cont.a0_seed_root(row) in state.posts[-1]['message']
     assert not state.running and row['host']['a0']['key_cleanup']=='REMOVED'
     row=module.collect_outputs(setup.host.store,row,['report.txt','diagnosis.txt'])
-    # Return through the original single-DSH route and preserve the same grant.
-    setup.configure(setup.runtime);second_native(setup,monkeypatch)
+    # In the joined profile, selection changes without replacing configuration.
+    if not worker_map:setup.configure(setup.runtime)
+    second_native(setup,monkeypatch)
     # Restore the synthetic DSH launch seam from the first route (a0 fixture
     # uses its explicit command callback instead of subprocess.run).
     returned=invoke(setup,parent['host']['binding']['ingress'],call={**CALL,'tool_call_id':'dsh-return'},args=source_args(row))
@@ -239,6 +244,10 @@ async def test_dsh_to_a0_to_dsh_cold_handoff_uses_actual_native_input_and_cwd_in
     assert (Path(final['workspace_reference'])/'workspace/report.txt').read_bytes()==b'actual retained fixture bytes\n'
     assert len(setup.host.store.snapshot())==3
     assert len(setup.boundary.launches)==2
+    if worker_map:
+        assert setup.ctx.get_config('runtime')==configured
+        assert final['host']['binding']['runtime']==setup.runtime
+        assert row['host']['binding']['runtime']==state.runtime
     state.capture()
 
 
@@ -354,12 +363,106 @@ async def test_symlink_injected_during_materialization_cannot_write_outside_seed
     contract=importlib.import_module(setup.module.__package__+'.adapters.contract')
     inputs=tuple(contract.VerifiedInput(**v) for v in child['host']['inputs'])
     root=Path(child['workspace_reference'])/'workspace'
-    original=Path.mkdir
+    import os
+    original=os.mkdir
     def inject(path,*a,**kw):
         value=original(path,*a,**kw)
-        if path==root:(root/'src').symlink_to(setup.cache,target_is_directory=True)
+        if path=='workspace' and kw.get('dir_fd') is not None:
+            (root/'src').symlink_to(setup.cache,target_is_directory=True)
         return value
-    monkeypatch.setattr(Path,'mkdir',inject)
+    monkeypatch.setattr(os,'mkdir',inject)
     with pytest.raises((RuntimeError,OSError)):mod.seed_workspace(child,inputs)
     assert not (setup.cache/'main.py').exists()
+    assert len(setup.boundary.launches)==1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('intent',['pause','cancel'])
+async def test_admin_stop_after_completion_retains_intent_and_denies_continuation(setup,monkeypatch,intent):
+    from hermes_constants import set_hermes_home_override,reset_hermes_home_override
+    _,parent,_=await retained(setup,monkeypatch)
+    token=set_hermes_home_override(setup.home)
+    try:
+        before=setup.host.admin_control('default',parent['existing_task_id'],'status',lambda:None)
+        assert before['stop_intent'] is None
+        stopped=setup.host.admin_control('default',parent['existing_task_id'],intent,lambda:None)
+        assert stopped['accepted'] and stopped['quiescent'] and stopped['stop_intent']==intent
+        if intent=='cancel':
+            assert setup.host.admin_control('default',parent['existing_task_id'],'pause',lambda:None)['stop_intent']=='cancel'
+    finally:reset_hermes_home_override(token)
+    row=setup.host.store.get(parent['existing_task_id'],parent['owner'])
+    assert row['host']['terminal']==parent['host']['terminal'] and row['result']==parent['result']
+    refused=invoke(setup,parent['host']['binding']['ingress'],call={**CALL,'tool_call_id':'after-stop'},args=source_args(parent))
+    assert not refused['accepted'] and len(setup.host.store.snapshot())==1
+    assert len(setup.boundary.launches)==1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('worker',['dsh','a0'])
+async def test_runtime_receipt_requires_exact_continuation_helper(setup,monkeypatch,tmp_path,worker):
+    from hermes_constants import set_hermes_home_override,reset_hermes_home_override
+    runtime=setup.runtime
+    if worker=='a0':
+        from test_a0_host import configure_a0
+        proof=await ingress(setup)
+        runtime=configure_a0(setup,proof,tmp_path,monkeypatch).runtime
+    hr=importlib.import_module(setup.module.__package__+'.host_runtime')
+    token=set_hermes_home_override(setup.home)
+    try:
+        assert hr.check_runtime(runtime,setup.host.store)==runtime
+        source=Path(hr.__file__).with_name('continuation.py')
+        source.write_bytes(source.read_bytes()+b'\n# synthetic source drift\n')
+        with pytest.raises(RuntimeError):hr.check_runtime(runtime,setup.host.store)
+    finally:reset_hermes_home_override(token)
+    assert not setup.boundary.launches
+
+
+@pytest.mark.asyncio
+async def test_seed_creation_stays_on_open_parent_when_path_is_replaced(setup,monkeypatch):
+    import os
+    _,parent,_=await retained(setup,monkeypatch,('src/main.py',))
+    setup.native.runner._draining=True
+    accepted=invoke(setup,parent['host']['binding']['ingress'],call={**CALL,'tool_call_id':'bound-directory'},args=source_args(parent))
+    row=setup.host.store.snapshot()[accepted['reference']]
+    mod=importlib.import_module(setup.module.__package__+'.continuation')
+    contract=importlib.import_module(setup.module.__package__+'.adapters.contract')
+    inputs=tuple(contract.VerifiedInput(**v) for v in row['host']['inputs'])
+    root=Path(row['workspace_reference'])/'workspace'
+    parked=root.parent.with_name(root.parent.name+'-retained')
+    original=os.mkdir
+    changed=[]
+    def replace_parent(name,*args,**kwargs):
+        if name=='workspace' and kwargs.get('dir_fd') is not None and not changed:
+            root.parent.rename(parked);root.parent.symlink_to(setup.cache,target_is_directory=True);changed.append(True)
+        return original(name,*args,**kwargs)
+    monkeypatch.setattr(os,'mkdir',replace_parent)
+    mod.seed_workspace(row,inputs)
+    assert changed and not (setup.cache/'workspace').exists()
+    assert (parked/'workspace/src/main.py').read_bytes()==b'verified source bytes\n'
+    with pytest.raises((RuntimeError,OSError)):mod.verify_seed(root,row,inputs)
+    root.parent.unlink();parked.rename(root.parent)
+    assert len(setup.boundary.launches)==1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('component',['workdir','job','seed'])
+async def test_a0_seed_walk_refuses_linked_components_from_trusted_anchor(setup,monkeypatch,tmp_path,component):
+    _,parent,_=await retained(setup,monkeypatch,('src/main.py',))
+    setup.native.runner._draining=True
+    accepted=invoke(setup,parent['host']['binding']['ingress'],call={**CALL,'tool_call_id':'anchored-seed'},args=source_args(parent))
+    row=setup.host.store.snapshot()[accepted['reference']]
+    mod=importlib.import_module(setup.module.__package__+'.continuation')
+    contract=importlib.import_module(setup.module.__package__+'.adapters.contract')
+    inputs=tuple(contract.VerifiedInput(**v) for v in row['host']['inputs'])
+    anchor=tmp_path/'owned-state';anchor.mkdir(mode=0o700)
+    parts=['workdir','job','seed'];target=anchor
+    for name in parts:
+        target=target/name
+        if name==component:
+            target.symlink_to(setup.cache,target_is_directory=True);break
+        target.mkdir(mode=0o700)
+    before=sorted(setup.cache.rglob('*'))
+    with pytest.raises((RuntimeError,OSError)):
+        mod.materialize(anchor/'workdir/job/seed',row,inputs,anchor=anchor)
+    assert sorted(setup.cache.rglob('*'))==before
     assert len(setup.boundary.launches)==1

@@ -564,6 +564,7 @@ def test_real_original_runtime_receipt_check_is_not_a_start_grant(tmp_path, monk
         "adapter_sha256": hashlib.sha256(
             Path(host_runtime.__file__).with_name("adapters").joinpath("dsh.py").read_bytes()
         ).hexdigest(),
+        "continuation_sha256": hashlib.sha256(Path(host_runtime.__file__).with_name("continuation.py").read_bytes()).hexdigest(),
         "evidence": [pinned(evidence)],
     }
     if mutation == "receipt-not-ready":

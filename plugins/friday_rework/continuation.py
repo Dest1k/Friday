@@ -7,11 +7,13 @@ There is no context resurrection, scheduler, mutable shared tree or retry here.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
+import stat
 
-from .associations import AssociationError, _sync_directory, _text
+from .associations import AssociationError, _text
 from .artifacts import StagedArtifact, read_staged, stage_file
 from .adapters.contract import VerifiedInput
 
@@ -215,14 +217,47 @@ def seed_workspace(row, inputs):
     materialize(Path(row['workspace_reference']) / 'workspace', row, inputs)
 
 
-def materialize(root, row, inputs):
-    from .host_runtime import private_directory
-    link = row['host']['continuation']
-    private_directory(root.parent)
-    root.mkdir(mode=0o700)  # Never adopt, overwrite or merge a previous tree.
-    _sync_directory(root.parent)
+@contextmanager
+def _seed_root(root, *, anchor=None, create=False):
+    """Walk from the trusted host directory without following worker links."""
     from .artifacts import _root
-    with _root(root, private=True) as root_fd:
+    root = Path(root)
+    anchor = root.parent if anchor is None else Path(anchor)
+    relative = root.relative_to(anchor)
+    seed_path(relative.as_posix())
+    with _root(anchor, private=True) as anchor_fd:
+        directory = os.dup(anchor_fd)
+        try:
+            for index, name in enumerate(relative.parts):
+                if create:
+                    try:
+                        os.mkdir(name, mode=0o700, dir_fd=directory)
+                    except FileExistsError:
+                        # Intermediate A0 workdir/job directories may exist;
+                        # the final seed is always new and cannot be adopted.
+                        if index == len(relative.parts) - 1:
+                            raise
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=directory)
+                try:
+                    info = os.fstat(child)
+                    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                        raise AssociationError('unsafe_seed_directory')
+                    if create:
+                        os.fsync(directory)
+                except BaseException:
+                    os.close(child)
+                    raise
+                os.close(directory)
+                directory = child
+            yield directory
+        finally:
+            os.close(directory)
+
+
+def materialize(root, row, inputs, *, anchor=None):
+    link = row['host']['continuation']
+    with _seed_root(root, anchor=anchor, create=True) as root_fd:
         for path, item in zip(link['paths'], inputs):
             seed_path(path)
             staged = StagedArtifact(Path(item.host_path).name, Path(item.host_path).name,
@@ -236,7 +271,6 @@ def materialize(root, row, inputs):
                     try:os.mkdir(name, mode=0o700, dir_fd=parent)
                     except FileExistsError:pass
                     child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-                    import stat
                     info = os.fstat(child)
                     if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
                         os.close(child)
@@ -257,9 +291,8 @@ def materialize(root, row, inputs):
         os.fsync(root_fd)
 
 
-def verify_seed(root, row, inputs):
-    from .artifacts import _root, _source
-    import stat
+def verify_seed(root, row, inputs, *, anchor=None):
+    from .artifacts import _source
     wanted = set(row['host']['continuation']['paths'])
     directories = {str(p) for path in wanted for p in PurePosixPath(path).parents if str(p) != '.'}
     seen = set()
@@ -279,7 +312,7 @@ def verify_seed(root, row, inputs):
                     finally:os.close(child)
                 elif path not in wanted or not stat.S_ISREG(info.st_mode):
                     raise AssociationError('seed_workspace_changed')
-    with _root(root, private=True) as fd:
+    with _seed_root(root, anchor=anchor) as fd:
         scan(fd)
         if seen != wanted | directories:
             raise AssociationError('seed_workspace_changed')

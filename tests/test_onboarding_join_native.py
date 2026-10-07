@@ -46,7 +46,7 @@ def wired(users, monkeypatch, request):
         from friday_admin_controls.host_record import digest
         evidence=home/'proof.json';evidence.write_text('{"synthetic_offline_admission":true}')
         receipt=home/'receipt.json';receipt.write_text(json.dumps(dict(schema='friday-rework.dsh-runtime.v1',ready=True,
-            runtime_sha256=digest(runtime),adapter_sha256=pin(destination/'adapters/dsh.py')['sha256'],evidence=[pin(evidence)])))
+            runtime_sha256=digest(runtime),adapter_sha256=pin(destination/'adapters/dsh.py')['sha256'],continuation_sha256=pin(destination/'continuation.py')['sha256'],evidence=[pin(evidence)])))
         runtime['runtime_receipt']=pin(receipt)
         configuration={'plugins':{'enabled':['friday_rework'],'entries':{'friday_rework':{'allow_gateway_work':True,
             'allow_gateway_control':True,'settings':{'runtime':runtime,'results':{'enabled':True}}}}}}

@@ -26,6 +26,7 @@ def test_native_host_factory_requires_source_pins_and_never_manufactures_web_adm
     receipt={'schema':'friday-rework.dsh-runtime.v1','ready':True,
         'runtime_sha256':setup.record.digest({k:v for k,v in config.items() if k!='runtime_receipt'}),
         'adapter_sha256':hashlib.sha256(Path(module.__file__).with_name('adapters').joinpath('dsh.py').read_bytes()).hexdigest(),
+        'continuation_sha256':hashlib.sha256(Path(module.__file__).with_name('continuation.py').read_bytes()).hexdigest(),
         'evidence':[fields['egress_evidence']],
         'web_source_pins':{'plugins/friday_rework/worker_web.py':hashlib.sha256(Path(module.__file__).with_name('worker_web.py').read_bytes()).hexdigest(),
                            'tools/web_profile.py':hashlib.sha256(Path(helper.__file__).read_bytes()).hexdigest(),

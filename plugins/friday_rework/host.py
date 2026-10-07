@@ -361,6 +361,10 @@ class WorkerHost:
                 raise HostUnavailable("foreign_runtime_home")
             row = self._remember(self.store.request_stop(row["existing_task_id"], row["owner"], intent))
             row = self._remember(self.store.current_stage(row["existing_task_id"], row["owner"]))
+            if row["host"]["quiescence"] is not None:
+                # Retain terminal evidence, but the chain's durable stop above
+                # must prohibit a later continuation of completed work.
+                return row
             if (row["submission_observation"] == "NOT_SUBMITTED"
                     and (row['worker_kind'] != 'a0' or row['host']['a0']['launch'] is None)):
                 return self._settle(row, NativeObservation("", "", "association:" + row["existing_task_id"] + "#stop_intent",
@@ -476,8 +480,8 @@ class WorkerHost:
             row = self.store.current_stage(row["existing_task_id"], row["owner"])
             self._remember(row)
             verify()  # Expiry/revocation after store acquisition cannot authorize stop.
-            if row["host"]["quiescence"] is not None:
-                return status(row)  # Retained pause/cancel never becomes resume.
+            if action == "status" and row["host"]["quiescence"] is not None:
+                return status(row)
             return status(self._reconcile(row) if action == "status" else
                           self._stop(row, "cancel" if action == "cancel" or row["stop_intent"] == "cancel" else "pause"))
 

@@ -33,6 +33,14 @@ its original association. A new call cannot branch from a predecessor whose
 custody was already transferred. A failed copy, preparation or uncertain launch
 reserves the stage and never authorizes an automatic retry.
 
+Administrative pause/cancel also persists after a stage has completed. It
+retains the finished result and prevents a subsequent continuation; status alone
+does not change intent. Both worker admission receipts bind the exact
+`continuation.py` helper, so older receipts cannot admit changed seeding code.
+Directory creation and verification stay relative to open directory descriptors;
+A0 walks from its bound state directory through `workdir`, job and seed. A
+replaced directory path cannot redirect writes into another tree.
+
 Before admission, the host freshly checks the departing native boundary. For
 DSH this is the supervised unit and its cgroup; for A0 it uses the existing exact
 dedicated environment stop/cessation path. A historical completion flag alone

@@ -130,7 +130,7 @@ async def test_ordinary_native_host_calls_concrete_producer_twice_then_same_work
     import tools.web_profile as helper
     receipt=dict(schema='friday-rework.dsh-runtime.v1',ready=True,
         runtime_sha256=setup.record.digest({k:v for k,v in config.items() if k!='runtime_receipt'}),
-        adapter_sha256=pin(Path(module.__file__).parent/'adapters/dsh.py')['sha256'],evidence=[fields['egress_evidence']],
+        adapter_sha256=pin(Path(module.__file__).parent/'adapters/dsh.py')['sha256'],continuation_sha256=pin(Path(module.__file__).parent/'continuation.py')['sha256'],evidence=[fields['egress_evidence']],
         web_source_pins={'plugins/friday_rework/worker_web.py':pin(Path(module.__file__).parent/'worker_web.py')['sha256'],
                          'tools/web_profile.py':pin(Path(helper.__file__))['sha256'],'config/RESEARCH.md':fields['research_policy']['sha256']})
     if web_profile == 'exa-keyless':

@@ -182,7 +182,8 @@ def check_runtime(value, associations):
         web.checked_patch(_pin(dsh['patch']).read())
     receipt = json.loads(_pin(config["runtime_receipt"]).read())
     adapter_hash = hashlib.sha256(Path(__file__).with_name("adapters").joinpath("dsh.py").read_bytes()).hexdigest()
-    fields = {"schema", "ready", "runtime_sha256", "adapter_sha256", "evidence"}
+    continuation_hash = hashlib.sha256(Path(__file__).with_name("continuation.py").read_bytes()).hexdigest()
+    fields = {"schema", "ready", "runtime_sha256", "adapter_sha256", "continuation_sha256", "evidence"}
     if web:
         fields.add('web_source_pins')
         import tools.web_profile as profile_helper
@@ -197,6 +198,7 @@ def check_runtime(value, associations):
     if (not isinstance(receipt, dict) or set(receipt) != fields
             or receipt["schema"] != "friday-rework.dsh-runtime.v1" or receipt["ready"] is not True
             or receipt["adapter_sha256"] != adapter_hash
+            or receipt["continuation_sha256"] != continuation_hash
             or receipt["runtime_sha256"] != digest({k: v for k, v in config.items() if k != "runtime_receipt"})
             or not isinstance(receipt["evidence"], list) or not receipt["evidence"]):
         raise HostUnavailable("runtime_not_verified")
@@ -307,7 +309,8 @@ def check_a0_runtime(value, associations):
     source = Path(__file__).parent
     actual = {k: hashlib.sha256((source/p).read_bytes()).hexdigest() for k,p in {
         'host':'host.py','host_runtime':'host_runtime.py','host_record':'host_record.py',
-        'associations':'associations.py','adapter':'adapters/a0.py','native':'adapters/a0_native.py',
+        'associations':'associations.py','continuation':'continuation.py',
+        'adapter':'adapters/a0.py','native':'adapters/a0_native.py',
         'config':'adapters/a0_config.py','profile':'adapters/a0_profile.py','web':'adapters/a0_web.py'}.items()}
     if (not isinstance(receipt,dict) or set(receipt) != {'schema','ready','runtime_sha256','source_pins','evidence'}
             or receipt['schema'] != 'friday-rework.a0-runtime.v2' or receipt['ready'] is not True

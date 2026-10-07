@@ -290,12 +290,9 @@ class A0Adapter:
                 from ..continuation import materialize, verify_seed, a0_seed_root
                 self.boundary.admit(row)  # Exact owned mount/environment, bootstrap returned.
                 base = _private(self.boundary.config.state_dir)
-                workdir = base / 'workdir'
-                workdir.mkdir(mode=0o700, exist_ok=True); _private(workdir)
-                job = workdir / job_prefix(row)
-                job.mkdir(mode=0o700, exist_ok=True); _private(job)
-                materialize(job / 'seed', row, inputs)
-                verify_seed(job / 'seed', row, inputs)
+                job = base / 'workdir' / job_prefix(row)
+                materialize(job / 'seed', row, inputs, anchor=base)
+                verify_seed(job / 'seed', row, inputs, anchor=base)
                 paths = tuple(a0_seed_root(row) + '/' + p for p in row['host']['continuation']['paths'])
                 seeded = self._verified_files(row, paths)
                 require(all(len(seeded[p]) == v.size_bytes and hashlib.sha256(seeded[p]).hexdigest() == v.sha256
@@ -337,7 +334,8 @@ class A0Adapter:
                             for v in inputs), "uploaded_input_missing_or_changed")
             if row.get('host', {}).get('continuation'):
                 from ..continuation import a0_seed_root, verify_seed
-                verify_seed(self.boundary.config.state_dir / 'workdir' / job_prefix(row) / 'seed', row, inputs)
+                verify_seed(self.boundary.config.state_dir / 'workdir' / job_prefix(row) / 'seed', row, inputs,
+                            anchor=self.boundary.config.state_dir)
                 paths = tuple(a0_seed_root(row) + '/' + p for p in row['host']['continuation']['paths'])
                 seeded = self._verified_files(row, paths)
                 require(all(len(seeded[p]) == v.size_bytes and hashlib.sha256(seeded[p]).hexdigest() == v.sha256

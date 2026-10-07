@@ -69,7 +69,8 @@ The readiness receipt is a small operator-authored admission record, not a new
 test runner or a self-certified worker result. Its exact fields are `schema`
 (`friday-rework.dsh-runtime.v1`), `ready` (`true` after review),
 `runtime_sha256` (host_record.digest of the complete runtime except
-`runtime_receipt`), `adapter_sha256` (exact accepted dsh.py) and `evidence`
+`runtime_receipt`), `adapter_sha256` (exact accepted dsh.py),
+`continuation_sha256` (exact accepted continuation.py) and `evidence`
 (nonempty array of `{path, sha256}` references to actual reviewed runtime
 evidence). Every reference is read and checked before new admission. The parent
 must establish the semantics of that evidence; a matching hash alone is not

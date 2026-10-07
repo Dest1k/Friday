@@ -103,7 +103,7 @@ def setup(isolated, native, tmp_path, monkeypatch):
     evidence.write_text('{"scope":"offline native boundary fixture only"}')
     receipt = tmp_path / "runtime-receipt.json"
     receipt.write_text(json.dumps(dict(schema="friday-rework.dsh-runtime.v1", ready=True,
-        runtime_sha256=record_module.digest(runtime), adapter_sha256=pin(destination / "adapters/dsh.py")["sha256"],
+        runtime_sha256=record_module.digest(runtime), adapter_sha256=pin(destination / "adapters/dsh.py")["sha256"], continuation_sha256=pin(destination / "continuation.py")["sha256"],
         evidence=[pin(evidence)])))
     runtime["runtime_receipt"] = pin(receipt)
     configure(runtime)

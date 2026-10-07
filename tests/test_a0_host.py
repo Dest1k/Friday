@@ -8,7 +8,7 @@ from test_host_native import setup,isolated,native,offline_boundary,ingress,invo
 
 SOURCE=Path(__file__).resolve().parents[1]
 
-def configure_a0(setup,proof,tmp_path,monkeypatch):
+def configure_a0(setup,proof,tmp_path,monkeypatch,*,separate_roots=False):
     package=setup.module.__package__
     import sys
     hr=sys.modules[package+'.host_runtime']
@@ -133,6 +133,10 @@ def configure_a0(setup,proof,tmp_path,monkeypatch):
     monkeypatch.setattr(an.A0NativeBoundary,'request',request);monkeypatch.setattr(an.A0NativeBoundary,'file',file)
     args={'worker':'a0','brief':'Repair offline fixture.','goal_check':'Owner checks retained bytes.'}
     runtime={k:copy.deepcopy(v) for k,v in setup.runtime.items() if k not in {'dsh','runtime_receipt'}}
+    if separate_roots:
+        for key in ('workspace_root','staging_root'):
+            directory=root/key;directory.mkdir(mode=0o700);runtime[key]=str(directory)
+        directory=root/'cache';directory.mkdir(mode=0o700);runtime['cache_roots']=[str(directory)]
     runtime['a0']={'runtime':pin(SOURCE/'scripts/a0_runtime.py'),'launcher':pin(launcher),'docker':pin(docker),
         'daemon_unit':pin(daemon),'policy':pin(policy),'git_metadata':{'source':str(git),'manifest_sha256':'f'*64},
         'owner_slot':'sol','expected_files':[{'logical_name':'report.txt','media_type':'text/plain'},{'logical_name':'diagnosis.txt','media_type':'text/plain'}],'capability':None}
@@ -156,7 +160,7 @@ def configure_a0(setup,proof,tmp_path,monkeypatch):
     capability=root/'capability.json'
     receipt=root/'receipt.json';destination=setup.home/'plugins/friday_rework'
     source_pins={k:pin(destination/p)['sha256'] for k,p in {'host':'host.py','host_runtime':'host_runtime.py','host_record':'host_record.py',
-        'associations':'associations.py','adapter':'adapters/a0.py','native':'adapters/a0_native.py','config':'adapters/a0_config.py','profile':'adapters/a0_profile.py','web':'adapters/a0_web.py'}.items()}
+        'associations':'associations.py','continuation':'continuation.py','adapter':'adapters/a0.py','native':'adapters/a0_native.py','config':'adapters/a0_config.py','profile':'adapters/a0_profile.py','web':'adapters/a0_web.py'}.items()}
     receipt.write_text(json.dumps({'schema':'friday-rework.a0-runtime.v2','ready':True,'runtime_sha256':setup.record.digest(runtime),
         'source_pins':source_pins,'evidence':[pin(evidence)]}))
     runtime['runtime_receipt']=pin(receipt);setup.configure(runtime)

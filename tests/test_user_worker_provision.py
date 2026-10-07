@@ -81,7 +81,7 @@ def reviewed(env,prepared):
     c=prepared['runtime'];d=c['dsh'];p=Path(c['runtime_receipt']['path']);e=p.parent/'synthetic-independent-evidence.json'
     e.write_text('{"fixture_only":true,"runtime_acceptance":"NOT_RUN"}');e.chmod(0o600)
     r=dict(schema='friday-rework.dsh-runtime.v1',ready=True,runtime_sha256=digest({k:v for k,v in c.items() if k!='runtime_receipt'}),
-        adapter_sha256=sha(ROOT/'plugins/friday_rework/adapters/dsh.py'),evidence=[pin(e)],web_source_pins={
+        adapter_sha256=sha(ROOT/'plugins/friday_rework/adapters/dsh.py'),continuation_sha256=sha(ROOT/'plugins/friday_rework/continuation.py'),evidence=[pin(e)],web_source_pins={
             'plugins/friday_rework/worker_web.py':sha(ROOT/'plugins/friday_rework/worker_web.py'),
             'tools/web_profile.py':sha(ROOT/'tools/web_profile.py'),'config/RESEARCH.md':d['web']['research_policy']['sha256']})
     p.write_text(json.dumps(r));p.chmod(0o600)
