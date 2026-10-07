@@ -349,6 +349,44 @@ for `mcp.exa.ai:443` plus the configured document probes. Existing whole-job
 deadline, stop, settlement and sandbox checks remain in force. This is source
 composition only. Real endpoint protocol/availability, TLS/DNS, output at the
 service and complete product journeys still need independent live qualification.
-The Hermes bounded transport uses the pinned requests/urllib3 socket seam; an
-unsupported transport is refused. DNS resolution/connection settlement and the
-existing extraction thread deadline still require actual runtime verification.
+The Hermes body-read bound uses the pinned requests/urllib3 socket seam; an
+unsupported transport is refused. This does **not** bound the complete native
+web operation. `FRW036-NATIVE-WEB-DEADLINE-SOL#1` reproduced the remaining
+failures through the exact 20-layer donor composition:
+
+- The actual requests/urllib3 connect path invokes synchronous `getaddrinfo`
+  before applying a socket timeout. A finite simulated resolver took over
+  1.10 seconds with a one-second MCP timeout, without opening a socket.
+- Genuine urllib3/http.client response-header parsing accepted successive
+  synthetic reads shorter than the one-second socket inactivity timeout. The
+  aggregate header phase exceeded the whole-call clock. The existing body
+  check then refused late success, but could not stop the preceding work.
+- Actual `_dispatch_extract` returned a timeout, or propagated cancellation,
+  while its `asyncio.to_thread(provider.extract, ...)` worker remained active.
+  The actual Exa provider subsequently started the next URL with another
+  30-second MCP clock after the caller had timed out and set its native stop
+  bit. That worker has no bound `acting_for_tid` for the caller's stop.
+- The native SSRF preflight has the same uncancellable resolver-thread seam.
+  `agent.deadline.run_bounded_sync` also abandons its daemon worker on timeout;
+  wrapping requests with it would not establish cessation.
+
+`tests/test_web_deadline_gaps.py` makes these observations executable with
+finite synthetic DNS/transport collaborators and the genuine native request,
+header-parser, Exa and dispatch paths. Every fixture-owned thread drains before
+the test process exits. Its green checks confirm the reproduced **blocked
+guarantees**, not repaired production behavior or live acceptance. A separate
+positive coroutine-provider control demonstrates that native async dispatch
+can drain cooperative cancellation; the shipped Exa adapter is synchronous.
+
+The missing normal-product seam is an owned, stop-capable execution boundary
+for the entire DNS/SSRF/provider/extraction operation, carrying the original
+caller/task deadline and returning confirmed cessation separately from timeout.
+The existing `NativeSystemdBoundary` research driver requires the parent to
+observe the whole cgroup quiescent after the driver exits. It is not wired into
+ordinary `web_search`/`web_extract` dispatch, and the driver cannot attest its
+own terminal cgroup. Reusing that existing host facility requires the normal
+task owner to supply and retain its custody, clock and stop/result association.
+The current provider API supplies none of those to its synchronous methods.
+No additional thread wrapper, timer, retry, fallback, process manager or ready
+label was added. The native deadline/settlement repair remains **BLOCKED**;
+source evidence does not accept any of the seven required live journeys.
