@@ -68,3 +68,11 @@ its earlier source was modified: those require current native logs, before/after
 workspace bytes and scoped diff. Native A0/REST/model/Hermes/Telegram and real
 delivery acceptance remain **NOT_RUN**. Astra reviews and binds a stable adapter,
 current route, original budgets and isolated write grant before any live run.
+
+The optional `check.py --json-observation --settings ... --report ...` emits one
+bounded structured observation for the trusted parent, including the actual
+snapshotted input digests and matching plain/base64 stdout/stderr. The default
+CLI is unchanged. `accepted`, `executed` (bwrap process attempted) and exit 0
+alone are not an owner-test or whole-environment cessation receipt. Require
+actual native outer call evidence and completed original five-test output. A
+nested-bwrap host-policy refusal is UNKNOWN, not an engineering goal FAIL.

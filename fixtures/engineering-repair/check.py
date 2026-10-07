@@ -1,4 +1,5 @@
 """Finite owner check for these exact report inputs. No candidate Python imports."""
+import base64
 import argparse
 from dataclasses import dataclass
 import hashlib
@@ -45,6 +46,7 @@ class Observation:
     stdout: bytes
     stderr: bytes
     elapsed_seconds: float
+    artifact_sha256: object = None
 
     @property
     def accepted(self):
@@ -189,7 +191,8 @@ def run(settings, returned_report=None, *, application=None, readings=None):
             result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                     timeout=5, check=False, preexec_fn=limits)
             return Observation(tuple(command), result.returncode, result.stdout, result.stderr,
-                               time.monotonic() - started)
+                               time.monotonic() - started,
+                               [hashlib.sha256(config).hexdigest(), hashlib.sha256(report).hexdigest()] if report is not None else None)
         except subprocess.TimeoutExpired as error:
             return Observation(tuple(command), 124, (error.stdout or b"")[:MAX_BYTES],
                                (error.stderr or b"")[:MAX_BYTES] + b"\nOWNER_CHECK_TIMEOUT\n",
@@ -201,10 +204,24 @@ def run(settings, returned_report=None, *, application=None, readings=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json-observation", action="store_true")
     parser.add_argument("--settings", required=True)
     parser.add_argument("--report", required=True)
     args = parser.parse_args()
     result = run(args.settings, args.report)
+    if args.json_observation:
+        print(json.dumps({"accepted": result.accepted, "returncode": result.returncode,
+            "executed": bool(result.command), "child_returncode": result.returncode if result.command else None,
+            "status": "completed" if result.command and result.returncode in (0, 1) else "refused",
+            "elapsed_seconds": result.elapsed_seconds,
+            "artifact_sha256": result.artifact_sha256,
+            "owner_sha256": PINS["owner/test_report.py"],
+            "stdout": result.stdout.decode("utf-8", errors="replace"),
+            "stderr": result.stderr.decode("utf-8", errors="replace"),
+            "stdout_base64": base64.b64encode(result.stdout).decode("ascii"),
+            "stderr_base64": base64.b64encode(result.stderr).decode("ascii"),
+            "cleanup_completed": result.returncode in (0, 1)}, sort_keys=True))
+        raise SystemExit(0 if result.accepted else (result.returncode or 1))
     print(json.dumps({"accepted": result.accepted, "exit": result.returncode,
                       "elapsed_seconds": result.elapsed_seconds}))
     print(result.stdout.decode("utf-8", errors="replace"), end="")

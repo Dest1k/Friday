@@ -135,6 +135,18 @@ def validate_assessment(row):
         raise AssociationError("invalid_result_observations")
     expected = {a["reference"]: a for a in result["artifacts"]}
     for reference, observed in observations.items():
+        if isinstance(observed, dict) and observed.get("kind") == "fixture_execution":
+            from .goal_checks import validate_observation
+            if (not isinstance(observed.get("call"), dict) or set(observed["call"]) != set(CALL_FIELDS)
+                    or reference != digest(observed["call"])
+                    or observed["call"]["task_id"] != row["owner"]["session_id"]
+                    or observed["call"]["session_id"] != row["owner"]["session_id"]):
+                raise AssociationError("invalid_fixture_call")
+            for value in observed["call"].values():
+                _text(value)
+            _number(observed["at_unix"])
+            validate_observation(row, observed)
+            continue
         if (not isinstance(observed, dict) or set(observed) != {"call", "kind", "files", "at_unix"}
                 or observed["kind"] != "file_inspection" or not isinstance(observed["call"], dict)
                 or set(observed["call"]) != set(CALL_FIELDS)
@@ -164,7 +176,7 @@ def validate_assessment(row):
         return
     if (not isinstance(assessment, dict)
             or set(assessment) != {"state", "method", "observations", "rationale", "at_unix"}
-            or assessment["method"] != "parent_file_review"
+            or assessment["method"] not in {"parent_file_review", "owner_fixture_execution"}
             or assessment["state"] not in {"PASS", "FAIL", "UNKNOWN"}
             or row["goal_verification"] != assessment["state"]
             or not isinstance(assessment["observations"], list) or not assessment["observations"]
@@ -173,11 +185,21 @@ def validate_assessment(row):
         raise AssociationError("invalid_goal_assessment")
     _text(assessment["rationale"], 2048)
     _number(assessment["at_unix"])
+    if assessment["method"] == "owner_fixture_execution":
+        if (len(assessment["observations"]) != 1
+                or observations[assessment["observations"][0]]["kind"] != "fixture_execution"
+                or assessment["state"] != "UNKNOWN" and observations[assessment["observations"][0]]["state"] != assessment["state"]):
+            raise AssociationError("invalid_fixture_assessment")
     if assessment["state"] == "PASS":
         terminal = row["host"]["terminal"]
         if terminal is None or terminal["state"] != "completed":
             raise AssociationError("unfinished_goal_cannot_pass")
-        if not any(all(f["preview_complete"] for f in observations[ref]["files"])
+        if assessment["method"] == "owner_fixture_execution":
+            if (row["stop_intent"] is not None or len(assessment["observations"]) != 1
+                    or observations[assessment["observations"][0]]["state"] != "PASS"):
+                raise AssociationError("unproved_fixture_pass")
+            return
+        if not any(observations[ref]["kind"] == "file_inspection" and all(f["preview_complete"] for f in observations[ref]["files"])
                    for ref in assessment["observations"]):
             raise AssociationError("incomplete_file_review")
 
@@ -215,7 +237,12 @@ def assess_result(store, row, verdict, rationale, observations):
         current = store._owned(data, row["existing_task_id"], row["owner"])
         if verdict == "PASS" and current["stop_intent"] is not None:
             raise AssociationError("stopped_goal_cannot_pass")
-        assessment = {"state": verdict, "method": "parent_file_review", "observations": copy.deepcopy(observations),
+        selected = [current["result"]["observations"].get(ref, {}) for ref in (observations or [])]
+        fixture = [o for o in selected if o.get("kind") == "fixture_execution"]
+        method = "owner_fixture_execution" if fixture else "parent_file_review"
+        if fixture and (len(selected) != 1 or (verdict != "UNKNOWN" and fixture[0]["state"] != verdict)):
+            raise AssociationError("unproved_fixture_assessment")
+        assessment = {"state": verdict, "method": method, "observations": copy.deepcopy(observations),
                       "rationale": rationale, "at_unix": store.clock()}
         if current["result"]["assessment"] is not None:
             raise AssociationError("assessment_already_retained")
