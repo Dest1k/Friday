@@ -67,7 +67,7 @@ def worker_health():
                     # The original v2 A0 contract has no accepted useful-web
                     # consumer. Keep that dependency; do not invent a new field.
                     raise HostUnavailable("a0_useful_web_runtime_contract_unavailable")
-                if checked["dsh"].get("web", {}).get("profile") != "exa-paid":
+                if checked["dsh"].get("web", {}).get("profile") not in ("exa-paid", "exa-keyless"):
                     raise HostUnavailable("mandatory_worker_web_contract_required")
             except (OSError, ValueError, RuntimeError, KeyError, TypeError):
                 rows.append(
