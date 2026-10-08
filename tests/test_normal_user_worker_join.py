@@ -104,7 +104,8 @@ def fixture_native(e,monkeypatch,uid='1',bad=None):
         'docker_sha256':a['docker']['sha256'],'daemon_unit_sha256':a['daemon_unit']['sha256'],
         'accepted_unix':now-1,'deadline_unix':now+300,'owner_slot':a['owner_slot'],'mode':'runtime'}
     m=SimpleNamespace(validate=lambda p,**kw:p,remaining=lambda p: 300,
-        probe_report_checked=a0.probe_report_checked,MEMORY=a0.MEMORY,PIDS=a0.PIDS)
+        probe_report_checked=a0.probe_report_checked,MEMORY=a0.MEMORY,PIDS=a0.PIDS,
+        RuntimeStopUnconfirmed=a0.RuntimeStopUnconfirmed)
     monkeypatch.setattr(hr,'a0_runtime_module',lambda c:m)
     from friday_admin_controls import a0_bootstrap as bootstrap
     monkeypatch.setattr(bootstrap,'a0_runtime_module',lambda c:m)
@@ -130,7 +131,7 @@ def fixture_native(e,monkeypatch,uid='1',bad=None):
     class NativeRuntimeFixture:
         def __init__(self,p,*,budget):
             self.p=p;self.budget=budget;self.known=None;self.create_attempted=False
-            self.root=h/'workers/a0/bootstrap/native-fixture';self.receipt_path=self.root/'native.json'
+            self.root=Path(p['association_binding']['workspace_reference'])/'native-fixture';self.receipt_path=self.root/'native.json'
             if self.receipt_path.exists():self.known=json.loads(self.receipt_path.read_text())
             self.supervisor=SimpleNamespace(observe=lambda row:SimpleNamespace(missing=False,
                 quiescent=not m.owned_running,invocation_id='b'*32))
@@ -184,7 +185,7 @@ def fixture_native(e,monkeypatch,uid='1',bad=None):
         if bad=='dsh-envelope':v['smoke'][0]['observation']['resource_envelope']['memory_bytes']=1
         if bad=='source':Path(d['cli']['path']).write_text('changed source')
         return v
-    def a0obs(c,ref,budget):
+    def a0obs(c,ref,budget,*,probe_owner=None):
         calls.append('a0');v={'plan':ref,'container_id':'e'*64,'invocation_id':'b'*32,
             'native_probe':probe(c['a0']['deployment']),
             'web':{'status':'CURRENT_NATIVE_WEB_SERVICE_CHECKED','version':c['a0']['web']['version'],

@@ -150,6 +150,15 @@ existing independently owned probe is supplied. It binds the installed operator,
 single receiving account and exact preparation, while keeping its short native
 phase inside the original installer deadline. An ambiguous multi-account owner
 stays pending. Installation does not qualify another user's private profile.
+Installation inspection recognizes only the protected `bootstrap/original.json`,
+`bootstrap/state.json` and matching `probe-plan.json`, with their exact original
+owner, preparation and plan binding. Other additions remain refused. An
+interrupted descendant sample stays historically uncertain even if a later
+cleanup sample succeeds. Startup and the observer's second native Runtime
+retain history under the same initial owner: stop is attempted, but retirement, key removal and
+readiness remain blocked. Initial startup may wait for Docker to become running
+only while the exact submitted native invocation remains current and within
+the original deadline; terminal/replaced ownership never replays start.
 
 Supported normal APIs are `POST /onboarding/workers/{prepare,qualify,state}` under
 `/api/plugins/friday_rework`. They take only the existing principal, receiving

@@ -1530,6 +1530,7 @@ class Runtime:
                         'initial_probe_not_stopped')
                 stopped = json.loads(private(self.directory/'stop.json').read_text())
                 require(stopped.get('status')=='STOP_CONFIRMED'
+                        and stopped.get('current_sampling') != 'UNKNOWN'
                         and stopped.get('container_id')==r['container_id']
                         and stopped.get('native_container_stopped') is True
                         and r['observations'] and all(cessation(s)['confirmed'] for s in r['observations']),

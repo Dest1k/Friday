@@ -125,7 +125,7 @@ def checked_product(value, home, product, marker):
     return product
 
 
-def a0_observe(runtime, plan_ref, budget):
+def a0_observe(runtime, plan_ref, budget, *, probe_owner=None):
     """Observe an existing exact native plan; no create/start/route or grant."""
     from plugins.friday_rework.host_runtime import a0_runtime_module, a0_deployment_contract
     a0_deployment_contract(runtime)
@@ -152,6 +152,8 @@ def a0_observe(runtime, plan_ref, budget):
                 'foreign_a0_qualification_home')
     m.remaining(plan)
     boundary = budget.call(m.Runtime, plan, budget=budget.check)
+    if probe_owner is not None:
+        budget.call(probe_owner.track_runtime, boundary)
     # Exact recorded native ID, pinned plan, live supervisor and current route.
     # Read-only probes use the existing bounded control runner and native locks.
     with boundary.locked():
@@ -323,7 +325,7 @@ def qualify(value, input_hash, plan_ref, budget):
         try:
             if probe_owner is not None:
                 with own_probe(probe_owner) as plan_ref:
-                    a0 = budget.call(a0_observe, product['runtime']['workers']['a0'], plan_ref, budget)
+                    a0 = budget.call(a0_observe, product['runtime']['workers']['a0'], plan_ref, budget, probe_owner=probe_owner)
                     budget.call(inspect,value,input_hash)
                 custody = checked_custody(home,probe_owner.binding,1,probe_owner.preparations,plan_ref)
             scratch = folder / 'dsh-probe'; scratch.mkdir(mode=0o700)

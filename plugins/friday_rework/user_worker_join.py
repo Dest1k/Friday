@@ -201,7 +201,7 @@ def qualify(home, binding, generation, prepared, *, verify, accepted_monotonic=N
                 'bootstrap_original':pin(home / 'workers/a0/bootstrap/original.json'),'binding':binding}
             verify(); folder.mkdir(mode=0o700)
             _new_file(home / INTENT, (json.dumps(original,sort_keys=True)+'\n').encode())
-            a0 = budget.call(a0_observe, runtimes['a0'], plan, budget)
+            a0 = budget.call(a0_observe, runtimes['a0'], plan, budget, probe_owner=probe)
             verify()
         custody = checked_custody(home, binding, generation, prepared, plan)
         # Native cessation precedes Harness observations/readiness publication;

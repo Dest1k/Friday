@@ -39,8 +39,8 @@ def test_initial_setup_consumes_real_existing_a0_observer_without_prequalified_j
     assert e.native_fixture.effect_calls==['READONLY_PREFLIGHT','ROUTE','START','STOP','RETIRE_STOPPED_PROBE']
     state=json.loads((home(e)/bootstrap.FOLDER/'state.json').read_text())
     assert state['phase']=='STOPPED' and state['settlement']['keys']=='REMOVED'
-    assert not e.native_fixture.owned_running and (home(e)/bootstrap.FOLDER/'native-fixture/usr/.env').read_bytes()==b''
-    assert (home(e)/bootstrap.FOLDER/'native-fixture/usr/web/secret.env').read_bytes()==b''
+    assert not e.native_fixture.owned_running and (Path(json.loads((home(e)/bootstrap.FOLDER/'original.json').read_text())['association']['workspace_reference'])/'native-fixture/usr/.env').read_bytes()==b''
+    assert (Path(json.loads((home(e)/bootstrap.FOLDER/'original.json').read_text())['association']['workspace_reference'])/'native-fixture/usr/web/secret.env').read_bytes()==b''
     proof=json.loads((home(e)/join.PROOF).read_text())
     assert proof['per_job_authority']=='NOT_GRANTED' and proof['workers']['a0']['plan']['path']==str(path)
     assert proof['bootstrap_custody']['original']['path']==str(home(e)/bootstrap.FOLDER/'original.json')
@@ -114,7 +114,7 @@ def test_uncertain_stop_never_publishes_readiness_or_restarts(normal_env,monkeyp
     with pytest.raises(StopUnconfirmed):action(e,'qualify')
     state=json.loads((home(e)/bootstrap.FOLDER/'state.json').read_text())
     assert state['phase']=='STOP_UNCONFIRMED' and state['settlement'] is None
-    assert (home(e)/bootstrap.FOLDER/'native-fixture/usr/.env').read_bytes()
+    assert (Path(json.loads((home(e)/bootstrap.FOLDER/'original.json').read_text())['association']['workspace_reference'])/'native-fixture/usr/.env').read_bytes()
     assert calls==['a0'] and not (home(e)/join.PROOF).exists()
     before=list(e.native_fixture.effect_calls)
     with pytest.raises(hr.HostUnavailable):action(e,'qualify')
@@ -134,7 +134,7 @@ def test_partial_key_preparation_retains_cleanup_uncertainty_before_create(norma
     state=json.loads((home(e)/bootstrap.FOLDER/'state.json').read_text())
     assert state['phase']=='STOP_UNCONFIRMED' and state['created'] is None
     assert calls==[] and not (home(e)/join.PROOF).exists()
-    assert (home(e)/bootstrap.FOLDER/'native-fixture/usr/web/secret.env').read_bytes()
+    assert (Path(json.loads((home(e)/bootstrap.FOLDER/'original.json').read_text())['association']['workspace_reference'])/'native-fixture/usr/web/secret.env').read_bytes()
 
 
 @pytest.mark.parametrize('changed',['generation','preparation','plan','settlement','source'])
@@ -219,7 +219,7 @@ def test_actual_native_readonly_preflight_preserves_registration_resources_clock
     assert not (root/'workspace').exists() and set(events)<= {'REGISTERED_SOURCE_CHECK','READONLY_NATIVE_SHOW'}
 
 
-@pytest.mark.parametrize('bad',[None,'ordinary-job','running','replaced-unit','alive-descendant','missing-stop','lost-ack'])
+@pytest.mark.parametrize('bad',[None,'ordinary-job','running','replaced-unit','alive-descendant','missing-stop','lost-ack','unknown-sample'])
 def test_actual_native_probe_retirement_requires_exact_cessation_and_never_forces_or_removes_state(tmp_path,monkeypatch,bad):
     from scripts import a0_runtime as m
     from types import SimpleNamespace
@@ -228,7 +228,8 @@ def test_actual_native_probe_retirement_requires_exact_cessation_and_never_force
     state=root/'usr';state.mkdir(mode=0o700);artifact=state/'retain-inputs.txt';artifact.write_text('retained native setup inputs')
     r={'container_id':'d'*64,'invocation_id':'b'*32,'observations':[{'group':'/user.slice/OFFLINE','processes':[]} ]}
     if bad!='missing-stop':m.write_json(root/'stop.json',{'status':'STOP_CONFIRMED',
-        'container_id':r['container_id'],'native_container_stopped':True})
+        'container_id':r['container_id'],'native_container_stopped':True,
+        'current_sampling':'UNKNOWN' if bad=='unknown-sample' else 'OBSERVED_OR_ALREADY_EXITED'})
     boundary=m.Runtime.__new__(m.Runtime)
     boundary.p={'association_binding':{'owner':{'session_key':'ordinary-job' if bad=='ordinary-job' else 'own-profile-initial-probe'}}}
     expired=lambda:(_ for _ in ()).throw(ValueError('original clock exhausted'))

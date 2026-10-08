@@ -151,6 +151,10 @@ launch; historical stops and actual kernel/network/service admission are intact.
 This source candidate has only offline observations, no installed runtime
 acceptance or per-job capability. The normal installer reuses this same producer
 inside its own original clock, without borrowing an operator success for users.
+Its retained bootstrap/plan inventory is checked separately from immutable
+deployment inputs. Historical sampling uncertainty stays unresolved after a
+later good sample; bounded startup waiting retains the exact native invocation
+and original clock, without another create/start attempt.
 The original WorkerHost retains one selected runtime per profile; these APIs
 add no second worker manager, task store, queue or automatic launch. Actual
 installation and independent/live acceptance remain required.
