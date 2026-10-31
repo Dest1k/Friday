@@ -1,0 +1,251 @@
+--- a/harness/known/s16_boundary.py
++++ b/harness/known/s16_boundary.py
+@@ -5,6 +5,7 @@
+ m = runpy.run_path(str(Path(__file__).with_name('xlsx_common.py')))
+ read_ref, read_json, root_record, need = (m[k] for k in ('read_ref', 'read_json', 'root_record', 'need'))
+ validate_common, fixed_engine_argv, pinned_read = (m[k] for k in ('validate_common', 'fixed_engine_argv', 'pinned_read'))
++seed_recalculation_profile = m['seed_recalculation_profile']
+ FIELDS = {'schema', 'operator', 'received_artifact', 'received_bytes', 'mime_type', 'expected_values', 'fixture',
+           'current', 'qualification', 'operation_clock', 'consumer', 'strace', 'kernel', 'import_settings', 'invocation_id'}
+ SCHEMA = 'frw.Root.kimi-b161-known-xlsx-host-admission.v1'
+--- a/harness/known/s16_office_host.py
++++ b/harness/known/s16_office_host.py
+@@ -616,6 +616,7 @@
+             before=input_path.read_bytes()
+             if stage=='resaved':os.chmod(input_path,0o400)
+             phase_profile=scratch/('profile-'+stage);phase_profile.mkdir(mode=0o700)
++            recalculation_profile=vm['seed_recalculation_profile'](phase_profile)
+             engine_argv=vm['fixed_engine_argv'](ENGINE,suffix if stage=='original'else'xlsx',scratch)
+             engine_argv[1]='-env:UserInstallation=file://'+str(phase_profile)
+             engine_argv[engine_argv.index('--outdir')+1]=str(output_dir)
+@@ -624,7 +625,7 @@
+             close_fds='import os,sys;fds=[int(x) for x in os.listdir("/proc/self/fd") if int(x)>2];[(os.close(fd) if os.path.exists("/proc/self/fd/"+str(fd)) else None) for fd in fds];os.execv(sys.argv[2],sys.argv[2:])'
+             trace_filter='%process,%network,%file,write,writev,pwrite64,pwritev,pwritev2,fsync,fdatasync'
+             argv=['/usr/bin/strace','-f','-ttt','-T','-yy','-s','256','-e','trace='+trace_filter,'-o','/dev/fd/'+str(trace_write),'--',PYTHON,'-I','-B','-c',close_fds,str(trace_write),*engine_argv]
+-            phase={'stage':stage,'input_path':str(input_path),'input_sha256':digest(before),'output_path':str(output_dir/'received.xlsx'),'started_monotonic':time.monotonic(),'deadline_monotonic':end,'trace_filter':trace_filter,'declared_import_settings':binding['import_settings']if stage=='original'else{'encoding':'OOXML-per-part-declaration','delimiter':'not-applicable','locale':'C.UTF-8','other_declared_options':{'profile':'fresh-default','filter':'Calc MS Excel 2007 XML','column_types':'consumer-default','formula_evaluation':'consumer-default','input_extension':'xlsx'}},'state':'INTENT_BEFORE_POPEN'}
++            phase={'stage':stage,'input_path':str(input_path),'input_sha256':digest(before),'output_path':str(output_dir/'received.xlsx'),'started_monotonic':time.monotonic(),'deadline_monotonic':end,'trace_filter':trace_filter,'declared_import_settings':binding['import_settings'],'recalculation_profile':recalculation_profile,'state':'INTENT_BEFORE_POPEN'}
+             record['phases'].append(phase)
+             process=None
+             try:
+--- a/harness/known/xlsx_common.py
++++ b/harness/known/xlsx_common.py
+@@ -12,6 +12,30 @@
+ SETTINGS = {'encoding': 'OOXML-per-part-declaration', 'delimiter': 'not-applicable', 'locale': 'C.UTF-8',
+-            'other_declared_options': {'profile': 'fresh-default', 'filter': 'Calc MS Excel 2007 XML',
+-                'column_types': 'consumer-default', 'formula_evaluation': 'consumer-default', 'input_extension': 'xlsx'}}
++            'other_declared_options': {'profile': 'fresh-isolated-ooxml-recalc-always', 'filter': 'Calc MS Excel 2007 XML',
++                'column_types': 'consumer-default', 'formula_evaluation': 'hard-recalc-on-load; OOXMLRecalcMode=0', 'input_extension': 'xlsx'}}
++
++
++# LibreOffice26.2.5.2: RECALC_ALWAYS=0; seed only this isolated phase profile.
++RECALC_PROFILE_XML = (b'<?xml version="1.0" encoding="UTF-8"?>\n'
++    b'<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
++    b'<item oor:path="/org.openoffice.Office.Calc/Formula/Load">'
++    b'<prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop>'
++    b'</item></oor:items>\n')
++
++
++def seed_recalculation_profile(profile):
++    """Initialize an empty owned phase profile before the fixed Office invocation."""
++    info = profile.lstat()
++    need(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
++         and stat.S_IMODE(info.st_mode) == 0o700 and not any(profile.iterdir()),
++         'FRESH_EMPTY_OWNED_RECALC_PROFILE_REQUIRED')
++    user = profile / 'user'
++    user.mkdir(mode=0o700)
++    target = user / 'registrymodifications.xcu'
++    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
++    with os.fdopen(fd, 'wb') as stream:
++        stream.write(RECALC_PROFILE_XML)
++    return {'path': str(target), 'sha256': hashlib.sha256(RECALC_PROFILE_XML).hexdigest(),
++            'bytes': len(RECALC_PROFILE_XML), 'initialized_before_office': True}
+ 
+ 
+ def need(condition, message):
+--- a/harness/launch_host.py
++++ b/harness/launch_host.py
+@@ -124,7 +124,7 @@
+                                     owner=0 if tool_path.startswith('/usr/bin/') else os.getuid())
+     version_end, operation_end = version_budget(plan, joined['operation_clock'])
+     base = utility['own_cgroup']()
+-    scope = 'frw-b161-' + plan['operation'].replace('_', '-') + '-2.scope'
++    scope = 'frw-b161-' + plan['operation'].replace('_', '-') + '-3.scope'
+     argv = [PYTHON, '-I', '-B', str(code / 's16_office_host.py'), '--binding', plan['binding']['path'],
+             '--binding-sha256', plan['binding']['sha256'], '--output', str(output), '--deadline-utc', plan['deadline_utc'],
+             '--cgroup-parent', str(base)]
+--- a/harness/s18/s16_boundary.py
++++ b/harness/s18/s16_boundary.py
+@@ -6,6 +6,7 @@
+ m = runpy.run_path(str(Path(__file__).with_name('xlsx_common.py')))
+ read_ref, read_json, root_record, need = (m[k] for k in ('read_ref', 'read_json', 'root_record', 'need'))
+ validate_common, fixed_engine_argv, pinned_read = (m[k] for k in ('validate_common', 'fixed_engine_argv', 'pinned_read'))
++seed_recalculation_profile = m['seed_recalculation_profile']
+ reference = m['reference']
+ FIELDS = {'schema', 'operator', 'received_artifact', 'received_bytes', 'mime_type', 'ingress_receipt', 'plan', 'run',
+           'origin_assessment', 'current', 'qualification', 'consumer_qualification', 'operation_clock', 'consumer',
+--- a/harness/s18/s16_office_host.py
++++ b/harness/s18/s16_office_host.py
+@@ -616,6 +616,7 @@
+             before=input_path.read_bytes()
+             if stage=='resaved':os.chmod(input_path,0o400)
+             phase_profile=scratch/('profile-'+stage);phase_profile.mkdir(mode=0o700)
++            recalculation_profile=vm['seed_recalculation_profile'](phase_profile)
+             engine_argv=vm['fixed_engine_argv'](ENGINE,suffix if stage=='original'else'xlsx',scratch)
+             engine_argv[1]='-env:UserInstallation=file://'+str(phase_profile)
+             engine_argv[engine_argv.index('--outdir')+1]=str(output_dir)
+@@ -624,7 +625,7 @@
+             close_fds='import os,sys;fds=[int(x) for x in os.listdir("/proc/self/fd") if int(x)>2];[(os.close(fd) if os.path.exists("/proc/self/fd/"+str(fd)) else None) for fd in fds];os.execv(sys.argv[2],sys.argv[2:])'
+             trace_filter='%process,%network,%file,write,writev,pwrite64,pwritev,pwritev2,fsync,fdatasync'
+             argv=['/usr/bin/strace','-f','-ttt','-T','-yy','-s','256','-e','trace='+trace_filter,'-o','/dev/fd/'+str(trace_write),'--',PYTHON,'-I','-B','-c',close_fds,str(trace_write),*engine_argv]
+-            phase={'stage':stage,'input_path':str(input_path),'input_sha256':digest(before),'output_path':str(output_dir/'received.xlsx'),'started_monotonic':time.monotonic(),'deadline_monotonic':end,'trace_filter':trace_filter,'declared_import_settings':binding['import_settings']if stage=='original'else{'encoding':'OOXML-per-part-declaration','delimiter':'not-applicable','locale':'C.UTF-8','other_declared_options':{'profile':'fresh-default','filter':'Calc MS Excel 2007 XML','column_types':'consumer-default','formula_evaluation':'consumer-default','input_extension':'xlsx'}},'state':'INTENT_BEFORE_POPEN'}
++            phase={'stage':stage,'input_path':str(input_path),'input_sha256':digest(before),'output_path':str(output_dir/'received.xlsx'),'started_monotonic':time.monotonic(),'deadline_monotonic':end,'trace_filter':trace_filter,'declared_import_settings':binding['import_settings'],'recalculation_profile':recalculation_profile,'state':'INTENT_BEFORE_POPEN'}
+             record['phases'].append(phase)
+             process=None
+             try:
+--- a/harness/s18/xlsx_common.py
++++ b/harness/s18/xlsx_common.py
+@@ -12,6 +12,30 @@
+ SETTINGS = {'encoding': 'OOXML-per-part-declaration', 'delimiter': 'not-applicable', 'locale': 'C.UTF-8',
+-            'other_declared_options': {'profile': 'fresh-default', 'filter': 'Calc MS Excel 2007 XML',
+-                'column_types': 'consumer-default', 'formula_evaluation': 'consumer-default', 'input_extension': 'xlsx'}}
++            'other_declared_options': {'profile': 'fresh-isolated-ooxml-recalc-always', 'filter': 'Calc MS Excel 2007 XML',
++                'column_types': 'consumer-default', 'formula_evaluation': 'hard-recalc-on-load; OOXMLRecalcMode=0', 'input_extension': 'xlsx'}}
++
++
++# LibreOffice26.2.5.2: RECALC_ALWAYS=0; seed only this isolated phase profile.
++RECALC_PROFILE_XML = (b'<?xml version="1.0" encoding="UTF-8"?>\n'
++    b'<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
++    b'<item oor:path="/org.openoffice.Office.Calc/Formula/Load">'
++    b'<prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop>'
++    b'</item></oor:items>\n')
++
++
++def seed_recalculation_profile(profile):
++    """Initialize an empty owned phase profile before the fixed Office invocation."""
++    info = profile.lstat()
++    need(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
++         and stat.S_IMODE(info.st_mode) == 0o700 and not any(profile.iterdir()),
++         'FRESH_EMPTY_OWNED_RECALC_PROFILE_REQUIRED')
++    user = profile / 'user'
++    user.mkdir(mode=0o700)
++    target = user / 'registrymodifications.xcu'
++    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
++    with os.fdopen(fd, 'wb') as stream:
++        stream.write(RECALC_PROFILE_XML)
++    return {'path': str(target), 'sha256': hashlib.sha256(RECALC_PROFILE_XML).hexdigest(),
++            'bytes': len(RECALC_PROFILE_XML), 'initialized_before_office': True}
+ 
+ 
+ def need(condition, message):
+--- a/harness/s18_observation.py
++++ b/harness/s18_observation.py
+@@ -1,5 +1,6 @@
+ """S18 factual two-phase runtime authentication; internal timings unobserved."""
+ import argparse
++import hashlib
+ import json
+ import math
+ import os
+@@ -45,6 +46,12 @@
+         need(phase.get('trace_filter') == FILTER and phase.get('trace_complete') is True and phase.get('exit_code') == 0
+              and phase.get('process_reaped') is True and phase.get('input_unchanged') is True and phase.get('timed_out') is False
+              and phase.get('overflow') is False, 'COMPLETE_S18_PHASE')
++        need(phase.get('declared_import_settings') == binding['import_settings'], 'EXACT_PHASE_IMPORT_SETTINGS_REQUIRED')
++        profile = phase.get('recalculation_profile', {})
++        expected_profile = str(Path(phase['output_path']).parent.parent / ('profile-' + phase['stage']) / 'user/registrymodifications.xcu')
++        need(profile == {'path': expected_profile, 'sha256': hashlib.sha256(common['RECALC_PROFILE_XML']).hexdigest(),
++                         'bytes': len(common['RECALC_PROFILE_XML']), 'initialized_before_office': True},
++             'EXACT_RECALC_PROFILE_INITIALIZATION_REQUIRED')
+         need(all(type(phase.get(n)) in (int, float) and math.isfinite(phase[n]) for n in ('started_monotonic', 'ended_monotonic', 'deadline_monotonic'))
+              and phase['started_monotonic'] <= phase['ended_monotonic'] <= phase['deadline_monotonic']
+              and phase['ended_monotonic'] - phase['started_monotonic'] <= 35
+@@ -62,7 +69,7 @@
+         need(len(trace) == phase['trace_bytes'], 'S18_TRACE_BYTES')
+         log = read_ref(phase['log_reference'], 65536, private=True)
+         need(b'strace:' not in log, 'S18_TRACER_DIAGNOSTIC')
+-        facts = trace_facts(trace, phase['input_path'], phase['output_path'])
++        facts = trace_facts(trace, phase['input_path'], phase['output_path'], profile['path'])
+         if facts['unexpected_network_family']:
+             return {'schema': 'frw.Root.kimi-b161-s18-runtime-observation.v1', 'status': 'FAIL', 'reason': 'NETWORK_FAMILY_INITIATION_OBSERVED', 'consumer_safety': 'FAIL'}
+         need(type(phase_review) is dict and set(phase_review) == {'stage', 'trace_reference', 'exec_records', 'network_records', 'decision'}
+--- a/harness/xlsx_common.py
++++ b/harness/xlsx_common.py
+@@ -12,6 +12,30 @@
+ SETTINGS = {'encoding': 'OOXML-per-part-declaration', 'delimiter': 'not-applicable', 'locale': 'C.UTF-8',
+-            'other_declared_options': {'profile': 'fresh-default', 'filter': 'Calc MS Excel 2007 XML',
+-                'column_types': 'consumer-default', 'formula_evaluation': 'consumer-default', 'input_extension': 'xlsx'}}
++            'other_declared_options': {'profile': 'fresh-isolated-ooxml-recalc-always', 'filter': 'Calc MS Excel 2007 XML',
++                'column_types': 'consumer-default', 'formula_evaluation': 'hard-recalc-on-load; OOXMLRecalcMode=0', 'input_extension': 'xlsx'}}
++
++
++# LibreOffice26.2.5.2: RECALC_ALWAYS=0; seed only this isolated phase profile.
++RECALC_PROFILE_XML = (b'<?xml version="1.0" encoding="UTF-8"?>\n'
++    b'<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
++    b'<item oor:path="/org.openoffice.Office.Calc/Formula/Load">'
++    b'<prop oor:name="OOXMLRecalcMode" oor:op="fuse"><value>0</value></prop>'
++    b'</item></oor:items>\n')
++
++
++def seed_recalculation_profile(profile):
++    """Initialize an empty owned phase profile before the fixed Office invocation."""
++    info = profile.lstat()
++    need(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
++         and stat.S_IMODE(info.st_mode) == 0o700 and not any(profile.iterdir()),
++         'FRESH_EMPTY_OWNED_RECALC_PROFILE_REQUIRED')
++    user = profile / 'user'
++    user.mkdir(mode=0o700)
++    target = user / 'registrymodifications.xcu'
++    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
++    with os.fdopen(fd, 'wb') as stream:
++        stream.write(RECALC_PROFILE_XML)
++    return {'path': str(target), 'sha256': hashlib.sha256(RECALC_PROFILE_XML).hexdigest(),
++            'bytes': len(RECALC_PROFILE_XML), 'initialized_before_office': True}
+ 
+ 
+ def need(condition, message):
+--- a/harness/xlsx_known.py
++++ b/harness/xlsx_known.py
+@@ -144,6 +144,12 @@
+         need(phase.get('trace_filter') == FILTER and phase.get('trace_complete') is True and phase.get('exit_code') == 0
+              and phase.get('process_reaped') is True and phase.get('input_unchanged') is True and phase.get('timed_out') is False
+              and phase.get('overflow') is False, 'COMPLETE_KNOWN_PHASE')
++        need(phase.get('declared_import_settings') == binding['import_settings'], 'EXACT_PHASE_IMPORT_SETTINGS_REQUIRED')
++        profile = phase.get('recalculation_profile', {})
++        expected_profile = str(Path(phase['output_path']).parent.parent / ('profile-' + phase['stage']) / 'user/registrymodifications.xcu')
++        need(profile == {'path': expected_profile, 'sha256': hashlib.sha256(common['RECALC_PROFILE_XML']).hexdigest(),
++                         'bytes': len(common['RECALC_PROFILE_XML']), 'initialized_before_office': True},
++             'EXACT_RECALC_PROFILE_INITIALIZATION_REQUIRED')
+         need(all(type(phase.get(n)) in (int, float) and math.isfinite(phase[n]) for n in ('started_monotonic', 'ended_monotonic', 'deadline_monotonic'))
+              and phase['started_monotonic'] <= phase['ended_monotonic'] <= phase['deadline_monotonic']
+              and phase['ended_monotonic'] - phase['started_monotonic'] <= 35
+@@ -161,7 +167,7 @@
+         need(len(trace) == phase['trace_bytes'], 'KNOWN_TRACE_BYTES')
+         log = read_ref(phase['log_reference'], 65536, private=True)
+         need(b'strace:' not in log, 'KNOWN_TRACER_DIAGNOSTIC')
+-        facts = trace_facts(trace, phase['input_path'], phase['output_path'])
++        facts = trace_facts(trace, phase['input_path'], phase['output_path'], profile['path'])
+         need(not facts['unexpected_network_family'], 'KNOWN_NETWORK_FAMILY')
+         need(type(phase_review) is dict and set(phase_review) == {'stage', 'trace_reference', 'exec_records', 'network_records', 'decision'}
+              and phase_review['stage'] == phase['stage'] and phase_review['trace_reference'] == phase['trace_reference']
+--- a/harness/xlsx_trace.py
++++ b/harness/xlsx_trace.py
+@@ -12,7 +12,7 @@
+         raise ValueError(message)
+ 
+ 
+-def trace_facts(raw, input_path, output_path):
++def trace_facts(raw, input_path, output_path, profile_path=None):
+     need(0 < len(raw) <= 4 * 1024 * 1024, 'COMPLETE_BOUNDED_TRACE_REQUIRED')
+     need(raw.endswith(b'\n'), 'INCOMPLETE_PROCESS_TRACE')
+     pending, calls, exits, pids = {}, [], set(), set()
+@@ -55,6 +55,10 @@
+                for name, args, result, sha in calls if name in NETWORK]
+     input_open = any(name in ('open', 'openat', 'openat2') and re.findall(r'"([^"]+)"', args)[:1] == [input_path]
+                      and 'O_RDONLY' in args and re.match(r'\d+', result) for name, args, result, sha in calls)
++    if profile_path is not None:
++        profile_open = any(name in ('open', 'openat', 'openat2') and re.findall(r'"([^"]+)"', args)[:1] == [profile_path]
++                           and 'O_RDONLY' in args and re.match(r'\d+', result) for name, args, result, sha in calls)
++        need(profile_open, 'ACTUAL_RECALC_PROFILE_READ_NOT_OBSERVED')
+     write_paths = {match.group(1) for name, args, result, sha in calls
+                    if name in ('write', 'writev', 'pwrite64', 'pwritev', 'pwritev2') and re.match(r'[1-9]\d*', result)
+                    for match in [re.match(r'\d+<(/[^>]+)>', args)] if match is not None}
