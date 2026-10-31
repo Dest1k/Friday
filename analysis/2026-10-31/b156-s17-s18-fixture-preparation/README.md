@@ -31,3 +31,23 @@ The ordinary document tester source supports one document per ordinary step. The
 Only the XLSX and a natural request belong in any separately authorized user task. Checker source, expected values, private evidence and fixture-preparation records are not user-task attachments. `PUBLIC_REQUESTS.json` preserves neutral case descriptions without transport identifiers or private oracle files.
 
 This export adapts reusable source to portable public paths and omits private history/ABI main routines. Original B156 checks and reviewer controls are historical observations, not automatic validation of these adapted bytes. See `OBSERVATIONS.json` for checks actually performed on this public candidate. No source installation, service or product state changes are included.
+
+The optional `source/assess_received_s18.py` is a narrow source-origin structural assessor for a future separately authorized derivative of this exact synthetic S18 fixture. Its helper bytes are unchanged from the independently accepted source-only implementation. It compares original cells and formula sources, validation coverage, scoped names, and linked chart/table structures; it does not establish actual received-file custody, runtime identity, consumer/Office reopen, recalculation, validation enforcement, visual preservation or semantic user acceptance. Cached results are ignored. Unsupported projections remain explicit, and additional cells/features require review rather than a blanket rejection.
+
+Before any future user task, explicitly declare the natural request, including this edit:
+
+> В приложенной книге измени количество в Orders!C3 с 3 на 4. Верни исправленную книгу, сохрани остальные исходные данные и формулы, проверку данных, именованные диапазоны, диаграмму и таблицу. Кратко сообщи, что удалось сохранить и что не поддерживается.
+
+Only the workbook and natural request belong in that user task: do not attach expected totals, oracle files, checker source, synthetic mutants or acceptance declarations. No task is sent or authorized by this documentation.
+
+After the integration owner separately establishes custody and all operational bindings, the static CLI accepts caller-supplied paths:
+
+```sh
+python3 -B source/assess_received_s18.py \
+  --source build/orders_s18_validation.xlsx \
+  --received path/to/returned.xlsx
+```
+
+The source must have SHA256 `4038289a6e89c86da8fd547705f9eb98ffbf48566e4dc22652768e405f7dec0d`. Exit zero means a JSON assessment was produced, including reports requiring review; it never means Office or user acceptance. Exit two means `UNKNOWN`. Read every status and gap. JSON includes caller-supplied paths and workbook-derived facts; keep actual local reports private as appropriate.
+
+The added portable controls generate the known source through the existing public `prepare_fixture.py`, create only temporary synthetic mutants, and remove them after the test run. They require no new binary fixture and run with the existing unittest command above. `RECEIVED_ASSESSOR_OBSERVATIONS.json` records checks actually executed on these adapted test bytes; historical source reviews are reused for the unchanged helper and do not establish any product/runtime result.
