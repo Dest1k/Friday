@@ -1,0 +1,922 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -190,6 +190,8 @@
+ 
+ ORDINARY_IDENTITY = 'Ты — Пятница (Friday), ИИ-помощник с высокой, но управляемой инициативой.'
+ DOCX_EDIT_GUIDANCE = (
++    'TAR archives: format=tar/tar.gz/tar.bz2/tar.xz/tar.zst with entries source/member creates a NEW matching archive; input aliases tgz/tbz2/txz/tzst are recognized. read_file lists checked member names and hashes; format=tar_extract with {source} publishes a NEW directory. archive_convert converts ZIP/7z/TAR families into a NEW supported archive preserving member names and bytes. Links, devices, sparse/unsupported records, unsafe paths and over-limit expansion refuse. Source archives are unchanged; never execute members. '
++    'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
+     'Старый .xls читается как ограниченная таблица BIFF8: имена и порядок листов, поддержанные значения ячеек и сохранённые результаты формул. Формулы не вычисляются, макросы не запускаются. Это не проверка оформления; смотри metadata покрытия и ограничений. Создание и изменение .xls не поддерживаются, не записывай под этим расширением текст. '
+     'EPUB читается по порядку XHTML-разделов книги, включая отдельно помеченные вспомогательные разделы. Это логический текст, не вид страниц: CSS, изображения, аудио и видео не проверяются; внешние ссылки не открываются. EPUB нельзя создать или изменить этой файловой операцией. '
+     'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. No cross-family/Office conversion in this path. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
+@@ -346,11 +348,18 @@
+             'auxiliary chapters are labelled. No CSS, page-layout, image or multimedia rendering, no '
+             'external fetches. Scripts, encryption, unsupported spine formats and ambiguous packages refuse. '
+             'EPUB writing is unsupported. '
++            'TAR, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz and tar.zst/tzst return the same bounded member registry. '
++            'Single gzip (.gz), bzip2 (.bz2), XZ (.xz) and Zstandard (.zst) streams return one '
++            'member named from the compressed basename minus its final suffix; embedded header names '
++            'are ignored. This is a registry, not decoded text; use format=stream_extract into a NEW '
++            'folder, then read its returned member path. '
+             'Other binary formats are unsupported; encrypted or unsupported 7z refuses. '
+             'Before replacing an existing text file, read its complete current content in this task.')
+     else:
+         function['description'] = (
+             'Own-workspace write: path + content string; choose format. '
++            'TAR archives: format=tar/tar.gz/tar.bz2/tar.xz/tar.zst with entries source/member creates a NEW matching archive; input aliases tgz/tbz2/txz/tzst are recognized. read_file lists checked member names and hashes; format=tar_extract with {source} publishes a NEW directory. archive_convert converts ZIP/7z/TAR families into a NEW supported archive preserving member names and bytes. Links, devices, sparse/unsupported records, unsafe paths and over-limit expansion refuse. Source archives are unchanged; never execute members. '
++    'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
+             'Word DOCX/DOTX and ODF ODT/OTT/FODT: profile name creates plain text natively; '
+             'profile_structured creates typed JSON blocks; profile_edit uses exact '
+             'source/old_text/new_text into a NEW same-profile file. Native MIME/content types '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -876,7 +876,7 @@
+                         'different document from matching extracted text. '
+                         'If the source cannot be identified, ask for clarification.'})
+             from hermes_cli import friday_workspace_revision as revision
+-            if path.suffix.lower() in {'.zip', '.7z'}:
++            if path.suffix.lower() in {'.zip', '.7z', '.gz', '.bz2', '.xz', '.zst'} or path.name.lower().endswith(('.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.tar.zst', '.tzst')):
+                 from hermes_cli.friday_workspace_zip import read_archive
+                 return read_archive(cap, path.as_posix(), offset=args.get('offset', 1),
+                                     limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+@@ -992,7 +992,7 @@
+                 'hint': 'DOCM/DOTM support bounded inert reading only. Macro projects are '
+                         'opaque, never executed, and not accepted as safe. Creating or editing '
+                         'these profiles is unsupported; do not drop VBA or rename another format.'})
+-        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit'):
++        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit'):
+             raise ScopeDenied()
+         if output_format in ('spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert'):
+             from hermes_cli.friday_workspace_spreadsheet import execute
+@@ -1030,6 +1030,18 @@
+             if output_format == 'odp_edit':
+                 return presentation.edit_odp(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+             return presentation.create_conversion(cap, fd, parts[-1], path.as_posix(), args.get('content'), output_format)
++        if output_format in ('tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst'):
++            from hermes_cli.friday_workspace_zip import create_tar
++            return create_tar(cap, fd, parts[-1], path.as_posix(), args.get('content'), format=output_format)
++        if output_format in ('gzip', 'bzip2', 'xz', 'zstd'):
++            from hermes_cli.friday_workspace_zip import create_stream
++            return create_stream(cap, fd, parts[-1], path.as_posix(), args.get('content'), format=output_format)
++        if output_format == 'stream_extract':
++            from hermes_cli.friday_workspace_zip import extract_zip
++            return extract_zip(cap, fd, parts[-1], path.as_posix(), args.get('content'), _format='stream')
++        if output_format == 'tar_extract':
++            from hermes_cli.friday_workspace_zip import extract_zip
++            return extract_zip(cap, fd, parts[-1], path.as_posix(), args.get('content'), _format='tar')
+         if output_format == 'zip':
+             if path.suffix.lower() != '.zip': raise ScopeDenied()
+             from hermes_cli.friday_workspace_zip import create_zip
+@@ -1093,7 +1105,7 @@
+                                         format=profile)
+             return word.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                                format=profile, structured=output_format.endswith('_structured'))
+-        if path.suffix.lower() in {'.doc', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
++        if path.suffix.lower() in {'.doc', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+             if path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
+--- a/hermes_cli/friday_workspace_zip.py
++++ b/hermes_cli/friday_workspace_zip.py
+@@ -15,6 +15,7 @@
+ import unicodedata
+ import uuid
+ from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED, ZIP_STORED, BadZipFile
++from tools.scoped_zip import read_zip_member
+ 
+ from hermes_cli.friday_user_scope import ScopeDenied, workspace_document
+ from hermes_cli.friday_workspace_revision import check, _move
+@@ -24,6 +25,10 @@
+ MAX_ENTRIES = 128
+ MAX_DEPTH = 16
+ MAX_SECRET_SCAN = 10000000
++TAR_FORMATS = frozenset(('tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst'))
++STREAM_SUFFIXES = {'.gz': 'gzip', '.bz2': 'bzip2', '.xz': 'xz', '.zst': 'zstd'}
++STREAM_FORMATS = frozenset(STREAM_SUFFIXES.values())
++TAR_SUFFIXES = (('.tar.bz2', 'tar.bz2'), ('.tar.zst', 'tar.zst'), ('.tar.gz', 'tar.gz'), ('.tar.xz', 'tar.xz'), ('.tbz2', 'tar.bz2'), ('.tzst', 'tar.zst'), ('.tgz', 'tar.gz'), ('.txz', 'tar.xz'), ('.tar', 'tar'))
+ 
+ 
+ def _secret_name(part):
+@@ -80,7 +85,7 @@
+     return data, identity
+ 
+ 
+-def _check_secrets(data, *, depth=0, budget=None):
++def _check_secrets(data, *, depth=0, budget=None, _compression_depth=0):
+     """Reuse native secret detection without altering a user's archived bytes.
+ 
+     Inspect bounded nested ZIP document parts too (DOCX/XLSX are ZIP packages).
+@@ -96,6 +101,29 @@
+     text = data.decode('utf-8', errors='ignore')
+     if redact_sensitive_text(text, force=True, redact_url_credentials=True) != text:
+         raise ScopeDenied()
++    compression = ('gzip' if data.startswith(b'\x1f\x8b') else
++                   'bz2' if data.startswith(b'BZh') else
++                   'xz' if data.startswith(b'\xfd7zXZ\x00') else
++                   'zstd' if data.startswith(b'\x28\xb5\x2f\xfd') else None)
++    if compression is not None:
++        if _compression_depth >= 4:
++            raise ScopeDenied()
++        from tools.scoped_tar import decompress_stream, TarError
++        try:
++            unpacked = decompress_stream(data, compression)
++        except TarError:
++            raise ScopeDenied() from None
++        _check_secrets(unpacked, depth=depth, budget=budget,
++                       _compression_depth=_compression_depth + 1)
++        return
++    if len(data) >= 512 and data[257:262] == b'ustar':
++        if depth >= 2:
++            raise ScopeDenied()
++        for name, directory, payload in _tar_rows(data, 'tar'):
++            _path(name, directory=directory)
++            if not directory:
++                _check_secrets(payload, depth=depth + 1, budget=budget)
++        return
+     if data.startswith((b'PK\x03\x04', b'PK\x05\x06')):
+         if depth >= 2:
+             raise ScopeDenied()
+@@ -113,8 +141,7 @@
+                         raise ScopeDenied()
+                     if info.is_dir():
+                         continue
+-                    with nested.open(info) as stream:
+-                        part = stream.read(min(info.file_size, budget[0]) + 1)
++                    part = read_zip_member(nested, data, info, budget[0])
+                     if len(part) != info.file_size:
+                         raise ScopeDenied()
+                     _check_secrets(part, depth=depth+1, budget=budget)
+@@ -157,8 +184,7 @@
+                 total += info.file_size
+                 if total > MAX_BYTES:
+                     raise ScopeDenied()
+-                with archive.open(info) as stream:
+-                    payload = stream.read(info.file_size + 1)
++                payload = read_zip_member(archive, data, info, MAX_BYTES)
+                 if len(payload) != info.file_size:
+                     raise ScopeDenied()
+                 rows.append((name, directory, payload))
+@@ -169,6 +195,55 @@
+             return rows
+     except (BadZipFile, EOFError, OSError, RuntimeError, NotImplementedError, ValueError):
+         raise ScopeDenied() from None
++
++
++def archive_format(relative):
++    lower = relative.lower()
++    for suffix, value in TAR_SUFFIXES:
++        if lower.endswith(suffix):
++            return value
++    suffix = PurePosixPath(lower).suffix
++    return STREAM_SUFFIXES.get(suffix, suffix.lstrip('.'))
++
++
++def _stream_rows(data, relative):
++    from tools.scoped_single_stream import decode_stream, StreamError
++    format = archive_format(relative)
++    if format not in STREAM_FORMATS:
++        raise ScopeDenied()
++    # Gzip optional names are untrusted metadata. Single streams have no member
++    # registry: derive the sole extracted name from the workspace source name.
++    member = _path(PurePosixPath(relative).name.rsplit('.', 1)[0])
++    try:
++        payload = decode_stream(data, format)
++    except StreamError:
++        raise ScopeDenied() from None
++    return [(member, False, payload)]
++
++
++def _tar_rows(data, format):
++    from tools.scoped_tar import decode_tar, TarError
++    try:
++        rows = decode_tar(data, format)
++    except TarError:
++        raise ScopeDenied() from None
++    for name, directory, payload in rows:
++        if _path(name, directory=directory) != name:
++            raise ScopeDenied()
++    return rows
++
++
++def _new_tar(cap, rows, format):
++    from tools.scoped_tar import encode_tar, TarError
++    check(cap)
++    try:
++        data = encode_tar(rows, format)
++    except TarError:
++        raise ScopeDenied() from None
++    check(cap)
++    if type(data) is not bytes or len(data) > MAX_BYTES:
++        raise ScopeDenied()
++    return data
+ 
+ 
+ def _manifest(rows, prefix=''):
+@@ -316,24 +391,30 @@
+         raise ScopeDenied()
+     budget = _inline_budget()
+     data, identity = _source(cap, relative)
+-    archive_format = PurePosixPath(relative).suffix.lower().lstrip('.')
++    source_format = archive_format(relative)
+     guard = lambda: check(cap)
+-    if archive_format == '7z':
++    if source_format == '7z':
+         try:
+             rows, guard = _seven_rows(cap, data)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+-    elif archive_format == 'zip':
++    elif source_format == 'zip':
+         rows = _rows(data)
++    elif source_format in TAR_FORMATS:
++        rows = _tar_rows(data, source_format)
++    elif source_format in STREAM_FORMATS:
++        rows = _stream_rows(data, relative)
+     else:
+         raise ScopeDenied()
+     _verify(cap, [(relative, data, identity)])
+     guard()
+     start = min(offset, len(rows) + 1)
+-    result = dict(success=True, format=archive_format, path=relative,
++    result = dict(success=True, format=source_format, path=relative,
+         scope='own_user_workspace', archive_members=[], extracted=False,
+         sha256=hashlib.sha256(data).hexdigest(), total_entries=len(rows),
+         partial=start <= len(rows), next_offset=start)
++    if source_format in STREAM_FORMATS:
++        result.update(compressed_stream=True, member_name_origin='compressed_filename')
+     if not _fits(result, budget):
+         return _capacity(budget, total=len(rows), offset=start)
+     for index in range(start - 1, min(len(rows), start - 1 + limit)):
+@@ -427,7 +508,11 @@
+             data, guard = _codec(cap, 'encode', [(name, payload) for name, _, payload in rows])
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
++    elif output_format in TAR_FORMATS:
++        data = _new_tar(cap, rows, output_format)
+     else:
++        if output_format != 'zip':
++            raise ScopeDenied()
+         try:
+             data = _new_zip(cap, rows)
+         except _CodecFailure as failure:
+@@ -474,30 +559,90 @@
+     return _publish_archive(cap, fd, leaf, relative, rows, sources, '7z', budget)
+ 
+ 
++def create_tar(cap, fd, leaf, relative, content, *, format):
++    _check_parent(cap, fd, relative)
++    if format not in TAR_FORMATS or archive_format(relative) != format:
++        raise ScopeDenied()
++    entries = _object(content, 'entries')
++    if not isinstance(entries, list) or not 1 <= len(entries) <= MAX_ENTRIES:
++        raise ScopeDenied()
++    rows = []; sources = []; names = set(); total = 0
++    scan_budget = [MAX_SECRET_SCAN]
++    for entry in entries:
++        if not isinstance(entry, dict) or set(entry) != {'source', 'member'}:
++            raise ScopeDenied()
++        source = _path(entry['source']); member = _path(entry['member'])
++        if member in names:
++            raise ScopeDenied()
++        names.add(member)
++        data, identity = _source(cap, source)
++        _check_secrets(data, budget=scan_budget)
++        total += len(data)
++        if total > MAX_BYTES:
++            raise ScopeDenied()
++        sources.append((source, data, identity)); rows.append((member, False, data))
++    for name in names:
++        if any(str(parent) in names for parent in PurePosixPath(name).parents if str(parent) != '.'):
++            raise ScopeDenied()
++    return _publish_archive(cap, fd, leaf, relative, rows, sources, format, _inline_budget())
++
++
++def create_stream(cap, fd, leaf, relative, content, *, format):
++    from tools.scoped_single_stream import encode_stream, StreamError
++    _check_parent(cap, fd, relative)
++    if format not in STREAM_FORMATS or archive_format(relative) != format:
++        raise ScopeDenied()
++    source = _path(_object(content, 'source'))
++    payload, identity = _source(cap, source)
++    _check_secrets(payload)
++    check(cap)
++    try:
++        data = encode_stream(payload, format)
++    except StreamError:
++        raise ScopeDenied() from None
++    check(cap)
++    member = _path(PurePosixPath(relative).name.rsplit('.', 1)[0])
++    rows = [(member, False, payload)]
++    budget = _inline_budget()
++    receipt = dict(success=True, format=format, path=relative,
++        scope='own_user_workspace', create_only=True, verified=True,
++        bytes_written=len(data), sha256=hashlib.sha256(data).hexdigest(),
++        compressed_stream=True, member_name_origin='compressed_filename')
++    if not _fits(_omitted_receipt(receipt, rows, relative), budget):
++        return _capacity(budget)
++    sources = [(source, payload, identity)]
++    _verify(cap, sources)
++    result = json.loads(_create_bytes(cap, fd, leaf, relative, data,
++        output_format=format, verify_source=lambda: _verify(cap, sources)))
++    result.update(compressed_stream=True, member_name_origin='compressed_filename')
++    return _effect_receipt(result, rows, relative, budget)
++
++
+ def convert_archive(cap, fd, leaf, relative, content):
+     _check_parent(cap, fd, relative)
+     budget = _inline_budget()
+     source = _path(_object(content, 'source'))
+-    source_format = PurePosixPath(source).suffix.lower()
+-    output_format = PurePosixPath(relative).suffix.lower()
+-    if (source_format, output_format) not in {('.zip', '.7z'), ('.7z', '.zip')}:
++    source_format = archive_format(source)
++    output_format = archive_format(relative)
++    allowed = TAR_FORMATS | {'zip', '7z'}
++    if source_format not in allowed or output_format not in allowed or source_format == output_format:
+         raise ScopeDenied()
+     data, identity = _source(cap, source)
+     guard = lambda: check(cap)
+-    if source_format == '.7z':
++    if source_format == '7z':
+         try:
+             rows, guard = _seven_rows(cap, data)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+     else:
+-        rows = _rows(data)
++        rows = _rows(data) if source_format == 'zip' else _tar_rows(data, source_format)
+         scan_budget = [MAX_SECRET_SCAN]
+         for _, directory, payload in rows:
+             check(cap)
+             if not directory:
+                 _check_secrets(payload, budget=scan_budget)
+     return _publish_archive(cap, fd, leaf, relative, rows, [(source, data, identity)],
+-                            output_format[1:], budget, guard=guard)
++                            output_format, budget, guard=guard)
+ 
+ 
+ def _tree_snapshot(fd, rows):
+@@ -578,6 +723,13 @@
+             return _codec_failure(failure)
+     elif _format == 'zip':
+         rows = _rows(data)
++    elif _format == 'tar':
++        source_format = archive_format(source)
++        if source_format not in TAR_FORMATS:
++            raise ScopeDenied()
++        rows = _tar_rows(data, source_format)
++    elif _format == 'stream':
++        rows = _stream_rows(data, source)
+     else:
+         raise ScopeDenied()
+     def verify():
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1193,13 +1193,13 @@
+ 
+ WRITE_FILE_SCHEMA = {
+     "name": "write_file",
+-    "description": 'Native slide text: presentation_text_edit uses exactly source/slide/role/old_text/new_text into a NEW path of the same native profile. slide is one-based; role is slide or notes. Replaces one unique literal occurrence within a supported paragraph. Equally formatted OOXML split runs and plain ODF paragraphs supported; typed/cached or repeated ODF table cells, mixed formatting, fields, links, whitespace that changes native semantics, ambiguous or missing text refuse. Only selected text-element contents are rewritten; other XML bytes and archive payloads preserved. Native presentation variants: presentation_create uses slides with title/body/notes/table/chart (the ODP schema) into a NEW .pptx/.potx/.ppsx/.odp/.otp/.fodp path. presentation_convert uses exactly {"source":"deck.odp"}; the NEW output suffix selects a supported native profile or PDF. Macro and legacy binary formats excluded. presentation_edit uses {"source":"deck.otp","edit":{"slide":1,"table":1,"row":2,"column":2,"old_value":"24","new_value":"25"}} into the same native profile at a NEW path. PPTX/POTX/PPSX edit keys: slide/old_title/new_title/category/old_value/new_value; changes one title and chart datum. ODF edit changes one numeric table cell. Cross-family conversion uses isolated Office; visual fidelity not claimed. External resources, active content and conflicting flat styles refuse. PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archive: zip/7z use entries source/member and a NEW matching archive path; zip_extract/7z_extract use {source} and a NEW folder; archive_convert uses {source} for ZIP to genuine 7z or 7z to ZIP into a NEW matching .zip/.7z path. Explicit directory records cannot be encoded to 7z. Unsupported/encrypted/unsafe inputs refuse, unavailable dependency refuses; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use only pptx_pdf, odp_pptx or pptx_odp; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. ' 'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=xlsx; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. ' "For own user workspace, format=xlsx creates a NEW workbook copy changing one numeric cell; content JSON requires source, sheet, cell, expected, value. Preserves other parts/formulas, no formula recalculation. Never write spreadsheet text under .xlsx/.xls. Explicit format=docx creates a NEW .docx from short plain paragraphs (100000 UTF-8 bytes, 2000 paragraphs); existing names are refused. For preserving revisions use docx_edit with the original source; these creation modes rebuild documents. Omit format for normal text. Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
++    "description": 'Native slide text: presentation_text_edit uses exactly source/slide/role/old_text/new_text into a NEW path of the same native profile. slide is one-based; role is slide or notes. Replaces one unique literal occurrence within a supported paragraph. Equally formatted OOXML split runs and plain ODF paragraphs supported; typed/cached or repeated ODF table cells, mixed formatting, fields, links, whitespace that changes native semantics, ambiguous or missing text refuse. Only selected text-element contents are rewritten; other XML bytes and archive payloads preserved. Native presentation variants: presentation_create uses slides with title/body/notes/table/chart (the ODP schema) into a NEW .pptx/.potx/.ppsx/.odp/.otp/.fodp path. presentation_convert uses exactly {"source":"deck.odp"}; the NEW output suffix selects a supported native profile or PDF. Macro and legacy binary formats excluded. presentation_edit uses {"source":"deck.otp","edit":{"slide":1,"table":1,"row":2,"column":2,"old_value":"24","new_value":"25"}} into the same native profile at a NEW path. PPTX/POTX/PPSX edit keys: slide/old_title/new_title/category/old_value/new_value; changes one title and chart datum. ODF edit changes one numeric table cell. Cross-family conversion uses isolated Office; visual fidelity not claimed. External resources, active content and conflicting flat styles refuse. PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use only pptx_pdf, odp_pptx or pptx_odp; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. ' 'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=xlsx; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. ' "For own user workspace, format=xlsx creates a NEW workbook copy changing one numeric cell; content JSON requires source, sheet, cell, expected, value. Preserves other parts/formulas, no formula recalculation. Never write spreadsheet text under .xlsx/.xls. Explicit format=docx creates a NEW .docx from short plain paragraphs (100000 UTF-8 bytes, 2000 paragraphs); existing names are refused. For preserving revisions use docx_edit with the original source; these creation modes rebuild documents. Omit format for normal text. Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+     "parameters": {
+         "type": "object",
+         "properties": {
+             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
+             "content": {"type": "string", "description": 'For docx_pdf, JSON with exactly source (existing own-workspace DOCX). For docx_edit, JSON with exactly source, old_text, new_text; unique exact text replacement into a NEW .docx copy. ' "Complete content. With docx_structured, a JSON string {\"blocks\":[...]} using title/paragraph blocks {\"type\":\"title\",\"text\":\"Report\"}, headings {\"type\":\"heading\",\"level\":1,\"text\":\"Data\"}, and tables {\"type\":\"table\",\"rows\":[[\"Item\",\"Amount\"],[\"Work\",\"800\"]]}. Exact keys only; table cells are strings, rows rectangular (1-32 columns). 100000 UTF-8 bytes total, at most 2000 paragraphs including table cells."},
+-            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archive: zip/7z use entries source/member and a NEW matching archive path; zip_extract/7z_extract use {source} and a NEW folder; archive_convert uses {source} for ZIP to genuine 7z or 7z to ZIP into a NEW matching .zip/.7z path. Explicit directory records cannot be encoded to 7z. Unsupported/encrypted/unsafe inputs refuse, unavailable dependency refuses; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
++            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar_extract", "gzip", "bzip2", "xz", "zstd", "stream_extract", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
+             # NOTE: the handler still accepts `cross_profile` (bool) — it now
+             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
+             # rejection error teaches it. Unadvertised: the cross-PROFILE
+--- /dev/null
++++ b/tools/scoped_single_stream.py
+@@ -0,0 +1,113 @@
++"""Bounded, deterministic native single-file compression; bytes in, bytes out.
++
++One complete gzip, bzip2, XZ or Zstandard stream is accepted. The shared TAR
++decoder supplies strict EOF/trailing-data checks and bounded codec memory.
++No paths, archive members, filesystem access, subprocesses or external codecs.
++"""
++from __future__ import annotations
++
++import bz2
++import gzip
++import lzma
++import zlib
++
++from tools.scoped_tar import TarError, decompress_stream
++
++try:
++    from compression import zstd as _zstd
++except ImportError:
++    _zstd = None
++
++MAX_BYTES = 1_000_000
++FORMATS = frozenset({'gzip', 'bzip2', 'xz', 'zstd'})
++ALIASES = {'gz': 'gzip', 'bz2': 'bzip2', 'zst': 'zstd'}
++CODES = frozenset({
++    'stream_format_unsupported', 'stream_codec_unavailable',
++    'stream_input_invalid', 'stream_size_limit', 'stream_compression_invalid',
++})
++_CODEC_ERRORS = (ValueError, OSError, EOFError, zlib.error, lzma.LZMAError) + (
++    (_zstd.ZstdError,) if _zstd is not None else ())
++_TAR_ERROR_CODES = {
++    'tar_format_unsupported': 'stream_format_unsupported',
++    'tar_codec_unavailable': 'stream_codec_unavailable',
++    'tar_input_invalid': 'stream_input_invalid',
++    'tar_size_limit': 'stream_size_limit',
++    'tar_compression_invalid': 'stream_compression_invalid',
++}
++
++
++class StreamError(ValueError):
++    """A fixed safe code without input content or codec exception details."""
++
++    def __init__(self, code):
++        self.code = code if type(code) is str and code in CODES else 'stream_input_invalid'
++        super().__init__(self.code)
++
++
++def _fail(code):
++    raise StreamError(code) from None
++
++
++def normalize_format(format: str) -> str:
++    if type(format) is not str:
++        _fail('stream_format_unsupported')
++    format = ALIASES.get(format.lower(), format.lower())
++    if format not in FORMATS:
++        _fail('stream_format_unsupported')
++    return format
++
++
++def _validate(data: bytes, format: str) -> str:
++    format = normalize_format(format)
++    if type(data) is not bytes:
++        _fail('stream_input_invalid')
++    if len(data) > MAX_BYTES:
++        _fail('stream_size_limit')
++    if format == 'zstd' and _zstd is None:
++        _fail('stream_codec_unavailable')
++    return format
++
++
++def encode_stream(data: bytes, format: str) -> bytes:
++    """Encode at most 1 MB; refuse encoded output larger than 1 MB.
++
++    Gzip has zero mtime and no filename. Other codecs contain no timestamps;
++    Zstandard uses one thread and includes content size and a checksum.
++    """
++    format = _validate(data, format)
++    try:
++        if format == 'gzip':
++            encoded = gzip.compress(data, compresslevel=9, mtime=0)
++        elif format == 'bzip2':
++            encoded = bz2.compress(data, compresslevel=9)
++        elif format == 'xz':
++            encoded = lzma.compress(data, format=lzma.FORMAT_XZ,
++                                    check=lzma.CHECK_CRC64, preset=6)
++        else:
++            encoded = _zstd.compress(data, options={
++                _zstd.CompressionParameter.compression_level: 3,
++                _zstd.CompressionParameter.nb_workers: 0,
++                _zstd.CompressionParameter.content_size_flag: 1,
++                _zstd.CompressionParameter.checksum_flag: 1,
++            })
++    except _CODEC_ERRORS:
++        _fail('stream_compression_invalid')
++    if len(encoded) > MAX_BYTES:
++        _fail('stream_size_limit')
++    return encoded
++
++
++def decode_stream(data: bytes, format: str) -> bytes:
++    """Decode exactly one stream to at most 1 MB, refusing trailing bytes.
++
++    The shared decoder's temporary output is bounded at 2 MB, XZ codec memory
++    at 64 MiB and Zstandard history at 8 MiB. No partially decoded bytes escape.
++    """
++    format = _validate(data, format)
++    try:
++        decoded = decompress_stream(data, 'bz2' if format == 'bzip2' else format)
++    except TarError as exc:
++        _fail(_TAR_ERROR_CODES.get(exc.code, 'stream_compression_invalid'))
++    if len(decoded) > MAX_BYTES:
++        _fail('stream_size_limit')
++    return decoded
+--- /dev/null
++++ b/tools/scoped_tar.py
+@@ -0,0 +1,413 @@
++"""Bounded, inert POSIX USTAR/PAX archives. Pure bytes in, pure bytes out.
++
++No extraction, files, subprocesses or external codecs. One compressed stream only;
++concatenated streams and trailing compressed bytes are refused. TAR padding after
++the required two zero blocks may contain only complete, all-zero blocks.
++"""
++from __future__ import annotations
++
++import bz2
++import gzip
++import lzma
++import re
++import unicodedata
++import zlib
++
++try:
++    from compression import zstd as _zstd
++except ImportError:
++    _zstd = None
++
++_CODEC_ERRORS = (ValueError, OSError, EOFError, zlib.error, lzma.LZMAError) + (
++    (_zstd.ZstdError,) if _zstd is not None else ())
++
++MAX_BYTES = 1_000_000
++MAX_RAW = 2_000_000
++MAX_MEMBERS = 128
++MAX_DEPTH = 16
++MAX_PAX_BYTES = 16_384
++MAX_PAX_TOTAL = 65_536
++FORMATS = frozenset({'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst'})
++ALIASES = {'tgz': 'tar.gz', 'tbz2': 'tar.bz2', 'txz': 'tar.xz', 'tzst': 'tar.zst'}
++CODES = frozenset({
++    'tar_format_unsupported', 'tar_codec_unavailable', 'tar_input_invalid',
++    'tar_size_limit', 'tar_compression_invalid', 'tar_header_invalid',
++    'tar_checksum_invalid', 'tar_type_unsupported', 'tar_pax_invalid',
++    'tar_path_invalid', 'tar_duplicate_path', 'tar_path_conflict',
++    'tar_member_limit', 'tar_payload_invalid',
++})
++
++
++class TarError(ValueError):
++    """A fixed safe diagnostic code, never archive content or codec messages."""
++
++    def __init__(self, code):
++        self.code = code if code in CODES else 'tar_input_invalid'
++        super().__init__(self.code)
++
++
++def _fail(code):
++    raise TarError(code)
++
++
++def normalize_format(format):
++    if type(format) is not str:
++        _fail('tar_format_unsupported')
++    result = ALIASES.get(format.lower(), format.lower())
++    if result not in FORMATS:
++        _fail('tar_format_unsupported')
++    return result
++
++
++def _path(value, directory=False):
++    if type(value) is not str or not value:
++        _fail('tar_path_invalid')
++    try:
++        length = len(value.encode('utf-8'))
++    except UnicodeError:
++        _fail('tar_path_invalid')
++    if length > 512:
++        _fail('tar_path_invalid')
++    name = value[:-1] if directory and value.endswith('/') else value
++    parts = name.split('/')
++    if (not name or len(parts) > MAX_DEPTH
++            or name != unicodedata.normalize('NFC', name)
++            or any(c in name for c in ('\\', ':', '\x00'))
++            or any(unicodedata.category(c).startswith('C') for c in name)
++            or any(not p or p in ('.', '..') or p.startswith('.') for p in parts)):
++        _fail('tar_path_invalid')
++    for part in parts:
++        lower = part.casefold()
++        if (lower in {'credentials', 'credentials.json', 'secrets', 'secrets.json',
++                      'secrets.txt', 'token', 'token.txt', 'id_rsa', 'id_ed25519'}
++                or lower.endswith(('.pem', '.key', '.p12', '.pfx'))):
++            _fail('tar_path_invalid')
++    return name
++
++
++def _validate_rows(rows):
++    if type(rows) is not list:
++        _fail('tar_input_invalid')
++    if len(rows) > MAX_MEMBERS:
++        _fail('tar_member_limit')
++    result = []
++    names = set()
++    files = set()
++    total = 0
++    for row in rows:
++        if type(row) not in (list, tuple) or len(row) != 3:
++            _fail('tar_input_invalid')
++        name, directory, payload = row
++        if type(directory) is not bool or type(payload) is not bytes:
++            _fail('tar_payload_invalid')
++        name = _path(name, directory)
++        key = name.casefold()
++        if key in names:
++            _fail('tar_duplicate_path')
++        names.add(key)
++        if directory and payload:
++            _fail('tar_payload_invalid')
++        if not directory:
++            files.add(key)
++        total += len(payload)
++        if total > MAX_BYTES:
++            _fail('tar_size_limit')
++        result.append((name, directory, payload))
++    for key in names:
++        parts = key.split('/')
++        if any('/'.join(parts[:i]) in files for i in range(1, len(parts))):
++            _fail('tar_path_conflict')
++    return result
++
++
++def _inflate(data, format):
++    if format == 'tar':
++        return data
++    if format == 'tar.zst' and _zstd is None:
++        _fail('tar_codec_unavailable')
++    try:
++        if format == 'tar.gz':
++            dec = zlib.decompressobj(16 + zlib.MAX_WBITS)
++        elif format == 'tar.bz2':
++            dec = bz2.BZ2Decompressor()
++        elif format == 'tar.xz':
++            dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=64 * 1024**2)
++        else:
++            # 8 MiB history limit, independent of an untrusted frame declaration.
++            if not data.startswith(b'\x28\xb5\x2f\xfd'):
++                _fail('tar_compression_invalid')
++            dec = _zstd.ZstdDecompressor(
++                options={_zstd.DecompressionParameter.window_log_max: 23})
++        raw = dec.decompress(data, MAX_RAW + 1)
++        if len(raw) > MAX_RAW:
++            _fail('tar_size_limit')
++        # Incremental APIs can retain output after consuming the supplied input.
++        # Every drain has a hard remaining-output bound; there is no flush().
++        while not dec.eof:
++            if format == 'tar.gz':
++                pending = dec.unconsumed_tail
++                if not pending:
++                    _fail('tar_compression_invalid')
++            else:
++                if dec.needs_input:
++                    _fail('tar_compression_invalid')
++                pending = b''
++            part = dec.decompress(pending, MAX_RAW + 1 - len(raw))
++            if not part and not dec.eof:
++                _fail('tar_compression_invalid')
++            raw += part
++            if len(raw) > MAX_RAW:
++                _fail('tar_size_limit')
++        if dec.unused_data or (format == 'tar.gz' and dec.unconsumed_tail):
++            _fail('tar_compression_invalid')
++        return raw
++    except TarError:
++        raise
++    except _CODEC_ERRORS:
++        _fail('tar_compression_invalid')
++
++
++def decompress_stream(data: bytes, compression: str) -> bytes:
++    """Bounded single gzip/bz2/xz/zstd stream; returned bytes need not be TAR.
++
++    Intended for the existing caller's nested secret scanner. It remains the
++    caller's responsibility to bound recursive nesting and aggregate scan work.
++    """
++    mapping = {'gzip': 'tar.gz', 'bz2': 'tar.bz2', 'xz': 'tar.xz', 'zstd': 'tar.zst'}
++    if type(compression) is not str or compression not in mapping:
++        _fail('tar_format_unsupported')
++    if type(data) is not bytes:
++        _fail('tar_input_invalid')
++    if len(data) > MAX_BYTES:
++        _fail('tar_size_limit')
++    return _inflate(data, mapping[compression])
++
++
++def _number(field):
++    # No base-256, negative values, signs, embedded NULs or non-octal digits.
++    if not re.fullmatch(rb' *[0-7]+[ \x00]*|[ \x00]*', field):
++        _fail('tar_header_invalid')
++    value = field.strip(b' \x00')
++    return int(value, 8) if value else 0
++
++
++def _string(field):
++    head, separator, tail = field.partition(b'\x00')
++    if separator and any(tail):
++        _fail('tar_header_invalid')
++    try:
++        return head.decode('utf-8')
++    except UnicodeError:
++        _fail('tar_header_invalid')
++
++
++def _header(block):
++    stored = _number(block[148:156])
++    if stored != sum(block[:148]) + 8 * 32 + sum(block[156:]):
++        _fail('tar_checksum_invalid')
++    if block[257:263] != b'ustar\x00' or block[263:265] != b'00' or any(block[500:]):
++        _fail('tar_header_invalid')
++    name = _string(block[:100])
++    prefix = _string(block[345:500])
++    name = prefix + '/' + name if prefix else name
++    mode = _number(block[100:108])
++    _number(block[108:116])
++    _number(block[116:124])
++    size = _number(block[124:136])
++    _number(block[136:148])
++    link = _string(block[157:257])
++    _string(block[265:297])
++    _string(block[297:329])
++    major, minor = _number(block[329:337]), _number(block[337:345])
++    if mode > 0o777 or link or major or minor:
++        _fail('tar_header_invalid')
++    return name, block[156:157], size
++
++
++def _pax(payload):
++    allowed = {'path', 'size', 'mtime', 'atime', 'ctime', 'uid', 'gid', 'uname', 'gname'}
++    result = {}
++    offset = 0
++    while offset < len(payload):
++        space = payload.find(b' ', offset, min(offset + 8, len(payload)))
++        if space < 0:
++            _fail('tar_pax_invalid')
++        digits = payload[offset:space]
++        if not re.fullmatch(rb'[1-9][0-9]*', digits):
++            _fail('tar_pax_invalid')
++        length = int(digits)
++        end = offset + length
++        if end > len(payload) or end <= space + 2 or payload[end-1:end] != b'\n':
++            _fail('tar_pax_invalid')
++        try:
++            pair = payload[space+1:end-1].decode('utf-8')
++        except UnicodeError:
++            _fail('tar_pax_invalid')
++        key, equals, value = pair.partition('=')
++        if not equals or key not in allowed or key in result or len(result) >= 32:
++            _fail('tar_pax_invalid')
++        if key == 'path':
++            # Directory normalization happens once the following type is known.
++            if not value or len(value.encode('utf-8')) > 512:
++                _fail('tar_pax_invalid')
++        elif key in {'size', 'uid', 'gid'}:
++            if not re.fullmatch(r'[0-9]{1,24}', value):
++                _fail('tar_pax_invalid')
++        elif key in {'mtime', 'atime', 'ctime'}:
++            if not re.fullmatch(r'-?[0-9]{1,24}(\.[0-9]{1,24})?', value):
++                _fail('tar_pax_invalid')
++        elif len(value) > 256 or any(unicodedata.category(c).startswith('C') for c in value):
++            _fail('tar_pax_invalid')
++        result[key] = value
++        offset = end
++    if not result:
++        _fail('tar_pax_invalid')
++    return result
++
++
++def decode_tar(data: bytes, format: str) -> list[tuple[str, bool, bytes]]:
++    """Decode one bounded archive, preserving member order and payload bytes."""
++    format = normalize_format(format)
++    if type(data) is not bytes:
++        _fail('tar_input_invalid')
++    if len(data) > MAX_BYTES:
++        _fail('tar_size_limit')
++    raw = _inflate(data, format)
++    if len(raw) > MAX_RAW:
++        _fail('tar_size_limit')
++    if len(raw) < 1024 or len(raw) % 512:
++        _fail('tar_header_invalid')
++    rows = []
++    offset = 0
++    pending = None
++    pax_total = 0
++    total = 0
++    while offset < len(raw):
++        block = raw[offset:offset+512]
++        offset += 512
++        if block == bytes(512):
++            if pending is not None or len(raw) - offset < 512 or any(raw[offset:]):
++                _fail('tar_header_invalid')
++            return _validate_rows(rows)
++        name, kind, size = _header(block)
++        if kind not in (b'\x00', b'0', b'5', b'x'):
++            _fail('tar_type_unsupported')
++        if size > (MAX_PAX_BYTES if kind == b'x' else MAX_BYTES):
++            _fail('tar_size_limit')
++        end = offset + size
++        padded = end + (-size % 512)
++        if padded > len(raw) or any(raw[end:padded]):
++            _fail('tar_header_invalid')
++        payload = raw[offset:end]
++        offset = padded
++        if kind == b'x':
++            pax_total += size
++            if pending is not None or pax_total > MAX_PAX_TOTAL:
++                _fail('tar_pax_invalid')
++            pending = _pax(payload)
++            continue
++        if len(rows) >= MAX_MEMBERS:
++            _fail('tar_member_limit')
++        directory = kind == b'5'
++        # Both the fallback header and effective PAX path must be harmless.
++        name = _path(name, directory)
++        if pending is not None:
++            if 'size' in pending and int(pending['size']) != size:
++                _fail('tar_pax_invalid')
++            name = _path(pending.get('path', name), directory)
++            pending = None
++        if directory and size:
++            _fail('tar_payload_invalid')
++        total += size
++        if total > MAX_BYTES:
++            _fail('tar_size_limit')
++        rows.append((name, directory, payload))
++    _fail('tar_header_invalid')
++
++
++def _octal(value, width):
++    return f'{value:0{width-1}o}'.encode('ascii') + b'\x00'
++
++
++def _make_header(name, kind, size, prefix=''):
++    block = bytearray(512)
++    encoded = name.encode('ascii')
++    block[:len(encoded)] = encoded
++    block[100:108] = _octal(0o755 if kind == b'5' else 0o644, 8)
++    block[108:116] = _octal(0, 8)
++    block[116:124] = _octal(0, 8)
++    block[124:136] = _octal(size, 12)
++    block[136:148] = _octal(0, 12)
++    block[148:156] = b'        '
++    block[156:157] = kind
++    block[257:265] = b'ustar\x0000'
++    block[329:337] = _octal(0, 8)
++    block[337:345] = _octal(0, 8)
++    encoded = prefix.encode('ascii')
++    block[345:345+len(encoded)] = encoded
++    block[148:156] = f'{sum(block):06o}\x00 '.encode('ascii')
++    return bytes(block)
++
++
++def _ustar_name(name):
++    if not name.isascii():
++        return None
++    if len(name) <= 100:
++        return name, ''
++    for i in range(len(name)-1, -1, -1):
++        if name[i] == '/' and 0 < i <= 155 and 0 < len(name)-i-1 <= 100:
++            return name[i+1:], name[:i]
++    return None
++
++
++def _pax_path(name):
++    body = b' path=' + name.encode('utf-8') + b'\n'
++    length = len(body) + 1
++    while len(str(length)) + len(body) != length:
++        length = len(str(length)) + len(body)
++    return str(length).encode('ascii') + body
++
++
++def encode_tar(rows: list[tuple[str, bool, bytes]], format: str) -> bytes:
++    """Create deterministic inert USTAR/PAX and verify the complete round trip."""
++    format = normalize_format(format)
++    if format == 'tar.zst' and _zstd is None:
++        _fail('tar_codec_unavailable')
++    rows = _validate_rows(rows)
++    pieces = []
++    for index, (name, directory, payload) in enumerate(rows):
++        stored = name + '/' if directory else name
++        # A slash is conventional, not required for a directory typeflag. Keep
++        # an otherwise valid 512-byte directory path inside the same name cap.
++        if directory and len(stored.encode('utf-8')) > 512:
++            stored = name
++        parts = _ustar_name(stored)
++        if parts is None:
++            pax = _pax_path(stored)
++            pieces.extend((_make_header(f'PaxHeaders/{index:04d}', b'x', len(pax)),
++                           pax, bytes(-len(pax) % 512)))
++            parts = (f'member-{index:04d}' + ('/' if directory else ''), '')
++        basename, prefix = parts
++        pieces.extend((_make_header(basename, b'5' if directory else b'0', len(payload), prefix),
++                       payload, bytes(-len(payload) % 512)))
++    raw = b''.join(pieces) + bytes(1024)
++    if len(raw) > MAX_RAW:
++        _fail('tar_size_limit')
++    try:
++        if format == 'tar':
++            encoded = raw
++        elif format == 'tar.gz':
++            encoded = gzip.compress(raw, compresslevel=6, mtime=0)
++        elif format == 'tar.bz2':
++            encoded = bz2.compress(raw, compresslevel=6)
++        elif format == 'tar.xz':
++            encoded = lzma.compress(raw, format=lzma.FORMAT_XZ, preset=6)
++        else:
++            encoded = _zstd.compress(raw, level=3)
++    except _CODEC_ERRORS:
++        _fail('tar_compression_invalid')
++    if len(encoded) > MAX_BYTES:
++        _fail('tar_size_limit')
++    if decode_tar(encoded, format) != rows:
++        _fail('tar_payload_invalid')
++    return encoded
