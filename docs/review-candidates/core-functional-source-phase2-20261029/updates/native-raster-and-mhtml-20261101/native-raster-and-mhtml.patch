@@ -1,0 +1,1116 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -353,11 +353,15 @@
+             'member named from the compressed basename minus its final suffix; embedded header names '
+             'are ignored. This is a registry, not decoded text; use format=stream_extract into a NEW '
+             'folder, then read its returned member path. '
++            'Raster JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF returns frame geometry and pixel hashes for all pages/frames via pagination, not OCR or visual meaning. Use approved vision/OCR separately. '
++            'MHTML/MHT reads root HTML text and table order from genuine MIME multipart/related, with resource/coverage metadata. Attachments, CSS, layout and images are not rendered; external resources never fetched. '
+             'Other binary formats are unsupported; encrypted or unsupported 7z refuses. '
+             'Before replacing an existing text file, read its complete current content in this task.')
+     else:
+         function['description'] = (
+             'Own-workspace write: path + content string; choose format. '
++            'MHTML/MHT: mhtml/mht creates a NEW genuine multipart HTML archive from literal text; mhtml_structured/mht_structured uses JSON {"title":"Report","blocks":[{"type":"heading","level":1,"text":"Title"},{"type":"paragraph","text":"Text"},{"type":"table","rows":[["A","B"]]}]}. mhtml_edit/mht_edit uses exactly source/old_text/new_text for one unique visible literal match within one root HTML text run. It creates a NEW archive preserving all other MIME parts and headers. Unsupported active/ambiguous MIME/HTML refuses, no external resources are fetched. Read preserves text/table order and reports missing resources; images, CSS and layout are not rendered. '
++            'Raster images: read_file on JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF returns a complete paginated frame/pixel registry, not vision or OCR. image_transform creates a NEW JPG/JPEG/PNG/TIF/TIFF/WebP/BMP file from JSON {"source":"scan.tiff","frame":2,"rotation":90,"crop":[0,0,300,200]}. Frame is required and one-based; crop is optional in EXIF-normalized pixels, then rotation is optional clockwise 0/90/180/270 degrees. Every input frame must decode within 32 frames and 16 million total pixels; 1 MB input/output. Only pixels losslessly representable as RGBA8 are supported; high-bit-depth, floating-point and non-RGB color modes refuse. Only the chosen frame is output. Other source frames are unchanged. Derivatives contain pixels only: EXIF orientation is applied, other metadata including ICC/EXIF is omitted. JPEG is lossy; alpha to JPEG/BMP refuses. No OCR, visual interpretation or fidelity claim follows from a pixel hash. '
+             'TAR archives: format=tar/tar.gz/tar.bz2/tar.xz/tar.zst with entries source/member creates a NEW matching archive; input aliases tgz/tbz2/txz/tzst are recognized. read_file lists checked member names and hashes; format=tar_extract with {source} publishes a NEW directory. archive_convert converts ZIP/7z/TAR families into a NEW supported archive preserving member names and bytes. Links, devices, sparse/unsupported records, unsafe paths and over-limit expansion refuse. Source archives are unchanged; never execute members. '
+     'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
+             'Word DOCX/DOTX and ODF ODT/OTT/FODT: profile name creates plain text natively; '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -880,7 +880,11 @@
+                 from hermes_cli.friday_workspace_zip import read_archive
+                 return read_archive(cap, path.as_posix(), offset=args.get('offset', 1),
+                                     limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.doc', '.xls', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
++            if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif'}:
++                from hermes_cli.friday_workspace_raster import read_image
++                return read_image(cap, path.as_posix(), offset=args.get('offset', 1),
++                                  limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.mhtml', '.mht', '.doc', '.xls', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
+             extraction_metadata = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+@@ -992,7 +996,7 @@
+                 'hint': 'DOCM/DOTM support bounded inert reading only. Macro projects are '
+                         'opaque, never executed, and not accepted as safe. Creating or editing '
+                         'these profiles is unsupported; do not drop VBA or rename another format.'})
+-        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit'):
++        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit'):
+             raise ScopeDenied()
+         if output_format in ('spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert'):
+             from hermes_cli.friday_workspace_spreadsheet import execute
+@@ -1056,6 +1060,14 @@
+         if output_format == '7z_extract':
+             from hermes_cli.friday_workspace_zip import extract_zip
+             return extract_zip(cap, fd, parts[-1], path.as_posix(), args.get('content'), _format='7z')
++        if output_format in ('mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit'):
++            from hermes_cli.friday_workspace_mhtml import create
++            profile = output_format.split('_', 1)[0]
++            operation = output_format.split('_', 1)[1] if '_' in output_format else 'plain'
++            return create(cap, fd, parts[-1], path.as_posix(), args.get('content'), format=profile, operation=operation)
++        if output_format == 'image_transform':
++            from hermes_cli.friday_workspace_raster import create_transform
++            return create_transform(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format == 'archive_convert':
+             from hermes_cli.friday_workspace_zip import convert_archive
+             return convert_archive(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+@@ -1105,7 +1117,7 @@
+                                         format=profile)
+             return word.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                                format=profile, structured=output_format.endswith('_structured'))
+-        if path.suffix.lower() in {'.doc', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
++        if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.mhtml', '.mht', '.doc', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+             if path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
+--- /dev/null
++++ b/hermes_cli/friday_workspace_mhtml.py
+@@ -0,0 +1,68 @@
++"""Native inert MHTML/MHT creation and preserving new-copy text edits."""
++import hashlib
++import json
++from pathlib import PurePosixPath
++
++from hermes_cli.friday_user_scope import ScopeDenied
++from hermes_cli.friday_workspace_revision import check
++from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++from hermes_cli.friday_workspace_zip import _source, _verify, _path
++
++
++def _spec(content):
++    if type(content) is not str or len(content.encode('utf-8')) > 100_000:
++        raise ScopeDenied()
++    def pairs(items):
++        result = {}
++        for k, v in items:
++            if k in result:
++                raise ScopeDenied()
++            result[k] = v
++        return result
++    try:
++        return json.loads(content, object_pairs_hook=pairs)
++    except (ValueError, RecursionError):
++        raise ScopeDenied() from None
++
++
++def create(cap, fd, leaf, relative, content, *, format, operation):
++    from tools.scoped_mhtml import create_mhtml, edit_mhtml, MHTMLError
++    _check_parent(cap, fd, relative)
++    if format not in ('mhtml', 'mht') or PurePosixPath(relative).suffix.lower() != '.' + format:
++        raise ScopeDenied()
++    if type(content) is not str or len(content.encode('utf-8')) > 100_000:
++        raise ScopeDenied()
++    check(cap)
++    sources = []
++    if operation == 'edit':
++        spec = _spec(content)
++        if type(spec) is not dict or set(spec) != {'source', 'old_text', 'new_text'}:
++            raise ScopeDenied()
++        source = _path(spec['source'])
++        if source == relative or PurePosixPath(source).suffix.lower() not in ('.mhtml', '.mht'):
++            raise ScopeDenied()
++        data, identity = _source(cap, source)
++        sources = [(source, data, identity)]
++        try:
++            encoded = edit_mhtml(data, spec['old_text'], spec['new_text'])
++        except MHTMLError as exc:
++            return json.dumps(dict(success=False, error='document_edit_refused',
++                                   reason=exc.code, effect_disposition='none'))
++    elif operation in ('plain', 'structured'):
++        value = _spec(content) if operation == 'structured' else content
++        try:
++            encoded = create_mhtml(value, structured=operation == 'structured')
++        except MHTMLError as exc:
++            return json.dumps(dict(success=False, error='document_create_refused',
++                                   reason=exc.code, effect_disposition='none'))
++    else:
++        raise ScopeDenied()
++    check(cap)
++    _verify(cap, sources)
++    result = json.loads(_create_bytes(cap, fd, leaf, relative, encoded,
++        output_format=format, verify_source=lambda: _verify(cap, sources)))
++    if result.get('success') and sources:
++        result.update(source=sources[0][0], source_sha256=hashlib.sha256(sources[0][1]).hexdigest(),
++            replacements=1, source_unchanged=True, unchanged_parts_preserved=True,
++            edit_mode='one_literal_root_HTML_text_run')
++    return json.dumps(result, ensure_ascii=False)
+--- /dev/null
++++ b/hermes_cli/friday_workspace_raster.py
+@@ -0,0 +1,97 @@
++"""Own-workspace raster frame registry and new-file transformations."""
++import hashlib
++import json
++from pathlib import PurePosixPath
++
++from hermes_cli.friday_user_scope import ScopeDenied
++from hermes_cli.friday_workspace_revision import check
++from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++from hermes_cli.friday_workspace_zip import (
++    _source, _verify, _path, _inline_budget, _fits, _capacity, _encode,
++)
++
++
++def read_image(cap, relative, *, offset=1, limit=2000, char_offset=0):
++    from tools.scoped_raster import inspect_raster, RasterError
++    if (type(offset) is not int or not 1 <= offset <= 1_000_000
++            or type(limit) is not int or not 1 <= limit <= 2000
++            or type(char_offset) is not int or char_offset != 0):
++        raise ScopeDenied()
++    data, identity = _source(cap, relative)
++    format = PurePosixPath(relative).suffix.lower().lstrip('.')
++    try:
++        metadata = inspect_raster(data, format)
++    except RasterError:
++        raise ScopeDenied() from None
++    _verify(cap, [(relative, data, identity)])
++    check(cap)
++    frames = metadata.pop('frames')
++    start = min(offset, len(frames) + 1)
++    result = dict(metadata, success=True, path=relative, scope='own_user_workspace',
++                  image_frames=[], partial=start <= len(frames), next_offset=start)
++    budget = _inline_budget()
++    if not _fits(result, budget):
++        return _capacity(budget, total=len(frames), offset=start)
++    for i in range(start - 1, min(len(frames), start - 1 + limit)):
++        candidate = dict(result, image_frames=result['image_frames'] + [frames[i]],
++                         partial=i + 1 < len(frames), next_offset=i + 2)
++        if not _fits(candidate, budget):
++            if not result['image_frames']:
++                return _capacity(budget, total=len(frames), offset=start)
++            break
++        result = candidate
++    check(cap)
++    return _encode(result)
++
++
++def create_transform(cap, fd, leaf, relative, content):
++    from tools.scoped_raster import transform_raster, RasterError
++    _check_parent(cap, fd, relative)
++    if not isinstance(content, str) or len(content.encode('utf-8')) > 100_000:
++        raise ScopeDenied()
++    def pairs(items):
++        value = {}
++        for k, v in items:
++            if k in value:
++                raise ScopeDenied()
++            value[k] = v
++        return value
++    try:
++        spec = json.loads(content, object_pairs_hook=pairs)
++    except (ValueError, RecursionError):
++        raise ScopeDenied() from None
++    if (not isinstance(spec, dict) or not {'source', 'frame'} <= set(spec)
++            or set(spec) - {'source', 'frame', 'rotation', 'crop'}):
++        raise ScopeDenied()
++    source = _path(spec['source'])
++    data, identity = _source(cap, source)
++    output_format = PurePosixPath(relative).suffix.lower().lstrip('.')
++    input_format = PurePosixPath(source).suffix.lower().lstrip('.')
++    check(cap)
++    try:
++        encoded, metadata = transform_raster(data, input_format, output_format,
++            frame=spec['frame'], rotation=spec.get('rotation', 0), crop=spec.get('crop'))
++    except RasterError:
++        raise ScopeDenied() from None
++    check(cap)
++    # Frame details are obtained through read_file; keep the effect reply bounded
++    # before publication rather than losing its receipt after a successful write.
++    output = metadata['output']['frames'][0]
++    receipt = dict(source_sha256=hashlib.sha256(data).hexdigest(),
++        input_total_frames=len(metadata['input_frames']), selected_frame=metadata['selected_frame'],
++        rotation_clockwise=metadata['rotation_clockwise'], crop=metadata['crop'],
++        width=output['width'], height=output['height'], pixel_sha256=output['pixel_sha256'],
++        pixel_lossy=metadata['pixel_lossy'], metadata_preserved=False,
++        metadata_policy=metadata['metadata_policy'])
++    budget = _inline_budget()
++    estimate = dict(receipt, success=True, path=relative, format=output_format,
++        scope='own_user_workspace', create_only=True, verified=True,
++        bytes_written=len(encoded), sha256=hashlib.sha256(encoded).hexdigest())
++    if not _fits(estimate, budget):
++        return _capacity(budget)
++    sources = [(source, data, identity)]
++    _verify(cap, sources)
++    result = json.loads(_create_bytes(cap, fd, leaf, relative, encoded,
++        output_format=output_format, verify_source=lambda: _verify(cap, sources)))
++    result.update(receipt)
++    return _encode(result)
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1199,7 +1199,7 @@
+         "properties": {
+             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
+             "content": {"type": "string", "description": 'For docx_pdf, JSON with exactly source (existing own-workspace DOCX). For docx_edit, JSON with exactly source, old_text, new_text; unique exact text replacement into a NEW .docx copy. ' "Complete content. With docx_structured, a JSON string {\"blocks\":[...]} using title/paragraph blocks {\"type\":\"title\",\"text\":\"Report\"}, headings {\"type\":\"heading\",\"level\":1,\"text\":\"Data\"}, and tables {\"type\":\"table\",\"rows\":[[\"Item\",\"Amount\"],[\"Work\",\"800\"]]}. Exact keys only; table cells are strings, rows rectangular (1-32 columns). 100000 UTF-8 bytes total, at most 2000 paragraphs including table cells."},
+-            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar_extract", "gzip", "bzip2", "xz", "zstd", "stream_extract", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
++            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar_extract", "gzip", "bzip2", "xz", "zstd", "stream_extract", "image_transform", "mhtml", "mht", "mhtml_structured", "mht_structured", "mhtml_edit", "mht_edit", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
+             # NOTE: the handler still accepts `cross_profile` (bool) — it now
+             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
+             # rejection error teaches it. Unadvertised: the cross-PROFILE
+@@ -1540,3 +1540,9 @@
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["spreadsheet_create", "spreadsheet_edit", "spreadsheet_convert"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"]
+ READ_FILE_SCHEMA["description"] += " Native XLSX/XLTX/XLSM/XLTM/ODS/OTS/FODS reading reports its coverage; macros are opaque and never executed."
++
++_RASTER_GUIDANCE = 'Raster images: read_file on JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF returns a complete paginated frame/pixel registry, not vision or OCR. image_transform creates a NEW JPG/JPEG/PNG/TIF/TIFF/WebP/BMP file from JSON {"source":"scan.tiff","frame":2,"rotation":90,"crop":[0,0,300,200]}. Frame is required and one-based; crop is optional in EXIF-normalized pixels, then rotation is optional clockwise 0/90/180/270 degrees. Every input frame must decode within 32 frames and 16 million total pixels; 1 MB input/output. Only pixels losslessly representable as RGBA8 are supported; high-bit-depth, floating-point and non-RGB color modes refuse. Only the chosen frame is output. Other source frames are unchanged. Derivatives contain pixels only: EXIF orientation is applied, other metadata including ICC/EXIF is omitted. JPEG is lossy; alpha to JPEG/BMP refuses. No OCR, visual interpretation or fidelity claim follows from a pixel hash. '
++WRITE_FILE_SCHEMA["description"] = _RASTER_GUIDANCE + WRITE_FILE_SCHEMA["description"]
++
++_MHTML_GUIDANCE = 'MHTML/MHT: mhtml/mht creates a NEW genuine multipart HTML archive from literal text; mhtml_structured/mht_structured uses JSON {"title":"Report","blocks":[{"type":"heading","level":1,"text":"Title"},{"type":"paragraph","text":"Text"},{"type":"table","rows":[["A","B"]]}]}. mhtml_edit/mht_edit uses exactly source/old_text/new_text for one unique visible literal match within one root HTML text run. It creates a NEW archive preserving all other MIME parts and headers. Unsupported active/ambiguous MIME/HTML refuses, no external resources are fetched. Read preserves text/table order and reports missing resources; images, CSS and layout are not rendered. '
++WRITE_FILE_SCHEMA["description"] = _MHTML_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -172,7 +172,15 @@
+         raise ScopedExtractionError('input_limit')
+     if checkpoint is not None:
+         checkpoint()
+-    if format == 'doc':
++    if format in ('mhtml', 'mht'):
++        from tools.scoped_mhtml import extract_mhtml, MHTMLError
++        try:
++            text = extract_mhtml(data)
++            text.extraction_metadata = dict(text.extraction_metadata,
++                coverage='root_HTML_text_and_tables_only; attachments_images_CSS_layout_not_rendered; external_resources_not_loaded')
++        except MHTMLError as exc:
++            raise ScopedExtractionError(exc.code) from None
++    elif format == 'doc':
+         from tools.scoped_doc import extract_doc, DOCError
+         try:
+             text = extract_doc(data)
+--- /dev/null
++++ b/tools/scoped_mhtml.py
+@@ -0,0 +1,644 @@
++"""Bounded, inert MHTML/MHT read/create and preserving literal-text edits.
++
++The supported profile is a flat multipart/related MIME message with an explicit
++HTML document.  MIME start selects a Content-ID; absent start, part zero is the
++root.  No files, URLs, renderers, scripts, or external services are used.
++"""
++from __future__ import annotations
++
++import base64
++import binascii
++from email import policy
++from email.errors import MessageError
++from email.parser import BytesHeaderParser
++from html import escape, unescape
++from html.parser import HTMLParser
++import json
++import quopri
++import re
++from urllib.parse import unquote, urldefrag, urljoin, urlsplit
++
++MAX_BYTES = 1_000_000
++MAX_PARTS = 128
++MAX_NODES = 50_000
++MAX_DEPTH = 64
++MAX_HEADER = 32_768
++CHARSETS = {
++    'utf-8': 'utf-8', 'utf8': 'utf-8',
++    'us-ascii': 'ascii', 'ascii': 'ascii',
++    'iso-8859-1': 'latin-1', 'latin1': 'latin-1', 'latin-1': 'latin-1',
++    'windows-1252': 'cp1252', 'cp1252': 'cp1252',
++    'windows-1251': 'cp1251', 'cp1251': 'cp1251',
++    'koi8-r': 'koi8-r',
++}
++VOID = frozenset('area base br col embed hr img input link meta param source track wbr'.split())
++ACTIVE = frozenset('script iframe object embed form input button select textarea applet svg math portal frameset frame'.split())
++UNSUPPORTED_TEXT_MODELS = frozenset('xmp noembed noframes plaintext noscript'.split())
++BLOCK = frozenset('p div section article header footer aside blockquote h1 h2 h3 h4 h5 h6 li tr pre figure ul ol table'.split())
++HIDDEN = frozenset(('head', 'style', 'title', 'template'))
++
++
++class MHTMLError(ValueError):
++    """Finite content-free refusal codes, never document or parser messages."""
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++class DocumentText(str):
++    def __new__(cls, value, metadata):
++        result = super().__new__(cls, value)
++        result.extraction_metadata = metadata
++        result.scoped_metadata = metadata
++        return result
++
++
++def _fail(code):
++    raise MHTMLError(code)
++
++
++def _charset(value):
++    if not isinstance(value, str) or value.lower() not in CHARSETS:
++        _fail('unsupported_charset')
++    return CHARSETS[value.lower()]
++
++
++def _headers(data, offset=0):
++    match = re.search(br'\r?\n\r?\n', data)
++    if match is None or match.start() > MAX_HEADER:
++        _fail('malformed_mime_headers')
++    raw = data[:match.start()]
++    if b'\r' in raw.replace(b'\r\n', b''):
++        _fail('malformed_mime_headers')
++    lines = raw.replace(b'\r\n', b'\n').split(b'\n')
++    count = 0
++    for line in lines:
++        if not line or len(line) > 998 or any(c < 32 and c != 9 or c > 126 for c in line):
++            _fail('malformed_mime_headers')
++        if line[:1] in (b' ', b'\t'):
++            if not count:
++                _fail('malformed_mime_headers')
++        else:
++            name, colon, _ = line.partition(b':')
++            if not colon or not re.fullmatch(br'[!-9;-~]+', name):
++                _fail('malformed_mime_headers')
++            count += 1
++            if count > 100:
++                _fail('mime_header_limit')
++    try:
++        message = BytesHeaderParser(policy=policy.default).parsebytes(data[:match.end()])
++        if message.defects or any(getattr(v, 'defects', ()) for _, v in message.items()):
++            _fail('malformed_mime_headers')
++        for name in ('Content-Type', 'Content-Transfer-Encoding', 'Content-ID',
++                     'Content-Location', 'Content-Disposition', 'MIME-Version', 'Content-Encoding', 'Content-Base'):
++            if len(message.get_all(name, ())) > 1:
++                _fail('duplicate_mime_header')
++        if message.get('Content-Type') is None:
++            _fail('missing_content_type')
++        if message.get('Content-Base') is not None:
++            _fail('content_base_unsupported')
++    except (MessageError, UnicodeError, ValueError, IndexError) as exc:
++        if isinstance(exc, MHTMLError):
++            raise
++        _fail('malformed_mime_headers')
++    return message, offset + match.end()
++
++
++def _cid(value):
++    if not isinstance(value, str) or not re.fullmatch(r'<[^<>\s\x00-\x1f\x7f]+>', value):
++        _fail('invalid_content_id')
++    return value[1:-1]
++
++
++def _url(value, base=''):
++    if not isinstance(value, str) or any(ord(c) < 32 or ord(c) == 127 for c in value):
++        _fail('invalid_resource_reference')
++    try:
++        # URI resolution is string manipulation only; no resource is opened.
++        return urldefrag(urljoin(base, value))[0]
++    except ValueError:
++        _fail('invalid_resource_reference')
++
++
++def _decode_transfer(raw, encoding):
++    if encoding not in ('7bit', '8bit', 'binary', 'base64', 'quoted-printable'):
++        _fail('unsupported_transfer_encoding')
++    if encoding == '7bit' and any(c > 127 for c in raw):
++        _fail('invalid_transfer_encoding')
++    if encoding == 'base64':
++        compact = re.sub(br'[ \t\r\n]', b'', raw)
++        try:
++            result = base64.b64decode(compact, validate=True)
++        except (ValueError, binascii.Error):
++            _fail('invalid_transfer_encoding')
++    elif encoding == 'quoted-printable':
++        if b'\r' in raw.replace(b'\r\n', b''):
++            _fail('invalid_transfer_encoding')
++        for line in raw.replace(b'\r\n', b'\n').split(b'\n'):
++            if len(line) > 76 or line.endswith((b' ', b'\t')) or any(c > 126 or c < 32 and c != 9 for c in line):
++                _fail('invalid_transfer_encoding')
++        if re.search(br'=(?![0-9A-Fa-f]{2}|\r?\n)', raw):
++            _fail('invalid_transfer_encoding')
++        result = quopri.decodestring(raw)
++    else:
++        result = raw
++    if len(result) > MAX_BYTES:
++        _fail('decoded_payload_limit')
++    return result
++
++
++class _HTML(HTMLParser):
++    def __init__(self, source, charset):
++        super().__init__(convert_charrefs=False)
++        self.source, self.charset = source, charset
++        self.lines = [0] + [m.end() for m in re.finditer('\n', source)]
++        self.stack = []
++        self.nodes = self.html_count = self.head_count = self.body_count = self.images = self.tables = 0
++        self.css = self.comments = self.links = 0
++        self.out, self.runs, self.pending, self.resources = [], [], [], []
++        self.seen_end = False
++        if any(ord(c) < 32 and c not in '\t\r\n' for c in source):
++            _fail('invalid_html_text')
++        try:
++            self.feed(source)
++            self.close()
++        except (ValueError, AssertionError, RecursionError) as exc:
++            if isinstance(exc, MHTMLError):
++                raise
++            _fail('malformed_html')
++        self._flush()
++        if self.stack or self.html_count != 1 or self.body_count != 1 or not self.seen_end:
++            _fail('unsupported_html_structure')
++        self.text = '\n'.join(re.sub(r' +', ' ', line).strip() for line in ''.join(self.out).splitlines() if line.strip())
++        if len(self.text.encode('utf-8')) > MAX_BYTES:
++            _fail('text_limit')
++
++    def _position(self):
++        line, col = self.getpos()
++        return self.lines[line - 1] + col
++
++    def _visible(self):
++        return 'body' in self.stack and not any(x in HIDDEN for x in self.stack)
++
++    def _flush(self):
++        if self.pending:
++            self.runs.append(self.pending)
++            text = ''.join(unit[0] for unit in self.pending)
++            if 'pre' not in self.stack:
++                text = re.sub(r'[\t\r\n\f ]+', ' ', text)
++            # Pretty-print indentation between table cells is not a cell value.
++            if not (not text.strip() and self.stack and self.stack[-1] in
++                    ('html', 'body', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'ul', 'ol')):
++                self.out.append(text)
++            self.pending = []
++
++    def handle_starttag(self, tag, attrs):
++        self._flush()
++        self.nodes += 1
++        if self.nodes > MAX_NODES or len(self.stack) >= MAX_DEPTH or len(attrs) > 64:
++            _fail('html_structure_limit')
++        if len({key for key, _ in attrs}) != len(attrs):
++            _fail('duplicate_html_attribute')
++        attrs = {key: value or '' for key, value in attrs}
++        if tag in ACTIVE or any(key.startswith('on') or key == 'srcdoc' for key in attrs):
++            _fail('active_html_unsupported')
++        # These elements use raw text or depend on a browser's scripting mode.
++        # Escaping an edit in their body would change the requested literal text.
++        if tag in UNSUPPORTED_TEXT_MODELS:
++            _fail('unsupported_html_text_model')
++        if tag == 'base':
++            _fail('html_base_unsupported')
++        if tag == 'html':
++            if self.stack or self.seen_end:
++                _fail('unsupported_html_structure')
++            self.html_count += 1
++        elif not self.stack:
++            _fail('unsupported_html_structure')
++        if tag == 'head' and self.stack != ['html']:
++            _fail('unsupported_html_structure')
++        if self.stack == ['html'] and tag not in ('head', 'body'):
++            _fail('unsupported_html_structure')
++        if tag == 'head':
++            self.head_count += 1
++            if self.head_count != 1 or self.body_count:
++                _fail('unsupported_html_structure')
++        if tag == 'body':
++            if self.stack != ['html']:
++                _fail('unsupported_html_structure')
++            self.body_count += 1
++        if tag == 'meta':
++            if attrs.get('http-equiv', '').strip().lower() == 'refresh':
++                _fail('active_html_unsupported')
++            declared = attrs.get('charset')
++            if attrs.get('http-equiv', '').strip().lower() == 'content-type':
++                found = re.search(r'charset\s*=\s*[\"\']?([^\s;\"\']+)', attrs.get('content', ''), re.I)
++                if found:
++                    declared = found[1]
++            if declared and _charset(declared) != self.charset:
++                _fail('conflicting_html_charset')
++        if tag == 'style' or 'style' in attrs:
++            self.css += 1
++        if tag == 'link' and 'stylesheet' in attrs.get('rel', '').lower().split():
++            self.css += 1
++        for key, value in attrs.items():
++            if key in ('src', 'href', 'poster', 'background', 'data', 'action', 'formaction') and value is not None:
++                try:
++                    scheme = urlsplit(value.strip()).scheme.lower()
++                except ValueError:
++                    _fail('invalid_resource_reference')
++                if scheme in ('javascript', 'vbscript'):
++                    _fail('active_html_unsupported')
++                if key == 'href' and tag in ('a', 'area'):
++                    self.links += 1
++                else:
++                    self.resources.append(value)
++            if key in ('srcset', 'imagesrcset'):
++                # Intentionally not parsed as a CSS/HTML resource selection engine.
++                self.css += 1
++        if self._visible():
++            if tag in BLOCK or tag in ('br', 'hr'):
++                self.out.append('\n')
++            if tag == 'img':
++                self.images += 1
++                if attrs.get('alt'):
++                    self.out.append('[image alt: ' + attrs['alt'] + ']')
++            if tag == 'table':
++                self.tables += 1
++        if tag not in VOID:
++            self.stack.append(tag)
++
++    def handle_startendtag(self, tag, attrs):
++        if tag not in VOID:
++            _fail('unsupported_html_structure')
++        self.handle_starttag(tag, attrs)
++
++    def handle_endtag(self, tag):
++        self._flush()
++        if not self.stack or self.stack[-1] != tag:
++            _fail('unsupported_html_structure')
++        if self._visible():
++            if tag in ('td', 'th'):
++                self.out.append('\t')
++            if tag in BLOCK:
++                self.out.append('\n')
++        self.stack.pop()
++        if tag == 'html':
++            self.seen_end = True
++
++    def handle_data(self, data):
++        if '\x00' in data or any(ord(c) < 32 and c not in '\t\r\n' for c in data):
++            _fail('invalid_html_text')
++        if self._visible():
++            pos = self._position()
++            self.pending.append((data, pos, pos + len(data), True))
++        elif not any(x in HIDDEN for x in self.stack) and data.strip('\ufeff \t\r\n'):
++            _fail('unsupported_html_structure')
++
++    def _entity(self, prefix, name):
++        pos = self._position()
++        size = len(prefix) + len(name)
++        if self.source[pos + size:pos + size + 1] == ';':
++            size += 1
++        raw = self.source[pos:pos + size]
++        if self._visible():
++            self.pending.append((unescape(raw), pos, pos + size, False))
++        elif not any(x in HIDDEN for x in self.stack) and unescape(raw).strip('\ufeff \t\r\n'):
++            _fail('unsupported_html_structure')
++
++    def handle_entityref(self, name):
++        self._entity('&', name)
++
++    def handle_charref(self, name):
++        self._entity('&#', name)
++
++    def handle_comment(self, data):
++        self._flush()
++        self.comments += 1
++
++    def handle_decl(self, decl):
++        self._flush()
++        if self.html_count or decl.lower().strip() != 'doctype html':
++            _fail('unsupported_html_declaration')
++
++    def unknown_decl(self, data):
++        _fail('unsupported_html_declaration')
++
++    def handle_pi(self, data):
++        _fail('unsupported_html_declaration')
++
++
++class _Package:
++    def __init__(self, data):
++        if type(data) is not bytes or not data or len(data) > MAX_BYTES:
++            _fail('input_limit')
++        self.data = data
++        self.headers, body = _headers(data)
++        if self.headers.get_content_type() != 'multipart/related':
++            _fail('unsupported_mime_type')
++        if str(self.headers.get('MIME-Version', '')) != '1.0':
++            _fail('unsupported_mime_version')
++        if str(self.headers.get('Content-Transfer-Encoding', '7bit')).lower() not in ('7bit', '8bit', 'binary'):
++            _fail('unsupported_transfer_encoding')
++        boundary = self.headers.get_boundary()
++        if not boundary or not re.fullmatch(r"[0-9A-Za-z'()+_,./:=? -]{1,70}", boundary) or boundary.endswith(' '):
++            _fail('invalid_mime_boundary')
++        self.boundary = boundary
++        pattern = br'(?m)^--' + re.escape(boundary.encode('ascii')) + br'(--)?[ \t]*(?:\r?\n|$)'
++        markers = list(re.finditer(pattern, data[body:]))
++        if (len(markers) < 2 or len(markers) > MAX_PARTS + 1 or markers[0][1]
++                or not markers[-1][1] or any(m[1] for m in markers[:-1])):
++            _fail('malformed_multipart')
++        self.parts = []
++        ids, locations = set(), set()
++        decoded = 0
++        for left, right in zip(markers, markers[1:]):
++            start, end = body + left.end(), body + right.start()
++            if data[end - 2:end] == b'\r\n':
++                end -= 2
++            elif data[end - 1:end] == b'\n':
++                end -= 1
++            else:
++                _fail('malformed_multipart')
++            headers, payload_start = _headers(data[start:end], start)
++            mime = headers.get_content_type()
++            if mime.startswith(('multipart/', 'message/')):
++                _fail('nested_mime_unsupported')
++            if headers.get('Content-Encoding') is not None:
++                _fail('content_encoding_unsupported')
++            cid = _cid(str(headers['Content-ID'])) if headers.get('Content-ID') is not None else None
++            location = _url(str(headers['Content-Location'])) if headers.get('Content-Location') is not None else None
++            for key, seen in ((cid, ids), (location, locations)):
++                if key is not None:
++                    if key.casefold() in seen:
++                        _fail('duplicate_mime_identity')
++                    seen.add(key.casefold())
++            encoding = str(headers.get('Content-Transfer-Encoding', '7bit')).lower()
++            payload = _decode_transfer(data[payload_start:end], encoding)
++            decoded += len(payload)
++            if decoded > MAX_BYTES:
++                _fail('decoded_payload_limit')
++            self.parts.append(dict(headers=headers, mime=mime, cid=cid, location=location,
++                                   encoding=encoding, payload=payload, start=payload_start, end=end))
++        start = self.headers.get_param('start')
++        if start is not None:
++            target = _cid(start)
++            roots = [i for i, p in enumerate(self.parts) if p['cid'] == target]
++            if len(roots) != 1:
++                _fail('missing_or_ambiguous_root')
++            self.root_index = roots[0]
++        else:
++            self.root_index = 0
++        self.root = self.parts[self.root_index]
++        if self.root['mime'] != 'text/html':
++            _fail('unsupported_root_type')
++        declared_type = self.headers.get_param('type')
++        if declared_type is not None and declared_type.lower() != self.root['mime']:
++            _fail('conflicting_root_type')
++        if self.root['headers'].get_content_disposition() == 'attachment':
++            _fail('unsupported_root_disposition')
++        self.charset = _charset(self.root['headers'].get_content_charset('us-ascii'))
++        try:
++            self.source = self.root['payload'].decode(self.charset)
++        except UnicodeError:
++            _fail('invalid_charset_payload')
++        self.html = _HTML(self.source, self.charset)
++        self.decoded_bytes = decoded
++        self._resources()
++
++    def _resources(self):
++        top_location = str(self.headers.get('Content-Location', ''))
++        base = _url(self.root['location'] or '', top_location)
++        locations = set()
++        ids = {p['cid'] for p in self.parts if p['cid'] is not None}
++        for part in self.parts:
++            if part['location'] is not None:
++                key = base if part is self.root else _url(part['location'], base)
++                if key in locations:
++                    _fail('duplicate_mime_identity')
++                locations.add(key)
++        self.embedded = self.missing = self.remote = self.inline = 0
++        for value in self.html.resources:
++            key = _url(value, base)
++            try:
++                parsed = urlsplit(key)
++            except ValueError:
++                _fail('invalid_resource_reference')
++            if parsed.scheme.lower() == 'cid':
++                try:
++                    target = unquote(parsed.path, encoding='utf-8', errors='strict')
++                except UnicodeError:
++                    _fail('invalid_resource_reference')
++                found = target in ids
++            elif parsed.scheme.lower() == 'data':
++                self.inline += 1
++                continue
++            else:
++                found = key in locations
++            if found:
++                self.embedded += 1
++            else:
++                self.missing += 1
++                if parsed.scheme.lower() in ('http', 'https', 'ftp') or parsed.netloc:
++                    self.remote += 1
++
++    def metadata(self):
++        return {
++            'format': 'mhtml', 'profile': 'flat_multipart_related_html_v1',
++            'root_selection': 'start_content_id' if self.headers.get_param('start') is not None else 'first_part',
++            'part_count': len(self.parts), 'root_index': self.root_index,
++            'charset': self.charset, 'transfer_encoding': self.root['encoding'],
++            'decoded_payload_bytes': self.decoded_bytes,
++            'table_count': self.html.tables, 'image_count': self.html.images,
++            'embedded_resource_references': self.embedded,
++            'missing_resource_references': self.missing,
++            'remote_unresolved_resource_references': self.remote,
++            'inline_data_resources_ignored': self.inline,
++            'resource_reference_inventory_complete': not bool(self.html.css),
++            'css_constructs_not_evaluated': self.html.css,
++            'comments_not_evaluated': self.html.comments,
++            'hyperlinks_not_followed': self.html.links,
++            'limitations': ['css_and_visual_layout_not_evaluated', 'images_and_other_attachments_not_rendered',
++                            'external_resources_never_fetched', 'comments_not_evaluated',
++                            'strict_explicit_html_structure'],
++        }
++
++
++def extract_mhtml(data):
++    """Return DocumentText (a str) with extraction_metadata and scoped_metadata."""
++    package = _Package(data)
++    return DocumentText(package.html.text, package.metadata())
++
++
++def _text(value):
++    if type(value) is not str or any(ord(c) < 32 and c not in '\t\r\n' for c in value):
++        _fail('invalid_content')
++    try:
++        if len(value.encode('utf-8')) > MAX_BYTES:
++            _fail('content_limit')
++    except UnicodeError:
++        _fail('invalid_content')
++    return value
++
++
++def create_mhtml(content, structured=False):
++    """Create safe UTF-8 MHTML. Plain input is text; structured input is a dict.
++
++    Dict schema: {"title": str, "blocks": [{"type":"paragraph","text":str},
++    {"type":"heading","level":1..6,"text":str},
++    {"type":"table","rows":[[str,...],...]}]}. No arbitrary HTML or resources.
++    """
++    if type(structured) is not bool:
++        _fail('invalid_content')
++    used = 0
++    def safe(value):
++        nonlocal used
++        result = escape(_text(value), quote=False)
++        used += len(result.encode('utf-8'))
++        if used > MAX_BYTES:
++            _fail('content_limit')
++        return result
++    title = 'Document'
++    pieces = []
++    if not structured:
++        value = _text(content)
++        lines = value.splitlines() or ['']
++        if len(lines) > 8192:
++            _fail('content_limit')
++        pieces = ['<p>' + safe(line) + '</p>' for line in lines]
++    else:
++        if type(content) is str:
++            _text(content)
++            try:
++                content = json.loads(content)
++            except (ValueError, RecursionError):
++                _fail('invalid_content')
++        if type(content) is not dict or set(content) - {'title', 'blocks'}:
++            _fail('invalid_content')
++        title = safe(content.get('title', 'Document'))
++        blocks = content.get('blocks')
++        if type(blocks) is not list or not 1 <= len(blocks) <= 8192:
++            _fail('invalid_content')
++        cells = 0
++        for block in blocks:
++            if type(block) is not dict:
++                _fail('invalid_content')
++            kind = block.get('type')
++            if kind in ('paragraph', 'heading'):
++                keys = {'type', 'text'} if kind == 'paragraph' else {'type', 'text', 'level'}
++                if set(block) != keys:
++                    _fail('invalid_content')
++                tag = 'p'
++                if kind == 'heading':
++                    level = block['level']
++                    if type(level) is not int or not 1 <= level <= 6:
++                        _fail('invalid_content')
++                    tag = 'h' + str(level)
++                pieces.append('<' + tag + '>' + safe(block['text']) + '</' + tag + '>')
++            elif kind == 'table':
++                rows = block.get('rows')
++                if set(block) != {'type', 'rows'} or type(rows) is not list or not 1 <= len(rows) <= 4096:
++                    _fail('invalid_content')
++                width = None
++                pieces.append('<table>')
++                for row in rows:
++                    if type(row) is not list or not 1 <= len(row) <= 128 or width is not None and len(row) != width:
++                        _fail('invalid_content')
++                    width = len(row)
++                    cells += width
++                    if cells > 8192:
++                        _fail('content_limit')
++                    pieces.append('<tr>' + ''.join('<td>' + safe(cell) + '</td>' for cell in row) + '</tr>')
++                pieces.append('</table>')
++            else:
++                _fail('invalid_content')
++            if sum(map(len, pieces)) > MAX_BYTES:
++                _fail('content_limit')
++    source = ('<!doctype html><html><head><meta charset="utf-8"><title>' + title
++              + '</title></head><body>' + ''.join(pieces) + '</body></html>').encode('utf-8')
++    encoded = base64.b64encode(source)
++    boundary = '----FridayNativeMHTML-1'
++    payload = b'\r\n'.join(encoded[i:i + 76] for i in range(0, len(encoded), 76))
++    result = (b'MIME-Version: 1.0\r\nContent-Type: multipart/related; type="text/html";\r\n'
++              b' boundary="' + boundary.encode() + b'"; start="<root@friday.invalid>"\r\n\r\n--'
++              + boundary.encode() + b'\r\nContent-Type: text/html; charset="utf-8"\r\n'
++              b'Content-ID: <root@friday.invalid>\r\nContent-Transfer-Encoding: base64\r\n\r\n'
++              + payload + b'\r\n--' + boundary.encode() + b'--\r\n')
++    if len(result) > MAX_BYTES:
++        _fail('output_limit')
++    _Package(result)
++    return result
++
++
++def _boundary(units, offset):
++    cursor = 0
++    for decoded, start, end, literal in units:
++        next_cursor = cursor + len(decoded)
++        if offset == cursor:
++            return start
++        if cursor < offset < next_cursor:
++            if not literal:
++                _fail('edit_splits_character_reference')
++            return start + offset - cursor
++        if offset == next_cursor:
++            return end
++        cursor = next_cursor
++    _fail('edit_text_not_found')
++
++
++def _encode_transfer(payload, encoding, old):
++    newline = b'\r\n' if b'\r\n' in old else b'\n'
++    if encoding == 'base64':
++        compact = base64.b64encode(payload)
++        return newline.join(compact[i:i + 76] for i in range(0, len(compact), 76))
++    if encoding == 'quoted-printable':
++        # Encode hard line endings as bytes too, preserving decoded HTML exactly.
++        chunks = [b''.join(b'=%02X' % c for c in payload[i:i + 25]) for i in range(0, len(payload), 25)]
++        return (b'=' + newline).join(chunks)
++    if encoding == '7bit' and any(c > 127 for c in payload):
++        _fail('edit_unrepresentable_transfer_encoding')
++    return payload
++
++
++def edit_mhtml(data, old_text, new_text):
++    """Replace one unique visible literal occurrence in one HTML text run.
++
++    Markup/attribute/cross-tag replacements are refused. Entity boundaries cannot
++    be split. The MIME envelope and every other part stay byte-for-byte identical;
++    only the selected root transfer payload is re-encoded. Source bytes are inert.
++    """
++    old_text, new_text = _text(old_text), _text(new_text)
++    if not old_text:
++        _fail('edit_empty_search')
++    package = _Package(data)
++    matches = []
++    for units in package.html.runs:
++        text = ''.join(unit[0] for unit in units)
++        offset = text.find(old_text)
++        while offset >= 0:
++            matches.append((units, offset))
++            if len(matches) > 1:
++                _fail('edit_text_ambiguous')
++            offset = text.find(old_text, offset + 1)
++    if not matches:
++        _fail('edit_text_not_found')
++    units, offset = matches[0]
++    start, end = _boundary(units, offset), _boundary(units, offset + len(old_text))
++    replacement = escape(new_text, quote=False)
++    try:
++        encoding = 'ascii' if package.root['encoding'] == '7bit' else package.charset
++        replacement = replacement.encode(encoding, 'xmlcharrefreplace').decode(encoding)
++        updated = (package.source[:start] + replacement + package.source[end:]).encode(package.charset)
++    except UnicodeError:
++        _fail('invalid_content')
++    root = package.root
++    encoded = _encode_transfer(updated, root['encoding'], data[root['start']:root['end']])
++    candidate = data[:root['start']] + encoded + data[root['end']:]
++    if len(candidate) > MAX_BYTES:
++        _fail('output_limit')
++    verified = _Package(candidate)
++    if verified.root['payload'] != updated or len(verified.parts) != len(package.parts):
++        _fail('edit_verification_failed')
++    for index, (before, after) in enumerate(zip(package.parts, verified.parts)):
++        if index != package.root_index and before['payload'] != after['payload']:
++            _fail('edit_verification_failed')
++    return candidate
+--- /dev/null
++++ b/tools/scoped_raster.py
+@@ -0,0 +1,189 @@
++"""Bounded local raster inspection and explicit single-frame transformations.
++
++No vision/OCR claim, network, file access, external codecs or metadata execution.
++Every input frame is decoded and accounted for before a derivative is returned.
++Only pixel modes losslessly representable as RGBA8 are accepted.
++Derivatives normalize EXIF orientation and intentionally contain pixels only.
++"""
++from io import BytesIO
++import hashlib
++import warnings
++
++MAX_BYTES = 1_000_000
++MAX_PIXELS = 16_000_000
++MAX_FRAMES = 32
++FORMATS = {'jpg': 'JPEG', 'jpeg': 'JPEG', 'png': 'PNG', 'tif': 'TIFF',
++           'tiff': 'TIFF', 'webp': 'WEBP', 'bmp': 'BMP', 'gif': 'GIF'}
++OUTPUTS = frozenset(FORMATS) - {'gif'}
++PIXEL_MODES = frozenset(('1', 'L', 'LA', 'P', 'PA', 'RGB', 'RGBA', 'RGBX'))
++
++
++class RasterError(ValueError):
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++def _fail(code):
++    raise RasterError(code) from None
++
++
++def _pillow():
++    try:
++        from PIL import Image, ImageOps
++    except ImportError:
++        _fail('image_codec_unavailable')
++    return Image, ImageOps
++
++
++def _validate(data, format):
++    if type(data) is not bytes or not 1 <= len(data) <= MAX_BYTES:
++        _fail('image_input_limit')
++    if type(format) is not str or format not in FORMATS:
++        _fail('image_format_unsupported')
++
++
++def _opened(data, format):
++    Image, _ = _pillow()
++    image = Image.open(BytesIO(data), formats=list(set(FORMATS.values())))
++    if image.format != FORMATS[format]:
++        image.close()
++        _fail('image_format_mismatch')
++    return image
++
++
++def _frames(data, format, selected=None):
++    Image, ImageOps = _pillow()
++    _validate(data, format)
++    with warnings.catch_warnings():
++        warnings.simplefilter('error', Image.DecompressionBombWarning)
++        with _opened(data, format) as initial:
++            initial.verify()
++        with _opened(data, format) as image:
++            count = getattr(image, 'n_frames', 1)
++            if type(count) is not int or not 1 <= count <= MAX_FRAMES:
++                _fail('image_frame_limit')
++            if selected is not None and (type(selected) is not int or not 1 <= selected <= count):
++                _fail('image_frame_invalid')
++            total = 0
++            rows = []
++            chosen = None
++            for i in range(count):
++                image.seek(i)
++                width, height = image.size
++                # Pillow exposes oriented TIFF geometry before load(), unlike
++                # JPEG/PNG. Keep physical IFD dimensions distinct from pixels.
++                if image.format == 'TIFF':
++                    width = image.tag_v2.get(256)
++                    height = image.tag_v2.get(257)
++                    bits = image.tag_v2.get(258, (1,))
++                    bits = bits if isinstance(bits, tuple) else (bits,)
++                    if any(type(v) is not int or not 1 <= v <= 8 for v in bits):
++                        _fail('image_pixel_mode_unsupported')
++                # RGB 16-bit PNG is reduced to RGB8 by Pillow before exposing
++                # mode. Refuse that reduction as well as high-precision modes.
++                if (image.mode not in PIXEL_MODES
++                        or image.format == 'PNG' and data[24] > 8):
++                    _fail('image_pixel_mode_unsupported')
++                if type(width) is not int or type(height) is not int:
++                    _fail('image_pixel_limit')
++                total += width * height
++                if width < 1 or height < 1 or total > MAX_PIXELS:
++                    _fail('image_pixel_limit')
++                orientation = image.getexif().get(274, 1)
++                if type(orientation) is not int or orientation not in range(1, 9):
++                    _fail('image_orientation_unsupported')
++                image.load()
++                if image.mode not in PIXEL_MODES:
++                    _fail('image_pixel_mode_unsupported')
++                normalized = ImageOps.exif_transpose(image).convert('RGBA')
++                pixels = normalized.tobytes()
++                rows.append(dict(frame=i + 1, width=normalized.width, height=normalized.height,
++                    stored_width=width, stored_height=height, orientation=orientation,
++                    pixel_sha256=hashlib.sha256(pixels).hexdigest()))
++                if selected == i + 1:
++                    chosen = normalized.copy()
++                normalized.close()
++            return rows, chosen
++
++
++def inspect_raster(data, format):
++    try:
++        rows, _ = _frames(data, format)
++        return dict(format=format, frames=rows, total_frames=len(rows),
++            source_sha256=hashlib.sha256(data).hexdigest(),
++            coverage='all_decoded_frame_geometry_and_pixels_only',
++            vision_performed=False, ocr_performed=False, orientation_normalized=True)
++    except RasterError:
++        raise
++    except Exception:
++        _fail('image_decode_failed')
++
++
++def transform_raster(data, input_format, output_format, *, frame, rotation=0, crop=None):
++    """Return one explicitly selected oriented frame, with optional crop/rotation."""
++    _validate(data, input_format)
++    if output_format not in OUTPUTS:
++        _fail('image_output_format_unsupported')
++    if type(rotation) is not int or rotation not in (0, 90, 180, 270):
++        _fail('image_rotation_invalid')
++    image = None
++    try:
++        rows, image = _frames(data, input_format, selected=frame)
++        if crop is not None:
++            if (type(crop) is not list or len(crop) != 4
++                    or any(type(v) is not int for v in crop)):
++                _fail('image_crop_invalid')
++            left, top, right, bottom = crop
++            if not (0 <= left < right <= image.width and 0 <= top < bottom <= image.height):
++                _fail('image_crop_invalid')
++            changed = image.crop((left, top, right, bottom))
++            image.close()
++            image = changed
++        if rotation:
++            # User-facing rotation is clockwise in degrees, without interpolation.
++            Image, _ = _pillow()
++            method = {90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180,
++                      270: Image.Transpose.ROTATE_90}[rotation]
++            changed = image.transpose(method)
++            image.close()
++            image = changed
++        target = FORMATS[output_format]
++        if target in ('JPEG', 'BMP'):
++            if image.getextrema()[3] != (255, 255):
++                _fail('image_alpha_not_supported')
++            changed = image.convert('RGB')
++            image.close()
++            image = changed
++        # Copy only pixels: no active/original EXIF, ICC, text, or location metadata.
++        Image, _ = _pillow()
++        clean = Image.frombytes(image.mode, image.size, image.tobytes())
++        try:
++            output = BytesIO()
++            options = {'lossless': True, 'exact': True} if target == 'WEBP' else {}
++            if target == 'JPEG':
++                options = {'quality': 95, 'subsampling': 0}
++            clean.save(output, format=target, **options)
++            encoded = output.getvalue()
++            if len(encoded) > MAX_BYTES:
++                _fail('image_output_limit')
++            check = inspect_raster(encoded, output_format)
++            if check['total_frames'] != 1 or (check['frames'][0]['width'], check['frames'][0]['height']) != clean.size:
++                _fail('image_output_verification_failed')
++            expected = hashlib.sha256(clean.convert('RGBA').tobytes()).hexdigest()
++            lossy = target == 'JPEG'
++            if not lossy and check['frames'][0]['pixel_sha256'] != expected:
++                _fail('image_output_verification_failed')
++            return encoded, dict(input_frames=rows, selected_frame=frame,
++                rotation_clockwise=rotation, crop=crop, output=check,
++                pixel_lossy=lossy, metadata_preserved=False,
++                metadata_policy='pixels_only; EXIF_orientation_applied; other_metadata_omitted')
++        finally:
++            clean.close()
++    except RasterError:
++        raise
++    except Exception:
++        _fail('image_transform_failed')
++    finally:
++        if image is not None:
++            image.close()
