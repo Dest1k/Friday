@@ -1,0 +1,762 @@
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -914,13 +914,13 @@
+                 return json.dumps({'success': False, 'error': 'document_extraction_failed',
+                     'format': path.suffix.lower().lstrip('.'), 'reason': 'unsupported_proprietary_diagram',
+                     'hint': 'Export to genuine ODG/OTG/FODG for bounded declared-connector reading; Legacy/binary Visio formats are unsupported.'})
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.vsdx', '.vstx', '.vsd', '.vst', '.vdx', '.vsdm', '.vstm', '.vss', '.vssx', '.vssm', '.mhtml', '.mht', '.doc', '.dot', '.xls', '.xlsb', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp', '.odg', '.otg', '.fodg'} else None
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.vsdx', '.vstx', '.vsd', '.vst', '.vdx', '.vsdm', '.vstm', '.vss', '.vssx', '.vssm', '.mhtml', '.mht', '.doc', '.dot', '.xls', '.xlsb', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp', '.odg', '.otg', '.fodg', '.odb'} else None
+             extraction_metadata = None
+             encryption_metadata = None
+             source_sha256 = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+-                identity_required = document_format in OOXML_PASSWORD_FORMATS or document_format in ('pdf','odt','ott','ods','ots','odp','otp')
++                identity_required = document_format in OOXML_PASSWORD_FORMATS or document_format in ('pdf','odt','ott','ods','ots','odp','otp','odb')
+                 document_snapshot = workspace_document(str(root / path), max_bytes=1000000,
+                                                        with_identity=identity_required)
+                 data = document_snapshot[0]
+@@ -931,7 +931,7 @@
+                                                       with_identity=True)
+                         if observed != document_snapshot:
+                             raise ScopeDenied()
+-                if document_format in ('docx', 'dotx', 'pdf', 'odt', 'ott', 'fodt'):
++                if document_format in ('docx', 'dotx', 'pdf', 'odt', 'ott', 'fodt', 'odb'):
+                     source_sha256 = hashlib.sha256(data).hexdigest()
+                 revision.check(cap)
+                 try:
+@@ -1281,10 +1281,14 @@
+                                         format=profile)
+             return word.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                                format=profile, structured=output_format.endswith('_structured'))
+-        if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.mhtml', '.mht', '.doc', '.dot', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.xlsb', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.rar', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp', '.odg', '.otg', '.fodg'}:
++        if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.mhtml', '.mht', '.doc', '.dot', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.xlsb', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.rar', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp', '.odg', '.otg', '.fodg', '.odb'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+-            if path.suffix.lower() in {'.odg', '.fodg'}:
++            if path.suffix.lower() == '.odb':
++                refusal['hint'] = ('ODB supports bounded read-only declared metadata. '
++                    'Creation, editing, conversion, export and stored-row access are unsupported; '
++                    'do not write plain text or rename another format under this suffix.')
++            elif path.suffix.lower() in {'.odg', '.fodg'}:
+                 refusal['hint'] = ('ODG/FODG supports bounded read-only object and declared connector inventories. '
+                     'Use format=diagram_create with an explicit bounded pages/nodes/connectors request and a NEW .odg/.fodg path. Source editing, conversion and rendering are unsupported; do not write plain text or rename another format.')
+             elif path.suffix.lower() == '.otg':
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -29,7 +29,7 @@
+ __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_bytes",
+            "extract_document_text", "is_extractable_document"]
+ 
+-EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".xlsb", ".odg", ".otg", ".fodg", ".db", ".sqlite", ".sqlite3", ".vsdx", ".vstx"})
++EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".xlsb", ".odg", ".otg", ".fodg", ".odb", ".db", ".sqlite", ".sqlite3", ".vsdx", ".vstx"})
+ ANYDOC_EXTENSIONS = frozenset({
+     ".doc", ".docm", ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+     ".xls", ".xlsm", ".odt", ".ods", ".odp", ".rtf", ".epub", ".pdf"})
+@@ -129,8 +129,8 @@
+ 
+ def extract_document_text(path: str) -> str:
+     ext = _extension(path)
+-    if ext in (".xlsb", ".odg", ".otg", ".fodg", ".vsdx", ".vstx"):
+-        # XLSB and diagrams are always native and bounded, including outside the scoped lane.
++    if ext in (".xlsb", ".odg", ".otg", ".fodg", ".odb", ".vsdx", ".vstx"):
++        # XLSB, diagrams and ODB metadata are native and bounded in every lane.
+         # Read one extra byte so the same pure-module input limit remains exact.
+         with open(path, "rb") as source:
+             return extract_scoped_document_bytes(source.read(1000001), ext[1:])
+@@ -145,7 +145,7 @@
+     """Extract a document already fetched across a file backend boundary."""
+     _check_size(len(data), MAX_DOCUMENT_BYTES)
+     ext = _extension(path)
+-    if ext in (".xlsb", ".odg", ".otg", ".fodg", ".vsdx", ".vstx"):
++    if ext in (".xlsb", ".odg", ".otg", ".fodg", ".odb", ".vsdx", ".vstx"):
+         return extract_scoped_document_bytes(data, ext[1:])
+     if ext in ANYDOC_EXTENSIONS:
+         return _extract_anydoc_bytes(data, path)
+@@ -171,6 +171,7 @@
+     separate notes and coverage. Macro projects remain opaque and are never run.
+     DOCX/DOTX and inert DOCM/DOTM require their genuine native main content type.
+     ODG/OTG/FODG exposes declared diagram topology without rendering.
++    ODB exposes declared database metadata without connections or SQL execution.
+     ODT/OTT/FODT use bounded native text-document profiles. XLSX retains its bounded parser. PDF keeps the existing installed
+     anydoc text route, with a bounded networkless local OCR fallback only for
+     its scanned-page signal. OCR returns a string-compatible trusted metadata
+@@ -224,6 +225,12 @@
+         try:
+             text = extract_xlsb(data, checkpoint=checkpoint)
+         except XLSBExtractionError as exc:
++            raise ScopedExtractionError(exc.code) from None
++    elif format == 'odb':
++        from tools.scoped_odb import extract_database, ODBError
++        try:
++            text = extract_database(data, format, checkpoint=checkpoint)
++        except ODBError as exc:
+             raise ScopedExtractionError(exc.code) from None
+     elif format in ('odg', 'otg', 'fodg'):
+         from tools.scoped_odg import extract_diagram, ODGError
+--- /dev/null
++++ b/tools/scoped_odb.py
+@@ -0,0 +1,393 @@
++"""Bounded, non-executing OpenDocument database declaration view.
++
++This reads ODF XML declarations, never a database engine. Table representations
++are not schemas; schemas are not stored rows. Embedded HSQL/Firebird payloads,
++SQL text, credentials, connection settings and component bodies remain opaque.
++"""
++from __future__ import annotations
++
++import io
++import json
++import re
++import struct
++import zipfile
++
++from tools.scoped_odf_profiles import _preflight_package, _root, ODFProfileError
++
++O = 'urn:oasis:names:tc:opendocument:xmlns:office:1.0'
++D = 'urn:oasis:names:tc:opendocument:xmlns:database:1.0'
++M = 'urn:oasis:names:tc:opendocument:xmlns:manifest:1.0'
++XL = 'http://www.w3.org/1999/xlink'
++MIME = 'application/vnd.oasis.opendocument.database'
++MAX_RECORDS = 4096
++MAX_NAME = 256
++MAX_OUTPUT = 1_000_000
++REDACTED = '[redacted]'
++
++
++def q(namespace, local):
++    return '{' + namespace + '}' + local
++
++
++class ODBError(ValueError):
++    """Fixed, content-free refusal code."""
++
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++class DatabaseText(str):
++    def __new__(cls, text, metadata):
++        value = super().__new__(cls, text)
++        value.extraction_metadata = metadata
++        return value
++
++
++def _fail(code):
++    raise ODBError(code)
++
++
++def _tick(checkpoint):
++    if checkpoint is not None:
++        checkpoint()
++
++
++def _safe_path(name):
++    key = name.rstrip('/')
++    return bool(key and not name.startswith('/')
++                and not any(c in name for c in '\\:%?#')
++                and not any(ord(c) < 32 for c in name)
++                and all(part not in ('', '.', '..') for part in key.split('/')))
++
++
++def _load(data, checkpoint):
++    try:
++        parts, xml_names = _preflight_package(data, checkpoint)
++        if parts.get('mimetype') != MIME.encode('ascii'):
++            _fail('not_native_odb')
++        with zipfile.ZipFile(io.BytesIO(data)) as archive:
++            info = archive.getinfo('mimetype')
++            local_extra_size = struct.unpack_from('<H', data, info.header_offset + 28)[0]
++            if (info.header_offset != 0 or info.compress_type != zipfile.ZIP_STORED
++                    or info.extra or local_extra_size):
++                _fail('not_native_odb')
++        roots = {name: _root(parts[name], checkpoint) for name in sorted(xml_names)}
++    except ODFProfileError as error:
++        raise ODBError(error.code) from None
++    manifest = roots.get('META-INF/manifest.xml')
++    if manifest is None or manifest.tag != q(M, 'manifest'):
++        _fail('manifest_missing_or_namespace')
++    declarations = {}
++    seen = set()
++    for entry in manifest:
++        _tick(checkpoint)
++        if entry.tag != q(M, 'file-entry'):
++            _fail('manifest_structure')
++        name = entry.get(q(M, 'full-path'), '')
++        key = name.rstrip('/').casefold()
++        if not name or key in seen:
++            _fail('duplicate_or_invalid_manifest_entry')
++        seen.add(key)
++        if name != '/' and not _safe_path(name):
++            _fail('unsafe_manifest_entry')
++        if name != '/' and not name.endswith('/') and name not in parts:
++            _fail('manifest_target_missing')
++        if any(node.tag == q(M, 'encryption-data') for node in entry.iter()):
++            _fail('encrypted_package')
++        declarations[name] = entry.get(q(M, 'media-type'), '')
++    if declarations.get('/') != MIME or 'content.xml' not in declarations:
++        _fail('manifest_type_or_content')
++    if any(name not in declarations for name in parts
++           if name not in ('mimetype', 'META-INF/manifest.xml')):
++        _fail('undeclared_package_member')
++    if declarations['content.xml'] != 'text/xml':
++        _fail('content_media_type')
++    content = roots.get('content.xml')
++    if content is None or content.tag != q(O, 'document-content'):
++        _fail('content_missing_or_namespace')
++    bodies = content.findall(q(O, 'body'))
++    if len(bodies) != 1 or len(bodies[0]) != 1 or bodies[0][0].tag != q(O, 'database'):
++        _fail('not_native_odb')
++    return parts, roots, bodies[0][0]
++
++
++class _View:
++    def __init__(self, database, checkpoint):
++        self.checkpoint = checkpoint
++        self.count = 0
++        self.redacted = False
++        self.uninterpreted = False
++        self.sensitive = set()
++        # Prevent known connection/credential values from leaking through an
++        # identifier duplicated elsewhere. Never include these values in errors.
++        for source in database.findall(q(D, 'data-source')):
++            for node in source.iter():
++                _tick(checkpoint)
++                values = [value for attr, value in node.attrib.items()
++                          if attr == q(XL, 'href') or attr.rsplit('}', 1)[-1] in
++                          ('user-name', 'password', 'host-name', 'hostname',
++                           'database-name', 'local-socket')]
++                if node.tag == q(D, 'data-source-setting'):
++                    values.extend(value for child in node.iter()
++                                  for value in [*child.attrib.values(), child.text or ''])
++                for value in values:
++                    if value.strip():
++                        self.sensitive.add(value.strip())
++        # SQL and component references are withheld too. Collect before reading
++        # any identifiers, so a later declaration cannot disclose a value by
++        # duplicating it in an earlier object's name.
++        for node in database.iter():
++            _tick(checkpoint)
++            for attr in (q(D, 'command'), q(XL, 'href')):
++                value = node.get(attr, '').strip()
++                if value:
++                    self.sensitive.add(value)
++        self.sensitive_lengths = {len(value) for value in self.sensitive
++                                  if len(value) <= MAX_NAME}
++
++    def record(self):
++        _tick(self.checkpoint)
++        self.count += 1
++        if self.count > MAX_RECORDS:
++            _fail('record_limit')
++
++    def name(self, node, attribute='name', required=True):
++        value = node.get(q(D, attribute))
++        if value is None:
++            if required:
++                _fail('missing_declared_name')
++            return None
++        if not value or len(value) > MAX_NAME or any(ord(c) < 32 for c in value):
++            _fail('invalid_or_long_declared_name')
++        # This is intentionally conservative: do not echo URI-looking values,
++        # login assignments or known secrets as object names or SQL type names.
++        # Bounded by MAX_NAME: also block a known value wrapped in punctuation
++        # or an innocent-looking prefix/suffix, without scanning each setting
++        # for each identifier or returning any part of those settings.
++        if (any(value[start:start + size] in self.sensitive
++                for size in self.sensitive_lengths if size <= len(value)
++                for start in range(len(value) - size + 1))
++                or re.search(r'[/\\:@?#]|\b(?:password|passwd|token|secret|user(?:name)?)\s*=', value, re.I)):
++            self.redacted = True
++            return REDACTED
++        return value
++
++    def children(self, parent, local):
++        children = parent.findall(q(D, local))
++        if len(children) > 1:
++            _fail('duplicate_declaration_container')
++        return children[0] if children else None
++
++    def unique(self, nodes, attributes=('name',)):
++        seen = set()
++        for node in nodes:
++            _tick(self.checkpoint)
++            key = tuple(node.get(q(D, attr)) for attr in attributes)
++            if key in seen:
++                _fail('duplicate_declared_name')
++            seen.add(key)
++
++    def columns(self, parent, schema=False):
++        container = self.children(parent, 'column-definitions' if schema else 'columns')
++        result = []
++        if container is None:
++            return result
++        expected = q(D, 'column-definition' if schema else 'column')
++        self.unique(list(container))
++        for node in container:
++            if node.tag != expected:
++                self.uninterpreted = True
++                continue
++            if len(node):
++                self.uninterpreted = True
++            self.record()
++            item = {'name': self.name(node)}
++            if schema:
++                # Optional properties retain declared values; none is inferred.
++                for attr in ('data-type', 'type-name'):
++                    value = self.name(node, attr, False)
++                    if value is not None:
++                        item[attr] = value
++                for attr in ('precision', 'scale'):
++                    value = node.get(q(D, attr))
++                    if value is not None:
++                        if not re.fullmatch(r'[0-9]{1,8}', value) or int(value) < 1:
++                            _fail('invalid_declared_column_property')
++                        item[attr] = int(value)
++                for attr, values in (('is-nullable', ('no-nulls', 'nullable')),
++                                     ('is-autoincrement', ('true', 'false', '1', '0')),
++                                     ('is-empty-allowed', ('true', 'false', '1', '0'))):
++                    value = node.get(q(D, attr))
++                    if value is not None:
++                        if value not in values:
++                            _fail('invalid_declared_column_property')
++                        item[attr] = value
++            result.append(item)
++        return result
++
++    def keys(self, parent, table):
++        container = self.children(parent, 'keys')
++        keys, relationships = [], []
++        if container is None:
++            return keys, relationships
++        named = [node for node in container if node.get(q(D, 'name')) is not None]
++        self.unique(named)
++        for node in container:
++            if node.tag != q(D, 'key'):
++                self.uninterpreted = True
++                continue
++            self.record()
++            kind = node.get(q(D, 'type'))
++            if kind not in ('primary', 'unique', 'foreign'):
++                _fail('unsupported_declared_key_type')
++            item = {'name': self.name(node, required=False), 'type': kind, 'columns': []}
++            for columns in node:
++                if columns.tag != q(D, 'key-columns'):
++                    self.uninterpreted = True
++                    continue
++                # ODF permits related-column-only records (db:name optional).
++                # Missing names do not establish duplicate source identities.
++                self.unique([column for column in columns
++                             if column.get(q(D, 'name')) is not None])
++                for column in columns:
++                    if column.tag != q(D, 'key-column'):
++                        self.uninterpreted = True
++                        continue
++                    self.record()
++                    item['columns'].append({'name': self.name(column, required=False),
++                        'related_column': self.name(column, 'related-column-name', False)})
++            if kind == 'foreign':
++                item['referenced_table'] = self.name(node, 'referenced-table-name', False)
++                for attr in ('update-rule', 'delete-rule'):
++                    value = node.get(q(D, attr))
++                    if value is not None:
++                        if value not in ('cascade', 'restrict', 'set-null', 'no-action', 'set-default'):
++                            _fail('unsupported_declared_key_rule')
++                        item[attr] = value
++                relationships.append({'source_table': table, **item,
++                    'target_and_constraint_not_verified': True})
++            keys.append(item)
++        return keys, relationships
++
++    def tables(self, database):
++        tables, relationships = [], []
++        containers = []
++        representations = self.children(database, 'table-representations')
++        if representations is not None:
++            containers.append((representations, False))
++        schema = self.children(database, 'schema-definition')
++        if schema is not None:
++            if any(node.tag != q(D, 'table-definitions') for node in schema):
++                self.uninterpreted = True
++            definitions = self.children(schema, 'table-definitions')
++            if definitions is not None:
++                containers.append((definitions, True))
++        for container, is_schema in containers:
++            self.unique(list(container), ('catalog-name', 'schema-name', 'name'))
++            expected = q(D, 'table-definition' if is_schema else 'table-representation')
++            for node in container:
++                if node.tag != expected:
++                    self.uninterpreted = True
++                    continue
++                interpreted = {q(D, name) for name in
++                    (('column-definitions', 'keys') if is_schema else ('columns',))}
++                if any(child.tag not in interpreted for child in node):
++                    self.uninterpreted = True
++                self.record()
++                item = {'name': self.name(node),
++                    'declaration_index': len(tables) + 1,
++                    'declaration': 'schema_definition' if is_schema else 'table_representation',
++                    'catalog_declared': q(D, 'catalog-name') in node.attrib,
++                    'schema_declared': q(D, 'schema-name') in node.attrib,
++                    'columns': self.columns(node, is_schema), 'rows': 'unavailable'}
++                if is_schema:
++                    item['keys'], refs = self.keys(node, item['name'])
++                    for ref in refs:
++                        ref['source_declaration_index'] = item['declaration_index']
++                    relationships.extend(refs)
++                tables.append(item)
++        return tables, relationships
++
++    def collection(self, container, parts, kind, members):
++        if container is None:
++            return
++        self.unique(list(container))
++        for node in container:
++            _tick(self.checkpoint)
++            if node.tag == q(D, 'query-collection' if kind == 'query' else 'component-collection'):
++                self.record()
++                path = parts + [self.name(node)]
++                members.append({'kind': 'collection', 'path': path})
++                self.collection(node, path, kind, members)
++            elif node.tag == q(D, kind if kind == 'query' else 'component'):
++                self.record()
++                item = {'kind': kind, 'path': parts + [self.name(node)]}
++                if kind == 'query':
++                    if any(child.tag != q(D, 'columns') for child in node):
++                        self.uninterpreted = True
++                    item.update(command_declared=q(D, 'command') in node.attrib,
++                                command='withheld; never executed',
++                                columns=self.columns(node), results='unavailable')
++                else:
++                    if len(node):
++                        self.uninterpreted = True
++                    item.update(reference_declared=q(XL, 'href') in node.attrib,
++                                reference='redacted; never opened',
++                                body='unavailable; not rendered or executed')
++                members.append(item)
++            else:
++                self.uninterpreted = True
++
++
++def extract_database(data, format='odb', *, checkpoint=None):
++    """Return a string-compatible, structured view of explicit ODF declarations.
++
++    Missing XML schema/relationship records mean unavailable, never no tables,
++    no relationships, or an empty database. No plaintext SQL is returned.
++    """
++    if format != 'odb':
++        _fail('unsupported_format')
++    parts, roots, database = _load(data, checkpoint)
++    view = _View(database, checkpoint)
++    sources = database.findall(q(D, 'data-source'))
++    if len(sources) != 1:
++        _fail('missing_or_duplicate_data_source')
++    connection_declared = view.children(sources[0], 'connection-data') is not None
++    tables, relationships = view.tables(database)
++    queries, forms, reports = [], [], []
++    for local, kind, output in (('queries', 'query', queries),
++                                ('forms', 'form', forms), ('reports', 'report', reports)):
++        view.collection(view.children(database, local), [], kind, output)
++    known = {q(D, name) for name in ('data-source', 'queries', 'forms', 'reports',
++                                    'table-representations', 'schema-definition')}
++    if any(node.tag not in known for node in database):
++        view.uninterpreted = True
++    result = {
++        'format': 'odb', 'view': 'declared_metadata_only',
++        'tables': tables, 'queries': queries, 'relationships': relationships,
++        'forms': forms, 'reports': reports,
++        'connection': {'declared': connection_declared,
++            'details': 'redacted; never opened' if connection_declared else 'not declared'},
++        'declaration_sections_present': {name: database.find(q(D, name)) is not None
++            for name in ('table-representations', 'schema-definition', 'queries', 'forms', 'reports')},
++        'opaque_non_xml_members': sum(name != 'mimetype' and name not in roots for name in parts),
++        'unavailable': ['stored_rows', 'live_schema', 'query_results', 'SQL_text',
++                        'form_and_report_contents', 'embedded_database_contents'],
++        'limitations': [
++            'Only explicit XML declarations are shown; absence is not proof of absence in the database.',
++            'Table representations contain view metadata, not a verified database schema.',
++            'Keys and relationships are declarations; referenced targets and constraints are not verified.',
++            'No database engine, connection, SQL, script, component or external resource is executed.',
++            'Connection details, credentials, schema/catalog values and component references are withheld.',
++        ],
++        'identifiers_redacted': view.redacted,
++        'uninterpreted_structures_present': view.uninterpreted,
++    }
++    text = '[ODB: bounded, non-executing declared metadata view]\n' + json.dumps(
++        result, ensure_ascii=False, indent=2) + '\n'
++    if len(text.encode('utf-8')) > MAX_OUTPUT:
++        _fail('output_limit')
++    _tick(checkpoint)
++    return DatabaseText(text, {'kind': 'odb', 'coverage': 'declared_metadata_only',
++        'database': result, 'raw_overwrite_authority': False})
+--- a/tools/scoped_word_macro_edit.py
++++ b/tools/scoped_word_macro_edit.py
+@@ -6,6 +6,7 @@
+ """
+ from io import BytesIO
+ import hashlib
++import re
+ import struct
+ import stat
+ import zlib
+@@ -27,6 +28,17 @@
+ _MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006'
+ _CP = 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties'
+ _EP = 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties'
++_WNE = 'http://schemas.microsoft.com/office/word/2006/wordml'
++_W14 = 'http://schemas.microsoft.com/office/word/2010/wordml'
++_W15 = 'http://schemas.microsoft.com/office/word/2012/wordml'
++_W16CID = 'http://schemas.microsoft.com/office/word/2016/wordml/cid'
++_THEME15 = 'http://schemas.microsoft.com/office/thememl/2012/main'
++_VBA_DATA_TYPE = 'application/vnd.ms-word.vbaData+xml'
++_VBA_DATA_REL = 'http://schemas.microsoft.com/office/2006/relationships/wordVbaData'
++_BIB = 'http://schemas.openxmlformats.org/officeDocument/2006/bibliography'
++_DS = 'http://schemas.openxmlformats.org/officeDocument/2006/customXml'
++_CUSTOM_TYPE = _BASE + 'customXmlProperties+xml'
++_CUSTOM_RELS = {R+'/customXml', R+'/customXmlProps'}
+ _ROOT_TYPES = {
+     _q(W, 'styles'): {_BASE+'wordprocessingml.styles+xml', 'application/vnd.ms-word.stylesWithEffects+xml'},
+     _q(W, 'settings'): {_BASE+'wordprocessingml.settings+xml'},
+@@ -48,7 +60,7 @@
+ _REL_TYPES = {R+'/'+name for name in ('officeDocument', 'styles', 'stylesWithEffects',
+     'settings', 'webSettings', 'fontTable', 'numbering', 'theme', 'header', 'footer',
+     'footnotes', 'endnotes', 'image', 'extended-properties')} | {
+-    VBA_REL, PKG+'/metadata/core-properties', PKG+'/metadata/thumbnail'}
++    VBA_REL, _VBA_DATA_REL, PKG+'/metadata/core-properties', PKG+'/metadata/thumbnail'}
+ _FORBIDDEN_WORD = {'altChunk', 'object', 'control', 'drawing', 'pict', 'sdt',
+     'customXml', 'subDoc', 'contentPart', 'fldChar', 'instrText', 'fldSimple',
+     'delInstrText', 'delText', 'ins', 'del', 'moveFrom', 'moveTo', 'trackRevisions',
+@@ -63,6 +75,165 @@
+ 
+ def _namespace(name):
+     return name[1:].split('}', 1)[0] if name.startswith('{') else ''
++
++
++def _vba_supplement(package):
++    """Validate opaque macro-name metadata without activating document events."""
++    parts = [name for name, kind in package.types.items() if kind == _VBA_DATA_TYPE]
++    refs = [(owner, target) for owner, rows in package.relationships.items()
++            for kind, target in rows.values() if kind == _VBA_DATA_REL]
++    declared = any(node.get('ContentType') == _VBA_DATA_TYPE
++                   for node in package.xml['[Content_Types].xml'])
++    vba_part = next(iter(package.vba_parts), None)
++    if not parts and not refs:
++        if declared:
++            _fail('orphan_vba_supplement')
++        return None
++    if (len(parts) != 1 or len(package.vba_parts) != 1
++            or refs != [(vba_part, parts[0])]
++            or list(package.relationships.get(vba_part, {}).values()) != [(_VBA_DATA_REL, parts[0])]
++            or package.relationships.get(parts[0])):
++        _fail('invalid_vba_supplement_relationship')
++    name = parts[0]
++    incoming = [(owner, kind) for owner, rows in package.relationships.items()
++                for kind, target in rows.values() if target == name]
++    if incoming != [(vba_part, _VBA_DATA_REL)]:
++        _fail('invalid_vba_supplement_relationship')
++    root = package.xml.get(name)
++    if (root is None or root.tag != _q(_WNE, 'vbaSuppData')
++            or len(package.parts[name]) > 262144
++            or set(root.attrib) - {_q(_MC, 'Ignorable')}):
++        _fail('invalid_vba_supplement')
++    if _q(_MC, 'Ignorable') in root.attrib and not re.fullmatch(
++            r'[A-Za-z_][A-Za-z0-9_.-]*(?:\s+[A-Za-z_][A-Za-z0-9_.-]*)*',
++            root.attrib[_q(_MC, 'Ignorable')]):
++        _fail('invalid_vba_supplement')
++    if len(root) != 1 or root[0].tag != _q(_WNE, 'mcds') or root[0].attrib:
++        _fail('vba_document_events_or_unknown_data')
++    if not 1 <= len(root[0]) <= 256:
++        _fail('vba_supplement_macro_limit')
++    seen = set()
++    required = {_q(_WNE, x) for x in ('macroName', 'name', 'bEncrypt', 'cmg')}
++    for node in root.iter():
++        if (node.text or '').strip() or (node.tail or '').strip():
++            _fail('invalid_vba_supplement_text')
++    for node in root[0]:
++        if (node.tag != _q(_WNE, 'mcd') or len(node)
++                or not required <= set(node.attrib)
++                or set(node.attrib) - required - {_q(_WNE, 'menuHelp')}):
++            _fail('invalid_vba_macro_metadata')
++        label = node.attrib[_q(_WNE, 'name')]
++        upper = node.attrib[_q(_WNE, 'macroName')]
++        if (not 1 <= len(label) <= 255 or upper != label.upper()
++                or len(upper) > 255 or label.casefold() in seen
++                or node.attrib[_q(_WNE, 'bEncrypt')] != '00'
++                or node.attrib[_q(_WNE, 'cmg')] != '56'
++                or len(node.attrib.get(_q(_WNE, 'menuHelp'), '')) > 4096):
++            _fail('invalid_vba_macro_metadata')
++        seen.add(label.casefold())
++    return name
++
++
++def _passive_element(name, node, parent, root):
++    """Recognize only unchanged, non-executable Office identifier metadata."""
++    if len(node) or (node.text or '').strip():
++        return False
++    if (node.tag == _q(_W14, 'docId') and name == 'word/settings.xml'
++            and parent is root and root.tag == _q(W, 'settings')
++            and set(node.attrib) == {_q(_W14, 'val')}):
++        value = node.attrib[_q(_W14, 'val')]
++        return bool(re.fullmatch(r'[0-9A-Fa-f]{8}', value)) and 0 < int(value, 16) < 0x80000000
++    if (node.tag == _q(_W15, 'chartTrackingRefBased') and name == 'word/settings.xml'
++            and parent is root and root.tag == _q(W, 'settings')):
++        return not node.attrib or (set(node.attrib) == {_q(W, 'val')}
++                                  and node.attrib[_q(W, 'val')] in ('0', '1', 'false', 'true', 'off', 'on'))
++    if (node.tag == _q(_THEME15, 'themeFamily') and name.startswith('word/theme/')
++            and root.tag == _q(_A, 'theme') and parent is not None
++            and parent.tag == _q(_A, 'ext') and len(parent) == 1
++            and parent in [ext for listing in root.findall(_q(_A, 'extLst')) for ext in listing]
++            and parent.attrib == {'uri': '{05A4C25C-085E-4340-85A3-A5531E510DB2}'}
++            and set(node.attrib) == {'name', 'id', 'vid'}
++            and 1 <= len(node.attrib['name']) <= 255):
++        guid = r'\{[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}'
++        return all(re.fullmatch(guid, value) for value in
++                   (node.attrib['id'], node.attrib['vid']))
++    return False
++
++
++def _empty_bibliography(package):
++    """Keep one inert, empty bibliography store; never allow bound/custom data."""
++    refs = [(owner, kind, target) for owner, rows in package.relationships.items()
++            for kind, target in rows.values() if kind in _CUSTOM_RELS]
++    parts = {name for name in package.parts if name.lower().startswith('customxml/')}
++    declared = any(node.get('ContentType') == _CUSTOM_TYPE
++                   for node in package.xml['[Content_Types].xml'])
++    if not refs and not parts and not declared:
++        return set()
++    main = [(owner, target) for owner, kind, target in refs if kind == R+'/customXml']
++    if (len(main) != 1 or main[0][0] != 'word/document.xml'
++            or not re.fullmatch(r'customXml/item[1-9][0-9]{0,3}\.xml', main[0][1])):
++        _fail('unsupported_custom_xml')
++    item = main[0][1]
++    number = item.removeprefix('customXml/item').removesuffix('.xml')
++    props = 'customXml/itemProps'+number+'.xml'
++    rels = 'customXml/_rels/item'+number+'.xml.rels'
++    if (len(refs) != 2 or (item, R+'/customXmlProps', props) not in refs
++            or parts != {item, props, rels}
++            or package.types.get(item) != 'application/xml'
++            or package.types.get(props) != _CUSTOM_TYPE
++            or [name for name, kind in package.types.items() if kind == _CUSTOM_TYPE] != [props]
++            or package.relationships.get(props)
++            or list(package.relationships.get(item, {}).values()) != [(R+'/customXmlProps', props)]):
++        _fail('unsupported_custom_xml')
++    for target, expected in ((item, [('word/document.xml', R+'/customXml')]),
++                             (props, [(item, R+'/customXmlProps')])):
++        incoming = [(owner, kind) for owner, rows in package.relationships.items()
++                    for kind, dest in rows.values() if dest == target]
++        if incoming != expected:
++            _fail('unsupported_custom_xml')
++    source = package.xml.get(item)
++    properties = package.xml.get(props)
++    if (source is None or source.tag != _q(_BIB, 'Sources') or len(source)
++            or set(source.attrib) - {'SelectedStyle', 'StyleName', 'Version'}
++            or properties is None or properties.tag != _q(_DS, 'datastoreItem')
++            or set(properties.attrib) != {_q(_DS, 'itemID')} or len(properties) != 1
++            or not re.fullmatch(r'\{[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}',
++                                properties.attrib[_q(_DS, 'itemID')])
++            or len(package.parts[item]) > 16384 or len(package.parts[props]) > 16384):
++        _fail('unsupported_custom_xml')
++    if any(not 1 <= len(value) <= 1024 or any(ord(c) < 32 for c in value)
++           for value in source.attrib.values()):
++        _fail('unsupported_custom_xml')
++    if 'Version' in source.attrib and not re.fullmatch(r'[0-9]{1,10}', source.attrib['Version']):
++        _fail('unsupported_custom_xml')
++    schema_refs = properties[0]
++    if (schema_refs.tag != _q(_DS, 'schemaRefs') or schema_refs.attrib or len(schema_refs) != 1
++            or schema_refs[0].tag != _q(_DS, 'schemaRef') or len(schema_refs[0])
++            or schema_refs[0].attrib != {_q(_DS, 'uri'): _BIB}):
++        _fail('unsupported_custom_xml')
++    for root in (source, properties):
++        for node in root.iter():
++            if (node.text or '').strip() or (node.tail or '').strip():
++                _fail('unsupported_custom_xml')
++    return {item, props}
++
++
++def _passive_attribute(name, node, key, value, parent=None, root=None):
++    if (key in (_q(_W14, 'paraId'), _q(_W14, 'textId'))
++            and node.tag == _q(W, 'p') and name == 'word/document.xml'
++            and parent is not None and parent.tag in (_q(W, 'body'), _q(W, 'tc'))):
++        return (bool(re.fullmatch(r'[0-9A-Fa-f]{8}', value))
++                and 0 < int(value, 16) < 0x80000000)
++    if (key == _q(_W15, 'restartNumberingAfterBreak')
++            and name == 'word/numbering.xml' and node.tag == _q(W, 'abstractNum')
++            and parent is root and root is not None and root.tag == _q(W, 'numbering')):
++        return value in ('0', '1', 'false', 'true', 'off', 'on')
++    if (key == _q(_W16CID, 'durableId') and name == 'word/numbering.xml'
++            and node.tag == _q(W, 'num') and parent is root
++            and root is not None and root.tag == _q(W, 'numbering')):
++        return bool(re.fullmatch(r'[0-9]{1,10}', value)) and 0 < int(value) < 0x7fffffff
++    # The sole attribute of a validated docId node is checked by _passive_element.
++    return key == _q(_W14, 'val') and node.tag == _q(_W14, 'docId')
+ 
+ 
+ def _envelope(data):
+@@ -221,12 +392,16 @@
+     package = _MacroPackage(data, profile, checkpoint)
+     if len(package.infos) != expected_members:
+         _fail('unsupported_zip_envelope')
+-    if any(kind not in _REL_TYPES for rows in package.relationships.values()
++    supplement = _vba_supplement(package)
++    bibliography = _empty_bibliography(package)
++    if any(kind not in _REL_TYPES | (_CUSTOM_RELS if bibliography else set()) for rows in package.relationships.values()
+            for kind, target in rows.values()):
+         _fail('unsupported_relationship')
+     allowed_types = {kind for kinds in _ROOT_TYPES.values() for kind in kinds} | {
+-        MAIN_TYPES[profile], VBA_TYPE, 'application/xml',
++        MAIN_TYPES[profile], VBA_TYPE, _VBA_DATA_TYPE, 'application/xml',
+         'application/vnd.openxmlformats-package.relationships+xml', 'image/png', 'image/jpeg'}
++    if bibliography:
++        allowed_types.add(_CUSTOM_TYPE)
+     # Unused declarations also refuse: no hidden alternate macro/signature type.
+     for declaration in package.xml['[Content_Types].xml']:
+         if declaration.get('ContentType') not in allowed_types:
+@@ -240,6 +415,8 @@
+         root = package.xml.get(name)
+         if name == '[Content_Types].xml':
+             continue
++        if name == supplement or name in bibliography:
++            continue  # Exact owner, content type and finite metadata grammar checked above.
+         if name.endswith('.rels'):
+             continue  # _Package checked root, type, targets and cardinality.
+         if root is not None:
+@@ -255,9 +432,28 @@
+         else:
+             _fail('unsupported_binary_part')
+     for name, root in package.xml.items():
++        if name == supplement or name in bibliography:
++            continue
++        parents = {child: node for node in root.iter() for child in node}
++        paragraph_ids = set()
++        doc_ids = 0
+         for node in root.iter():
++            if node.tag == _q(W, 'p'):
++                para_id = node.get(_q(_W14, 'paraId'))
++                text_id = node.get(_q(_W14, 'textId'))
++                if text_id is not None and para_id is None:
++                    _fail('invalid_passive_paragraph_metadata')
++                if para_id is not None:
++                    normalized = para_id.upper()
++                    if normalized in paragraph_ids:
++                        _fail('duplicate_passive_paragraph_id')
++                    paragraph_ids.add(normalized)
++            if node.tag == _q(_W14, 'docId'):
++                doc_ids += 1
++                if doc_ids > 1:
++                    _fail('duplicate_passive_document_id')
+             ns = _namespace(node.tag); local = node.tag.rsplit('}', 1)[-1]
+-            if ns not in _NAMESPACES:
++            if ns not in _NAMESPACES and not _passive_element(name, node, parents.get(node), root):
+                 _fail('unsupported_xml_namespace')
+             if (ns == W and (local in _FORBIDDEN_WORD or local.endswith('Change')
+                     or local.startswith(('moveFromRange', 'moveToRange', 'customXml')))):
+@@ -272,7 +468,7 @@
+                 _fail('alternate_content_unsupported')
+             for key, value in node.attrib.items():
+                 attr_ns = _namespace(key)
+-                if attr_ns and attr_ns not in _NAMESPACES:
++                if attr_ns and attr_ns not in _NAMESPACES and not _passive_attribute(name, node, key, value, parents.get(node), root):
+                     _fail('unsupported_xml_attribute')
+                 if key == _q(_XML, 'base') or key.rsplit('}', 1)[-1].lower() in ('macro', 'action'):
+                     _fail('active_xml_attribute')
