@@ -1,0 +1,176 @@
+--- a/tools/scoped_doc.py
++++ b/tools/scoped_doc.py
+@@ -138,15 +138,16 @@
+         if root[5] not in (bytes(16), WORD_CLSID):
+             _fail('not_word_cfb')
+         # Walk every directory entry; no orphan streams or nested storage allowed.
+-        stack = [(root[4], None, None, False, 0)]
+-        leaf_depths = set()
++        # MS-CFB 2.6.4 requires ordering and no consecutive red nodes, but
++        # explicitly permits an unbalanced all-black binary tree. Equal black
++        # heights are not a CFB invariant.
++        stack = [(root[4], None, None, False)]
+         seen = {0}
+         names = set()
+         streams = []
+         while stack:
+-            idx, low, high, parent_red, depth = stack.pop()
++            idx, low, high, parent_red = stack.pop()
+             if idx == FREE:
+-                leaf_depths.add(depth)
+                 continue
+             if idx >= len(entries) or idx in seen or entries[idx] is None:
+                 _fail('cfb_directory_cycle_or_bounds')
+@@ -165,11 +166,8 @@
+             if name not in STREAMS:
+                 _fail('unsupported_cfb_stream')
+             streams.append((name, start, size))
+-            depth += color
+-            stack.extend(((left, low, key, color == 0, depth),
+-                          (right, key, high, color == 0, depth)))
+-        if len(leaf_depths) > 1:
+-            _fail('cfb_directory_tree')
++            stack.extend(((left, low, key, color == 0),
++                          (right, key, high, color == 0)))
+         if seen != {i for i, row in enumerate(entries) if row is not None}:
+             _fail('cfb_directory_orphan')
+         mini_table = self._chain(_u32(data, 60), self.fat, self.sector_size,
+--- a/tools/scoped_xls.py
++++ b/tools/scoped_xls.py
+@@ -247,7 +247,12 @@
+     0x0080,0x0081,0x0082,0x0083,0x0084,0x0099,0x00A0,0x00A1,
+     0x00D7,0x00E5,0x0200,0x0208,0x020B,0x0225,0x023E))
+ _ACTIVE = frozenset((0x002F,0x005D,0x00D3,0x00EB,0x00EC,0x01AE,0x0017,
+-                     0x0023,0x01B6,0x01B8,0x01BA,0x01BE,0x0800,0x0867))
++                     0x0023,0x01B6,0x01B8,0x01BA,0x01BE,0x0800))
++# These documented Globals records contain only formatting, compatibility,
++# compression, or recalculation metadata. Their bounded payloads stay opaque,
++# just like FONT/XF/FORMAT above; no theme ZIP, formula, or directive is run.
++_GLOBAL_PASSIVE_FRT = frozenset((0x087C,0x087D,0x0892,0x088E,0x089A,
++                               0x08A3,0x0863,0x0896,0x089B,0x088C))
+ _ERROR_VALUES = {0x00:'#NULL!',0x07:'#DIV/0!',0x0F:'#VALUE!',0x17:'#REF!',
+                  0x1D:'#NAME?',0x24:'#NUM!',0x2A:'#N/A',0x2B:'#GETTING_DATA'}
+ 
+@@ -280,6 +285,13 @@
+         payload=data[at+4:at+4+size]
+         if kind == 0x002F: _fail('xls_encrypted')
+         if kind in _ACTIVE: _fail('xls_active_or_external_record')
++        if kind == 0x0867:
++            # Only Excel's fixed EnhancedProtection header is passive here.
++            # Smart tags, feature bodies, and unknown feature types refuse.
++            if (len(payload) != 23 or payload[:12] != b'\x67\x08' + b'\0' * 10
++                    or payload[12:19] != b'\x02\0\x01\xff\xff\xff\xff'
++                    or _u32(payload,19) & ~0x7FFF):
++                _fail('xls_active_or_external_record')
+         if kind == 0x003C: _fail('xls_continuation_unsupported')
+         out.append((at,kind,payload)); at += 4+size
+     if not out: _fail('biff_empty')
+@@ -366,6 +378,34 @@
+     i=markers[0]
+     if records[i][2]: _fail('xlt_template_payload')
+     if i!=1: _fail('xlt_template_placement')
++
++
++def _passive_sheet_extension(kind, payload):
++    # MS-XLS FrtHeader is fixed and cannot point at a range or another stream.
++    if (len(payload) < 12 or _u16(payload,0) != kind
++            or payload[2:12] != b'\0' * 10):
++        _fail('xls_passive_extension_header')
++    if kind == 0x089C:
++        # Empty first/even page headers for the current view only. Nonempty
++        # strings and custom views remain outside this cell-reading subset.
++        # The high twelve flag bits are explicitly unused by MS-XLS.
++        if (len(payload) != 38 or payload[12:28] != b'\0' * 16
++                or payload[30:38] != b'\0' * 8):
++            _fail('xls_header_footer_extension_unsupported')
++    elif kind == 0x088B:
++        if len(payload) != 16:
++            _fail('xls_page_layout_extension_size')
++        scale = _u16(payload,12)
++        if scale != 0 and not 10 <= scale <= 400:
++            _fail('xls_page_layout_extension_scale')
++    elif kind != 0x0867:
++        _fail('xls_passive_extension_unknown')
++
++
++def _passive_global_extension(kind, payload):
++    if (len(payload) < 12 or _u16(payload,0) != kind
++            or payload[2:12] != b'\0' * 10):
++        _fail('xls_passive_extension_header')
+ 
+ 
+ def _extract(data, *, template=False):
+@@ -400,11 +440,23 @@
+             if len(p) != 2 or _u16(p, 0) != 0:
+                 _fail('xls_object_protection_unsupported')
+             ignored.add(kind)
++        elif kind == 0x01C0:
++            if p: _fail('xls_excel9file_payload')
++            ignored.add(kind)
++        elif kind == 0x01C1:
++            if len(p)!=8 or p[:4]!=b'\xc1\x01\0\0':
++                _fail('xls_recalc_id_header')
++            ignored.add(kind)
++        elif kind in _GLOBAL_PASSIVE_FRT:
++            _passive_global_extension(kind,p)
++            ignored.add(kind)
+         elif kind in _GLOBAL_IGNORED:
+             if kind==0x0022:
+                 if len(p)!=2 or _u16(p,0) not in (0,1): _fail('xls_date_mode')
+                 date1904=bool(_u16(p,0))
+             ignored.add(kind)
++        elif kind == 0x0867:
++            _fail('xls_active_or_external_record')
+         else: _fail('xls_global_record_unsupported')
+     if i>=len(records) or records[i][2] or not bounds:
+         _fail('xls_globals_eof_or_sheets')
+@@ -417,6 +469,7 @@
+         if offset not in by_offset: _fail('xls_unreferenced_substream')
+         _bof(kind,p,0x0010); i+=1
+         cells=[]; seen=set(); pending=None; wsbool=False; row_ids=set()
++        extensions=set(); protected=False
+         while i<len(records) and records[i][1] != 0x000A:
+             _,kind,p=records[i]; i+=1
+             if pending is not None:
+@@ -472,6 +525,11 @@
+                     pos=4+n*stride; xf=_u16(p,pos)
+                     new.append(_cell(row,col+n,xf,'number' if stride==6 else 'blank',
+                                      _rk(p[pos+2:pos+6]) if stride==6 else None))
++            elif kind in (0x0867, 0x088B, 0x089C):
++                if kind in extensions:
++                    _fail('xls_duplicate_passive_extension')
++                _passive_sheet_extension(kind,p)
++                extensions.add(kind); ignored.add(kind)
+             elif kind in (0x0063, 0x00DD):
+                 # ObjProtect/ScenarioProtect carry only protection booleans.
+                 # Accept the inert unprotected case; actual object/scenario
+@@ -480,6 +538,10 @@
+                     _fail('xls_object_or_scenario_protection_unsupported')
+                 ignored.add(kind)
+             elif kind in _SHEET_IGNORED:
++                if kind in (0x0012,0x0013):
++                    # Do not admit the new protection header on a protected
++                    # sheet. This decision is independent of record ordering.
++                    protected |= len(p) != 2 or _u16(p,0) != 0
+                 if kind==0x0081:
+                     if wsbool or len(p)!=2 or _u16(p,0)&0x10: _fail('xls_dialog_sheet_unsupported')
+                     wsbool=True
+@@ -491,6 +553,8 @@
+                 seen.add(key); row_ids.add(cell['row']); total_cells+=1
+                 if total_cells>MAX_CELLS or len(row_ids)>4096: _fail('xls_cell_or_row_limit')
+                 cells.append(cell)
++        if 0x0867 in extensions and protected:
++            _fail('xls_protected_sheet_extension_unsupported')
+         if i>=len(records) or records[i][2] or pending is not None or not wsbool:
+             _fail('xls_sheet_eof_or_wsbool')
+         i+=1; parsed[offset]=cells
+@@ -507,6 +571,9 @@
+         'omissions':['formula_expressions','styles_and_number_formats','visual_layout','merged_cell_layout',
+                      'row_column_visibility','comments','rich_string_formatting','phonetic_annotations'],
+         'ignored_structural_record_types':[f'{k:04x}' for k in sorted(ignored)]}
++    if ignored & _GLOBAL_PASSIVE_FRT:
++        metadata['omissions'].extend(('style_extension_payloads','theme_package',
++                                      'recalculation_directives'))
+     if template:
+         metadata.update(format='xlt',template=True,read_only=True,
+                         template_marker='BIFF8 Template (0x0060); empty; after Globals BOF',
