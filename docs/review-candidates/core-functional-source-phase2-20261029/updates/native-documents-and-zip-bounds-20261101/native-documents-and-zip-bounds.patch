@@ -1,0 +1,3058 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -11,7 +11,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = "friday.public-identity.v16"
++DIALOGUE_REVISION = "friday.public-identity.v16.native-word-odf-profiles.v1"
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -190,6 +190,8 @@
+ 
+ ORDINARY_IDENTITY = 'Ты — Пятница (Friday), ИИ-помощник с высокой, но управляемой инициативой.'
+ DOCX_EDIT_GUIDANCE = (
++    'Старый .xls читается как ограниченная таблица BIFF8: имена и порядок листов, поддержанные значения ячеек и сохранённые результаты формул. Формулы не вычисляются, макросы не запускаются. Это не проверка оформления; смотри metadata покрытия и ограничений. Создание и изменение .xls не поддерживаются, не записывай под этим расширением текст. '
++    'EPUB читается по порядку XHTML-разделов книги, включая отдельно помеченные вспомогательные разделы. Это логический текст, не вид страниц: CSS, изображения, аудио и видео не проверяются; внешние ссылки не открываются. EPUB нельзя создать или изменить этой файловой операцией. '
+     'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. No cross-family/Office conversion in this path. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
+     'ODS table operations ods_join {source,left_sheet,right_sheet,key,sheet} and ods_merge '
+     '{base,update,sheet,key,revision} create NEW plain .ods tables, without source formatting. '
+@@ -204,15 +206,20 @@
+     'rtf_edit и source/old_text/new_text в НОВЫЙ .rtf: одно совпадение внутри абзаца или ячейки, '
+     'без смешанного форматирования, полей, объектов и отслеживаемых изменений. Остальные байты '
+     'сохраняются; чтение не проверяет внешний вид. '
+-    'ODT/OTT читаются штатно. Для нового ODT используй format=odt с обычным текстом или '
+-    'odt_structured и JSON {blocks:[...]}: paragraph type/text, heading type/text/level 1..9, '
+-    'list type/items из строк/ordered boolean, table type/rows из прямоугольных строковых ячеек. '
+-    'Для сохраняющей правки ODT используй odt_edit и source/old_text/new_text в новый .odt: '
+-    'ровно одно совпадение в поддержанном абзаце; смешанное форматирование и активное содержимое отказываются. '
+-    'OTT только читается. Не записывай обычный текст под расширением ODT/OTT. '
+-    'Для точечной правки существующего DOCX используй write_file format=docx_edit с '
+-    'source/old_text/new_text и новым именем выходного файла. docx/docx_structured создают '
+-    'документ заново и не сохраняют исходный пакет. Чтение текста не проверяет оформление. '
++    'Word DOCX/DOTX и ODF ODT/OTT/FODT читаются и создаются штатно в ограниченном native-профиле. '
++    'Для нового документа используй format с именем профиля (docx/dotx/odt/ott/fodt); '
++    'для структурного создания добавь _structured, для сохраняющей копии _edit. '
++    'Выход всегда в НОВЫЙ файл с соответствующим расширением и настоящим content type/MIME/manifest. '
++    'Правка принимает ровно source/old_text/new_text: один уникальный поддержанный абзац, '
++    'исходник и выход одного профиля; смешанные стили, поля, anchors и опасные структуры отказываются. '
++    'Не восстанавливай исходник из извлечённого текста ради заявления о сохранении оформления. '
++    'Word blocks: title/paragraph type/text, heading type/text/level 1..9, table type/rows из строк. '
++    'ODF blocks: paragraph type/text, heading type/text/level 1..9, list type/items/ordered boolean, '
++    'table type/rows из прямоугольных строковых ячеек; content — JSON {blocks:[...]}. '
++    'DOCM/DOTM доступны только для инертного чтения. VBA непрозрачен и никогда не исполняется; '
++    'поля не вычисляются. Раскрой ограничения и неизвестную безопасность; создание и правка этих '
++    'профилей отказываются, не удаляй VBA молча. Не переименовывай расширение ради другого профиля. '
++    'Чтение текста не подтверждает оформление или приёмку Office. '
+     'Для экспорта DOCX в новый PDF используй write_file format=docx_pdf и JSON {"source":"report.docx"}; исходник остаётся неизменным. '
+     'Если пользователь просит одну таблицу с буквальным текстом, создай один .xlsx через write_file '
+     'format=xlsx_create, если он явно не выбрал другой формат. Копируй текст строками: сохраняй '
+@@ -311,12 +318,16 @@
+     if function['name'] == 'read_file':
+         function['description'] = (
+             'Read an own-workspace UTF-8 text file with numbered lines. Use offset, limit and the '
+-            'returned next_offset/next_char_offset for continuation. PDF, DOCX and XLSX extract text '
+-            'only; images and layout are not covered. XLSX also supplies bounded escaped typed cell JSON '
++            'returned next_offset/next_char_offset for continuation. PDF, Word DOCX/DOTX/DOCM/DOTM, '
++            'ODF ODT/OTT/FODT, spreadsheets XLSX/XLTX/XLSM/XLTM/ODS/OTS/FODS and RTF expose bounded '
++            'native text or cell views; images and layout are not covered. DOCM/DOTM are inert read-only '
++            'profiles: VBA remains opaque and is never executed; cached fields are never evaluated. '
++            'XLSX also supplies bounded escaped typed cell JSON '
+             'records with native coordinates/types and separate formula/cache fields; inspect '
+             'extraction.cell_records for omissions/truncation and concatenate char_offset segments '
+             'of one line before JSON parsing. The TAB/LF display is not a lossless table stream. '
+-            'PPTX/POTX/PPSX/PPTM/POTM/PPSM and ODP/OTP return native slide text, tables and cached chart data with slide order, '
++            'PPT/POT/PPS/PPTX/POTX/PPSX/PPTM/POTM/PPSM and ODP/OTP/FODP return their supported native '
++            'slide views with slide order; tables and cached chart data are available where reported. '
+             'separate speaker notes, source labels and coverage/unsupported-feature metadata; follow all '
+             'pages when partial is true. Hidden content is labelled; notes are not public slide content. '
+             'Images, layout and rendering are not covered. Macro variants require their genuine native '
+@@ -327,11 +338,25 @@
+             'offset and limit paginate whole archive entries. If partial is true, continue at next_offset; '
+             'total_entries and sha256 identify the full archive. '
+             'use write_file format=zip_extract or 7z_extract to extract into a NEW folder, then read those returned paths. '
++            'Legacy .doc reads stored main-story text only; notes, headers, images, formatting and layout are not covered. '
++            'Encrypted, field/object/macro-bearing or unsupported DOC refuses. DOC is read-only. '
++            'Legacy .xls reads bounded BIFF8 stored cells and saved formula caches with sheet order and visibility. '
++            'Formulas are not evaluated. Unsupported, encrypted or active XLS refuses. No XLS write or conversion support is implied. '
++            'EPUB 2/3 with UTF-8 XHTML spine chapters returns logical book text in declared reading order; '
++            'auxiliary chapters are labelled. No CSS, page-layout, image or multimedia rendering, no '
++            'external fetches. Scripts, encryption, unsupported spine formats and ambiguous packages refuse. '
++            'EPUB writing is unsupported. '
+             'Other binary formats are unsupported; encrypted or unsupported 7z refuses. '
+             'Before replacing an existing text file, read its complete current content in this task.')
+     else:
+         function['description'] = (
+             'Own-workspace write: path + content string; choose format. '
++            'Word DOCX/DOTX and ODF ODT/OTT/FODT: profile name creates plain text natively; '
++            'profile_structured creates typed JSON blocks; profile_edit uses exact '
++            'source/old_text/new_text into a NEW same-profile file. Native MIME/content types '
++            'are checked. DOCM/DOTM are inert-read-only: never execute macros/fields, never '
++            'drop VBA to perform an edit; all macro-profile writes refuse. '
++
+             'ZIP: format=zip needs a NEW .zip path and content JSON {"entries":[{"source":"report.docx","member":"Docs/report.docx"}]}; '
+             'only the exact listed files are included, with unchanged bytes and the requested nested member names. '
+             'format=zip_extract needs a NEW folder path and content JSON {"source":"materials.zip"}. '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -880,14 +880,15 @@
+                 from hermes_cli.friday_workspace_zip import read_archive
+                 return read_archive(cap, path.as_posix(), offset=args.get('offset', 1),
+                                     limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.odt', '.ott', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.doc', '.xls', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
+             extraction_metadata = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+                 data, _ = workspace_document(str(root / path), max_bytes=1000000)
+                 revision.check(cap)
+                 try:
+-                    text = extract_scoped_document_bytes(data, document_format)
++                    text = extract_scoped_document_bytes(data, document_format,
++                                                         checkpoint=lambda: revision.check(cap))
+                     # Authored by the trusted extractor; preserve on every page.
+                     extraction_metadata = getattr(text, 'extraction_metadata', None)
+                 except ScopedExtractionError as exc:
+@@ -984,7 +985,14 @@
+         if name != 'write_file':
+             raise ScopeDenied()
+         output_format = args.get('format', 'text')
+-        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit'):
++        if path.suffix.lower() in {'.docm', '.dotm'} or output_format in (
++                'docm', 'dotm', 'docm_structured', 'dotm_structured', 'docm_edit', 'dotm_edit'):
++            return json.dumps({'success': False, 'error': 'document_write_unsupported',
++                'reason': 'macro_preservation_unsupported', 'effect_disposition': 'none',
++                'hint': 'DOCM/DOTM support bounded inert reading only. Macro projects are '
++                        'opaque, never executed, and not accepted as safe. Creating or editing '
++                        'these profiles is unsupported; do not drop VBA or rename another format.'})
++        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit'):
+             raise ScopeDenied()
+         if output_format in ('spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert'):
+             from hermes_cli.friday_workspace_spreadsheet import execute
+@@ -1060,28 +1068,32 @@
+             if path.suffix.lower() != '.rtf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_rtf import execute
+             return execute(cap, fd, parts[-1], path.as_posix(), args.get('content'), output_format)
+-        if output_format in ('odt', 'odt_structured', 'odt_edit'):
+-            if path.suffix.lower() != '.odt': raise ScopeDenied()
+-            from hermes_cli import friday_workspace_odt as odt
+-            if output_format == 'odt_edit':
+-                return odt.create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+-            return odt.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+-                              structured=output_format == 'odt_structured')
++        if output_format in ('odt', 'odt_structured', 'odt_edit',
++                             'ott', 'ott_structured', 'ott_edit',
++                             'fodt', 'fodt_structured', 'fodt_edit'):
++            profile = output_format.split('_', 1)[0]
++            if path.suffix.lower() != '.' + profile: raise ScopeDenied()
++            from hermes_cli import friday_workspace_odf_profiles as odf
++            if output_format.endswith('_edit'):
++                return odf.create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'),
++                                       format=profile)
++            return odf.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
++                              format=profile, structured=output_format.endswith('_structured'))
+         if output_format == 'docx_pdf':
+             if path.suffix.lower() != '.pdf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_pdf import create_pdf
+             return create_pdf(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+-        if output_format == 'docx_edit':
+-            if path.suffix.lower() != '.docx': raise ScopeDenied()
+-            from hermes_cli.friday_workspace_docx import create_edit
+-            return create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+-        if output_format in ('docx', 'docx_structured'):
+-            if path.suffix.lower() != '.docx':
+-                raise ScopeDenied()
+-            from hermes_cli.friday_workspace_docx import create
+-            return create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+-                          structured=output_format == 'docx_structured')
+-        if path.suffix.lower() in {'.docx', '.odt', '.ott', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
++        if output_format in ('docx', 'docx_structured', 'docx_edit',
++                             'dotx', 'dotx_structured', 'dotx_edit'):
++            profile = output_format.split('_', 1)[0]
++            if path.suffix.lower() != '.' + profile: raise ScopeDenied()
++            from hermes_cli import friday_workspace_word_profiles as word
++            if output_format.endswith('_edit'):
++                return word.create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'),
++                                        format=profile)
++            return word.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
++                               format=profile, structured=output_format.endswith('_structured'))
++        if path.suffix.lower() in {'.doc', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+             if path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
+@@ -1130,19 +1142,19 @@
+                 refusal['hint'] = ('Use rtf_create or rtf_structured for a NEW native RTF, '
+                     'or rtf_edit with source/old_text/new_text for a NEW preserving copy. '
+                     'Never write ordinary text under the RTF suffix.')
+-            elif path.suffix.lower() in {'.odt', '.ott'}:
+-                refusal['hint'] = ('ODT/OTT have a bounded native reader. To create a NEW ODT use '
+-                    'format=odt with plain text, or odt_structured with JSON blocks: paragraph '
+-                    '(type,text), heading (type,text,level 1..9), list (type,items,ordered), '
+-                    'table (type,rows of rectangular strings). For a preserving ODT copy use '
+-                    'format=odt_edit and JSON source/old_text/new_text; exactly one supported '
+-                    'body paragraph match is required. OTT creation/editing is unsupported. '
+-                    'Do not write text or rename another format under an ODT/OTT suffix.')
+-            elif path.suffix.lower() == '.docx':
+-                refusal['hint'] = ('For a preserving DOCX edit use format=docx_edit, a NEW .docx path, '
+-                    'and content JSON with source, old_text, new_text. The literal old_text must '
+-                    'match exactly once within a supported body/table paragraph. Never rebuild '
+-                    'an existing document from extracted text to claim preservation.')
++            elif path.suffix.lower() == '.doc':
++                refusal['hint'] = ('Legacy DOC supports bounded stored main-story reading only. '
++                    'Creation, editing and conversion are unsupported; do not write text '
++                    'under the DOC suffix or rebuild an existing DOC from extracted text.')
++            elif path.suffix.lower() in {'.odt', '.ott', '.fodt', '.docx', '.dotx'}:
++                profile = path.suffix.lower().lstrip('.')
++                refusal['hint'] = ('Use explicit format=' + profile + ' or ' + profile +
++                    '_structured to CREATE a new native document. For a preserving copy use ' +
++                    profile + '_edit, a NEW matching output path, and exact JSON '
++                    'source/old_text/new_text. Source and destination must share the actual native '
++                    'profile. One unique supported paragraph match is required; unsafe or '
++                    'unsupported structures refuse. Do not reconstruct a source from extracted '
++                    'text or rename another format to claim preservation.')
+             return json.dumps(refusal)
+         content = args.get('content')
+         if not isinstance(content, str) or len(content.encode()) > 1000000:
+--- /dev/null
++++ b/hermes_cli/friday_workspace_odf_profiles.py
+@@ -0,0 +1,73 @@
++"""Own-workspace ODF profiles, create-only writes and exact source CAS."""
++import hashlib
++import json
++from pathlib import Path
++
++from hermes_cli.friday_user_scope import ScopeDenied
++from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++from hermes_cli.friday_workspace_odt import _spec
++from hermes_cli.friday_workspace_revision import check
++from tools.scoped_odf_profiles import ODFProfileError, render, render_edit
++
++
++def _destination(leaf, path, format):
++    if (not isinstance(format, str) or format not in ('odt', 'ott', 'fodt')
++            or not isinstance(path, str) or Path(path).suffix.lower() != '.' + format
++            or Path(path).name != leaf):
++        raise ScopeDenied()
++
++
++def create(cap, fd, leaf, path, content, *, format, structured=False):
++    _check_parent(cap, fd, path)
++    _destination(leaf, path, format)
++    try:
++        data = render(content, format, structured=structured, checkpoint=lambda: check(cap))
++    except ODFProfileError as error:
++        return json.dumps({'success': False, 'error': 'document_create_refused',
++                           'reason': error.code, 'effect_disposition': 'none'})
++    return _create_bytes(cap, fd, leaf, path, data, output_format=format)
++
++
++def create_edit(cap, fd, leaf, path, content, *, format):
++    from hermes_cli.friday_user_scope import workspace_document
++
++    _check_parent(cap, fd, path)
++    _destination(leaf, path, format)
++    spec = _spec(content)
++    raw = spec['source']
++    if not isinstance(raw, str) or not raw or '\x00' in raw:
++        raise ScopeDenied()
++    root = cap.home / 'workspace'
++    source = Path(raw)
++    if not source.is_absolute():
++        source = root / source
++    try:
++        relative = source.relative_to(root)
++    except ValueError:
++        raise ScopeDenied() from None
++    if (not relative.parts or any(p in ('.', '..') or p.startswith('.') for p in relative.parts)
++            or source.suffix.lower() != '.' + format or relative.as_posix() == path):
++        raise ScopeDenied()
++    data, _, identity = workspace_document(str(source), with_identity=True)
++    try:
++        rendered = render_edit(data, spec['old_text'], spec['new_text'], format,
++                               checkpoint=lambda: check(cap))
++    except ODFProfileError as error:
++        return json.dumps({'success': False, 'error': 'document_edit_refused',
++                           'reason': error.code, 'effect_disposition': 'none'})
++
++    def verify():
++        check(cap)
++        current, _, version = workspace_document(str(source), with_identity=True)
++        if current != data or version != identity:
++            raise ScopeDenied()
++
++    result = json.loads(_create_bytes(cap, fd, leaf, path, rendered,
++                                     output_format=format, verify_source=verify))
++    if result.get('success'):
++        result.update(source=relative.as_posix(), source_sha256=hashlib.sha256(data).hexdigest(),
++                      replacements=1, source_unchanged=True, unchanged_parts_preserved=True,
++                      edit_mode='exact_text')
++        if format == 'fodt':
++            result['unselected_source_bytes_preserved'] = True
++    return json.dumps(result, ensure_ascii=False)
+--- /dev/null
++++ b/hermes_cli/friday_workspace_word_profiles.py
+@@ -0,0 +1,71 @@
++"""Scoped Word profile copies; existing no-overwrite publication and source CAS."""
++import hashlib
++import json
++from pathlib import Path
++
++from hermes_cli.friday_user_scope import ScopeDenied
++from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++from hermes_cli.friday_workspace_odt import _spec
++from hermes_cli.friday_workspace_revision import check
++from tools.scoped_word_profiles import MAIN_TYPES, WordProfileError, render, render_edit
++
++
++def _destination(leaf, path, format):
++    if (not isinstance(format, str) or format not in MAIN_TYPES
++            or not isinstance(path, str) or Path(path).suffix.lower() != '.' + format
++            or Path(path).name != leaf):
++        raise ScopeDenied()
++
++
++def create(cap, fd, leaf, path, content, *, format, structured=False):
++    _check_parent(cap, fd, path)
++    _destination(leaf, path, format)
++    try:
++        data = render(content, format, structured=structured, checkpoint=lambda: check(cap))
++    except WordProfileError as error:
++        return json.dumps({'success': False, 'error': 'document_create_refused',
++                           'reason': error.code, 'effect_disposition': 'none'})
++    return _create_bytes(cap, fd, leaf, path, data, output_format=format)
++
++
++def create_edit(cap, fd, leaf, path, content, *, format):
++    from hermes_cli.friday_user_scope import workspace_document
++
++    _check_parent(cap, fd, path)
++    _destination(leaf, path, format)
++    spec = _spec(content)
++    raw = spec['source']
++    if not isinstance(raw, str) or not raw or '\x00' in raw:
++        raise ScopeDenied()
++    root = cap.home / 'workspace'
++    source = Path(raw)
++    if not source.is_absolute():
++        source = root / source
++    try:
++        relative = source.relative_to(root)
++    except ValueError:
++        raise ScopeDenied() from None
++    if (not relative.parts or any(p in ('.', '..') or p.startswith('.') for p in relative.parts)
++            or source.suffix.lower() != '.' + format or relative.as_posix() == path):
++        raise ScopeDenied()
++    data, _, identity = workspace_document(str(source), with_identity=True)
++    try:
++        rendered = render_edit(data, spec['old_text'], spec['new_text'], format,
++                               checkpoint=lambda: check(cap))
++    except WordProfileError as error:
++        return json.dumps({'success': False, 'error': 'document_edit_refused',
++                           'reason': error.code, 'effect_disposition': 'none'})
++
++    def verify():
++        check(cap)
++        current, _, version = workspace_document(str(source), with_identity=True)
++        if current != data or version != identity:
++            raise ScopeDenied()
++
++    result = json.loads(_create_bytes(cap, fd, leaf, path, rendered,
++                                     output_format=format, verify_source=verify))
++    if result.get('success'):
++        result.update(source=relative.as_posix(), source_sha256=hashlib.sha256(data).hexdigest(),
++                      replacements=1, source_unchanged=True, unchanged_parts_preserved=True,
++                      edit_mode='exact_text')
++    return json.dumps(result, ensure_ascii=False)
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1212,26 +1212,39 @@
+ 
+ 
+ # ODT extends the existing own-workspace native document lane.
+-_ODT_GUIDANCE = (
+-    'ODT/OTT expose bounded native paragraphs, headings, lists, tables and separate notes. '
+-    'Fields, images, layout and external content are not evaluated. OTT is read-only. '
+-    'For a NEW .odt use format=odt with plain text or odt_structured with a JSON string '
+-    '{"blocks":[...]}. Blocks: paragraph {type,text}; heading {type,text,level} with '
+-    'level 1..9; list {type,items,ordered} with string items and boolean ordered; '
+-    'table {type,rows} with rectangular string cells. Exact keys; at most100000 UTF-8 '
+-    'input bytes. For preserving ODT edits use odt_edit, NEW .odt path and JSON '
+-    'source/old_text/new_text: one unique supported body paragraph match; mixed '
+-    'span styles, fields, anchors and active content refuse. Other member payloads '
+-    'are preserved. Never write text or rename a different format under ODT/OTT. ')
++_DOCUMENT_PROFILE_GUIDANCE = (
++    'Native Word DOCX/DOTX and ODF ODT/OTT/FODT support bounded reading, creation and '
++    'preserving exact-text copies. Use the matching profile name as format for plain '
++    'creation, or append _structured for JSON blocks, or _edit for a preserving copy. '
++    'Each output requires a NEW matching suffix and the genuine native content type, '
++    'MIME/manifest or flat XML profile. For example dotx_structured creates a NEW .dotx; '
++    'ott_edit requires JSON {"source":"template.ott","old_text":"old","new_text":"new"} '
++    'and a NEW .ott. Source and output must share a profile. Never merely rename a '
++    'document or rebuild it from extracted text to claim preservation. '
++    'Word structured blocks: title/paragraph {type,text}, heading {type,text,level 1..9}, '
++    'table {type,rows of rectangular string cells}. ODF structured blocks: paragraph '
++    '{type,text}, heading {type,text,level 1..9}, list {type,items of strings,ordered boolean}, '
++    'table {type,rows of rectangular strings}. Exact keys; at most100000 UTF-8 input bytes. '
++    'Preserving edit content has exactly source/old_text/new_text: one unique supported '
++    'paragraph match; mixed formatting, active fields, anchors, unsafe resources and '
++    'unsupported preserving operations refuse. Unselected ZIP part payloads are preserved; '
++    'FODT edits preserve unselected XML bytes and namespace declarations. Reading exposes '
++    'text only and grants no raw binary overwrite authority or layout/render acceptance. '
++    'DOCM/DOTM are READ ONLY inert native text: VBA is opaque and never executed; active '
++    'fields are not evaluated. Disclose unsupported macro/field semantics; safety is '
++    'unproven. All macro-profile create/edit operations refuse; never silently drop VBA. ')
+ READ_FILE_SCHEMA['description'] += (
+-    ' Own-workspace ODT/OTT expose bounded native text structure and separate notes. '
+-    'Fields, images, layout and external content are not evaluated; reading grants '
+-    'no raw overwrite authority.')
+-WRITE_FILE_SCHEMA['description'] = _ODT_GUIDANCE + WRITE_FILE_SCHEMA['description']
++    ' Own-workspace DOCX/DOTX/DOCM/DOTM/ODT/OTT/FODT use bounded native profile readers. '
++    'Macro projects remain opaque and never execute; extraction metadata discloses coverage '
++    'limits. No raw overwrite or layout acceptance follows from text extraction.')
++WRITE_FILE_SCHEMA['description'] = _DOCUMENT_PROFILE_GUIDANCE + WRITE_FILE_SCHEMA['description']
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] = (
+-    _ODT_GUIDANCE + WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'])
++    _DOCUMENT_PROFILE_GUIDANCE + WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'])
+ WRITE_FILE_SCHEMA['parameters']['properties']['format']['enum'][1:1] = [
+-    'odt', 'odt_structured', 'odt_edit']
++    'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit',
++    'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit']
++WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'] = (
++    _DOCUMENT_PROFILE_GUIDANCE + WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'])
+ 
+ # Native RTF extends the same admitted document lane, without Office execution.
+ _RTF_GUIDANCE = (
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -157,24 +157,33 @@
+         super().__init__(code)
+ 
+ 
+-def extract_scoped_document_bytes(data: bytes, format: str) -> str:
++def extract_scoped_document_bytes(data: bytes, format: str, *, checkpoint=None) -> str:
+     """Convert own immutable snapshots; never install or use hosted OCR.
+ 
+     PPT/PPTX/POTX/PPSX/PPTM/POTM/PPSM/ODP/OTP/FODP expose bounded native content,
+     separate notes and coverage. Macro projects remain opaque and are never run.
+-    ODT/OTT use the bounded native text-document view.
+-    DOCX/XLSX reuse bounded native parsers. PDF keeps the existing installed
++    DOCX/DOTX and inert DOCM/DOTM require their genuine native main content type.
++    ODT/OTT/FODT use bounded native text-document profiles. XLSX retains its bounded parser. PDF keeps the existing installed
+     anydoc text route, with a bounded networkless local OCR fallback only for
+     its scanned-page signal. OCR returns a string-compatible trusted metadata
+     result; neither route establishes exact image content or raw write authority.
+     """
+     if not isinstance(data, bytes) or len(data) > 1000000:
+         raise ScopedExtractionError('input_limit')
+-    if format == 'docx':
++    if checkpoint is not None:
++        checkpoint()
++    if format == 'doc':
++        from tools.scoped_doc import extract_doc, DOCError
+         try:
+-            text = _extract_docx(io.BytesIO(data), max_xml_bytes=1000000)
+-        except (ExtractionError, ValueError, RuntimeError, NotImplementedError, LookupError, zlib.error):
+-            raise ScopedExtractionError('malformed_or_required_part_limit') from None
++            text = extract_doc(data)
++        except DOCError as exc:
++            raise ScopedExtractionError(str(exc)) from None
++    elif format in ('docx', 'dotx', 'docm', 'dotm'):
++        from tools.scoped_word_profiles import extract, WordProfileError
++        try:
++            text = extract(data, format, checkpoint=checkpoint)
++        except WordProfileError as exc:
++            raise ScopedExtractionError(exc.code) from None
+     elif format in ('ods', 'ots'):
+         from tools.scoped_ods import extract_spreadsheet, ODSError
+         from tools.scoped_odt import ODTError
+@@ -182,18 +191,30 @@
+             text = extract_spreadsheet(data, format)
+         except (ODSError, ODTError) as exc:
+             raise ScopedExtractionError(str(exc)) from None
++    elif format == 'xls':
++        from tools.scoped_xls import extract_xls, XLSExtractionError
++        try:
++            text = extract_xls(data)
++        except XLSExtractionError as exc:
++            raise ScopedExtractionError(str(exc)) from None
++    elif format == 'epub':
++        from tools.scoped_epub import extract_epub, EPUBError
++        try:
++            text = extract_epub(data)
++        except EPUBError as exc:
++            raise ScopedExtractionError(str(exc)) from None
+     elif format == 'rtf':
+         from tools.scoped_rtf import extract_rtf, RTFError
+         try:
+             text = extract_rtf(data)
+         except RTFError as exc:
+             raise ScopedExtractionError(str(exc)) from None
+-    elif format in ('odt', 'ott'):
+-        from tools.scoped_odt import extract_document, ODTError
++    elif format in ('odt', 'ott', 'fodt'):
++        from tools.scoped_odf_profiles import extract, ODFProfileError
+         try:
+-            text = extract_document(data, format)
+-        except ODTError as exc:
+-            raise ScopedExtractionError(str(exc)) from None
++            text = extract(data, format, checkpoint=checkpoint)
++        except ODFProfileError as exc:
++            raise ScopedExtractionError(exc.code) from None
+     elif format in ('xlsx', 'xltx', 'xlsm', 'xltm', 'ods', 'ots', 'fods'):
+         from tools.scoped_spreadsheet_profiles import extract_spreadsheet, ODSError
+         from tools.scoped_odt import ODTError
+@@ -227,6 +248,8 @@
+             text = _pdf_scoped_page_view(data, text)
+     else:
+         raise ScopedExtractionError('unsupported_format')
++    if checkpoint is not None:
++        checkpoint()
+     if not isinstance(text, str) or not text.strip():
+         raise ScopedExtractionError('no_extractable_text')
+     if len(text.encode('utf-8')) > 1000000:
+--- /dev/null
++++ b/tools/scoped_doc.py
+@@ -0,0 +1,428 @@
++"""Bounded inert Word 97-2007 binary (.doc) main-story text reader.
++
++CFB allocation checks are copied and specialized from the accepted XLS reader;
++no XLS/PPT profile boundaries are changed. Only FIB/CLX text is interpreted.
++Macro/storage, object, field and encrypted documents refuse. No file, process,
++network, Office or formula execution. See package FORMAT-NOTES.md for the exact
++subset and Microsoft specification references.
++"""
++from __future__ import annotations
++import struct
++
++MAX_INPUT = 1_000_000
++MAX_DIRECTORY = 256
++MAX_PIECES = 4096
++MAX_CP = 400_000
++MAX_TEXT = 1_000_000
++FREE = 0xFFFFFFFF
++END = 0xFFFFFFFE
++FAT = 0xFFFFFFFD
++DIF = 0xFFFFFFFC
++WORD_CLSID = bytes.fromhex('0609020000000000c000000000000046')
++STREAMS = frozenset(('WordDocument', '0Table', '1Table', 'Data', '\x01CompObj', '\x05SummaryInformation',
++                     '\x05DocumentSummaryInformation'))
++
++class DOCError(ValueError):
++    """Fixed content-free refusal code."""
++
++
++def _fail(code):
++    raise DOCError(code)
++
++def _u16(data, at):
++    return struct.unpack_from('<H', data, at)[0]
++
++
++def _u32(data, at):
++    return struct.unpack_from('<I', data, at)[0]
++
++
++def _words(data):
++    return struct.unpack('<' + 'I' * (len(data) // 4), data)
++
++
++class _CFB:
++    def __init__(self, data):
++        if len(data) < 512 or data[:8] != bytes.fromhex('d0cf11e0a1b11ae1'):
++            _fail('cfb_signature')
++        self.data = data
++        version = _u16(data, 26)
++        shift = _u16(data, 30)
++        if (data[8:24] != b'\0' * 16 or _u16(data, 24) != 0x003E or version not in (3, 4)
++                or _u16(data, 28) != 0xFFFE or shift != (9 if version == 3 else 12)
++                or _u16(data, 32) != 6 or data[34:40] != b'\0' * 6
++                or _u32(data, 56) != 4096):
++            _fail('cfb_header')
++        self.sector_size = 1 << shift
++        if (len(data) % self.sector_size or len(data) < self.sector_size * 3
++                or any(data[512:self.sector_size])):
++            _fail('cfb_geometry')
++        self.sectors = len(data) // self.sector_size - 1
++        self.used = set()
++        ndir, nfat = _u32(data, 40), _u32(data, 44)
++        nmini, ndif = _u32(data, 64), _u32(data, 72)
++        if ((version == 3 and ndir != 0) or not 1 <= nfat <= self.sectors
++                or nmini > self.sectors or ndif > self.sectors):
++            _fail('cfb_allocation_count')
++        fat_ids = []
++        saw_free = False
++
++        def add_fat_ids(items):
++            nonlocal saw_free
++            for sid in items:
++                if sid == FREE:
++                    saw_free = True
++                else:
++                    if saw_free or len(fat_ids) >= nfat:
++                        _fail('cfb_difat_count')
++                    self._claim(sid)
++                    fat_ids.append(sid)
++
++        add_fat_ids(_words(data[76:512]))
++        dif_ids = []
++        sid = _u32(data, 68)
++        for _ in range(ndif):
++            self._claim(sid)
++            dif_ids.append(sid)
++            items = _words(self._sector(sid))
++            add_fat_ids(items[:-1])
++            sid = items[-1]
++        if sid != END or len(fat_ids) != nfat:
++            _fail('cfb_difat_count')
++        self.fat = tuple(v for sid in fat_ids for v in _words(self._sector(sid)))
++        if len(self.fat) < self.sectors:
++            _fail('cfb_fat_coverage')
++        for sid, value in enumerate(self.fat):
++            if sid >= self.sectors:
++                if value != FREE:
++                    _fail('cfb_fat_padding')
++            elif value not in (FREE, END, FAT, DIF) and value >= self.sectors:
++                _fail('cfb_sector_bounds')
++        if any(self.fat[sid] != FAT for sid in fat_ids) or any(
++                self.fat[sid] != DIF for sid in dif_ids):
++            _fail('cfb_allocation_marker')
++        directory = self._chain(_u32(data, 48), self.fat, self.sector_size,
++                                self.sectors, self.used, limit=MAX_DIRECTORY // (self.sector_size // 128))
++        if version == 4 and len(directory) // self.sector_size != ndir:
++            _fail('cfb_directory_count')
++        if not directory:
++            _fail('cfb_directory_missing')
++        entries = []
++        for at in range(0, len(directory), 128):
++            row = directory[at:at + 128]
++            kind = row[66]
++            if kind == 0:
++                entries.append(None)
++                continue
++            length = _u16(row, 64)
++            if (kind not in (1, 2, 5) or length < 2 or length > 64 or length % 2
++                    or row[length - 2:length] != b'\0\0' or row[67] not in (0, 1)):
++                _fail('cfb_directory_entry')
++            try:
++                name = row[:length - 2].decode('utf-16le')
++            except UnicodeError:
++                _fail('cfb_directory_name')
++            if not name or any(c in name for c in '\0/\\:!'):
++                _fail('cfb_directory_name')
++            if version == 3 and _u32(row, 124):
++                _fail('cfb_v3_stream_size')
++            size = _u32(row, 120) if version == 3 else struct.unpack_from('<Q', row, 120)[0]
++            if size > MAX_INPUT:
++                _fail('cfb_stream_limit')
++            entries.append((name, kind, _u32(row, 68), _u32(row, 72),
++                            _u32(row, 76), row[80:96], _u32(row, 116), size, row[67]))
++        root = entries[0]
++        if (root is None or root[0] != 'Root Entry' or root[1] != 5
++                or root[2:4] != (FREE, FREE) or root[8] != 1):
++            _fail('cfb_root')
++        if root[5] not in (bytes(16), WORD_CLSID):
++            _fail('not_word_cfb')
++        # Walk every directory entry; no orphan streams or nested storage allowed.
++        stack = [(root[4], None, None, False, 0)]
++        leaf_depths = set()
++        seen = {0}
++        names = set()
++        streams = []
++        while stack:
++            idx, low, high, parent_red, depth = stack.pop()
++            if idx == FREE:
++                leaf_depths.add(depth)
++                continue
++            if idx >= len(entries) or idx in seen or entries[idx] is None:
++                _fail('cfb_directory_cycle_or_bounds')
++            seen.add(idx)
++            row = entries[idx]
++            name, kind, left, right, child, _, start, size, color = row
++            key = (len(name), name.upper())
++            if ((low is not None and key <= low) or (high is not None and key >= high)
++                    or (parent_red and color == 0) or (idx == root[4] and color != 1)):
++                _fail('cfb_directory_tree')
++            if kind != 2 or child != FREE or row[5] != bytes(16):
++                _fail('unsupported_cfb_storage')
++            if name.casefold() in names:
++                _fail('cfb_duplicate_stream')
++            names.add(name.casefold())
++            if name not in STREAMS:
++                _fail('unsupported_cfb_stream')
++            streams.append((name, start, size))
++            depth += color
++            stack.extend(((left, low, key, color == 0, depth),
++                          (right, key, high, color == 0, depth)))
++        if len(leaf_depths) > 1:
++            _fail('cfb_directory_tree')
++        if seen != {i for i, row in enumerate(entries) if row is not None}:
++            _fail('cfb_directory_orphan')
++        mini_table = self._chain(_u32(data, 60), self.fat, self.sector_size,
++                                 self.sectors, self.used, count=nmini)
++        self.mini_fat = _words(mini_table)
++        self.mini = self._chain(root[6], self.fat, self.sector_size,
++                                self.sectors, self.used, size=root[7])
++        if len(self.mini) % 64:
++            _fail('cfb_ministream_geometry')
++        mini_count = len(self.mini) // 64
++        if len(self.mini_fat) < mini_count:
++            _fail('cfb_minifat_coverage')
++        for idx, value in enumerate(self.mini_fat):
++            if value not in (FREE, END) and value >= mini_count:
++                _fail('cfb_minisector_bounds')
++            if idx >= mini_count and value != FREE:
++                _fail('cfb_minifat_padding')
++        mini_used = set()
++        self.streams = {}
++        for name, start, size in streams:
++            if size < 4096:
++                blob = self._chain(start, self.mini_fat, 64, mini_count, mini_used, size=size, mini=True)
++            else:
++                blob = self._chain(start, self.fat, self.sector_size, self.sectors, self.used, size=size)
++            self.streams[name] = blob
++        if any(value != FREE and idx not in self.used for idx, value in enumerate(self.fat[:self.sectors])):
++            _fail('cfb_unowned_sector')
++        if any(value != FREE and idx not in mini_used for idx, value in enumerate(self.mini_fat)):
++            _fail('cfb_unowned_minisector')
++        if 'WordDocument' not in self.streams:
++            _fail('word_document_stream_missing')
++        if self.streams.get('Data'):
++            _fail('doc_data_stream_unsupported')
++
++    def _sector(self, sid):
++        if not 0 <= sid < self.sectors:
++            _fail('cfb_sector_bounds')
++        at = (sid + 1) * self.sector_size
++        return self.data[at:at + self.sector_size]
++
++    def _claim(self, sid):
++        if not 0 <= sid < self.sectors:
++            _fail('cfb_sector_bounds')
++        if sid in self.used:
++            _fail('cfb_sector_overlap_or_cycle')
++        self.used.add(sid)
++
++    def _chain(self, start, table, unit, available, used, *, size=None, count=None,
++               limit=None, mini=False):
++        expected = (size + unit - 1) // unit if size is not None else count
++        maximum = available if limit is None else min(available, limit)
++        if expected is not None and expected > maximum:
++            _fail('cfb_chain_limit')
++        ids = []
++        sid = start
++        while sid != END:
++            if not 0 <= sid < available or sid >= len(table):
++                _fail('cfb_chain_bounds')
++            if sid in used:
++                _fail('cfb_sector_overlap_or_cycle')
++            if len(ids) >= maximum or (expected is not None and len(ids) >= expected):
++                _fail('cfb_chain_length')
++            used.add(sid)
++            ids.append(sid)
++            sid = table[sid]
++        if expected is not None and len(ids) != expected:
++            _fail('cfb_chain_length')
++        value = b''.join(self.mini[sid * unit:(sid + 1) * unit] if mini else self._sector(sid) for sid in ids)
++        return value if size is None else value[:size]
++
++
++# FIB sizes for Word 97, 2000, 2002, 2003 and 2007 binary storage.
++_VERSIONS = {0x00C1: (93, 0), 0x00D9: (108, 2), 0x0101: (136, 2),
++             0x010C: (164, 2), 0x0112: (183, 5)}
++# Field PLCs, command customizations, drawing anchors, mail merge and OLE controls.
++_ACTIVE_FIB = frozenset((16, 17, 18, 19, 20, 24, 40, 41, 44, 45, 48, 57, 59, 69, 85))
++# FcCompressed maps bytes to Unicode, NOT the document's language code page.
++_COMPRESSED = {0x82:0x201A, 0x83:0x0192, 0x84:0x201E, 0x85:0x2026,
++    0x86:0x2020, 0x87:0x2021, 0x88:0x02C6, 0x89:0x2030, 0x8A:0x0160,
++    0x8B:0x2039, 0x8C:0x0152, 0x91:0x2018, 0x92:0x2019, 0x93:0x201C,
++    0x94:0x201D, 0x95:0x2022, 0x96:0x2013, 0x97:0x2014, 0x98:0x02DC,
++    0x99:0x2122, 0x9A:0x0161, 0x9B:0x203A, 0x9C:0x0153, 0x9F:0x0178}
++
++
++class _Text(str):
++    def __new__(cls, value, metadata):
++        obj = super().__new__(cls, value)
++        obj.extraction_metadata = metadata
++        return obj
++
++
++def _fib(word, streams):
++    if len(word) < 156 or _u16(word, 0) != 0xA5EC:
++        _fail('doc_fib_signature')
++    base_version = _u16(word, 2)
++    if base_version not in _VERSIONS:
++        _fail('doc_version_unsupported')
++    flags = _u16(word, 10)
++    if flags & 0x0100:
++        _fail('doc_encrypted')
++    if flags & 0x0003 or _u16(word, 8):
++        _fail('doc_template_or_autotext_unsupported')
++    if (not flags & 0x1000 or _u16(word, 12) not in (0x00BF, 0x00C1)
++            or _u32(word, 14) or word[18] or word[19] & 1):
++        _fail('doc_fib_flags')
++    if _u16(word, 32) != 14 or _u16(word, 62) != 22:
++        _fail('doc_fib_counts')
++    count = _u16(word, 152)
++    if count not in {item[0] for item in _VERSIONS.values()}:
++        _fail('doc_fib_counts')
++    at = 154 + count * 8
++    if len(word) < at + 2:
++        _fail('doc_fib_truncated')
++    csw_new = _u16(word, at)
++    fib_end = at + 2 + csw_new * 2
++    if fib_end > len(word) or csw_new not in (0, 2, 5):
++        _fail('doc_fib_counts')
++    version = _u16(word, at + 2) if csw_new else base_version
++    if version not in _VERSIONS or _VERSIONS[version] != (count, csw_new) or version < base_version:
++        _fail('doc_version_unsupported')
++    cb_mac = _u32(word, 64)
++    if not fib_end <= cb_mac <= len(word):
++        _fail('doc_word_stream_bounds')
++    counts = [_u32(word, p) for p in (76, 80, 84, 92, 96, 100, 104)]
++    if any(n > MAX_CP for n in counts) or sum(counts) > MAX_CP or not counts[0]:
++        _fail('doc_character_limit')
++    pairs = [struct.unpack_from('<II', word, 154 + 8 * i) for i in range(count)]
++    if any(pairs[i][1] for i in _ACTIVE_FIB):
++        _fail('doc_fields_or_active_content_unsupported')
++    # Later FIB extensions include additional document behaviours. They are
++    # deliberately not interpreted or silently discarded by this narrow reader.
++    if any(a or b for a, b in pairs[93:]):
++        _fail('doc_extended_structures_unsupported')
++    table_name = '1Table' if flags & 0x0200 else '0Table'
++    table = streams.get(table_name)
++    if table is None:
++        _fail('doc_selected_table_missing')
++    if streams.get('0Table' if table_name == '1Table' else '1Table'):
++        _fail('doc_ambiguous_table_streams')
++    fc, size = pairs[33]
++    if size < 21 or size > len(table) or fc > len(table) - size:
++        _fail('doc_clx_bounds')
++    return word[:cb_mac], table[fc:fc + size], counts, version, fib_end, table_name
++
++
++def _piece_text(word, clx, counts, fib_end):
++    at = 0
++    prcs = 0
++    while at < len(clx) and clx[at] == 1:
++        if at + 3 > len(clx):
++            _fail('doc_clx_prc_bounds')
++        size = _u16(clx, at + 1)
++        if size > 0x3FA2 or at + 3 + size > len(clx) or prcs >= MAX_PIECES:
++            _fail('doc_clx_prc_bounds')
++        # Property runs are opaque, bounded styling; no sprm is applied.
++        at += 3 + size
++        prcs += 1
++    if at + 5 > len(clx) or clx[at] != 2:
++        _fail('doc_piece_table_missing')
++    size = _u32(clx, at + 1)
++    at += 5
++    if size != len(clx) - at or size < 16 or (size - 4) % 12:
++        _fail('doc_piece_table_size')
++    n = (size - 4) // 12
++    if n > MAX_PIECES:
++        _fail('doc_piece_limit')
++    cps = [_u32(clx, at + i * 4) for i in range(n + 1)]
++    expected = sum(counts) + (1 if any(counts[1:]) else 0)
++    if cps[0] != 0 or cps[-1] != expected or any(a >= b for a, b in zip(cps, cps[1:])):
++        _fail('doc_piece_character_bounds')
++    pcd_at = at + (n + 1) * 4
++    out = []
++    all_units = []
++    encodings = set()
++    intervals = []
++    for i in range(n):
++        offset = pcd_at + 8 * i
++        flags = _u16(clx, offset)
++        packed_fc = _u32(clx, offset + 2)
++        prm = _u16(clx, offset + 6)
++        if flags & 4 or packed_fc & 0x80000000:
++            _fail('doc_piece_flags')
++        if prm & 1 and prm >> 1 >= prcs:
++            _fail('doc_piece_property_reference')
++        compressed = bool(packed_fc & 0x40000000)
++        fc = packed_fc & 0x3FFFFFFF
++        if fc % 2:
++            _fail('doc_piece_alignment')
++        start = fc // 2 if compressed else fc
++        end = start + (cps[i + 1] - cps[i]) * (1 if compressed else 2)
++        if start < fib_end or end > len(word):
++            _fail('doc_piece_stream_bounds')
++        intervals.append((start, end))
++        raw = word[start:end]
++        # Decode ALL pieces to reject active characters even in omitted stories.
++        if compressed:
++            text = ''.join(chr(_COMPRESSED.get(c, c)) for c in raw)
++            encodings.add('compressed_unicode')
++        else:
++            # Join UTF-16 units across pieces before final Unicode decoding:
++            # a legitimate surrogate pair may cross a piece boundary.
++            text = raw.decode('utf-16le', errors='surrogatepass')
++            encodings.add('utf16le')
++        # MS-DOC Pcd.fNoParaLast forbids paragraph marks in this piece.
++        if flags & 1 and '\r' in text:
++            _fail('doc_piece_paragraph_flag')
++        if any(c in text for c in ('\x01', '\x08', '\x13', '\x14', '\x15')):
++            _fail('doc_fields_or_objects_unsupported')
++        if any(ord(c) < 32 and c not in '\x02\x05\x07\t\n\x0b\x0c\r\x1e\x1f' for c in text):
++            _fail('doc_control_character_unsupported')
++        encoded = text.encode('utf-16le', errors='surrogatepass')
++        all_units.append(encoded)
++        # Slice by UTF-16 CP units, not Python scalar characters.
++        take = max(0, min(cps[i + 1], counts[0]) - cps[i])
++        if take:
++            out.append(encoded[:take * 2])
++    # Aliased byte ranges make different CP positions claim the same storage.
++    # Out-of-order physical pieces are valid incremental-save data.
++    intervals.sort()
++    if any(a[1] > b[0] for a, b in zip(intervals, intervals[1:])):
++        _fail('doc_overlapping_pieces')
++    try:
++        b''.join(all_units).decode('utf-16le')
++        text = b''.join(out).decode('utf-16le')
++    except UnicodeError:
++        _fail('doc_invalid_unicode')
++    if not text.endswith('\r'):
++        _fail('doc_main_story_paragraph_required')
++    # Render plain text conservatively; table structure is not reconstructed.
++    text = text.replace('\r', '\n').replace('\x0b', '\n').replace('\x0c', '\n')
++    text = text.replace('\x07', '\t').replace('\x02', '[note reference]').replace('\x05', '[comment reference]')
++    text = text.replace('\x1e', '\u2011').replace('\x1f', '\u00ad')
++    return text, n, sorted(encodings)
++
++
++def extract_doc(data):
++    """Return stored main-story text with coverage, or a fixed safe refusal."""
++    if not isinstance(data, bytes) or not 512 <= len(data) <= MAX_INPUT:
++        _fail('doc_input_limit')
++    cfb = _CFB(data)
++    word, clx, counts, version, fib_end, table = _fib(cfb.streams['WordDocument'], cfb.streams)
++    text, pieces, encodings = _piece_text(word, clx, counts, fib_end)
++    if not text.strip():
++        _fail('doc_no_main_text')
++    if len(text.encode('utf-8')) > MAX_TEXT:
++        _fail('doc_extracted_text_limit')
++    metadata = {
++        'schema': 'friday.doc-text.v1', 'format': 'doc', 'parser': 'bounded_word_binary',
++        'coverage': 'stored_main_story_text_only; headers_footers_notes_comments_textboxes_images_formatting_layout_not_covered; hidden_revision_visibility_not_resolved',
++        'native_version': hex(version), 'table_stream': table, 'pieces': pieces,
++        'encodings': encodings, 'main_story_cp': counts[0],
++        'omitted_story_cp': dict(zip(('footnotes', 'headers_footers', 'comments', 'endnotes', 'textboxes', 'header_textboxes'), counts[1:])),
++        'field_evaluation': False, 'macro_execution': False, 'external_resources_loaded': False,
++        'read_only': True,
++    }
++    return _Text(text, metadata)
+--- /dev/null
++++ b/tools/scoped_epub.py
+@@ -0,0 +1,261 @@
++"""Bounded, inert EPUB 2/3 spine-text extraction; no rendering or I/O.
++
++Container, package and spine semantics follow W3C EPUB 3.3 sections 4.2.6,
++4.3.3 and 5.6–5.7. Only UTF-8 XML and XHTML spine documents are supported.
++CSS, images, audio, SVG and scripts are never rendered or executed.
++"""
++from __future__ import annotations
++
++import io
++import json
++import posixpath
++import re
++import stat
++import struct
++from urllib.parse import unquote, urlsplit
++import zipfile
++import zlib
++from xml.etree import ElementTree as ET
++
++MAX_INPUT = 1_000_000
++MAX_EXPANDED = 2_000_000
++MAX_PART = 500_000
++MAX_MEMBERS = 256
++MAX_SPINE = 128
++MAX_TEXT = 800_000
++CONTAINER = 'urn:oasis:names:tc:opendocument:xmlns:container'
++OPF = 'http://www.idpf.org/2007/opf'
++XHTML = 'http://www.w3.org/1999/xhtml'
++DC = 'http://purl.org/dc/elements/1.1/'
++
++
++class EPUBError(ValueError):
++    """Fixed diagnostic codes only; no private content in error messages."""
++
++
++class _Text(str):
++    def __new__(cls, text, metadata):
++        value = super().__new__(cls, text)
++        value.extraction_metadata = metadata
++        return value
++
++
++def fail(code):
++    raise EPUBError(code)
++
++
++def xml(data, expected=None):
++    if len(data) > MAX_PART or b'\0' in data:
++        fail('epub_xml_limit_or_encoding')
++    try:
++        text = data.decode('utf-8-sig')
++        if re.search(r'<!\s*(?:DOCTYPE|ENTITY)', text, re.I):
++            fail('epub_dtd_forbidden')
++        declaration = re.match(r'\s*<\?xml\s+([^?]+)\?>', text)
++        if declaration:
++            encoding = re.search(r'encoding\s*=\s*[\'"]([^\'"]+)', declaration[1])
++            if encoding and encoding[1].lower().replace('_', '-') not in ('utf-8', 'utf8'):
++                fail('epub_xml_encoding_unsupported')
++        root = ET.fromstring(text)
++    except (UnicodeError, ET.ParseError):
++        fail('epub_xml_malformed')
++    if expected is not None and root.tag != expected:
++        fail('epub_xml_root')
++    stack = [(root, 0)]; count = 0
++    while stack:
++        node, depth = stack.pop(); count += 1
++        if depth > 64 or count > 20_000:
++            fail('epub_xml_structure_limit')
++        stack.extend((child, depth+1) for child in node)
++    return root
++
++
++def local_path(base, href):
++    if not isinstance(href, str) or not href or '\\' in href:
++        fail('epub_resource_path')
++    try:
++        url = urlsplit(href)
++        path = unquote(url.path, encoding='utf-8', errors='strict')
++    except (ValueError, UnicodeError):
++        fail('epub_resource_path')
++    if url.scheme or url.netloc or url.query or url.fragment or path.startswith('/'):
++        fail('epub_external_resource')
++    if '\\' in path or any(ord(c) < 32 for c in path):
++        fail('epub_resource_path')
++    result = posixpath.normpath(posixpath.join(base, path))
++    if result in ('', '.', '..') or result.startswith('../'):
++        fail('epub_resource_path')
++    return result
++
++
++def archive(data):
++    if not isinstance(data, bytes) or len(data) > MAX_INPUT:
++        fail('epub_input_limit')
++    if data[:4] != b'PK\x03\x04':
++        fail('epub_zip_signature')
++    with zipfile.ZipFile(io.BytesIO(data)) as z:
++        rows = z.infolist()
++        if not 3 <= len(rows) <= MAX_MEMBERS:
++            fail('epub_member_limit')
++        first = rows[0]
++        if first.filename != 'mimetype' or first.header_offset != 0 or first.compress_type != 0 or first.extra:
++            fail('epub_mimetype_header')
++        # OCF forbids an extra field in the local mimetype header as well.
++        if len(data) < 30 or struct.unpack_from('<H', data, 28)[0] != 0:
++            fail('epub_mimetype_header')
++        result = {}; seen = set(); expanded = 0
++        for row in rows:
++            name = row.filename
++            if (name != row.orig_filename or not name or '\\' in name or name.startswith('/') or '\0' in name
++                    or any(ord(c) < 32 for c in name) or any(p in ('', '.', '..') for p in name.rstrip('/').split('/'))):
++                fail('epub_member_path')
++            if name.casefold() in seen:
++                fail('epub_duplicate_member')
++            seen.add(name.casefold())
++            mode = (row.external_attr >> 16) & 0xffff
++            if row.flag_bits & 1 or row.compress_type not in (0, 8) or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)):
++                fail('epub_encrypted_or_special_member')
++            expanded += row.file_size
++            if row.file_size > MAX_PART or expanded > MAX_EXPANDED:
++                fail('epub_expansion_limit')
++            if row.is_dir():
++                if row.file_size:
++                    fail('epub_directory_payload')
++                continue
++            result[name] = read_member(z, data, row)
++        if result.get('mimetype') != b'application/epub+zip':
++            fail('epub_mimetype')
++        if any(name.casefold() in ('meta-inf/encryption.xml', 'meta-inf/rights.xml') for name in result):
++            fail('epub_encryption_or_rights_unsupported')
++        return result
++
++
++def read_member(z, data, row):
++    # ZipFile validates local names/headers and overlapping members, but its
++    # unbounded read can inflate far beyond a forged central-directory size
++    # before truncating the output. Bound the inflater itself and verify EOF.
++    with z.open(row):
++        pass
++    name_bytes, extra_bytes = struct.unpack_from('<HH', data, row.header_offset + 26)
++    start = row.header_offset + 30 + name_bytes + extra_bytes
++    compressed = data[start:start + row.compress_size]
++    if len(compressed) != row.compress_size:
++        fail('epub_malformed')
++    if row.compress_type == 8:
++        decoder = zlib.decompressobj(-zlib.MAX_WBITS)
++        payload = decoder.decompress(compressed, row.file_size + 1)
++        if len(payload) > row.file_size:
++            fail('epub_expansion_limit')
++        if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
++            fail('epub_malformed')
++    else:
++        payload = compressed
++    if len(payload) != row.file_size or zlib.crc32(payload) != row.CRC:
++        fail('epub_malformed')
++    return payload
++
++
++def document_text(data):
++    root = xml(data, '{'+XHTML+'}html')
++    bodies = root.findall('{'+XHTML+'}body')
++    if len(bodies) != 1:
++        fail('epub_xhtml_body')
++    omissions = set(); out = []; remote_links = 0
++    for node in root.iter():
++        local = node.tag.rsplit('}', 1)[-1] if isinstance(node.tag, str) else ''
++        if local.lower() in ('script', 'iframe', 'object', 'embed', 'form'):
++            fail('epub_active_content')
++        for key, value in node.attrib.items():
++            attr = key.rsplit('}', 1)[-1].lower()
++            if attr.startswith('on'):
++                fail('epub_active_content')
++            if attr in ('src', 'href', 'action', 'poster'):
++                try: scheme = urlsplit(value.strip()).scheme.lower()
++                except ValueError: fail('epub_resource_path')
++                if scheme in ('javascript', 'vbscript', 'data'):
++                    fail('epub_active_content')
++                if scheme or value.startswith('//'):
++                    remote_links += 1
++    blocks = {'p', 'div', 'section', 'article', 'header', 'footer', 'aside', 'blockquote',
++              'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr', 'pre', 'figure'}
++    def walk(node):
++        if not isinstance(node.tag, str) or not node.tag.startswith('{'+XHTML+'}'):
++            omissions.add('foreign_namespace_content'); return
++        tag = node.tag.split('}', 1)[1]
++        if tag in ('style', 'link', 'meta', 'title'):
++            return
++        if tag in ('audio', 'video', 'source', 'track', 'canvas'):
++            omissions.add('multimedia'); return
++        if tag in blocks: out.append('\n')
++        if tag == 'br': out.append('\n')
++        if tag == 'img':
++            omissions.add('image_content')
++            if node.get('alt'): out.append('[image alt: '+node.get('alt')+']')
++        elif node.text: out.append(node.text)
++        for child in node:
++            walk(child)
++            if child.tail: out.append(child.tail)
++        if tag in ('td', 'th'): out.append('\t')
++        if tag in blocks: out.append('\n')
++    walk(bodies[0])
++    text = '\n'.join(line.strip() for line in ''.join(out).splitlines() if line.strip())
++    return text, omissions, remote_links
++
++
++def extract_epub(data):
++    """Extract logical spine XHTML text without executing or fetching resources."""
++    try:
++        parts = archive(data)
++        container = xml(parts.get('META-INF/container.xml', b''), '{'+CONTAINER+'}container')
++        rootfiles = container.findall('{'+CONTAINER+'}rootfiles')
++        if container.get('version') != '1.0' or len(rootfiles) != 1 or len(rootfiles[0]) != 1:
++            fail('epub_package_ambiguous')
++        rootfile = rootfiles[0][0]
++        if rootfile.tag != '{'+CONTAINER+'}rootfile' or rootfile.get('media-type') != 'application/oebps-package+xml':
++            fail('epub_package_type')
++        package_path = local_path('', rootfile.get('full-path'))
++        package = xml(parts.get(package_path, b''), '{'+OPF+'}package')
++        if package.get('version') not in ('2.0', '3.0'):
++            fail('epub_version_unsupported')
++        manifests = package.findall('{'+OPF+'}manifest'); spines = package.findall('{'+OPF+'}spine')
++        if len(manifests) != 1 or len(spines) != 1 or not 1 <= len(spines[0]) <= MAX_SPINE:
++            fail('epub_manifest_or_spine')
++        items = {}; paths = set()
++        for item in manifests[0]:
++            if item.tag != '{'+OPF+'}item' or not item.get('id') or item.get('id') in items:
++                fail('epub_manifest_item')
++            path = local_path(posixpath.dirname(package_path), item.get('href'))
++            if path in paths or path not in parts:
++                fail('epub_resource_missing_or_duplicate')
++            if set(item.get('properties', '').split()) & {'scripted', 'remote-resources'}:
++                fail('epub_active_or_remote_manifest')
++            paths.add(path); items[item.get('id')] = (path, item.get('media-type'))
++        sections = []; metadata_sections = []; omissions = {'css_and_visual_layout_not_evaluated'}; remote = 0; has_text = False
++        for index, itemref in enumerate(spines[0], 1):
++            identity = itemref.get('idref'); linear = itemref.get('linear', 'yes')
++            if itemref.tag != '{'+OPF+'}itemref' or identity not in items or linear not in ('yes', 'no'):
++                fail('epub_spine_item')
++            path, media_type = items[identity]
++            if media_type != 'application/xhtml+xml':
++                fail('epub_spine_format_unsupported')
++            text, skipped, links = document_text(parts[path]); omissions.update(skipped); remote += links
++            has_text = has_text or bool(text.strip())
++            sections.append('[EPUB section '+str(index)+(' auxiliary' if linear == 'no' else '')+']\n'+text)
++            metadata_sections.append(dict(index=index,resource=path,linear=linear == 'yes'))
++        if not any(row['linear'] for row in metadata_sections):
++            fail('epub_linear_spine_required')
++        text = '\n\n'.join(sections)
++        if not has_text:
++            fail('epub_no_extractable_text')
++        if len(text.encode('utf-8')) > MAX_TEXT:
++            fail('epub_text_limit')
++        metadata = dict(format='epub', coverage='logical_xhtml_spine_text_only', spine=metadata_sections,
++                        external_links_not_fetched=remote, resources_executed=False, omissions=sorted(omissions),
++                        container_members=len(parts), title=[e.text or '' for e in package.findall('.//{'+DC+'}title')][:8],
++                        limits=dict(input_bytes=MAX_INPUT, expanded_bytes=MAX_EXPANDED,
++                                    part_bytes=MAX_PART, members=MAX_MEMBERS, spine=MAX_SPINE, text_bytes=MAX_TEXT))
++        return _Text(text, metadata)
++    except EPUBError:
++        raise
++    except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, ValueError, OSError, KeyError, struct.error, zlib.error):
++        fail('epub_malformed')
+--- /dev/null
++++ b/tools/scoped_odf_profiles.py
+@@ -0,0 +1,685 @@
++"""Bounded native ODT, OTT and flat FODT text profiles.
++
++No conversion service, renderer, external resource, script or field execution.
++Flat creation joins the creator's original XML sections and namespace bindings;
++flat edits splice selected lexical text only, retaining every other source byte.
++"""
++from __future__ import annotations
++
++import copy
++import io
++import re
++import stat
++import zipfile
++import zlib
++from xml.etree import ElementTree as ET
++from xml.parsers import expat
++from xml.sax.saxutils import escape, quoteattr
++
++from tools import scoped_odt as odt
++from tools.scoped_odt_create import create_odt, ODTCreateError
++from tools.scoped_presentation import PresentationError, xml_root, q
++
++MIMES = dict(odt.MIMES, fodt=odt.MIMES['odt'])
++MAX_BYTES = 1_000_000
++MAX_NODES = 50_000
++MAX_DEPTH = 64
++
++
++class ODFProfileError(ValueError):
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++def _fail(code):
++    raise ODFProfileError(code)
++
++
++def _tick(checkpoint):
++    if checkpoint is not None:
++        checkpoint()
++
++
++def _format(format):
++    if type(format) is not str or format not in MIMES:
++        _fail('unsupported_format')
++
++
++def _preflight_xml(raw, checkpoint=None):
++    """Strict UTF-8 and bounded, entity-free syntax BEFORE ElementTree sees bytes.
++
++    UTF-16/32 without a BOM can decode as UTF-8 containing NULs, while XML
++    parsers auto-detect the wide encoding. Reject that ambiguity explicitly.
++    The parser stops at a DOCTYPE event before processing its internal subset.
++    """
++    if not isinstance(raw, bytes) or len(raw) > MAX_BYTES:
++        _fail('xml_size_limit')
++    _tick(checkpoint)
++    if b'\x00' in raw:
++        _fail('unsupported_xml_encoding')
++    try:
++        raw.decode('utf-8-sig')
++    except UnicodeError:
++        _fail('unsupported_xml_encoding')
++    parser = expat.ParserCreate(encoding='UTF-8', namespace_separator='}')
++    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
++    depth = nodes = 0
++    entries = []
++
++    def start(name, attrs):
++        nonlocal depth, nodes
++        depth += 1
++        nodes += 1
++        if depth > MAX_DEPTH or nodes > MAX_NODES or len(attrs) > 64:
++            _fail('xml_structure_limit')
++        if nodes % 64 == 0:
++            _tick(checkpoint)
++        if name == odt.M + '}file-entry':
++            entries.append((attrs.get(odt.M + '}full-path'),
++                            attrs.get(odt.M + '}media-type', '')))
++
++    def end(name):
++        nonlocal depth
++        depth -= 1
++
++    def declaration(version, encoding, standalone):
++        if encoding is not None and encoding.lower() != 'utf-8':
++            _fail('unsupported_xml_encoding')
++
++    def refuse(*args):
++        _fail('xml_dtd_forbidden')
++
++    parser.StartElementHandler = start
++    parser.EndElementHandler = end
++    parser.XmlDeclHandler = declaration
++    parser.StartDoctypeDeclHandler = refuse
++    parser.EntityDeclHandler = refuse
++    parser.ExternalEntityRefHandler = refuse
++    try:
++        for offset in range(0, len(raw), 16_384):
++            _tick(checkpoint)
++            parser.Parse(raw[offset:offset + 16_384], False)
++        parser.Parse(b'', True)
++    except expat.ExpatError:
++        _fail('malformed_xml')
++    _tick(checkpoint)
++    return entries
++
++
++def _preflight_package(data, checkpoint=None):
++    """Read bounded immutable members, then guard ALL XML before base parsers.
++
++    This first phase performs no XML tree construction. Manifest-declared XML
++    resources are covered even without an XML suffix; suffix checks ignore case.
++    Native package semantic validation remains owned by DocumentPackage.
++    """
++    if not isinstance(data, bytes) or len(data) > MAX_BYTES:
++        _fail('input_limit')
++    _tick(checkpoint)
++    parts = {}
++    seen = set()
++    total = 0
++    try:
++        with zipfile.ZipFile(io.BytesIO(data)) as archive:
++            infos = archive.infolist()
++            if not infos or len(infos) > 512:
++                _fail('package_member_limit')
++            for info in infos:
++                _tick(checkpoint)
++                name = info.filename
++                key = name.rstrip('/')
++                if (info.orig_filename != name or not key or '\\' in name
++                        or name.startswith('/') or '\x00' in name
++                        or any(ord(c) < 32 for c in name) or ':' in name or '%' in name
++                        or any(part in ('', '.', '..') for part in key.split('/'))
++                        or key.casefold() in seen):
++                    _fail('unsafe_or_duplicate_member')
++                seen.add(key.casefold())
++                mode = info.external_attr >> 16
++                if stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR) or info.flag_bits & 1:
++                    _fail('encrypted_or_special_member')
++                if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
++                    _fail('unsupported_compression')
++                total += info.file_size
++                if (info.file_size > 2_000_000 or total > 8_000_000
++                        or info.file_size > max(1, info.compress_size) * 200):
++                    _fail('package_expansion_limit')
++                if info.is_dir():
++                    if info.file_size:
++                        _fail('nonempty_directory_member')
++                    continue
++                from tools.scoped_zip import read_zip_member, ZipMemberLimitError
++                try:
++                    value = read_zip_member(archive, data, info, 2_000_000)
++                except ZipMemberLimitError:
++                    _fail('package_member_limit')
++                if len(value) != info.file_size or len(value) > 2_000_000:
++                    _fail('package_member_limit')
++                parts[name] = value
++    except (zipfile.BadZipFile, UnicodeError, zlib.error, NotImplementedError, EOFError):
++        _fail('malformed_package')
++    xml_names = {name for name in parts if name.lower().endswith(('.xml', '.rels'))}
++    manifest_name = 'META-INF/manifest.xml'
++    checked = set()
++    if manifest_name in parts:
++        entries = _preflight_xml(parts[manifest_name], checkpoint)
++        checked.add(manifest_name)
++        for name, media in entries:
++            media = media.split(';', 1)[0].strip().lower()
++            if media in ('text/xml', 'application/xml') or media.endswith('+xml'):
++                if name in parts:
++                    xml_names.add(name)
++    if sum(len(parts[name]) for name in xml_names) > 4_000_000:
++        _fail('xml_size_limit')
++    for name in sorted(xml_names - checked):
++        _preflight_xml(parts[name], checkpoint)
++    return parts, xml_names
++
++
++def _document_package(data, format, checkpoint=None):
++    _preflight_package(data, checkpoint)
++    return odt.DocumentPackage(data, format, checkpoint)
++
++
++def _editable_package(data, format, checkpoint):
++    pkg = _document_package(data, format, checkpoint)
++    manifest = pkg.xml['META-INF/manifest.xml']
++    xml_names = {name for name in pkg.parts if name.lower().endswith(('.xml', '.rels'))}
++    for entry in manifest:
++        media = entry.get(q(odt.M, 'media-type'), '').split(';', 1)[0].strip().lower()
++        if media in ('text/xml', 'application/xml') or media.endswith('+xml'):
++            name = entry.get(q(odt.M, 'full-path'))
++            if name in pkg.parts:
++                xml_names.add(name)
++    total = sum(len(pkg.parts[name]) for name in pkg.xml)
++    for name in sorted(xml_names - set(pkg.xml)):
++        total += len(pkg.parts[name])
++        if total > 4_000_000:
++            _fail('xml_size_limit')
++        pkg.xml[name] = _root(pkg.parts[name], checkpoint)
++    for root in pkg.xml.values():
++        _static_xml(root, checkpoint)
++    odt._editable_package(pkg)
++    return pkg
++
++
++def _static_xml(root, checkpoint):
++    """Reject active resources and URI bases in every parsed XML container."""
++    for index, node in enumerate(root.iter()):
++        if index % 64 == 0:
++            _tick(checkpoint)
++        local = node.tag.rsplit('}', 1)[-1]
++        if local in {'applet', 'floating-frame'}:
++            _fail('active_or_embedded_content')
++        for attr, value in node.attrib.items():
++            if attr == '{http://www.w3.org/XML/1998/namespace}base':
++                _fail('external_or_unresolved_link')
++            if attr.rsplit('}', 1)[-1] == 'may-script' and value not in ('false', '0'):
++                _fail('active_or_embedded_content')
++
++
++def _root(raw, checkpoint=None):
++    if not isinstance(raw, bytes) or len(raw) > MAX_BYTES:
++        _fail('input_limit')
++    _tick(checkpoint)
++    _preflight_xml(raw, checkpoint)
++    try:
++        root = xml_root(raw)
++    except PresentationError as error:
++        _fail(str(error))
++    except (ET.ParseError, UnicodeError, ValueError):
++        _fail('malformed_xml')
++    stack = [(root, 1)]
++    count = 0
++    while stack:
++        node, depth = stack.pop()
++        count += 1
++        if count % 64 == 0:
++            _tick(checkpoint)
++        if count > MAX_NODES or depth > MAX_DEPTH or len(node.attrib) > 64:
++            _fail('xml_structure_limit')
++        stack.extend((child, depth + 1) for child in node)
++    return root
++
++
++def _sections(raw, checkpoint=None):
++    """Lexical immediate children plus complete root namespace bindings."""
++    parser = expat.ParserCreate(namespace_separator='}')
++    frames = []
++    namespaces = {}
++    sections = []
++    root_info = []
++    nodes = 0
++
++    def namespace(prefix, uri):
++        if not frames:
++            namespaces[prefix or ''] = uri
++
++    def start(name, attrs):
++        nonlocal nodes
++        nodes += 1
++        if nodes % 64 == 0:
++            _tick(checkpoint)
++        if nodes > MAX_NODES or len(frames) >= MAX_DEPTH or len(attrs) > 64:
++            _fail('xml_structure_limit')
++        begin = parser.CurrentByteIndex
++        end = odt._tag_end(raw, begin)
++        frames.append((name, begin, end, raw[begin:end].rstrip().endswith(b'/>')))
++        if len(frames) == 1:
++            root_info.append((name, attrs))
++
++    def end(name):
++        tag, begin, edge, empty = frames[-1]
++        finish = edge if empty else odt._tag_end(raw, parser.CurrentByteIndex)
++        if len(frames) == 2:
++            sections.append((tag, raw[begin:finish]))
++        frames.pop()
++
++    def refuse(*args):
++        _fail('unsupported_xml_construct')
++
++    parser.StartNamespaceDeclHandler = namespace
++    parser.StartElementHandler = start
++    parser.EndElementHandler = end
++    parser.StartDoctypeDeclHandler = refuse
++    parser.EntityDeclHandler = refuse
++    parser.ProcessingInstructionHandler = refuse
++    try:
++        parser.Parse(raw, True)
++    except (expat.ExpatError, odt.ODTError):
++        _fail('malformed_xml')
++    return root_info[0], namespaces, sections
++
++
++def _rewrite_zip(data, replacements, checkpoint=None):
++    out = io.BytesIO()
++    with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(out, 'w') as target:
++        target.comment = source.comment
++        for info in source.infolist():
++            _tick(checkpoint)
++            value = replacements.get(info.filename)
++            if value is None:
++                value = source.read(info)
++            target.writestr(copy.copy(info), value)
++            if out.tell() > MAX_BYTES:
++                _fail('output_limit')
++    result = out.getvalue()
++    if len(result) > MAX_BYTES:
++        _fail('output_limit')
++    _tick(checkpoint)
++    return result
++
++
++def _template(data, checkpoint):
++    pkg = _document_package(data, 'odt', checkpoint)
++    raw = pkg.parts['META-INF/manifest.xml']
++    # The native creator emits exactly one document MIME in the root entry.
++    # Refuse an unexpected creator shape instead of changing unrelated values.
++    before = odt.MIMES['odt'].encode('ascii')
++    if raw.count(before) != 1:
++        _fail('unsupported_manifest_profile_switch')
++    changed = raw.replace(before, odt.MIMES['ott'].encode('ascii'), 1)
++    result = _rewrite_zip(data, {'mimetype': odt.MIMES['ott'].encode('ascii'),
++                                'META-INF/manifest.xml': changed}, checkpoint)
++    _document_package(result, 'ott', checkpoint)
++    return result
++
++
++def _flatten_created(data, checkpoint):
++    """Only creator output is merged; arbitrary package conversion is absent."""
++    pkg = _document_package(data, 'odt', checkpoint)
++    allowed_parts = {'mimetype', 'content.xml', 'styles.xml', 'meta.xml',
++                     'settings.xml', 'META-INF/manifest.xml'}
++    if set(pkg.parts) - allowed_parts:
++        _fail('flat_resources_unsupported')
++    order = ['meta', 'settings', 'scripts', 'font-face-decls', 'styles',
++             'automatic-styles', 'master-styles', 'body']
++    sections = {}
++    namespaces = {}
++    version = None
++    for part in ('meta.xml', 'settings.xml', 'styles.xml', 'content.xml'):
++        if part not in pkg.parts:
++            continue
++        _tick(checkpoint)
++        (name, attrs), bindings, children = _sections(pkg.parts[part], checkpoint)
++        expected = odt.O + '}document-' + part[:-4]
++        if name != expected or set(attrs) != {odt.O + '}version'}:
++            _fail('unsupported_flat_merge')
++        if version is not None and attrs[odt.O + '}version'] != version:
++            _fail('conflicting_flat_version')
++        version = attrs[odt.O + '}version']
++        for prefix, uri in bindings.items():
++            if prefix in namespaces and namespaces[prefix] != uri:
++                _fail('conflicting_flat_namespace')
++            namespaces[prefix] = uri
++        for tag, lexical in children:
++            if tag not in {odt.O + '}' + item for item in order} or tag in sections:
++                _fail('conflicting_flat_section')
++            sections[tag] = lexical
++    if namespaces.get('office') != odt.O or odt.O + '}body' not in sections:
++        _fail('unsupported_flat_merge')
++    declarations = ''.join(' xmlns' + (':' + prefix if prefix else '') + '=' + quoteattr(uri)
++                           for prefix, uri in sorted(namespaces.items()))
++    opening = ('<?xml version="1.0" encoding="utf-8"?>\n<office:document' + declarations
++               + ' office:version=' + quoteattr(version)
++               + ' office:mimetype=' + quoteattr(MIMES['fodt']) + '>').encode('utf-8')
++    result = opening + b''.join(sections[odt.O + '}' + name] for name in order
++                               if odt.O + '}' + name in sections) + b'</office:document>'
++    if len(result) > MAX_BYTES:
++        _fail('output_limit')
++    _flat_package(result, checkpoint)
++    return result
++
++
++class _Flat:
++    pass
++
++
++def _flat_package(data, checkpoint=None):
++    root = _root(data, checkpoint)
++    if (root.tag != q(odt.O, 'document') or root.get(q(odt.O, 'mimetype')) != MIMES['fodt']
++            or root.get(q(odt.O, 'version')) not in ('1.0', '1.1', '1.2', '1.3')):
++        _fail('not_native_fodt')
++    bodies = root.findall(q(odt.O, 'body'))
++    if len(bodies) != 1 or len(bodies[0]) != 1 or bodies[0][0].tag != q(odt.O, 'text'):
++        _fail('not_native_fodt')
++    singletons = {'meta', 'settings', 'scripts', 'font-face-decls', 'styles',
++                  'automatic-styles', 'master-styles', 'body'}
++    for local in singletons:
++        if len(root.findall(q(odt.O, local))) > 1:
++            _fail('conflicting_flat_section')
++    pkg = _Flat()
++    pkg.parts = {'document.xml': data}
++    pkg.xml = {'document.xml': root}
++    pkg.body = bodies[0][0]
++    pkg.unsupported = set()
++    pkg.checkpoint = checkpoint
++    _static_xml(root, checkpoint)
++    # Preserve opaque static namespaces/attributes; refuse resources or active
++    # constructs instead of dropping, evaluating or fetching them.
++    for index, node in enumerate(root.iter()):
++        if index % 64 == 0:
++            _tick(checkpoint)
++        local = node.tag.rsplit('}', 1)[-1]
++        if local in {'binary-data', 'object', 'object-ole', 'plugin', 'script',
++                     'event-listener', 'event-listeners', 'execute-macro'}:
++            _fail('active_or_embedded_flat_content')
++        for attr, value in node.attrib.items():
++            if attr == '{http://www.w3.org/XML/1998/namespace}base':
++                _fail('external_or_unresolved_link')
++            if attr.rsplit('}', 1)[-1] in {'href', 'src'} and value and not value.startswith('#'):
++                _fail('external_or_unresolved_link')
++    try:
++        odt._editable_package(pkg)
++        _sections(data, checkpoint)  # Also refuses processing instructions.
++    except odt.ODTError as error:
++        _fail(str(error))
++    return pkg
++
++
++def _lexical_text(piece, start, checkpoint):
++    """Decoded text plus source-byte boundaries for every XML character."""
++    source = piece.decode('utf-8')
++    chars = []
++    spans = []
++    index = byte = 0
++    while index < len(source):
++        if len(chars) % 1024 == 0:
++            _tick(checkpoint)
++        char = source[index]
++        if char == '&':
++            edge = source.find(';', index + 1)
++            if edge < 0 or edge - index > 32:
++                _fail('malformed_xml')
++            token = source[index:edge + 1]
++            value = ET.fromstring(('<r>' + token + '</r>').encode('utf-8')).text
++            size = len(token.encode('utf-8'))
++            index = edge + 1
++        elif char == '\r':
++            size = 2 if source[index:index + 2] == '\r\n' else 1
++            index += size
++            value = '\n'
++        else:
++            value = char
++            size = len(char.encode('utf-8'))
++            index += 1
++        chars.append(value)
++        spans.append((start + byte, start + byte + size))
++        byte += size
++    return ''.join(chars), spans
++
++
++def _flat_slots(raw, checkpoint):
++    """The existing literal-edit shape, extended to office:document."""
++    parser = expat.ParserCreate(namespace_separator='}')
++    stack = []
++    contexts = []
++    records = []
++    cursor = 0
++    in_body = False
++    characters = slots = nodes = 0
++    text_tags = {odt.T + '}' + name for name in ('p', 'h')}
++    space_tags = {odt.T + '}' + name for name in ('s', 'tab', 'line-break')}
++    parents = {odt.O + '}' + name for name in ('document', 'document-content', 'body', 'text')}
++    parents.update(odt.T + '}' + name for name in ('section', 'list', 'list-item', 'list-header'))
++    parents.update(odt.TB + '}' + name for name in ('table', 'table-row', 'table-cell',
++                   'table-header-rows', 'table-rows', 'table-row-group'))
++
++    def add(start, end, value, boundaries=None):
++        nonlocal characters, slots
++        if not value:
++            return
++        characters += len(value)
++        slots += 1
++        if characters > 900_000 or slots > 50_000:
++            _fail('document_text_limit')
++        record = contexts[-1]
++        record['chars'] += len(value)
++        if record['chars'] > odt.MAX_TEXT:
++            _fail('paragraph_text_limit')
++        profile = tuple(frame['attrs'] for frame in stack if frame['name'] == odt.T + '}span')
++        record['slots'].append((start, end, value, profile, boundaries))
++
++    def flush(end):
++        nonlocal cursor
++        if contexts and end > cursor:
++            piece = raw[cursor:end]
++            if b'<' in piece:
++                contexts[-1]['supported'] = False
++            else:
++                value, boundaries = _lexical_text(piece, cursor, checkpoint)
++                add(cursor, end, value, boundaries)
++        cursor = end
++
++    def start(name, attrs):
++        nonlocal cursor, in_body, nodes
++        nodes += 1
++        if nodes % 64 == 0:
++            _tick(checkpoint)
++        begin = parser.CurrentByteIndex
++        flush(begin)
++        end = odt._tag_end(raw, begin)
++        frame = {'name': name, 'attrs': tuple(sorted(attrs.items())),
++                 'empty': raw[begin:end].rstrip().endswith(b'/>')}
++        if name == odt.O + '}text':
++            in_body = True
++        if name in text_tags and in_body:
++            if len(records) >= odt.MAX_RECORDS:
++                _fail('record_count_limit')
++            if contexts:
++                contexts[-1]['supported'] = False
++            record = {'slots': [], 'chars': 0,
++                      'supported': all(p['name'] in parents for p in stack)}
++            contexts.append(record)
++            records.append(record)
++            frame['paragraph'] = True
++        elif contexts and name != odt.T + '}span' and name not in space_tags:
++            contexts[-1]['supported'] = False
++        if contexts and name in space_tags:
++            if not frame['empty']:
++                contexts[-1]['supported'] = False
++            if name == odt.T + '}s':
++                value = ' ' * odt._count(attrs.get(odt.T + '}c', '1'), odt.MAX_TEXT)
++                if set(attrs) - {odt.T + '}c'}:
++                    contexts[-1]['supported'] = False
++            else:
++                value = '\t' if name == odt.T + '}tab' else '\n'
++                if attrs:
++                    contexts[-1]['supported'] = False
++            add(begin, end, value)
++        stack.append(frame)
++        cursor = end
++
++    def end(name):
++        nonlocal cursor, in_body
++        frame = stack[-1]
++        if not frame['empty']:
++            flush(parser.CurrentByteIndex)
++            cursor = odt._tag_end(raw, parser.CurrentByteIndex)
++        if frame.get('paragraph'):
++            contexts.pop()
++        stack.pop()
++        if name == odt.O + '}text':
++            in_body = False
++
++    def refuse(*args):
++        _fail('unsupported_xml_construct')
++
++    parser.StartElementHandler = start
++    parser.EndElementHandler = end
++    parser.StartDoctypeDeclHandler = refuse
++    parser.EntityDeclHandler = refuse
++    parser.ProcessingInstructionHandler = refuse
++    parser.CommentHandler = lambda *args: contexts[-1].update(supported=False) if contexts else None
++    parser.StartCdataSectionHandler = lambda: contexts[-1].update(supported=False) if contexts else None
++    try:
++        parser.Parse(raw, True)
++    except (expat.ExpatError, ET.ParseError, UnicodeError):
++        _fail('malformed_xml')
++    for record in records:
++        record['text'] = ''.join(slot[2] for slot in record['slots'])
++    return records
++
++
++def _edit_xml(data, old, new, checkpoint):
++    old, new = odt._plain(old), odt._plain(new)
++    if not old or old == new:
++        _fail('invalid_replacement')
++    records = _flat_slots(data, checkpoint)
++    matches = []
++    for record in records:
++        _tick(checkpoint)
++        begin = record['text'].find(old)
++        while begin >= 0:
++            matches.append((record, begin))
++            if len(matches) > 1:
++                _fail('ambiguous_match')
++            begin = record['text'].find(old, begin + 1)
++    if not matches:
++        _fail('match_missing')
++    record, begin = matches[0]
++    if not record['supported']:
++        _fail('unsupported_paragraph_structure')
++    finish = begin + len(old)
++    selected = []
++    cursor = 0
++    for start, end, value, profile, boundaries in record['slots']:
++        edge = cursor + len(value)
++        if cursor < finish and edge > begin:
++            lo, hi = max(0, begin - cursor), min(len(value), finish - cursor)
++            if boundaries is not None:
++                start, end = boundaries[lo][0], boundaries[hi - 1][1]
++            elif lo != 0 or hi != len(value):
++                _fail('partial_whitespace_element')
++            selected.append((start, end, profile))
++        cursor = edge
++    if not selected or len({item[2] for item in selected}) != 1:
++        _fail('mixed_span_format')
++    result = data
++    for index in reversed(range(len(selected))):
++        start, end, _ = selected[index]
++        result = result[:start] + (odt._literal_xml(new) if index == 0 else b'') + result[end:]
++    if len(result) > MAX_BYTES:
++        _fail('output_limit')
++    expected = [item['text'] for item in records]
++    expected[records.index(record)] = record['text'][:begin] + new + record['text'][finish:]
++    if [item['text'] for item in _flat_slots(result, checkpoint)] != expected:
++        _fail('invalid_edit')
++    return result
++
++
++def render(content, format, structured=False, checkpoint=None):
++    _format(format)
++    _tick(checkpoint)
++    try:
++        data = create_odt(content, structured=structured, checkpoint=checkpoint)
++        if format == 'ott':
++            return _template(data, checkpoint)
++        if format == 'fodt':
++            return _flatten_created(data, checkpoint)
++        _document_package(data, 'odt', checkpoint)
++        return data
++    except (odt.ODTError, ODTCreateError) as error:
++        raise ODFProfileError(str(error)) from None
++
++
++def render_edit(data, old, new, format, checkpoint=None):
++    _format(format)
++    _tick(checkpoint)
++    try:
++        if format == 'fodt':
++            _flat_package(data, checkpoint)
++            result = _edit_xml(data, old, new, checkpoint)
++            _flat_package(result, checkpoint)
++            return result
++        pkg = _editable_package(data, format, checkpoint)
++        # One lexical splice engine for flat and ZIP profiles. No MIME/manifest
++        # normalization or unselected text/entity serialization is necessary.
++        content = _edit_xml(pkg.parts['content.xml'], old, new, checkpoint)
++        result = _rewrite_zip(data, {'content.xml': content}, checkpoint)
++        _document_package(result, format, checkpoint)
++        return result
++    except odt.ODTError as error:
++        raise ODFProfileError(str(error)) from None
++
++
++def extract(data, format, checkpoint=None):
++    _format(format)
++    _tick(checkpoint)
++    try:
++        if format != 'fodt':
++            _preflight_package(data, checkpoint)
++            return odt.extract_document(data, format, checkpoint=checkpoint)
++        pkg = _flat_package(data, checkpoint)
++        # The existing bounded semantic reader accepts a DocumentPackage. Build
++        # a safe ephemeral ODT view, retaining original flat XML on disk.
++        root_info, namespaces, sections = _sections(data, checkpoint)
++        body = [raw for name, raw in sections if name == odt.O + '}body']
++        if len(body) != 1:
++            _fail('not_native_fodt')
++        prefix = 'frwodfo'
++        while prefix in namespaces:
++            prefix += 'x'
++        declarations = ''.join(' xmlns' + (':' + p if p else '') + '=' + quoteattr(uri)
++                               for p, uri in sorted(namespaces.items()))
++        opening = ('<' + prefix + ':document-content xmlns:' + prefix + '=' + quoteattr(odt.O)
++                   + declarations + ' ' + prefix + ':version="1.3">').encode('utf-8')
++        content = opening + body[0] + ('</' + prefix + ':document-content>').encode('utf-8')
++        from tools.scoped_odt_create import _zip, _State, _noop
++        manifest = ('<manifest:manifest xmlns:manifest="' + odt.M + '">'
++                    '<manifest:file-entry manifest:full-path="/" manifest:media-type="' + MIMES['odt'] + '"/>'
++                    '<manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>'
++                    '</manifest:manifest>').encode('utf-8')
++        view = _zip([('mimetype', MIMES['odt'].encode('ascii')), ('content.xml', content),
++                     ('META-INF/manifest.xml', manifest)], _State(checkpoint or _noop))
++        _preflight_package(view, checkpoint)
++        result = odt.extract_document(view, 'odt', checkpoint=checkpoint)
++        metadata = dict(result.extraction_metadata, format='fodt',
++                        native_container=True, source_representation='flat_xml',
++                        preserved_source_sections=True)
++        lines = str(result).split('\n')
++        lines[0] = '[DOCUMENT ' + odt.encoded(metadata) + ']'
++        return odt.DocumentText('\n'.join(lines), metadata)
++    except (odt.ODTError, ODTCreateError) as error:
++        raise ODFProfileError(str(error)) from None
+--- a/tools/scoped_presentation.py
++++ b/tools/scoped_presentation.py
+@@ -12,6 +12,7 @@
+ import stat
+ import zipfile
+ import zlib
++from tools.scoped_zip import ZipMemberLimitError, read_zip_member
+ from decimal import Decimal, InvalidOperation
+ from xml.etree import ElementTree as ET
+ 
+@@ -146,8 +147,10 @@
+                     refuse('package_expansion_limit')
+                 if info.is_dir():
+                     continue
+-                with archive.open(info) as member:
+-                    value = member.read(MAX_MEMBER+1)
++                try:
++                    value = read_zip_member(archive, data, info, MAX_MEMBER)
++                except ZipMemberLimitError:
++                    refuse('package_member_limit')
+                 if len(value) != info.file_size or len(value) > MAX_MEMBER:
+                     refuse('package_member_limit')
+                 self.parts[name] = value
+--- a/tools/scoped_presentation_write.py
++++ b/tools/scoped_presentation_write.py
+@@ -16,6 +16,7 @@
+ from xml.parsers import expat
+ from xml.sax.saxutils import escape
+ from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
++from tools.scoped_zip import ZipMemberLimitError, read_zip_member
+ 
+ MAX_PACKAGE = 1000000
+ MAX_TOTAL = 4000000
+@@ -114,11 +115,15 @@
+                 name = info.filename
+                 path = PurePosixPath(name)
+                 if (path.is_absolute() or '..' in path.parts or '\\' in name or '\x00' in name
++                        or name != info.orig_filename or '\x00' in info.orig_filename
+                         or info.flag_bits & 1 or info.compress_type not in (ZIP_STORED, ZIP_DEFLATED)
+                         or stat.S_ISLNK(info.external_attr >> 16) or info.file_size > MAX_XML
+                         or info.file_size > max(4096, info.compress_size * 200)):
+                     raise PresentationRefused('unsafe_package')
+-                parts[name] = package.read(name)
++                try:
++                    parts[name] = read_zip_member(package, data, info, MAX_XML)
++                except ZipMemberLimitError:
++                    raise PresentationRefused('unsafe_package') from None
+     except (BadZipFile, RuntimeError, NotImplementedError, OSError, EOFError, UnicodeError, zlib.error):
+         raise PresentationRefused('invalid_package') from None
+     lowered = {name.lower() for name in parts}
+--- /dev/null
++++ b/tools/scoped_word_profiles.py
+@@ -0,0 +1,473 @@
++"""Bounded, inert native Word packages and exact text-copy edits.
++
++DOCX/DOTX are genuine OPC profiles. DOCM/DOTM are read-only: VBA is opaque,
++never imported, evaluated or removed. No Office, converters, extraction to disk,
++link resolution, field updates or network calls are used by this module.
++"""
++from __future__ import annotations
++
++from io import BytesIO
++import json
++import posixpath
++import re
++import stat
++import zipfile
++import zlib
++from xml.etree import ElementTree as ET
++from xml.parsers import expat
++
++MAX_BYTES = 1_000_000
++MAX_MEMBERS = 256
++MAX_NODES = 100_000
++MAX_PARAGRAPHS = 8_192
++W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
++R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
++PKG = 'http://schemas.openxmlformats.org/package/2006/relationships'
++CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
++MAIN_TYPES = {
++    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml',
++    'dotx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml',
++    'docm': 'application/vnd.ms-word.document.macroEnabled.main+xml',
++    'dotm': 'application/vnd.ms-word.template.macroEnabledTemplate.main+xml',
++}
++MACRO_FORMATS = frozenset(('docm', 'dotm'))
++VBA_TYPE = 'application/vnd.ms-office.vbaProject'
++VBA_REL = 'http://schemas.microsoft.com/office/2006/relationships/vbaProject'
++
++
++class WordProfileError(ValueError):
++    """A finite, content-free refusal code; never a parser or document message."""
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++class DocumentText(str):
++    def __new__(cls, value, metadata):
++        result = super().__new__(cls, value)
++        result.extraction_metadata = metadata
++        result.scoped_metadata = metadata
++        return result
++
++
++def _fail(code):
++    raise WordProfileError(code)
++
++
++def _tick(checkpoint):
++    if checkpoint is not None:
++        checkpoint()
++
++
++def _format(format):
++    if not isinstance(format, str) or format not in MAIN_TYPES:
++        _fail('unsupported_format')
++    return format
++
++
++def _q(ns, name):
++    return '{' + ns + '}' + name
++
++
++def _xml(raw, checkpoint):
++    """Reject declarations/expansion and bound structure before building a tree."""
++    try:
++        raw.decode('utf-8-sig')
++    except UnicodeError:
++        _fail('unsupported_xml_encoding')
++    if b'\x00' in raw:
++        _fail('unsupported_xml_encoding')
++    parser = expat.ParserCreate(encoding='UTF-8', namespace_separator='}')
++    depth = count = 0
++
++    def start(name, attrs):
++        nonlocal depth, count
++        depth += 1
++        count += 1
++        if depth > 128 or count > MAX_NODES or len(attrs) > 64:
++            _fail('xml_structure_limit')
++        if count % 256 == 0:
++            _tick(checkpoint)
++
++    def end(name):
++        nonlocal depth
++        depth -= 1
++
++    def refuse(*args):
++        _fail('xml_active_declaration')
++
++    def declaration(version, encoding, standalone):
++        if encoding and encoding.upper() not in ('UTF-8', 'UTF8', 'US-ASCII'):
++            _fail('unsupported_xml_encoding')
++
++    parser.StartElementHandler = start
++    parser.EndElementHandler = end
++    parser.StartDoctypeDeclHandler = refuse
++    parser.EntityDeclHandler = refuse
++    parser.ExternalEntityRefHandler = refuse
++    parser.ProcessingInstructionHandler = refuse
++    parser.XmlDeclHandler = declaration
++    parser.Parse(raw, True)
++    _tick(checkpoint)
++    return ET.fromstring(raw), count
++
++
++def _part_name(name, *, absolute=False):
++    if not isinstance(name, str):
++        _fail('unsafe_part_name')
++    if absolute:
++        if not name.startswith('/') or name.startswith('//'):
++            _fail('unsafe_part_name')
++        name = name[1:]
++    if (not name or name.startswith('/') or any(c in name for c in '\\:%?#')
++            or any(ord(c) < 32 or ord(c) == 127 for c in name)
++            or any(part in ('', '.', '..') for part in name.split('/'))):
++        _fail('unsafe_part_name')
++    return name
++
++
++def _target(owner, target):
++    if (not isinstance(target, str) or not target or target.startswith('//')
++            or any(c in target for c in '\\:%?#')
++            or any(ord(c) < 32 or ord(c) == 127 for c in target)):
++        _fail('unsafe_relationship_target')
++    name = (posixpath.normpath(target[1:]) if target.startswith('/')
++            else posixpath.normpath(posixpath.join(posixpath.dirname(owner), target)))
++    return _part_name(name)
++
++
++def _metadata(info):
++    # CRC, compressed size and offset are derived by ZIP serialization. All
++    # descriptive member metadata and the original payload remain authoritative.
++    return (info.filename, info.date_time, info.compress_type, info.comment,
++            info.extra, info.create_system, info.create_version,
++            info.extract_version, info.reserved, info.volume,
++            info.internal_attr, info.external_attr, info.flag_bits)
++
++
++class _Package:
++    def __init__(self, data, format, checkpoint=None):
++        self.format = _format(format)
++        if not isinstance(data, bytes) or not data or len(data) > MAX_BYTES:
++            _fail('input_limit')
++        self.parts = {}
++        self.xml = {}
++        self.relationships = {}
++        self.limitations = {'page_layout_images_styles_and_rendering_not_evaluated'}
++        self.active = False
++        self.macro = False
++        self.vba_parts = set()
++        _tick(checkpoint)
++        try:
++            self._load(data, checkpoint)
++            self._profiles(checkpoint)
++        except (zipfile.BadZipFile, ET.ParseError, expat.ExpatError, UnicodeError,
++                KeyError, NotImplementedError, EOFError, zlib.error):
++            _fail('malformed_package')
++        _tick(checkpoint)
++
++    def _load(self, data, checkpoint):
++        with zipfile.ZipFile(BytesIO(data)) as archive:
++            self.infos = archive.infolist()
++            self.comment = archive.comment
++            if not 1 <= len(self.infos) <= MAX_MEMBERS:
++                _fail('package_member_limit')
++            seen = {}
++            total = nodes = 0
++            for info in self.infos:
++                _tick(checkpoint)
++                raw_name = info.filename
++                name = raw_name[:-1] if info.is_dir() else raw_name
++                _part_name(name)
++                if (info.orig_filename != raw_name or name.casefold() in seen
++                        or (info.is_dir() and info.file_size)):
++                    _fail('duplicate_or_conflicting_member')
++                seen[name.casefold()] = info.is_dir()
++                mode = info.external_attr >> 16
++                if (stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)
++                        or (stat.S_IFMT(mode) == stat.S_IFDIR and not info.is_dir())
++                        or (stat.S_IFMT(mode) == stat.S_IFREG and info.is_dir())
++                        or info.flag_bits & ~0x0808):
++                    _fail('encrypted_or_special_member')
++                if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
++                    _fail('unsupported_compression')
++                total += info.file_size
++                if (info.file_size > MAX_BYTES or total > MAX_BYTES
++                        or info.file_size > max(4096, info.compress_size * 200)):
++                    _fail('package_expansion_limit')
++                if info.is_dir():
++                    continue
++                from tools.scoped_zip import read_zip_member, ZipMemberLimitError
++                try:
++                    raw = read_zip_member(archive, data, info, MAX_BYTES)
++                except ZipMemberLimitError:
++                    _fail('package_expansion_limit')
++                if len(raw) != info.file_size:
++                    _fail('malformed_package')
++                self.parts[name] = raw
++                if name.lower().endswith(('.xml', '.rels')):
++                    root, count = _xml(raw, checkpoint)
++                    nodes += count
++                    if nodes > MAX_NODES:
++                        _fail('xml_structure_limit')
++                    self.xml[name] = root
++            for name in seen:
++                components = name.split('/')
++                for end in range(1, len(components)):
++                    if seen.get('/'.join(components[:end])) is False:
++                        _fail('duplicate_or_conflicting_member')
++
++    def _profiles(self, checkpoint):
++        types = self.xml.get('[Content_Types].xml')
++        if types is None or types.tag != _q(CT, 'Types'):
++            _fail('content_types_missing_or_namespace')
++        defaults = {}
++        overrides = {}
++        for node in types:
++            kind = node.get('ContentType')
++            if (not kind or len(kind) > 256 or any(ord(c) < 33 for c in kind)
++                    or len(node)):
++                _fail('invalid_content_type')
++            if node.tag == _q(CT, 'Default'):
++                extension = node.get('Extension')
++                if (not extension or not re.fullmatch(r'[A-Za-z0-9_-]{1,32}', extension)
++                        or extension.casefold() in defaults):
++                    _fail('duplicate_or_invalid_content_type')
++                defaults[extension.casefold()] = kind
++            elif node.tag == _q(CT, 'Override'):
++                name = _part_name(node.get('PartName'), absolute=True)
++                if name.casefold() in overrides or name not in self.parts:
++                    _fail('duplicate_or_invalid_content_type')
++                overrides[name.casefold()] = (name, kind)
++            else:
++                _fail('invalid_content_type')
++        self.types = {}
++        for name in self.parts:
++            if name == '[Content_Types].xml':
++                continue
++            override = overrides.get(name.casefold())
++            if override is not None and override[0] != name:
++                _fail('content_type_case_conflict')
++            kind = override[1] if override else defaults.get(name.rsplit('.', 1)[-1].casefold())
++            if not kind:
++                _fail('content_type_missing')
++            self.types[name] = kind
++            lowered = (name + ' ' + kind).lower()
++            if any(marker in lowered for marker in ('macroenabled', 'vbaproject', 'vbadata')):
++                self.macro = True
++            if kind == VBA_TYPE:
++                self.vba_parts.add(name)
++            if any(marker in lowered for marker in ('activex', 'embedding', 'oleobject', 'vba',
++                                                     'signature', 'customui', 'afchunk')):
++                self.active = True
++                self.limitations.add('active_embedded_content_and_signatures_not_evaluated')
++        if self.types.get('word/document.xml') != MAIN_TYPES[self.format]:
++            _fail('profile_content_type_mismatch')
++        document = self.xml.get('word/document.xml')
++        if document is None or document.tag != _q(W, 'document'):
++            _fail('main_part_missing_or_namespace')
++        bodies = document.findall(_q(W, 'body'))
++        if len(bodies) != 1:
++            _fail('main_body_missing_or_duplicate')
++        self.body = bodies[0]
++        for name, root in self.xml.items():
++            _tick(checkpoint)
++            if not name.lower().endswith('.rels'):
++                continue
++            if (not name.endswith('.rels') or root.tag != _q(PKG, 'Relationships')
++                    or self.types.get(name) != 'application/vnd.openxmlformats-package.relationships+xml'):
++                _fail('relationship_namespace_or_content_type')
++            if name == '_rels/.rels':
++                owner = ''
++            else:
++                folder, leaf = posixpath.split(name)
++                if posixpath.basename(folder) != '_rels':
++                    _fail('relationship_location')
++                owner = posixpath.join(posixpath.dirname(folder), leaf[:-5])
++                if owner not in self.parts:
++                    _fail('relationship_owner_missing')
++            rows = {}
++            for relation in root:
++                if relation.tag != _q(PKG, 'Relationship') or len(relation):
++                    _fail('relationship_structure')
++                rid, kind, target = (relation.get(key) for key in ('Id', 'Type', 'Target'))
++                if (not rid or rid in rows or not kind or len(kind) > 512
++                        or any(ord(c) < 33 for c in rid + kind)):
++                    _fail('duplicate_or_invalid_relationship')
++                mode = relation.get('TargetMode')
++                if mode == 'External':
++                    _fail('external_relationship')
++                if mode not in (None, 'Internal'):
++                    _fail('relationship_mode')
++                resolved = _target(owner, target)
++                if resolved not in self.parts:
++                    _fail('relationship_target_missing')
++                rows[rid] = (kind, resolved)
++                lowered = kind.lower()
++                if any(marker in lowered for marker in ('vbaproject', 'vbadata')):
++                    self.macro = True
++                if any(marker in lowered for marker in ('oleobject', 'control', 'activex', 'vba',
++                                                        'digital-signature', 'afchunk', 'customui')):
++                    self.active = True
++                    self.limitations.add('active_embedded_content_and_signatures_not_evaluated')
++            self.relationships[owner] = rows
++        office = [target for kind, target in self.relationships.get('', {}).values()
++                  if kind == R + '/officeDocument']
++        if office != ['word/document.xml']:
++            _fail('main_root_relationship')
++        if self.format not in MACRO_FORMATS and self.macro:
++            _fail('macro_profile_mismatch')
++        vba_links = [(owner, target) for owner, rows in self.relationships.items()
++                     for kind, target in rows.values() if kind == VBA_REL]
++        if (self.vba_parts or vba_links) and (
++                len(self.vba_parts) != 1 or len(vba_links) != 1
++                or vba_links[0][0] != 'word/document.xml'
++                or vba_links[0][1] not in self.vba_parts):
++            _fail('macro_project_relationship_mismatch')
++        if self.format in MACRO_FORMATS:
++            self.limitations.add('vba_macros_opaque_never_executed_read_only')
++        for name, root in self.xml.items():
++            for node in root.iter():
++                if node.tag in {_q(W, n) for n in ('fldChar', 'instrText', 'fldSimple')}:
++                    self.limitations.add('cached_field_results_inert_not_evaluated')
++                if node.tag in {_q(W, n) for n in ('altChunk', 'object', 'control')}:
++                    self.active = True
++                    self.limitations.add('active_embedded_content_and_signatures_not_evaluated')
++            if name != 'word/document.xml' and name.startswith('word/') and name.endswith('.xml'):
++                if posixpath.basename(name).startswith(('header', 'footer', 'footnote', 'endnote', 'comment')):
++                    self.limitations.add('headers_footers_notes_and_comments_not_read')
++
++
++def _rewrite(data, changes):
++    output = BytesIO()
++    with zipfile.ZipFile(BytesIO(data)) as source, zipfile.ZipFile(output, 'w') as target:
++        target.comment = source.comment
++        for info in source.infolist():
++            target.writestr(info, changes.get(info.filename, source.read(info)))
++    result = output.getvalue()
++    if len(result) > MAX_BYTES:
++        _fail('output_limit')
++    return result
++
++
++def _switch_main(raw, original, target):
++    # The validated exact attribute value is ASCII. Change only that value; all
++    # namespace prefixes, comments, whitespace and unselected CT bytes survive.
++    pattern = re.compile(rb'(\bContentType\s*=\s*)([\x22\x27])' + re.escape(original.encode('ascii')) + rb'\2')
++    changed, count = pattern.subn(lambda m: m[1] + m[2] + target.encode('ascii') + m[2], raw)
++    if count != 1:
++        _fail('unsupported_content_type_lexical_form')
++    return changed
++
++
++def _preserved(original, rendered, selected):
++    with zipfile.ZipFile(BytesIO(original)) as before, zipfile.ZipFile(BytesIO(rendered)) as after:
++        left, right = before.infolist(), after.infolist()
++        if (before.comment != after.comment or len(left) != len(right)
++                or any(_metadata(a) != _metadata(b) for a, b in zip(left, right))):
++            _fail('unsupported_zip_metadata')
++        for info in left:
++            if info.filename not in selected and before.read(info) != after.read(info.filename):
++                _fail('unselected_part_changed')
++
++
++def render(content, format, *, structured=False, checkpoint=None):
++    """Create a genuine native plain/structured DOCX or DOTX OPC package."""
++    _format(format)
++    if format in MACRO_FORMATS:
++        _fail('unsupported_macro_create')
++    from hermes_cli.friday_workspace_docx import render as render_docx
++    _tick(checkpoint)
++    data = render_docx(content, structured=structured)
++    _tick(checkpoint)
++    if format == 'dotx':
++        with zipfile.ZipFile(BytesIO(data)) as source:
++            types = source.read('[Content_Types].xml')
++        changed = _switch_main(types, MAIN_TYPES['docx'], MAIN_TYPES['dotx'])
++        result = _rewrite(data, {'[Content_Types].xml': changed})
++        _preserved(data, result, {'[Content_Types].xml'})
++        data = result
++    _Package(data, format, checkpoint)
++    return data
++
++
++def render_edit(data, old, new, format, *, checkpoint=None):
++    """One unique literal body/table paragraph edit into a preserving new copy."""
++    _format(format)
++    if format in MACRO_FORMATS:
++        _fail('unsupported_macro_edit')
++    package = _Package(data, format, checkpoint)
++    if package.active:
++        _fail('unsupported_active_or_signed_edit')
++    from hermes_cli.friday_workspace_docx import render_edit as edit_docx, _EditRefused
++    temporary = data
++    if format == 'dotx':
++        changed = _switch_main(package.parts['[Content_Types].xml'], MAIN_TYPES['dotx'], MAIN_TYPES['docx'])
++        temporary = _rewrite(data, {'[Content_Types].xml': changed})
++    _tick(checkpoint)
++    try:
++        rendered = edit_docx(temporary, old, new)
++    except _EditRefused as error:
++        _fail(str(error))
++    _tick(checkpoint)
++    if format == 'dotx':
++        rendered = _rewrite(rendered, {'[Content_Types].xml': package.parts['[Content_Types].xml']})
++    _Package(rendered, format, checkpoint)
++    _preserved(data, rendered, {'word/document.xml'})
++    _tick(checkpoint)
++    return rendered
++
++
++def _encoded(value):
++    return (json.dumps(value, ensure_ascii=False, separators=(',', ':'))
++            .replace('\u0085', r'\u0085').replace('\u2028', r'\u2028').replace('\u2029', r'\u2029'))
++
++
++def extract(data, format, *, checkpoint=None):
++    """Return only inert stored text plus explicit trusted coverage metadata."""
++    package = _Package(data, format, checkpoint)
++    rows = []
++    output_bytes = 0
++    paragraphs = tables = 0
++    parents = {child: parent for parent in package.body.iter() for child in parent}
++    for node in package.body.iter():
++        _tick(checkpoint)
++        if node.tag == _q(W, 'tbl'):
++            tables += 1
++        if node.tag != _q(W, 'p'):
++            continue
++        paragraphs += 1
++        if paragraphs > MAX_PARAGRAPHS:
++            _fail('paragraph_count_limit')
++        guide = {child for ruby in node.iter(_q(W, 'rt')) for child in ruby.iter()}
++        value = ''.join((item.text or '') if item.tag == _q(W, 't')
++                        else '\t' if item.tag == _q(W, 'tab')
++                        else '\n' if item.tag in (_q(W, 'br'), _q(W, 'cr')) else ''
++                        for item in node.iter() if item not in guide)
++        # Nested paragraphs (e.g. text boxes) do not become text in their outer
++        # paragraph as well. Their distinct placement is not a rendered view.
++        nested = any(child is not node and child.tag == _q(W, 'p') for child in node.iter())
++        if nested:
++            _fail('unsupported_nested_paragraph')
++        parent = parents.get(node)
++        record = {'number': paragraphs, 'role': 'table_cell' if parent is not None
++                  and parent.tag == _q(W, 'tc') else 'body', 'text': value}
++        line = '[PARAGRAPH ' + _encoded(record) + ']'
++        output_bytes += len(line.encode('utf-8')) + 1
++        if output_bytes > 900_000:
++            _fail('extracted_text_limit')
++        rows.append(line)
++    metadata = {'format': format, 'native_container': True,
++                'view': 'inert_stored_word_text', 'paragraphs': paragraphs, 'tables': tables,
++                'macro_enabled_profile': format in MACRO_FORMATS,
++                'macro_project_present': bool(package.vba_parts),
++                'macros_executed': False, 'fields_evaluated': False,
++                'coverage': 'stored_body_table_text_only; macros_fields_images_layout_and_external_content_not_evaluated',
++                'limitations': sorted(package.limitations)}
++    result = '[DOCUMENT ' + _encoded(metadata) + ']'
++    if rows:
++        result += '\n' + '\n'.join(rows)
++    if len(result.encode('utf-8')) > MAX_BYTES:
++        _fail('extracted_text_limit')
++    _tick(checkpoint)
++    return DocumentText(result, metadata)
+--- /dev/null
++++ b/tools/scoped_xls.py
+@@ -0,0 +1,517 @@
++"""Inert bounded BIFF8 XLS cell reader; no I/O, Office, macro or formula execution.
++
++CFB allocation primitives are an isolated copy from scoped_ppt_binary (F122),
++with Excel-only root/stream constraints. The original PPT implementation is
++unchanged. Unknown BIFF records, drawing/object streams, encryption, external
++links, non-worksheet substreams and continued strings refuse. This deliberately
++supports a documented subset, not a renderer or a full Office security scanner.
++See FORMAT-NOTES.md in the implementation evidence for Microsoft references.
++"""
++from __future__ import annotations
++import json
++import math
++import struct
++
++MAX_INPUT = 1_000_000
++MAX_DIRECTORY = 256
++MAX_RECORDS = 50_000
++MAX_SHEETS = 32
++MAX_CELLS = 8192
++MAX_STRINGS = 8192
++MAX_STRING = 32767
++MAX_TEXT = 800_000
++FREE = 0xFFFFFFFF
++END = 0xFFFFFFFE
++FAT = 0xFFFFFFFD
++DIF = 0xFFFFFFFC
++XLS_CLSID = bytes.fromhex('2008020000000000c000000000000046')
++STREAMS = frozenset(('Workbook', '\x01CompObj', '\x05SummaryInformation',
++                     '\x05DocumentSummaryInformation'))
++
++class BinarySpreadsheetError(ValueError):
++    """Fixed content-free refusal code."""
++
++
++def _fail(code):
++    raise BinarySpreadsheetError(code)
++
++def _u16(data, at):
++    return struct.unpack_from('<H', data, at)[0]
++
++
++def _u32(data, at):
++    return struct.unpack_from('<I', data, at)[0]
++
++
++def _words(data):
++    return struct.unpack('<' + 'I' * (len(data) // 4), data)
++
++
++class _CFB:
++    def __init__(self, data):
++        if len(data) < 512 or data[:8] != bytes.fromhex('d0cf11e0a1b11ae1'):
++            _fail('cfb_signature')
++        self.data = data
++        version = _u16(data, 26)
++        shift = _u16(data, 30)
++        if (data[8:24] != b'\0' * 16 or version not in (3, 4)
++                or _u16(data, 28) != 0xFFFE or shift != (9 if version == 3 else 12)
++                or _u16(data, 32) != 6 or data[34:40] != b'\0' * 6
++                or _u32(data, 56) != 4096):
++            _fail('cfb_header')
++        self.sector_size = 1 << shift
++        if (len(data) % self.sector_size or len(data) < self.sector_size * 3
++                or any(data[512:self.sector_size])):
++            _fail('cfb_geometry')
++        self.sectors = len(data) // self.sector_size - 1
++        self.used = set()
++        ndir, nfat = _u32(data, 40), _u32(data, 44)
++        nmini, ndif = _u32(data, 64), _u32(data, 72)
++        if ((version == 3 and ndir != 0) or not 1 <= nfat <= self.sectors
++                or nmini > self.sectors or ndif > self.sectors):
++            _fail('cfb_allocation_count')
++        fat_ids = []
++        saw_free = False
++
++        def add_fat_ids(items):
++            nonlocal saw_free
++            for sid in items:
++                if sid == FREE:
++                    saw_free = True
++                else:
++                    if saw_free or len(fat_ids) >= nfat:
++                        _fail('cfb_difat_count')
++                    self._claim(sid)
++                    fat_ids.append(sid)
++
++        add_fat_ids(_words(data[76:512]))
++        dif_ids = []
++        sid = _u32(data, 68)
++        for _ in range(ndif):
++            self._claim(sid)
++            dif_ids.append(sid)
++            items = _words(self._sector(sid))
++            add_fat_ids(items[:-1])
++            sid = items[-1]
++        if sid != END or len(fat_ids) != nfat:
++            _fail('cfb_difat_count')
++        self.fat = tuple(v for sid in fat_ids for v in _words(self._sector(sid)))
++        if len(self.fat) < self.sectors:
++            _fail('cfb_fat_coverage')
++        for sid, value in enumerate(self.fat):
++            if sid >= self.sectors:
++                if value != FREE:
++                    _fail('cfb_fat_padding')
++            elif value not in (FREE, END, FAT, DIF) and value >= self.sectors:
++                _fail('cfb_sector_bounds')
++        if any(self.fat[sid] != FAT for sid in fat_ids) or any(
++                self.fat[sid] != DIF for sid in dif_ids):
++            _fail('cfb_allocation_marker')
++        directory = self._chain(_u32(data, 48), self.fat, self.sector_size,
++                                self.sectors, self.used, limit=MAX_DIRECTORY // (self.sector_size // 128))
++        if version == 4 and len(directory) // self.sector_size != ndir:
++            _fail('cfb_directory_count')
++        if not directory:
++            _fail('cfb_directory_missing')
++        entries = []
++        for at in range(0, len(directory), 128):
++            row = directory[at:at + 128]
++            kind = row[66]
++            if kind == 0:
++                entries.append(None)
++                continue
++            length = _u16(row, 64)
++            if (kind not in (1, 2, 5) or length < 2 or length > 64 or length % 2
++                    or row[length - 2:length] != b'\0\0' or row[67] not in (0, 1)):
++                _fail('cfb_directory_entry')
++            try:
++                name = row[:length - 2].decode('utf-16le')
++            except UnicodeError:
++                _fail('cfb_directory_name')
++            if not name or any(c in name for c in '\0/\\:!'):
++                _fail('cfb_directory_name')
++            if version == 3 and _u32(row, 124):
++                _fail('cfb_v3_stream_size')
++            size = _u32(row, 120) if version == 3 else struct.unpack_from('<Q', row, 120)[0]
++            if size > MAX_INPUT:
++                _fail('cfb_stream_limit')
++            entries.append((name, kind, _u32(row, 68), _u32(row, 72),
++                            _u32(row, 76), row[80:96], _u32(row, 116), size))
++        root = entries[0]
++        if (root is None or root[0] != 'Root Entry' or root[1] != 5
++                or root[2:4] != (FREE, FREE)):
++            _fail('cfb_root')
++        if root[5] not in (bytes(16), XLS_CLSID):
++            _fail('not_excel_cfb')
++        # Walk every directory entry; no orphan streams or nested storage allowed.
++        stack = [root[4]]
++        seen = {0}
++        names = set()
++        streams = []
++        while stack:
++            idx = stack.pop()
++            if idx == FREE:
++                continue
++            if idx >= len(entries) or idx in seen or entries[idx] is None:
++                _fail('cfb_directory_cycle_or_bounds')
++            seen.add(idx)
++            row = entries[idx]
++            name, kind, left, right, child, _, start, size = row
++            if kind != 2 or child != FREE:
++                _fail('unsupported_cfb_storage')
++            if name.casefold() in names:
++                _fail('cfb_duplicate_stream')
++            names.add(name.casefold())
++            if name not in STREAMS:
++                _fail('unsupported_cfb_stream')
++            streams.append((name, start, size))
++            stack.extend((left, right))
++        if seen != {i for i, row in enumerate(entries) if row is not None}:
++            _fail('cfb_directory_orphan')
++        mini_table = self._chain(_u32(data, 60), self.fat, self.sector_size,
++                                 self.sectors, self.used, count=nmini)
++        self.mini_fat = _words(mini_table)
++        self.mini = self._chain(root[6], self.fat, self.sector_size,
++                                self.sectors, self.used, size=root[7])
++        if len(self.mini) % 64:
++            _fail('cfb_ministream_geometry')
++        mini_count = len(self.mini) // 64
++        if len(self.mini_fat) < mini_count:
++            _fail('cfb_minifat_coverage')
++        for idx, value in enumerate(self.mini_fat):
++            if value not in (FREE, END) and value >= mini_count:
++                _fail('cfb_minisector_bounds')
++            if idx >= mini_count and value != FREE:
++                _fail('cfb_minifat_padding')
++        mini_used = set()
++        self.streams = {}
++        for name, start, size in streams:
++            if size < 4096:
++                blob = self._chain(start, self.mini_fat, 64, mini_count, mini_used, size=size, mini=True)
++            else:
++                blob = self._chain(start, self.fat, self.sector_size, self.sectors, self.used, size=size)
++            self.streams[name] = blob
++        if any(value != FREE and idx not in self.used for idx, value in enumerate(self.fat[:self.sectors])):
++            _fail('cfb_unowned_sector')
++        if any(value != FREE and idx not in mini_used for idx, value in enumerate(self.mini_fat)):
++            _fail('cfb_unowned_minisector')
++        if 'Workbook' not in self.streams:
++            _fail('workbook_stream_missing')
++
++    def _sector(self, sid):
++        if not 0 <= sid < self.sectors:
++            _fail('cfb_sector_bounds')
++        at = (sid + 1) * self.sector_size
++        return self.data[at:at + self.sector_size]
++
++    def _claim(self, sid):
++        if not 0 <= sid < self.sectors:
++            _fail('cfb_sector_bounds')
++        if sid in self.used:
++            _fail('cfb_sector_overlap_or_cycle')
++        self.used.add(sid)
++
++    def _chain(self, start, table, unit, available, used, *, size=None, count=None,
++               limit=None, mini=False):
++        expected = (size + unit - 1) // unit if size is not None else count
++        maximum = available if limit is None else min(available, limit)
++        if expected is not None and expected > maximum:
++            _fail('cfb_chain_limit')
++        ids = []
++        sid = start
++        while sid != END:
++            if not 0 <= sid < available or sid >= len(table):
++                _fail('cfb_chain_bounds')
++            if sid in used:
++                _fail('cfb_sector_overlap_or_cycle')
++            if len(ids) >= maximum or (expected is not None and len(ids) >= expected):
++                _fail('cfb_chain_length')
++            used.add(sid)
++            ids.append(sid)
++            sid = table[sid]
++        if expected is not None and len(ids) != expected:
++            _fail('cfb_chain_length')
++        value = b''.join(self.mini[sid * unit:(sid + 1) * unit] if mini else self._sector(sid) for sid in ids)
++        return value if size is None else value[:size]
++
++
++# Structural/style/print records can be skipped without interpreting their
++# values as cells. Unknown records refuse: no scan-for-text fallback exists.
++_GLOBAL_IGNORED = frozenset((0x000C,0x000D,0x000E,0x000F,0x0010,0x0011,
++    0x0012,0x0013,0x0019,0x0022,0x0031,0x003D,0x0040,0x0042,0x005C,0x005F,
++    0x008C,0x008D,0x0092,0x009C,0x00C1,0x00DA,0x00E0,0x00E1,0x00E2,
++    0x00FF,0x013D,0x0160,0x0161,0x01AF,0x01B7,0x01BC,0x0293,0x041E))
++_SHEET_IGNORED = frozenset((0x000C,0x000D,0x000E,0x000F,0x0010,0x0011,
++    0x0012,0x0013,0x0014,0x0015,0x0019,0x001A,0x001B,0x001D,0x0026,
++    0x0027,0x0028,0x0029,0x002A,0x002B,0x0041,0x0055,0x005F,0x007D,
++    0x0080,0x0081,0x0082,0x0083,0x0084,0x0099,0x00A0,0x00A1,
++    0x00D7,0x00E5,0x0200,0x0208,0x020B,0x0225,0x023E))
++_ACTIVE = frozenset((0x002F,0x005D,0x00D3,0x00EB,0x00EC,0x01AE,0x0017,
++                     0x0023,0x01B6,0x01B8,0x01BA,0x01BE,0x0800,0x0867))
++_ERROR_VALUES = {0x00:'#NULL!',0x07:'#DIV/0!',0x0F:'#VALUE!',0x17:'#REF!',
++                 0x1D:'#NAME?',0x24:'#NUM!',0x2A:'#N/A',0x2B:'#GETTING_DATA'}
++
++
++class XLSExtractionError(BinarySpreadsheetError):
++    """Fixed code refusal for the public XLS extractor."""
++
++
++class _Text(str):
++    def __new__(cls, value, metadata):
++        obj = super().__new__(cls, value)
++        obj.extraction_metadata = metadata
++        return obj
++
++
++def _records(data):
++    out=[]; at=0
++    while at < len(data):
++        if len(out) >= MAX_RECORDS:
++            _fail('biff_record_limit')
++        if len(data)-at < 4:
++            _fail('biff_truncated_record')
++        kind,size=struct.unpack_from('<HH',data,at)
++        # A Workbook stream may end in zero-filled unused bytes after its EOF.
++        if kind == size == 0:
++            if any(data[at:]): _fail('biff_nonzero_tail')
++            break
++        if size > 8224 or at+4+size > len(data):
++            _fail('biff_record_size')
++        payload=data[at+4:at+4+size]
++        if kind == 0x002F: _fail('xls_encrypted')
++        if kind in _ACTIVE: _fail('xls_active_or_external_record')
++        if kind == 0x003C: _fail('xls_continuation_unsupported')
++        out.append((at,kind,payload)); at += 4+size
++    if not out: _fail('biff_empty')
++    return out
++
++
++def _bof(kind,payload,doctype):
++    if (kind != 0x0809 or len(payload) != 16
++            or _u16(payload,0) != 0x0600 or _u16(payload,2) != doctype):
++        _fail('xls_biff8_substream_required')
++
++
++def _unicode(data, at=0, *, short=False, rich=False):
++    width=1 if short else 2
++    if len(data)-at < width+1: _fail('xls_string_header')
++    count=data[at] if short else _u16(data,at)
++    flags=data[at+width]; at += width+1
++    if flags & ~(0x0D if rich else 0x01): _fail('xls_string_flags')
++    runs=ext=0
++    if flags & 8:
++        if len(data)-at < 2: _fail('xls_string_header')
++        runs=_u16(data,at); at+=2
++    if flags & 4:
++        if len(data)-at < 4: _fail('xls_string_header')
++        ext=_u32(data,at); at+=4
++    size=count*(2 if flags&1 else 1)
++    if count>MAX_STRING or size+runs*4+ext>len(data)-at:
++        _fail('xls_string_size')
++    try:
++        value=data[at:at+size].decode('utf-16le' if flags&1 else 'latin-1')
++    except UnicodeError:
++        _fail('xls_string_encoding')
++    # NUL/surrogate text is not a valid XLS cell string. Compressed BIFF8
++    # characters are Unicode low bytes, not a locale/codepage decoding.
++    if '\0' in value: _fail('xls_string_nul')
++    at += size
++    if runs:
++        last=-1
++        for pos in range(at,at+runs*4,4):
++            index=_u16(data,pos)
++            if index <= last or index > count: _fail('xls_rich_run_bounds')
++            last=index
++    return value,at+runs*4+ext
++
++
++def _number(data):
++    value=struct.unpack('<d',data)[0]
++    if not math.isfinite(value): _fail('xls_nonfinite_number')
++    return value
++
++
++def _rk(data):
++    value=_u32(data,0)
++    if value & 2:
++        result=struct.unpack('<i',struct.pack('<I',value))[0] >> 2
++    else:
++        result=_number(b'\0'*4+struct.pack('<I',value & 0xFFFFFFFC))
++    return result/100 if value&1 else result
++
++
++def _cell(row,column,xf,kind,value,**extra):
++    if not 0<=row<65536 or not 0<=column<256: _fail('xls_cell_bounds')
++    col=column+1; letters=''
++    while col:
++        col,rem=divmod(col-1,26); letters=chr(65+rem)+letters
++    return dict(cell=f'{letters}{row+1}',row=row+1,column=column+1,
++                type=kind,value=value,xf_index=xf,**extra)
++
++
++def _boolerr(value,iserr):
++    if iserr == 0 and value in (0,1): return 'boolean',bool(value)
++    if iserr == 1 and value in _ERROR_VALUES: return 'error',_ERROR_VALUES[value]
++    _fail('xls_boolean_or_error')
++
++
++def _extract(data):
++    cfb=_CFB(data)
++    records=_records(cfb.streams['Workbook'])
++    _bof(records[0][1],records[0][2],0x0005)
++    bounds=[]; strings=[]; date1904=False; i=1; sst_seen=False; ignored=set()
++    while i<len(records) and records[i][1] != 0x000A:
++        at,kind,p=records[i]; i+=1
++        if kind == 0x0085:
++            if len(p)<8 or p[5]!=0 or p[4]&3 not in (0,1,2) or not 1<=p[6]<=31:
++                _fail('xls_worksheet_required')
++            name,end=_unicode(p,6,short=True)
++            if (end!=len(p) or not 1<=len(name)<=31 or name[0]=="'" or name[-1]=="'"
++                    or any(c in name for c in '\0\x03:\\*?/[]')):
++                _fail('xls_sheet_name')
++            bounds.append(dict(offset=_u32(p,0),name=name,
++                               visibility=('visible','hidden','very_hidden')[p[4]&3]))
++            if len(bounds)>MAX_SHEETS: _fail('xls_sheet_limit')
++        elif kind == 0x00FC:
++            if sst_seen or len(p)<8: _fail('xls_sst_header')
++            sst_seen=True; total,unique=struct.unpack_from('<II',p)
++            if unique>MAX_STRINGS or total<unique or total>0x7FFFFFFF: _fail('xls_sst_limit')
++            pos=8
++            for _ in range(unique):
++                value,pos=_unicode(p,pos,rich=True); strings.append(value)
++            if pos!=len(p): _fail('xls_sst_trailing')
++        elif kind == 0x0063:
++            # Legacy xlwt emits an unprotected ObjProtect in Globals. This
++            # explicit compatibility case is inert; protected values refuse.
++            if len(p) != 2 or _u16(p, 0) != 0:
++                _fail('xls_object_protection_unsupported')
++            ignored.add(kind)
++        elif kind in _GLOBAL_IGNORED:
++            if kind==0x0022:
++                if len(p)!=2 or _u16(p,0) not in (0,1): _fail('xls_date_mode')
++                date1904=bool(_u16(p,0))
++            ignored.add(kind)
++        else: _fail('xls_global_record_unsupported')
++    if i>=len(records) or records[i][2] or not bounds:
++        _fail('xls_globals_eof_or_sheets')
++    i+=1
++    if len({s['name'].casefold() for s in bounds})!=len(bounds): _fail('xls_duplicate_sheet')
++    if len({s['offset'] for s in bounds})!=len(bounds): _fail('xls_duplicate_sheet_offset')
++    by_offset={s['offset']:s for s in bounds}; parsed={}; total_cells=0
++    while i<len(records):
++        offset,kind,p=records[i]
++        if offset not in by_offset: _fail('xls_unreferenced_substream')
++        _bof(kind,p,0x0010); i+=1
++        cells=[]; seen=set(); pending=None; wsbool=False; row_ids=set()
++        while i<len(records) and records[i][1] != 0x000A:
++            _,kind,p=records[i]; i+=1
++            if pending is not None:
++                if kind!=0x0207: _fail('xls_formula_string_missing')
++                value,end=_unicode(p)
++                if end!=len(p): _fail('xls_formula_string_trailing')
++                pending['value']=value; pending['cached_type']='string'; pending=None
++                continue
++            new=[]
++            if kind in (0x0203,0x027E,0x00FD,0x0204,0x0205,0x0201,0x0006):
++                if len(p)<6: _fail('xls_cell_size')
++                row,col,xf=struct.unpack_from('<HHH',p)
++                if kind==0x0203:
++                    if len(p)!=14: _fail('xls_cell_size')
++                    cell=_cell(row,col,xf,'number',_number(p[6:14]))
++                elif kind==0x027E:
++                    if len(p)!=10: _fail('xls_cell_size')
++                    cell=_cell(row,col,xf,'number',_rk(p[6:10]))
++                elif kind==0x00FD:
++                    if len(p)!=10 or _u32(p,6)>=len(strings): _fail('xls_sst_reference')
++                    cell=_cell(row,col,xf,'string',strings[_u32(p,6)])
++                elif kind==0x0204:
++                    value,end=_unicode(p,6)
++                    if end!=len(p): _fail('xls_cell_size')
++                    cell=_cell(row,col,xf,'string',value)
++                elif kind==0x0205:
++                    if len(p)!=8: _fail('xls_cell_size')
++                    typ,value=_boolerr(p[6],p[7]); cell=_cell(row,col,xf,typ,value)
++                elif kind==0x0201:
++                    if len(p)!=6: _fail('xls_cell_size')
++                    cell=_cell(row,col,xf,'blank',None)
++                else:
++                    if len(p)<22 or not 0<_u16(p,20)<=len(p)-22: _fail('xls_formula_size')
++                    result=p[6:14]; cache_type='number'
++                    if result[6:8]==b'\xff\xff':
++                        if result[0]==0: cache_type='string_pending'; value=None
++                        elif result[0] in (1,2): cache_type,value=_boolerr(result[2],result[0]-1)
++                        elif result[0]==3: cache_type='string'; value=''
++                        else: _fail('xls_formula_cached_type')
++                    else: value=_number(result)
++                    cell=_cell(row,col,xf,'formula',value,cached_type=cache_type,
++                        formula='binary_tokens_not_interpreted',evaluated=False,
++                        cache_freshness='unknown')
++                    if cache_type=='string_pending': pending=cell
++                new=[cell]
++            elif kind in (0x00BD,0x00BE):
++                stride=6 if kind==0x00BD else 2
++                if len(p)<6+stride or (len(p)-6)%stride: _fail('xls_multiple_cell_size')
++                row,col=struct.unpack_from('<HH',p); last=_u16(p,len(p)-2)
++                count=(len(p)-6)//stride
++                if count<2 or col+count-1!=last: _fail('xls_multiple_cell_range')
++                for n in range(count):
++                    pos=4+n*stride; xf=_u16(p,pos)
++                    new.append(_cell(row,col+n,xf,'number' if stride==6 else 'blank',
++                                     _rk(p[pos+2:pos+6]) if stride==6 else None))
++            elif kind in (0x0063, 0x00DD):
++                # ObjProtect/ScenarioProtect carry only protection booleans.
++                # Accept the inert unprotected case; actual object/scenario
++                # content remains outside the supported record subset.
++                if len(p) != 2 or _u16(p, 0) != 0:
++                    _fail('xls_object_or_scenario_protection_unsupported')
++                ignored.add(kind)
++            elif kind in _SHEET_IGNORED:
++                if kind==0x0081:
++                    if wsbool or len(p)!=2 or _u16(p,0)&0x10: _fail('xls_dialog_sheet_unsupported')
++                    wsbool=True
++                ignored.add(kind)
++            else: _fail('xls_sheet_record_unsupported')
++            for cell in new:
++                key=(cell['row'],cell['column'])
++                if key in seen: _fail('xls_duplicate_cell')
++                seen.add(key); row_ids.add(cell['row']); total_cells+=1
++                if total_cells>MAX_CELLS or len(row_ids)>4096: _fail('xls_cell_or_row_limit')
++                cells.append(cell)
++        if i>=len(records) or records[i][2] or pending is not None or not wsbool:
++            _fail('xls_sheet_eof_or_wsbool')
++        i+=1; parsed[offset]=cells
++    if len(parsed)!=len(bounds): _fail('xls_missing_sheet')
++    metadata={'format':'xls','native_type':'CFB/BIFF8','coverage':'stored_cell_values_and_formula_caches_only',
++        'formula_evaluation':False,'formula_cache_freshness':'unknown',
++        'security_scope':'known active records/streams refused; formula tokens and metadata payloads not inspected; not a code-safety validation',
++        'date_system':'1904' if date1904 else '1900','date_display':'not_interpreted; numeric_serials_retained',
++        'sheets':[dict(index=n+1,name=s['name'],visibility=s['visibility'],cells=len(parsed[s['offset']]))
++                  for n,s in enumerate(bounds)],
++        'cell_records':{'included':total_cells,'truncated':False,'limit':MAX_CELLS},
++        'limits':{'input_bytes':MAX_INPUT,'sheets':MAX_SHEETS,'records':MAX_RECORDS,
++                  'strings':MAX_STRINGS,'rows_with_cells_per_sheet':4096,'columns':256},
++        'omissions':['formula_expressions','styles_and_number_formats','visual_layout','merged_cell_layout',
++                     'row_column_visibility','comments','rich_string_formatting','phonetic_annotations'],
++        'ignored_structural_record_types':[f'{k:04x}' for k in sorted(ignored)]}
++    lines=[json.dumps({'xls_workbook':metadata},ensure_ascii=True,separators=(',',':'))]
++    size=len(lines[0])
++    for n,s in enumerate(bounds):
++        for cell in parsed[s['offset']]:
++            line=json.dumps({'xls_cell':dict(sheet=n+1,sheet_name=s['name'],
++                sheet_visibility=s['visibility'],**cell)},ensure_ascii=True,separators=(',',':'))
++            size+=len(line)+1
++            if size>MAX_TEXT: _fail('xls_extracted_text_limit')
++            lines.append(line)
++    return _Text('\n'.join(lines),metadata)
++
++
++def extract_xls(data: bytes) -> str:
++    """Extract one bounded native BIFF8 workbook; no filesystem/network effects."""
++    if not isinstance(data,bytes) or len(data)>MAX_INPUT:
++        raise XLSExtractionError('xls_input_limit')
++    try:
++        return _extract(data)
++    except BinarySpreadsheetError as exc:
++        raise XLSExtractionError(str(exc)) from None
++    except (ValueError,struct.error,IndexError,OverflowError,UnicodeError):
++        raise XLSExtractionError('xls_malformed') from None
+--- /dev/null
++++ b/tools/scoped_zip.py
+@@ -0,0 +1,113 @@
++"""Bounded, exact reads of stored/deflated members from an in-memory ZIP."""
++import struct
++import zlib
++from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED
++
++
++class ZipMemberLimitError(BadZipFile):
++    """The declared or actual member output exceeds its allowed bound."""
++
++
++def read_zip_member(archive, data, info, max_bytes):
++    """Read one member without ZipExtFile's unbounded final inflater flush.
++
++    ``archive`` must describe ``data``. Headers, names, overlap, actual sizes,
++    CRC and exact deflate end-of-stream are checked before returning bytes.
++    """
++    if type(max_bytes) is not int or max_bytes < 0:
++        raise ValueError('invalid ZIP member limit')
++    if (info.filename != info.orig_filename or '\x00' in info.orig_filename):
++        raise BadZipFile('Ambiguous ZIP member name')
++    if info.file_size > max_bytes:
++        raise ZipMemberLimitError('ZIP member limit')
++    if info.compress_type not in (ZIP_STORED, ZIP_DEFLATED):
++        raise NotImplementedError('Unsupported ZIP compression')
++    # Keep the standard library's local-name/header and overlap validation.
++    # Opening and closing alone neither decompresses nor flushes the member.
++    try:
++        with archive.open(info):
++            pass
++    except UnicodeError:
++        raise BadZipFile('Invalid ZIP member name encoding') from None
++    offset = info.header_offset
++    flags, method = struct.unpack_from('<HH', data, offset + 6)
++    crc, compressed_size, file_size = struct.unpack_from('<III', data, offset + 14)
++    name_size, extra_size = struct.unpack_from('<HH', data, offset + 26)
++    extra_start = offset + 30 + name_size
++    start = extra_start + extra_size
++    if flags != info.flag_bits or method != info.compress_type:
++        raise BadZipFile('Inconsistent ZIP member header')
++    if not flags & 8:
++        if 0xffffffff in (file_size, compressed_size):
++            extra = data[extra_start:start]
++            position = 0
++            zip64 = None
++            while position + 4 <= len(extra):
++                kind, size = struct.unpack_from('<HH', extra, position)
++                end = position + 4 + size
++                if end > len(extra):
++                    raise BadZipFile('Truncated ZIP64 member header')
++                if kind == 1:
++                    if zip64 is not None:
++                        raise BadZipFile('Ambiguous ZIP64 member header')
++                    zip64 = extra[position + 4:end]
++                position = end
++            if zip64 is None:
++                raise BadZipFile('Missing ZIP64 member sizes')
++            try:
++                if file_size == 0xffffffff:
++                    file_size, = struct.unpack_from('<Q', zip64)
++                    zip64 = zip64[8:]
++                if compressed_size == 0xffffffff:
++                    compressed_size, = struct.unpack_from('<Q', zip64)
++            except struct.error:
++                raise BadZipFile('Truncated ZIP64 member sizes') from None
++        if (crc, compressed_size, file_size) != (info.CRC, info.compress_size, info.file_size):
++            raise BadZipFile('Inconsistent ZIP member sizes or CRC')
++    else:
++        # A streaming writer records the authoritative local sizes and CRC in
++        # a descriptor after the compressed bytes. Never read into the next
++        # member or central directory while validating it.
++        zip64_descriptor = 0xffffffff in (file_size, compressed_size)
++        for extra in (data[extra_start:start], info.extra):
++            position = 0
++            while position + 4 <= len(extra):
++                kind, size = struct.unpack_from('<HH', extra, position)
++                position += 4 + size
++                if position > len(extra):
++                    raise BadZipFile('Truncated ZIP member extra field')
++                if kind == 1:
++                    zip64_descriptor = True
++        descriptor_start = start + info.compress_size
++        boundary = min(len(data), info._end_offset if info._end_offset is not None else len(data))
++        descriptor_format = '<IQQ' if zip64_descriptor else '<III'
++        descriptor_size = struct.calcsize(descriptor_format)
++        # An unsigned descriptor's CRC can itself equal the optional signature.
++        offsets = [descriptor_start]
++        if data[descriptor_start:descriptor_start + 4] == b'PK\x07\x08':
++            offsets.append(descriptor_start + 4)
++        expected = (info.CRC, info.compress_size, info.file_size)
++        if not any(offset + descriptor_size <= boundary and
++                   struct.unpack_from(descriptor_format, data, offset) == expected
++                   for offset in offsets):
++            raise BadZipFile('Invalid ZIP member data descriptor')
++    if info.compress_type == ZIP_STORED and info.compress_size != info.file_size:
++        raise BadZipFile('Inconsistent stored ZIP member size')
++    compressed = data[start:start + info.compress_size]
++    if len(compressed) != info.compress_size:
++        raise BadZipFile('Truncated ZIP member data')
++    if info.compress_type == ZIP_DEFLATED:
++        decoder = zlib.decompressobj(-zlib.MAX_WBITS)
++        try:
++            payload = decoder.decompress(compressed, min(info.file_size, max_bytes) + 1)
++        except zlib.error:
++            raise BadZipFile('Invalid deflate stream') from None
++        if len(payload) > info.file_size or len(payload) > max_bytes:
++            raise ZipMemberLimitError('ZIP member limit')
++        if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
++            raise BadZipFile('Incomplete or trailing deflate stream')
++    else:
++        payload = compressed
++    if len(payload) != info.file_size or zlib.crc32(payload) != info.CRC:
++        raise BadZipFile('Inconsistent ZIP member output or CRC')
++    return payload
