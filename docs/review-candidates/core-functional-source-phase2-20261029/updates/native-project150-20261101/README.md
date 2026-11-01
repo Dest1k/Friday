@@ -1,0 +1,7 @@
+# Native Project task catalog and bounded name edit
+
+Source150 adds native MPP9 task-catalog reading and an own-workspace `mpp_task_name_edit` operation. The reader exposes persisted task IDs, names, parent IDs and outline levels; the writer creates a new MPP copy and edits one existing nonzero leaf-in-catalog task name of exactly equal UTF-16 length. It preserves all unrelated bytes, checks the source hash and retains cancellation, source identity, no-overwrite and post-publication uncertainty handling.
+
+This remains partial format coverage: dates, duration, calendars, resources, assignments, dependencies and scheduling are not interpreted. Native summary flags are not decoded. Templates, encrypted or active-content inputs, ambiguous records and shared name payloads are refused. Application interoperability and live Telegram acceptance have not run. Installed Source117 and permanent services remain unchanged.
+
+Independent review found and fixed short-record field borrowing, overlapping-payload allocation before validation, Unicode NDJSON line splitting and non-leaf task selection. The original failures are retained in working evidence. Current-source checks exercise genuine native fixtures, FAT/mini-FAT mappings, exact byte preservation, ordinary read/write continuation, source races and cancellation. Existing OneNote, Publisher and Access routes remain available. LGPL-2.1-or-later provenance and license accompany the native Project reader.
