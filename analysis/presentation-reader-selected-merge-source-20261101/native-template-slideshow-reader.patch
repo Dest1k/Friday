@@ -1,0 +1,159 @@
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -880,7 +880,7 @@
+                 from hermes_cli.friday_workspace_zip import read_archive
+                 return read_archive(cap, path.as_posix(), offset=args.get('offset', 1),
+                                     limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.pptx', '.odp'} else None
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.pptx', '.potx', '.ppsx', '.odp', '.otp'} else None
+             extraction_metadata = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+@@ -1049,10 +1049,14 @@
+             from hermes_cli.friday_workspace_docx import create
+             return create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                           structured=output_format == 'docx_structured')
+-        if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.xls', '.zip', '.7z', '.pptx', '.odp'}:
++        if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.xls', '.zip', '.7z', '.pptx', '.potx', '.ppsx', '.odp', '.otp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+-            if path.suffix.lower() in {'.pptx', '.odp'}:
++            if path.suffix.lower() in {'.potx', '.ppsx', '.otp'}:
++                refusal['hint'] = ('Native presentation templates and slideshows can be read. Creating '
++                    'or editing these formats is not supported by this writer. Do not write text/XML '
++                    'under these suffixes or rename an ordinary presentation to claim these formats.')
++            elif path.suffix.lower() in {'.pptx', '.odp'}:
+                 refusal['hint'] = ('Use the explicit native presentation formats pptx_create/pptx_edit/pptx_pdf '
+                     'or odp_create/odp_edit/odp_pptx/pptx_odp with their typed JSON contract and a NEW output path. '
+                     'UTF-8 text, CSV or XML under a presentation suffix is not a native presentation.')
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1177,6 +1177,11 @@
+         "required": ["path"]
+     }
+ }
++
++READ_FILE_SCHEMA['description'] += (
++    ' In the own-user workspace, native POTX/OTP templates and PPSX slideshows also expose slide text, '
++    'tables, cached chart data and separate speaker notes. This reading does not render layout '
++    'or authorize template/slideshow creation/editing; macro-enabled OOXML presentation formats are unsupported.')
+ 
+ WRITE_FILE_SCHEMA = {
+     "name": "write_file",
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -160,7 +160,7 @@
+ def extract_scoped_document_bytes(data: bytes, format: str) -> str:
+     """Convert own immutable snapshots; never install or use hosted OCR.
+ 
+-    PPTX/ODP expose bounded native slide content, separate notes and coverage.
++    PPTX/POTX/PPSX/ODP/OTP expose bounded native content, separate notes and coverage.
+     DOCX/XLSX reuse bounded native parsers. PDF keeps the existing installed
+     anydoc text route, with a bounded networkless local OCR fallback only for
+     its scanned-page signal. OCR returns a string-compatible trusted metadata
+@@ -179,7 +179,7 @@
+                                  max_total_xml_bytes=1000000, include_inventory=True)
+         except (ExtractionError, ValueError, RuntimeError, NotImplementedError, LookupError, zlib.error):
+             raise ScopedExtractionError('malformed_or_required_part_limit') from None
+-    elif format in ('pptx', 'odp'):
++    elif format in ('pptx', 'potx', 'ppsx', 'odp', 'otp'):
+         from tools.scoped_presentation import extract_presentation, PresentationError
+         try:
+             text = extract_presentation(data, format)
+--- a/tools/scoped_presentation.py
++++ b/tools/scoped_presentation.py
+@@ -1,4 +1,4 @@
+-"""Bounded, offline native PPTX/ODP text and cached-data view of immutable bytes.
++"""Bounded, offline native PPTX/POTX/PPSX/ODP/OTP view of immutable bytes.
+ 
+ No rendering, formula evaluation, link refresh, archive extraction or installation.
+ All content is labelled by slide and role; this view does not grant write authority.
+@@ -29,6 +29,15 @@
+ PR = 'urn:oasis:names:tc:opendocument:xmlns:presentation:1.0'
+ XL = 'http://www.w3.org/1999/xlink'
+ MIME = 'application/vnd.oasis.opendocument.presentation'
++PPT_MAIN_TYPES = {
++    'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml',
++    'potx': 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml',
++    'ppsx': 'application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml',
++}
++ODF_MIMES = {
++    'odp': MIME,
++    'otp': 'application/vnd.oasis.opendocument.presentation-template',
++}
+ MAX_MEMBERS = 512
+ MAX_MEMBER = 2_000_000
+ MAX_TOTAL = 8_000_000
+@@ -204,8 +213,11 @@
+     paragraphs = []; size = 0
+     for paragraph in node.iter(q(A, 'p')):
+         chunks = []
++        # Paragraph tab stops configure layout; only text/run tabs are content.
++        tab_stops = {tab for tabs in paragraph.findall('./'+q(A, 'pPr')+'/'+q(A, 'tabLst'))
++                     for tab in tabs.findall(q(A, 'tab'))}
+         for part in paragraph.iter():
+-            value = part.text or '' if part.tag == q(A, 't') else '\n' if part.tag == q(A, 'br') else '\t' if part.tag == q(A, 'tab') else ''
++            value = part.text or '' if part.tag == q(A, 't') else '\n' if part.tag == q(A, 'br') else '\t' if part.tag == q(A, 'tab') and part not in tab_stops else ''
+             size += len(value.encode('utf-8'))
+             if size > 500_000: refuse('native_text_limit')
+             chunks.append(value)
+@@ -393,7 +405,8 @@
+     return output
+ 
+ 
+-def read_pptx(pkg):
++def read_pptx(pkg, format='pptx'):
++    if format not in PPT_MAIN_TYPES: refuse('unsupported_format')
+     types = pkg.root('[Content_Types].xml', q(CT, 'Types')); overrides = {}; defaults = {}
+     for part in types:
+         typ = part.get('ContentType', '')
+@@ -422,8 +435,8 @@
+     roots = pkg.targets('', 'officeDocument')
+     if len(roots) != 1 or roots[0][1] is None: refuse('presentation_root_relationship')
+     name = roots[0][1]
+-    if content_type(name) != 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml':
+-        refuse('not_native_pptx')
++    if content_type(name) != PPT_MAIN_TYPES[format]:
++        refuse('not_native_'+format)
+     root = pkg.root(name, q(P, 'presentation'))
+     slide_ids = root.findall('./'+q(P, 'sldIdLst')+'/'+q(P, 'sldId'))
+     if not 1 <= len(slide_ids) <= MAX_SLIDES: refuse('slide_count_limit')
+@@ -544,19 +557,21 @@
+     return result
+ 
+ 
+-def read_odp(pkg):
+-    if (pkg.parts.get('mimetype') != MIME.encode()
++def read_odp(pkg, format='odp'):
++    if format not in ODF_MIMES: refuse('unsupported_format')
++    mime = ODF_MIMES[format]
++    if (pkg.parts.get('mimetype') != mime.encode()
+             or pkg.member_info.get('mimetype') != (zipfile.ZIP_STORED, 0)):
+-        refuse('not_native_odp')
++        refuse('not_native_'+format)
+     manifest=pkg.root('META-INF/manifest.xml', q('urn:oasis:names:tc:opendocument:xmlns:manifest:1.0','manifest'))
+     mns='urn:oasis:names:tc:opendocument:xmlns:manifest:1.0'
+     if any(n.tag==q(mns,'encryption-data') for n in manifest.iter()): refuse('encrypted_package')
+     roots = [n for n in manifest if n.tag == q(mns, 'file-entry') and n.get(q(mns, 'full-path')) == '/']
+-    if len(roots) != 1 or roots[0].get(q(mns, 'media-type')) != MIME:
++    if len(roots) != 1 or roots[0].get(q(mns, 'media-type')) != mime:
+         refuse('odf_manifest_type')
+     root=pkg.root('content.xml',q(O,'document-content'))
+     presentation=root.find('./'+q(O,'body')+'/'+q(O,'presentation'))
+-    if presentation is None: refuse('not_native_odp')
++    if presentation is None: refuse('not_native_'+format)
+     pages=presentation.findall(q(DR,'page'))
+     if not 1<=len(pages)<=MAX_SLIDES: refuse('slide_count_limit')
+     slides=[]; names=set()
+@@ -610,9 +625,9 @@
+ 
+ def extract_presentation(data, format):
+     try:
+-        if format not in ('pptx', 'odp'): refuse('unsupported_format')
++        if format not in (*PPT_MAIN_TYPES, *ODF_MIMES): refuse('unsupported_format')
+         pkg=Package(data)
+-        slides=read_pptx(pkg) if format=='pptx' else read_odp(pkg) if format=='odp' else refuse('unsupported_format')
++        slides=read_pptx(pkg, format) if format in PPT_MAIN_TYPES else read_odp(pkg, format)
+         counts={'slides':len(slides),'notes_present':sum(s['notes']['status']=='present' for s in slides),
+                 'notes_absent':sum(s['notes']['status']=='absent' for s in slides),
+                 'charts':sum(x['kind']=='chart' for s in slides for x in s['content']),
