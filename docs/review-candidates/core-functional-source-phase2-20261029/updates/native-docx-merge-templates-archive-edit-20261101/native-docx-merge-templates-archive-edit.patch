@@ -1,0 +1,1158 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -11,7 +11,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = "friday.public-identity.v16.native-word-odf-profiles.v1"
++DIALOGUE_REVISION = "friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1"
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -222,6 +222,15 @@
+     'поля не вычисляются. Раскрой ограничения и неизвестную безопасность; создание и правка этих '
+     'профилей отказываются, не удаляй VBA молча. Не переименовывай расширение ради другого профиля. '
+     'Чтение текста не подтверждает оформление или приёмку Office. '
++    'Для объединения ровно двух различных собственных DOCX используй write_file format=docx_merge, '
++    'новый .docx и content — строку точного JSON {"sources":["first.docx","second.docx"]}. '
++    'Полное поддержанное содержимое обоих body включается по одному разу в указанном порядке: '
++    'форматирование абзацев и runs, таблицы и inline PNG/JPEG сохраняются. Исходники не меняются. '
++    'Body непрерывен, без автоматической вставки разрыва страницы между исходниками. Общие части, '
++    'включая стили/настройки/метаданные, должны совпадать побайтно, конечные свойства секции — быть совместимы. '
++    'Нумерация, включая унаследованную из стилей, headers/footers, разрывы секций, compatibility markup, '
++    'закладки, notes, макросы, поля, OLE, внешние связи и другие неподдержанные структуры отказываются до публикации. '
++    'Не заменяй package merge склейкой извлечённого текста; отсутствие отказа не является приёмкой Office. '
+     'Для экспорта DOCX в новый PDF используй write_file format=docx_pdf и JSON {"source":"report.docx"}; исходник остаётся неизменным. '
+     'Если пользователь просит одну таблицу с буквальным текстом, создай один .xlsx через write_file '
+     'format=xlsx_create, если он явно не выбрал другой формат. Копируй текст строками: сохраняй '
+@@ -342,8 +351,10 @@
+             'use write_file format=zip_extract or 7z_extract to extract into a NEW folder, then read those returned paths. '
+             'Legacy .doc reads stored main-story text only; notes, headers, images, formatting and layout are not covered. '
+             'Encrypted, field/object/macro-bearing or unsupported DOC refuses. DOC is read-only. '
++            'Legacy DOT requires the genuine binary template marker and supports the same bounded read-only main story; AutoText refuses. No template instantiation or writing. '
+             'Legacy .xls reads bounded BIFF8 stored cells and saved formula caches with sheet order and visibility. '
+             'Formulas are not evaluated. Unsupported, encrypted or active XLS refuses. No XLS write or conversion support is implied. '
++            'Legacy XLT requires its BIFF8 template record and supports the same bounded stored-cell/cache view. No XLT writing or template instantiation. DOC/DOT and XLS/XLT content markers must match their suffixes. '
+             'EPUB 2/3 with UTF-8 XHTML spine chapters returns logical book text in declared reading order; '
+             'auxiliary chapters are labelled. No CSS, page-layout, image or multimedia rendering, no '
+             'external fetches. Scripts, encryption, unsupported spine formats and ambiguous packages refuse. '
+@@ -361,6 +372,7 @@
+         function['description'] = (
+             'Own-workspace write: path + content string; choose format. '
+             'MHTML/MHT: mhtml/mht creates a NEW genuine multipart HTML archive from literal text; mhtml_structured/mht_structured uses JSON {"title":"Report","blocks":[{"type":"heading","level":1,"text":"Title"},{"type":"paragraph","text":"Text"},{"type":"table","rows":[["A","B"]]}]}. mhtml_edit/mht_edit uses exactly source/old_text/new_text for one unique visible literal match within one root HTML text run. It creates a NEW archive preserving all other MIME parts and headers. Unsupported active/ambiguous MIME/HTML refuses, no external resources are fetched. Read preserves text/table order and reports missing resources; images, CSS and layout are not rendered. '
++            'ZIP/TAR preserving member edits: archive_edit into a NEW same-profile archive with exact JSON {"source":"original.zip","remove":["obsolete.txt"],"entries":[{"source":"new.txt","member":"docs/new.txt"}]}. Explicit listed members only: matching entries replace existing files; others append. Removal names must exist and remove only that exact member, not descendants. Unchanged member names/order/payload bytes are retained; original archive and input files remain unchanged. Container metadata is normalized, not byte-preserved. Duplicate/conflicting paths, directory replacement, secret-bearing payloads and empty output refuse. Supports ZIP and TAR family; 7z edit is unsupported. '
+             'Raster images: read_file on JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF returns a complete paginated frame/pixel registry, not vision or OCR. image_transform creates a NEW JPG/JPEG/PNG/TIF/TIFF/WebP/BMP file from JSON {"source":"scan.tiff","frame":2,"rotation":90,"crop":[0,0,300,200]}. Frame is required and one-based; crop is optional in EXIF-normalized pixels, then rotation is optional clockwise 0/90/180/270 degrees. Every input frame must decode within 32 frames and 16 million total pixels; 1 MB input/output. Only pixels losslessly representable as RGBA8 are supported; high-bit-depth, floating-point and non-RGB color modes refuse. Only the chosen frame is output. Other source frames are unchanged. Derivatives contain pixels only: EXIF orientation is applied, other metadata including ICC/EXIF is omitted. JPEG is lossy; alpha to JPEG/BMP refuses. No OCR, visual interpretation or fidelity claim follows from a pixel hash. '
+             'TAR archives: format=tar/tar.gz/tar.bz2/tar.xz/tar.zst with entries source/member creates a NEW matching archive; input aliases tgz/tbz2/txz/tzst are recognized. read_file lists checked member names and hashes; format=tar_extract with {source} publishes a NEW directory. archive_convert converts ZIP/7z/TAR families into a NEW supported archive preserving member names and bytes. Links, devices, sparse/unsupported records, unsafe paths and over-limit expansion refuse. Source archives are unchanged; never execute members. '
+     'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
+@@ -370,6 +382,16 @@
+             'are checked. DOCM/DOTM are inert-read-only: never execute macros/fields, never '
+             'drop VBA to perform an edit; all macro-profile writes refuse. '
+ 
++            'DOCX merge: format=docx_merge, a NEW .docx path, and content string exactly '
++            '{"sources":["first.docx","second.docx"]}. Exactly two distinct own-workspace DOCX '
++            'sources; each supported full body is included once in the exact given order. Preserve '
++            'paragraph/run formatting, tables and inline PNG/JPEG bytes; source files stay unchanged. '
++            'Continuous body only, without implicit page breaks. Shared globals, including '
++            'styles/settings/metadata, must be byte-identical and final section properties compatible. '
++            'Numbered content (including inherited style numbering), headers/footers, section breaks, '
++            'compatibility markup, bookmarks, notes, macros, fields, OLE, external relations and other '
++            'unsupported structures refuse before publication. No extracted-text '
++            'reconstruction or Office/render fidelity claim. '
+             'ZIP: format=zip needs a NEW .zip path and content JSON {"entries":[{"source":"report.docx","member":"Docs/report.docx"}]}; '
+             'only the exact listed files are included, with unchanged bytes and the requested nested member names. '
+             'format=zip_extract needs a NEW folder path and content JSON {"source":"materials.zip"}. '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -884,7 +884,7 @@
+                 from hermes_cli.friday_workspace_raster import read_image
+                 return read_image(cap, path.as_posix(), offset=args.get('offset', 1),
+                                   limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.mhtml', '.mht', '.doc', '.xls', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.mhtml', '.mht', '.doc', '.dot', '.xls', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
+             extraction_metadata = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+@@ -996,7 +996,7 @@
+                 'hint': 'DOCM/DOTM support bounded inert reading only. Macro projects are '
+                         'opaque, never executed, and not accepted as safe. Creating or editing '
+                         'these profiles is unsupported; do not drop VBA or rename another format.'})
+-        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit'):
++        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'docx_merge', 'archive_edit'):
+             raise ScopeDenied()
+         if output_format in ('spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert'):
+             from hermes_cli.friday_workspace_spreadsheet import execute
+@@ -1068,6 +1068,9 @@
+         if output_format == 'image_transform':
+             from hermes_cli.friday_workspace_raster import create_transform
+             return create_transform(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'archive_edit':
++            from hermes_cli.friday_workspace_zip import edit_archive
++            return edit_archive(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format == 'archive_convert':
+             from hermes_cli.friday_workspace_zip import convert_archive
+             return convert_archive(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+@@ -1103,6 +1106,10 @@
+                                        format=profile)
+             return odf.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                               format=profile, structured=output_format.endswith('_structured'))
++        if output_format == 'docx_merge':
++            if path.suffix.lower() != '.docx': raise ScopeDenied()
++            from hermes_cli.friday_workspace_docx_merge import create
++            return create(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format == 'docx_pdf':
+             if path.suffix.lower() != '.pdf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_pdf import create_pdf
+@@ -1117,7 +1124,7 @@
+                                         format=profile)
+             return word.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                                format=profile, structured=output_format.endswith('_structured'))
+-        if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.mhtml', '.mht', '.doc', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
++        if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.mhtml', '.mht', '.doc', '.dot', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+             if path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
+@@ -1179,6 +1186,11 @@
+                     'profile. One unique supported paragraph match is required; unsafe or '
+                     'unsupported structures refuse. Do not reconstruct a source from extracted '
+                     'text or rename another format to claim preservation.')
++                if profile == 'docx':
++                    refusal['hint'] += (' To merge exactly two distinct own-workspace DOCX files, '
++                        'use format=docx_merge, a NEW .docx path and exact content JSON '
++                        '{"sources":["first.docx","second.docx"]}. Source order is preserved; '
++                        'unsupported or incompatible packages refuse before publication.')
+             return json.dumps(refusal)
+         content = args.get('content')
+         if not isinstance(content, str) or len(content.encode()) > 1000000:
+--- /dev/null
++++ b/hermes_cli/friday_workspace_docx_merge.py
+@@ -0,0 +1,102 @@
++"""Two own-workspace DOCX sources into one NEW native DOCX, in requested order.
++
++Both source identities and complete bytes are checked before and after the
++existing atomic no-replace publisher. Post-publication uncertainty is retained.
++"""
++import hashlib
++import json
++from pathlib import Path
++
++from hermes_cli.friday_user_scope import ScopeDenied
++from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++from hermes_cli.friday_workspace_revision import check
++from tools.scoped_docx_merge import MergeError, merge
++
++
++def _spec(content):
++    if not isinstance(content, str) or len(content) > 16_384:
++        raise ScopeDenied()
++
++    def pairs(items):
++        result = {}
++        for key, value in items:
++            if key in result:
++                raise ScopeDenied()
++            result[key] = value
++        return result
++
++    try:
++        value = json.loads(content, object_pairs_hook=pairs)
++    except (ValueError, RecursionError):
++        raise ScopeDenied() from None
++    if not isinstance(value, dict) or set(value) != {'sources'}:
++        raise ScopeDenied()
++    sources = value['sources']
++    if not isinstance(sources, list) or len(sources) != 2:
++        raise ScopeDenied()
++    return sources
++
++
++def _source(root, raw, destination):
++    if not isinstance(raw, str) or not raw or len(raw) > 4096 or '\x00' in raw:
++        raise ScopeDenied()
++    source = Path(raw)
++    if not source.is_absolute():
++        source = root / source
++    try:
++        relative = source.relative_to(root)
++    except ValueError:
++        raise ScopeDenied() from None
++    if (not relative.parts or any(part in ('.', '..') or part.startswith('.')
++                                  for part in relative.parts)
++            or source.suffix.lower() != '.docx'
++            or relative.as_posix() == destination):
++        raise ScopeDenied()
++    return source, relative.as_posix()
++
++
++def create(cap, fd, leaf, path, content):
++    from hermes_cli.friday_user_scope import workspace_document
++
++    _check_parent(cap, fd, path)
++    if (not isinstance(path, str) or Path(path).suffix.lower() != '.docx'
++            or Path(path).name != leaf):
++        raise ScopeDenied()
++    root = cap.home / 'workspace'
++    sources = [_source(root, raw, path) for raw in _spec(content)]
++    if sources[0][1] == sources[1][1]:
++        raise ScopeDenied()
++    snapshots = []
++    for source, relative in sources:
++        check(cap)
++        data, _, identity = workspace_document(str(source), with_identity=True)
++        snapshots.append((source, relative, data, identity))
++    # Lexically distinct names cannot grant two views of the same source inode.
++    if snapshots[0][3][:2] == snapshots[1][3][:2]:
++        raise ScopeDenied()
++    try:
++        rendered = merge(snapshots[0][2], snapshots[1][2],
++                         checkpoint=lambda: check(cap))
++    except MergeError as error:
++        return json.dumps({'success': False, 'error': 'document_merge_refused',
++                           'reason': error.code, 'effect_disposition': 'none'})
++
++    def verify():
++        for source, _, original, identity in snapshots:
++            check(cap)
++            current, _, version = workspace_document(str(source), with_identity=True)
++            if current != original or version != identity:
++                raise ScopeDenied()
++        check(cap)
++
++    result = json.loads(_create_bytes(cap, fd, leaf, path, rendered,
++                                     output_format='docx', verify_source=verify))
++    if result.get('success'):
++        result.update(merge_mode='native_two_docx',
++                      sources=[relative for _, relative, _, _ in snapshots],
++                      source_sha256=[hashlib.sha256(data).hexdigest()
++                                     for _, _, data, _ in snapshots],
++                      sources_unchanged=True, source_order_preserved=True,
++                      coverage='supported_body_paragraphs_tables_inline_images',
++                      office_rendering_evaluated=False)
++    return json.dumps(result, ensure_ascii=False)
+--- a/hermes_cli/friday_workspace_zip.py
++++ b/hermes_cli/friday_workspace_zip.py
+@@ -643,6 +643,71 @@
+                 _check_secrets(payload, budget=scan_budget)
+     return _publish_archive(cap, fd, leaf, relative, rows, [(source, data, identity)],
+                             output_format, budget, guard=guard)
++
++
++def edit_archive(cap, fd, leaf, relative, content):
++    """Replace/add/delete explicit ZIP/TAR members in a new same-profile copy."""
++    _check_parent(cap, fd, relative)
++    if type(content) is not str or len(content.encode('utf-8')) > 100000:
++        raise ScopeDenied()
++    def pairs(items):
++        value = {}
++        for key, item in items:
++            if key in value:
++                raise ScopeDenied()
++            value[key] = item
++        return value
++    try:
++        spec = json.loads(content, object_pairs_hook=pairs)
++    except (ValueError, RecursionError):
++        raise ScopeDenied() from None
++    if type(spec) is not dict or set(spec) != {'source', 'remove', 'entries'}:
++        raise ScopeDenied()
++    source = _path(spec['source'])
++    format = archive_format(source)
++    if format not in TAR_FORMATS | {'zip'} or archive_format(relative) != format or source == relative:
++        raise ScopeDenied()
++    removals, entries = spec['remove'], spec['entries']
++    if (type(removals) is not list or type(entries) is not list
++            or not 1 <= len(removals) + len(entries) <= MAX_ENTRIES):
++        raise ScopeDenied()
++    remove = [_path(name) for name in removals]
++    if len(set(remove)) != len(remove):
++        raise ScopeDenied()
++    data, identity = _source(cap, source)
++    old = _rows(data) if format == 'zip' else _tar_rows(data, format)
++    original = {name: (directory, payload) for name, directory, payload in old}
++    if any(name not in original for name in remove):
++        raise ScopeDenied()
++    changes = {}
++    sources = [(source, data, identity)]
++    for entry in entries:
++        if type(entry) is not dict or set(entry) != {'source', 'member'}:
++            raise ScopeDenied()
++        item = _path(entry['source'])
++        member = _path(entry['member'])
++        if member in changes or member in remove or original.get(member, (False,))[0]:
++            raise ScopeDenied()
++        payload, item_identity = _source(cap, item)
++        changes[member] = (False, payload)
++        sources.append((item, payload, item_identity))
++    # Replacements retain their original order; new members follow request order.
++    rows = [(name, *changes.get(name, (directory, payload)))
++            for name, directory, payload in old if name not in remove]
++    rows.extend((name, *row) for name, row in changes.items() if name not in original)
++    if not 1 <= len(rows) <= MAX_ENTRIES or sum(len(payload) for _, _, payload in rows) > MAX_BYTES:
++        raise ScopeDenied()
++    names = {name for name, _, _ in rows}
++    files = {name for name, directory, _ in rows if not directory}
++    if len(names) != len(rows) or any(str(parent) in files for name in names
++            for parent in PurePosixPath(name).parents if str(parent) != '.'):
++        raise ScopeDenied()
++    scan_budget = [MAX_SECRET_SCAN]
++    for _, directory, payload in rows:
++        check(cap)
++        if not directory:
++            _check_secrets(payload, budget=scan_budget)
++    return _publish_archive(cap, fd, leaf, relative, rows, sources, format, _inline_budget())
+ 
+ 
+ def _tree_snapshot(fd, rows):
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1199,7 +1199,7 @@
+         "properties": {
+             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
+             "content": {"type": "string", "description": 'For docx_pdf, JSON with exactly source (existing own-workspace DOCX). For docx_edit, JSON with exactly source, old_text, new_text; unique exact text replacement into a NEW .docx copy. ' "Complete content. With docx_structured, a JSON string {\"blocks\":[...]} using title/paragraph blocks {\"type\":\"title\",\"text\":\"Report\"}, headings {\"type\":\"heading\",\"level\":1,\"text\":\"Data\"}, and tables {\"type\":\"table\",\"rows\":[[\"Item\",\"Amount\"],[\"Work\",\"800\"]]}. Exact keys only; table cells are strings, rows rectangular (1-32 columns). 100000 UTF-8 bytes total, at most 2000 paragraphs including table cells."},
+-            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar_extract", "gzip", "bzip2", "xz", "zstd", "stream_extract", "image_transform", "mhtml", "mht", "mhtml_structured", "mht_structured", "mhtml_edit", "mht_edit", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
++            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar_extract", "gzip", "bzip2", "xz", "zstd", "stream_extract", "image_transform", "mhtml", "mht", "mhtml_structured", "mht_structured", "mhtml_edit", "mht_edit", "archive_edit", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
+             # NOTE: the handler still accepts `cross_profile` (bool) — it now
+             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
+             # rejection error teaches it. Unadvertised: the cross-PROFILE
+@@ -1245,6 +1245,26 @@
+     'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit']
+ WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'] = (
+     _DOCUMENT_PROFILE_GUIDANCE + WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'])
++
++# Bounded native DOCX package merge stays in the ordinary own-workspace lane.
++_DOCX_MERGE_GUIDANCE = (
++    'DOCX merge: format=docx_merge, a NEW .docx path, and content string with exactly '
++    '{"sources":["first.docx","second.docx"]}. Exactly two distinct own-workspace DOCX '
++    'sources are included once each in the exact given order. Supported full body paragraphs, '
++    'run formatting, tables and inline PNG/JPEG media bytes are preserved; source files stay '
++    'unchanged. Continuous body only, without implicit page breaks. Shared globals, including '
++    'styles/settings/metadata, must be byte-identical and final section properties compatible. '
++    'Numbered content (including inherited style numbering), headers/footers, section breaks, '
++    'compatibility markup, bookmarks, notes, macros, fields, OLE, external relations and other '
++    'unsupported structures refuse before publication. '
++    'This is native package merging; never substitute extracted-text concatenation. '
++    'No Office, layout or rendering acceptance is implied. ')
++WRITE_FILE_SCHEMA['description'] = _DOCX_MERGE_GUIDANCE + WRITE_FILE_SCHEMA['description']
++WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] = (
++    _DOCX_MERGE_GUIDANCE + WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'])
++WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'] = (
++    _DOCX_MERGE_GUIDANCE + WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'])
++WRITE_FILE_SCHEMA['parameters']['properties']['format']['enum'][1:1] = ['docx_merge']
+ 
+ # Native RTF extends the same admitted document lane, without Office execution.
+ _RTF_GUIDANCE = (
+@@ -1546,3 +1566,6 @@
+ 
+ _MHTML_GUIDANCE = 'MHTML/MHT: mhtml/mht creates a NEW genuine multipart HTML archive from literal text; mhtml_structured/mht_structured uses JSON {"title":"Report","blocks":[{"type":"heading","level":1,"text":"Title"},{"type":"paragraph","text":"Text"},{"type":"table","rows":[["A","B"]]}]}. mhtml_edit/mht_edit uses exactly source/old_text/new_text for one unique visible literal match within one root HTML text run. It creates a NEW archive preserving all other MIME parts and headers. Unsupported active/ambiguous MIME/HTML refuses, no external resources are fetched. Read preserves text/table order and reports missing resources; images, CSS and layout are not rendered. '
+ WRITE_FILE_SCHEMA["description"] = _MHTML_GUIDANCE + WRITE_FILE_SCHEMA["description"]
++
++_ARCHIVE_EDIT_GUIDANCE = 'ZIP/TAR preserving member edits: archive_edit into a NEW same-profile archive with exact JSON {"source":"original.zip","remove":["obsolete.txt"],"entries":[{"source":"new.txt","member":"docs/new.txt"}]}. Explicit listed members only: matching entries replace existing files; others append. Removal names must exist and remove only that exact member, not descendants. Unchanged member names/order/payload bytes are retained; original archive and input files remain unchanged. Container metadata is normalized, not byte-preserved. Duplicate/conflicting paths, directory replacement, secret-bearing payloads and empty output refuse. Supports ZIP and TAR family; 7z edit is unsupported. '
++WRITE_FILE_SCHEMA["description"] = _ARCHIVE_EDIT_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -180,10 +180,10 @@
+                 coverage='root_HTML_text_and_tables_only; attachments_images_CSS_layout_not_rendered; external_resources_not_loaded')
+         except MHTMLError as exc:
+             raise ScopedExtractionError(exc.code) from None
+-    elif format == 'doc':
+-        from tools.scoped_doc import extract_doc, DOCError
+-        try:
+-            text = extract_doc(data)
++    elif format in ('doc', 'dot'):
++        from tools.scoped_doc import extract_doc, extract_dot, DOCError
++        try:
++            text = extract_dot(data) if format == 'dot' else extract_doc(data)
+         except DOCError as exc:
+             raise ScopedExtractionError(str(exc)) from None
+     elif format in ('docx', 'dotx', 'docm', 'dotm'):
+@@ -199,10 +199,10 @@
+             text = extract_spreadsheet(data, format)
+         except (ODSError, ODTError) as exc:
+             raise ScopedExtractionError(str(exc)) from None
+-    elif format == 'xls':
+-        from tools.scoped_xls import extract_xls, XLSExtractionError
+-        try:
+-            text = extract_xls(data)
++    elif format in ('xls', 'xlt'):
++        from tools.scoped_xls import extract_xls, extract_xlt, XLSExtractionError
++        try:
++            text = extract_xlt(data) if format == 'xlt' else extract_xls(data)
+         except XLSExtractionError as exc:
+             raise ScopedExtractionError(str(exc)) from None
+     elif format == 'epub':
+--- a/tools/scoped_doc.py
++++ b/tools/scoped_doc.py
+@@ -1,4 +1,4 @@
+-"""Bounded inert Word 97-2007 binary (.doc) main-story text reader.
++"""Bounded inert Word 97-2007 binary (.doc/.dot) main-story text reader.
+ 
+ CFB allocation checks are copied and specialized from the accepted XLS reader;
+ no XLS/PPT profile boundaries are changed. Only FIB/CLX text is interpreted.
+@@ -261,7 +261,7 @@
+         return obj
+ 
+ 
+-def _fib(word, streams):
++def _fib(word, streams, *, template=False):
+     if len(word) < 156 or _u16(word, 0) != 0xA5EC:
+         _fail('doc_fib_signature')
+     base_version = _u16(word, 2)
+@@ -270,8 +270,12 @@
+     flags = _u16(word, 10)
+     if flags & 0x0100:
+         _fail('doc_encrypted')
+-    if flags & 0x0003 or _u16(word, 8):
++    # MS-DOC FibBase: fDot identifies the template; fGlsy/pnNext identify
++    # AutoText and remain outside both bounded text profiles.
++    if flags & 0x0002 or _u16(word, 8):
+         _fail('doc_template_or_autotext_unsupported')
++    if bool(flags & 0x0001) != template:
++        _fail('doc_template_required' if template else 'doc_template_or_autotext_unsupported')
+     if (not flags & 0x1000 or _u16(word, 12) not in (0x00BF, 0x00C1)
+             or _u32(word, 14) or word[18] or word[19] & 1):
+         _fail('doc_fib_flags')
+@@ -297,6 +301,9 @@
+     if any(n > MAX_CP for n in counts) or sum(counts) > MAX_CP or not counts[0]:
+         _fail('doc_character_limit')
+     pairs = [struct.unpack_from('<II', word, 154 + 8 * i) for i in range(count)]
++    if template and any(pairs[i][1] for i in (9, 10, 83)):
++        # FibRgFcLcb97 SttbfGlsy, PlcfGlsy, SttbGlsyStyle contain AutoText.
++        _fail('doc_template_or_autotext_unsupported')
+     if any(pairs[i][1] for i in _ACTIVE_FIB):
+         _fail('doc_fields_or_active_content_unsupported')
+     # Later FIB extensions include additional document behaviours. They are
+@@ -405,12 +412,12 @@
+     return text, n, sorted(encodings)
+ 
+ 
+-def extract_doc(data):
+-    """Return stored main-story text with coverage, or a fixed safe refusal."""
++def _extract(data, *, template=False):
+     if not isinstance(data, bytes) or not 512 <= len(data) <= MAX_INPUT:
+         _fail('doc_input_limit')
+     cfb = _CFB(data)
+-    word, clx, counts, version, fib_end, table = _fib(cfb.streams['WordDocument'], cfb.streams)
++    word, clx, counts, version, fib_end, table = _fib(cfb.streams['WordDocument'], cfb.streams,
++                                                  template=template)
+     text, pieces, encodings = _piece_text(word, clx, counts, fib_end)
+     if not text.strip():
+         _fail('doc_no_main_text')
+@@ -425,4 +432,20 @@
+         'field_evaluation': False, 'macro_execution': False, 'external_resources_loaded': False,
+         'read_only': True,
+     }
++    if template:
++        metadata.update(schema='friday.dot-text.v1', format='dot', template=True,
++                        template_marker='FibBase.fDot=1; fGlsy=0; pnNext=0')
+     return _Text(text, metadata)
++
++
++def extract_doc(data):
++    """Return stored DOC main-story text; refuse a native template marker."""
++    return _extract(data)
++
++
++def extract_dot(data):
++    """Return stored DOT main-story text; require the native fDot marker.
++
++    Same inert coverage and refusals as DOC; no instantiation or layout.
++    """
++    return _extract(data, template=True)
+--- /dev/null
++++ b/tools/scoped_docx_merge.py
+@@ -0,0 +1,626 @@
++"""Pure bounded OPC merge for compatible inert DOCX body content.
++
++Both sources must have byte-identical shared parts and non-image relationships.
++This includes styles, numbering definitions, settings, metadata and theme. Only
++paragraphs/tables, ordinary run formatting and DrawingML inline PNG/JPEG pictures
++are supported. Numbering *use*, section breaks, headers/footers, notes, bookmarks,
++fields, revisions, unknown markup and namespace-sensitive main markup refuse.
++The final section properties must match exactly. This continuous-body merge does
++not introduce a page break. Source one is authoritative for shared package bytes;
++only its main XML, main relationships and content types may be reserialized.
++All source-two body nodes are copied once in order; image relationships, media
++names and picture IDs are remapped. No document library roundtrip or disk I/O.
++"""
++from __future__ import annotations
++
++from copy import copy, deepcopy
++from io import BytesIO
++import posixpath
++import re
++import struct
++import zipfile
++import zlib
++from xml.etree import ElementTree as ET
++
++from tools.scoped_word_profiles import (
++    _Package, WordProfileError, W, R, PKG, CT, MAX_BYTES, MAX_MEMBERS,
++)
++
++WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
++A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
++PIC = 'http://schemas.openxmlformats.org/drawingml/2006/picture'
++XML = 'http://www.w3.org/XML/1998/namespace'
++MAIN = 'word/document.xml'
++RELS = 'word/_rels/document.xml.rels'
++TYPES = '[Content_Types].xml'
++IMAGE_REL = R + '/image'
++REL_TYPE = 'application/vnd.openxmlformats-package.relationships+xml'
++
++
++class MergeError(ValueError):
++    """Finite content-free refusal code; contains no input/parser messages."""
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++def _fail(code):
++    raise MergeError(code)
++
++
++def _tick(checkpoint):
++    if checkpoint is not None:
++        checkpoint()
++
++
++def _q(ns, name):
++    return '{' + ns + '}' + name
++
++
++def _split(name):
++    if not isinstance(name, str):
++        _fail('unsupported_markup')
++    if name.startswith('{'):
++        return tuple(name[1:].split('}', 1))
++    return '', name
++
++
++_W_TAGS = set('''document body p pPr r rPr t tab br cr noBreakHyphen softHyphen
++ tbl tblPr tblGrid gridCol tr trPr tc tcPr pStyle keepNext keepLines pageBreakBefore
++ widowControl suppressLineNumbers pBdr shd tabs suppressAutoHyphens kinsoku wordWrap
++ overflowPunct topLinePunct autoSpaceDE autoSpaceDN bidi adjustRightInd snapToGrid
++ spacing ind contextualSpacing mirrorIndents suppressOverlap jc textDirection
++ textAlignment outlineLvl cnfStyle rStyle rFonts b bCs i iCs caps smallCaps strike
++ dstrike outline shadow emboss imprint noProof vanish webHidden color w kern
++ position sz szCs highlight u effect bdr fitText vertAlign rtl cs em lang
++ eastAsianLayout specVanish tblStyle tblOverlap bidiVisual tblStyleRowBandSize
++ tblStyleColBandSize tblW tblCellSpacing tblInd tblBorders tblLayout tblCellMar
++ tblLook tblCaption tblDescription gridBefore gridAfter wBefore wAfter cantSplit
++ trHeight tblHeader hidden tcW gridSpan hMerge vMerge tcBorders noWrap tcMar
++ tcFitText vAlign hideMark top left bottom right insideH insideV start end between bar
++ sectPr pgSz pgMar cols col docGrid drawing'''.split())
++_W_ATTRS = set('''val rsidR rsidRPr rsidDel rsidP rsidRDefault rsidSect rsidTr
++ ascii hAnsi eastAsia cs asciiTheme hAnsiTheme eastAsiaTheme cstheme hint
++ color themeColor themeTint themeShade fill themeFill themeFillTint themeFillShade
++ sz space shadow frame auto top right bottom left header footer gutter h w
++ linePitch charSpace sep num equalWidth orient code firstLine hanging leftChars
++ rightChars firstLineChars hangingChars before after beforeLines afterLines
++ beforeAutospacing afterAutospacing line lineRule type pos leader
++ eastAsiaLayout combine combineBrackets vert vertCompress id restart
++ firstRow lastRow firstColumn lastColumn noHBand noVBand firstRowFirstColumn
++ firstRowLastColumn lastRowFirstColumn lastRowLastColumn band1Horz band2Horz
++ band1Vert band2Vert fullDate dateFormat calendar lid name distance wrap hRule
++ rule fldLock dirty cryptProviderType cryptAlgorithmClass cryptAlgorithmType
++ cryptAlgorithmSid cryptSpinCount cryptProvider cryptProviderTypeExt cryptProviderTypeExtSource
++ countBy suffix fmt start suppressTopSpacing suppressBottomSpacing'''.split())
++_DRAW_ATTRS = {
++    (WP, 'inline'): {'distT', 'distB', 'distL', 'distR'},
++    (WP, 'extent'): {'cx', 'cy'},
++    (WP, 'effectExtent'): {'l', 't', 'r', 'b'},
++    (WP, 'docPr'): {'id', 'name', 'descr', 'title', 'hidden'},
++    (WP, 'cNvGraphicFramePr'): set(),
++    (A, 'graphic'): set(), (A, 'graphicData'): {'uri'},
++    (A, 'graphicFrameLocks'): {'noChangeAspect', 'noMove', 'noResize', 'noSelect', 'noGrp', 'noDrilldown'},
++    (PIC, 'pic'): set(), (PIC, 'nvPicPr'): set(),
++    (PIC, 'cNvPr'): {'id', 'name', 'descr', 'title', 'hidden'},
++    (PIC, 'cNvPicPr'): {'preferRelativeResize'},
++    (A, 'picLocks'): {'noChangeAspect', 'noMove', 'noResize', 'noSelect', 'noGrp', 'noRot', 'noChangeArrowheads', 'noChangeShapeType', 'noCrop', 'noEditPoints', 'noAdjustHandles'},
++    (PIC, 'blipFill'): {'dpi', 'rotWithShape'}, (A, 'blip'): {'cstate'},
++    (A, 'srcRect'): {'l', 't', 'r', 'b'}, (A, 'stretch'): set(),
++    (A, 'fillRect'): {'l', 't', 'r', 'b'},
++    (PIC, 'spPr'): {'bwMode'}, (A, 'xfrm'): {'rot', 'flipH', 'flipV'},
++    (A, 'off'): {'x', 'y'}, (A, 'ext'): {'cx', 'cy'},
++    (A, 'prstGeom'): {'prst'}, (A, 'avLst'): set(),
++}
++_W_CHILDREN = {
++    'pPr': set('pStyle keepNext keepLines pageBreakBefore widowControl suppressLineNumbers pBdr shd tabs suppressAutoHyphens kinsoku wordWrap overflowPunct topLinePunct autoSpaceDE autoSpaceDN bidi adjustRightInd snapToGrid spacing ind contextualSpacing mirrorIndents suppressOverlap jc textDirection textAlignment outlineLvl cnfStyle rPr'.split()),
++    'rPr': set('rStyle rFonts b bCs i iCs caps smallCaps strike dstrike outline shadow emboss imprint noProof snapToGrid vanish webHidden color spacing w kern position sz szCs highlight u effect bdr shd fitText vertAlign rtl cs em lang eastAsianLayout specVanish'.split()),
++    'tblPr': set('tblStyle tblOverlap bidiVisual tblStyleRowBandSize tblStyleColBandSize tblW jc tblCellSpacing tblInd tblBorders shd tblLayout tblCellMar tblLook tblCaption tblDescription'.split()),
++    'trPr': set('cnfStyle gridBefore gridAfter wBefore wAfter cantSplit trHeight tblHeader tblCellSpacing jc hidden'.split()),
++    'tcPr': set('cnfStyle tcW gridSpan hMerge vMerge tcBorders shd noWrap tcMar textDirection tcFitText vAlign hideMark'.split()),
++    'pBdr': set('top left bottom right between bar'.split()),
++    'tblBorders': set('top left bottom right insideH insideV start end'.split()),
++    'tcBorders': set('top left bottom right insideH insideV start end'.split()),
++    'tblCellMar': set('top left bottom right start end'.split()),
++    'tcMar': set('top left bottom right start end'.split()),
++    'tabs': {'tab'}, 'tblGrid': {'gridCol'},
++    'sectPr': {'pgSz', 'pgMar', 'cols', 'docGrid'}, 'cols': {'col'},
++}
++_DRAW_CHILDREN = {
++    (WP, 'inline'): [(WP, 'extent'), (WP, 'effectExtent'), (WP, 'docPr'), (WP, 'cNvGraphicFramePr'), (A, 'graphic')],
++    (WP, 'cNvGraphicFramePr'): [(A, 'graphicFrameLocks')],
++    (A, 'graphic'): [(A, 'graphicData')], (A, 'graphicData'): [(PIC, 'pic')],
++    (PIC, 'pic'): [(PIC, 'nvPicPr'), (PIC, 'blipFill'), (PIC, 'spPr')],
++    (PIC, 'nvPicPr'): [(PIC, 'cNvPr'), (PIC, 'cNvPicPr')],
++    (PIC, 'cNvPicPr'): [(A, 'picLocks')],
++    (PIC, 'blipFill'): [(A, 'blip'), (A, 'srcRect'), (A, 'stretch')],
++    (A, 'stretch'): [(A, 'fillRect')],
++    (PIC, 'spPr'): [(A, 'xfrm'), (A, 'prstGeom')],
++    (A, 'xfrm'): [(A, 'off'), (A, 'ext')],
++    (A, 'prstGeom'): [(A, 'avLst')],
++}
++_GLOBAL_RELS = {
++    R + '/' + n for n in ('officeDocument', 'extended-properties', 'styles',
++        'settings', 'webSettings', 'fontTable', 'theme', 'customXml', 'numbering', 'customXmlProps')
++} | {
++    PKG + '/metadata/core-properties', PKG + '/metadata/thumbnail',
++    'http://schemas.microsoft.com/office/2007/relationships/stylesWithEffects',
++}
++_PASSIVE_TYPES = {
++    REL_TYPE, 'application/xml',
++    'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml',
++    'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml',
++    'application/vnd.ms-word.stylesWithEffects+xml',
++    'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml',
++    'application/vnd.openxmlformats-officedocument.wordprocessingml.webSettings+xml',
++    'application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml',
++    'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml',
++    'application/vnd.openxmlformats-officedocument.theme+xml',
++    'application/vnd.openxmlformats-officedocument.customXmlProperties+xml',
++    'application/vnd.openxmlformats-officedocument.extended-properties+xml',
++    'application/vnd.openxmlformats-package.core-properties+xml',
++    'image/png', 'image/jpeg',
++}
++_ROLE_PROFILES = {
++    R+'/officeDocument': ('', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml', W, 'document'),
++    PKG+'/metadata/core-properties': ('', 'application/vnd.openxmlformats-package.core-properties+xml', 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties', 'coreProperties'),
++    R+'/extended-properties': ('', 'application/vnd.openxmlformats-officedocument.extended-properties+xml', 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties', 'Properties'),
++    R+'/styles': (MAIN, 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml', W, 'styles'),
++    'http://schemas.microsoft.com/office/2007/relationships/stylesWithEffects': (MAIN, 'application/vnd.ms-word.stylesWithEffects+xml', W, 'styles'),
++    R+'/settings': (MAIN, 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml', W, 'settings'),
++    R+'/webSettings': (MAIN, 'application/vnd.openxmlformats-officedocument.wordprocessingml.webSettings+xml', W, 'webSettings'),
++    R+'/fontTable': (MAIN, 'application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml', W, 'fonts'),
++    R+'/numbering': (MAIN, 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml', W, 'numbering'),
++    R+'/theme': (MAIN, 'application/vnd.openxmlformats-officedocument.theme+xml', A, 'theme'),
++}
++
++
++def _role(package, owner, kind, target):
++    if kind in _ROLE_PROFILES:
++        expected_owner, mime, ns, tag = _ROLE_PROFILES[kind]
++        root = package.xml.get(target)
++        if owner != expected_owner or package.types[target] != mime or root is None or root.tag != _q(ns,tag):
++            _fail('unsupported_part_profile')
++    elif kind == R+'/customXml':
++        if owner != MAIN or package.types[target] != 'application/xml':
++            _fail('unsupported_part_profile')
++    elif kind == R+'/customXmlProps':
++        root = package.xml.get(target)
++        if (package.types.get(owner) != 'application/xml'
++                or package.types[target] != 'application/vnd.openxmlformats-officedocument.customXmlProperties+xml'
++                or root is None or root.tag != _q('http://schemas.openxmlformats.org/officeDocument/2006/customXml','datastoreItem')):
++            _fail('unsupported_part_profile')
++    elif kind == PKG+'/metadata/thumbnail':
++        if owner or package.types[target] not in ('image/png','image/jpeg'):
++            _fail('unsupported_part_profile')
++
++
++def _plain_profile_xml(package):
++    for name in [TYPES] + [n for n in package.xml if n.endswith('.rels')]:
++        root = package.xml.get(name)
++        if root is None:
++            continue
++        if b'<!--' in package.parts[name]:
++            _fail('unsupported_profile_markup')
++        expected = CT if name == TYPES else PKG
++        if root.attrib or (root.text or '').strip():
++            _fail('unsupported_profile_markup')
++        for node in root:
++            ns, local = _split(node.tag)
++            allowed = ({'Default': {'Extension', 'ContentType'}, 'Override': {'PartName', 'ContentType'}}
++                       if name == TYPES else {'Relationship': {'Id', 'Type', 'Target', 'TargetMode'}})
++            if (ns != expected or local not in allowed or set(node.attrib) - allowed[local]
++                    or len(node) or (node.text or '').strip() or (node.tail or '').strip()):
++                _fail('unsupported_profile_markup')
++
++
++def _image(raw, mime):
++    """Structural signature check without image decoders or unbounded inflate."""
++    if mime == 'image/png':
++        if not raw.startswith(b'\x89PNG\r\n\x1a\n'):
++            _fail('invalid_image')
++        offset = 8
++        kinds = []
++        compressed = []
++        decoded_size = row_size = height = None
++        while offset < len(raw):
++            if offset + 12 > len(raw): _fail('invalid_image')
++            size = int.from_bytes(raw[offset:offset+4], 'big')
++            kind = raw[offset+4:offset+8]
++            end = offset + 12 + size
++            if end > len(raw) or not re.fullmatch(b'[A-Za-z]{4}', kind): _fail('invalid_image')
++            payload = raw[offset+8:offset+8+size]
++            if zlib.crc32(kind + payload) & 0xffffffff != int.from_bytes(raw[end-4:end], 'big'):
++                _fail('invalid_image')
++            if kind == b'IHDR':
++                if kinds or size != 13: _fail('invalid_image')
++                width, height, depth, color, compression, filtering, interlace = struct.unpack('>IIBBBBB', payload)
++                depths = {0:{1,2,4,8,16}, 2:{8,16}, 3:{1,2,4,8}, 4:{8,16}, 6:{8,16}}
++                if (not 1 <= width <= 8192 or not 1 <= height <= 8192
++                        or width * height > 4_194_304 or depth not in depths.get(color, set())
++                        or compression or filtering or interlace != 0):
++                    _fail('unsupported_image')
++                channels = {0:1, 2:3, 3:1, 4:2, 6:4}[color]
++                row_size = (width * channels * depth + 7) // 8 + 1
++                decoded_size = height * row_size
++            elif kind == b'IEND':
++                if size or end != len(raw) or b'IDAT' not in kinds: _fail('invalid_image')
++            elif kind == b'IDAT':
++                if not kinds or (b'IDAT' in kinds and kinds[-1] != b'IDAT'):
++                    _fail('invalid_image')
++                compressed.append(payload)
++            elif kind == b'PLTE':
++                if b'PLTE' in kinds or b'IDAT' in kinds or not 3 <= size <= 768 or size % 3:
++                    _fail('invalid_image')
++            elif kind[0] < 97 and kind not in (b'PLTE', b'IDAT'):
++                _fail('unsupported_image')
++            kinds.append(kind)
++            offset = end
++        if not kinds or kinds[0] != b'IHDR' or kinds[-1] != b'IEND': _fail('invalid_image')
++        if color == 3 and b'PLTE' not in kinds: _fail('invalid_image')
++        try:
++            decoder = zlib.decompressobj()
++            decoded = decoder.decompress(b''.join(compressed), decoded_size + 1)
++        except zlib.error:
++            _fail('invalid_image')
++        if (len(decoded) != decoded_size or not decoder.eof or decoder.unused_data
++                or decoder.unconsumed_tail or any(decoded[n*row_size] > 4 for n in range(height))):
++            _fail('invalid_image')
++    elif mime == 'image/jpeg':
++        # Word's checked-in native template JPEG has one NUL padding byte.
++        # Retain the source bytes, allowing only bounded zero padding after EOI.
++        unpadded = raw.rstrip(b'\x00')
++        if len(raw) - len(unpadded) > 16: _fail('invalid_image')
++        raw = unpadded
++        if not raw.startswith(b'\xff\xd8') or not raw.endswith(b'\xff\xd9'):
++            _fail('invalid_image')
++        # Markers before the first scan prove the native JPEG framing/dimensions.
++        offset = 2
++        found = False
++        while offset < len(raw) - 2:
++            if raw[offset] != 255: _fail('invalid_image')
++            while offset < len(raw) and raw[offset] == 255: offset += 1
++            if offset >= len(raw): _fail('invalid_image')
++            marker = raw[offset]; offset += 1
++            if marker in (0, 0xD8, 0xD9) or 0xD0 <= marker <= 0xD7: _fail('invalid_image')
++            if offset + 2 > len(raw): _fail('invalid_image')
++            size = int.from_bytes(raw[offset:offset+2], 'big')
++            if size < 2 or offset + size > len(raw): _fail('invalid_image')
++            if marker in (0xC0, 0xC1, 0xC2):
++                if size < 8: _fail('invalid_image')
++                height = int.from_bytes(raw[offset+3:offset+5], 'big')
++                width = int.from_bytes(raw[offset+5:offset+7], 'big')
++                if not 1 <= width <= 8192 or not 1 <= height <= 8192 or width*height > 16_777_216:
++                    _fail('unsupported_image')
++                found = True
++            if marker == 0xDA:
++                if not found or offset + size >= len(raw) - 2: _fail('invalid_image')
++                break
++            offset += size
++        else:
++            _fail('invalid_image')
++    else:
++        _fail('unsupported_image')
++
++
++def _style_numbering(styles, used):
++    used = {sid:set(kinds) for sid,kinds in used.items()}
++    rows = {}
++    defaults_by_type = {}
++    if styles is not None:
++        # Raw shared style parts keep their namespace declarations/attributes.
++        # Conditional element wrappers can select a different default style or
++        # inheritance chain in Office, so this bounded merger never interprets
++        # them as an empty/non-numbered profile.
++        allowed_root = {_q(W, n) for n in ('docDefaults', 'latentStyles', 'style')}
++        if (any(node.tag not in allowed_root for node in styles)
++                or any(sum(node.tag == _q(W, name) for node in styles) > 1
++                       for name in ('docDefaults', 'latentStyles'))
++                or any(_split(node.tag)[0] ==
++                       'http://schemas.openxmlformats.org/markup-compatibility/2006'
++                       for node in styles.iter())):
++            _fail('unsupported_style_profile')
++        allowed_style = {_q(W, n) for n in (
++            'name aliases basedOn next link autoRedefine hidden uiPriority '
++            'semiHidden unhideWhenUsed qFormat locked personal personalCompose '
++            'personalReply rsid pPr rPr tblPr trPr tcPr tblStylePr').split()}
++        for node in styles:
++            if node.tag == _q(W, 'style'):
++                if any(child.tag not in allowed_style for child in node):
++                    _fail('unsupported_style_profile')
++                sid = node.get(_q(W, 'styleId'))
++                if not sid or sid in rows: _fail('unsupported_style_profile')
++                rows[sid] = node
++                kind = node.get(_q(W, 'type'))
++                if node.get(_q(W, 'default')) in ('1', 'true', 'on'):
++                    if kind in defaults_by_type: _fail('unsupported_style_profile')
++                    defaults_by_type[kind] = sid
++        defaults = styles.find(_q(W, 'docDefaults'))
++        if defaults is not None and defaults.find('.//' + _q(W, 'numPr')) is not None:
++            _fail('unsupported_numbering_use')
++    for kind, sid in defaults_by_type.items():
++        used.setdefault(sid, set()).add(kind)
++    seen = set()
++    active = set()
++    def visit(sid, *, linked=False):
++        # Reciprocal paragraph/character links are normal Word profiles;
++        # inheritance (basedOn) cycles remain an explicit refusal.
++        if sid in active:
++            if linked: return
++            _fail('unsupported_style_profile')
++        if sid in seen: return
++        if len(active) >= 128:
++            _fail('style_inheritance_limit')
++        node = rows.get(sid)
++        if node is None: _fail('unsupported_style_reference')
++        active.add(sid)
++        if node.find('.//' + _q(W, 'numPr')) is not None:
++            _fail('unsupported_numbering_use')
++        for key in ('basedOn', 'link'):
++            ref = node.find(_q(W, key))
++            if ref is not None:
++                target = ref.get(_q(W, 'val'))
++                if not target: _fail('unsupported_style_reference')
++                targetnode = rows.get(target)
++                if targetnode is None: _fail('unsupported_style_reference')
++                if key == 'basedOn' and targetnode.get(_q(W,'type')) != node.get(_q(W,'type')):
++                    _fail('unsupported_style_reference')
++                visit(target, linked=key == 'link')
++        active.remove(sid)
++        seen.add(sid)
++    for sid, kinds in used.items():
++        if sid not in rows or rows[sid].get(_q(W, 'type')) not in kinds:
++            _fail('unsupported_style_reference')
++        visit(sid)
++
++
++def _main(package, checkpoint):
++    root = package.xml[MAIN]
++    if b'<!--' in package.parts[MAIN]:
++        _fail('unsupported_document_markup')
++    if root.attrib or len(root) != 1 or root[0] is not package.body:
++        _fail('unsupported_document_markup')
++    body = package.body
++    if body.attrib or not len(body) or body[-1].tag != _q(W, 'sectPr'):
++        _fail('unsupported_section_profile')
++    if sum(n.tag == _q(W, 'sectPr') for n in root.iter()) != 1:
++        _fail('unsupported_section_profile')
++    if any(n.tag not in {_q(W,'p'), _q(W,'tbl'), _q(W,'sectPr')} for n in body):
++        _fail('unsupported_body_content')
++    used = {}
++    embeds = []
++    ids = set()
++    for count, node in enumerate(root.iter()):
++        if count % 128 == 0: _tick(checkpoint)
++        ns, local = _split(node.tag)
++        if ns == W:
++            if local == 'numPr': _fail('unsupported_numbering_use')
++            if local not in _W_TAGS: _fail('unsupported_body_markup')
++            if local in ('pStyle', 'rStyle', 'tblStyle'):
++                kind = {'pStyle':'paragraph', 'rStyle':'character', 'tblStyle':'table'}[local]
++                used.setdefault(node.get(_q(W, 'val'), ''), set()).add(kind)
++            for attr in node.attrib:
++                ans, name = _split(attr)
++                if ans == XML and name == 'space' and local == 't' and node.get(attr) in ('preserve','default'):
++                    continue
++                if ans != W or name not in _W_ATTRS: _fail('unsupported_body_attribute')
++            children = list(node)
++            names = [n.tag for n in children]
++            if local == 'p' and (any(t not in {_q(W,'pPr'), _q(W,'r')} for t in names)
++                    or names.count(_q(W,'pPr')) > 1 or (_q(W,'pPr') in names and names[0] != _q(W,'pPr'))):
++                _fail('unsupported_paragraph_content')
++            if local == 'r' and (any(t not in {_q(W,n) for n in ('rPr','t','tab','br','cr','noBreakHyphen','softHyphen','drawing')} for t in names)
++                    or names.count(_q(W,'rPr')) > 1 or (_q(W,'rPr') in names and names[0] != _q(W,'rPr'))):
++                _fail('unsupported_run_content')
++            if local == 'drawing' and names != [_q(WP,'inline')]: _fail('unsupported_drawing')
++            if local in ('tbl', 'tr', 'tc'):
++                prop = {'tbl':'tblPr', 'tr':'trPr', 'tc':'tcPr'}[local]
++                allowed = {'tbl': {'tblPr','tblGrid','tr'}, 'tr':{'trPr','tc'}, 'tc':{'tcPr','p','tbl'}}[local]
++                if any(_split(t)[0] != W or _split(t)[1] not in allowed for t in names):
++                    _fail('unsupported_table_content')
++                if names.count(_q(W,prop)) > 1 or (_q(W,prop) in names and names[0] != _q(W,prop)):
++                    _fail('unsupported_table_content')
++                if local == 'tbl' and (not any(t == _q(W,'tr') for t in names)
++                        or names.count(_q(W,'tblGrid')) > 1
++                        or (_q(W,'tblGrid') in names and names.index(_q(W,'tblGrid')) > names.index(_q(W,'tr')))):
++                    _fail('unsupported_table_content')
++                if local == 'tr' and not any(t == _q(W,'tc') for t in names): _fail('unsupported_table_content')
++                if local == 'tc' and (not names or names[-1] != _q(W,'p')): _fail('unsupported_table_content')
++            structural = {'document','body','p','r','tbl','tr','tc','drawing'}
++            if local not in structural:
++                allowed = _W_CHILDREN.get(local, set())
++                if any(_split(t)[0] != W or _split(t)[1] not in allowed for t in names):
++                    _fail('unsupported_property_content')
++            if local == 't' and children: _fail('unsupported_body_markup')
++            if local in ('t','tab','br','cr','noBreakHyphen','softHyphen') and local != 't' and children:
++                _fail('unsupported_run_content')
++        elif (ns, local) in _DRAW_ATTRS:
++            for attr in node.attrib:
++                ans, name = _split(attr)
++                if (ns,local) == (A,'blip') and attr == _q(R,'embed'): continue
++                if ans or name not in _DRAW_ATTRS[(ns,local)]: _fail('unsupported_drawing_attribute')
++            expected = _DRAW_CHILDREN.get((ns,local), [])
++            actual = [_split(n.tag) for n in node]
++            if (any(t not in expected for t in actual) or len(actual) != len(set(actual))
++                    or [expected.index(t) for t in actual] != sorted(expected.index(t) for t in actual)):
++                _fail('unsupported_drawing')
++            required = {
++                (WP,'inline'): {(WP,'extent'), (WP,'docPr'), (A,'graphic')},
++                (A,'graphic'): {(A,'graphicData')}, (A,'graphicData'): {(PIC,'pic')},
++                (PIC,'pic'): {(PIC,'nvPicPr'), (PIC,'blipFill'), (PIC,'spPr')},
++                (PIC,'nvPicPr'): {(PIC,'cNvPr'), (PIC,'cNvPicPr')},
++                (PIC,'blipFill'): {(A,'blip'), (A,'stretch')},
++                (A,'stretch'): {(A,'fillRect')},
++            }.get((ns,local), set())
++            if not required <= set(actual): _fail('unsupported_drawing')
++            if (ns,local) == (A,'graphicData') and node.get('uri') != PIC: _fail('unsupported_drawing')
++            if (ns,local) == (A,'prstGeom') and node.get('prst') != 'rect': _fail('unsupported_drawing')
++            if (ns,local) == (A,'blip'):
++                rid = node.get(_q(R,'embed'))
++                if not rid: _fail('unsupported_image_reference')
++                embeds.append(rid)
++            if (ns,local) in ((WP,'docPr'), (PIC,'cNvPr')):
++                value = node.get('id','')
++                if not re.fullmatch(r'[0-9]{1,10}', value) or int(value) > 2**31-1:
++                    _fail('unsupported_picture_id')
++                if ns == WP:
++                    if int(value) in ids: _fail('duplicate_picture_id')
++                    ids.add(int(value))
++        else:
++            _fail('unsupported_body_namespace')
++        if local != 't' and (node.text or '').strip(): _fail('unsupported_body_text')
++        if (node.tail or '').strip(): _fail('unsupported_body_text')
++    style_kinds = {R+'/styles', 'http://schemas.microsoft.com/office/2007/relationships/stylesWithEffects'}
++    style_parts = {}
++    for kind,target in package.relationships.get(MAIN,{}).values():
++        if kind in style_kinds:
++            if kind in style_parts: _fail('unsupported_style_profile')
++            style_parts[kind] = target
++    if not style_parts:
++        _style_numbering(None, used)
++    for target in style_parts.values():
++        styles = package.xml.get(target)
++        if styles is None or styles.tag != _q(W,'styles'):
++            _fail('unsupported_style_profile')
++        _style_numbering(styles, used)
++    return embeds, ids
++
++
++def _inspect(data, checkpoint):
++    package = _Package(data, 'docx', checkpoint)
++    if package.active or package.macro: _fail('active_content')
++    _plain_profile_xml(package)
++    for name, mime in package.types.items():
++        if mime not in _PASSIVE_TYPES: _fail('unsupported_part_type')
++        if (mime == 'application/xml' or mime.endswith('+xml')) and name not in package.xml:
++            _fail('unsupported_xml_part_name')
++    for owner, rows in package.relationships.items():
++        for kind, target in rows.values():
++            if kind == IMAGE_REL:
++                if owner != MAIN or not target.startswith('word/media/'):
++                    _fail('unsupported_image_reference')
++            elif kind not in _GLOBAL_RELS:
++                _fail('unsupported_relationship')
++            else:
++                _role(package, owner, kind, target)
++    for name, root in package.xml.items():
++        for node in root.iter():
++            if node.tag in {_q(W,n) for n in ('fldChar','instrText','fldSimple','altChunk','object','control')}:
++                _fail('active_or_field_content')
++            if name != MAIN and any(_split(attr)[0] == R for attr in node.attrib):
++                _fail('unsupported_global_reference')
++    # Every package part must be reachable from the root relationship graph.
++    reached = {TYPES}
++    pending = ['']
++    while pending:
++        owner = pending.pop()
++        relname = '_rels/.rels' if not owner else posixpath.join(posixpath.dirname(owner), '_rels', posixpath.basename(owner)+'.rels')
++        if relname in package.parts: reached.add(relname)
++        for kind, target in package.relationships.get(owner, {}).values():
++            if target not in reached:
++                reached.add(target); pending.append(target)
++    if set(package.parts) != reached: _fail('unsupported_orphan_part')
++    embeds, ids = _main(package, checkpoint)
++    images = {rid:target for rid,(kind,target) in package.relationships.get(MAIN,{}).items() if kind == IMAGE_REL}
++    if set(embeds) != set(images): _fail('unsupported_image_reference')
++    for target in set(images.values()):
++        _tick(checkpoint)
++        _image(package.parts[target], package.types[target])
++    if any(name.startswith('word/media/') and name not in images.values() for name in package.parts):
++        _fail('unsupported_image_reference')
++    return package, images, ids
++
++
++def _compatible(first, second, images1, images2):
++    selected = {MAIN, RELS, TYPES}
++    shared1 = {name:raw for name,raw in first.parts.items() if name not in selected and name not in images1.values()}
++    shared2 = {name:raw for name,raw in second.parts.items() if name not in selected and name not in images2.values()}
++    if shared1 != shared2 or any(first.types[n] != second.types[n] for n in shared1):
++        _fail('incompatible_shared_parts')
++    rel1 = {rid:row for rid,row in first.relationships.get(MAIN,{}).items() if row[0] != IMAGE_REL}
++    rel2 = {rid:row for rid,row in second.relationships.get(MAIN,{}).items() if row[0] != IMAGE_REL}
++    if rel1 != rel2: _fail('incompatible_document_relationships')
++    if ET.tostring(first.body[-1]) != ET.tostring(second.body[-1]):
++        _fail('incompatible_section_profile')
++
++
++def merge(first: bytes, second: bytes, *, checkpoint=None) -> bytes:
++    """Merge two validated compatible DOCX byte packages into new DOCX bytes.
++
++    Input identity/path/CAS and atomic publication belong to the scoped caller.
++    Equal bytes in two distinct source files are allowed. Checkpoint exceptions
++    propagate unchanged so caller cancellation/stop handling remains authoritative.
++    """
++    try:
++        left, images1, ids1 = _inspect(first, checkpoint)
++        right, images2, ids2 = _inspect(second, checkpoint)
++        _compatible(left, right, images1, images2)
++        document = deepcopy(left.xml[MAIN])
++        body = document.find(_q(W,'body'))
++        section = body[-1]; body.remove(section)
++        rels = deepcopy(left.xml.get(RELS))
++        if rels is None: rels = ET.Element(_q(PKG,'Relationships'))
++        types = deepcopy(left.xml[TYPES])
++        occupied = {name.casefold() for name in left.parts}
++        rids = set(left.relationships.get(MAIN,{}))
++        added = {}
++        ridmap = {}
++        targetmap = {}
++        for index, (rid, target) in enumerate(images2.items(), 1):
++            _tick(checkpoint)
++            newrid = 'fridayMerge' + str(index)
++            while newrid in rids: newrid += '_'
++            rids.add(newrid); ridmap[rid] = newrid
++            if target not in targetmap:
++                extension = '.png' if right.types[target] == 'image/png' else '.jpeg'
++                newname = 'word/media/friday-merge-' + str(index) + extension
++                while newname.casefold() in occupied:
++                    newname = newname[:-len(extension)] + '_' + extension
++                occupied.add(newname.casefold()); targetmap[target] = newname
++                added[newname] = (right.parts[target], target)
++                ET.SubElement(types, _q(CT,'Override'), {'PartName':'/'+newname, 'ContentType':right.types[target]})
++            ET.SubElement(rels, _q(PKG,'Relationship'), {'Id':newrid,'Type':IMAGE_REL,'Target':posixpath.relpath(targetmap[target], 'word')})
++        nextid = max(ids1 | {int(n.get('id')) for n in left.xml[MAIN].iter(_q(PIC,'cNvPr'))} | {0}) + 1
++        for node in list(right.body)[:-1]:
++            _tick(checkpoint)
++            cloned = deepcopy(node)
++            for child in cloned.iter():
++                if child.tag == _q(A,'blip'): child.set(_q(R,'embed'), ridmap[child.get(_q(R,'embed'))])
++                if child.tag in (_q(WP,'docPr'), _q(PIC,'cNvPr')):
++                    if nextid > 2**31-1: _fail('picture_id_limit')
++                    child.set('id', str(nextid)); nextid += 1
++            body.append(cloned)
++        body.append(section)
++        changes = {MAIN:ET.tostring(document,encoding='utf-8',xml_declaration=True)}
++        if added:
++            if RELS not in left.parts:
++                ET.SubElement(types, _q(CT,'Override'), {'PartName':'/'+RELS, 'ContentType':REL_TYPE})
++            changes[RELS] = ET.tostring(rels,encoding='utf-8',xml_declaration=True)
++            changes[TYPES] = ET.tostring(types,encoding='utf-8',xml_declaration=True)
++        if len(left.infos) + len(added) + (RELS not in left.parts and bool(added)) > MAX_MEMBERS:
++            _fail('output_limit')
++        if sum(len(changes.get(n,raw)) for n,raw in left.parts.items()) + sum(len(v[0]) for v in added.values()) > MAX_BYTES:
++            _fail('output_limit')
++        output = BytesIO()
++        with zipfile.ZipFile(output,'w') as archive:
++            archive.comment = left.comment
++            for info in left.infos:
++                _tick(checkpoint)
++                raw = b'' if info.is_dir() else changes.get(info.filename,left.parts[info.filename])
++                archive.writestr(copy(info),raw)
++            if RELS not in left.parts and added:
++                archive.writestr(RELS,changes[RELS],compress_type=zipfile.ZIP_DEFLATED)
++            sourceinfos = {info.filename:info for info in right.infos}
++            for name,(raw,oldname) in added.items():
++                info = copy(sourceinfos[oldname]); info.filename = name; info.orig_filename = name
++                archive.writestr(info,raw)
++        result = output.getvalue()
++        if len(result) > MAX_BYTES: _fail('output_limit')
++        verified, _, _ = _inspect(result, checkpoint)
++        for name, raw in left.parts.items():
++            if name not in changes and verified.parts.get(name) != raw:
++                _fail('unselected_part_changed')
++        _tick(checkpoint)
++        return result
++    except WordProfileError as error:
++        raise MergeError(error.code) from None
+--- a/tools/scoped_xls.py
++++ b/tools/scoped_xls.py
+@@ -355,11 +355,25 @@
+     _fail('xls_boolean_or_error')
+ 
+ 
+-def _extract(data):
++def _template_marker(records):
++    # MS-XLS 2.4.323: Template (0x0060) has no payload. Per 2.1.7.20.3 it
++    # occurs once before INTERFACE, after only optional WriteProtect/FilePass.
++    # FilePass is already refused by _records; WriteProtect remains outside
++    # the bounded supported records. Accept only the unprotected prefix.
++    markers=[i for i,(_,kind,_) in enumerate(records) if kind==0x0060]
++    if not markers: _fail('xlt_template_required')
++    if len(markers)!=1: _fail('xlt_duplicate_template')
++    i=markers[0]
++    if records[i][2]: _fail('xlt_template_payload')
++    if i!=1: _fail('xlt_template_placement')
++
++
++def _extract(data, *, template=False):
+     cfb=_CFB(data)
+     records=_records(cfb.streams['Workbook'])
+     _bof(records[0][1],records[0][2],0x0005)
+-    bounds=[]; strings=[]; date1904=False; i=1; sst_seen=False; ignored=set()
++    if template: _template_marker(records)
++    bounds=[]; strings=[]; date1904=False; i=2 if template else 1; sst_seen=False; ignored=set()
+     while i<len(records) and records[i][1] != 0x000A:
+         at,kind,p=records[i]; i+=1
+         if kind == 0x0085:
+@@ -493,6 +507,10 @@
+         'omissions':['formula_expressions','styles_and_number_formats','visual_layout','merged_cell_layout',
+                      'row_column_visibility','comments','rich_string_formatting','phonetic_annotations'],
+         'ignored_structural_record_types':[f'{k:04x}' for k in sorted(ignored)]}
++    if template:
++        metadata.update(format='xlt',template=True,read_only=True,
++                        template_marker='BIFF8 Template (0x0060); empty; after Globals BOF',
++                        template_instantiation=False)
+     lines=[json.dumps({'xls_workbook':metadata},ensure_ascii=True,separators=(',',':'))]
+     size=len(lines[0])
+     for n,s in enumerate(bounds):
+@@ -505,13 +523,25 @@
+     return _Text('\n'.join(lines),metadata)
+ 
+ 
+-def extract_xls(data: bytes) -> str:
+-    """Extract one bounded native BIFF8 workbook; no filesystem/network effects."""
++def _extract_profile(data, *, template=False):
+     if not isinstance(data,bytes) or len(data)>MAX_INPUT:
+         raise XLSExtractionError('xls_input_limit')
+     try:
+-        return _extract(data)
++        return _extract(data, template=template)
+     except BinarySpreadsheetError as exc:
+         raise XLSExtractionError(str(exc)) from None
+     except (ValueError,struct.error,IndexError,OverflowError,UnicodeError):
+         raise XLSExtractionError('xls_malformed') from None
++
++
++def extract_xls(data: bytes) -> str:
++    """Extract a bounded BIFF8 workbook; refuse native template records."""
++    return _extract_profile(data)
++
++
++def extract_xlt(data: bytes) -> str:
++    """Extract stored cells/caches from a marked BIFF8 template, read-only.
++
++    Same bounded records and safety refusals as XLS; no instantiation/layout.
++    """
++    return _extract_profile(data, template=True)
