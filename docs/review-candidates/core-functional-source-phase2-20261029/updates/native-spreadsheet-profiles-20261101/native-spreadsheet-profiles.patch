@@ -1,0 +1,667 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -190,12 +190,13 @@
+ 
+ ORDINARY_IDENTITY = 'Ты — Пятница (Friday), ИИ-помощник с высокой, но управляемой инициативой.'
+ DOCX_EDIT_GUIDANCE = (
++    'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. No cross-family/Office conversion in this path. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
+     'ODS table operations ods_join {source,left_sheet,right_sheet,key,sheet} and ods_merge '
+     '{base,update,sheet,key,revision} create NEW plain .ods tables, without source formatting. '
+     'Join is an exact text LEFT JOIN with unique nonempty text keys and noncolliding headers. '
+     'Merge requires identical ordered headers; newer nonnegative integer numeric revision wins, '
+     'equal-revision value conflicts refuse. Selected formula, merged or protected cells refuse. '
+-    'Native ODS: ods_create creates a NEW .ods from exactly {sheets:[{name,rows}]}, using explicit scalar cells as xlsx_create. String IDs and prefixes remain literal; bounded acyclic SUM ranges and two-cell multiplication are calculated locally. ods_edit creates a NEW .ods from {source,sheet,cell,expected,value}: exact float/string/boolean target only, same type, no repeated/merged/formula/protected target. Other member payloads preserved; existing formula caches are not recalculated after edits. ODS/OTS reading separates values, formula cache and display. OTS is read-only. '
++    'Native ODS: ods_create creates a NEW .ods from exactly {sheets:[{name,rows}]}, using explicit scalar cells as xlsx_create. String IDs and prefixes remain literal; bounded acyclic SUM ranges and two-cell multiplication are calculated locally. ods_edit creates a NEW .ods from {source,sheet,cell,expected,value}: exact float/string/boolean target only, same type, no repeated/merged/formula/protected target. Other member payloads preserved; existing formula caches are not recalculated after edits. ODS/OTS reading separates values, formula cache and display. Use spreadsheet modes for OTS/FODS. '
+     'RTF читается без выполнения полей, объектов и внешних ссылок. Для нового .rtf используй '
+     'rtf_create с обычным текстом или rtf_structured с JSON blocks: paragraph type/text, '
+     'heading type/text/level 1..9, list type/items/ordered (буквальные метки, без автонумерации), '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -880,7 +880,7 @@
+                 from hermes_cli.friday_workspace_zip import read_archive
+                 return read_archive(cap, path.as_posix(), offset=args.get('offset', 1),
+                                     limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.odt', '.ott', '.ods', '.ots', '.rtf', '.pdf', '.xlsx', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.odt', '.ott', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
+             extraction_metadata = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+@@ -984,8 +984,14 @@
+         if name != 'write_file':
+             raise ScopeDenied()
+         output_format = args.get('format', 'text')
+-        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'odt', 'odt_structured', 'odt_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit'):
+-            raise ScopeDenied()
++        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit'):
++            raise ScopeDenied()
++        if output_format in ('spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert'):
++            from hermes_cli.friday_workspace_spreadsheet import execute
++            return execute(cap, fd, parts[-1], path.as_posix(), args.get('content'), operation=output_format)
++        if output_format in ('ods_create', 'ods_edit'):
++            from hermes_cli.friday_workspace_ods import execute
++            return execute(cap, fd, parts[-1], path.as_posix(), args.get('content'), edit=output_format == 'ods_edit')
+         if output_format == 'odf_merge':
+             from hermes_cli.friday_workspace_presentation_odf_merge import create_merge
+             return create_merge(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+@@ -1075,7 +1081,7 @@
+             from hermes_cli.friday_workspace_docx import create
+             return create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                           structured=output_format == 'docx_structured')
+-        if path.suffix.lower() in {'.docx', '.odt', '.ott', '.rtf', '.pdf', '.xlsx', '.xls', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
++        if path.suffix.lower() in {'.docx', '.odt', '.ott', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+             if path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
+--- /dev/null
++++ b/hermes_cli/friday_workspace_spreadsheet.py
+@@ -0,0 +1,53 @@
++"""Native spreadsheet profiles through existing bounded workspace CAS publication."""
++import hashlib
++import json
++import os
++from pathlib import Path
++
++
++def execute(cap, fd, leaf, path, content, *, operation):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_docx import _check_parent
++    from hermes_cli.friday_workspace_revision import check
++    from hermes_cli.friday_workspace_presentation import _read_source, _publish
++    from tools.scoped_presentation_write import json_object, PresentationRefused
++    from tools.scoped_presentation_variants import PresentationRefused as VariantRefused
++    from tools.scoped_odt import ODTError
++    from tools.scoped_spreadsheet_profiles import create, edit, convert, FORMATS, WRITABLE, ODSError
++    check(cap); _check_parent(cap, fd, path)
++    target = Path(path).suffix.lower().lstrip('.')
++    if target not in FORMATS: raise ScopeDenied()
++    try:
++        try: os.stat(leaf, dir_fd=fd, follow_symlinks=False)
++        except FileNotFoundError: pass
++        else: raise ODSError('document_already_exists')
++        if target not in WRITABLE: raise ODSError('macro_profile_read_only')
++        state = None
++        if operation == 'spreadsheet_create':
++            # Rich XLSX creation validates its own exact optional keys.
++            spec = json_object(content, ('sheets',))
++            rendered = create(spec,target,checkpoint=lambda:check(cap))
++            extra = dict(native_editable=True, formulas_recalculated=False)
++        else:
++            keys = ('source',) if operation == 'spreadsheet_convert' else ('source','sheet','cell','expected','value')
++            spec = json_object(content,keys)
++            source_name = spec.pop('source')
++            if not isinstance(source_name,str): raise ScopeDenied()
++            source_format = Path(source_name).suffix.lower().lstrip('.')
++            if source_format not in FORMATS: raise ODSError('unsupported_spreadsheet_profile')
++            source,relative,data,identity = _read_source(source_name,cap,'.'+source_format)
++            if operation == 'spreadsheet_edit':
++                if source_format != target: raise ODSError('edit_requires_same_native_profile')
++                rendered = edit(data,source_format,spec,checkpoint=lambda:check(cap))
++            elif operation == 'spreadsheet_convert':
++                rendered = convert(data,source_format,target,checkpoint=lambda:check(cap))
++            else: raise ODSError('unsupported_spreadsheet_operation')
++            state = source,data,identity
++            extra = dict(source=relative,source_sha256=hashlib.sha256(data).hexdigest(),source_unchanged=True,
++                         formulas_recalculated=False, macros_executed=False,
++                         preservation='native_profile_conversion' if operation == 'spreadsheet_convert' else 'other_XML_bytes_and_package_payloads_preserved')
++        check(cap)
++        return _publish(cap,fd,leaf,path,rendered,target,state,extra)
++    except ScopeDenied: raise
++    except (ODSError, ODTError, PresentationRefused, VariantRefused) as error:
++        return json.dumps(dict(success=False,error='spreadsheet_operation_refused',reason=str(error),effect_disposition='none'))
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1512,7 +1512,7 @@
+ registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
+ 
+ # Native ODS extends the existing bounded own-workspace document lane.
+-_ODS_GUIDANCE = 'Native ODS: ods_create creates a NEW .ods from exactly {sheets:[{name,rows}]}, using explicit scalar cells as xlsx_create. String IDs and prefixes remain literal; bounded acyclic SUM ranges and two-cell multiplication are calculated locally. ods_edit creates a NEW .ods from {source,sheet,cell,expected,value}: exact float/string/boolean target only, same type, no repeated/merged/formula/protected target. Other member payloads preserved; existing formula caches are not recalculated after edits. ODS/OTS reading separates values, formula cache and display. OTS is read-only. '
++_ODS_GUIDANCE = 'Native ODS: ods_create creates a NEW .ods from exactly {sheets:[{name,rows}]}, using explicit scalar cells as xlsx_create. String IDs and prefixes remain literal; bounded acyclic SUM ranges and two-cell multiplication are calculated locally. ods_edit creates a NEW .ods from {source,sheet,cell,expected,value}: exact float/string/boolean target only, same type, no repeated/merged/formula/protected target. Other member payloads preserved; existing formula caches are not recalculated after edits. ODS/OTS reading separates values, formula cache and display. Use spreadsheet modes for OTS/FODS. '
+ WRITE_FILE_SCHEMA["description"] = _ODS_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["ods_create", "ods_edit"]
+ READ_FILE_SCHEMA["description"] += " Native ODS/OTS returns cell types, values and separate formula/cache observations."
+@@ -1520,3 +1520,10 @@
+ _ODS_TABLE_GUIDANCE = 'ODS table operations create new plain native tables; source formatting is not preserved. ods_join uses {source,left_sheet,right_sheet,key,sheet} for a same-workbook exact text LEFT JOIN. ods_merge uses {base,update,sheet,key,revision}; identical ordered headers required, newer nonnegative integer numeric revision wins, equal-revision conflicts refuse. Text keys are unique and nonempty; no string/number or Unicode coercion. Formula/merged/unsupported selected cells refuse. '
+ WRITE_FILE_SCHEMA["description"] = _ODS_TABLE_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["ods_join", "ods_merge"]
++
++# Native spreadsheet profiles extend the existing scoped document contracts.
++_SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. No cross-family/Office conversion in this path. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
++WRITE_FILE_SCHEMA["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["description"]
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["spreadsheet_create", "spreadsheet_edit", "spreadsheet_convert"]
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"]
++READ_FILE_SCHEMA["description"] += " Native XLSX/XLTX/XLSM/XLTM/ODS/OTS/FODS reading reports its coverage; macros are opaque and never executed."
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -194,12 +194,13 @@
+             text = extract_document(data, format)
+         except ODTError as exc:
+             raise ScopedExtractionError(str(exc)) from None
+-    elif format == 'xlsx':
++    elif format in ('xlsx', 'xltx', 'xlsm', 'xltm', 'ods', 'ots', 'fods'):
++        from tools.scoped_spreadsheet_profiles import extract_spreadsheet, ODSError
++        from tools.scoped_odt import ODTError
+         try:
+-            text = _extract_xlsx(io.BytesIO(data), max_xml_bytes=1000000,
+-                                 max_total_xml_bytes=1000000, include_inventory=True)
+-        except (ExtractionError, ValueError, RuntimeError, NotImplementedError, LookupError, zlib.error):
+-            raise ScopedExtractionError('malformed_or_required_part_limit') from None
++            text = extract_spreadsheet(data, format)
++        except (ODSError, ODTError, ExtractionError, ValueError, RuntimeError, NotImplementedError, LookupError, zlib.error) as exc:
++            raise ScopedExtractionError(str(exc) if isinstance(exc, (ODSError, ODTError)) else 'malformed_or_required_part_limit') from None
+     elif format in ('ppt', 'pot', 'pps', 'pptx', 'potx', 'ppsx', 'pptm', 'potm', 'ppsm', 'odp', 'otp', 'fodp'):
+         from tools.scoped_presentation import extract_presentation, PresentationError
+         try:
+@@ -1078,7 +1079,9 @@
+ 
+ 
+ def _extract_xlsx(path: str, *, max_xml_bytes: Optional[int] = None,
+-                  max_total_xml_bytes: Optional[int] = None, include_inventory: bool = False) -> str:
++                  max_total_xml_bytes: Optional[int] = None, include_inventory: bool = False,
++                  sheet_parts: Optional[dict[str, str]] = None,
++                  shared_strings_part: Optional[str] = 'xl/sharedStrings.xml') -> str:
+     s, r, pr = f"{{{_NS_S}}}", f"{{{_NS_REL}}}", f"{{{_NS_PKG_REL}}}"
+     with _open_zip(path, "XLSX") as zf:
+         names = set(zf.namelist())
+@@ -1096,8 +1099,11 @@
+                 raise ExtractionError('Required document XML aggregate exceeds limit')
+ 
+         charge = _charge if max_xml_bytes is not None else None
+-        sst = _zip_xml(zf, "xl/sharedStrings.xml", optional=True, max_bytes=max_xml_bytes, _charge=charge)
+-        shared = [_xlsx_string_text(item, s) for item in sst.iter(f"{s}si")]
++        # Scoped native callers supply already validated OPC targets. A valid
++        # workbook may store these parts outside the conventional filenames.
++        sst = (_zip_xml(zf, shared_strings_part, optional=True, max_bytes=max_xml_bytes, _charge=charge)
++               if shared_strings_part is not None else None)
++        shared = [_xlsx_string_text(item, s) for item in sst.iter(f"{s}si")] if sst is not None else []
+         rels_root = _zip_xml(zf, "xl/_rels/workbook.xml.rels", optional=True, max_bytes=max_xml_bytes, _charge=charge)
+         rels = {rel.get("Id", ""): rel.get("Target", "")
+                 for rel in rels_root.iter(f"{pr}Relationship")
+@@ -1106,8 +1112,11 @@
+         out: list[str] = []
+         formulas = _XlsxFormulaPreview() if include_inventory else None
+         for sheet in workbook.iter(f"{s}sheet"):
+-            target = rels.get(sheet.get(f"{r}id", ""), "").lstrip("/")
+-            part = posixpath.normpath(target if target.startswith("xl/") else f"xl/{target}")
++            if sheet_parts is not None:
++                part = sheet_parts.get(sheet.get(f"{r}id", ""), '')
++            else:
++                target = rels.get(sheet.get(f"{r}id", ""), "").lstrip("/")
++                part = posixpath.normpath(target if target.startswith("xl/") else f"xl/{target}")
+             if sheet.get("state", "visible") in {"hidden", "veryHidden"}:
+                 if formulas is not None:
+                     formulas.sheets["skipped_hidden"] += 1
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -15,7 +15,7 @@
+ from xml.parsers import expat
+ from xml.sax.saxutils import escape, quoteattr
+ 
+-from tools.scoped_presentation import Package, PresentationError, q
++from tools.scoped_presentation import Package, PresentationError, q, xml_root
+ from tools.scoped_odt import _text, _count
+ 
+ O = 'urn:oasis:names:tc:opendocument:xmlns:office:1.0'
+@@ -47,6 +47,15 @@
+         checkpoint()
+ 
+ 
++def active_formula(value):
++    # Formula-bearing names, validations and table columns are just as inert
++    # here as ordinary cells. Do not silently carry their external behavior
++    # through a write merely because they use a different XML field.
++    value = value or ''
++    return (('|' in value and '!' in value)
++            or bool(re.search(r'(?i)(?:\b(?:WEBSERVICE|DDE|HYPERLINK|RTD)\s*\(|(?:https?|file|ftp):)', value)))
++
++
+ def decimal(raw):
+     if not isinstance(raw, str) or not re.fullmatch(r'-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[Ee][+-]?[0-9]+)?', raw) or len(raw) > 128:
+         fail('invalid_numeric_value')
+@@ -84,46 +93,69 @@
+ 
+ class Spreadsheet(Package):
+     def __init__(self, data, format='ods', checkpoint=None):
+-        if format not in MIMES:
++        if format not in (*MIMES, 'fods'):
+             fail('unsupported_spreadsheet_format')
+         tick(checkpoint)
+-        try:
+-            super().__init__(data)
+-            with zipfile.ZipFile(BytesIO(data)) as z:
+-                if any(i.is_dir() and i.file_size for i in z.infolist()):
+-                    fail('nonempty_directory_member')
+-        except (PresentationError, zipfile.BadZipFile, ET.ParseError, UnicodeError,
+-                EOFError, NotImplementedError, zlib.error) as error:
+-            raise ODSError('invalid_spreadsheet_package') from error
+-        self.checkpoint = checkpoint
+-        if self.parts.get('mimetype') != MIMES[format].encode() or self.member_info.get('mimetype') != (zipfile.ZIP_STORED, 0):
+-            fail('native_spreadsheet_identity')
+-        manifest = self.xml.get('META-INF/manifest.xml')
+-        if manifest is None or manifest.tag != q(M, 'manifest'):
+-            fail('spreadsheet_manifest_missing')
+-        paths = set()
+-        for entry in manifest:
+-            if entry.tag != q(M, 'file-entry'):
+-                fail('invalid_manifest_entry')
+-            path = entry.get(q(M, 'full-path'), '')
+-            if not path or path.casefold() in paths:
+-                fail('duplicate_manifest_entry')
+-            paths.add(path.casefold())
+-            if path == '/':
+-                if entry.get(q(M, 'media-type')) != MIMES[format]:
+-                    fail('spreadsheet_manifest_type')
+-            else:
+-                if path.startswith('/') or any(c in path for c in '\\:%?#') or any(ord(c) < 32 for c in path) or any(x in ('', '.', '..') for x in path.rstrip('/').split('/')):
+-                    fail('unsafe_manifest_entry')
+-                if not path.endswith('/') and path not in self.parts:
+-                    fail('manifest_target_missing')
+-            if len(entry):
+-                fail('encrypted_or_unknown_manifest')
+-        if not {'/', 'content.xml'} <= paths:
+-            fail('spreadsheet_manifest_incomplete')
+-        root = self.xml.get('content.xml')
+-        if root is None or root.tag != q(O, 'document-content'):
+-            fail('spreadsheet_content_missing')
++        if format == 'fods':
++            if not isinstance(data, bytes) or not 1 <= len(data) <= 1000000:
++                fail('input_limit')
++            try:
++                root = xml_root(data)
++                stack = [(root, 1)]; count = 0
++                while stack:
++                    node, depth = stack.pop(); count += 1
++                    if depth > 64 or count > 50000 or len(node.attrib) > 64:
++                        fail('xml_structure_limit')
++                    stack.extend((child, depth+1) for child in node)
++            except (PresentationError, ET.ParseError, UnicodeError) as error:
++                raise ODSError('invalid_flat_spreadsheet') from error
++            if (root.tag != q(O, 'document') or root.get(q(O, 'mimetype')) != MIME
++                    or root.get(q(O, 'version')) not in ('1.0','1.1','1.2','1.3')):
++                fail('native_flat_spreadsheet_identity')
++            self.parts = {'content.xml': data}; self.xml = {'content.xml': root}
++            self.member_info = {}; self.unsupported = set(); self.checkpoint = checkpoint
++        else:
++            try:
++                super().__init__(data)
++                with zipfile.ZipFile(BytesIO(data)) as z:
++                    if any(i.is_dir() and i.file_size for i in z.infolist()):
++                        fail('nonempty_directory_member')
++            except (PresentationError, zipfile.BadZipFile, ET.ParseError, UnicodeError,
++                    EOFError, NotImplementedError, zlib.error) as error:
++                raise ODSError('invalid_spreadsheet_package') from error
++            self.checkpoint = checkpoint
++            if self.parts.get('mimetype') != MIMES[format].encode() or self.member_info.get('mimetype') != (zipfile.ZIP_STORED, 0):
++                fail('native_spreadsheet_identity')
++            manifest = self.xml.get('META-INF/manifest.xml')
++            if manifest is None or manifest.tag != q(M, 'manifest'):
++                fail('spreadsheet_manifest_missing')
++            paths = set(); media_types = {}
++            for entry in manifest:
++                if entry.tag != q(M, 'file-entry'):
++                    fail('invalid_manifest_entry')
++                path = entry.get(q(M, 'full-path'), '')
++                if not path or path.casefold() in paths:
++                    fail('duplicate_manifest_entry')
++                paths.add(path.casefold())
++                media_types[path] = entry.get(q(M, 'media-type'))
++                if path == '/':
++                    if entry.get(q(M, 'media-type')) != MIMES[format]:
++                        fail('spreadsheet_manifest_type')
++                else:
++                    if path.startswith('/') or any(c in path for c in '\\:%?#') or any(ord(c) < 32 for c in path) or any(x in ('', '.', '..') for x in path.rstrip('/').split('/')):
++                        fail('unsafe_manifest_entry')
++                    if not path.endswith('/') and path not in self.parts:
++                        fail('manifest_target_missing')
++                if len(entry):
++                    fail('encrypted_or_unknown_manifest')
++            if not {'/', 'content.xml'} <= paths:
++                fail('spreadsheet_manifest_incomplete')
++            for part in ('content.xml', 'styles.xml', 'meta.xml', 'settings.xml'):
++                if part in self.parts and media_types.get(part) != 'text/xml':
++                    fail('spreadsheet_manifest_part_type')
++            root = self.xml.get('content.xml')
++            if root is None or root.tag != q(O, 'document-content'):
++                fail('spreadsheet_content_missing')
+         bodies = root.findall(q(O, 'body'))
+         if len(bodies) != 1 or len(bodies[0]) != 1 or bodies[0][0].tag != q(O, 'spreadsheet'):
+             fail('spreadsheet_body')
+@@ -134,7 +166,10 @@
+         names = [sheet.get(q(TB, 'name')) for sheet in self.sheets]
+         if any(not n or len(n) > 128 for n in names) or len(set(names)) != len(names):
+             fail('ambiguous_sheet_name')
+-        self.unsupported = set()
++        self.unsupported = set(getattr(self, 'unsupported', ()))
++        for name in self.parts:
++            if name.lower().startswith(('basic/', 'scripts/', 'meta-inf/documentsignatures', 'meta-inf/macrosignatures')):
++                self.unsupported.add('scripts_or_signatures')
+         for name, tree in self.xml.items():
+             tick(checkpoint)
+             if name.lower().startswith(('basic/', 'scripts/', 'meta-inf/documentsignatures', 'meta-inf/macrosignatures')):
+@@ -146,8 +181,10 @@
+                     or node.tag == q(O, 'dde-source')
+                     or (node.tag == q(O, 'scripts') and (len(node) or (node.text or '').strip()))):
+                     self.unsupported.add('active_or_linked_content')
+-                if node.get(q(XL, 'href')):
++                if node.get(q(XL, 'href')) or node.get('{http://www.w3.org/XML/1998/namespace}base'):
+                     self.unsupported.add('linked_or_embedded_content')
++                if any(active_formula(node.get(q(TB, field))) for field in ('formula', 'expression')):
++                    self.unsupported.add('active_or_external_formula_not_evaluated')
+ 
+     def rows(self, sheet):
+         def walk(parent):
+@@ -421,11 +458,11 @@
+     return found[0]
+ 
+ 
+-def edit_spreadsheet(data, spec, *, checkpoint=None):
++def edit_spreadsheet(data, spec, *, format='ods', checkpoint=None):
+     if not isinstance(spec, dict) or set(spec) != {'sheet', 'cell', 'expected', 'value'}:
+         fail('ods_edit_schema')
+     if not isinstance(spec['sheet'], str): fail('ods_edit_schema')
+-    book = Spreadsheet(data, checkpoint=checkpoint)
++    book = Spreadsheet(data, format, checkpoint=checkpoint)
+     if book.unsupported: fail('unsupported_preserving_edit')
+     if any(n.tag in {q(TB, k) for k in ('named-expressions', 'database-ranges', 'content-validations')} for n in book.body):
+         # They are preserved, but target constraints require a separate editor.
+@@ -468,11 +505,16 @@
+     attributes = ''.join(' ' + ('office:' if key.startswith('{'+O+'}') else 'table:') + key.split('}', 1)[1] + '="' + escape(text, {'"': '&quot;'}) + '"' for key, text in attrs.items())
+     replacement = ('<table:table-cell xmlns:table="'+TB+'" xmlns:office="'+O+'" xmlns:text="'+T+'"'+attributes+'><text:p>'+_literal(display)+'</text:p></table:table-cell>').encode()
+     changed = raw[:begin] + replacement + raw[end:]
+-    out = BytesIO()
+-    with zipfile.ZipFile(BytesIO(data)) as source, zipfile.ZipFile(out, 'w') as dest:
+-        for info in source.infolist():
+-            tick(checkpoint); dest.writestr(info, changed if info.filename == 'content.xml' else source.read(info))
+-    result = out.getvalue(); after = Spreadsheet(result, checkpoint=checkpoint)
++    if format == 'fods':
++        result = changed
++    else:
++        out = BytesIO()
++        with zipfile.ZipFile(BytesIO(data)) as source, zipfile.ZipFile(out, 'w') as dest:
++            dest.comment = source.comment
++            for info in source.infolist():
++                tick(checkpoint); dest.writestr(info, changed if info.filename == 'content.xml' else source.read(info))
++        result = out.getvalue()
++    after = Spreadsheet(result, format, checkpoint=checkpoint)
+     if len(result) > 1000000: fail('output_limit')
+     found = [after.value(n) for r, c, h, w, n, _ in after.cells(after.sheets[book.sheets.index(sheet)]) if r == row_wanted and c == col_wanted]
+     if len(found) != 1 or found[0]['value'] != value: fail('edited_value_mismatch')
+--- /dev/null
++++ b/tools/scoped_spreadsheet_profiles.py
+@@ -0,0 +1,277 @@
++"""Native spreadsheet profiles; immutable bounded bytes, no engine or macro execution."""
++from copy import deepcopy
++from io import BytesIO
++import zipfile
++import zlib
++from xml.etree import ElementTree as ET
++from tools.scoped_presentation import Package, PresentationError, q, xml_root
++from tools.scoped_ods import (Spreadsheet, SpreadsheetText, ODSError, MIME, MIMES,
++                              O, M, TB, XL, ST, fail, tick, _zip, active_formula)
++
++CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
++S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
++R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
++OOXML = {
++ 'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml',
++ 'xltx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml',
++ 'xlsm': 'application/vnd.ms-excel.sheet.macroEnabled.main+xml',
++ 'xltm': 'application/vnd.ms-excel.template.macroEnabled.main+xml',
++}
++ODF = frozenset(('ods', 'ots', 'fods'))
++FORMATS = frozenset(OOXML) | ODF
++WRITABLE = FORMATS - {'xlsm', 'xltm'}
++VBA_TYPE = 'application/vnd.ms-office.vbaProject'
++RELS_TYPE = 'application/vnd.openxmlformats-package.relationships+xml'
++FORMULA_FIELDS = frozenset(q(S, field) for field in (
++    'f', 'definedName', 'formula', 'formula1', 'formula2',
++    'calculatedColumnFormula', 'totalsRowFormula'))
++SECTIONS = ('meta', 'settings', 'font-face-decls', 'styles', 'automatic-styles', 'master-styles', 'body')
++STANDARD = {'mimetype', 'content.xml', 'styles.xml', 'meta.xml', 'settings.xml', 'META-INF/manifest.xml'}
++
++
++def _rewrite(data, changed, checkpoint=None):
++    out = BytesIO()
++    with zipfile.ZipFile(BytesIO(data)) as source, zipfile.ZipFile(out, 'w') as dest:
++        dest.comment = source.comment
++        for info in source.infolist():
++            tick(checkpoint)
++            dest.writestr(info, changed.get(info.filename, source.read(info)))
++    result = out.getvalue()
++    if len(result) > 1000000: fail('output_limit')
++    return result
++
++
++def ooxml(data, format, *, writing=False, checkpoint=None):
++    if format not in OOXML: fail('unsupported_spreadsheet_profile')
++    tick(checkpoint)
++    try:
++        book = Package(data)
++        types = book.root('[Content_Types].xml', q(CT, 'Types'))
++        overrides = {}; defaults = {}
++        for node in types:
++            if len(node): fail('invalid_content_types')
++            content_type = node.get('ContentType', '')
++            if not content_type or '/' not in content_type or any(char.isspace() or ord(char) < 32 for char in content_type):
++                fail('invalid_content_types')
++            if node.tag == q(CT, 'Override'):
++                key = node.get('PartName', '')
++                if key in overrides or not key.startswith('/') or key[1:] not in book.parts: fail('invalid_content_types')
++                overrides[key] = node.get('ContentType')
++            elif node.tag == q(CT, 'Default'):
++                key = node.get('Extension', '').lower()
++                if not key or key in defaults: fail('invalid_content_types')
++                defaults[key] = node.get('ContentType')
++            else: fail('invalid_content_types')
++        if overrides.get('/xl/workbook.xml') != OOXML[format]: fail('native_spreadsheet_identity')
++        office = book.targets('', 'officeDocument')
++        if len(office) != 1 or office[0][1] != 'xl/workbook.xml':
++            fail('workbook_relationship')
++        root = book.root('xl/workbook.xml', q(S, 'workbook'))
++        groups = root.findall(q(S, 'sheets'))
++        if len(groups) != 1 or not 1 <= len(groups[0]) <= 32: fail('sheet_count_limit')
++        names = set(); ids = set(); targets = set(); sheet_parts = {}
++        for node in groups[0]:
++            name, rid = node.get('name'), node.get(q(R, 'id'))
++            if node.tag != q(S, 'sheet') or not name or name in names or not rid or rid in ids: fail('ambiguous_sheet_name')
++            names.add(name); ids.add(rid)
++            part = book.target('xl/workbook.xml', rid, 'worksheet')
++            if part in targets or overrides.get('/'+part) != 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml': fail('worksheet_identity')
++            targets.add(part); sheet = book.root(part, q(S, 'worksheet'))
++            sheet_parts[rid] = part
++            if writing and sheet.find(q(S,'sheetProtection')) is not None:
++                fail('protected_sheet')
++        if writing and root.find(q(S,'workbookProtection')) is not None:
++            fail('protected_workbook')
++        shared = book.targets('xl/workbook.xml', 'sharedStrings')
++        if len(shared) > 1:
++            fail('shared_strings_relationship')
++        shared_part = shared[0][1] if shared else None
++        string_count = 0
++        if shared_part is not None:
++            if overrides.get('/'+shared_part, defaults.get(shared_part.rpartition('.')[2].lower())) != 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml':
++                fail('shared_strings_identity')
++            string_count = len(book.root(shared_part, q(S, 'sst')).findall(q(S, 'si')))
++        for part in targets:
++            for cell in book.xml[part].iter(q(S, 'c')):
++                if cell.get('t') == 's':
++                    raw = cell.findtext(q(S, 'v'), '')
++                    if not raw.isascii() or not raw.isdecimal() or len(raw) > 8 or int(raw) >= string_count:
++                        fail('shared_string_index')
++        macro_parts = []
++        for name in book.parts:
++            typ = overrides.get('/'+name, defaults.get(name.rpartition('.')[2].lower(), '')) or ''
++            if name != '[Content_Types].xml' and not typ:
++                fail('missing_part_content_type')
++            if name.endswith('.rels') and typ != RELS_TYPE:
++                fail('relationship_content_type')
++            if 'vba' in typ.lower() or 'vba' in name.lower():
++                if typ != VBA_TYPE or not name.lower().endswith('vbaproject.bin'): fail('unsupported_macro_part')
++                macro_parts.append(name)
++            if name.lower().startswith('_xmlsignatures/'):
++                book.unsupported.add('signatures_not_validated')
++            if (any(key in name.lower() for key in ('/connections', '/externallinks/', '/querytables/', '/activex/', '/embeddings/'))
++                    or any(key in typ.lower() for key in ('activex', 'oleobject', 'externallink', 'connections', 'querytable'))):
++                book.unsupported.add('active_or_external_workbook_parts_not_executed')
++        links = [(owner,target) for owner, rows in book.relationships.items() for _, (typ,target) in rows.items() if typ.endswith('/vbaProject')]
++        if macro_parts or links:
++            if format not in ('xlsm', 'xltm') or len(macro_parts) != 1 or links != [('xl/workbook.xml', macro_parts[0])]: fail('macro_profile_mismatch')
++        for name, tree in book.xml.items():
++            tick(checkpoint)
++            for node in tree.iter():
++                if node.tag in FORMULA_FIELDS and active_formula(node.text):
++                    book.unsupported.add('active_or_external_formula_not_evaluated')
++        if writing and (format not in WRITABLE or macro_parts or links or book.external or book.unsupported):
++            fail('macro_external_or_active_mutation_unsupported')
++        if format in ('xlsm', 'xltm'):
++            book.unsupported.add('macro_profile_read_only; VBA_opaque_never_executed')
++        book.macro_parts = macro_parts
++        book.sheet_parts = sheet_parts
++        book.shared_strings_part = shared_part
++        return book
++    except (PresentationError, zipfile.BadZipFile, ET.ParseError, UnicodeError, EOFError, NotImplementedError, zlib.error) as error:
++        raise ODSError('invalid_spreadsheet_package') from error
++
++
++def extract_spreadsheet(data, format, *, checkpoint=None):
++    if format in ODF:
++        from tools.scoped_ods import extract_spreadsheet as extract
++        return extract(data, format, checkpoint=checkpoint)
++    book = ooxml(data, format, checkpoint=checkpoint)
++    from tools.read_extract import _extract_xlsx
++    text = _extract_xlsx(BytesIO(data), max_xml_bytes=1000000, max_total_xml_bytes=1000000,
++                         include_inventory=True, sheet_parts=book.sheet_parts,
++                         shared_strings_part=book.shared_strings_part)
++    metadata = dict(getattr(text, 'extraction_metadata', {}))
++    metadata.update(native_container=True, format=format, formulas_evaluated=False,
++                    macros_executed=False, macro_projects=len(book.macro_parts),
++                    unsupported=sorted(book.unsupported))
++    metadata.setdefault('coverage', 'visible_sheet_values_and_formula_cache_preview; layout_not_covered')
++    return SpreadsheetText(str(text), metadata)
++
++
++def _odf_convert(data, source, target, checkpoint=None):
++    from tools.scoped_presentation_variants import _namespaces, _merge_namespaces, _serialize
++    book = Spreadsheet(data, source, checkpoint)
++    if book.unsupported: fail('active_or_linked_conversion_unsupported')
++    if source == target: return data
++    if source != 'fods' and target != 'fods':
++        raw = book.parts['META-INF/manifest.xml']
++        # Only the exact root media-type declaration is changed; no other XML rewritten.
++        root = book.xml['META-INF/manifest.xml']
++        old, new = MIMES[source].encode(), MIMES[target].encode()
++        if raw.count(old) != 1: fail('manifest_profile_ambiguous')
++        result = _rewrite(data, {'mimetype': new, 'META-INF/manifest.xml': raw.replace(old,new)}, checkpoint)
++        Spreadsheet(result, target, checkpoint); return result
++    if source == 'fods':
++        flat = book.xml['content.xml']; namespaces = _namespaces(data)
++        allowed = {q(O, k) for k in SECTIONS}; seen = set()
++        for child in flat:
++            if child.tag not in allowed or child.tag in seen: fail('flat_sections_unsupported')
++            seen.add(child.tag)
++        if set(flat.attrib) - {q(O, 'version'), q(O, 'mimetype')}: fail('flat_attributes_unsupported')
++        attrs = {q(O, 'version'): flat.get(q(O, 'version'), '1.3')}
++        groups = {'content.xml': ('document-content', ('font-face-decls','automatic-styles','body')),
++                  'styles.xml': ('document-styles', ('font-face-decls','styles','automatic-styles','master-styles')),
++                  'meta.xml': ('document-meta', ('meta',)), 'settings.xml': ('document-settings', ('settings',))}
++        parts = {'mimetype': MIMES[target].encode()}
++        for name, (tag, children) in groups.items():
++            root = ET.Element(q(O, tag), attrs)
++            for section in children:
++                node = flat.find(q(O, section))
++                if node is not None:
++                    node = deepcopy(node)
++                    if section == 'automatic-styles':
++                        # Page layouts belong in document-styles. Other
++                        # automatic styles can be referenced by either sheet
++                        # content or master-page headers/footers, so keep their
++                        # definitions in both parts. The reverse merge below
++                        # deduplicates identical definitions by family/name.
++                        page = {q(ST,'page-layout'), q(ST,'presentation-page-layout')}
++                        if name == 'content.xml':
++                            node[:] = [child for child in node if child.tag not in page]
++                    if section != 'automatic-styles' or name != 'styles.xml' or len(node): root.append(node)
++            if len(root): parts[name] = _serialize(root, namespaces)
++        root = ET.Element(q(M,'manifest'),{q(M,'version'):'1.3'})
++        ET.SubElement(root,q(M,'file-entry'),{q(M,'full-path'):'/',q(M,'media-type'):MIMES[target]})
++        for name in parts:
++            if name != 'mimetype': ET.SubElement(root,q(M,'file-entry'),{q(M,'full-path'):name,q(M,'media-type'):'text/xml'})
++        parts['META-INF/manifest.xml'] = _serialize(root, {'manifest':M})
++        result = _zip(parts)
++    else:
++        if set(book.parts) - STANDARD: fail('flat_conversion_package_resources_unsupported')
++        root = ET.Element(q(O,'document'),{q(O,'version'):book.xml['content.xml'].get(q(O,'version'),'1.3'),q(O,'mimetype'):MIME})
++        sections = {}; namespaces = {}
++        for name in ('content.xml','styles.xml','meta.xml','settings.xml'):
++            if name not in book.xml: continue
++            namespaces = _merge_namespaces(namespaces, _namespaces(book.parts[name]))
++            tree = book.xml[name]
++            if tree.tag != q(O, {'content.xml':'document-content','styles.xml':'document-styles','meta.xml':'document-meta','settings.xml':'document-settings'}[name]): fail('odf_part_identity')
++            if set(tree.attrib) - {q(O,'version')}: fail('odf_part_attributes_unsupported')
++            for child in tree:
++                if child.tag not in {q(O,k) for k in SECTIONS}: fail('odf_sections_unsupported')
++                if child.tag in sections:
++                    previous = sections[child.tag]
++                    if child.tag not in {q(O,'automatic-styles'),q(O,'font-face-decls')}:
++                        fail('flat_global_styles_conflict')
++                    if child.attrib != previous.attrib or (child.text or '').strip() != (previous.text or '').strip():
++                        fail('flat_global_styles_conflict')
++                    def key(node):
++                        name = node.get(q(ST,'name'))
++                        if not name: fail('flat_unnamed_style_unsupported')
++                        return node.tag,node.get(q(ST,'family')),name
++                    known = {key(item):item for item in previous}
++                    if len(known) != len(previous): fail('flat_global_styles_conflict')
++                    for item in child:
++                        identity = key(item)
++                        if identity in known:
++                            left,right = deepcopy(known[identity]),deepcopy(item)
++                            left.tail = right.tail = None
++                            if ET.tostring(left) != ET.tostring(right): fail('flat_global_styles_conflict')
++                        else:
++                            previous.append(deepcopy(item));known[identity] = item
++                else: sections[child.tag] = deepcopy(child)
++        for section in SECTIONS:
++            if q(O,section) in sections: root.append(deepcopy(sections[q(O,section)]))
++        result = _serialize(root,namespaces)
++    Spreadsheet(result,target,checkpoint)
++    return result
++
++
++def convert(data, source, target, *, checkpoint=None):
++    if source not in WRITABLE or target not in WRITABLE: fail('macro_profile_read_only')
++    if source in ODF and target in ODF: return _odf_convert(data,source,target,checkpoint)
++    if source not in OOXML or target not in OOXML: fail('cross_family_conversion_requires_office; unsupported_native_operation')
++    book = ooxml(data,source,writing=True,checkpoint=checkpoint)
++    if source == target: return data
++    raw = book.parts['[Content_Types].xml']; old,new = OOXML[source].encode(),OOXML[target].encode()
++    if raw.count(old) != 1: fail('content_type_ambiguous')
++    result = _rewrite(data,{'[Content_Types].xml':raw.replace(old,new)},checkpoint)
++    ooxml(result,target,writing=True,checkpoint=checkpoint); return result
++
++
++def create(spec, format, *, checkpoint=None):
++    if format not in WRITABLE: fail('macro_profile_read_only')
++    if format in ODF:
++        from tools.scoped_ods import create_spreadsheet
++        return convert(create_spreadsheet(spec,checkpoint=checkpoint),'ods',format,checkpoint=checkpoint)
++    from hermes_cli import friday_workspace_xlsx_table as table
++    try:
++        sheets, tables, names = table.normalize_document(*table.create_document(spec))
++        data = table.render_document(sheets,checkpoint=lambda:tick(checkpoint),tables=tables,names=names)
++    except table.TableRefused as error: raise ODSError(str(error)) from None
++    return convert(data,'xlsx',format,checkpoint=checkpoint)
++
++
++def edit(data, source, spec, *, checkpoint=None):
++    if source not in WRITABLE: fail('macro_profile_read_only')
++    if source in ODF:
++        from tools.scoped_ods import edit_spreadsheet
++        return edit_spreadsheet(data,spec,format=source,checkpoint=checkpoint)
++    if not isinstance(spec,dict) or set(spec) != {'sheet','cell','expected','value'}: fail('spreadsheet_edit_schema')
++    from hermes_cli.friday_workspace_xlsx import render_copy
++    from hermes_cli.friday_user_scope import ScopeDenied
++    normalized = convert(data,source,'xlsx',checkpoint=checkpoint)
++    tick(checkpoint)
++    try: result = render_copy(normalized,**spec)
++    except ScopeDenied: fail('numeric_cell_edit_unsupported_or_expected_mismatch')
++    return convert(result,'xlsx',source,checkpoint=checkpoint)
