@@ -1,0 +1,33 @@
+--- a/v03_runtime.py
++++ b/v03_runtime.py
+@@ -3 +3 @@
+-import copy,re
++import copy,os,re,stat
+@@ -26,0 +27,27 @@
++            def _preserve_native_response_refusal(self,value,parsed,verb,response_bytes,exc):
++                # Keep accepted lower evidence; neither diagnostic may mask refusal.
++                try:lower['Live']._preserve_native_response_refusal(self,value,parsed,verb,response_bytes,exc)
++                except BaseException:pass
++                try:
++                    info=self.out.lstat()
++                    if not (stat.S_ISDIR(info.st_mode) and info.st_uid==os.getuid()
++                            and stat.S_IMODE(info.st_mode)==0o700):return
++                    kind={'ordinary-turn-readonly':'read_only','ordinary-turn-cancel':'cancel'}.get(verb,'other') if type(verb)is str else 'other'
++                    codes={
++                        'read_only':{'exact_ordinary_scope_required':'EXACT_ORDINARY_SCOPE_REQUIRED',
++                            'native_projection_timeout':'NATIVE_PROJECTION_TIMEOUT',
++                            'native_projection_unavailable':'NATIVE_PROJECTION_UNAVAILABLE'},
++                        'cancel':{'exact_owned_cancel_schema':'EXACT_OWNED_CANCEL_SCHEMA',
++                            'owned_cancel_settlement_deadline_UNKNOWN':'OWNED_CANCEL_SETTLEMENT_DEADLINE_UNKNOWN',
++                            'owned_cancel_refused_or_UNKNOWN':'OWNED_CANCEL_REFUSED_OR_UNKNOWN',
++                            'owned_cancel_outcome_UNKNOWN':'OWNED_CANCEL_OUTCOME_UNKNOWN',
++                            'owned_cancel_unavailable':'OWNED_CANCEL_UNAVAILABLE'}}
++                    answer=value.get('result') if parsed is True and type(value)is dict else None
++                    error=answer.get('error') if type(answer)is dict else None
++                    code=codes.get(kind,{}).get(error,'OTHER_UNKNOWN') if type(error)is str else 'OTHER_UNKNOWN'
++                    # put_once uses O_EXCL; later cleanup cannot replace first enum.
++                    self.put_once('V03-FIRST-NATIVE-ERROR.private.json',dict(
++                        schema='frw.Root.v03-native-error-enum.v1',
++                        phase='native_decode_and_response_guard',request_kind=kind,native_error_enum=code,
++                        no_response_or_message_or_user_content=True,no_retry=True,no_clock_reset=True))
++                except BaseException:pass
