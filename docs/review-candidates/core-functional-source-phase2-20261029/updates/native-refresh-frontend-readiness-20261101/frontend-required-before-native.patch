@@ -1,0 +1,58 @@
+--- a/root_source_refresh.py
++++ b/root_source_refresh.py
+@@ -79,6 +79,47 @@
+             self.failure = type(exc).__name__
+             self.event.set()
+         return self.event.is_set()
++
++SOURCE_BUILD_IMPLEMENTATION = {'path': str(HOME / 'hermes-agent/hermes_cli/source_build.py'), 'sha256': '9fc26b645e39241a4627d3f778f58cd9556573cd09e51939d9c4dd2470c8aec9'}
++WEB_FRESHNESS_MAXIMUM_SECONDS = 60
++
++class FrontendFreshnessAborted(RuntimeError):
++    pass
++
++def require_current_web(p, *, deadline_monotonic):
++    """Refuse native publication until canonical web output has a current receipt."""
++    if not math.isfinite(deadline_monotonic):
++        raise ValueError('finite original forward deadline required')
++    finish_by = min(deadline_monotonic, time.monotonic() + WEB_FRESHNESS_MAXIMUM_SECONDS)
++    remaining = finish_by - time.monotonic()
++    if remaining <= 0:
++        raise FrontendFreshnessAborted('canonical web freshness deadline exhausted')
++    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM)}
++    if signal.getitimer(signal.ITIMER_REAL)[0] > 0:
++        raise ValueError('fresh frontend check process must have no inherited alarm')
++    def abort(signum, _frame):
++        # RuntimeError deliberately escapes source_product_current's OSError /
++        # SubprocessError catch, letting subprocess.run kill and reap its child.
++        reason = 'deadline exhausted' if signum == signal.SIGALRM else 'interrupted'
++        raise FrontendFreshnessAborted('canonical web freshness ' + reason)
++    try:
++        for sig in previous:
++            signal.signal(sig, abort)
++        signal.setitimer(signal.ITIMER_REAL, remaining)
++        p['pinned'](SOURCE_BUILD_IMPLEMENTATION)
++        from hermes_cli import source_build
++        if Path(source_build.__file__).resolve() != Path(SOURCE_BUILD_IMPLEMENTATION['path']):
++            raise ValueError('exact canonical source build helper required')
++        source = HOME / 'hermes-agent'
++        if not source_build.source_product_current(source, 'web', source / 'hermes_cli/web_dist'):
++            raise ValueError('canonical web build required before native source identity')
++        if time.monotonic() >= finish_by:
++            raise FrontendFreshnessAborted('canonical web freshness deadline exhausted')
++    finally:
++        signal.setitimer(signal.ITIMER_REAL, 0)
++        for sig, handler in previous.items():
++            signal.signal(sig, handler)
++
+ 
+ def main():
+     parser = argparse.ArgumentParser()
+@@ -134,6 +175,7 @@
+     previous = source_identity(selected.parent / 'workspace')
+     if previous != parent_native['source_identity']:
+         raise ValueError('selected Source119 source ancestry changed')
++    require_current_web(p, deadline_monotonic=deadline)
+     expected = source_identity(HOME / 'hermes-agent')
+     if expected == previous:
+         raise ValueError('exact Source119 source commit is not visible')
