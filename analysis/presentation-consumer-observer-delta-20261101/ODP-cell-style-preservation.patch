@@ -1,0 +1,134 @@
+--- a/code/v04_contract.py
++++ b/code/v04_contract.py
+@@ -8,6 +8,7 @@
+ from pathlib import Path
+ import re
+ import runpy
++import xml.etree.ElementTree as ET
+ 
+ HERE = Path(__file__).resolve().parent
+ BASE = runpy.run_path(str(HERE / 'base_presentation_contract.py'))
+@@ -221,6 +222,56 @@
+     return [list(row) for row in sorted(merged.items())]
+ 
+ 
++def odf_cell_edges(facts, attributes):
++    """Resolve explicit cell side overrides after inherited shorthand values."""
++    sides = ('left', 'right', 'top', 'bottom')
++    border_names = {'border', *('border-' + side for side in sides)}
++    if border_names.intersection(attributes):
++        inherited = facts.get('border-sides')
++        if inherited:
++            borders = {side: dict(row) for side, row in zip(sides, inherited)}
++        else:
++            borders = {side: {'side': name, 'width': facts.get('border-width', 'UNKNOWN'),
++                              'color': facts.get('border-color', 'UNKNOWN'),
++                              'style': facts.get('border-style', 'UNKNOWN')}
++                       for side, name in zip(sides, ('lnL', 'lnR', 'lnT', 'lnB'))}
++        def parse(value, side):
++            if value in ('none', 'hidden'):
++                return {'side': side, 'width': '0', 'color': 'NONE', 'style': 'none'}
++            match = re.fullmatch(r'(\S+)\s+(solid|dashed|dotted|double)\s+(#[0-9A-Fa-f]{6})', value)
++            need(match is not None, 'ODF_EXPLICIT_BORDER_UNSUPPORTED')
++            return {'side': side, 'width': measurement(match[1]), 'color': match[3].upper(), 'style': match[2]}
++        if 'border' in attributes:
++            borders = {side: parse(attributes['border'], borders[side]['side']) for side in sides}
++        for side in sides:
++            key = 'border-' + side
++            if key in attributes:
++                borders[side] = parse(attributes[key], borders[side]['side'])
++        for key in ('border-width', 'border-color', 'border-style', 'border-sides'):
++            facts.pop(key, None)
++        common = {(row['width'], row['color'], row['style']) for row in borders.values()}
++        if len(common) == 1:
++            width, colour, style = next(iter(common))
++            facts.update({'border-width': width, 'border-color': colour, 'border-style': style})
++        else:
++            facts['border-sides'] = [borders[side] for side in sides]
++    padding_names = {'padding', *('padding-' + side for side in sides)}
++    if padding_names.intersection(attributes):
++        padding = list(facts.get('padding-sides', [facts.get('padding', 'UNKNOWN')] * 4))
++        if 'padding' in attributes:
++            padding = [measurement(attributes['padding'])] * 4
++        for index, side in enumerate(sides):
++            key = 'padding-' + side
++            if key in attributes:
++                padding[index] = measurement(attributes[key])
++        facts.pop('padding', None)
++        facts.pop('padding-sides', None)
++        if len(set(padding)) == 1:
++            facts['padding'] = padding[0]
++        else:
++            facts['padding-sides'] = padding
++
++
+ def odf_style(node, styles, text_nodes=(), table_layout=False):
+     names = {'style': 'urn:oasis:names:tc:opendocument:xmlns:style:1.0',
+              'draw': DR, 'text': T, 'table': TB}
+@@ -237,8 +288,13 @@
+         for child in style_node:
+             if not child.tag.endswith('properties'):
+                 continue
++            edge_attributes = {}
+             for attr, value in child.attrib.items():
+                 local = attr.rsplit('}', 1)[-1]
++                if table_layout and (local == 'border' or local.startswith('border-')
++                                     or local == 'padding' or local.startswith('padding-')):
++                    edge_attributes[local] = value
++                    continue
+                 if local not in STYLE_NAMES or (local == 'padding' and not table_layout):
+                     continue
+                 local = 'fill-color' if local == 'background-color' else local
+@@ -257,6 +313,8 @@
+                         facts['border-style'] = 'UNKNOWN'
+                     continue
+                 facts[local] = normalized
++            if edge_attributes:
++                odf_cell_edges(facts, edge_attributes)
+         return [list(row) for row in sorted(facts.items())]
+     def style_name(value):
+         return next((ref for ns in (names['style'], DR, T, TB)
+@@ -278,10 +336,11 @@
+         need(name not in seen and name in styles, 'ODF_LAYOUT_STYLE_UNKNOWN')
+         seen.add(name)
+         style = styles[name]
+-        for child in style:
+-            value = child.get(q(namespace, attribute))
+-            if value is not None:
+-                return measurement(value)
++        for candidate in ((attribute,) if type(attribute) is str else attribute):
++            for child in style:
++                value = child.get(q(namespace, candidate))
++                if value is not None:
++                    return measurement(value)
+         name = style.get(q(namespace, 'parent-style-name'))
+     return 'UNKNOWN'
+ 
+@@ -336,8 +395,17 @@
+                 if line is None:
+                     continue
+                 stroke = color(line, theme)
++                dash = line.find(q(A, 'prstDash'))
++                dash_name = 'solid' if dash is None else dash.get('val', 'UNKNOWN')
++                border_style = {'solid': 'solid', 'dash': 'dashed', 'dot': 'dotted'}.get(dash_name, 'EXPLICIT:' + dash_name)
++                if line.find(q(A, 'custDash')) is not None:
++                    border_style = 'CUSTOM:' + digest(ET.tostring(line.find(q(A, 'custDash'))))
++                compound = line.get('cmpd', 'sng')
++                if compound != 'sng':
++                    border_style = ('double' if compound == 'dbl' and border_style == 'solid'
++                                    else 'EXPLICIT_COMPOUND:' + compound + ':' + border_style)
+                 borders.append({'side': name, 'width': measurement(str(Decimal(line.get('w', '0')) / 12700) + 'pt'),
+-                                'color': stroke or 'UNKNOWN', 'style': 'solid' if stroke not in (None, 'NONE') else 'none'})
++                                'color': stroke or 'UNKNOWN', 'style': border_style if stroke not in (None, 'NONE') else 'none'})
+             if borders:
+                 common = {(row['width'], row['color'], row['style']) for row in borders}
+                 if len(borders) == 4 and len(common) == 1:
+@@ -420,7 +488,7 @@
+                       'style': odf_style(cell, styles, table_layout=True), 'storage': storage}
+             cells.extend([copy.deepcopy(record) for _ in range(count)])
+         need(not columns or len(cells) == len(columns), 'ODP_TABLE_COLUMN_CELL_JOIN')
+-        rows.extend([copy.deepcopy({'height': odf_dimension(row, styles, 'min-row-height'), 'cells': cells})
++        rows.extend([copy.deepcopy({'height': odf_dimension(row, styles, ('row-height', 'min-row-height')), 'cells': cells})
+                      for _ in range(repeat)])
+     need(columns and rows, 'ODP_TABLE_LAYOUT_REQUIRED')
+     return {'columns': columns, 'rows': rows}
