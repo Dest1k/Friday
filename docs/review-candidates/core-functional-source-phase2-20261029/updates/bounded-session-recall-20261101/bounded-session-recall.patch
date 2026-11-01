@@ -1,0 +1,326 @@
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -40,6 +40,10 @@
+ # Bounding message COUNT (head/tail) is not enough when content per message is
+ # unbounded; the agent can scroll around a message for detail (#114344).
+ _READ_MAX_CONTENT = 2000
++# Field pages bound UTF-8 text bytes; the response bound includes JSON escaping.
++# Neither is a model-token estimate.
++_FIELD_MAX_BYTES = 6000
++_RESPONSE_MAX_BYTES = 131072
+ # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
+ # returns, so interactive matches buried under cron hits survive the demotion pass.
+ _DISCOVER_SCAN_LIMIT = 300
+@@ -111,8 +115,80 @@
+             "model": meta.get("model"), "title": meta.get("title")}
+ 
+ 
++def _utf8_prefix(text: str, limit: int) -> str:
++    return text.encode('utf-8')[:limit].decode('utf-8', errors='ignore')
++
++
++def _json_field_page(value, offset: int, limit: int):
++    """A bounded page of canonical JSON, with character offsets for exact recovery."""
++    result, consumed, used, more = [], 0, 0, False
++    for chunk in json.JSONEncoder(ensure_ascii=False, separators=(',', ':')).iterencode(value):
++        end = consumed + len(chunk)
++        if end <= offset:
++            consumed = end
++            continue
++        remaining = chunk[max(0, offset - consumed):]
++        piece = _utf8_prefix(remaining, limit - used)
++        result.append(piece)
++        used += len(piece.encode('utf-8'))
++        consumed = end
++        if len(piece) < len(remaining):
++            more = True
++            break
++    text = ''.join(result)
++    if offset and not text:
++        raise ValueError('field_offset must point inside the requested field')
++    return text, more
++
++
++def _message_pages(value):
++    if isinstance(value, dict):
++        if 'id' in value and 'role' in value and 'content' in value:
++            yield value
++        else:
++            for child in value.values():
++                yield from _message_pages(child)
++    elif isinstance(value, list):
++        for child in value:
++            yield from _message_pages(child)
++
++
+ def _ok(**payload) -> str:
+-    return json.dumps({"success": True, **payload}, ensure_ascii=False)
++    result = {'success': True, **payload}
++    encode = lambda: json.dumps(result, ensure_ascii=False)
++    text = encode()
++    if len(text.encode('utf-8')) <= _RESPONSE_MAX_BYTES:
++        return text
++    # Keep every message/session anchor. Detailed text can be recovered through
++    # scroll, including tool-call JSON. Never spill another user's data to disk.
++    # Keep a positive page so following next_*_offset always makes progress.
++    # Metadata that cannot fit even with small pages receives the typed refusal.
++    for limit in (512, 128, 32):
++        for message in _message_pages(result):
++            content = message.get('content')
++            if isinstance(content, str) and len(content.encode('utf-8')) > limit:
++                prefix = _utf8_prefix(content, limit)
++                message['content'] = prefix
++                message['content_truncated'] = True
++                message['next_content_offset'] = message.get('content_offset', 0) + len(prefix)
++            if 'tool_calls' in message:
++                page, more = _json_field_page(message.pop('tool_calls'), 0, limit)
++                message.update(tool_calls_page=page, tool_calls_offset=0,
++                               tool_calls_truncated=more, tool_calls_encoding='json',
++                               tool_calls_offset_unit='unicode_characters')
++                if more:
++                    message['next_tool_calls_offset'] = len(page)
++            elif len(message.get('tool_calls_page', '').encode('utf-8')) > limit:
++                page = _utf8_prefix(message['tool_calls_page'], limit)
++                message.update(tool_calls_page=page, tool_calls_truncated=True,
++                               next_tool_calls_offset=message.get('tool_calls_offset', 0) + len(page))
++        result['response_truncated'] = True
++        result['response_byte_limit'] = _RESPONSE_MAX_BYTES
++        text = encode()
++        if len(text.encode('utf-8')) <= _RESPONSE_MAX_BYTES:
++            return text
++    return json.dumps({'success': False, 'error': 'session_search_response_too_large',
++                       'response_byte_limit': _RESPONSE_MAX_BYTES})
+ 
+ 
+ def _is_compaction_summary(content: str) -> bool:
+@@ -250,21 +326,40 @@
+ 
+ 
+ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None,
+-                   max_content_len: Optional[int] = None, content_offset: int = 0) -> Dict[str, Any]:
++                   max_content_len: Optional[int] = None, content_offset: int = 0,
++                   message_field: str = 'content') -> Dict[str, Any]:
+     """Slim a message row; keeps ``content`` even when empty (tool-call-only turns)."""
+     content = m.get("content")
+     if isinstance(content, str) and "\x1b" in content:  # archived terminal output carries ANSI
+         from tools.ansi_strip import strip_ansi
+         content = strip_ansi(content)
+     entry = {"id": m.get("id"), "role": m.get("role"), "content": content, "timestamp": m.get("timestamp")}
+-    entry.update({k: m.get(k) for k in ("tool_name", "tool_calls", "tool_call_id") if m.get(k)})
++    entry.update({k: m.get(k) for k in ('tool_name', 'tool_call_id') if m.get(k)})
++    if m.get('tool_calls'):
++        offset = content_offset if message_field == 'tool_calls' else 0
++        page, more = _json_field_page(m['tool_calls'], offset, _FIELD_MAX_BYTES)
++        if not offset and not more and message_field == 'content':
++            entry['tool_calls'] = m['tool_calls']
++        else:
++            entry.update(tool_calls_page=page, tool_calls_offset=offset,
++                         tool_calls_truncated=more, tool_calls_encoding='json',
++                         tool_calls_offset_unit='unicode_characters')
++            if more:
++                entry['next_tool_calls_offset'] = offset + len(page)
++    elif message_field == 'tool_calls':
++        raise ValueError('anchor has no tool_calls field')
+     if anchor_id is not None and m.get("id") == anchor_id:
+         entry["anchor"] = True
++    content_offset = content_offset if message_field == 'content' else 0
+     if content_offset and (not isinstance(content, str) or content_offset >= len(content)):
+         raise ValueError("content_offset must point inside the anchor message text")
+-    if max_content_len and isinstance(content, str) and (content_offset or len(content) > max_content_len):
++    if isinstance(content, str) and (content_offset or (max_content_len and len(content) > max_content_len)
++                                    or len(content.encode('utf-8')) > _FIELD_MAX_BYTES):
++        max_content_len = max_content_len or len(content)
+         end = min(len(content), content_offset + max_content_len)
+-        entry.update(content=content[content_offset:end] + ("…" if end < len(content) else ""),
++        piece = _utf8_prefix(content[content_offset:end], _FIELD_MAX_BYTES)
++        end = content_offset + len(piece)
++        entry.update(content=piece + ("…" if end < len(content) else ""),
+                      content_truncated=True, original_content_chars=len(content),
+                      content_offset=content_offset)
+         if end < len(content):
+@@ -313,7 +408,9 @@
+                           "get_session failed for title match %s", session_id) or {}
+     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
+         return None
+-    messages = _quiet(lambda: db.get_messages(session_id), [], "get_messages failed for title match %s", session_id)
++    page = _quiet(lambda: db.get_session_recall_page(session_id, head=5, tail=3), {},
++                  'get_session_recall_page failed for title match %s', session_id)
++    messages = page.get('messages', [])
+     anchor_id = messages[0].get("id") if messages else None
+     view = {} if anchor_id is None else _quiet(
+         lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
+@@ -331,7 +428,7 @@
+         bookend_start=shape("bookend_start", messages[:3]),
+         messages=shape("window", messages[:5], anchor_id, max_content_len=4000),
+         bookend_end=shape("bookend_end", messages[-3:]), messages_before=view.get("messages_before", 0),
+-        messages_after=view.get("messages_after", max(len(messages) - 5, 0)), detail="full"),
++        messages_after=view.get("messages_after", max(page.get('message_count', len(messages)) - 5, 0)), detail="full"),
+         "_lineage_root": lineage_root}
+ 
+ 
+@@ -514,15 +611,15 @@
+     meta = _get_session_meta(db, session_id)
+     if not meta:
+         return tool_error(f"session_id not found: {session_id}", success=False)
+-    rows, err = _loud(lambda: db.get_messages(session_id), "get_messages failed for %s: %s", "failed to load session",
++    page, err = _loud(lambda: db.get_session_recall_page(session_id, head=head, tail=tail), "get_messages failed for %s: %s", "failed to load session",
+                       session_id)
+     if err:
+         return err
+-    shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
+-    total, truncated = len(shaped), len(shaped) > head + tail
++    shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in page['messages']]
++    total, truncated = page['message_count'], page['truncated']
+     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),
+                session_meta=_session_meta_block(meta), message_count=total, truncated=truncated,
+-               messages=shaped[:head] + shaped[-tail:] if truncated else shaped,
++               messages=shaped,
+                **({"message": (f"Session has {total} messages; showing first {head} + last {tail}. "
+                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
+ 
+@@ -594,7 +691,8 @@
+ 
+ 
+ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
+-            current_session_id: str = None, content_offset: int = 0) -> str:
++            current_session_id: str = None, content_offset: int = 0,
++            message_field: str = 'content') -> str:
+     """Scroll shape: a window centered on an anchor (no FTS5, no bookends)."""
+     try:
+         around_message_id = int(around_message_id)
+@@ -630,7 +728,8 @@
+         return tool_error(f"around_message_id {around_message_id} not in session_id {session_id}", success=False)
+     try:
+         shaped = [_shape_message(m, anchor_id=around_message_id, max_content_len=4000,
+-                                 content_offset=content_offset if m.get("id") == around_message_id else 0)
++                                 content_offset=content_offset if m.get("id") == around_message_id else 0,
++                                 message_field=message_field if m.get('id') == around_message_id else 'content')
+                   for m in messages]
+     except ValueError as exc:
+         return tool_error(str(exc), success=False)
+@@ -640,7 +739,9 @@
+         messages=shaped,
+         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
+         hint=("To continue a truncated message, re-call with its id as around_message_id "
+-              "and its next_content_offset as content_offset. Offsets count displayed text characters. "
++              "and its next_content_offset as content_offset. For tool_calls_page, set message_field=tool_calls "
++              "and use next_tool_calls_offset as content_offset; concatenate tool_calls_page chunks then parse JSON. "
++              "Offsets count Unicode characters, not tokens or UTF-8 bytes. "
+               "Scroll forward: re-call with around_message_id = the LAST message's "
+               "id; backward: the FIRST message's id (the boundary message repeats "
+               "as an orientation marker). messages_before/messages_after < window "
+@@ -649,7 +750,8 @@
+ 
+ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
+               around_message_id, window, sort, profile, detail, owned_dbs,
+-              after=None, before=None, exclude_session_ids=None, content_offset=0) -> str:
++              after=None, before=None, exclude_session_ids=None, content_offset=0,
++              message_field='content') -> str:
+     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
+     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
+     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
+@@ -672,7 +774,7 @@
+         owned_dbs.append(profile_db)
+     if isinstance(session_id, str) and session_id.strip():
+         if around_message_id is not None:
+-            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id, content_offset)
++            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id, content_offset, message_field)
+         return _read_scoped(db, session_id.strip(), profile)
+     limit = _clamp_int(limit, 3, 1, 10)
+     if not query or not isinstance(query, str) or not query.strip():
+@@ -694,7 +796,7 @@
+                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
+                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
+                    after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None,
+-                   content_offset: int = 0) -> str:
++                   content_offset: int = 0, message_field: str = 'content') -> str:
+     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
+     new parameters are appended after ``detail``."""
+     from hermes_cli.friday_user_scope import check_search, ScopeDenied, ordinary_tool_error_json
+@@ -705,6 +807,10 @@
+                 or (len(parts) == 2 and profile not in (None, "", parts[0]))):
+             return tool_error("Invalid or conflicting session link", success=False)
+     content_offset = 0 if content_offset is None else content_offset
++    if message_field not in ('content', 'tool_calls'):
++        return tool_error('message_field must be content or tool_calls', success=False)
++    if message_field != 'content' and (not isinstance(session_id, str) or not session_id.strip() or around_message_id is None):
++        return tool_error('message_field requires session_id and around_message_id', success=False)
+     if type(content_offset) is not int or content_offset < 0:
+         return tool_error("content_offset must be a non-negative integer", success=False)
+     if content_offset and (not isinstance(session_id, str) or not session_id.strip() or around_message_id is None):
+@@ -725,7 +831,9 @@
+         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
+                          around_message_id, window, sort, profile, detail, owned_dbs,
+                          after=after, before=before, exclude_session_ids=exclude_session_ids,
+-                         content_offset=content_offset)
++                         content_offset=content_offset, message_field=message_field)
++    except (UnicodeError, RecursionError):
++        return tool_error('session_search_invalid_data', success=False)
+     finally:
+         for owned_db in reversed(owned_dbs):
+             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
+@@ -841,6 +949,10 @@
+                     "its next_content_offset here. Defaults to 0; does not alter saved history."
+                 ),
+             },
++            "message_field": {
++                "type": "string", "enum": ["content", "tool_calls"], "default": "content",
++                "description": "Scroll anchor field. For a truncated tool_calls_page, select tool_calls and use next_tool_calls_offset as content_offset. Concatenate JSON text pages before parsing; offsets are Unicode characters. Original archived rows remain unchanged.",
++            },
+             "around_message_id": {
+                 "type": "integer",
+                 "description": (
+@@ -889,7 +1001,7 @@
+     schema=SESSION_SEARCH_SCHEMA,
+     handler=lambda args, **kw: session_search(
+         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
+-        content_offset=args.get("content_offset", 0),
++        content_offset=args.get("content_offset", 0), message_field=args.get('message_field', 'content'),
+         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
+         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
+                                     "after", "before", "exclude_session_ids")}),
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -1436,6 +1436,32 @@
+             if latest:
+                 rows.reverse()
+         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
++
++    def get_session_recall_page(self, session_id: str, head: int = 20,
++                                tail: int = 10) -> Dict[str, Any]:
++        """Active head/tail plus exact count in one SQLite read snapshot.
++
++        The edge queries select only IDs. Message payloads are fetched after
++        LIMIT, so retained middle rows are never decoded just to omit them.
++        This preserves the existing read-mode active-only visibility policy.
++        """
++        if type(head) is not int or type(tail) is not int or not 1 <= head <= 30 or not 0 <= tail <= 30:
++            raise ValueError('invalid recall page bounds')
++        sql = """WITH
++            first_ids AS (SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?),
++            last_ids AS (SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id DESC LIMIT ?),
++            selected_ids AS (SELECT id FROM first_ids UNION SELECT id FROM last_ids),
++            totals AS (SELECT COUNT(*) AS recall_count FROM messages WHERE session_id = ? AND active = 1)
++            SELECT m.*, totals.recall_count FROM messages m
++            JOIN selected_ids x ON x.id = m.id CROSS JOIN totals ORDER BY m.id"""
++        rows = self._read_all(sql, (session_id, head, session_id, tail, session_id))
++        total = rows[0]['recall_count'] if rows else 0
++        messages = []
++        for row in rows:
++            clean = dict(row)
++            clean.pop('recall_count')
++            messages.append(self._row_to_message_dict(clean, warn_context='session_recall_page', summary_flag=True))
++        return {'messages': messages, 'message_count': total, 'truncated': total > head + tail}
+ 
+     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
+         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""
+--- a/hermes_state_common.py
++++ b/hermes_state_common.py
+@@ -162,6 +162,7 @@
+     stats older than idx_messages_session_id, SQLite otherwise reads and sorts the whole session (#119403)."""
+     return (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m INDEXED BY idx_messages_session"
+         f" WHERE m.session_id = {session_id_expr} AND m.role = 'user' AND m.content IS NOT NULL"
++        " AND (m.active = 1 OR m.compacted = 1)"
+         f" AND {_PREVIEW_ELIGIBLE_SQL} ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
+ 
+ # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
