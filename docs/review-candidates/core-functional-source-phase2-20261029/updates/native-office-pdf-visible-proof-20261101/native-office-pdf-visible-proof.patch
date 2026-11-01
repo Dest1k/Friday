@@ -1,0 +1,1958 @@
+--- /dev/null
++++ b/hermes_cli/friday_workspace_document_pdf.py
+@@ -0,0 +1,1498 @@
++"""Three source-bound native Office-to-PDF commands; DOCX export is unchanged.
++
++Uses the established document toolchain, authenticated native process custody,
++revision checks and create-only publisher. No user-supplied command or filter.
++"""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import shutil
++import stat
++import subprocess
++import sys
++import tempfile
++
++OFFICE = '/opt/friday-document-toolchain/root/usr/lib/libreoffice/program/soffice'
++# SinglePageSheets is a fixed Calc export policy: all each-sheet contents must
++# fit one searchable page and pass the independent source/value/geometry oracle.
++CALC_FILTER = 'pdf:calc_pdf_Export:{"SinglePageSheets":{"type":"boolean","value":"true"},"ExportFormFields":{"type":"boolean","value":"false"}}'
++OPERATIONS = {'odt_pdf': ('odt', 'pdf:writer_pdf_Export'),
++              'xlsx_pdf': ('xlsx', CALC_FILTER), 'ods_pdf': ('ods', CALC_FILTER)}
++MAX_OUTPUT = 1_000_000
++MAX_EVIDENCE = 4_000_000
++LIBRARY = '/usr/lib/x86_64-linux-gnu/libqpdf.so.30'
++
++
++def _request(content):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    def pairs(items):
++        result = {}
++        for key, value in items:
++            if key in result:
++                raise ScopeDenied()
++            result[key] = value
++        return result
++    if not isinstance(content, str) or len(content) > 8192:
++        raise ScopeDenied()
++    try:
++        result = json.loads(content, object_pairs_hook=pairs)
++    except (ValueError, RecursionError):
++        raise ScopeDenied() from None
++    if (type(result) is not dict or set(result) != {'source', 'source_sha256'} or
++            not isinstance(result['source'], str) or not 1 <= len(result['source']) <= 4096 or
++            '\x00' in result['source'] or not isinstance(result['source_sha256'], str) or
++            re.fullmatch('[0-9a-f]{64}', result['source_sha256']) is None):
++        raise ScopeDenied()
++    return result
++
++
++def _office_command(operation):
++    if operation not in OPERATIONS:
++        raise ValueError('pdf_operation_unsupported')
++    source, filter_name = OPERATIONS[operation]
++    return [OFFICE, '--headless', '--norestore', '--nodefault', '--nolockcheck',
++            '--nofirststartwizard', '-env:UserInstallation=file:///work/home/profile',
++            '--convert-to', filter_name, '--outdir', '/work/out', '/work/input.' + source]
++
++
++def _argv(work, toolchain, operation):
++    # Keep this adapter local; the existing DOCX renderer is not widened.
++    from hermes_cli.friday_workspace_pdf import _PREFIX, ExportRefused
++    if operation not in OPERATIONS:
++        raise ExportRefused('pdf_operation_unsupported')
++    source = OPERATIONS[operation][0]
++    argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--new-session',
++            '--as-pid-1', '--cap-drop', 'ALL', '--clearenv', '--ro-bind', '/usr', '/usr']
++    for alias in ('bin', 'sbin', 'lib', 'lib64'):
++        item = Path('/') / alias
++        if item.exists():
++            target = item.resolve()
++            if not target.is_relative_to('/usr'):
++                raise ExportRefused('renderer_unavailable')
++            argv += ['--symlink', str(target), str(item)]
++    argv += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/opt',
++             '--ro-bind', str(toolchain), _PREFIX,
++             '--ro-bind', '/usr/share', _PREFIX + '/.host-share',
++             '--ro-bind', str(toolchain / 'share-merged'), '/usr/share', '--dir', '/etc']
++    for item in ('/etc/fonts', '/etc/ld.so.cache', '/var/cache/fontconfig'):
++        if Path(item).exists():
++            argv += ['--ro-bind', item, item]
++    argv += ['--bind', str(work), '/work',
++             '--ro-bind', str(work / ('input.' + source)), '/work/input.' + source,
++             '--ro-bind', str(work / 'renderer.py'), '/renderer.py',
++             '--chdir', '/work', '--remount-ro', '/', '--',
++             '/usr/bin/python3', '-I', '-B', '-S', '/renderer.py', '--render', operation]
++    return argv
++
++
++def _parser_available():
++    from hermes_cli.friday_workspace_pdf import ExportRefused
++    try:
++        for path in ('/usr/bin/pdfinfo', '/usr/bin/pdftotext', LIBRARY, FREETYPE):
++            resolved = Path(path).resolve(strict=True)
++            info = resolved.stat()
++            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
++                raise ExportRefused('pdf_engine_unavailable')
++    except OSError:
++        raise ExportRefused('pdf_engine_unavailable') from None
++
++
++def _read_output(work, expected_source_sha):
++    from hermes_cli.friday_workspace_pdf import _private_bytes, ExportRefused
++    root = output = None
++    try:
++        root = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++        output = os.open('out', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
++        for fd in (root, output):
++            info = os.fstat(fd)
++            if info.st_uid != os.getuid() or info.st_mode & 0o077:
++                raise ExportRefused('invalid_pdf_output')
++        if os.listdir(output) != ['input.pdf']:
++            raise ExportRefused('invalid_pdf_output')
++        pdf = _private_bytes(output, 'input.pdf', MAX_OUTPUT)
++        if not pdf.startswith(b'%PDF-') or not pdf.rstrip().endswith(b'%%EOF'):
++            raise ExportRefused('invalid_pdf_output')
++        info = _private_bytes(root, 'pdfinfo', 8192)
++        bbox = _private_bytes(root, 'bbox.xhtml', MAX_EVIDENCE)
++        receipt = json.loads(_private_bytes(root, 'validated.json', MAX_EVIDENCE))
++        if (type(receipt) is not dict or set(receipt) != {'source_sha256', 'pdf_sha256', 'structure'} or
++                receipt['source_sha256'] != expected_source_sha or
++                receipt['pdf_sha256'] != hashlib.sha256(pdf).hexdigest()):
++            raise ExportRefused('invalid_pdf_output')
++        return pdf, info, bbox, receipt['structure']
++    except (OSError, ValueError, RecursionError):
++        raise ExportRefused('invalid_pdf_output') from None
++    finally:
++        if output is not None:
++            os.close(output)
++        if root is not None:
++            os.close(root)
++
++
++def render(cap, data, operation):
++    from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_document_pdf import preflight, verify
++    if operation not in OPERATIONS:
++        raise ExportRefused('pdf_operation_unsupported')
++    check(cap)
++    plan = preflight(data, OPERATIONS[operation][0], checkpoint=lambda: check(cap))
++    _parser_available()
++    toolchain = _toolchain()
++    work = Path(tempfile.mkdtemp(prefix='friday-document-pdf-'))
++    try:
++        work.chmod(0o700)
++        for name in ('out', 'home', 'tmp'):
++            (work / name).mkdir(mode=0o700)
++        for name, value in (('input.' + OPERATIONS[operation][0], data),
++                            ('renderer.py', Path(__file__).read_bytes())):
++            (work / name).write_bytes(value)
++            (work / name).chmod(0o600)
++        _run(cap, _argv(work, toolchain, operation), work)
++        pdf, info, bbox, structure = _read_output(work, plan['source_sha256'])
++        details = verify(plan, info, bbox, structure, checkpoint=lambda: check(cap))
++        check(cap)
++        return pdf, dict(details, office_filter=OPERATIONS[operation][1],
++                         source_sha256=plan['source_sha256'], runtime_qualified=False)
++    finally:
++        try:
++            shutil.rmtree(work)
++        except OSError:
++            from agent.web_call_context import _current
++            call = _current.get()
++            if call is not None and hasattr(call, 'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise ExportRefused('renderer_cleanup_unconfirmed') from None
++
++
++def create_pdf(cap, fd, leaf, path, content, operation):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_docx import _check_parent
++    from hermes_cli.friday_workspace_pdf import ExportRefused
++    from hermes_cli.friday_workspace_presentation import _read_source, _publish
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_document_pdf import DocumentPDFError
++    if (operation not in OPERATIONS or not isinstance(path, str) or
++            Path(path).suffix.lower() != '.pdf' or Path(path).name != leaf):
++        raise ScopeDenied()
++    try:
++        check(cap)
++        _check_parent(cap, fd, path)
++        request = _request(content)
++        try:
++            os.stat(leaf, dir_fd=fd, follow_symlinks=False)
++        except FileNotFoundError:
++            pass
++        else:
++            return json.dumps(dict(success=False, error='document_already_exists', effect_disposition='none'))
++        source, relative, data, identity = _read_source(request['source'], cap, '.' + OPERATIONS[operation][0])
++        if relative == path:
++            raise ScopeDenied()
++        if hashlib.sha256(data).hexdigest() != request['source_sha256']:
++            raise DocumentPDFError('source_hash_mismatch')
++        output, details = render(cap, data, operation)
++        check(cap)
++        return _publish(cap, fd, leaf, path, output, 'pdf', (source, data, identity),
++                        dict(details, source=relative, source_unchanged=True, export_mode=operation,
++                             native_editable=False, macros_executed=False))
++    except ScopeDenied:
++        raise
++    except (DocumentPDFError, ExportRefused) as error:
++        unknown = str(error) == 'renderer_cleanup_unconfirmed'
++        return json.dumps(dict(success=False, error='document_pdf_refused', reason=str(error),
++                               effect_disposition='unknown' if unknown else 'none'))
++    except (OSError, RuntimeError, TimeoutError):
++        return json.dumps(dict(success=False, error='document_pdf_stopped', effect_disposition='none'))
++
++
++def _pdf_structure(path):
++    """Read only inside the bounded networkless child; native qpdf, no repair."""
++    import ctypes as C
++    lib = C.CDLL(LIBRARY)
++    ptr, integer, string = C.c_void_p, C.c_int, C.c_char_p
++    signatures = {
++        'qpdf_get_qpdf_version': (string, []), 'qpdf_init': (ptr, []),
++        'qpdf_cleanup': (None, [C.POINTER(ptr)]),
++        'qpdf_silence_errors': (None, [ptr]),
++        'qpdf_set_suppress_warnings': (None, [ptr, integer]),
++        'qpdf_set_attempt_recovery': (None, [ptr, integer]),
++        'qpdf_has_error': (integer, [ptr]), 'qpdf_more_warnings': (integer, [ptr]),
++        'qpdf_get_error': (ptr, [ptr]),
++        'qpdf_read': (integer, [ptr, string, string]),
++        'qpdf_is_encrypted': (integer, [ptr]), 'qpdf_check_pdf': (integer, [ptr]),
++        'qpdf_get_num_pages': (integer, [ptr]),
++    }
++    for name, (result, args) in signatures.items():
++        getattr(lib, name).restype, getattr(lib, name).argtypes = result, args
++    if lib.qpdf_get_qpdf_version() != b'12.3.2':
++        raise ValueError('pdf_engine_unavailable')
++    handle = ptr(lib.qpdf_init())
++    if not handle:
++        raise ValueError('pdf_engine_unavailable')
++    try:
++        lib.qpdf_silence_errors(handle)
++        lib.qpdf_set_suppress_warnings(handle, 1)
++        lib.qpdf_set_attempt_recovery(handle, 0)
++        if lib.qpdf_read(handle, os.fsencode(path), None) or lib.qpdf_is_encrypted(handle):
++            raise ValueError('invalid_pdf_output')
++        if lib.qpdf_check_pdf(handle) or lib.qpdf_has_error(handle) or lib.qpdf_more_warnings(handle):
++            raise ValueError('invalid_pdf_output')
++        pages = lib.qpdf_get_num_pages(handle)
++        if not 1 <= pages <= 64:
++            raise ValueError('pdf_page_limit')
++        visibility = _visible_pdf_profile(lib, handle, pages)
++        if lib.qpdf_has_error(handle) or lib.qpdf_more_warnings(handle):
++            raise ValueError('invalid_pdf_output')
++        return dict(pages=pages, engine='libqpdf-12.3.2', visibility=visibility)
++    finally:
++        # Consume the native error without asking for its private diagnostic.
++        if lib.qpdf_has_error(handle):
++            lib.qpdf_get_error(handle)
++        lib.qpdf_cleanup(C.byref(handle))
++
++
++# This is deliberately a small PDF language, not a general renderer. qpdf owns
++# object parsing, inheritance, stream decoding and structural validation. The
++# bounded content lexer below admits only ordinary text operators and rejects
++# every other paint/clip/semantic facility, including ones it does not recognize.
++VISIBLE_PROFILE = 'base14_black_text_v1'
++BASE14 = {'/Helvetica', '/Times-Roman', '/Courier'}
++
++
++# Exact trusted local font bytes, never PDF font names. A changed/missing font
++# cannot silently replace this inventory. All handles close before returning.
++FREETYPE = '/usr/lib/x86_64-linux-gnu/libfreetype.so.6'
++TRUSTED_FONTS = {'/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf': '50464e64aaadea741fb9516748aee296d570439406be11d63df22294e77ba867', '/usr/share/fonts/truetype/liberation/LiberationMono-BoldItalic.ttf': '291872531f0e8013df602c412fc570241860e41b1fa1b7972537c27a19024d4d', '/usr/share/fonts/truetype/liberation/LiberationMono-Italic.ttf': '35c3116d4366eb0e58494d8e432d4ee0c60c5735c7f775ffc096008bd2907c74', '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf': 'd18235f1e874771f4eaec3ddd6ddb4db849d334bdc6930c5c2185d9344834e62', '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf': 'b72c65e551d653b54217ffad0d1454ce0657e4e8d4a28bcc79e0acd2598f4bf3', '/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf': '64263238517af60213cdb469165fc7e9acd0c09c35f4155f924a379f97125a57', '/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf': '4ccb79043bd3a6d131b5a53901abb21261b1417f6052b38a9fa9716a4e5a3d81', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf': '075e71be4c58beda172ecb574a799308f04c3d054c6a5b7434954d3b0f1b28d8', '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf': '3271f41b67a81a806aadbf71762c14a405e617b738d9ceeb81191dd681c66fc4', '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-BoldItalic.ttf': '2340c7d3c4afc55bf1f6ddffad488039921580e3b07b9788d210e6ca18a77494', '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Italic.ttf': '1e41d3cec0352efbf9b1035d872ad41033533b59b0789d9599f4fff1fcccf4b6', '/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf': '8ff00a422289dce865973a299c9284ab7cb91a2b1ef1c7b9ef622b793cab5447', '/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf': 'bb033fae52dcbf67a55494a08829aaa788324624d72a195af7f93da3061c928f', '/usr/share/fonts/truetype/liberation/LiberationSerif-BoldItalic.ttf': '10ec0fa22bc6f12a239d600c051752884d155997aafd19ebc24c4f4a8d2b98d0', '/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf': 'c1882fbb05e78537b9c39dad3c07c4f231c987a3747b20c8745737aed50cd488', '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf': '350f4ffd773cae53560c63dca3d89a5070595614fde12f772bf43feb63d81064', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf': 'e1d733afbbfce842a1b43dced0c9885a76a4e67290dc7e690c4e9b76ebfc7d23', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf': 'b4c632e3cdf9acc7f28758fb5a323c8524d7fc6660d46904d9b6cbe2809c419c', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf': '2d67eed9b325ee2e69f906ce4f3f6264d5105230a13352c8494daad4f17b12c8', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf': '3e19ce950e77f59d5d3607c4a4ed6a5152933f88937a4e0e7586ee5d5319aa5c', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf': 'a033f17e7e42934146337ab2858f7bae5e10c59708d810f1fca0bc81dd543cae', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf': 'a54dca07c76d6289e717e75e0a58c0128f6d7269ef3faf76417c9d7d3bba37ab'}
++TRUSTED_FONTS.update({'/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf': '89c3c497f618fdaa0b2d1e98fef93582f28c71debd2c4a8cdf41f190ced2909d', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf': 'e83493c945848ecd4a9ad0f6d19164541a0d3e23a9c952304a00a46e00272ac5'})
++TRUSTED_PROFILE = 'trusted_embedded_glyphs_v1'
++
++
++def _unicode_glyph(value):
++    import unicodedata
++    return (len(value) == 1 and (value == ' ' or
++            not unicodedata.category(value).startswith(('C', 'M', 'Z'))))
++
++
++def _to_unicode(data, code_bytes=2):
++    if code_bytes not in (1, 2): raise ValueError('pdf_cmap_unsupported')
++    digits = code_bytes * 2
++    source_hex = r'[0-9a-fA-F]{' + str(digits) + r'}'
++    # Deliberately recognize the producer's simple UCS CMap grammar in full.
++    # No inherited CMap, duplicate ranges, multi-character substitution, or
++    # unparsed executable PostScript is allowed to change decoding semantics.
++    try:
++        text = data.decode('ascii')
++    except UnicodeError:
++        raise ValueError('pdf_cmap_unsupported') from None
++    text = re.sub(r'%[^\r\n]*', '', text)
++    prefix = (r'\s*/CIDInit\s*/ProcSet\s+findresource\s+begin\s+'
++              r'12\s+dict\s+begin\s+begincmap\s+'
++              r'/CIDSystemInfo\s*<<\s*/Registry\s*\(Adobe\)\s*'
++              r'/Ordering\s*\(UCS\)\s*/Supplement\s+0\s*>>\s*def\s+'
++              r'/CMapName\s*/[A-Za-z0-9_.-]+\s+def\s+/CMapType\s+2\s+def\s+'
++              r'1\s+begincodespacerange\s*<' + '0'*digits + r'>\s*<[fF]{' + str(digits) + r'}>\s*endcodespacerange\s*')
++    m = re.match(prefix, text)
++    if not m:
++        raise ValueError('pdf_cmap_unsupported')
++    text = text[m.end():]
++    mapping = {}
++    def put(source, raw):
++        if source in mapping or not 0 <= source < 256**code_bytes:
++            raise ValueError('pdf_cmap_unsupported')
++        try:
++            value = bytes.fromhex(raw).decode('utf-16-be')
++        except (ValueError, UnicodeError):
++            raise ValueError('pdf_cmap_unsupported') from None
++        if not _unicode_glyph(value):
++            raise ValueError('pdf_cmap_unsupported')
++        mapping[source] = value
++        if len(mapping) > 4096:
++            raise ValueError('pdf_visibility_limit')
++    while True:
++        m = re.match(r'\s*(\d+)\s+(beginbfchar|beginbfrange)\s*', text)
++        if not m:
++            break
++        count, kind = int(m[1]), m[2]
++        if not 1 <= count <= 100:
++            raise ValueError('pdf_cmap_unsupported')
++        text = text[m.end():]
++        for _ in range(count):
++            if kind == 'beginbfchar':
++                m = re.match(r'<(' + source_hex + r')>\s*<([0-9a-fA-F]{4}|[0-9a-fA-F]{8})>\s*', text)
++                if not m: raise ValueError('pdf_cmap_unsupported')
++                put(int(m[1], 16), m[2])
++            else:
++                m = re.match(r'<(' + source_hex + r')>\s*<(' + source_hex + r')>\s*<([0-9a-fA-F]{4})>\s*', text)
++                if not m: raise ValueError('pdf_cmap_unsupported')
++                a, b, start = (int(m[x], 16) for x in (1, 2, 3))
++                if b < a or b-a > 4096: raise ValueError('pdf_cmap_unsupported')
++                for code in range(a, b+1): put(code, f'{start+code-a:04x}')
++            text = text[m.end():]
++        end = 'endbfchar' if kind == 'beginbfchar' else 'endbfrange'
++        m = re.match(end+r'\s*', text)
++        if not m: raise ValueError('pdf_cmap_unsupported')
++        text = text[m.end():]
++    if not mapping or not re.fullmatch(r'endcmap\s+CMapName\s+currentdict\s+/CMap\s+defineresource\s+pop\s+end\s+end\s*', text):
++        raise ValueError('pdf_cmap_unsupported')
++    return mapping
++
++
++class _TrueType:
++    """Bounded SFNT view used only to compare raster-affecting hint programs."""
++    def __init__(self, data):
++        import struct
++        self.struct=struct; self.data=data
++        if len(data)<12 or data[:4] not in (b'\x00\x01\x00\x00',b'true'): raise ValueError('pdf_font_unsupported')
++        count=struct.unpack_from('>H',data,4)[0]
++        if not 1<=count<=64 or 12+16*count>len(data): raise ValueError('pdf_font_unsupported')
++        self.tables={}; ranges=[]
++        for i in range(count):
++            tag,checksum,start,length=struct.unpack_from('>4sIII',data,12+16*i)
++            if tag in self.tables or start<12+16*count or start+length>len(data): raise ValueError('pdf_font_unsupported')
++            if length: ranges.append((start,start+length))
++            self.tables[tag]=data[start:start+length]
++        ranges.sort()
++        if any(a[1]>b[0] for a,b in zip(ranges,ranges[1:])): raise ValueError('pdf_font_unsupported')
++        forbidden={b'CFF ',b'CFF2',b'SVG ',b'COLR',b'CBDT',b'CBLC',b'EBDT',b'EBLC',b'sbix',b'fvar',b'gvar',b'HVAR',b'MVAR',b'avar',b'hdmx',b'LTSH',b'VDMX',b'vhea',b'vmtx',b'VORG',b'bdat',b'bloc',b'EBSC'}
++        if forbidden & self.tables.keys(): raise ValueError('pdf_font_unsupported')
++        try:
++            head=self.tables[b'head'];maxp=self.tables[b'maxp'];loca=self.tables[b'loca'];self.glyf=self.tables[b'glyf']
++            if len(head)!=54 or len(maxp)!=32 or maxp[:4]!=b'\x00\x01\x00\x00': raise ValueError()
++            self.n=struct.unpack_from('>H',maxp,4)[0];fmt=struct.unpack_from('>h',head,50)[0]
++            if not 1<=self.n<=65535 or fmt not in (0,1): raise ValueError()
++            size=2 if fmt==0 else 4
++            if len(loca)!=(self.n+1)*size: raise ValueError()
++            self.offsets=struct.unpack('>'+('H' if size==2 else 'I')*(self.n+1),loca)
++            if size==2:self.offsets=tuple(x*2 for x in self.offsets)
++            if self.offsets[-1]>len(self.glyf) or any(a>b for a,b in zip(self.offsets,self.offsets[1:])): raise ValueError()
++        except (KeyError,ValueError,struct.error): raise ValueError('pdf_font_unsupported') from None
++        self.environment=(head[16:20],head[44:50],head[52:54],maxp[6:],self.tables.get(b'hhea',b'')[:34],self.tables.get(b'OS/2',b''),*(self.tables.get(k,b'') for k in (b'fpgm',b'prep',b'cvt ',b'gasp')))
++        self.global_hints=any(self.tables.get(k) for k in (b'fpgm',b'prep',b'cvt '))
++        self.cache={}
++        self.geometry_limits=None
++
++
++    def same_hint_environment(self, trusted):
++        if self.environment==trusted.environment:return True
++        # One bounded subset form emitted by the existing producer.  This is
++        # not permission to ignore arbitrary missing/changed SFNT metadata.
++        # Instructions, CVT, head flags and all interpreter capacities remain
++        # exact.  Only geometric maxima and hhea summary metrics are rebuilt.
++        tags={b'cmap',b'cvt ',b'fpgm',b'glyf',b'head',b'hhea',b'hmtx',b'loca',b'maxp',b'name',b'post',b'prep'}
++        if self.data[:4]!=b'true' or set(self.tables)!=tags or not 1<self.n<=256 or self.n>trusted.n:
++            return False
++        if any(self.environment[i]!=trusted.environment[i] for i in (0,1,2,6,7,8)):
++            return False
++        actual_maxp=self.tables[b'maxp'];trusted_maxp=trusted.tables[b'maxp']
++        if actual_maxp[14:]!=trusted_maxp[14:]:return False
++        if self.geometry_limits is None:
++            count_cache={}
++            def counts(program):
++                key=id(program)
++                if key in count_cache:return count_cache[key]
++                if program[0]=='empty':return (0,0)
++                if program[0]=='simple':
++                    raw=program[1];contours=self.struct.unpack_from('>h',raw)[0]
++                    points=self.struct.unpack_from('>H',raw,10+2*(contours-1))[0]+1 if contours else 0
++                else:
++                    children=[counts(child[2]) for child in program[2]]
++                    points,contours=(sum(values) for values in zip(*children))
++                if points>8192 or contours>1024:raise ValueError('pdf_font_unsupported')
++                count_cache[key]=(points,contours)
++                return points,contours
++            maxima=[0,0,0,0]
++            for gid in range(self.n):
++                program=self.program(gid)[1];points,contours=counts(program)
++                offset=2 if program[0]=='composite' else 0
++                maxima[offset]=max(maxima[offset],points)
++                maxima[offset+1]=max(maxima[offset+1],contours)
++            self.geometry_limits=tuple(maxima)
++        limits=self.struct.unpack_from('>4H',actual_maxp,6)
++        if limits!=self.geometry_limits or any(a>b for a,b in zip(limits,self.struct.unpack_from('>4H',trusted_maxp,6))):
++            return False
++        hhea=self.tables[b'hhea'];original_hhea=trusted.tables.get(b'hhea',b'')
++        if (len(hhea)!=36 or len(original_hhea)!=36 or hhea[:10]!=original_hhea[:10]
++                or hhea[10:18]!=b'\0'*8 or hhea[18:34]!=original_hhea[18:34]
++                or self.struct.unpack_from('>H',hhea,34)[0]!=self.n
++                or len(self.tables[b'hmtx'])!=4*self.n):
++            return False
++        # Without OS/2 FreeType synthesizes vertical phantom points from hhea.
++        # These are accessible to horizontal glyph bytecode too: omission is
++        # equivalent only if the trusted sTypoAscender/Descender already match.
++        os2=trusted.tables.get(b'OS/2',b'')
++        if len(os2)<78 or os2[68:72]!=hhea[4:8]:return False
++        # This source gasp enables every standardized grid-fitting/smoothing
++        # mode at every size.  Omission may choose unhinted rendering (already
++        # admitted by this proof), or the exact trusted programs above; it must
++        # not override a source's size-dependent hinting policy.
++        if trusted.tables.get(b'gasp')!=b'\0\1\0\1\xff\xff\0\x0f':return False
++        return True
++
++    def program(self,gid,depth=0,seen=()):
++        if gid in self.cache:return self.cache[gid]
++        if not 0<=gid<self.n or depth>16 or gid in seen: raise ValueError('pdf_font_unsupported')
++        b=self.glyf[self.offsets[gid]:self.offsets[gid+1]]; st=self.struct
++        if not b:return (False,('empty',))
++        try:
++            if len(b)<10:raise ValueError()
++            n=st.unpack_from('>h',b)[0];pos=10; hints=False
++            if n>=0:
++                if n>1024 or len(b)<pos+2*n+2:raise ValueError()
++                ends=st.unpack_from('>'+'H'*n,b,pos) if n else ();pos+=2*n
++                points=ends[-1]+1 if n else 0
++                if points>8192 or any(a>=z for a,z in zip((-1,)+ends,ends)):raise ValueError()
++                length=st.unpack_from('>H',b,pos)[0];pos+=2;hints=bool(length);pos+=length
++                flags=[]
++                while len(flags)<points:
++                    flag=b[pos];pos+=1;repeat=1
++                    if flag&8:repeat+=b[pos];pos+=1
++                    flags.extend([flag]*repeat)
++                    if len(flags)>points:raise ValueError()
++                pos+=sum(1 if f&2 else (0 if f&16 else 2) for f in flags)
++                pos+=sum(1 if f&4 else (0 if f&32 else 2) for f in flags)
++                canonical=('simple',b[:pos])
++            else:
++                if n!=-1:raise ValueError()
++                children=[];flags=32
++                while flags&32:
++                    if len(children)>=128:raise ValueError()
++                    flags,child=st.unpack_from('>HH',b,pos);pos+=4
++                    size=(4 if flags&1 else 2)+(2 if flags&8 else 4 if flags&64 else 8 if flags&128 else 0)
++                    params=b[pos:pos+size];pos+=size
++                    child_hints,child_program=self.program(child,depth+1,seen+(gid,));hints|=child_hints
++                    children.append((flags,params,child_program))
++                ins=b''
++                if flags&256:
++                    length=st.unpack_from('>H',b,pos)[0];pos+=2;ins=b[pos:pos+length];pos+=length;hints|=bool(length)
++                canonical=('composite',b[:10],tuple(children),ins)
++            if pos>len(b) or any(b[pos:]):raise ValueError()
++        except (ValueError,IndexError,st.error): raise ValueError('pdf_font_unsupported') from None
++        result=(hints,canonical);self.cache[gid]=result;return result
++
++class _GlyphProof:
++    """FreeType outline identity against one trusted face for ALL used glyphs."""
++    def __init__(self):
++        import ctypes as C
++        self.C = C
++        class Vector(C.Structure): _fields_ = [('x', C.c_long), ('y', C.c_long)]
++        class Generic(C.Structure): _fields_ = [('data', C.c_void_p), ('finalizer', C.c_void_p)]
++        class Box(C.Structure): _fields_ = [(x, C.c_long) for x in ('xMin','yMin','xMax','yMax')]
++        class Metrics(C.Structure): _fields_ = [(x, C.c_long) for x in ('width','height','horiBearingX','horiBearingY','horiAdvance','vertBearingX','vertBearingY','vertAdvance')]
++        class Bitmap(C.Structure): _fields_ = [('rows',C.c_uint),('width',C.c_uint),('pitch',C.c_int),('buffer',C.c_void_p),('num_grays',C.c_ushort),('pixel_mode',C.c_ubyte),('palette_mode',C.c_ubyte),('palette',C.c_void_p)]
++        class Outline(C.Structure): _fields_ = [('n_contours',C.c_short),('n_points',C.c_short),('points',C.POINTER(Vector)),('tags',C.POINTER(C.c_ubyte)),('contours',C.POINTER(C.c_short)),('flags',C.c_int)]
++        class Slot(C.Structure): _fields_ = [('library',C.c_void_p),('face',C.c_void_p),('next',C.c_void_p),('glyph_index',C.c_uint),('generic',Generic),('metrics',Metrics),('linearHoriAdvance',C.c_long),('linearVertAdvance',C.c_long),('advance',Vector),('format',C.c_uint32),('bitmap',Bitmap),('bitmap_left',C.c_int),('bitmap_top',C.c_int),('outline',Outline)]
++        class Face(C.Structure): _fields_ = [('num_faces',C.c_long),('face_index',C.c_long),('face_flags',C.c_long),('style_flags',C.c_long),('num_glyphs',C.c_long),('family_name',C.c_char_p),('style_name',C.c_char_p),('num_fixed_sizes',C.c_int),('available_sizes',C.c_void_p),('num_charmaps',C.c_int),('charmaps',C.c_void_p),('generic',Generic),('bbox',Box),('units_per_EM',C.c_ushort),('ascender',C.c_short),('descender',C.c_short),('height',C.c_short),('max_advance_width',C.c_short),('max_advance_height',C.c_short),('underline_position',C.c_short),('underline_thickness',C.c_short),('glyph',C.POINTER(Slot))]
++        self.Face = Face
++        self.lib = C.CDLL(FREETYPE)
++        for name, result, args in (
++            ('FT_Init_FreeType',C.c_int,[C.POINTER(C.c_void_p)]),
++            ('FT_Done_FreeType',C.c_int,[C.c_void_p]),
++            ('FT_Library_Version',None,[C.c_void_p,C.POINTER(C.c_int),C.POINTER(C.c_int),C.POINTER(C.c_int)]),
++            ('FT_New_Memory_Face',C.c_int,[C.c_void_p,C.c_void_p,C.c_long,C.c_long,C.POINTER(C.c_void_p)]),
++            ('FT_Done_Face',C.c_int,[C.c_void_p]),
++            ('FT_Select_Charmap',C.c_int,[C.c_void_p,C.c_uint32]),
++            ('FT_Get_Char_Index',C.c_uint,[C.c_void_p,C.c_ulong]),
++            ('FT_Load_Glyph',C.c_int,[C.c_void_p,C.c_uint,C.c_int32])):
++            fn = getattr(self.lib,name); fn.restype=result; fn.argtypes=args
++        self.library=C.c_void_p();self.faces=[];self.trusted=[];self.sfnts={}
++        if self.lib.FT_Init_FreeType(C.byref(self.library)): raise ValueError('pdf_font_engine_unavailable')
++        major,minor,patch=C.c_int(),C.c_int(),C.c_int()
++        self.lib.FT_Library_Version(self.library,C.byref(major),C.byref(minor),C.byref(patch))
++        if major.value!=2:
++            self.close();raise ValueError('pdf_font_engine_unavailable')
++
++    def close(self):
++        for face, buffer in reversed(self.faces): self.lib.FT_Done_Face(face)
++        self.faces.clear()
++        if self.library: self.lib.FT_Done_FreeType(self.library); self.library=self.C.c_void_p()
++
++    def face(self, data):
++        C=self.C; buffer=C.create_string_buffer(data); face=C.c_void_p()
++        if self.lib.FT_New_Memory_Face(self.library,buffer,len(data),0,C.byref(face)):
++            raise ValueError('pdf_font_unsupported')
++        self.faces.append((face,buffer)); self.sfnts[face.value]=_TrueType(data); record=C.cast(face,C.POINTER(self.Face)).contents
++        # A static scalable horizontal SFNT face, no variations/color/bitmap.
++        if not (record.face_flags & 1 and record.face_flags & 8 and record.face_flags & 16) or record.face_flags & ((1<<8)|(1<<13)|(1<<14)) or record.num_fixed_sizes or record.num_faces != 1 or not 16<=record.units_per_EM<=16384 or not 1<=record.num_glyphs<=65536:
++            raise ValueError('pdf_font_unsupported')
++        return face
++
++    def outline(self, face, gid):
++        C=self.C; record=C.cast(face,C.POINTER(self.Face)).contents
++        if not 0 < gid < record.num_glyphs or self.lib.FT_Load_Glyph(face,gid,1|2|8|2048):
++            raise ValueError('pdf_glyph_unproven')
++        slot=record.glyph.contents; o=slot.outline
++        if slot.format != 0x6f75746c or not 0<=o.n_points<=8192 or not 0<=o.n_contours<=1024:
++            raise ValueError('pdf_glyph_unproven')
++        if bool(o.n_points)!=bool(o.n_contours): raise ValueError('pdf_glyph_unproven')
++        points=tuple((o.points[i].x,o.points[i].y) for i in range(o.n_points))
++        tags=tuple(o.tags[i]&3 for i in range(o.n_points)); contours=tuple(o.contours[i] for i in range(o.n_contours))
++        if contours and (contours[-1]!=o.n_points-1 or any(a>=b for a,b in zip((-1,)+contours,contours))):
++            raise ValueError('pdf_glyph_unproven')
++        upem=record.units_per_EM; m=slot.metrics
++        # Control-point box is conservative for quadratic/cubic Bezier curves.
++        box=(min(x for x,y in points),min(y for x,y in points),max(x for x,y in points),max(y for x,y in points)) if points else None
++        signature=(upem,points,tags,contours,m.horiAdvance,m.horiBearingX,m.horiBearingY,m.width,m.height)
++        return signature, m.horiAdvance*1000/upem, tuple(v/upem for v in box) if box else None
++
++    def inventory(self):
++        if self.trusted: return self.trusted
++        for path, digest in TRUSTED_FONTS.items():
++            fd=None
++            try:
++                fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW); st=os.fstat(fd)
++                if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_mode&0o022 or not 0<st.st_size<=4_000_000:
++                    continue
++                data=b''
++                while len(data)<=st.st_size:
++                    chunk=os.read(fd,min(65536,st.st_size+1-len(data)))
++                    if not chunk: break
++                    data+=chunk
++                if hashlib.sha256(data).hexdigest()!=digest: continue
++                face=self.face(data)
++                if not self.lib.FT_Select_Charmap(face,0x756e6963): self.trusted.append((face,{}))
++            except OSError: pass
++            finally:
++                if fd is not None: os.close(fd)
++        if not self.trusted: raise ValueError('pdf_trusted_fonts_unavailable')
++        return self.trusted
++
++    def prove(self, data, mapping, gids, widths, used):
++        face=self.face(data); candidates=list(self.inventory()); result={}
++        if not set(used)<=mapping.keys():raise ValueError('pdf_glyph_unproven')
++        # Prove the complete declaration against one face, including entries
++        # unused by the current content stream.
++        for cid in sorted(mapping):
++            if cid not in mapping or cid not in gids or cid not in widths:
++                raise ValueError('pdf_glyph_unproven')
++            char=mapping[cid]; signature, advance, box=self.outline(face,gids[cid])
++            sfnt=self.sfnts[face.value]; hinted,program=sfnt.program(gids[cid])
++            if abs(widths[cid]-advance)>1 or (char==' ') != (box is None):
++                raise ValueError('pdf_glyph_unproven')
++            remaining=[]
++            for trusted,cache in candidates:
++                if char not in cache:
++                    gid=self.lib.FT_Get_Char_Index(trusted,ord(char))
++                    cache[char]=self.outline(trusted,gid)[0] if gid else None
++                if cache[char]==signature:
++                    trusted_gid=self.lib.FT_Get_Char_Index(trusted,ord(char))
++                    trusted_sfnt=self.sfnts[trusted.value]
++                    if not hinted and not sfnt.global_hints or (sfnt.same_hint_environment(trusted_sfnt) and program==trusted_sfnt.program(trusted_gid)[1]):
++                        remaining.append((trusted,cache))
++            candidates=remaining
++            if not candidates: raise ValueError('pdf_glyph_identity_mismatch')
++            result[cid]=(char,widths[cid]/1000,box)
++        return result
++
++def _content_tokens(data):
++    """Lex the admitted PDF content subset, including bounded tag delimiters."""
++    whitespace = b'\x00\t\n\x0c\r '
++    delimiters = whitespace + b'()<>[]{}/%'
++    index, count = 0, 0
++    while index < len(data):
++        byte = data[index]
++        if byte in whitespace:
++            index += 1
++            continue
++        if byte == 37:
++            while index < len(data) and data[index] not in (10, 13):
++                index += 1
++            continue
++        count += 1
++        if count > 100000:
++            raise ValueError('pdf_visibility_limit')
++        if byte == 40:
++            index += 1
++            depth, value = 1, bytearray()
++            while index < len(data) and depth:
++                c = data[index]
++                index += 1
++                if c == 92:
++                    if index == len(data):
++                        raise ValueError('pdf_content_unsupported')
++                    c = data[index]
++                    index += 1
++                    if c in b'01234567':
++                        octal = bytes([c])
++                        for _ in range(2):
++                            if index < len(data) and data[index] in b'01234567':
++                                octal += data[index:index+1]
++                                index += 1
++                        value.append(int(octal, 8) & 255)
++                    elif c in (10, 13):
++                        if c == 13 and index < len(data) and data[index] == 10:
++                            index += 1
++                    else:
++                        value.append({110: 10, 114: 13, 116: 9, 98: 8, 102: 12}.get(c, c))
++                elif c == 40:
++                    depth += 1
++                    if depth > 32:
++                        raise ValueError('pdf_visibility_limit')
++                    value.append(c)
++                elif c == 41:
++                    depth -= 1
++                    if depth:
++                        value.append(c)
++                else:
++                    value.append(c)
++            if depth:
++                raise ValueError('pdf_content_unsupported')
++            yield ('string', bytes(value))
++        elif data[index:index+2] in (b'<<', b'>>'):
++            yield ('dict_start' if byte == 60 else 'dict_end', None)
++            index += 2
++        elif byte == 60:
++            end = data.find(b'>', index + 1)
++            if end < 0 or data[index:index+2] == b'<<':
++                raise ValueError('pdf_content_unsupported')
++            raw = bytes(c for c in data[index+1:end] if c not in whitespace)
++            if not re.fullmatch(b'[0-9A-Fa-f]*', raw):
++                raise ValueError('pdf_content_unsupported')
++            yield ('string', bytes.fromhex((raw + (b'0' if len(raw) % 2 else b'')).decode('ascii')))
++            index = end + 1
++        elif byte in (91, 93):
++            yield ('array_start' if byte == 91 else 'array_end', None)
++            index += 1
++        else:
++            start = index
++            if byte == 47:
++                index += 1
++            while index < len(data) and data[index] not in delimiters:
++                index += 1
++            if index == start:
++                raise ValueError('pdf_content_unsupported')
++            raw = data[start:index]
++            if byte == 47:
++                if re.search(b'#(?![0-9a-fA-F]{2})', raw):
++                    raise ValueError('pdf_content_unsupported')
++                raw = re.sub(b'#([0-9A-Fa-f]{2})', lambda m: bytes([int(m[1], 16)]), raw)
++                yield ('name', raw.decode('ascii'))
++            elif re.fullmatch(rb'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)', raw):
++                value = float(raw)
++                if not -14400 <= value <= 14400:
++                    raise ValueError('pdf_content_unsupported')
++                yield ('number', value)
++            else:
++                yield ('operator', raw.decode('ascii'))
++
++
++def _passive_content_tokens(data, marked_content=None):
++    """Remove only proven semantic wrappers; never omit their painted content.
++
++    Inline dictionaries have exactly one integer MCID, bound to the validated
++    structure tree and tag. ActualText, Alt, properties resources and optional
++    content are not part of this language.
++    """
++    pending, stack, seen = [], [], set()
++    for kind, value in _content_tokens(data):
++        if kind != 'operator':
++            pending.append((kind, value))
++            if len(pending) > 16384: raise ValueError('pdf_visibility_limit')
++            continue
++        if value == 'BMC':
++            if pending != [('name', '/Artifact')]:
++                raise ValueError('pdf_marked_content_unsupported')
++            stack.append(None)
++        elif value == 'BDC':
++            if (len(pending) != 5 or pending[0][0] != 'name' or
++                    pending[1:3] != [('dict_start', None), ('name', '/MCID')] or
++                    pending[3][0] != 'number' or pending[4] != ('dict_end', None)):
++                raise ValueError('pdf_marked_content_unsupported')
++            mcid = pending[3][1]
++            if (mcid != int(mcid) or marked_content is None or
++                    int(mcid) not in marked_content or int(mcid) in seen or
++                    marked_content[int(mcid)] != pending[0][1]):
++                raise ValueError('pdf_marked_content_unsupported')
++            seen.add(int(mcid)); stack.append(int(mcid))
++        elif value == 'EMC':
++            if pending or not stack: raise ValueError('pdf_marked_content_unsupported')
++            stack.pop()
++        else:
++            if any(kind in ('dict_start', 'dict_end') for kind, value in pending):
++                raise ValueError('pdf_marked_content_unsupported')
++            yield from pending
++            yield kind, value
++        if len(stack) > 32: raise ValueError('pdf_visibility_limit')
++        pending = []
++    if pending or stack or marked_content is not None and seen != set(marked_content):
++        raise ValueError('pdf_marked_content_unsupported')
++
++
++def _visible_text_runs(data, fonts, marked_content=None):
++    operands, array, stack, runs = [], None, [], []
++    in_text, font, size = False, None, None
++    for kind, value in _passive_content_tokens(data, marked_content):
++        if kind == 'array_start':
++            if array is not None:
++                raise ValueError('pdf_content_unsupported')
++            array = []
++            continue
++        if kind == 'array_end':
++            if array is None:
++                raise ValueError('pdf_content_unsupported')
++            operands.append(('array', array))
++            array = None
++            continue
++        if array is not None:
++            if kind not in ('number', 'string') or len(array) >= 4096:
++                raise ValueError('pdf_content_unsupported')
++            array.append((kind, value))
++            continue
++        if kind != 'operator':
++            operands.append((kind, value))
++            if len(operands) > 8:
++                raise ValueError('pdf_content_unsupported')
++            continue
++        op = value
++        kinds = [x[0] for x in operands]
++        values = [x[1] for x in operands]
++        # Operators not listed here always refuse: ActualText,
++        # graphics states, images/forms, all path painting, clipping, Type3 etc.
++        arity = {'q': 0, 'Q': 0, 'BT': 0, 'ET': 0, 'Tf': 2, 'Tm': 6,
++                 'Td': 2, 'TD': 2, 'T*': 0, 'TL': 1, 'Tj': 1, 'TJ': 1,
++                 'Tc': 1, 'Tw': 1, 'Tz': 1, 'Ts': 1, 'Tr': 1,
++                 'cm': 6, 'g': 1, 'G': 1, 'rg': 3, 'RG': 3,
++                 'k': 4, 'K': 4}
++        if op not in arity or len(operands) != arity[op]:
++            raise ValueError('pdf_content_unsupported')
++        if op in ('q', 'Q', 'cm') and in_text:
++            raise ValueError('pdf_content_unsupported')
++        if op == 'q':
++            if len(stack) >= 32:
++                raise ValueError('pdf_visibility_limit')
++            stack.append((font, size))
++        elif op == 'Q':
++            if not stack:
++                raise ValueError('pdf_content_unsupported')
++            font, size = stack.pop()
++        elif op == 'BT':
++            if in_text:
++                raise ValueError('pdf_content_unsupported')
++            in_text = True
++        elif op == 'ET':
++            if not in_text:
++                raise ValueError('pdf_content_unsupported')
++            in_text = False
++        elif op == 'Tf':
++            if kinds != ['name', 'number'] or values[0] not in fonts or not 8 <= values[1] <= 72:
++                raise ValueError('pdf_font_unsupported')
++            font, size = values
++        elif op in ('Tj', 'TJ'):
++            if not in_text or font is None or size is None:
++                raise ValueError('pdf_content_unsupported')
++            if op == 'Tj':
++                if kinds != ['string']:
++                    raise ValueError('pdf_content_unsupported')
++                text = values[0]
++            else:
++                if kinds != ['array'] or any(k == 'number' and v != 0 for k, v in values[0]):
++                    raise ValueError('pdf_content_unsupported')
++                text = b''.join(v for k, v in values[0] if k == 'string')
++            # Base14 ASCII has fixed glyph semantics. Neither a ToUnicode CMap
++            # nor a custom encoding/embedded outline is permitted by resources.
++            if not text.strip() or any(c < 32 or c > 126 for c in text):
++                raise ValueError('pdf_font_unsupported')
++            runs.append(dict(words=text.decode('ascii').split(), font_size=size))
++            if len(runs) > 4096:
++                raise ValueError('pdf_visibility_limit')
++        else:
++            if kinds != ['number'] * len(values):
++                raise ValueError('pdf_content_unsupported')
++            if op in ('Tm', 'cm') and values[:4] != [1, 0, 0, 1]:
++                raise ValueError('pdf_transform_unsupported')
++            if op in ('Tm', 'Td', 'TD', 'T*', 'TL', 'Tc', 'Tw', 'Tz', 'Ts', 'Tr') and not in_text:
++                raise ValueError('pdf_content_unsupported')
++            if op in ('Tc', 'Tw', 'Ts', 'Tr', 'g', 'G', 'rg', 'RG') and any(values):
++                raise ValueError('pdf_visibility_unsupported')
++            if op in ('k', 'K') and values != [0, 0, 0, 1]:
++                raise ValueError('pdf_visibility_unsupported')
++            if op == 'Tz' and values != [100]:
++                raise ValueError('pdf_transform_unsupported')
++        operands.clear()
++    if operands or array is not None or stack or in_text or not runs:
++        raise ValueError('pdf_content_unsupported')
++    return runs
++
++
++def _embedded_text_runs(data, fonts, crop, marked_content=None):
++    """Axis-aligned positive transforms, opaque black glyphs and safe rectangles.
++
++    Every claimed non-space glyph has trusted outline identity. Conservative
++    control-point ink boxes must be fully within the live clip and must not
++    intersect any other glyph. Only white path paint is admitted, and later
++    paint cannot cover existing glyphs; vector pseudo-text cannot be added.
++    """
++    operands=[];array=None;stack=[];runs=[];ink=[];guards=[];path=[];segments=[];current_point=None;start_point=None;pending_clip=False
++    state={'ctm':(1.,1.,0.,0.),'clip':tuple(crop),'fill':(0.,0.,0.),'stroke':(0.,0.,0.),'width':1.,'font':None,'size':None,'spacing':0.,'wordspacing':0.,'hscale':1.,'rise':0.,'leading':0.}
++    in_text=False;tx=ty=line_x=line_y=0.
++    def numeric(kinds, count):
++        if kinds!=['number']*count:raise ValueError('pdf_content_unsupported')
++    def intersection(a,b):return (max(a[0],b[0]),max(a[1],b[1]),min(a[2],b[2]),min(a[3],b[3]))
++    def overlaps(a,b):return min(a[2],b[2])>max(a[0],b[0])+.001 and min(a[3],b[3])>max(a[1],b[1])+.001
++    def rectangle(x,y,w,h):
++        sx,sy,dx,dy=state['ctm']; a,b=sx*x+dx,sy*y+dy;c,d=sx*(x+w)+dx,sy*(y+h)+dy
++        return (min(a,c),min(b,d),max(a,c),max(b,d))
++    def paint(box,white=False):
++        visible=intersection(box,state['clip'])
++        if visible[0]>=visible[2] or visible[1]>=visible[3]:return
++        if any(overlaps(visible,b) for b in guards):raise ValueError('pdf_glyph_covered')
++        if not white:raise ValueError('pdf_nonwhite_path_unproven')
++    def show(items):
++        nonlocal tx
++        if not in_text or state['font'] not in fonts or state['size'] is None:raise ValueError('pdf_content_unsupported')
++        size=state['size'];sx,sy,dx,dy=state['ctm'];scale=state['hscale']
++        if state['fill']!=(0.,0.,0.) or not 8<=size*sy<=72 or not .5<=sx*scale/sy<=2:
++            raise ValueError('pdf_visibility_unsupported')
++        chars=[];boxes=[]
++        glyphs=fonts[state['font']]['glyphs']
++        code_bytes=fonts[state['font']].get('code_bytes',2)
++        for kind,value in items:
++            if kind=='number':
++                tx-=value*size*scale/1000
++                continue
++            if kind!='string' or len(value)%code_bytes:raise ValueError('pdf_content_unsupported')
++            for offset in range(0,len(value),code_bytes):
++                cid=int.from_bytes(value[offset:offset+code_bytes],'big')
++                if cid not in glyphs:raise ValueError('pdf_glyph_unproven')
++                char,advance,b=glyphs[cid];bound=None
++                if b is not None:
++                    bound=(dx+sx*(tx+size*scale*b[0]),dy+sy*(ty+state['rise']+size*b[1]),dx+sx*(tx+size*scale*b[2]),dy+sy*(ty+state['rise']+size*b[3]))
++                    clip=state['clip']
++                    # A full em of clearance also protects against trusted hint
++                    # grid-fitting and viewer rounding at clip/paint boundaries.
++                    margin=size*max(sx*scale,sy)
++                    guard=(bound[0]-margin,bound[1]-margin,bound[2]+margin,bound[3]+margin)
++                    if any(abs(v)>14400 for v in bound) or guard[0]<clip[0] or guard[1]<clip[1] or guard[2]>clip[2] or guard[3]>clip[3]:
++                        raise ValueError('pdf_glyph_clipped')
++                    if any(overlaps(bound,other) for other in ink):raise ValueError('pdf_overlapping_glyphs')
++                    ink.append(bound);guards.append(guard)
++                    if len(ink)>20000:raise ValueError('pdf_visibility_limit')
++                    bound=[bound[0]-crop[0],crop[3]-bound[3],bound[2]-crop[0],crop[3]-bound[1]]
++                chars.append(char);boxes.append(bound)
++                tx+=(advance*size+state['spacing'])*scale
++        text=''.join(chars)
++        words=[];word_ink=[];word='';word_boxes=[]
++        for char,box in zip(chars,boxes):
++            if char==' ':
++                if word:words.append(word);word_ink.append(word_boxes);word='';word_boxes=[]
++            else:word+=char;word_boxes.append(box)
++        if word:words.append(word);word_ink.append(word_boxes)
++        if words:runs.append({'words':words,'font_size':size*sy,'ink':word_ink})
++        if len(runs)>4096:raise ValueError('pdf_visibility_limit')
++    arity={'q':0,'Q':0,'BT':0,'ET':0,'Tf':2,'Tm':6,'Td':2,'TD':2,'T*':0,'TL':1,'Tj':1,'TJ':1,'Tc':1,'Tw':1,'Tz':1,'Ts':1,'Tr':1,'cm':6,'g':1,'G':1,'rg':3,'RG':3,'k':4,'K':4,'w':1,'J':1,'j':1,'M':1,'re':4,'W':0,'W*':0,'n':0,'f':0,'f*':0,'S':0,'m':2,'l':2,'h':0,'d':2}
++    for kind,value in _passive_content_tokens(data, marked_content):
++        if kind=='array_start':
++            if array is not None:raise ValueError('pdf_content_unsupported')
++            array=[];continue
++        if kind=='array_end':
++            if array is None:raise ValueError('pdf_content_unsupported')
++            operands.append(('array',array));array=None;continue
++        if array is not None:
++            if kind not in ('number','string') or len(array)>=4096:raise ValueError('pdf_content_unsupported')
++            array.append((kind,value));continue
++        if kind!='operator':
++            operands.append((kind,value))
++            if len(operands)>8:raise ValueError('pdf_content_unsupported')
++            continue
++        op=value;kinds=[x[0] for x in operands];v=[x[1] for x in operands]
++        if op not in arity or len(v)!=arity[op]:raise ValueError('pdf_content_unsupported')
++        if pending_clip and op!='n':raise ValueError('pdf_content_unsupported')
++        if op in ('q','Q','cm','re','W','W*','n','f','f*','S','m','l','h') and in_text:raise ValueError('pdf_content_unsupported')
++        if op in ('q','Q'):
++            if path or segments or current_point is not None:raise ValueError('pdf_content_unsupported')
++            if op=='q':
++                if len(stack)>=32:raise ValueError('pdf_visibility_limit')
++                stack.append(state.copy())
++            else:
++                if not stack:raise ValueError('pdf_content_unsupported')
++                state=stack.pop()
++        elif op=='BT':
++            if in_text or path or segments or current_point is not None:raise ValueError('pdf_content_unsupported')
++            in_text=True;tx=ty=line_x=line_y=0.
++        elif op=='ET':
++            if not in_text:raise ValueError('pdf_content_unsupported')
++            in_text=False
++        elif op=='Tf':
++            if kinds!=['name','number'] or v[0] not in fonts or not 0<v[1]<=720:raise ValueError('pdf_font_unsupported')
++            state['font'],state['size']=v
++        elif op in ('Tj','TJ'):
++            if kinds!=['string' if op=='Tj' else 'array']:raise ValueError('pdf_content_unsupported')
++            show([('string',v[0])] if op=='Tj' else v[0])
++        elif op=='d':
++            if kinds!=['array','number'] or len(v[0])>32 or any(k!='number' or x<=0 for k,x in v[0]):raise ValueError('pdf_content_unsupported')
++        else:
++            numeric(kinds,len(v))
++            if op in ('Tm','Td','TD','T*','TL','Tc','Tw','Tz','Ts','Tr') and not in_text:raise ValueError('pdf_content_unsupported')
++            if op=='cm':
++                a,b,c,d,e,f=v
++                if b or c or not .01<=a<=100 or not .01<=d<=100:raise ValueError('pdf_transform_unsupported')
++                sx,sy,dx,dy=state['ctm'];state['ctm']=(sx*a,sy*d,dx+sx*e,dy+sy*f)
++            elif op=='Tm':
++                if v[:4]!=[1,0,0,1]:raise ValueError('pdf_transform_unsupported')
++                tx,line_x=v[4],v[4];ty,line_y=v[5],v[5]
++            elif op in ('Td','TD'):
++                line_x+=v[0];line_y+=v[1];tx,ty=line_x,line_y
++                if op=='TD':state['leading']=-v[1]
++            elif op=='T*':line_y-=state['leading'];tx,ty=line_x,line_y
++            elif op=='TL':state['leading']=v[0]
++            elif op=='Tc':
++                if abs(v[0])>10:raise ValueError('pdf_transform_unsupported')
++                state['spacing']=v[0]
++            elif op=='Tw':
++                if v[0]:raise ValueError('pdf_transform_unsupported')
++            elif op=='Tz':
++                if not 50<=v[0]<=200:raise ValueError('pdf_transform_unsupported')
++                state['hscale']=v[0]/100
++            elif op=='Ts':
++                if abs(v[0])>72:raise ValueError('pdf_transform_unsupported')
++                state['rise']=v[0]
++            elif op=='Tr':
++                if v[0]:raise ValueError('pdf_visibility_unsupported')
++            elif op in ('g','G','rg','RG','k','K'):
++                if any(not 0<=x<=1 for x in v):raise ValueError('pdf_visibility_unsupported')
++                color=tuple(v*3) if op in ('g','G') else tuple(v) if op in ('rg','RG') else tuple(1-min(1,x+v[3]) for x in v[:3])
++                state['fill' if op in ('g','rg','k') else 'stroke']=color
++            elif op=='w':
++                if not 0<v[0]<=100:raise ValueError('pdf_visibility_unsupported')
++                state['width']=v[0]
++            elif op in ('J','j'):
++                if v[0] not in (0,1,2):raise ValueError('pdf_visibility_unsupported')
++            elif op=='M':
++                if not 1<=v[0]<=20:raise ValueError('pdf_visibility_unsupported')
++            elif op in ('m','l','h'):
++                if path:raise ValueError('pdf_content_unsupported')
++                if op=='h':
++                    if current_point is None or start_point is None:raise ValueError('pdf_content_unsupported')
++                    point=start_point
++                else:
++                    sx,sy,dx,dy=state['ctm'];point=(sx*v[0]+dx,sy*v[1]+dy)
++                if op=='m':current_point=start_point=point
++                else:
++                    if current_point is None or current_point[0]!=point[0] and current_point[1]!=point[1]:raise ValueError('pdf_content_unsupported')
++                    segments.append((min(current_point[0],point[0]),min(current_point[1],point[1]),max(current_point[0],point[0]),max(current_point[1],point[1])))
++                    current_point=point
++                    if len(segments)>4096:raise ValueError('pdf_visibility_limit')
++            elif op=='re':
++                if segments or current_point is not None:raise ValueError('pdf_content_unsupported')
++                if len(path)>=4096:raise ValueError('pdf_visibility_limit')
++                path.append(rectangle(*v))
++            elif op in ('W','W*'):
++                if len(path)!=1 or segments or current_point is not None:raise ValueError('pdf_content_unsupported')
++                pending_clip=True
++            elif op=='n':
++                if pending_clip:state['clip']=intersection(state['clip'],path[0]);pending_clip=False
++                path=[];segments=[];current_point=start_point=None
++            elif op in ('f','f*','S'):
++                if not path and not segments:raise ValueError('pdf_content_unsupported')
++                if segments and op!='S':raise ValueError('pdf_content_unsupported')
++                width=state['width']*max(state['ctm'][:2])/2
++                for b in segments:paint((b[0]-width,b[1]-width,b[2]+width,b[3]+width),state['stroke']==(1.,1.,1.))
++                for b in path:
++                    if op=='S':
++                        width=state['width']*max(state['ctm'][:2])/2
++                        for edge in ((b[0]-width,b[1]-width,b[2]+width,b[1]+width),(b[0]-width,b[3]-width,b[2]+width,b[3]+width),(b[0]-width,b[1]-width,b[0]+width,b[3]+width),(b[2]-width,b[1]-width,b[2]+width,b[3]+width)):
++                            paint(edge,state['stroke']==(1.,1.,1.))
++                    else:paint(b,state['fill']==(1.,1.,1.))
++                path=[];segments=[];current_point=start_point=None
++        operands=[]
++    if operands or array is not None or stack or in_text or path or segments or current_point is not None or pending_clip or not runs:raise ValueError('pdf_content_unsupported')
++    return runs
++
++def _visible_pdf_profile(lib, handle, page_count):
++    """Native qpdf object inspection and bounded, fail-closed paint proof."""
++    import ctypes as C
++    P, U, I, S = C.c_void_p, C.c_uint, C.c_int, C.c_char_p
++    signatures = {
++        'qpdf_get_root': (U, [P]), 'qpdf_get_page_n': (U, [P, I]),
++        'qpdf_get_last_string_length': (C.c_size_t, [P]),
++        'qpdf_oh_is_dictionary': (I, [P, U]), 'qpdf_oh_is_array': (I, [P, U]),
++        'qpdf_oh_is_stream': (I, [P, U]), 'qpdf_oh_is_null': (I, [P, U]),
++        'qpdf_oh_is_number': (I, [P, U]), 'qpdf_oh_get_numeric_value': (C.c_double, [P, U]),
++        'qpdf_oh_is_integer': (I, [P, U]), 'qpdf_oh_is_string': (I, [P, U]),
++        'qpdf_oh_is_bool': (I, [P, U]), 'qpdf_oh_get_bool_value': (I, [P, U]),
++        'qpdf_oh_get_object_id': (I, [P, U]), 'qpdf_oh_get_generation': (I, [P, U]),
++        'qpdf_oh_get_name': (S, [P, U]), 'qpdf_oh_get_string_value': (P, [P, U]), 'qpdf_oh_get_key': (U, [P, U, S]),
++        'qpdf_oh_get_array_n_items': (I, [P, U]), 'qpdf_oh_get_array_item': (U, [P, U, I]),
++        'qpdf_oh_begin_dict_key_iter': (None, [P, U]),
++        'qpdf_oh_dict_more_keys': (I, [P]), 'qpdf_oh_dict_next_key': (S, [P]),
++        'qpdf_oh_get_dict': (U, [P, U]),
++        'qpdf_oh_get_stream_data': (I, [P, U, I, C.POINTER(I), C.POINTER(P), C.POINTER(C.c_size_t)]),
++        'qpdf_oh_get_page_content_data': (I, [P, U, C.POINTER(P), C.POINTER(C.c_size_t)]),
++        'qpdf_oh_free_buffer': (None, [C.POINTER(P)]),
++    }
++    for name, (result, args) in signatures.items():
++        getattr(lib, name).restype, getattr(lib, name).argtypes = result, args
++    def get(obj, key):
++        return lib.qpdf_oh_get_key(handle, obj, key.encode('ascii'))
++    def is_null(obj):
++        return bool(lib.qpdf_oh_is_null(handle, obj))
++    def name(obj):
++        value = lib.qpdf_oh_get_name(handle, obj)
++        if value is None or len(value) != lib.qpdf_get_last_string_length(handle):
++            raise ValueError('pdf_resources_unsupported')
++        return value.decode('ascii')
++    def keys(obj):
++        if not lib.qpdf_oh_is_dictionary(handle, obj):
++            raise ValueError('pdf_resources_unsupported')
++        lib.qpdf_oh_begin_dict_key_iter(handle, obj)
++        result = set()
++        while lib.qpdf_oh_dict_more_keys(handle):
++            result.add(lib.qpdf_oh_dict_next_key(handle).decode('ascii'))
++            if len(result) > 128:
++                raise ValueError('pdf_visibility_limit')
++        return result
++    def array(obj, limit):
++        if not lib.qpdf_oh_is_array(handle, obj):
++            raise ValueError('pdf_resources_unsupported')
++        count = lib.qpdf_oh_get_array_n_items(handle, obj)
++        if not 0 <= count <= limit:
++            raise ValueError('pdf_visibility_limit')
++        return [lib.qpdf_oh_get_array_item(handle, obj, i) for i in range(count)]
++    def number(obj):
++        if not lib.qpdf_oh_is_number(handle, obj):
++            raise ValueError('pdf_page_geometry_unsupported')
++        value = lib.qpdf_oh_get_numeric_value(handle, obj)
++        if not -14400 <= value <= 14400:
++            raise ValueError('pdf_page_geometry_unsupported')
++        return value
++    def stream_bytes(obj, limit, font=False, metadata=False):
++        if not lib.qpdf_oh_is_stream(handle,obj): raise ValueError('pdf_resources_unsupported')
++        d=lib.qpdf_oh_get_dict(handle,obj)
++        allowed = {'/Length', '/Filter'} | ({'/Length1'} if font else set()) | ({'/Type', '/Subtype'} if metadata else set())
++        if keys(d)-allowed:
++            raise ValueError('pdf_resources_unsupported')
++        f=get(d,'/Filter')
++        if not is_null(f) and name(f)!='/FlateDecode': raise ValueError('pdf_resources_unsupported')
++        buffer,length,filtered=P(),C.c_size_t(),I()
++        try:
++            if lib.qpdf_oh_get_stream_data(handle,obj,1,C.byref(filtered),C.byref(buffer),C.byref(length)) or not buffer.value or not 0<length.value<=limit:
++                raise ValueError('pdf_visibility_limit')
++            result=C.string_at(buffer,length.value)
++            length1=get(d,'/Length1')
++            if font and not is_null(length1) and (not lib.qpdf_oh_is_number(handle,length1) or lib.qpdf_oh_get_numeric_value(handle,length1)!=len(result)): raise ValueError('pdf_font_unsupported')
++            return result
++        finally: lib.qpdf_oh_free_buffer(C.byref(buffer))
++    def string_value(obj):
++        value=lib.qpdf_oh_get_string_value(handle,obj)
++        length=lib.qpdf_get_last_string_length(handle)
++        if not value and length:raise ValueError('pdf_font_unsupported')
++        if length>65536:raise ValueError('pdf_visibility_limit')
++        return C.string_at(value,length) if length else b''
++    def simple_font(font):
++        # Bounded LibreOffice symbolic TrueType profile: one-byte codes map
++        # through the sole Macintosh format-0 cmap. PDF names never prove ink.
++        import struct
++        if keys(font)-{'/Type','/Subtype','/BaseFont','/FirstChar','/LastChar','/Widths','/FontDescriptor','/ToUnicode'}:
++            raise ValueError('pdf_font_unsupported')
++        first,last=number(get(font,'/FirstChar')),number(get(font,'/LastChar'))
++        if first!=int(first) or last!=int(last) or not 0<=first<=last<=255:
++            raise ValueError('pdf_font_unsupported')
++        values=[number(x) for x in array(get(font,'/Widths'),256)]
++        if len(values)!=last-first+1 or any(not 0<=x<=4000 for x in values):
++            raise ValueError('pdf_font_unsupported')
++        widths=dict(zip(range(int(first),int(last)+1),values))
++        descriptor=get(font,'/FontDescriptor')
++        if keys(descriptor)-{'/Type','/FontName','/Flags','/FontBBox','/ItalicAngle','/Ascent','/Descent','/CapHeight','/XHeight','/StemV','/StemH','/MissingWidth','/FontFile2'} or name(get(descriptor,'/Type'))!='/FontDescriptor':
++            raise ValueError('pdf_font_unsupported')
++        fontname=name(get(font,'/BaseFont'))
++        if fontname!=name(get(descriptor,'/FontName')) or re.fullmatch(r'/[A-Za-z0-9+_.-]{1,127}',fontname) is None:
++            raise ValueError('pdf_font_unsupported')
++        flags=number(get(descriptor,'/Flags'))
++        if flags!=int(flags) or int(flags)&~(1|2|4|8|32|64) or not int(flags)&4 or int(flags)&32:
++            raise ValueError('pdf_font_unsupported')
++        fontbox=[number(x) for x in array(get(descriptor,'/FontBBox'),4)]
++        if len(fontbox)!=4 or fontbox[0]>=fontbox[2] or fontbox[1]>=fontbox[3]:
++            raise ValueError('pdf_font_unsupported')
++        for field in ('/ItalicAngle','/Ascent','/Descent','/CapHeight','/XHeight','/StemV','/StemH','/MissingWidth'):
++            value=get(descriptor,field)
++            if not is_null(value):number(value)
++        mapping=_to_unicode(stream_bytes(get(font,'/ToUnicode'),256_000),1)
++        raw_font=stream_bytes(get(descriptor,'/FontFile2'),4_000_000,True)
++        cmap=_TrueType(raw_font).tables.get(b'cmap',b'')
++        # No alternate cmap may disagree with the exact one-byte selection.
++        if len(cmap)!=274 or struct.unpack_from('>HHHHI',cmap)!=(0,1,1,0,12) or struct.unpack_from('>HHH',cmap,12)!=(0,262,0):
++            raise ValueError('pdf_font_unsupported')
++        gidmap={code:cmap[18+code] for code in mapping}
++        if any(code not in widths or widths[code]<=0 for code in mapping):
++            raise ValueError('pdf_font_unsupported')
++        proof=_GlyphProof()
++        try:
++            glyphs=proof.prove(raw_font,mapping,gidmap,widths,mapping)
++        finally:proof.close()
++        if any(box and (box[0]*1000<fontbox[0] or box[1]*1000<fontbox[1] or box[2]*1000>fontbox[2] or box[3]*1000>fontbox[3]) for char,width,box in glyphs.values()):
++            raise ValueError('pdf_font_unsupported')
++        return {'kind':'embedded','code_bytes':1,'glyphs':glyphs,'font_sha256':hashlib.sha256(raw_font).hexdigest()}
++    def cid_font(font):
++        if keys(font)-{'/Type','/Subtype','/BaseFont','/Encoding','/DescendantFonts','/ToUnicode'} or name(get(font,'/Encoding'))!='/Identity-H':
++            raise ValueError('pdf_font_unsupported')
++        descendants=array(get(font,'/DescendantFonts'),1)
++        if len(descendants)!=1:raise ValueError('pdf_font_unsupported')
++        cid=descendants[0]
++        if keys(cid)-{'/Type','/Subtype','/BaseFont','/CIDSystemInfo','/FontDescriptor','/DW','/W','/CIDToGIDMap'} or name(get(cid,'/Type'))!='/Font' or name(get(cid,'/Subtype'))!='/CIDFontType2':
++            raise ValueError('pdf_font_unsupported')
++        if keys(get(cid,'/CIDSystemInfo')) != {'/Registry','/Ordering','/Supplement'}:
++            raise ValueError('pdf_font_unsupported')
++        system=get(cid,'/CIDSystemInfo')
++        if string_value(get(system,'/Registry'))!=b'Adobe' or string_value(get(system,'/Ordering'))!=b'Identity' or number(get(system,'/Supplement'))!=0:
++            raise ValueError('pdf_font_unsupported')
++        descriptor=get(cid,'/FontDescriptor')
++        if keys(descriptor)-{'/Type','/FontName','/Flags','/FontBBox','/ItalicAngle','/Ascent','/Descent','/CapHeight','/XHeight','/StemV','/StemH','/MissingWidth','/FontFile2'} or name(get(descriptor,'/Type'))!='/FontDescriptor':
++            raise ValueError('pdf_font_unsupported')
++        fontname=name(get(font,'/BaseFont'))
++        if fontname!=name(get(cid,'/BaseFont')) or fontname!=name(get(descriptor,'/FontName')) or re.fullmatch(r'/[A-Za-z0-9+_.-]{1,127}',fontname) is None:
++            raise ValueError('pdf_font_unsupported')
++        flags=number(get(descriptor,'/Flags'))
++        if flags!=int(flags) or int(flags)&~(1|2|4|8|32|64) or bool(int(flags)&4)==bool(int(flags)&32):raise ValueError('pdf_font_unsupported')
++        fontbox=[number(x) for x in array(get(descriptor,'/FontBBox'),4)]
++        if len(fontbox)!=4 or fontbox[0]>=fontbox[2] or fontbox[1]>=fontbox[3]:raise ValueError('pdf_font_unsupported')
++        for field in ('/ItalicAngle','/Ascent','/Descent','/CapHeight','/XHeight','/StemV','/StemH','/MissingWidth'):
++            value=get(descriptor,field)
++            if not is_null(value):number(value)
++        mapping=_to_unicode(stream_bytes(get(font,'/ToUnicode'),256_000))
++        raw_font=stream_bytes(get(descriptor,'/FontFile2'),4_000_000,True)
++        width_obj=get(cid,'/W'); width_values=[] if is_null(width_obj) else array(width_obj,16384)
++        default=get(cid,'/DW'); default=1000 if is_null(default) else number(default)
++        widths={};i=0
++        while i<len(width_values):
++            first=number(width_values[i]);i+=1
++            if first!=int(first) or not 0<=first<=65535 or i>=len(width_values):raise ValueError('pdf_font_unsupported')
++            first=int(first);value=width_values[i];i+=1
++            if lib.qpdf_oh_is_array(handle,value):
++                values=[number(x) for x in array(value,4096)];last=first+len(values)-1
++            else:
++                last=number(value)
++                if last!=int(last) or last<first or last-first>4096 or i>=len(width_values):raise ValueError('pdf_font_unsupported')
++                last=int(last);values=[number(width_values[i])]*(last-first+1);i+=1
++            if last>65535:raise ValueError('pdf_font_unsupported')
++            for c,w in zip(range(first,last+1),values):
++                if c in widths or not 0<w<=4000:raise ValueError('pdf_font_unsupported')
++                widths[c]=w
++        gids=get(cid,'/CIDToGIDMap')
++        if lib.qpdf_oh_is_stream(handle,gids):
++            raw=stream_bytes(gids,131072)
++            if len(raw)%2:raise ValueError('pdf_font_unsupported')
++            gidmap={c:int.from_bytes(raw[c*2:c*2+2],'big') for c in mapping if c*2+2<=len(raw)}
++        elif name(gids)=='/Identity':gidmap={c:c for c in mapping}
++        else:raise ValueError('pdf_font_unsupported')
++        proof=_GlyphProof()
++        try:
++            glyphs=proof.prove(raw_font,mapping,gidmap,{c:widths.get(c,default) for c in mapping},mapping)
++        finally:proof.close()
++        if any(box and (box[0]*1000<fontbox[0] or box[1]*1000<fontbox[1] or box[2]*1000>fontbox[2] or box[3]*1000>fontbox[3]) for char,width,box in glyphs.values()):
++            raise ValueError('pdf_font_unsupported')
++        return {'kind':'embedded','glyphs':glyphs,'font_sha256':hashlib.sha256(raw_font).hexdigest()}
++    def identity(obj):
++        oid = lib.qpdf_oh_get_object_id(handle, obj)
++        if oid <= 0: raise ValueError('pdf_catalog_unsupported')
++        return (oid, lib.qpdf_oh_get_generation(handle, obj))
++    def integer(obj, limit=20000):
++        if not lib.qpdf_oh_is_integer(handle, obj): raise ValueError('pdf_catalog_unsupported')
++        value = number(obj)
++        if not 0 <= value <= limit: raise ValueError('pdf_catalog_unsupported')
++        return int(value)
++    def passive_string(obj, limit=4096):
++        if not lib.qpdf_oh_is_string(handle, obj): raise ValueError('pdf_catalog_unsupported')
++        raw = string_value(obj)
++        if len(raw) > limit: raise ValueError('pdf_visibility_limit')
++        return raw
++    root = lib.qpdf_get_root(handle)
++    if (keys(root) - {'/Type', '/Pages', '/Version', '/Lang', '/MarkInfo',
++                     '/Metadata', '/Outlines', '/PageMode', '/StructTreeRoot'} or
++            name(get(root, '/Type')) != '/Catalog'):
++        raise ValueError('pdf_catalog_unsupported')
++    version = get(root, '/Version')
++    if not is_null(version) and name(version) not in ('/1.4', '/1.5', '/1.6', '/1.7', '/2.0'):
++        raise ValueError('pdf_catalog_unsupported')
++    language = get(root, '/Lang')
++    if not is_null(language) and re.fullmatch(rb'[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*', passive_string(language, 63)) is None:
++        raise ValueError('pdf_catalog_unsupported')
++    page_handles = [lib.qpdf_get_page_n(handle, i) for i in range(page_count)]
++    page_ids = {identity(page): i for i, page in enumerate(page_handles)}
++    if len(page_ids) != page_count: raise ValueError('pdf_catalog_unsupported')
++    metadata = get(root, '/Metadata')
++    if not is_null(metadata):
++        from xml.etree import ElementTree as ET
++        if not lib.qpdf_oh_is_stream(handle, metadata): raise ValueError('pdf_catalog_unsupported')
++        md = lib.qpdf_oh_get_dict(handle, metadata)
++        if name(get(md, '/Type')) != '/Metadata' or name(get(md, '/Subtype')) != '/XML':
++            raise ValueError('pdf_catalog_unsupported')
++        raw = stream_bytes(metadata, 65536, metadata=True)
++        try: text = raw.decode('utf-8')
++        except UnicodeDecodeError: raise ValueError('pdf_catalog_unsupported') from None
++        if (re.search(r'<!\s*(?:DOCTYPE|ENTITY)', text, re.I) or
++                re.search(r'<\?(?!xpacket\b|xml(?:\s|\?))', text)):
++            raise ValueError('pdf_catalog_unsupported')
++        try: xml = ET.fromstring(text)
++        except (ET.ParseError, ValueError): raise ValueError('pdf_catalog_unsupported') from None
++        xmp, rdf = 'adobe:ns:meta/', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
++        text_tags = {'{http://ns.adobe.com/pdf/1.3/}' + t for t in ('Producer', 'PDFVersion')}
++        text_tags |= {'{http://ns.adobe.com/xap/1.0/}' + t for t in ('CreatorTool', 'CreateDate', 'ModifyDate', 'MetadataDate')}
++        if xml.tag != '{' + xmp + '}xmpmeta' or xml.attrib or len(xml) != 1:
++            raise ValueError('pdf_catalog_unsupported')
++        body = xml[0]
++        if body.tag != '{' + rdf + '}RDF' or body.attrib or len(body) > 16:
++            raise ValueError('pdf_catalog_unsupported')
++        for node in xml.iter():
++            if ((node.tag not in text_tags and (node.text or '').strip()) or (node.tail or '').strip()):
++                raise ValueError('pdf_catalog_unsupported')
++        for description in body:
++            if (description.tag != '{' + rdf + '}Description' or
++                    description.attrib not in ({}, {'{' + rdf + '}about': ''}) or len(description) > 16):
++                raise ValueError('pdf_catalog_unsupported')
++            for item in description:
++                if item.tag not in text_tags or item.attrib or len(item) or len(item.text or '') > 4096:
++                    raise ValueError('pdf_catalog_unsupported')
++    outlines = get(root, '/Outlines')
++    if not is_null(outlines):
++        # The supported producer profile has a flat, local-page outline list.
++        # Action dictionaries and remote/named destinations never enter it.
++        if keys(outlines) - {'/Type', '/First', '/Last', '/Count'}:
++            raise ValueError('pdf_catalog_unsupported')
++        kind = get(outlines, '/Type')
++        if not is_null(kind) and name(kind) != '/Outlines': raise ValueError('pdf_catalog_unsupported')
++        count = integer(get(outlines, '/Count'), 4096)
++        item, previous, visited = get(outlines, '/First'), None, []
++        while not is_null(item):
++            ident = identity(item)
++            if ident in visited or len(visited) >= 4096: raise ValueError('pdf_catalog_unsupported')
++            if (keys(item) - {'/Title', '/Parent', '/Prev', '/Next', '/Count', '/Dest'} or
++                    identity(get(item, '/Parent')) != identity(outlines)):
++                raise ValueError('pdf_catalog_unsupported')
++            passive_string(get(item, '/Title'))
++            prev = get(item, '/Prev')
++            if (previous is None and not is_null(prev) or
++                    previous is not None and (is_null(prev) or identity(prev) != previous)):
++                raise ValueError('pdf_catalog_unsupported')
++            children = get(item, '/Count')
++            if not is_null(children) and integer(children, 0): raise ValueError('pdf_catalog_unsupported')
++            dest = array(get(item, '/Dest'), 5)
++            if len(dest) != 5 or identity(dest[0]) not in page_ids or name(dest[1]) != '/XYZ':
++                raise ValueError('pdf_catalog_unsupported')
++            for coordinate in dest[2:]:
++                if not is_null(coordinate): number(coordinate)
++            if not is_null(dest[4]) and not 0 <= number(dest[4]) <= 64:
++                raise ValueError('pdf_catalog_unsupported')
++            visited.append(ident); previous = ident; item = get(item, '/Next')
++        last = get(outlines, '/Last')
++        if (count != len(visited) or bool(visited) == is_null(last) or
++                visited and identity(last) != visited[-1]):
++            raise ValueError('pdf_catalog_unsupported')
++    page_mode = get(root, '/PageMode')
++    if not is_null(page_mode) and (name(page_mode) not in ('/UseNone', '/UseOutlines') or
++                                  name(page_mode) == '/UseOutlines' and is_null(outlines)):
++        raise ValueError('pdf_catalog_unsupported')
++    tree, mark = get(root, '/StructTreeRoot'), get(root, '/MarkInfo')
++    marked_pages, page_tags = {}, {}
++    if is_null(tree) != is_null(mark): raise ValueError('pdf_catalog_unsupported')
++    if not is_null(tree):
++        if (keys(mark) != {'/Marked'} or not lib.qpdf_oh_is_bool(handle, get(mark, '/Marked')) or
++                lib.qpdf_oh_get_bool_value(handle, get(mark, '/Marked')) != 1 or
++                keys(tree) != {'/Type', '/K', '/ParentTree'} or name(get(tree, '/Type')) != '/StructTreeRoot'):
++            raise ValueError('pdf_catalog_unsupported')
++        for index, page in enumerate(page_handles):
++            struct_parent = get(page, '/StructParents')
++            if not is_null(struct_parent):
++                key = integer(struct_parent, 63)
++                if key in marked_pages: raise ValueError('pdf_catalog_unsupported')
++                marked_pages[key] = index
++        seen, slots = set(), {}
++        roles = {'/Document', '/Part', '/Art', '/Sect', '/Div', '/P', '/H', '/H1', '/H2', '/H3',
++                 '/H4', '/H5', '/H6', '/L', '/LI', '/Lbl', '/LBody', '/Table', '/TR', '/TH', '/TD', '/Span', '/Figure'}
++        def struct_element(element, parent, depth):
++            ident = identity(element)
++            if ident in seen or len(seen) >= 4096 or depth > 32: raise ValueError('pdf_visibility_limit')
++            seen.add(ident)
++            if (keys(element) - {'/Type', '/S', '/P', '/Pg', '/K', '/A'} or
++                    name(get(element, '/Type')) != '/StructElem' or identity(get(element, '/P')) != parent):
++                raise ValueError('pdf_catalog_unsupported')
++            role = name(get(element, '/S'))
++            if role not in roles: raise ValueError('pdf_catalog_unsupported')
++            page_key = identity(get(element, '/Pg'))
++            if page_key not in page_ids: raise ValueError('pdf_catalog_unsupported')
++            page_index = page_ids[page_key]
++            if page_index not in marked_pages.values(): raise ValueError('pdf_catalog_unsupported')
++            attributes = get(element, '/A')
++            if not is_null(attributes):
++                attrs = array(attributes, 4) if lib.qpdf_oh_is_array(handle, attributes) else [attributes]
++                for attr in attrs:
++                    owner = name(get(attr, '/O'))
++                    if owner == '/Layout':
++                        if keys(attr) - {'/O', '/Placement', '/BBox'}: raise ValueError('pdf_catalog_unsupported')
++                        placement = get(attr, '/Placement')
++                        if not is_null(placement) and name(placement) not in ('/Block', '/Inline'):
++                            raise ValueError('pdf_catalog_unsupported')
++                        bbox = get(attr, '/BBox')
++                        if not is_null(bbox):
++                            box = [number(x) for x in array(bbox, 4)]
++                            if len(box) != 4 or box[0] >= box[2] or box[1] >= box[3]: raise ValueError('pdf_catalog_unsupported')
++                    elif owner == '/Table':
++                        if keys(attr) != {'/O', '/Scope'} or name(get(attr, '/Scope')) not in ('/Column', '/Row', '/Both'):
++                            raise ValueError('pdf_catalog_unsupported')
++                    else: raise ValueError('pdf_catalog_unsupported')
++            for child in array(get(element, '/K'), 4096):
++                if lib.qpdf_oh_is_integer(handle, child):
++                    mcid = integer(child)
++                    slot = (page_index, mcid)
++                    if slot in slots: raise ValueError('pdf_catalog_unsupported')
++                    slots[slot] = ident
++                    page_tags.setdefault(page_index, {})[mcid] = role
++                else: struct_element(child, ident, depth + 1)
++        for child in array(get(tree, '/K'), 4096): struct_element(child, identity(tree), 1)
++        parent_tree = get(tree, '/ParentTree')
++        if keys(parent_tree) != {'/Nums'}: raise ValueError('pdf_catalog_unsupported')
++        nums = array(get(parent_tree, '/Nums'), 128)
++        if len(nums) % 2: raise ValueError('pdf_catalog_unsupported')
++        parent_keys = set()
++        for position in range(0, len(nums), 2):
++            key = integer(nums[position], 63)
++            if key not in marked_pages or key in parent_keys: raise ValueError('pdf_catalog_unsupported')
++            parent_keys.add(key); page_index = marked_pages[key]
++            entries = array(nums[position + 1], 20000)
++            if set(page_tags.get(page_index, {})) != set(range(len(entries))): raise ValueError('pdf_catalog_unsupported')
++            for mcid, entry in enumerate(entries):
++                if slots.get((page_index, mcid)) != identity(entry): raise ValueError('pdf_catalog_unsupported')
++        if parent_keys != set(marked_pages): raise ValueError('pdf_catalog_unsupported')
++    pages, total = [], 0
++    for page_id in range(page_count):
++        page = page_handles[page_id]
++        inherited, node, depth = {}, page, 0
++        while not is_null(node):
++            depth += 1
++            if depth > 64:
++                raise ValueError('pdf_visibility_limit')
++            allowed = {'/Type', '/Parent', '/MediaBox', '/CropBox', '/Rotate', '/Resources'}
++            allowed |= {'/Contents', '/StructParents', '/Tabs'} if depth == 1 else {'/Kids', '/Count'}
++            if depth == 1:
++                struct_parent, tabs = get(node, '/StructParents'), get(node, '/Tabs')
++                if (not is_null(struct_parent) and (is_null(tree) or marked_pages.get(integer(struct_parent, 63)) != page_id) or
++                        not is_null(tabs) and (is_null(struct_parent) or name(tabs) != '/S')):
++                    raise ValueError('pdf_page_features_unsupported')
++            if keys(node) - allowed or name(get(node, '/Type')) != ('/Page' if depth == 1 else '/Pages'):
++                raise ValueError('pdf_page_features_unsupported')
++            for key in ('/MediaBox', '/CropBox', '/Rotate', '/Resources'):
++                value = get(node, key)
++                if key not in inherited and not is_null(value):
++                    inherited[key] = value
++            node = get(node, '/Parent')
++        if '/MediaBox' not in inherited or '/Resources' not in inherited:
++            raise ValueError('pdf_resources_unsupported')
++        media = [number(x) for x in array(inherited['/MediaBox'], 4)]
++        crop = [number(x) for x in array(inherited.get('/CropBox', inherited['/MediaBox']), 4)]
++        if (len(media) != 4 or len(crop) != 4 or
++                not (media[0] <= crop[0] < crop[2] <= media[2] and
++                     media[1] <= crop[1] < crop[3] <= media[3]) or
++                not (32 <= crop[2]-crop[0] <= 14400 and 32 <= crop[3]-crop[1] <= 14400) or
++                '/Rotate' in inherited and number(inherited['/Rotate']) != 0):
++            raise ValueError('pdf_page_geometry_unsupported')
++        resources = inherited['/Resources']
++        if keys(resources) - {'/Font', '/ProcSet'}:
++            raise ValueError('pdf_resources_unsupported')
++        procset = get(resources, '/ProcSet')
++        if not is_null(procset) and any(name(x) not in ('/PDF', '/Text', '/ImageB', '/ImageC', '/ImageI') for x in array(procset, 5)):
++            raise ValueError('pdf_resources_unsupported')
++        font_dict = get(resources, '/Font')
++        font_keys = keys(font_dict)
++        if not font_keys or len(font_keys)>32:raise ValueError('pdf_font_unsupported')
++        fonts={}
++        for font_key in font_keys:
++            font=get(font_dict,font_key)
++            if name(get(font,'/Type'))!='/Font':raise ValueError('pdf_font_unsupported')
++            if name(get(font,'/Subtype'))=='/Type0':
++                fonts[font_key]=cid_font(font)
++            elif name(get(font,'/Subtype'))=='/TrueType':
++                fonts[font_key]=simple_font(font)
++            elif (not keys(font)-{'/Type','/Subtype','/BaseFont','/Encoding'} and name(get(font,'/Subtype'))=='/Type1' and name(get(font,'/BaseFont')) in BASE14):
++                encoding=get(font,'/Encoding')
++                if not is_null(encoding) and name(encoding) not in ('/WinAnsiEncoding','/MacRomanEncoding','/StandardEncoding'):
++                    raise ValueError('pdf_font_unsupported')
++                fonts[font_key]={'kind':'base14'}
++            else:raise ValueError('pdf_font_unsupported')
++        kinds={f['kind'] for f in fonts.values()}
++        if len(kinds)!=1:raise ValueError('pdf_font_unsupported')
++        contents = get(page, '/Contents')
++        streams = array(contents, 256) if lib.qpdf_oh_is_array(handle, contents) else [contents]
++        if not streams:
++            raise ValueError('pdf_content_unsupported')
++        for stream in streams:
++            if not lib.qpdf_oh_is_stream(handle, stream):
++                raise ValueError('pdf_content_unsupported')
++            dictionary = lib.qpdf_oh_get_dict(handle, stream)
++            if keys(dictionary) - {'/Length', '/Filter'}:
++                raise ValueError('pdf_content_unsupported')
++            filter_obj = get(dictionary, '/Filter')
++            if not is_null(filter_obj) and name(filter_obj) != '/FlateDecode':
++                raise ValueError('pdf_content_unsupported')
++        buffer, length = P(), C.c_size_t()
++        try:
++            if lib.qpdf_oh_get_page_content_data(handle, page, C.byref(buffer), C.byref(length)):
++                raise ValueError('pdf_content_unsupported')
++            total += length.value
++            if not buffer.value or not 0 < length.value or total > MAX_EVIDENCE:
++                raise ValueError('pdf_visibility_limit')
++            if kinds=={'embedded'}:
++                runs=_embedded_text_runs(C.string_at(buffer,length.value),fonts,crop,page_tags.get(page_id))
++            else:
++                runs=_visible_text_runs(C.string_at(buffer,length.value),fonts,page_tags.get(page_id))
++        finally:
++            lib.qpdf_oh_free_buffer(C.byref(buffer))
++        pages.append(dict(width=crop[2]-crop[0], height=crop[3]-crop[1], runs=runs, embedded=kinds=={'embedded'}))
++    if any(p['embedded'] for p in pages):
++        if not all(p['embedded'] for p in pages):raise ValueError('pdf_font_unsupported')
++        for p in pages:del p['embedded']
++        return dict(profile=TRUSTED_PROFILE,pages=pages)
++    for p in pages:del p['embedded']
++    return dict(profile=VISIBLE_PROFILE, pages=pages)
++
++
++def _render_child(operation):
++    import resource
++    if operation not in OPERATIONS:
++        raise ValueError('pdf_operation_unsupported')
++    os.umask(0o077)
++    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:2])
++    for key, value in ((resource.RLIMIT_AS, 1024**3), (resource.RLIMIT_CPU, 35),
++                       (resource.RLIMIT_FSIZE, 16 * 1024**2), (resource.RLIMIT_CORE, 0),
++                       (resource.RLIMIT_NOFILE, 128)):
++        resource.setrlimit(key, (value, value))
++    profile = Path('/work/home/profile')
++    (profile / 'user').mkdir(mode=0o700, parents=True)
++    (profile / 'user/registrymodifications.xcu').write_text(
++        '<?xml version="1.0" encoding="UTF-8"?><oor:items xmlns:oor="http://openoffice.org/2001/registry">'
++        '<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item>'
++        '<item oor:path="/org.openoffice.Office.Calc/Content/Update"><prop oor:name="Link" oor:op="fuse"><value>0</value></prop></item></oor:items>', encoding='utf-8')
++    prefix = '/opt/friday-document-toolchain'
++    program = prefix + '/root/usr/lib/libreoffice/program'
++    env = {'PATH': '/usr/bin:/bin', 'HOME': '/work/home', 'TMPDIR': '/work/tmp',
++           'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'SAL_USE_VCLPLUGIN': 'svp',
++           'XDG_CACHE_HOME': '/work/home/cache', 'XDG_CONFIG_HOME': '/work/home/config',
++           'XDG_RUNTIME_DIR': '/work/tmp',
++           'LD_LIBRARY_PATH': program + ':' + prefix + '/root/usr/lib/x86_64-linux-gnu'}
++    subprocess.run(_office_command(operation), env=env, stdin=subprocess.DEVNULL,
++                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=True)
++    path = Path('/work/out/input.pdf')
++    if not 0 < path.stat().st_size <= MAX_OUTPUT:
++        raise ValueError('invalid_pdf_output')
++    structure = _pdf_structure(path)
++    for command, name, limit in (
++        (['/usr/bin/pdfinfo', '/work/out/input.pdf'], 'pdfinfo', 8192),
++        (['/usr/bin/pdftotext', '-enc', 'UTF-8', '-bbox-layout', '-cropbox', '/work/out/input.pdf', '-'], 'bbox.xhtml', MAX_EVIDENCE),
++    ):
++        with open('/work/' + name, 'xb') as output:
++            subprocess.run(command, env=env, stdin=subprocess.DEVNULL, stdout=output,
++                           stderr=subprocess.DEVNULL, timeout=3, check=True)
++        if not 0 < Path('/work/' + name).stat().st_size <= limit:
++            raise ValueError('invalid_pdf_evidence')
++    source = Path('/work/input.' + OPERATIONS[operation][0]).read_bytes()
++    Path('/work/validated.json').write_text(json.dumps(dict(
++        source_sha256=hashlib.sha256(source).hexdigest(),
++        pdf_sha256=hashlib.sha256(path.read_bytes()).hexdigest(), structure=structure)), encoding='ascii')
++
++
++if __name__ == '__main__':
++    if len(sys.argv) != 3 or sys.argv[1] != '--render':
++        raise SystemExit(2)
++    try:
++        _render_child(sys.argv[2])
++    except BaseException:
++        raise SystemExit(1)
+--- /dev/null
++++ b/tools/scoped_document_pdf.py
+@@ -0,0 +1,454 @@
++"""Source and PDF evidence oracle for three fixed native Office exports.
++
++No document is reconstructed here. Inputs pass the existing strict conversion
++inventories and the genuine package is rendered by the family-local adapter.
++The PDF contract requires a separately attested restricted visible text profile,
++then searchable ordered text, or one complete scalar sheet per page. Typography, exact whitespace, pagination and metadata are not retained.
++"""
++from __future__ import annotations
++
++from datetime import date
++from decimal import Decimal, InvalidOperation
++import hashlib
++import json
++import math
++import re
++from xml.etree import ElementTree as ET
++
++MAX_PAGES = 64
++MAX_EVIDENCE = 4_000_000
++MAX_WORDS = 20_000
++MAX_SHEETS = 16
++XHTML = 'http://www.w3.org/1999/xhtml'
++PROFILE = 'native_office_visible_pdf_v3'
++VISIBLE_PROFILE = 'base14_black_text_v1'
++TRUSTED_PROFILE = 'trusted_embedded_glyphs_v1'
++LAYOUT_LIMITS = (
++    'ODT: single-column visual reading order, ordered text including table cells; '
++    'whitespace and paragraph/table boundaries are not preserved as PDF semantics. '
++    'XLSX/ODS: each visible nonempty sheet occupies exactly one PDF page in source '
++    'order; scalar values and independently recomputed supported formula results '
++    'must appear in source row/column order, with one unwrapped line per source '
++    'row. No hidden/nonprinted sheets, empty cells carrying text, print ranges, '
++    'headers/footers, extra page text, cropped/overlapping or missing words. '
++    'Visible PDF support admits the former restricted unembedded Base14 ASCII '
++    'profile, Type0/Identity-H CIDFontType2 and restricted one-byte symbolic '
++    'TrueType fonts whose complete declared '
++    'Unicode repertoire matches one fixed trusted TrueType face, including '
++    'outlines, metrics and any used hint programs. Embedded glyph ink is black, '
++    '8–72pt, with positive axis-aligned transforms; only bounded spacing, '
++    'rectangular clipping and white path paint are admitted. Nonwhite path '
++    'paint, including table rules, requires source geometry proof and refuses. '
++    'The proof requires full-em clip/paint clearance and rejects intersecting '
++    'glyph boxes. Validated passive metadata, page tags and MCID/Artifact '
++    'wrappers may preserve the same paint; semantic replacement, images, forms, '
++    'transparency, annotations and optional content remain unsupported. Native paint-order words '
++    'must agree with Poppler. General Office producer compatibility, CFF/fonts '
++    'outside the fixed inventory, shaping/ligatures and visual fidelity remain '
++    'NOT qualified. '
++    'PDF is a derivative; formulas, editable structure and metadata remain in '
++    'the unchanged source, not in the PDF.'
++)
++
++
++class DocumentPDFError(ValueError):
++    """Only finite public refusal codes; never user text or parser diagnostics."""
++
++
++def fail(code):
++    raise DocumentPDFError(code)
++
++
++def _tick(checkpoint):
++    if checkpoint is not None:
++        checkpoint()
++
++
++def _tokens(value):
++    if not isinstance(value, str):
++        fail('pdf_text_profile_unsupported')
++    # These can change shaping, reading order or extraction without a visible
++    # text equivalent. Do not silently normalize them away.
++    if any(ord(c) < 32 and c not in '\t\r\n' or
++           ord(c) in (0x7f, 0xad, 0x200b, 0x200c, 0x200d, 0x2060, 0xfeff) or
++           0x202a <= ord(c) <= 0x202e or 0x2066 <= ord(c) <= 0x2069
++           for c in value):
++        fail('pdf_text_profile_unsupported')
++    return value.split()
++
++
++def preflight(data, source, *, checkpoint=None):
++    """Return private source expectations; never a substitute for native export."""
++    if source not in ('odt', 'xlsx', 'ods'):
++        fail('pdf_source_format_unsupported')
++    _tick(checkpoint)
++    if source == 'odt':
++        from tools.scoped_word_conversion import inventory, WordConversionError
++        try:
++            blocks = inventory(data, 'odt', checkpoint=checkpoint)
++        except WordConversionError as error:
++            raise DocumentPDFError(str(error)) from None
++        paragraphs = [p for b in blocks for p in ([b] if b['type'] != 'table' else
++                      [p for row in b['rows'] for cell in row for p in cell])]
++        words = [word for p in paragraphs for word in _tokens(p['text'])]
++        if not words or len(words) > MAX_WORDS:
++            fail('pdf_text_capacity_or_empty')
++        canonical = json.dumps(blocks, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
++        plan = dict(source=source, words=words, source_semantic_sha256=hashlib.sha256(canonical).hexdigest(),
++                    source_counts=dict(paragraphs=len(paragraphs),
++                        tables=sum(b['type'] == 'table' for b in blocks),
++                        cells=sum(len(row) for b in blocks if b['type'] == 'table' for row in b['rows'])))
++    else:
++        from tools.scoped_spreadsheet_conversion import inventory, evaluate, ConversionRefused
++        from tools.scoped_ods import Spreadsheet, TB, q
++        try:
++            book = inventory(data, source, checkpoint=checkpoint)
++            # Native Office recalculates, but stale source caches cannot serve as
++            # evidence that it exported the intended values. Require valid caches.
++            values = evaluate(book, checkpoint=checkpoint, check_cache=True)
++            if source == 'ods':
++                physical = Spreadsheet(data, 'ods', checkpoint)
++                if any(sheet.get(q(TB, 'print')) in ('false', '0') for sheet in physical.sheets):
++                    fail('pdf_nonprinted_sheet_unsupported')
++        except ConversionRefused as error:
++            raise DocumentPDFError(str(error)) from None
++        if not 1 <= len(book.sheets) <= MAX_SHEETS:
++            fail('pdf_sheet_limit')
++        sheets = []
++        for name, cells in book.sheets:
++            _tick(checkpoint)
++            if not cells:
++                fail('pdf_empty_sheet_unsupported')
++            rows = []
++            for r, c, cell in cells:
++                _tick(checkpoint)
++                if cell.kind == 'string':
++                    value = _tokens(cell.value)
++                    if not value:
++                        fail('pdf_empty_string_cell_unsupported')
++                    if len(value) > 128 or any(len(t) > 256 for t in value):
++                        fail('pdf_cell_text_limit')
++                elif cell.kind == 'number':
++                    value = format(values[(name, r, c)], 'f')
++                elif cell.kind in ('date', 'boolean'):
++                    value = cell.value
++                else:
++                    fail('pdf_cell_type_unsupported')
++                rows.append(dict(row=r, column=c, kind=cell.kind, value=value))
++            sheets.append(rows)
++        plan = dict(source=source, sheets=sheets, source_semantic_sha256=book.digest(),
++                    source_counts=book.counts())
++    plan['source_sha256'] = hashlib.sha256(data).hexdigest()
++    _tick(checkpoint)
++    return plan
++
++
++def pdf_info(data):
++    if not isinstance(data, bytes) or not 0 < len(data) <= 8192:
++        fail('pdf_info_invalid')
++    fields = {}
++    for name, pattern in (
++        ('pages', rb'^Pages:\s+([1-9][0-9]*)\s*$'),
++        ('encrypted', rb'^Encrypted:\s+(no)\s*$'),
++        ('javascript', rb'^JavaScript:\s+(no)\s*$'),
++        ('form', rb'^Form:\s+(none)\s*$'),
++        ('version', rb'^PDF version:\s+(1\.[0-7]|2\.0)\s*$'),
++    ):
++        matches = re.findall(pattern, data, re.M)
++        # A metadata-injected second field must fail, including an invalid value.
++        label = {'pages': b'Pages', 'encrypted': b'Encrypted', 'javascript': b'JavaScript',
++                 'form': b'Form', 'version': b'PDF version'}[name]
++        if len(matches) != 1 or len(re.findall(rb'^' + re.escape(label) + rb':', data, re.M)) != 1:
++            fail('pdf_info_invalid')
++        fields[name] = matches[0].decode('ascii')
++    fields['pages'] = int(fields['pages'])
++    if fields['pages'] > MAX_PAGES:
++        fail('pdf_page_limit')
++    return fields
++
++
++def _number(raw):
++    try:
++        value = float(raw)
++    except (TypeError, ValueError):
++        fail('pdf_bbox_invalid')
++    if not math.isfinite(value):
++        fail('pdf_bbox_invalid')
++    return value
++
++
++def _bounds(node, width, height):
++    if set(node.attrib) != {'xMin', 'yMin', 'xMax', 'yMax'}:
++        fail('pdf_bbox_invalid')
++    x0, y0, x1, y1 = (_number(node.get(k)) for k in ('xMin', 'yMin', 'xMax', 'yMax'))
++    if not (0 <= x0 < x1 <= width + .5 and 0 <= y0 < y1 <= height + .5):
++        fail('pdf_cropped_or_invalid_text')
++    return x0, y0, x1, y1
++
++
++def bbox_pages(data, *, checkpoint=None, with_geometry=False):
++    if not isinstance(data, bytes) or not 0 < len(data) <= MAX_EVIDENCE:
++        fail('pdf_bbox_limit')
++    if b'<!ENTITY' in data.upper() or b'<![' in data:
++        fail('pdf_bbox_invalid')
++    # Poppler emits this inert XHTML declaration. ET never fetches external DTDs.
++    doctypes = re.findall(rb'<!DOCTYPE[^>]*>', data, re.I)
++    if doctypes and (len(doctypes) != 1 or doctypes[0] !=
++        b'<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">'):
++        fail('pdf_bbox_invalid')
++    try:
++        root = ET.fromstring(data)
++    except (ET.ParseError, ValueError, RecursionError):
++        fail('pdf_bbox_invalid')
++    q = lambda local: '{' + XHTML + '}' + local
++    if root.tag != q('html') or len(root) != 2 or root[0].tag != q('head') or root[1].tag != q('body'):
++        fail('pdf_bbox_invalid')
++    body = root[1]
++    if len(body) != 1 or body[0].tag != q('doc'):
++        fail('pdf_bbox_invalid')
++    pages = list(body[0])
++    if not 1 <= len(pages) <= MAX_PAGES or any(p.tag != q('page') for p in pages):
++        fail('pdf_page_limit')
++    total = 0
++    result, geometry = [], []
++    for page in pages:
++        _tick(checkpoint)
++        if set(page.attrib) != {'width', 'height'}:
++            fail('pdf_bbox_invalid')
++        width, height = _number(page.get('width')), _number(page.get('height'))
++        if not (32 <= width <= 14400 and 32 <= height <= 14400):
++            fail('pdf_page_geometry_unsupported')
++        geometry.append((width, height))
++        words = []
++        for node in page.iter():
++            if node is page:
++                continue
++            if node.tag not in {q('flow'), q('block'), q('line'), q('word')}:
++                fail('pdf_bbox_invalid')
++            if node.tag != q('word'):
++                continue
++            _tick(checkpoint)
++            if len(node) or len(_tokens(node.text or '')) != 1:
++                fail('pdf_bbox_invalid')
++            bounds = _bounds(node, width, height)
++            words.append(dict(text=node.text, bounds=bounds))
++            total += 1
++            if total > MAX_WORDS:
++                fail('pdf_word_limit')
++        if not words:
++            fail('pdf_blank_or_unextractable_page')
++        # Use visual rows, not Poppler's flow order (which may be column-major
++        # for a spreadsheet). Unsupported wraps and columns fail the oracle.
++        lines = []
++        active = []
++        for word in sorted(words, key=lambda w: (w['bounds'][1], w['bounds'][0])):
++            x0, y0, x1, y1 = word['bounds']
++            active = [line for line in active if line['y1'] >= y0]
++            if len(active) > 64:
++                fail('pdf_ambiguous_text_layout')
++            matches = [line for line in active if
++                       min(line['y1'], y1) - max(line['y0'], y0) >= .5 * min(line['y1']-line['y0'], y1-y0)]
++            if len(matches) > 1:
++                fail('pdf_ambiguous_text_layout')
++            if matches:
++                line = matches[0]
++                line['words'].append(word)
++                line['y0'], line['y1'] = min(line['y0'], y0), max(line['y1'], y1)
++            else:
++                line = dict(y0=y0, y1=y1, words=[word])
++                lines.append(line)
++                active.append(line)
++        ordered = []
++        previous_bottom = None
++        for line_id, line in enumerate(sorted(lines, key=lambda ln: ln['y0'])):
++            # Distinct visual rows may overlap by less than the grouping
++            # threshold above.  They still cannot be accepted as separate,
++            # readable source rows; reject overlapping vertical bands too.
++            if previous_bottom is not None and line['y0'] < previous_bottom - .5:
++                fail('pdf_overlapping_text')
++            previous_bottom = line['y1']
++            row = sorted(line['words'], key=lambda w: w['bounds'][0])
++            for index, word in enumerate(row):
++                if index and word['bounds'][0] < row[index-1]['bounds'][2] - .5:
++                    fail('pdf_overlapping_text')
++                word['line'] = line_id
++                ordered.append(word)
++        result.append(ordered)
++    return (result, geometry) if with_geometry else result
++
++
++
++def _trusted_visible_content(visibility, pages, geometry, checkpoint):
++    if set(visibility)!={'profile','pages'} or type(visibility['pages']) is not list or len(visibility['pages'])!=len(pages):
++        fail('pdf_visibility_unproven')
++    for proof,words,(width,height) in zip(visibility['pages'],pages,geometry):
++        _tick(checkpoint)
++        if (type(proof) is not dict or set(proof)!={'width','height','runs'} or
++                any(type(proof[k]) not in (int,float) or not math.isfinite(proof[k]) for k in ('width','height')) or
++                abs(proof['width']-width)>.01 or abs(proof['height']-height)>.01 or
++                type(proof['runs']) is not list or not 1<=len(proof['runs'])<=4096):
++            fail('pdf_visibility_unproven')
++        offset=0;all_ink=[]
++        for run in proof['runs']:
++            _tick(checkpoint)
++            if (type(run) is not dict or set(run)!={'words','font_size','ink'} or
++                    type(run['words']) is not list or not 1<=len(run['words'])<=MAX_WORDS or
++                    type(run['ink']) is not list or len(run['ink'])!=len(run['words']) or
++                    type(run['font_size']) not in (int,float) or not math.isfinite(run['font_size']) or not 8<=run['font_size']<=72):
++                fail('pdf_visibility_unproven')
++            selected=words[offset:offset+len(run['words'])]
++            if [w['text'] for w in selected]!=run['words'] or len({w['line'] for w in selected})!=1:
++                fail('pdf_painted_text_disagreement')
++            for text,boxes,word in zip(run['words'],run['ink'],selected):
++                if type(text) is not str or not text or len(text)>8192 or type(boxes) is not list or len(boxes)!=len(text):
++                    fail('pdf_visibility_unproven')
++                for b in boxes:
++                    if (type(b) is not list or len(b)!=4 or any(type(v) not in (int,float) or not math.isfinite(v) for v in b) or
++                            not 0<=b[0]<b[2]<=width or not 0<=b[1]<b[3]<=height):
++                        fail('pdf_visibility_unproven')
++                    w=word['bounds']
++                    # Poppler's metric box may be slightly narrower than real
++                    # overhangs; allow one tenth em while still binding position.
++                    tolerance=run['font_size']*.1
++                    if b[0]<w[0]-tolerance or b[1]<w[1]-tolerance or b[2]>w[2]+tolerance or b[3]>w[3]+tolerance:
++                        fail('pdf_painted_geometry_disagreement')
++                    all_ink.append(b)
++            offset+=len(selected)
++        if offset!=len(words):fail('pdf_painted_text_disagreement')
++        active=[]
++        for b in sorted(all_ink,key=lambda b:b[1]):
++            _tick(checkpoint)
++            active=[a for a in active if a[3]>b[1]+.001]
++            if len(active)>4096 or any(min(a[2],b[2])>max(a[0],b[0])+.001 and min(a[3],b[3])>max(a[1],b[1])+.001 for a in active):
++                fail('pdf_overlapping_glyphs')
++            active.append(b)
++
++def _visible_content(visibility, pages, geometry, checkpoint):
++    """Bind native paint proof to extracted words, with conservative ink clearance.
++
++    The admitted Base14 glyphs fit within one em of their advance/line box.
++    Whole-run clearance is deliberately stricter than normal typesetting; it
++    avoids claiming that separate painted runs cannot obscure one another.
++    """
++    if type(visibility) is dict and visibility.get('profile')==TRUSTED_PROFILE:
++        return _trusted_visible_content(visibility,pages,geometry,checkpoint)
++    if (type(visibility) is not dict or set(visibility) != {'profile', 'pages'} or
++            visibility['profile'] != VISIBLE_PROFILE or type(visibility['pages']) is not list or
++            len(visibility['pages']) != len(pages)):
++        fail('pdf_visibility_unproven')
++    for proof, words, (width, height) in zip(visibility['pages'], pages, geometry):
++        _tick(checkpoint)
++        if (type(proof) is not dict or set(proof) != {'width', 'height', 'runs'} or
++                type(proof['width']) not in (int, float) or type(proof['height']) not in (int, float) or
++                not math.isfinite(proof['width']) or not math.isfinite(proof['height']) or
++                abs(proof['width'] - width) > .01 or abs(proof['height'] - height) > .01 or
++                type(proof['runs']) is not list or not 1 <= len(proof['runs']) <= 4096):
++            fail('pdf_visibility_unproven')
++        offset, guards = 0, []
++        for run in proof['runs']:
++            _tick(checkpoint)
++            if (type(run) is not dict or set(run) != {'words', 'font_size'} or
++                    type(run['words']) is not list or not 1 <= len(run['words']) <= MAX_WORDS or
++                    any(type(w) is not str or not w or any(ord(c) < 33 or ord(c) > 126 for c in w)
++                        for w in run['words']) or type(run['font_size']) not in (int, float) or
++                    not 8 <= run['font_size'] <= 72):
++                fail('pdf_visibility_unproven')
++            selected = words[offset:offset+len(run['words'])]
++            if [w['text'] for w in selected] != run['words']:
++                fail('pdf_painted_text_disagreement')
++            if len({w['line'] for w in selected}) != 1:
++                fail('pdf_painted_text_disagreement')
++            em = run['font_size']
++            x0 = min(w['bounds'][0] for w in selected) - em
++            y0 = min(w['bounds'][1] for w in selected) - em
++            x1 = max(w['bounds'][2] for w in selected) + em
++            y1 = max(w['bounds'][3] for w in selected) + em
++            if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
++                fail('pdf_visible_ink_clearance_unproven')
++            guards.append((x0, y0, x1, y1))
++            offset += len(selected)
++        if offset != len(words):
++            fail('pdf_painted_text_disagreement')
++        active = []
++        for guard in sorted(guards, key=lambda b: b[1]):
++            _tick(checkpoint)
++            active = [b for b in active if b[3] > guard[1]]
++            if len(active) > 64:
++                fail('pdf_visible_ink_clearance_unproven')
++            if any(min(guard[2], b[2]) > max(guard[0], b[0]) for b in active):
++                fail('pdf_visible_ink_clearance_unproven')
++            active.append(guard)
++
++def _cell_matches(cell, tokens):
++    if cell['kind'] == 'string':
++        return tokens == cell['value']
++    if len(tokens) != 1:
++        return False
++    token = tokens[0]
++    if cell['kind'] == 'boolean':
++        return token == ('TRUE' if cell['value'] else 'FALSE')
++    if cell['kind'] == 'date':
++        value = date.fromisoformat(cell['value'])
++        return token in (value.isoformat(), value.strftime('%d.%m.%Y'))
++    if cell['kind'] == 'number':
++        if not re.fullmatch(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]{1,3})?', token):
++            return False
++        try:
++            return Decimal(token) == Decimal(cell['value'])
++        except InvalidOperation:
++            return False
++    return False
++
++
++def verify(plan, info, bbox, structure, *, checkpoint=None):
++    """Check independent native parser evidence before create-only publication."""
++    facts = pdf_info(info)
++    pages, geometry = bbox_pages(bbox, checkpoint=checkpoint, with_geometry=True)
++    if (type(structure) is not dict or set(structure) != {'pages', 'engine', 'visibility'} or
++            structure['engine'] != 'libqpdf-12.3.2' or type(structure['pages']) is not int or
++            structure['pages'] != facts['pages'] or len(pages) != facts['pages']):
++        fail('pdf_parser_disagreement')
++    _visible_content(structure['visibility'], pages, geometry, checkpoint)
++    evidence = []
++    if plan['source'] == 'odt':
++        actual = [word['text'] for page in pages for word in page]
++        if actual != plan['words']:
++            fail('pdf_text_changed_missing_or_extra')
++        matched = dict(text_words=len(actual))
++    else:
++        if len(pages) != len(plan['sheets']):
++            fail('pdf_sheet_page_count_changed')
++        for page_id, (cells, words) in enumerate(zip(plan['sheets'], pages)):
++            offset = 0
++            row_lines = {}
++            for cell in cells:
++                _tick(checkpoint)
++                count = len(cell['value']) if cell['kind'] == 'string' else 1
++                selected = words[offset:offset+count]
++                if not _cell_matches(cell, [word['text'] for word in selected]):
++                    fail('pdf_cell_changed_missing_or_extra')
++                if len({w['line'] for w in selected}) != 1:
++                    fail('pdf_wrapped_cell_unsupported')
++                line = selected[0]['line']
++                if cell['row'] in row_lines and row_lines[cell['row']] != line:
++                    fail('pdf_source_row_split')
++                if cell['row'] not in row_lines and row_lines and line <= max(row_lines.values()):
++                    fail('pdf_source_rows_merged_or_reordered')
++                row_lines[cell['row']] = line
++                evidence.append((page_id+1, cell['row'], cell['column'], offset, count,
++                                 [w['bounds'] for w in selected]))
++                offset += count
++            if offset != len(words):
++                fail('pdf_extra_cell_or_page_text')
++        matched = dict(matched_cells=len(evidence), text_words=sum(map(len, pages)))
++    _tick(checkpoint)
++    return dict(profile=PROFILE, pages=len(pages), searchable_text_verified=True,
++                cell_values_verified=plan['source'] != 'odt',
++                formula_results_verified=plan['source_counts'].get('formula_cells', 0),
++                source_semantic_sha256=plan['source_semantic_sha256'],
++                evidence_sha256=hashlib.sha256(json.dumps(evidence if evidence else
++                    [[(w['text'], w['bounds']) for w in p] for p in pages],
++                    ensure_ascii=False, separators=(',', ':')).encode()).hexdigest(),
++                visible_text_verified=True, visible_profile=structure['visibility']['profile'],
++                visual_fidelity_verified=False, layout_limits=LAYOUT_LIMITS,
++                **plan['source_counts'], **matched)
