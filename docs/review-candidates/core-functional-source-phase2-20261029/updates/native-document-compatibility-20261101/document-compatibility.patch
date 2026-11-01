@@ -1,0 +1,340 @@
+--- a/tools/scoped_doc.py
++++ b/tools/scoped_doc.py
+@@ -2,7 +2,9 @@
+ 
+ CFB allocation checks are copied and specialized from the accepted XLS reader;
+ no XLS/PPT profile boundaries are changed. Only FIB/CLX text is interpreted.
+-Macro/storage, object, field and encrypted documents refuse. No file, process,
++Macro/storage, object, active-field and encrypted documents refuse. Only stored
++main-story HYPERLINK result text is read; field instructions are never returned.
++No file, process,
+ network, Office or formula execution. See package FORMAT-NOTES.md for the exact
+ subset and Microsoft specification references.
+ """
+@@ -242,8 +244,9 @@
+ # FIB sizes for Word 97, 2000, 2002, 2003 and 2007 binary storage.
+ _VERSIONS = {0x00C1: (93, 0), 0x00D9: (108, 2), 0x0101: (136, 2),
+              0x010C: (164, 2), 0x0112: (183, 5)}
+-# Field PLCs, command customizations, drawing anchors, mail merge and OLE controls.
+-_ACTIVE_FIB = frozenset((16, 17, 18, 19, 20, 24, 40, 41, 44, 45, 48, 57, 59, 69, 85))
++# Non-main field PLCs, drawing anchors, mail merge and OLE controls.
++# Main-story fields and the command table have separate bounded checks below.
++_ACTIVE_FIB = frozenset((17, 18, 19, 20, 40, 41, 44, 45, 48, 57, 59, 69, 85))
+ # FcCompressed maps bytes to Unicode, NOT the document's language code page.
+ _COMPRESSED = {0x82:0x201A, 0x83:0x0192, 0x84:0x201E, 0x85:0x2026,
+     0x86:0x2020, 0x87:0x2021, 0x88:0x02C6, 0x89:0x2030, 0x8A:0x0160,
+@@ -304,23 +307,90 @@
+         _fail('doc_template_or_autotext_unsupported')
+     if any(pairs[i][1] for i in _ACTIVE_FIB):
+         _fail('doc_fields_or_active_content_unsupported')
+-    # Later FIB extensions include additional document behaviours. They are
+-    # deliberately not interpreted or silently discarded by this narrow reader.
+-    if any(a or b for a, b in pairs[93:]):
+-        _fail('doc_extended_structures_unsupported')
+     table_name = '1Table' if flags & 0x0200 else '0Table'
+     table = streams.get(table_name)
+     if table is None:
+         _fail('doc_selected_table_missing')
+     if streams.get('0Table' if table_name == '1Table' else '1Table'):
+         _fail('doc_ambiguous_table_streams')
++    # Explicitly bounded passive metadata, omitted by the stored-text profile:
++    # table cache, mail threading metadata, list styles, language detection,
++    # revision-save IDs, and the deprecated Office theme/color mapping.
++    # Other nonempty extension records still refuse. An absent record's
++    # offset is undefined, so it must not be mistaken for present content.
++    passive = {93, 94, 96, 98, 99, 113, 181, 182}
++    for i, (fc, size) in enumerate(pairs[93:], 93):
++        if not size:
++            continue
++        if i not in passive:
++            _fail('doc_extended_structures_unsupported')
++        if size > 1048576 or fc > len(table) - size:
++            _fail('doc_passive_metadata_bounds')
++        if i == 99:
++            # Only the list-style record; framesets and frame file paths
++            # remain unsupported even though this reader never loads them.
++            data = table[fc:fc + size]
++            if (size < 12 or _u32(data, 0) != size or _u32(data, 4) != 6
++                    or _u32(data, 8) > 65536 or size != 12 + 4 * _u32(data, 8)):
++                _fail('doc_frameset_or_list_metadata_unsupported')
++    # MS-DOC Tcg/Tcg255: version 255 followed immediately by the
++    # terminator is an empty customization sequence, not a macro command.
++    fc, size = pairs[24]
++    if size and (size != 2 or fc > len(table) - size or table[fc:fc + size] != b'\xff\x40'):
++        _fail('doc_fields_or_active_content_unsupported')
+     fc, size = pairs[33]
+     if size < 21 or size > len(table) or fc > len(table) - size:
+         _fail('doc_clx_bounds')
+     return word[:cb_mac], table[fc:fc + size], counts, version, fib_end, table_name
+ 
+ 
+-def _piece_text(word, clx, counts, fib_end):
++def _stored_hyperlink_results(raw, plc):
++    """Return stored field results, never instructions, URLs or evaluated text.
++
++    The field PLC and UTF-16 CP positions must agree exactly. Only flat,
++    complete HYPERLINK begin/separator/end triples are supported. The profile
++    remains stored main-story text, not a claim about Word's display settings.
++    """
++    if len(plc) < 4 or (len(plc) - 4) % 6:
++        _fail('doc_field_plc_bounds')
++    n = (len(plc) - 4) // 6
++    if n > 12288 or n % 3:
++        _fail('doc_field_limit_or_structure')
++    cps = [_u32(plc, 4 * i) for i in range(n + 1)]
++    count = len(raw) // 2
++    if cps[-1] > count or any(a >= b for a, b in zip(cps, cps[1:])):
++        _fail('doc_field_cp_bounds')
++    actual = [i for i in range(count) if _u16(raw, i * 2) in (19, 20, 21)]
++    if actual != cps[:-1]:
++        _fail('doc_field_character_mismatch')
++    entries = plc[4 * (n + 1):]
++    out = []; previous = 0
++    for i in range(0, n, 3):
++        begin, sep, end = cps[i:i + 3]
++        fields = [entries[2 * j] & 31 for j in range(i, i + 3)]
++        if fields != [19, 20, 21] or entries[2 * i + 1] != 88:
++            _fail('doc_field_type_unsupported')
++        # No private/OLE/nested results or inverted display. Dirty/edited/
++        # locked cached results are admitted as stored, without recalculation.
++        if entries[2 * (i + 2) + 1] & 0xE3 != 0x80:
++            _fail('doc_field_result_unsupported')
++        try:
++            instruction = raw[2 * (begin + 1):2 * sep].decode('utf-16le')
++            result = raw[2 * (sep + 1):2 * end].decode('utf-16le')
++        except UnicodeError:
++            _fail('doc_invalid_unicode')
++        keyword = instruction.lstrip().split(None, 1)
++        if not keyword or keyword[0].upper() != 'HYPERLINK' or len(keyword) != 2:
++            _fail('doc_field_instruction_unsupported')
++        if any(ord(c) < 32 and c not in '\t' for c in instruction) or not result.strip():
++            _fail('doc_field_result_unsupported')
++        out.append(raw[2 * previous:2 * begin]); out.append(raw[2 * (sep + 1):2 * end])
++        previous = end + 1
++    out.append(raw[2 * previous:])
++    return b''.join(out), n // 3
++
++
++def _piece_text(word, clx, counts, fib_end, field_plc=None):
+     at = 0
+     prcs = 0
+     while at < len(clx) and clx[at] == 1:
+@@ -381,9 +451,9 @@
+         # MS-DOC Pcd.fNoParaLast forbids paragraph marks in this piece.
+         if flags & 1 and '\r' in text:
+             _fail('doc_piece_paragraph_flag')
+-        if any(c in text for c in ('\x01', '\x08', '\x13', '\x14', '\x15')):
++        if any(c in text for c in ('\x01', '\x08')) or (field_plc is None and any(c in text for c in ('\x13', '\x14', '\x15'))):
+             _fail('doc_fields_or_objects_unsupported')
+-        if any(ord(c) < 32 and c not in '\x02\x05\x07\t\n\x0b\x0c\r\x1e\x1f' for c in text):
++        if any(ord(c) < 32 and c not in '\x02\x05\x07\t\n\x0b\x0c\r\x13\x14\x15\x1e\x1f' for c in text):
+             _fail('doc_control_character_unsupported')
+         encoded = text.encode('utf-16le', errors='surrogatepass')
+         all_units.append(encoded)
+@@ -397,8 +467,14 @@
+     if any(a[1] > b[0] for a, b in zip(intervals, intervals[1:])):
+         _fail('doc_overlapping_pieces')
+     try:
+-        b''.join(all_units).decode('utf-16le')
+-        text = b''.join(out).decode('utf-16le')
++        full = b''.join(all_units)
++        full.decode('utf-16le')
++        raw = b''.join(out)
++        if field_plc is not None:
++            if any(_u16(full, i) in (19, 20, 21) for i in range(len(raw), len(full), 2)):
++                _fail('doc_fields_or_objects_unsupported')
++            raw, _ = _stored_hyperlink_results(raw, field_plc)
++        text = raw.decode('utf-16le')
+     except UnicodeError:
+         _fail('doc_invalid_unicode')
+     if not text.endswith('\r'):
+@@ -416,7 +492,14 @@
+     cfb = _CFB(data)
+     word, clx, counts, version, fib_end, table = _fib(cfb.streams['WordDocument'], cfb.streams,
+                                                   template=template)
+-    text, pieces, encodings = _piece_text(word, clx, counts, fib_end)
++    fc, size = struct.unpack_from('<II', word, 154 + 8 * 16)
++    field_plc = None
++    if size:
++        data_table = cfb.streams[table]
++        if size > 73732 or fc > len(data_table) - size:
++            _fail('doc_field_plc_bounds')
++        field_plc = data_table[fc:fc + size]
++    text, pieces, encodings = _piece_text(word, clx, counts, fib_end, field_plc)
+     if not text.strip():
+         _fail('doc_no_main_text')
+     if len(text.encode('utf-8')) > MAX_TEXT:
+@@ -433,6 +516,12 @@
+     if template:
+         metadata.update(schema='friday.dot-text.v1', format='dot', template=True,
+                         template_marker='FibBase.fDot=1; fGlsy=0; pnNext=0')
++    if field_plc is not None:
++        metadata.update(stored_hyperlink_results=(len(field_plc) - 4) // 18,
++                        field_instructions_returned=False, hyperlink_targets_loaded=False,
++                        field_result_freshness='stored_only_not_recalculated')
++    if any(_u32(word, 154 + 8 * i + 4) for i in range(93, _u16(word, 152))):
++        metadata['passive_metadata_omitted'] = 'table_cache,mail_threading,list_styles,language_detection,revision_save_ids,theme,color_mapping; not interpreted'
+     return _Text(text, metadata)
+ 
+ 
+--- a/tools/scoped_odb.py
++++ b/tools/scoped_odb.py
+@@ -18,7 +18,10 @@
+ D = 'urn:oasis:names:tc:opendocument:xmlns:database:1.0'
+ M = 'urn:oasis:names:tc:opendocument:xmlns:manifest:1.0'
+ XL = 'http://www.w3.org/1999/xlink'
+-MIME = 'application/vnd.oasis.opendocument.database'
++# IANA registers .base for ODB; .database remains a deprecated alias.
++# Both identify ODB, but the package and manifest must use the SAME spelling.
++MIME = 'application/vnd.oasis.opendocument.base'
++MIMES = (MIME, 'application/vnd.oasis.opendocument.database')
+ MAX_RECORDS = 4096
+ MAX_NAME = 256
+ MAX_OUTPUT = 1_000_000
+@@ -64,7 +67,8 @@
+ def _load(data, checkpoint):
+     try:
+         parts, xml_names = _preflight_package(data, checkpoint)
+-        if parts.get('mimetype') != MIME.encode('ascii'):
++        mime = parts.get('mimetype')
++        if mime not in tuple(value.encode('ascii') for value in MIMES):
+             _fail('not_native_odb')
+         with zipfile.ZipFile(io.BytesIO(data)) as archive:
+             info = archive.getinfo('mimetype')
+@@ -96,7 +100,7 @@
+         if any(node.tag == q(M, 'encryption-data') for node in entry.iter()):
+             _fail('encrypted_package')
+         declarations[name] = entry.get(q(M, 'media-type'), '')
+-    if declarations.get('/') != MIME or 'content.xml' not in declarations:
++    if declarations.get('/') != mime.decode('ascii') or 'content.xml' not in declarations:
+         _fail('manifest_type_or_content')
+     if any(name not in declarations for name in parts
+            if name not in ('mimetype', 'META-INF/manifest.xml')):
+--- a/hermes_cli/friday_workspace_document_pdf.py
++++ b/hermes_cli/friday_workspace_document_pdf.py
+@@ -374,7 +374,63 @@
+         self.geometry_limits=None
+ 
+ 
+-    def same_hint_environment(self, trusted):
++    def phantom_independent(self, program):
++        """Prove a tiny straight-line family never reads vertical phantoms."""
++        if program[0]!='simple':return False
++        raw=program[1];st=self.struct
++        try:
++            contours=st.unpack_from('>h',raw)[0]
++            if not 1<=contours<=1024:return False
++            points=st.unpack_from('>H',raw,10+2*(contours-1))[0]+1
++            pos=10+2*contours;size=st.unpack_from('>H',raw,pos)[0]
++            code=raw[pos+2:pos+2+size]
++            if len(code)!=size or len(code)>8192:return False
++            stack=[];rp=[None,None,None];axis=None
++            def pop():
++                if not stack:raise ValueError()
++                return stack.pop()
++            def real(point):
++                if not 0<=point<points:raise ValueError()
++                return point
++            def reference(point):
++                if not 0<=point<points+2:raise ValueError()
++                return point
++            def horizontal(value):
++                if value is None or value>=points and axis!='x':raise ValueError()
++            i=0
++            while i<len(code):
++                op=code[i];i+=1
++                if op==0x40:
++                    if i>=len(code):return False
++                    count=code[i];i+=1
++                    if i+count>len(code):return False
++                    stack.extend(code[i:i+count]);i+=count
++                elif op in (0x00,0x01):axis='y' if op==0 else 'x'
++                elif op in (0x30,0x31):
++                    # IUP visits contour endpoints, never the four phantoms.
++                    pass
++                elif op==0x2f:
++                    if axis is None:return False
++                    rp[0]=rp[1]=real(pop())
++                elif op in (0x11,0x12):
++                    rp[op-0x10]=reference(pop())
++                elif op==0x5d:
++                    if axis is None:return False
++                    count=pop()
++                    if count>64 or len(stack)<2*count:return False
++                    operands=[pop() for _ in range(2*count)]
++                    for j in range(count):real(operands[2*j])
++                elif 0xc0<=op<=0xdf:
++                    if axis is None:return False
++                    real(pop());horizontal(rp[0]);rp[0]=None
++                elif op==0x39:
++                    if axis is None:return False
++                    real(pop());horizontal(rp[1]);horizontal(rp[2])
++                else:return False
++            return not stack
++        except (ValueError,IndexError,st.error):return False
++
++    def same_hint_environment(self, trusted, phantom_free=False):
+         if self.environment==trusted.environment:return True
+         # One bounded subset form emitted by the existing producer.  This is
+         # not permission to ignore arbitrary missing/changed SFNT metadata.
+@@ -419,15 +475,21 @@
+                 or len(self.tables[b'hmtx'])!=4*self.n):
+             return False
+         # Without OS/2 FreeType synthesizes vertical phantom points from hhea.
+-        # These are accessible to horizontal glyph bytecode too: omission is
+-        # equivalent only if the trusted sTypoAscender/Descender already match.
+-        os2=trusted.tables.get(b'OS/2',b'')
+-        if len(os2)<78 or os2[68:72]!=hhea[4:8]:return False
+-        # This source gasp enables every standardized grid-fitting/smoothing
+-        # mode at every size.  Omission may choose unhinted rendering (already
+-        # admitted by this proof), or the exact trusted programs above; it must
+-        # not override a source's size-dependent hinting policy.
+-        if trusted.tables.get(b'gasp')!=b'\0\1\0\1\xff\xff\0\x0f':return False
++        # Normally their original typo values must match.  The alternate path
++        # requires a complete glyph-program proof that no such point is read.
++        os2=trusted.tables.get(b'OS/2',b'');gasp=trusted.tables.get(b'gasp',b'')
++        if len(os2)>=78 and os2[68:72]==hhea[4:8] and gasp==b'\0\1\0\1\xff\xff\0\x0f':return True
++        if not phantom_free or len(os2)<78:return False
++        # Missing gasp may select trusted hinted or unhinted rendering and
++        # smoothing, not different glyph identity.  This proof never claims
++        # pixel identity and retains full-em clip/paint clearance.  Require a
++        # well-formed trusted size policy rather than ignoring arbitrary bytes.
++        if len(gasp)<8:return False
++        version,count=self.struct.unpack_from('>HH',gasp)
++        if version not in (0,1) or not 1<=count<=256 or len(gasp)!=4+4*count:return False
++        ranges=[self.struct.unpack_from('>HH',gasp,4+4*i) for i in range(count)]
++        if ranges[-1][0]!=0xffff or any(flag&~15 or i and ranges[i-1][0]>=size for i,(size,flag) in enumerate(ranges)):
++            return False
+         return True
+ 
+     def program(self,gid,depth=0,seen=()):
+@@ -578,7 +640,8 @@
+                 if cache[char]==signature:
+                     trusted_gid=self.lib.FT_Get_Char_Index(trusted,ord(char))
+                     trusted_sfnt=self.sfnts[trusted.value]
+-                    if not hinted and not sfnt.global_hints or (sfnt.same_hint_environment(trusted_sfnt) and program==trusted_sfnt.program(trusted_gid)[1]):
++                    if not hinted and not sfnt.global_hints or (program==trusted_sfnt.program(trusted_gid)[1] and
++                            sfnt.same_hint_environment(trusted_sfnt,sfnt.phantom_independent(program))):
+                         remaining.append((trusted,cache))
+             candidates=remaining
+             if not candidates: raise ValueError('pdf_glyph_identity_mismatch')
+@@ -985,9 +1048,17 @@
+                 path=[];segments=[];current_point=start_point=None
+             elif op in ('f','f*','S'):
+                 if not path and not segments:raise ValueError('pdf_content_unsupported')
+-                if segments and op!='S':raise ValueError('pdf_content_unsupported')
+                 width=state['width']*max(state['ctm'][:2])/2
+-                for b in segments:paint((b[0]-width,b[1]-width,b[2]+width,b[3]+width),state['stroke']==(1.,1.,1.))
++                if segments and op in ('f','f*'):
++                    # The complete fill, including implicit subpath closing
++                    # edges and holes, lies inside this conservative box.
++                    # Only opaque white is admissible; check the whole box
++                    # against earlier glyph guards, not just its boundary.
++                    b=(min(p[0] for p in segments),min(p[1] for p in segments),
++                       max(p[2] for p in segments),max(p[3] for p in segments))
++                    paint(b,state['fill']==(1.,1.,1.))
++                else:
++                    for b in segments:paint((b[0]-width,b[1]-width,b[2]+width,b[3]+width),state['stroke']==(1.,1.,1.))
+                 for b in path:
+                     if op=='S':
+                         width=state['width']*max(state['ctm'][:2])/2
