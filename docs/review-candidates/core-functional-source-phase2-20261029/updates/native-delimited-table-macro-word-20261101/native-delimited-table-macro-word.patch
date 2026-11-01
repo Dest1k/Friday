@@ -1,0 +1,1076 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -12,7 +12,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1'
++DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1'
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -203,7 +203,9 @@
+ from hermes_cli.friday_workspace_presentation_macro import GUIDANCE as MACRO_PRESENTATION_GUIDANCE
+ WORD_CONVERSION_GUIDANCE = 'Word conversion: docx_odt creates a NEW .odt from .docx; odt_docx creates a NEW .docx from .odt. Content is exactly JSON {source,source_sha256}; read the source first and use its current lowercase SHA-256. An isolated local Office process converts genuine native input; parsed destination paragraphs, heading levels and plain rectangular tables must match the original semantic inventory. Only plain text, explicit spaces/tabs/line breaks and unmerged tables are supported; fonts, run styling and pagination may change. Lists, fields, images, notes, links, hidden/protected/signed/active content and ambiguous styles refuse. Source remains unchanged; unavailable toolchain or unsupported conversion refuses without publishing. Never rename a suffix or rebuild extracted text to claim conversion. '
+ SPREADSHEET_CONVERSION_GUIDANCE = 'XLSX/ODS cross-family conversion: spreadsheet_convert with exactly {source} into a NEW opposite .ods or .xlsx output uses isolated Office. Only this XLSX<->ODS pair is added; other existing native family conversions keep their limits. The output must retain sheet order, exact text/IDs, booleans, bounded decimals, dates and supported formula references, with independent formula/cache verification. Plain scalar cells and bounded SUM/product formulas only; custom styles, names, tables, charts, merged/hidden cells or sheets, protected/macro/external content refuse. Source is unchanged. No general filter or visual/layout fidelity is promised; unsupported output or unavailable toolchain produces no file. '
+-DOCX_EDIT_GUIDANCE = WORD_CONVERSION_GUIDANCE + SPREADSHEET_CONVERSION_GUIDANCE + MACRO_PRESENTATION_GUIDANCE + PDF_SIGNATURE_GUIDANCE + PDF_REPORT_GUIDANCE + (
++DELIMITED_TABLE_GUIDANCE = 'Delimited native tables: delimited_convert creates a NEW CSV/TSV/XLSX/ODS, exactly one side delimited and the other native. Import JSON requires source,encoding,delimiter,type_policy,sheet; type_policy="text" keeps every field literal, or {columns:["text","decimal","boolean","date"],header_rows:0} gives explicit column types and header_rows 0 or 1. Export JSON requires source,encoding,delimiter,type_policy,line_ending; sheet is mandatory for multi-sheet files, range is optional A1:D5. Export type_policy="text" permits only text/blanks; "canonical" exports exact supported numeric/boolean/ISO-date values, without display formatting or formula caches. Encoding is explicit utf-8/utf-8-sig/utf-16/utf-16-le/utf-16-be/cp1251; generic utf-16 input requires a BOM. Delimiter is comma/semicolon/tab/vertical bar; TSV requires tab; line_ending is LF or CRLF. No detection or locale inference. Quoted field delimiters, quotes and embedded line breaks are preserved. All formulas, unsafe/active/macro structures and ambiguous native extents refuse. OOXML escape-looking text is unsupported for XLSX. Without range native data must be an explicit A1 rectangle matching declarations. Sources remain unchanged; no overwrite. '
++WORD_MACRO_EDIT_GUIDANCE = 'Word macro text: word_macro_edit accepts exactly {source,source_sha256,old_text,new_text} into a NEW same-format .docm/.dotm. Obtain source_sha256 from current read_file. One unique literal in a supported main-body/table paragraph changes; equal-format split runs work. All other XML/member bytes, macro-enabled main declaration and any opaque VBA project remain intact. Signatures, protection, fields, revisions, hidden text, mixed-format matches, external/active/OLE/unknown parts refuse. VBA is never evaluated or executed and its safety remains unproven. This operation does not create, instantiate, convert or strip macro templates/documents. '
++DOCX_EDIT_GUIDANCE = WORD_MACRO_EDIT_GUIDANCE + DELIMITED_TABLE_GUIDANCE + WORD_CONVERSION_GUIDANCE + SPREADSHEET_CONVERSION_GUIDANCE + MACRO_PRESENTATION_GUIDANCE + PDF_SIGNATURE_GUIDANCE + PDF_REPORT_GUIDANCE + (
+     'For supported PDF text forms, read_file with pdf_form_fields=true returns field names, values and source_sha256; use default pagination. '
+     'Fill a NEW PDF with pdf_form_fill and exact JSON {"source":"form.pdf","source_sha256":"<hash from that read>","fields":{"name":"value"}}. '
+     'Only flat AcroForm text widgets with standard Helvetica/Courier defaults and fitting single-line text are supported. Printable ASCII keeps its standard appearance; bounded supported Latin/Cyrillic text uses the pinned embedded DejaVu Sans font with Unicode values and native appearance streams, without flattening. '
+@@ -271,9 +273,7 @@
+     'Word blocks: title/paragraph type/text, heading type/text/level 1..9, table type/rows из строк. '
+     'ODF blocks: paragraph type/text, heading type/text/level 1..9, list type/items/ordered boolean, '
+     'table type/rows из прямоугольных строковых ячеек; content — JSON {blocks:[...]}. '
+-    'DOCM/DOTM доступны только для инертного чтения. VBA непрозрачен и никогда не исполняется; '
+-    'поля не вычисляются. Раскрой ограничения и неизвестную безопасность; создание и правка этих '
+-    'профилей отказываются, не удаляй VBA молча. Не переименовывай расширение ради другого профиля. '
++    'DOCM/DOTM читаются инертно; word_macro_edit меняет один уникальный литерал с точным хешем исходника в новую копию того же профиля. VBA не исполняется, безопасность неизвестна. Создание и конверсия этих профилей отказываются; не удаляй VBA и не переименовывай расширение. '
+     'Чтение текста не подтверждает оформление или приёмку Office. '
+     'Для объединения ровно двух различных собственных DOCX используй write_file format=docx_merge, '
+     'новый .docx и content — строку точного JSON {"sources":["first.docx","second.docx"]}. '
+@@ -385,7 +385,7 @@
+             'Read an own-workspace UTF-8 text file with numbered lines. Use offset, limit and the '
+             'returned next_offset/next_char_offset for continuation. PDF, Word DOCX/DOTX/DOCM/DOTM, '
+             'ODF ODT/OTT/FODT, spreadsheets XLSX/XLTX/XLSM/XLTM/ODS/OTS/FODS and RTF expose bounded '
+-            'native text or cell views; images and layout are not covered. DOCX/DOTX pages also return source_sha256 of the exact package read; keep it with the selected paragraph for word_located_edit. DOCM/DOTM are inert read-only '
++            'native text or cell views; images and layout are not covered. DOCX/DOTX pages also return source_sha256 of the exact package read; keep it with the selected paragraph for word_located_edit. DOCM/DOTM expose inert reads and a separate source-bound word_macro_edit; '
+             'profiles: VBA remains opaque and is never executed; cached fields are never evaluated. '
+             'Supported native ODS charts expose source ranges and verified matching local caches; chart metadata is not visual or Office acceptance. '
+             'Word review documents expose separate FINAL/ORIGINAL paragraph views, TRACKED changes and '
+@@ -464,8 +464,7 @@
+             'Word DOCX/DOTX and ODF ODT/OTT/FODT: profile name creates plain text natively; '
+             'profile_structured creates typed JSON blocks; profile_edit uses exact '
+             'source/old_text/new_text into a NEW same-profile file. Native MIME/content types '
+-            'are checked. DOCM/DOTM are inert-read-only: never execute macros/fields, never '
+-            'drop VBA to perform an edit; all macro-profile writes refuse. '
++            'are checked. DOCM/DOTM support only word_macro_edit for a preserving source-bound unique literal into a new same-profile copy. Never execute macros/fields or drop VBA; other macro-profile writes refuse. '
+ 
+             'DOCX merge: format=docx_merge, a NEW .docx path, and content string exactly '
+             '{"sources":["first.docx","second.docx"]}. Exactly two distinct own-workspace DOCX '
+@@ -538,9 +537,9 @@
+         from tools.scoped_odg_write import GUIDANCE as DIAGRAM_GUIDANCE
+         function['description'] = DIAGRAM_GUIDANCE + function['description']
+         from hermes_cli.friday_workspace_xlsx_table import GUIDANCE
+-        function['description'] = WORD_CONVERSION_GUIDANCE + SPREADSHEET_CONVERSION_GUIDANCE + MACRO_PRESENTATION_GUIDANCE + PDF_REPORT_GUIDANCE + GUIDANCE + function['description']
++        function['description'] = WORD_MACRO_EDIT_GUIDANCE + DELIMITED_TABLE_GUIDANCE + WORD_CONVERSION_GUIDANCE + SPREADSHEET_CONVERSION_GUIDANCE + MACRO_PRESENTATION_GUIDANCE + PDF_REPORT_GUIDANCE + GUIDANCE + function['description']
+         content = function['parameters']['properties']['content']
+-        content['description'] = WORD_CONVERSION_GUIDANCE + SPREADSHEET_CONVERSION_GUIDANCE + MACRO_PRESENTATION_GUIDANCE + PDF_REPORT_GUIDANCE + GUIDANCE + content.get('description', '')
++        content['description'] = WORD_MACRO_EDIT_GUIDANCE + DELIMITED_TABLE_GUIDANCE + WORD_CONVERSION_GUIDANCE + SPREADSHEET_CONVERSION_GUIDANCE + MACRO_PRESENTATION_GUIDANCE + PDF_REPORT_GUIDANCE + GUIDANCE + content.get('description', '')
+         function['description'] = PDF_REPORT_GUIDANCE + function['description']
+     function['description'] = ODF_PASSWORD_GUIDANCE + PDF_SIGNATURE_GUIDANCE + function['description']
+     return value
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -1075,15 +1075,16 @@
+             return json.dumps({'success': False, 'error': 'document_write_unsupported',
+                 'format': path.suffix.lower().lstrip('.'), 'effect_disposition': 'none',
+                 'hint': 'Native Visio diagram reading is read-only; no creation, conversion, editing or template instantiation is supported.'})
+-        if path.suffix.lower() in {'.docm', '.dotm'} or output_format in (
++        if (path.suffix.lower() in {'.docm', '.dotm'} and output_format != 'word_macro_edit') or output_format in (
+                 'docm', 'dotm', 'docm_structured', 'dotm_structured', 'docm_edit', 'dotm_edit'):
+             return json.dumps({'success': False, 'error': 'document_write_unsupported',
+-                'reason': 'macro_preservation_unsupported', 'effect_disposition': 'none',
+-                'hint': 'DOCM/DOTM support bounded inert reading only. Macro projects are '
+-                        'opaque, never executed, and not accepted as safe. Creating or editing '
+-                        'these profiles is unsupported; do not drop VBA or rename another format.'})
+-        if output_format not in ('diagram_create', 'pdf_report', 'pdf_form_fill', 'text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'docx_odt', 'odt_docx', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'presentation_macro_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit'):
+-            raise ScopeDenied()
++                'reason': 'macro_profile_requires_preserving_edit', 'effect_disposition': 'none',
++                'hint': 'Use word_macro_edit for a source-hash-bound unique literal correction into a new same-profile DOCM/DOTM. VBA remains opaque and never executes; creation, conversion and raw writes remain unsupported.'})
++        if output_format not in ('word_macro_edit', 'diagram_create', 'pdf_report', 'pdf_form_fill', 'text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'docx_odt', 'odt_docx', 'delimited_convert', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'presentation_macro_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit'):
++            raise ScopeDenied()
++        if output_format == 'word_macro_edit':
++            from hermes_cli.friday_workspace_word_macro import create_edit
++            return create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format == 'diagram_create':
+             from hermes_cli.friday_workspace_odg import create
+             return create(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+@@ -1257,6 +1258,9 @@
+             if path.suffix.lower() != '.pdf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_pdf_form import create_filled
+             return create_filled(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'delimited_convert':
++            from hermes_cli.friday_workspace_delimited_table import execute
++            return execute(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format in ('docx_odt', 'odt_docx'):
+             from hermes_cli.friday_workspace_word_conversion import create_conversion
+             return create_conversion(cap, fd, parts[-1], path.as_posix(), args.get('content'), output_format)
+--- /dev/null
++++ b/hermes_cli/friday_workspace_delimited_table.py
+@@ -0,0 +1,41 @@
++"""Scoped create-only CSV/TSV ↔ XLSX/ODS adapter using existing source CAS."""
++import hashlib
++import json
++import os
++from pathlib import Path
++
++
++def execute(cap, fd, leaf, path, content):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_docx import _check_parent
++    from hermes_cli.friday_workspace_revision import check
++    from hermes_cli.friday_workspace_presentation import _read_source, _publish
++    from tools.scoped_delimited_table import request, validate, convert, DelimitedRefused
++    from tools.scoped_ods import ODSError
++    from tools.scoped_odt import ODTError
++    from tools.scoped_presentation import PresentationError
++    try:
++        check(cap); _check_parent(cap, fd, path)
++        spec = request(content)
++        source = Path(spec.get('source', '')).suffix.lower().lstrip('.') if isinstance(spec.get('source'), str) else ''
++        target = Path(path).suffix.lower().lstrip('.')
++        validate(spec, source, target)
++        try:
++            os.stat(leaf, dir_fd=fd, follow_symlinks=False)
++        except FileNotFoundError:
++            pass
++        else:
++            return json.dumps(dict(success=False, error='document_already_exists', effect_disposition='none'))
++        item, relative, data, identity = _read_source(spec['source'], cap, '.'+source)
++        rendered, facts = convert(data, source, target, spec, checkpoint=lambda: check(cap))
++        check(cap)
++        facts.update(source=relative, source_sha256=hashlib.sha256(data).hexdigest(),
++                     source_unchanged=True, export_mode=source+'_'+target)
++        return _publish(cap, fd, leaf, path, rendered, target, (item, data, identity), facts)
++    except ScopeDenied:
++        raise
++    except (DelimitedRefused, ODSError, ODTError, PresentationError) as error:
++        return json.dumps(dict(success=False, error='delimited_conversion_refused',
++                               reason=str(error), effect_disposition='none'))
++    except (OSError, RuntimeError, TimeoutError):
++        return json.dumps(dict(success=False, error='delimited_conversion_stopped', effect_disposition='none'))
+--- /dev/null
++++ b/hermes_cli/friday_workspace_word_macro.py
+@@ -0,0 +1,79 @@
++"""Own-workspace SHA-bound DOCM/DOTM literal edit into a NEW same-profile file."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++
++GUIDANCE = ('Word macro text: word_macro_edit accepts exactly {source,source_sha256,old_text,new_text} '
++    'into a NEW same-format .docm/.dotm. Obtain source_sha256 from current read_file. '
++    'One unique literal in a supported main-body/table paragraph changes; equal-format split runs work. '
++    'All other XML/member bytes, macro-enabled main declaration and any opaque VBA project remain intact. '
++    'Signatures, protection, fields, revisions, hidden text, mixed-format matches, external/active/OLE/unknown '
++    'parts refuse. VBA is never evaluated or executed and its safety remains unproven. '
++    'This operation does not create, instantiate, convert or strip macro templates/documents. ')
++
++
++def _request(content):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    if not isinstance(content, str) or len(content) > 50000:
++        raise ScopeDenied()
++    def pairs(items):
++        result = {}
++        for key, value in items:
++            if key in result:
++                raise ScopeDenied()
++            result[key] = value
++        return result
++    try:
++        result = json.loads(content, object_pairs_hook=pairs)
++    except (ValueError, RecursionError):
++        raise ScopeDenied() from None
++    if not isinstance(result, dict) or set(result) != {'source', 'source_sha256', 'old_text', 'new_text'}:
++        raise ScopeDenied()
++    if not isinstance(result['source'], str) or not 1 <= len(result['source']) <= 4096:
++        raise ScopeDenied()
++    return result
++
++
++def create_edit(cap, fd, leaf, path, content):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_docx import _check_parent
++    from hermes_cli.friday_workspace_revision import check
++    from hermes_cli.friday_workspace_presentation import _read_source, _publish
++    from tools.scoped_word_profiles import MACRO_FORMATS, WordProfileError
++    from tools.scoped_word_macro_edit import edit_text
++    try:
++        check(cap)
++        _check_parent(cap, fd, path)
++        request = _request(content)
++        digest = request['source_sha256']
++        if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
++            raise WordProfileError('source_hash_required')
++        profile = Path(request['source']).suffix.lower().lstrip('.')
++        if (profile not in MACRO_FORMATS or not isinstance(path, str)
++                or Path(path).suffix.lower() != '.'+profile or Path(path).name != leaf):
++            raise WordProfileError('macro_edit_output_profile_mismatch')
++        try:
++            os.stat(leaf, dir_fd=fd, follow_symlinks=False)
++        except FileNotFoundError:
++            pass
++        else:
++            raise WordProfileError('document_already_exists')
++        source, relative, data, identity = _read_source(request['source'], cap, '.'+profile)
++        if relative == path:
++            raise ScopeDenied()
++        if hashlib.sha256(data).hexdigest() != digest:
++            raise WordProfileError('source_hash_mismatch')
++        rendered, details = edit_text(data, profile,
++            {key: request[key] for key in ('old_text', 'new_text')}, checkpoint=lambda: check(cap))
++        check(cap)
++        return _publish(cap, fd, leaf, path, rendered, profile, (source, data, identity),
++            {'source': relative, 'source_sha256': digest, 'source_unchanged': True,
++             'preserving_edit': True, 'edit_mode': 'unique_macro_native_text',
++             'output_profile': profile, **details})
++    except ScopeDenied:
++        raise
++    except WordProfileError as error:
++        return json.dumps({'success': False, 'error': 'word_macro_edit_refused',
++                           'reason': error.code, 'effect_disposition': 'none'})
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1259,9 +1259,7 @@
+     'unsupported preserving operations refuse. Unselected ZIP part payloads are preserved; '
+     'FODT edits preserve unselected XML bytes and namespace declarations. Reading exposes '
+     'text only and grants no raw binary overwrite authority or layout/render acceptance. '
+-    'DOCM/DOTM are READ ONLY inert native text: VBA is opaque and never executed; active '
+-    'fields are not evaluated. Disclose unsupported macro/field semantics; safety is '
+-    'unproven. All macro-profile create/edit operations refuse; never silently drop VBA. ')
++    'DOCM/DOTM expose inert native text. Only word_macro_edit can change one unique source-hash-bound literal into a new same-profile copy; VBA remains opaque and never executes. Other macro-profile writes refuse; never silently drop VBA. ')
+ READ_FILE_SCHEMA['description'] += (
+     ' Own-workspace DOCX/DOTX/DOCM/DOTM/ODT/OTT/FODT use bounded native profile readers. '
+     'Macro projects remain opaque and never execute; extraction metadata discloses coverage '
+@@ -1785,3 +1783,16 @@
+     WRITE_FILE_SCHEMA["description"] += _conversion_guidance
+     WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _conversion_guidance
+     WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _conversion_guidance
++
++_DELIMITED_TABLE_GUIDANCE = 'Delimited native tables: delimited_convert creates a NEW CSV/TSV/XLSX/ODS, exactly one side delimited and the other native. Import JSON requires source,encoding,delimiter,type_policy,sheet; type_policy="text" keeps every field literal, or {columns:["text","decimal","boolean","date"],header_rows:0} gives explicit column types and header_rows 0 or 1. Export JSON requires source,encoding,delimiter,type_policy,line_ending; sheet is mandatory for multi-sheet files, range is optional A1:D5. Export type_policy="text" permits only text/blanks; "canonical" exports exact supported numeric/boolean/ISO-date values, without display formatting or formula caches. Encoding is explicit utf-8/utf-8-sig/utf-16/utf-16-le/utf-16-be/cp1251; generic utf-16 input requires a BOM. Delimiter is comma/semicolon/tab/vertical bar; TSV requires tab; line_ending is LF or CRLF. No detection or locale inference. Quoted field delimiters, quotes and embedded line breaks are preserved. All formulas, unsafe/active/macro structures and ambiguous native extents refuse. OOXML escape-looking text is unsupported for XLSX. Without range native data must be an explicit A1 rectangle matching declarations. Sources remain unchanged; no overwrite. '
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["delimited_convert"]
++for _new_document_guidance in (_DELIMITED_TABLE_GUIDANCE,):
++    WRITE_FILE_SCHEMA["description"] += _new_document_guidance
++    WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _new_document_guidance
++    WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _new_document_guidance
++
++_WORD_MACRO_EDIT_GUIDANCE = 'Word macro text: word_macro_edit accepts exactly {source,source_sha256,old_text,new_text} into a NEW same-format .docm/.dotm. Obtain source_sha256 from current read_file. One unique literal in a supported main-body/table paragraph changes; equal-format split runs work. All other XML/member bytes, macro-enabled main declaration and any opaque VBA project remain intact. Signatures, protection, fields, revisions, hidden text, mixed-format matches, external/active/OLE/unknown parts refuse. VBA is never evaluated or executed and its safety remains unproven. This operation does not create, instantiate, convert or strip macro templates/documents. '
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("word_macro_edit")
++WRITE_FILE_SCHEMA["description"] += _WORD_MACRO_EDIT_GUIDANCE
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _WORD_MACRO_EDIT_GUIDANCE
++WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _WORD_MACRO_EDIT_GUIDANCE
+--- /dev/null
++++ b/tools/scoped_delimited_table.py
+@@ -0,0 +1,391 @@
++"""Finite CSV/TSV ↔ plain XLSX/ODS table bridge; no Office or type guessing.
++
++The import policy is explicit literal text, or explicit per-column scalar types.
++Export never uses formula caches or formatted display values. The existing native
++inventory gate rejects active content, protection and unsupported package features.
++"""
++import csv
++from io import StringIO
++import json
++import re
++
++from tools.scoped_ods import ODSError, Spreadsheet, TB, address, q, tick
++from tools.scoped_spreadsheet_conversion import inventory
++from tools.scoped_spreadsheet_profiles import ooxml, S, R
++from hermes_cli import friday_workspace_xlsx_table as table
++
++DELIMITED = frozenset(('csv', 'tsv'))
++NATIVE = frozenset(('xlsx', 'ods'))
++ENCODINGS = frozenset(('utf-8', 'utf-8-sig', 'utf-16', 'utf-16-le', 'utf-16-be', 'cp1251'))
++DELIMITERS = frozenset((',', ';', '\t', '|'))
++MAX_BYTES = 1000000
++MAX_TEXT = 100000
++MAX_ROWS = 512
++MAX_COLS = 64
++MAX_CELLS = 4096
++XSTRING_ESCAPE = re.compile(r'_[xX][0-9A-Fa-f]{4}_')
++
++
++class DelimitedRefused(ODSError):
++    """Fixed content-free reason; no cell contents or library diagnostics."""
++
++
++def refuse(reason):
++    raise DelimitedRefused(reason)
++
++
++def _object(pairs):
++    result = {}
++    for key, value in pairs:
++        if key in result:
++            refuse('delimited_duplicate_key')
++        result[key] = value
++    return result
++
++
++def request(content):
++    if not isinstance(content, str) or len(content) > MAX_TEXT:
++        refuse('delimited_request_limit')
++    try:
++        if len(content.encode('utf-8')) > MAX_TEXT:
++            refuse('delimited_request_limit')
++        result = json.loads(content, object_pairs_hook=_object,
++                            parse_constant=lambda _: refuse('delimited_request_schema'))
++    except DelimitedRefused:
++        raise
++    except (ValueError, UnicodeError, RecursionError):
++        refuse('delimited_request_schema')
++    if not isinstance(result, dict):
++        refuse('delimited_request_schema')
++    return result
++
++
++def _policy(policy, importing):
++    if importing:
++        if policy == 'text':
++            return
++        if (not isinstance(policy, dict) or set(policy) != {'columns', 'header_rows'}
++                or type(policy['header_rows']) is not int or policy['header_rows'] not in (0, 1)
++                or not isinstance(policy['columns'], list) or not 1 <= len(policy['columns']) <= MAX_COLS
++                or any(kind not in ('text', 'decimal', 'boolean', 'date') for kind in policy['columns'])):
++            refuse('delimited_type_policy')
++    elif policy not in ('text', 'canonical'):
++        refuse('delimited_type_policy')
++
++
++def validate(spec, source, target):
++    importing = source in DELIMITED and target in NATIVE
++    exporting = source in NATIVE and target in DELIMITED
++    if not importing and not exporting:
++        refuse('delimited_pair_unsupported')
++    common = {'source', 'encoding', 'delimiter', 'type_policy'}
++    required = common | ({'sheet'} if importing else {'line_ending'})
++    allowed = required if importing else required | {'sheet', 'range'}
++    if not isinstance(spec, dict) or not required <= set(spec) or set(spec) - allowed:
++        refuse('delimited_request_schema')
++    if not isinstance(spec['source'], str) or not spec['source'] or '\x00' in spec['source']:
++        refuse('delimited_source_schema')
++    if not isinstance(spec['encoding'], str) or spec['encoding'] not in ENCODINGS:
++        refuse('delimited_encoding_unsupported')
++    if not isinstance(spec['delimiter'], str) or spec['delimiter'] not in DELIMITERS:
++        refuse('delimited_delimiter_unsupported')
++    if (source == 'tsv' or target == 'tsv') and spec['delimiter'] != '\t':
++        refuse('delimited_tsv_requires_tab')
++    if 'sheet' in spec:
++        try:
++            table.sheet_name(spec['sheet'])
++        except table.TableRefused:
++            refuse('delimited_sheet_name')
++    if exporting and spec['line_ending'] not in ('LF', 'CRLF'):
++        refuse('delimited_line_ending')
++    _policy(spec['type_policy'], importing)
++    if 'range' in spec:
++        _rectangle(spec['range'])
++    return importing
++
++
++def _rectangle(value):
++    if not isinstance(value, str):
++        refuse('delimited_range_schema')
++    ends = value.split(':')
++    if len(ends) not in (1, 2):
++        refuse('delimited_range_schema')
++    try:
++        first = address(ends[0]); last = address(ends[-1])
++    except ODSError:
++        refuse('delimited_range_schema')
++    r1, c1 = first; r2, c2 = last
++    if (r2 < r1 or c2 < c1 or r2 > MAX_ROWS or c2 > MAX_COLS
++            or (r2-r1+1)*(c2-c1+1) > MAX_CELLS):
++        refuse('delimited_table_limit')
++    return r1, c1, r2, c2
++
++
++def _text(value):
++    try:
++        return table.text(value)
++    except (table.TableRefused, UnicodeError):
++        refuse('delimited_invalid_text')
++
++
++def _xlsx_literal(value):
++    # The shared native reader/writer currently expose XML text, not OOXML
++    # ST_Xstring logical escapes. Never certify those ambiguous strings as
++    # preserved user text. ODS does not have this escape convention.
++    if XSTRING_ESCAPE.search(value):
++        refuse('delimited_xstring_unsupported')
++
++
++def _typed(raw, kind):
++    if kind == 'text':
++        return _text(raw)
++    if raw == '':
++        return None
++    if kind == 'boolean':
++        if raw not in ('true', 'false'):
++            refuse('delimited_boolean_literal')
++        return raw == 'true'
++    value = {'type': kind, 'value': raw}
++    try:
++        # This validates decimal precision and ISO calendar/date epoch before
++        # either native writer is entered. Leading zeros are never coerced.
++        table.scalar(value)
++    except (table.TableRefused, UnicodeError):
++        refuse('delimited_typed_literal')
++    return value
++
++
++def _decode(data, encoding):
++    if not isinstance(data, bytes) or not 1 <= len(data) <= MAX_BYTES:
++        refuse('delimited_input_limit')
++    # bytes.decode('utf-16') otherwise guesses the host's native byte order.
++    if encoding == 'utf-16' and not data.startswith((b'\xff\xfe', b'\xfe\xff')):
++        refuse('delimited_utf16_bom_required')
++    try:
++        return data.decode(encoding, errors='strict')
++    except UnicodeError:
++        refuse('delimited_decode_failed')
++
++
++def _read_rows(data, spec, checkpoint):
++    decoded = _decode(data, spec['encoding'])
++    rows = []; width = None; content_bytes = 0
++    try:
++        reader = csv.reader(StringIO(decoded, newline=''), delimiter=spec['delimiter'],
++                            quotechar='"', doublequote=True, escapechar=None,
++                            skipinitialspace=False, strict=True)
++        for row in reader:
++            tick(checkpoint)
++            if not row or len(row) > MAX_COLS:
++                refuse('delimited_rectangular_rows_required')
++            if width is None:
++                width = len(row)
++            if len(row) != width:
++                refuse('delimited_rectangular_rows_required')
++            if len(rows) >= MAX_ROWS or (len(rows)+1)*width > MAX_CELLS:
++                refuse('delimited_table_limit')
++            content_bytes += sum(len(_text(item).encode('utf-8')) for item in row)
++            if content_bytes > MAX_TEXT:
++                refuse('delimited_text_limit')
++            rows.append(row)
++    except (csv.Error, UnicodeError):
++        refuse('delimited_invalid_csv')
++    if not rows:
++        refuse('delimited_empty_table')
++    policy = spec['type_policy']
++    if policy != 'text':
++        if len(policy['columns']) != width:
++            refuse('delimited_column_policy_mismatch')
++        rows = [row if i < policy['header_rows'] else [_typed(raw, kind) for raw, kind in zip(row, policy['columns'])]
++                for i, row in enumerate(rows)]
++    return rows
++
++
++def _shape(data, source, name, checkpoint, *, explicit=False):
++    """Exact explicit rectangle for implicit selection; no used-range guessing."""
++    occupied = set(); maximum_row = maximum_column = 0
++    if source == 'xlsx':
++        book = ooxml(data, 'xlsx', writing=True, checkpoint=checkpoint)
++        sheets = book.xml['xl/workbook.xml'].find(q(S, 'sheets'))
++        sheet = next(item for item in sheets if item.get('name') == name)
++        tree = book.xml[book.sheet_parts[sheet.get(q(R, 'id'))]]
++        rows = tree.find(q(S, 'sheetData'))
++        for row in rows:
++            tick(checkpoint)
++            maximum_row = max(maximum_row, int(row.get('r')))
++            for cell in row:
++                r, c = address(cell.get('r'))
++                maximum_column = max(maximum_column, c); occupied.add((r, c))
++        dimension = tree.find(q(S, 'dimension'))
++        if dimension is not None:
++            declared = _rectangle(dimension.get('ref'))
++            if not explicit and declared != (1, 1, maximum_row, maximum_column):
++                refuse('delimited_explicit_range_required')
++    else:
++        book = Spreadsheet(data, 'ods', checkpoint)
++        sheet = next(item for item in book.sheets if item.get(q(TB, 'name')) == name)
++        for r, c, height, width, _, _ in book.cells(sheet):
++            tick(checkpoint)
++            if r+height-1 > MAX_ROWS or c+width-1 > MAX_COLS or height*width > MAX_CELLS:
++                refuse('delimited_table_limit')
++            maximum_row = max(maximum_row, r+height-1)
++            maximum_column = max(maximum_column, c+width-1)
++            occupied.update((rr, cc) for rr in range(r, r+height) for cc in range(c, c+width))
++        # Empty explicit rows also affect the range and must not disappear.
++        from tools.scoped_odt import _count
++        row_count = sum(_count(row.get(q(TB, 'number-rows-repeated'), '1'), MAX_ROWS)
++                        for row in book.rows(sheet))
++        maximum_row = max(maximum_row, row_count)
++        declared_columns = sum(_count(column.get(q(TB, 'number-columns-repeated'), '1'), MAX_COLS)
++                               for column in sheet.iter(q(TB, 'table-column')))
++        if declared_columns > MAX_COLS:
++            refuse('delimited_table_limit')
++        if declared_columns and declared_columns != maximum_column and not explicit:
++            refuse('delimited_explicit_range_required')
++    area = maximum_row*maximum_column
++    if maximum_row > MAX_ROWS or maximum_column > MAX_COLS or area > MAX_CELLS:
++        refuse('delimited_table_limit')
++    if not explicit and (not area or len(occupied) != area):
++        refuse('delimited_explicit_range_required')
++    return 1, 1, maximum_row, maximum_column
++
++
++def _export_rows(data, source, spec, checkpoint):
++    contents = inventory(data, source, checkpoint=checkpoint)
++    names = [name for name, _ in contents.sheets]
++    if source == 'xlsx':
++        for name in names:
++            _xlsx_literal(name)
++    name = spec.get('sheet')
++    if name is None:
++        if len(names) != 1:
++            refuse('delimited_explicit_sheet_required')
++        name = names[0]
++    if name not in names:
++        refuse('delimited_sheet_not_found')
++    # Never make a formula cache look like an original literal; no formula
++    # execution or evaluation policy is provided by this bridge.
++    if any(cell.formula is not None for _, cells in contents.sheets for _, _, cell in cells):
++        refuse('delimited_formula_unsupported')
++    selected = dict(contents.sheets)[name]
++    shape = _shape(data, source, name, checkpoint, explicit='range' in spec)
++    bounds = _rectangle(spec['range']) if 'range' in spec else shape
++    r1, c1, r2, c2 = bounds
++    cells = {(r, c): cell for r, c, cell in selected}
++    rows = []; text_bytes = 0
++    for r in range(r1, r2+1):
++        tick(checkpoint); row = []
++        for c in range(c1, c2+1):
++            cell = cells.get((r, c))
++            if cell is None:
++                value = ''
++            elif cell.kind == 'string':
++                value = _text(cell.value)
++                if source == 'xlsx':
++                    _xlsx_literal(value)
++            elif spec['type_policy'] == 'text':
++                refuse('delimited_nontext_cell_requires_canonical_policy')
++            elif cell.kind == 'number':
++                value = format(cell.value, 'f')
++            elif cell.kind == 'boolean':
++                value = 'true' if cell.value else 'false'
++            elif cell.kind == 'date':
++                value = cell.value
++            else:
++                refuse('delimited_cell_type_unsupported')
++            text_bytes += len(value.encode('utf-8')); row.append(value)
++        rows.append(row)
++    if text_bytes > MAX_TEXT:
++        refuse('delimited_text_limit')
++    return name, bounds, rows
++
++
++def _write_rows(rows, spec, checkpoint):
++    pieces = []
++    for row in rows:
++        tick(checkpoint)
++        # Quote against BOTH CR and LF, then change only the record terminator.
++        # csv.writer with lineterminator='\n' alone fails to quote bare CR cells.
++        stream = StringIO(newline='')
++        csv.writer(stream, delimiter=spec['delimiter'], quotechar='"', doublequote=True,
++                   escapechar=None, quoting=csv.QUOTE_MINIMAL, lineterminator='\r\n').writerow(row)
++        record = stream.getvalue()
++        pieces.append(record if spec['line_ending'] == 'CRLF' else record[:-2]+'\n')
++    text = ''.join(pieces)
++    try:
++        # Make BOM-bearing utf-16 deterministic, independent of host byte order.
++        rendered = (b'\xff\xfe'+text.encode('utf-16-le') if spec['encoding'] == 'utf-16'
++                    else text.encode(spec['encoding'], errors='strict'))
++    except UnicodeError:
++        refuse('delimited_encode_failed')
++    if len(rendered) > MAX_BYTES:
++        refuse('delimited_output_limit')
++    return rendered
++
++
++def convert(data, source, target, spec, *, checkpoint=None):
++    importing = validate(spec, source, target)
++    tick(checkpoint)
++    if importing:
++        rows = _read_rows(data, spec, checkpoint)
++        sheet = spec['sheet']
++        if target == 'xlsx':
++            _xlsx_literal(sheet)
++            for row in rows:
++                for value in row:
++                    if isinstance(value, str):
++                        _xlsx_literal(value)
++        document = {'sheets': [{'name': sheet, 'rows': rows}]}
++        try:
++            if target == 'xlsx':
++                rendered = table.render(table.create_spec(document), checkpoint=lambda: tick(checkpoint))
++            else:
++                from tools.scoped_ods import create_spreadsheet
++                rendered = create_spreadsheet(document, checkpoint=checkpoint)
++        except table.TableRefused:
++            refuse('delimited_native_values_unsupported')
++        # Read the actual native bytes independently before publication, including
++        # empty strings and typed cells; success is never just a file extension.
++        actual = inventory(rendered, target, checkpoint=checkpoint)
++        cells = dict(actual.sheets)[sheet]
++        got = {(r, c): cell for r, c, cell in cells}
++        for r, row in enumerate(rows, 1):
++            tick(checkpoint)
++            for c, value in enumerate(row, 1):
++                kind, literal, _ = table.scalar(value)
++                cell = got.get((r, c))
++                if kind == 'blank':
++                    if cell is not None: refuse('delimited_native_roundtrip_mismatch')
++                elif kind == 'string':
++                    if cell is None or cell.kind != 'string' or cell.value != literal:
++                        refuse('delimited_native_roundtrip_mismatch')
++                elif kind == 'boolean':
++                    if cell is None or cell.kind != 'boolean' or cell.value != (literal == '1'):
++                        refuse('delimited_native_roundtrip_mismatch')
++                elif kind == 'number':
++                    from decimal import Decimal
++                    if cell is None or cell.kind != 'number' or cell.value != Decimal(literal):
++                        refuse('delimited_native_roundtrip_mismatch')
++                elif kind == 'date':
++                    if cell is None or cell.kind != 'date' or cell.value != value['value']:
++                        refuse('delimited_native_roundtrip_mismatch')
++                else:
++                    refuse('delimited_native_roundtrip_mismatch')
++        bounds = (1, 1, len(rows), len(rows[0]))
++    else:
++        sheet, bounds, rows = _export_rows(data, source, spec, checkpoint)
++        rendered = _write_rows(rows, spec, checkpoint)
++        # Verify the exact serialized records decode back to the chosen values.
++        actual = _read_rows(rendered, {**spec, 'type_policy': 'text'}, checkpoint)
++        if actual != rows:
++            refuse('delimited_serialization_mismatch')
++    tick(checkpoint)
++    return rendered, dict(sheet=sheet, rows=len(rows), columns=len(rows[0]),
++                          selected_range=f'{table.colname(bounds[1])}{bounds[0]}:{table.colname(bounds[3])}{bounds[2]}',
++                          encoding=spec['encoding'], delimiter=spec['delimiter'],
++                          type_policy=spec['type_policy'],
++                          **({'line_ending': spec['line_ending']} if not importing else {}),
++                          formulas_evaluated=False,
++                          formula_like_text_preserved=True, macros_executed=False,
++                          native_editable=importing, conversion_engine='native_table_bridge',
++                          preservation='literal_text_and_explicit_scalar_policy_in_selected_table')
+--- /dev/null
++++ b/tools/scoped_word_macro_edit.py
+@@ -0,0 +1,411 @@
++"""Finite preserving DOCM/DOTM literal edits; opaque VBA is never executed.
++
++Only a unique main-body/table paragraph literal changes. This module neither
++instantiates templates nor changes package type, evaluates fields or asserts
++VBA safety. ZIP member payloads other than word/document.xml remain identical.
++"""
++from io import BytesIO
++import hashlib
++import struct
++import stat
++import zlib
++import zipfile
++from zipfile import ZipFile
++
++from tools.scoped_word_profiles import (
++    _Package, _preserved, _q, _tick, WordProfileError, MAX_BYTES,
++    MACRO_FORMATS, MAIN_TYPES, VBA_TYPE, VBA_REL, W, R, PKG, CT,
++    _part_name, _xml, MAX_MEMBERS, MAX_NODES, MAX_PARAGRAPHS,
++)
++
++_BASE = 'application/vnd.openxmlformats-officedocument.'
++_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
++_M = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
++_O = 'urn:schemas-microsoft-com:office:office'
++_V = 'urn:schemas-microsoft-com:vml'
++_XML = 'http://www.w3.org/XML/1998/namespace'
++_MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006'
++_CP = 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties'
++_EP = 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties'
++_ROOT_TYPES = {
++    _q(W, 'styles'): {_BASE+'wordprocessingml.styles+xml', 'application/vnd.ms-word.stylesWithEffects+xml'},
++    _q(W, 'settings'): {_BASE+'wordprocessingml.settings+xml'},
++    _q(W, 'webSettings'): {_BASE+'wordprocessingml.webSettings+xml'},
++    _q(W, 'fonts'): {_BASE+'wordprocessingml.fontTable+xml'},
++    _q(W, 'numbering'): {_BASE+'wordprocessingml.numbering+xml'},
++    _q(W, 'hdr'): {_BASE+'wordprocessingml.header+xml'},
++    _q(W, 'ftr'): {_BASE+'wordprocessingml.footer+xml'},
++    _q(W, 'footnotes'): {_BASE+'wordprocessingml.footnotes+xml'},
++    _q(W, 'endnotes'): {_BASE+'wordprocessingml.endnotes+xml'},
++    _q(_A, 'theme'): {_BASE+'theme+xml'},
++    _q(_CP, 'coreProperties'): {'application/vnd.openxmlformats-package.core-properties+xml'},
++    _q(_EP, 'Properties'): {_BASE+'extended-properties+xml'},
++}
++_NAMESPACES = {W, R, PKG, CT, _A, _M, _O, _V, _XML, _MC, _CP, _EP,
++    'http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes',
++    'http://purl.org/dc/elements/1.1/', 'http://purl.org/dc/terms/',
++    'http://purl.org/dc/dcmitype/', 'http://www.w3.org/2001/XMLSchema-instance'}
++_REL_TYPES = {R+'/'+name for name in ('officeDocument', 'styles', 'stylesWithEffects',
++    'settings', 'webSettings', 'fontTable', 'numbering', 'theme', 'header', 'footer',
++    'footnotes', 'endnotes', 'image', 'extended-properties')} | {
++    VBA_REL, PKG+'/metadata/core-properties', PKG+'/metadata/thumbnail'}
++_FORBIDDEN_WORD = {'altChunk', 'object', 'control', 'drawing', 'pict', 'sdt',
++    'customXml', 'subDoc', 'contentPart', 'fldChar', 'instrText', 'fldSimple',
++    'delInstrText', 'delText', 'ins', 'del', 'moveFrom', 'moveTo', 'trackRevisions',
++    'documentProtection', 'writeProtection', 'vanish', 'webHidden', 'specVanish',
++    'hidden', 'dataBinding', 'attachedTemplate', 'mailMerge', 'commentRangeStart',
++    'commentRangeEnd', 'commentReference', 'rt', 'ruby', 'txbxContent'}
++
++
++def _fail(reason):
++    raise WordProfileError(reason)
++
++
++def _namespace(name):
++    return name[1:].split('}', 1)[0] if name.startswith('{') else ''
++
++
++def _envelope(data):
++    if not data.startswith(b'PK\x03\x04'):
++        _fail('unsupported_zip_envelope')
++    end = data.rfind(b'PK\x05\x06', max(0, len(data)-65557))
++    if end < 0 or end+22 > len(data):
++        _fail('unsupported_zip_envelope')
++    disk, cd_disk, count, total, size, offset, comment = struct.unpack_from('<4H2IH', data, end+4)
++    if (disk or cd_disk or count != total or not count or count == 65535
++            or offset+size != end or end+22+comment != len(data)
++            or data[offset:offset+4] != b'PK\x01\x02'):
++        _fail('unsupported_zip_envelope')
++    return count
++
++
++class _MacroPackage(_Package):
++    # Standard DEFLATE option bits 1/2 are compression metadata, not encryption.
++    # Otherwise this is the exact bounded source132 _Package loader.
++    def _load(self, data, checkpoint):
++        with zipfile.ZipFile(BytesIO(data)) as archive:
++            self.infos = archive.infolist()
++            self.comment = archive.comment
++            if not 1 <= len(self.infos) <= MAX_MEMBERS:
++                _fail('package_member_limit')
++            seen = {}
++            total = nodes = 0
++            for info in self.infos:
++                _tick(checkpoint)
++                raw_name = info.filename
++                name = raw_name[:-1] if info.is_dir() else raw_name
++                _part_name(name)
++                if (info.orig_filename != raw_name or name.casefold() in seen
++                        or (info.is_dir() and info.file_size)):
++                    _fail('duplicate_or_conflicting_member')
++                seen[name.casefold()] = info.is_dir()
++                mode = info.external_attr >> 16
++                if (info.volume or stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)
++                        or (stat.S_IFMT(mode) == stat.S_IFDIR and not info.is_dir())
++                        or (stat.S_IFMT(mode) == stat.S_IFREG and info.is_dir())
++                        or info.flag_bits & ~0x080e
++                        or (info.compress_type != zipfile.ZIP_DEFLATED and info.flag_bits & 6)):
++                    _fail('encrypted_or_special_member')
++                if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
++                    _fail('unsupported_compression')
++                total += info.file_size
++                if (info.file_size > MAX_BYTES or total > MAX_BYTES
++                        or info.file_size > max(4096, info.compress_size * 200)):
++                    _fail('package_expansion_limit')
++                from tools.scoped_zip import read_zip_member, ZipMemberLimitError
++                try:
++                    raw = read_zip_member(archive, data, info, MAX_BYTES)
++                except ZipMemberLimitError:
++                    _fail('package_expansion_limit')
++                if len(raw) != info.file_size:
++                    _fail('malformed_package')
++                # Empty directory records still need matching local headers,
++                # methods, flags, names, CRC, stream boundaries and descriptors.
++                if info.is_dir():
++                    continue
++                self.parts[name] = raw
++                if name.lower().endswith(('.xml', '.rels')):
++                    root, count = _xml(raw, checkpoint)
++                    nodes += count
++                    if nodes > MAX_NODES:
++                        _fail('xml_structure_limit')
++                    self.xml[name] = root
++            for name in seen:
++                components = name.split('/')
++                for end in range(1, len(components)):
++                    if seen.get('/'.join(components[:end])) is False:
++                        _fail('duplicate_or_conflicting_member')
++
++
++def _macro_metadata(package):
++    # Presence is not safety: inspect only the bounded CFB header, never streams.
++    if not package.vba_parts:
++        return {'present': False, 'execution': 'not_performed', 'safety': 'unproven'}
++    name, = package.vba_parts
++    raw = package.parts[name]
++    if (len(raw) < 512 or raw[:8] != bytes.fromhex('d0cf11e0a1b11ae1')
++            or raw[8:24] != bytes(16) or raw[28:30] != b'\xfe\xff'
++            or raw[32:34] != b'\x06\x00' or raw[34:40] != bytes(6)):
++        _fail('invalid_vba_project_container')
++    major = int.from_bytes(raw[26:28], 'little')
++    shift = int.from_bytes(raw[30:32], 'little')
++    if (major, shift) not in ((3, 9), (4, 12)) or len(raw) % (1 << shift):
++        _fail('invalid_vba_project_container')
++    return {'present': True, 'source': name, 'bytes': len(raw),
++            'sha256': hashlib.sha256(raw).hexdigest(),
++            'validation': 'cfb_header_only_not_vba_semantics',
++            'source_code': 'not_read', 'compiled_pcode': 'not_disassembled',
++            'execution': 'not_performed', 'safety': 'unproven'}
++
++
++def _main_structure(body):
++    """Keep literal selection inside an unambiguous finite Word body tree."""
++    children = {
++        'body': {'p', 'tbl', 'sectPr'},
++        'tbl': {'tblPr', 'tblGrid', 'tr'},
++        'tr': {'trPr', 'tc'},
++        'tc': {'tcPr', 'p', 'tbl'},
++        'p': {'pPr', 'r', 'bookmarkStart', 'bookmarkEnd', 'proofErr'},
++        'r': {'rPr', 't', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen',
++              'sym', 'lastRenderedPageBreak'},
++    }
++    properties = {'tbl': ('tblPr', 'tblGrid'), 'tr': ('trPr',),
++                  'tc': ('tcPr',), 'p': ('pPr',), 'r': ('rPr',)}
++    containers = {'p': {'body', 'tc'}, 'r': {'p'}, 't': {'r'},
++                  'tbl': {'body', 'tc'}, 'tr': {'tbl'}, 'tc': {'tr'},
++                  'tblPr': {'tbl'}, 'tblGrid': {'tbl'}, 'trPr': {'tr'},
++                  'tcPr': {'tc'}, 'pPr': {'p'}, 'rPr': {'r', 'pPr'},
++                  'sectPr': {'body', 'pPr'}}
++    parents = {child: node for node in body.iter() for child in node}
++    for node in body.iter():
++        if node.tag != _q(W, 't') and (node.text or '').strip():
++            _fail('unsupported_main_structure')
++        if any((child.tail or '').strip() for child in node):
++            _fail('unsupported_main_structure')
++        local = node.tag.rsplit('}', 1)[-1]
++        if node.tag == _q(W, local) and local in containers:
++            parent = parents.get(node)
++            if parent is None or parent.tag not in {_q(W, name) for name in containers[local]}:
++                _fail('unsupported_main_structure')
++        if node.tag == _q(W, 't'):
++            if (parents.get(node) is None or parents[node].tag != _q(W, 'r')
++                    or len(node) or any(key != _q(_XML, 'space') for key in node.attrib)
++                    or node.get(_q(_XML, 'space'), 'default') not in ('default', 'preserve')):
++                _fail('unsupported_main_structure')
++        if node.tag != _q(W, local) or local not in children:
++            continue
++        tags = [child.tag for child in node]
++        if any(tag not in {_q(W, name) for name in children[local]} for tag in tags):
++            _fail('unsupported_main_structure')
++        prior = -1
++        for prop in properties.get(local, ()):
++            key = _q(W, prop)
++            if tags.count(key) > 1:
++                _fail('unsupported_main_structure')
++            if key in tags:
++                index = tags.index(key)
++                if index != prior + 1:
++                    _fail('unsupported_main_structure')
++                prior = index
++        if local == 'body' and (_q(W, 'sectPr') in tags and
++                (tags.count(_q(W, 'sectPr')) != 1 or tags[-1] != _q(W, 'sectPr'))):
++            _fail('unsupported_main_structure')
++
++
++def validate_profile(data, profile, *, checkpoint=None):
++    if not isinstance(profile, str) or profile not in MACRO_FORMATS:
++        _fail('unsupported_macro_word_profile')
++    if not isinstance(data, bytes) or not 1 <= len(data) <= MAX_BYTES:
++        _fail('input_limit')
++    expected_members = _envelope(data)
++    package = _MacroPackage(data, profile, checkpoint)
++    if len(package.infos) != expected_members:
++        _fail('unsupported_zip_envelope')
++    if any(kind not in _REL_TYPES for rows in package.relationships.values()
++           for kind, target in rows.values()):
++        _fail('unsupported_relationship')
++    allowed_types = {kind for kinds in _ROOT_TYPES.values() for kind in kinds} | {
++        MAIN_TYPES[profile], VBA_TYPE, 'application/xml',
++        'application/vnd.openxmlformats-package.relationships+xml', 'image/png', 'image/jpeg'}
++    # Unused declarations also refuse: no hidden alternate macro/signature type.
++    for declaration in package.xml['[Content_Types].xml']:
++        if declaration.get('ContentType') not in allowed_types:
++            _fail('unsupported_content_type')
++    for name, raw in package.parts.items():
++        _tick(checkpoint)
++        if any(value in name.lower() for value in ('_xmlsignatures', 'signature',
++                '/activex/', '/embeddings/', '/customxml/', '/ctrlprops/', '/customui/')):
++            _fail('signed_or_active_package')
++        kind = package.types.get(name)
++        root = package.xml.get(name)
++        if name == '[Content_Types].xml':
++            continue
++        if name.endswith('.rels'):
++            continue  # _Package checked root, type, targets and cardinality.
++        if root is not None:
++            expected = {MAIN_TYPES[profile]} if name == 'word/document.xml' else _ROOT_TYPES.get(root.tag, set())
++            if kind not in expected:
++                _fail('unsupported_part_or_content_type')
++        elif name in package.vba_parts:
++            continue
++        elif kind == 'image/png' and raw.startswith(b'\x89PNG\r\n\x1a\n'):
++            continue
++        elif kind == 'image/jpeg' and raw.startswith(b'\xff\xd8\xff'):
++            continue
++        else:
++            _fail('unsupported_binary_part')
++    for name, root in package.xml.items():
++        for node in root.iter():
++            ns = _namespace(node.tag); local = node.tag.rsplit('}', 1)[-1]
++            if ns not in _NAMESPACES:
++                _fail('unsupported_xml_namespace')
++            if (ns == W and (local in _FORBIDDEN_WORD or local.endswith('Change')
++                    or local.startswith(('moveFromRange', 'moveToRange', 'customXml')))):
++                _fail('protected_hidden_field_revision_or_active_xml')
++            if (ns == _EP and local == 'DocSecurity' and (node.text or '').strip() != '0'):
++                _fail('protected_document')
++            # Only inert Word-generated shape defaults are accepted; no VML shapes.
++            if ns in (_O, _V) and (name != 'word/settings.xml' or
++                    (ns, local) not in {(_O, 'shapedefaults'), (_O, 'shapelayout'), (_O, 'idmap')}):
++                _fail('active_or_unsupported_vml')
++            if ns == _MC:
++                _fail('alternate_content_unsupported')
++            for key, value in node.attrib.items():
++                attr_ns = _namespace(key)
++                if attr_ns and attr_ns not in _NAMESPACES:
++                    _fail('unsupported_xml_attribute')
++                if key == _q(_XML, 'base') or key.rsplit('}', 1)[-1].lower() in ('macro', 'action'):
++                    _fail('active_xml_attribute')
++                if attr_ns == R and value not in package.relationships.get(name, {}):
++                    _fail('dangling_xml_relationship')
++    # Reject text outside the unique main body and malformed table ancestry.
++    main = package.xml['word/document.xml']
++    if list(main) != [package.body] or list(main.iter(_q(W, 'body'))) != [package.body]:
++        _fail('ambiguous_main_body')
++    _main_structure(package.body)
++    parents = {child: node for node in package.body.iter() for child in node}
++    for cell in package.body.iter(_q(W, 'tc')):
++        row = parents.get(cell)
++        table = parents.get(row)
++        if row is None or row.tag != _q(W, 'tr') or table is None or table.tag != _q(W, 'tbl'):
++            _fail('unsupported_table_structure')
++    for table in package.body.iter(_q(W, 'tbl')):
++        if parents.get(table) is None or parents[table].tag not in (_q(W, 'body'), _q(W, 'tc')):
++            _fail('unsupported_table_structure')
++    paragraphs = list(package.body.iter(_q(W, 'p')))
++    if len(paragraphs) > MAX_PARAGRAPHS:
++        _fail('paragraph_count_limit')
++    for paragraph in paragraphs:
++        parent = parents.get(paragraph)
++        if parent is None or parent.tag not in (_q(W, 'body'), _q(W, 'tc')):
++            _fail('unsupported_paragraph_location')
++    metadata = _macro_metadata(package)
++    _tick(checkpoint)
++    return package, metadata
++
++
++def _rewrite_main(data, changed):
++    """Retain every unselected local ZIP record, including compressed bytes.
++
++    Only selected CRC/sizes/payload and central offsets change. No prefix, gaps,
++    ZIP64 records or trailing envelope are accepted. Streaming descriptors are
++    supported in their original signed/unsigned form.
++    """
++    end = data.rfind(b'PK\x05\x06', max(0, len(data)-65557))
++    central_offset = struct.unpack_from('<I', data, end+16)[0]
++    with ZipFile(BytesIO(data)) as archive:
++        infos = archive.infolist()
++        central = []; cursor = central_offset
++        for info in infos:
++            if data[cursor:cursor+4] != b'PK\x01\x02':
++                _fail('unsupported_zip_layout')
++            names, extra, comment = struct.unpack_from('<HHH', data, cursor+28)
++            stop = cursor+46+names+extra+comment
++            if stop > end or struct.unpack_from('<I', data, cursor+42)[0] != info.header_offset:
++                _fail('unsupported_zip_layout')
++            if 0xffffffff in (info.compress_size, info.file_size, info.header_offset):
++                _fail('unsupported_zip_layout')
++            central.append((info, bytearray(data[cursor:stop])))
++            cursor = stop
++        if cursor != end:
++            _fail('unsupported_zip_layout')
++        offsets = {}; changed_info = None; selected_crc = selected_size = selected_compressed = None
++        local = bytearray()
++        ordered = sorted(infos, key=lambda item: item.header_offset)
++        for index, info in enumerate(ordered):
++            begin = info.header_offset
++            boundary = ordered[index+1].header_offset if index+1 < len(ordered) else central_offset
++            if (index == 0 and begin != 0) or data[begin:begin+4] != b'PK\x03\x04':
++                _fail('unsupported_zip_layout')
++            names, extra = struct.unpack_from('<HH', data, begin+26)
++            payload_start = begin+30+names+extra
++            payload_end = payload_start+info.compress_size
++            descriptor = data[payload_end:boundary]
++            if info.flag_bits & 8:
++                signed = descriptor.startswith(b'PK\x07\x08')
++                expected = (b'PK\x07\x08' if signed else b'')+struct.pack('<III',info.CRC,info.compress_size,info.file_size)
++                if descriptor != expected:
++                    _fail('unsupported_zip_descriptor')
++            elif payload_end != boundary:
++                _fail('unsupported_zip_layout')
++            offsets[begin] = len(local)
++            if info.filename != 'word/document.xml':
++                local.extend(data[begin:boundary]); continue
++            changed_info = info
++            if info.compress_type == zipfile.ZIP_DEFLATED:
++                level = {0:6,2:9,4:3,6:1}[info.flag_bits & 6]
++                compressor = zlib.compressobj(level, zlib.DEFLATED, -15)
++                compressed = compressor.compress(changed)+compressor.flush()
++            else:
++                compressed = changed
++            selected_crc = zlib.crc32(changed); selected_size = len(changed); selected_compressed = len(compressed)
++            header = bytearray(data[begin:payload_start])
++            if not info.flag_bits & 8:
++                struct.pack_into('<III',header,14,selected_crc,selected_compressed,selected_size)
++            local.extend(header); local.extend(compressed)
++            if info.flag_bits & 8:
++                local.extend((b'PK\x07\x08' if signed else b'')+struct.pack('<III',selected_crc,selected_compressed,selected_size))
++        if changed_info is None:
++            _fail('main_part_missing_or_namespace')
++        result = bytearray(local)
++        for info, record in central:
++            struct.pack_into('<I',record,42,offsets[info.header_offset])
++            if info is changed_info:
++                struct.pack_into('<III',record,16,selected_crc,selected_compressed,selected_size)
++            result.extend(record)
++        final = bytearray(data[end:])
++        struct.pack_into('<II',final,12,len(result)-len(local),len(local))
++        result.extend(final)
++        if len(result) > MAX_BYTES:
++            _fail('output_limit')
++        return bytes(result)
++
++
++def edit_text(data, profile, spec, *, checkpoint=None):
++    if not isinstance(spec, dict) or set(spec) != {'old_text', 'new_text'}:
++        _fail('text_edit_schema')
++    for value in spec.values():
++        if (not isinstance(value, str) or len(value) > 4000 or any(
++                not (0x20 <= ord(c) <= 0xD7FF or 0xE000 <= ord(c) <= 0xFFFD
++                     or 0x10000 <= ord(c) <= 0x10FFFF) for c in value)):
++            _fail('unsupported_text')
++    if not spec['old_text'] or spec['old_text'] == spec['new_text']:
++        _fail('invalid_replacement')
++    package, metadata = validate_profile(data, profile, checkpoint=checkpoint)
++    from hermes_cli.friday_workspace_docx import _replace_docx_text, _EditRefused
++    try:
++        changed = _replace_docx_text(package.parts['word/document.xml'], spec['old_text'], spec['new_text'])
++    except _EditRefused as error:
++        _fail(str(error))
++    _tick(checkpoint)
++    result = _rewrite_main(data, changed)
++    final, final_metadata = validate_profile(result, profile, checkpoint=checkpoint)
++    _preserved(data, result, {'word/document.xml'})
++    if final_metadata != metadata or final.parts['word/document.xml'] != changed:
++        _fail('preservation_mismatch')
++    return result, {'edited_part': 'word/document.xml', 'replacements': 1,
++                    'macro_project': metadata, 'macros_executed': False,
++                    'main_content_type': MAIN_TYPES[profile],
++                    'preserved_other_members': len(package.parts)-1,
++                    'unchanged_parts_preserved': True,
++                    'office_rendering_evaluated': False}
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -187,7 +187,8 @@
+                 if (stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)
+                         or (stat.S_IFMT(mode) == stat.S_IFDIR and not info.is_dir())
+                         or (stat.S_IFMT(mode) == stat.S_IFREG and info.is_dir())
+-                        or info.flag_bits & ~0x0808):
++                        or info.flag_bits & ~0x080e
++                        or (info.compress_type != zipfile.ZIP_DEFLATED and info.flag_bits & 6)):
+                     _fail('encrypted_or_special_member')
+                 if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                     _fail('unsupported_compression')
