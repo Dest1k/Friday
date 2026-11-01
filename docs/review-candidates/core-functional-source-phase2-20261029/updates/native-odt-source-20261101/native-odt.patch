@@ -1,0 +1,1304 @@
+--- /dev/null
++++ b/tools/scoped_odt.py
+@@ -0,0 +1,572 @@
++"""Bounded native OpenDocument text views and preserving literal edits.
++
++Immutable ZIP/XML only: no renderer, archive extraction, URL lookup, macro or
++field evaluation. The established presentation package guard bounds the same
++ODF container; this module owns only text-document semantics.
++"""
++from __future__ import annotations
++
++import io
++import json
++import re
++import zipfile
++import zlib
++from xml.etree import ElementTree as ET
++from xml.parsers import expat
++from xml.sax.saxutils import escape
++
++from tools.scoped_presentation import Package, PresentationError, encoded, q
++
++O = 'urn:oasis:names:tc:opendocument:xmlns:office:1.0'
++T = 'urn:oasis:names:tc:opendocument:xmlns:text:1.0'
++TB = 'urn:oasis:names:tc:opendocument:xmlns:table:1.0'
++DR = 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0'
++M = 'urn:oasis:names:tc:opendocument:xmlns:manifest:1.0'
++XL = 'http://www.w3.org/1999/xlink'
++SCRIPT = 'urn:oasis:names:tc:opendocument:xmlns:script:1.0'
++FORM = 'urn:oasis:names:tc:opendocument:xmlns:form:1.0'
++MIMES = {'odt': 'application/vnd.oasis.opendocument.text',
++         'ott': 'application/vnd.oasis.opendocument.text-template'}
++MAX_TEXT = 100_000
++MAX_RECORDS = 8_192
++MAX_CELLS = 4_096
++MAX_OUTPUT = 1_000_000
++
++
++class ODTError(ValueError):
++    """A fixed, content-free refusal code."""
++
++
++class DocumentText(str):
++    def __new__(cls, text, metadata):
++        result = super().__new__(cls, text)
++        result.extraction_metadata = metadata
++        return result
++
++
++def _fail(code):
++    raise ODTError(code)
++
++
++def _count(value, maximum=MAX_RECORDS):
++    if not isinstance(value, str) or not re.fullmatch(r'[0-9]{1,8}', value):
++        _fail('invalid_repeat_count')
++    number = int(value)
++    if not 1 <= number <= maximum:
++        _fail('repeat_count_limit')
++    return number
++
++
++def _tick(checkpoint):
++    if checkpoint is not None:
++        checkpoint()
++
++
++class DocumentPackage(Package):
++    def __init__(self, data, format='odt', checkpoint=None):
++        if format not in MIMES:
++            _fail('unsupported_format')
++        _tick(checkpoint)
++        try:
++            super().__init__(data)
++        except PresentationError as error:
++            raise ODTError(str(error)) from None
++        except (zipfile.BadZipFile, ET.ParseError, UnicodeError, zlib.error,
++                NotImplementedError, EOFError):
++            raise ODTError('malformed_package') from None
++        with zipfile.ZipFile(io.BytesIO(data)) as archive:
++            if any(info.is_dir() and info.file_size for info in archive.infolist()):
++                _fail('nonempty_directory_member')
++        _tick(checkpoint)
++        self.format = format
++        self.checkpoint = checkpoint
++        if (self.parts.get('mimetype') != MIMES[format].encode('ascii')
++                or self.member_info.get('mimetype') != (zipfile.ZIP_STORED, 0)):
++            _fail('not_native_' + format)
++        manifest = self.xml.get('META-INF/manifest.xml')
++        if manifest is None or manifest.tag != q(M, 'manifest'):
++            _fail('manifest_missing_or_namespace')
++        roots = []
++        names = set()
++        for node in manifest:
++            if node.tag != q(M, 'file-entry'):
++                _fail('manifest_structure')
++            name = node.get(q(M, 'full-path'))
++            if not name or name.casefold() in names:
++                _fail('duplicate_or_invalid_manifest_entry')
++            names.add(name.casefold())
++            if name == '/':
++                roots.append(node)
++            else:
++                key = name.rstrip('/')
++                if (not key or name.startswith('/') or any(c in name for c in '\\:%?#')
++                        or any(ord(c) < 32 for c in name)
++                        or any(part in ('', '.', '..') for part in key.split('/'))):
++                    _fail('unsafe_manifest_entry')
++                # ODF manifests may retain an empty directory (Configurations2/
++                # is usual). A directory declaration is not a fetched resource.
++                if not name.endswith('/') and name not in self.parts:
++                    _fail('manifest_target_missing')
++            if any(child.tag == q(M, 'encryption-data') for child in node.iter()):
++                _fail('encrypted_package')
++        if (len(roots) != 1 or roots[0].get(q(M, 'media-type')) != MIMES[format]
++                or 'content.xml' not in names):
++            _fail('manifest_type_or_content')
++        self.content = self.xml.get('content.xml')
++        if self.content is None or self.content.tag != q(O, 'document-content'):
++            _fail('content_missing_or_namespace')
++        bodies = self.content.findall(q(O, 'body'))
++        if len(bodies) != 1 or len(bodies[0]) != 1 or bodies[0][0].tag != q(O, 'text'):
++            _fail('not_native_' + format)
++        self.body = bodies[0][0]
++        self.unsupported = set()
++        for name, root in self.xml.items():
++            _tick(checkpoint)
++            if (name.lower().startswith(('meta-inf/documentsignatures', 'meta-inf/macrosignatures',
++                                         'basic/', 'scripts/'))):
++                self.unsupported.add('signatures_or_scripts_not_evaluated')
++            for node in root.iter():
++                if (node.tag in (q(O, 'script'), q(T, 'script'),
++                                 q(DR, 'plugin'), q(DR, 'object-ole'))
++                        or (node.tag == q(O, 'scripts') and (len(node) or (node.text or '').strip()))
++                        or node.tag.startswith((q(SCRIPT, ''), q(FORM, ''), q(T, 'dde-'),
++                                                q(T, 'database-'), q(TB, 'database-'),
++                                                q(TB, 'data-pilot-')))
++                        or node.tag in (q(O, 'dde-source'), q(T, 'execute-macro'),
++                                        q(TB, 'table-source'), q(TB, 'cell-range-source'))
++                        or any(attr.startswith(q(SCRIPT, '')) for attr in node.attrib)):
++                    self.unsupported.add('active_or_embedded_content_not_read')
++                href = node.get(q(XL, 'href'))
++                if href and not href.startswith('#'):
++                    self.unsupported.add('linked_content_not_resolved')
++                if node.tag in (q(T, 'tracked-changes'), q(T, 'change-start'), q(T, 'change-end')):
++                    self.unsupported.add('tracked_changes_not_resolved')
++
++
++def _text(node, package, *, omit_notes=True):
++    parts = []
++    chars = 0
++
++    def add(value):
++        nonlocal chars
++        if value:
++            chars += len(value)
++            if chars > MAX_TEXT:
++                _fail('paragraph_text_limit')
++            parts.append(value)
++
++    def walk(item):
++        if (item.tag in (q(O, 'scripts'), q(O, 'script'), q(T, 'script'))
++                or item.tag.startswith((q(SCRIPT, ''), q(FORM, '')))):
++            package.unsupported.add('active_or_embedded_content_not_read')
++            return
++        if item.tag == q(T, 's'):
++            add(' ' * _count(item.get(q(T, 'c'), '1'), MAX_TEXT))
++            return
++        if item.tag == q(T, 'tab'):
++            add('\t')
++            return
++        if item.tag == q(T, 'line-break'):
++            add('\n')
++            return
++        if item.tag in (q(T, 'note'), q(O, 'annotation')) and omit_notes:
++            package.unsupported.add('notes_and_annotations_separate')
++            return
++        if item.tag.startswith(q(DR, '')[:-1]):
++            package.unsupported.add('drawings_and_embedded_objects_not_read')
++            return
++        if item.tag.startswith(q(T, '')) and item.tag not in {
++                q(T, n) for n in ('p', 'h', 'span', 'a', 's', 'tab', 'line-break')}:
++            package.unsupported.add('fields_and_inline_metadata_not_evaluated')
++        add(item.text)
++        for child in item:
++            walk(child)
++            add(child.tail)
++
++    walk(node)
++    return ''.join(parts)
++
++
++def extract_document(data, format='odt', *, checkpoint=None):
++    """Return labelled paragraphs/lists/tables and explicit view limitations."""
++    pkg = DocumentPackage(data, format, checkpoint)
++    rows = []
++    output_bytes = 0
++    cells = 0
++    paragraph = 0
++    table_number = 0
++
++    def record(kind, value):
++        nonlocal output_bytes
++        if len(rows) >= MAX_RECORDS:
++            _fail('record_count_limit')
++        line = '[' + kind + ' ' + encoded(value) + ']'
++        output_bytes += len(line.encode('utf-8')) + 1
++        if output_bytes > 900_000:
++            _fail('extracted_text_limit')
++        rows.append(line)
++
++    def table_rows(table, budget):
++        nonlocal cells
++        result = []
++        used = 0
++        for node in table:
++            if node.tag in (q(TB, 'table-header-rows'), q(TB, 'table-rows'), q(TB, 'table-row-group')):
++                nested, cost = table_rows(node, budget - used)
++                result.extend(nested)
++                used += cost
++            elif node.tag == q(TB, 'table-row'):
++                row = []
++                row_cost = 2
++                for cell in node:
++                    if cell.tag not in (q(TB, 'table-cell'), q(TB, 'covered-table-cell')):
++                        _fail('unsupported_table_structure')
++                    repeat = _count(cell.get(q(TB, 'number-columns-repeated'), '1'), 256)
++                    cells += repeat
++                    if cells > MAX_CELLS or len(row) + repeat > 256:
++                        _fail('table_cell_limit')
++                    if cell.tag == q(TB, 'covered-table-cell'):
++                        value = {'covered': True}
++                    else:
++                        paragraphs = []
++                        cell_bytes = 0
++                        for p in cell:
++                            if p.tag in (q(T, 'p'), q(T, 'h')):
++                                text = _text(p, pkg)
++                                cell_bytes += len(text.encode('utf-8')) + 1
++                                if cell_bytes > MAX_TEXT or cell_bytes > budget - used - row_cost:
++                                    _fail('table_cell_text_limit')
++                                paragraphs.append(text)
++                        if any(p.tag not in (q(T, 'p'), q(T, 'h')) for p in cell):
++                            pkg.unsupported.add('nested_table_cell_content_not_read')
++                        value = {'text': '\n'.join(paragraphs)}
++                        for attr, key in (('number-columns-spanned', 'column_span'),
++                                          ('number-rows-spanned', 'row_span')):
++                            if cell.get(q(TB, attr)) is not None:
++                                value[key] = _count(cell.get(q(TB, attr)), 256)
++                        if cell.get(q(TB, 'formula')) is not None:
++                            value['formula_cached_only'] = True
++                            pkg.unsupported.add('table_formulas_not_evaluated')
++                    # Account for expanded JSON before allocating repeated
++                    # values/rows. XML repeat attributes cannot multiply a
++                    # bounded source text into an unbounded encoded record.
++                    row_cost += (len(encoded(value).encode('utf-8')) + 1) * repeat
++                    if row_cost > budget - used:
++                        _fail('extracted_text_limit')
++                    row.extend([value] * repeat)
++                if not row:
++                    _fail('empty_table_row')
++                repeat = _count(node.get(q(TB, 'number-rows-repeated'), '1'), MAX_RECORDS)
++                if len(result) + repeat > MAX_RECORDS or cells + len(row) * (repeat - 1) > MAX_CELLS:
++                    _fail('table_row_limit')
++                cost = (row_cost + 1) * repeat
++                if cost > budget - used:
++                    _fail('extracted_text_limit')
++                cells += len(row) * (repeat - 1)
++                result.extend([row] * repeat)
++                used += cost
++        return result, used
++
++    def walk(node, context=None):
++        nonlocal paragraph, table_number
++        _tick(checkpoint)
++        context = {} if context is None else context
++        if (node.tag in (q(O, 'scripts'), q(O, 'script'), q(T, 'script'))
++                or node.tag.startswith((q(SCRIPT, ''), q(FORM, '')))):
++            pkg.unsupported.add('active_or_embedded_content_not_read')
++            return
++        if node.tag == q(T, 'tracked-changes'):
++            pkg.unsupported.add('tracked_changes_not_resolved')
++            return
++        if node.tag == q(TB, 'table'):
++            table_number += 1
++            table, _ = table_rows(node, max(0, 900_000-output_bytes))
++            record('TABLE', {'number': table_number, 'name': node.get(q(TB, 'name')),
++                             'rows': table, **context})
++            return
++        if node.tag in (q(T, 'p'), q(T, 'h')):
++            paragraph += 1
++            item = {'number': paragraph, 'text': _text(node, pkg), **context}
++            if node.tag == q(T, 'h'):
++                item['level'] = _count(node.get(q(T, 'outline-level'), '1'), 10)
++            record('HEADING' if node.tag == q(T, 'h') else 'PARAGRAPH', item)
++            for note in node.iter(q(T, 'note')):
++                bodies = note.findall(q(T, 'note-body'))
++                if len(bodies) == 1:
++                    walk(bodies[0], {**context, 'role': note.get(q(T, 'note-class'), 'note')})
++            for annotation in node.iter(q(O, 'annotation')):
++                walk(annotation, {**context, 'role': 'annotation'})
++            return
++        if node.tag in (q(T, 'list'), q(T, 'list-item'), q(T, 'list-header')):
++            context = {**context, 'list_depth': context.get('list_depth', 0) + (node.tag == q(T, 'list'))}
++            if node.tag == q(T, 'list'):
++                context['list_style'] = node.get(q(T, 'style-name'))
++        if node.tag.startswith(q(DR, '')[:-1]):
++            pkg.unsupported.add('drawings_and_embedded_objects_not_read')
++            return
++        for child in node:
++            walk(child, context)
++
++    walk(pkg.body)
++    pkg.unsupported.add('page_layout_styles_and_rendering_not_evaluated')
++    metadata = {'format': format, 'native_container': True, 'view': 'native_text_structure',
++                'paragraphs': paragraph, 'tables': table_number,
++                'coverage': 'native_text_structure; images_layout_fields_and_external_content_not_evaluated',
++                'limitations': sorted(pkg.unsupported)}
++    header = '[DOCUMENT ' + encoded(metadata) + ']'
++    return DocumentText('\n'.join([header] + rows), metadata)
++
++
++def _plain(value):
++    if (not isinstance(value, str) or len(value) > MAX_TEXT
++            or any(not (ord(c) in (9, 10, 13) or 0x20 <= ord(c) <= 0xD7FF
++                       or 0xE000 <= ord(c) <= 0xFFFD or 0x10000 <= ord(c) <= 0x10FFFF)
++                   for c in value)):
++        _fail('invalid_text')
++    if len(value.encode('utf-8')) > MAX_TEXT:
++        _fail('text_limit')
++    return value.replace('\r\n', '\n').replace('\r', '\n')
++
++
++def _tag_end(raw, start):
++    quote = None
++    for index in range(start, len(raw)):
++        byte = raw[index]
++        if quote is not None:
++            if byte == quote:
++                quote = None
++        elif byte in (34, 39):
++            quote = byte
++        elif byte == 62:
++            return index + 1
++    _fail('malformed_xml')
++
++
++def _paragraph_slots(raw):
++    """Lexical text spans: untouched XML, namespaces and package parts survive."""
++    parser = expat.ParserCreate(namespace_separator='}')
++    stack = []
++    contexts = []
++    paragraphs = []
++    cursor = 0
++    body = False
++    total_chars = 0
++    total_slots = 0
++    text_tags = {T + '}' + n for n in ('p', 'h')}
++    space_tags = {T + '}' + n for n in ('s', 'tab', 'line-break')}
++    allowed_parents = {O + '}document-content', O + '}body', O + '}text',
++                       T + '}section', T + '}list', T + '}list-item', T + '}list-header',
++                       TB + '}table', TB + '}table-row', TB + '}table-cell',
++                       TB + '}table-header-rows', TB + '}table-rows', TB + '}table-row-group'}
++
++    def reserve(size):
++        nonlocal total_chars, total_slots
++        if contexts:
++            total_chars += size
++            total_slots += 1
++            if total_chars > 900_000 or total_slots > 50_000:
++                _fail('document_text_limit')
++            contexts[-1]['chars'] += size
++            if contexts[-1]['chars'] > MAX_TEXT:
++                _fail('paragraph_text_limit')
++
++    def flush(end):
++        nonlocal cursor
++        if contexts and end > cursor:
++            piece = raw[cursor:end]
++            if b'<' in piece:
++                contexts[-1]['supported'] = False
++            else:
++                value = ET.fromstring(b'<r>' + piece + b'</r>').text or ''
++                if value:
++                    reserve(len(value))
++                    profile = tuple(frame['attrs'] for frame in stack if frame['name'] == T + '}span')
++                    contexts[-1]['slots'].append((cursor, end, value, profile))
++        cursor = end
++
++    def start(name, attrs):
++        nonlocal cursor, body
++        begin = parser.CurrentByteIndex
++        flush(begin)
++        end = _tag_end(raw, begin)
++        frame = {'name': name, 'attrs': tuple(sorted(attrs.items())), 'start': begin,
++                 'end': end, 'empty': raw[begin:end].rstrip().endswith(b'/>')}
++        if name == O + '}text':
++            body = True
++        if name in text_tags and body:
++            if len(paragraphs) >= MAX_RECORDS:
++                _fail('record_count_limit')
++            if contexts:
++                contexts[-1]['supported'] = False
++            record = {'slots': [], 'chars': 0,
++                      'supported': all(p['name'] in allowed_parents for p in stack)}
++            contexts.append(record)
++            paragraphs.append(record)
++            frame['paragraph'] = record
++        elif contexts and name != T + '}span' and name not in space_tags:
++            contexts[-1]['supported'] = False
++        if contexts and name in space_tags:
++            if not frame['empty']:
++                contexts[-1]['supported'] = False
++            if name == T + '}s':
++                count = _count(attrs.get(T + '}c', '1'), MAX_TEXT)
++                reserve(count)
++                value = ' ' * count
++                if set(attrs) - {T + '}c'}:
++                    contexts[-1]['supported'] = False
++            else:
++                reserve(1)
++                value = '\t' if name == T + '}tab' else '\n'
++                if attrs:
++                    contexts[-1]['supported'] = False
++            profile = tuple(item['attrs'] for item in stack if item['name'] == T + '}span')
++            contexts[-1]['slots'].append((begin, end, value, profile))
++        stack.append(frame)
++        cursor = end
++
++    def end(name):
++        nonlocal cursor, body
++        frame = stack[-1]
++        if not frame['empty']:
++            flush(parser.CurrentByteIndex)
++            cursor = _tag_end(raw, parser.CurrentByteIndex)
++        if 'paragraph' in frame:
++            contexts.pop()
++        stack.pop()
++        if name == O + '}text':
++            body = False
++
++    def refuse(*args):
++        _fail('unsupported_xml_construct')
++
++    parser.StartElementHandler = start
++    parser.EndElementHandler = end
++    parser.StartDoctypeDeclHandler = refuse
++    parser.EntityDeclHandler = refuse
++    parser.ProcessingInstructionHandler = refuse
++    parser.CommentHandler = lambda *args: contexts[-1].update(supported=False) if contexts else None
++    parser.StartCdataSectionHandler = lambda: contexts[-1].update(supported=False) if contexts else None
++    try:
++        parser.Parse(raw, True)
++    except (expat.ExpatError, ET.ParseError):
++        raise ODTError('malformed_xml') from None
++    for record in paragraphs:
++        record['text'] = ''.join(slot[2] for slot in record['slots'])
++        if len(record['text']) > MAX_TEXT:
++            _fail('paragraph_text_limit')
++    return paragraphs
++
++
++def _literal_xml(value):
++    # Locally bound names cannot collide with a retained document namespace.
++    name = 'frwodft'
++    ns = ' xmlns:' + name + '="' + T + '"'
++    result = []
++    for part in re.split(r'( +|\t|\n)', value):
++        if not part:
++            continue
++        if part[0] == ' ':
++            result.append('<' + name + ':s' + ns + ' ' + name + ':c="' + str(len(part)) + '"/>')
++        elif part == '\t':
++            result.append('<' + name + ':tab' + ns + '/>')
++        elif part == '\n':
++            result.append('<' + name + ':line-break' + ns + '/>')
++        else:
++            result.append(escape(part))
++    return ''.join(result).encode('utf-8')
++
++
++def _editable_package(pkg):
++    for name in pkg.parts:
++        low = name.lower()
++        if (low.startswith(('meta-inf/documentsignatures', 'meta-inf/macrosignatures', 'basic/', 'scripts/'))
++                or low.endswith(('.js', '.py', '.jar', '.class', '.vbs', '.exe', '.dll'))):
++            _fail('signed_or_active_package')
++    forbidden = {q(O, 'script'), q(T, 'script'),
++                 q(DR, 'plugin'), q(DR, 'object'), q(DR, 'object-ole'),
++                 q(T, 'tracked-changes'), q(T, 'change-start'), q(T, 'change-end'),
++                 q(O, 'dde-source'), q(T, 'execute-macro'),
++                 q(TB, 'table-source'), q(TB, 'cell-range-source')}
++    for root in pkg.xml.values():
++        _tick(pkg.checkpoint)
++        for node in root.iter():
++            if (node.tag in forbidden or node.tag.startswith((q(SCRIPT, ''), q(FORM, ''),
++                    q(T, 'dde-'), q(T, 'database-'), q(TB, 'database-'), q(TB, 'data-pilot-')))
++                    or (node.tag == q(O, 'scripts') and (len(node) or (node.text or '').strip()))
++                    or node.get(q(TB, 'formula')) is not None
++                    or any(attr.startswith(q(SCRIPT, '')) for attr in node.attrib)):
++                _fail('active_embedded_or_tracked_content')
++            href = node.get(q(XL, 'href'))
++            if href and not href.startswith('#'):
++                candidate = href[2:] if href.startswith('./') else href
++                if (candidate not in pkg.parts or any(c in candidate for c in ':\\%?#')
++                        or any(p in ('', '.', '..') for p in candidate.split('/'))):
++                    _fail('external_or_unresolved_link')
++
++
++def edit_document(data, old_text, new_text, *, checkpoint=None):
++    """One unique body/table/list paragraph literal match to a preserving copy.
++
++    Mixed span formatting, fields, bookmarks, tracked changes, signatures and
++    active/external references refuse. XML outside selected text slots and all
++    other member payloads remain unchanged; ZIP records may be recompressed.
++    """
++    old = _plain(old_text)
++    new = _plain(new_text)
++    if not old or old == new:
++        _fail('invalid_replacement')
++    pkg = DocumentPackage(data, 'odt', checkpoint)
++    _editable_package(pkg)
++    records = _paragraph_slots(pkg.parts['content.xml'])
++    matches = []
++    for record in records:
++        _tick(checkpoint)
++        begin = record['text'].find(old)
++        while begin >= 0:
++            matches.append((record, begin))
++            if len(matches) > 1:
++                _fail('ambiguous_match')
++            begin = record['text'].find(old, begin + 1)
++    if not matches:
++        _fail('match_missing')
++    record, begin = matches[0]
++    if not record['supported']:
++        _fail('unsupported_paragraph_structure')
++    finish = begin + len(old)
++    selected = []
++    cursor = 0
++    for start, end, value, profile in record['slots']:
++        edge = cursor + len(value)
++        if cursor < finish and edge > begin:
++            selected.append((start, end, value, profile, max(0, begin-cursor), min(len(value), finish-cursor)))
++        cursor = edge
++    if not selected or len({slot[3] for slot in selected}) != 1:
++        _fail('mixed_span_format')
++    changes = []
++    for index, (start, end, value, profile, lo, hi) in enumerate(selected):
++        replacement = value[:lo] + (new if index == 0 else '') + value[hi:]
++        changes.append((start, end, _literal_xml(replacement)))
++    changed = pkg.parts['content.xml']
++    for start, end, value in reversed(changes):
++        changed = changed[:start] + value + changed[end:]
++    if len(changed) > MAX_OUTPUT:
++        _fail('output_xml_limit')
++    after_records = _paragraph_slots(changed)
++    expected = [item['text'] for item in records]
++    expected[records.index(record)] = record['text'][:begin] + new + record['text'][finish:]
++    if [item['text'] for item in after_records] != expected:
++        _fail('invalid_edit')
++    _tick(checkpoint)
++    output = io.BytesIO()
++    with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(output, 'w') as target:
++        target.comment = source.comment
++        for info in source.infolist():
++            _tick(checkpoint)
++            value = changed if info.filename == 'content.xml' else pkg.parts.get(info.filename, b'')
++            target.writestr(info, value)
++    result = output.getvalue()
++    if len(result) > MAX_OUTPUT:
++        _fail('output_limit')
++    DocumentPackage(result, 'odt', checkpoint)
++    _tick(checkpoint)
++    return result
+--- /dev/null
++++ b/tools/scoped_odt_create.py
+@@ -0,0 +1,509 @@
++"""Bounded native, editable ODT creation with no external resources.
++
++``create_odt(text)`` splits CRLF, CR, and LF into native paragraphs, including
++empty paragraphs. ``create_odt(json_text, structured=True)`` accepts exactly::
++
++    {"blocks": [
++        {"type": "paragraph", "text": "..."},
++        {"type": "heading", "text": "...", "level": 1},
++        {"type": "list", "items": ["..."], "ordered": false},
++        {"type": "table", "rows": [["...", "..."]]}
++    ]}
++
++Heading levels are required integers from 1 through 9. Lists and rectangular
++rows are nonempty; text fields may be empty. Empty ``blocks`` creates one blank
++paragraph. No additional keys, duplicate JSON keys, floating-point values, or
++nonfinite JSON constants are accepted. Structured text preserves line breaks
++within its paragraph, heading, item, or cell. Tabs and spaces use native ODF
++whitespace elements. The zero-argument checkpoint callback is called between
++phases and throughout bounded loops; its exceptions propagate unchanged.
++
++Input and aggregate text are limited to 100,000 UTF-8 bytes. The other public
++MAX_* constants specify additional independent bounds. No filesystem writes,
++network requests, XML parsing, subprocesses, or global namespace registration
++are performed by this module.
++"""
++
++from io import BytesIO
++import json
++import stat
++from xml.etree import ElementTree as ET
++from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
++import zlib
++
++
++MIMETYPE = "application/vnd.oasis.opendocument.text"
++ODF_VERSION = "1.3"
++MAX_INPUT_BYTES = 100_000
++MAX_TOTAL_TEXT_BYTES = 100_000
++MAX_STRING_BYTES = 100_000
++MAX_BLOCKS = 512
++MAX_LIST_ITEMS = 4_096
++MAX_TABLE_ROWS = 256
++MAX_TABLE_COLUMNS = 64
++MAX_TABLE_CELLS = 4_096
++MAX_XML_NODES = 32_768
++MAX_XML_BYTES = 1_000_000
++MAX_TOTAL_XML_BYTES = 4_000_000
++MAX_PACKAGE_BYTES = 1_000_000
++MAX_JSON_DEPTH = 8
++MAX_JSON_TOKENS = 32_768
++
++OFFICE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
++TEXT = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
++TABLE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
++STYLE = "urn:oasis:names:tc:opendocument:xmlns:style:1.0"
++FO = "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
++META = "urn:oasis:names:tc:opendocument:xmlns:meta:1.0"
++MANIFEST = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
++
++
++class ODTCreateError(ValueError):
++    """Input refusal; ``str(error)`` and ``code`` contain a safe reason code."""
++
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++def _noop():
++    pass
++
++
++class _State:
++    def __init__(self, checkpoint):
++        self.checkpoint = checkpoint
++        self.text_bytes = 0
++        self.list_items = 0
++        self.table_cells = 0
++        self.xml_nodes = 0
++
++    def element(self, tag, attributes=None):
++        self.xml_nodes += 1
++        if self.xml_nodes > MAX_XML_NODES:
++            raise ODTCreateError("node_capacity")
++        if self.xml_nodes % 64 == 0:
++            self.checkpoint()
++        return ET.Element(tag, {} if attributes is None else attributes)
++
++    def child(self, parent, tag, attributes=None):
++        child = self.element(tag, attributes)
++        parent.append(child)
++        return child
++
++
++def _utf8_size(value, code):
++    try:
++        return len(value.encode("utf-8"))
++    except UnicodeEncodeError:
++        raise ODTCreateError(code) from None
++
++
++def _text(value, state):
++    if type(value) is not str:
++        raise ODTCreateError("invalid_text_type")
++    if len(value) > MAX_STRING_BYTES:
++        raise ODTCreateError("text_capacity")
++    size = _utf8_size(value, "invalid_xml_character")
++    if size > MAX_STRING_BYTES:
++        raise ODTCreateError("text_capacity")
++    state.text_bytes += size
++    if state.text_bytes > MAX_TOTAL_TEXT_BYTES:
++        raise ODTCreateError("text_capacity")
++    for index, char in enumerate(value):
++        if index % 1_024 == 0:
++            state.checkpoint()
++        point = ord(char)
++        if not (point in (9, 10, 13) or 0x20 <= point <= 0xD7FF
++                or 0xE000 <= point <= 0xFFFD or 0x10000 <= point <= 0x10FFFF):
++            raise ODTCreateError("invalid_xml_character")
++    return value.replace("\r\n", "\n").replace("\r", "\n")
++
++
++def _json_preflight(content, checkpoint):
++    # This bounds decoder work before json.loads constructs any nested values.
++    depth = tokens = 0
++    quoted = escaped = False
++    for index, char in enumerate(content):
++        if index % 1_024 == 0:
++            checkpoint()
++        if quoted:
++            if escaped:
++                escaped = False
++            elif char == "\\":
++                escaped = True
++            elif char == '"':
++                quoted = False
++            continue
++        if char == '"':
++            quoted = True
++            tokens += 1
++        elif char in "[{":
++            depth += 1
++            tokens += 1
++            if depth > MAX_JSON_DEPTH:
++                raise ODTCreateError("json_capacity")
++        elif char in "]}":
++            depth -= 1
++            if depth < 0:
++                raise ODTCreateError("invalid_json")
++        elif char == ",":
++            tokens += 1
++        if tokens > MAX_JSON_TOKENS:
++            raise ODTCreateError("json_capacity")
++    if quoted or depth:
++        raise ODTCreateError("invalid_json")
++
++
++def _load_json(content, checkpoint):
++    _json_preflight(content, checkpoint)
++
++    checkpoint_failed = False
++
++    def pairs(items):
++        nonlocal checkpoint_failed
++        result = {}
++        for index, (key, value) in enumerate(items):
++            if index % 64 == 0:
++                try:
++                    checkpoint()
++                except BaseException:
++                    checkpoint_failed = True
++                    raise
++            if key in result:
++                raise ODTCreateError("duplicate_json_key")
++            result[key] = value
++        return result
++
++    def integer(value):
++        if len(value) > 16:
++            raise ODTCreateError("invalid_json_number")
++        return int(value)
++
++    def refuse_number(value):
++        raise ODTCreateError("invalid_json_number")
++
++    def refuse_constant(value):
++        raise ODTCreateError("invalid_json_constant")
++
++    try:
++        result = json.loads(content, object_pairs_hook=pairs, parse_int=integer,
++                            parse_float=refuse_number, parse_constant=refuse_constant)
++    except (json.JSONDecodeError, RecursionError):
++        if checkpoint_failed:
++            raise
++        raise ODTCreateError("invalid_json") from None
++    checkpoint()
++    return result
++
++
++def _blocks(content, structured, state):
++    if not structured:
++        paragraphs = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
++        if len(paragraphs) > MAX_BLOCKS:
++            raise ODTCreateError("block_capacity")
++        result = []
++        for paragraph in paragraphs:
++            state.checkpoint()
++            result.append(("paragraph", _text(paragraph, state), None))
++        return result
++
++    value = _load_json(content, state.checkpoint)
++    if type(value) is not dict or set(value) != {"blocks"}:
++        raise ODTCreateError("invalid_schema")
++    raw_blocks = value["blocks"]
++    if type(raw_blocks) is not list:
++        raise ODTCreateError("invalid_schema")
++    if len(raw_blocks) > MAX_BLOCKS:
++        raise ODTCreateError("block_capacity")
++    result = []
++    for block in raw_blocks:
++        state.checkpoint()
++        if type(block) is not dict or type(block.get("type")) is not str:
++            raise ODTCreateError("invalid_block")
++        kind = block["type"]
++        if kind == "paragraph":
++            if set(block) != {"type", "text"}:
++                raise ODTCreateError("invalid_schema")
++            result.append((kind, _text(block["text"], state), None))
++        elif kind == "heading":
++            if set(block) != {"type", "text", "level"}:
++                raise ODTCreateError("invalid_schema")
++            level = block["level"]
++            if type(level) is not int or not 1 <= level <= 9:
++                raise ODTCreateError("invalid_heading_level")
++            result.append((kind, _text(block["text"], state), level))
++        elif kind == "list":
++            if set(block) != {"type", "items", "ordered"}:
++                raise ODTCreateError("invalid_schema")
++            items = block["items"]
++            if type(items) is not list or not items or type(block["ordered"]) is not bool:
++                raise ODTCreateError("invalid_list")
++            state.list_items += len(items)
++            if state.list_items > MAX_LIST_ITEMS:
++                raise ODTCreateError("list_capacity")
++            normalized = []
++            for item in items:
++                state.checkpoint()
++                normalized.append(_text(item, state))
++            result.append((kind, normalized, block["ordered"]))
++        elif kind == "table":
++            if set(block) != {"type", "rows"}:
++                raise ODTCreateError("invalid_schema")
++            rows = block["rows"]
++            if type(rows) is not list or not rows:
++                raise ODTCreateError("invalid_table")
++            if len(rows) > MAX_TABLE_ROWS:
++                raise ODTCreateError("table_capacity")
++            normalized = []
++            columns = None
++            for row in rows:
++                state.checkpoint()
++                if type(row) is not list or not row:
++                    raise ODTCreateError("invalid_table")
++                if columns is None:
++                    columns = len(row)
++                    if columns > MAX_TABLE_COLUMNS:
++                        raise ODTCreateError("table_capacity")
++                elif len(row) != columns:
++                    raise ODTCreateError("invalid_table")
++                state.table_cells += len(row)
++                if state.table_cells > MAX_TABLE_CELLS:
++                    raise ODTCreateError("table_capacity")
++                cells = []
++                for cell in row:
++                    state.checkpoint()
++                    cells.append(_text(cell, state))
++                normalized.append(cells)
++            result.append((kind, normalized, None))
++        else:
++            raise ODTCreateError("invalid_block")
++    return result or [("paragraph", "", None)]
++
++
++def _inline(parent, value, state):
++    """Encode every ASCII space, tab, and line break as native ODF whitespace."""
++    index = start = 0
++    next_checkpoint = 0
++    previous = None
++    while index < len(value):
++        if index >= next_checkpoint:
++            state.checkpoint()
++            next_checkpoint = index + 1_024
++        char = value[index]
++        if char not in " \t\n":
++            index += 1
++            continue
++        if start < index:
++            if previous is None:
++                parent.text = value[start:index]
++            else:
++                previous.tail = value[start:index]
++        if char == " ":
++            end = index + 1
++            while end < len(value) and value[end] == " ":
++                if end >= next_checkpoint:
++                    state.checkpoint()
++                    next_checkpoint = end + 1_024
++                end += 1
++            count = end - index
++            attributes = {"text:c": str(count)} if count > 1 else None
++            previous = state.child(parent, "text:s", attributes)
++            index = end
++        else:
++            tag = "text:tab" if char == "\t" else "text:line-break"
++            previous = state.child(parent, tag)
++            index += 1
++        start = index
++    if start < len(value):
++        if previous is None:
++            parent.text = value[start:]
++        else:
++            previous.tail = value[start:]
++
++
++def _content_xml(blocks, state):
++    root = state.element("office:document-content", {
++        "xmlns:office": OFFICE, "xmlns:text": TEXT, "xmlns:table": TABLE,
++        "xmlns:style": STYLE, "xmlns:fo": FO, "office:version": ODF_VERSION,
++    })
++    automatic = state.child(root, "office:automatic-styles")
++    list_kinds = {option for kind, value, option in blocks if kind == "list"}
++    for ordered in sorted(list_kinds):
++        state.checkpoint()
++        style = state.child(automatic, "text:list-style", {
++            "style:name": "ListNumbered" if ordered else "ListBulleted",
++        })
++        if ordered:
++            state.child(style, "text:list-level-style-number", {
++                "text:level": "1", "style:num-format": "1", "style:num-suffix": ".",
++            })
++        else:
++            state.child(style, "text:list-level-style-bullet", {
++                "text:level": "1", "text:bullet-char": "\u2022",
++            })
++    if any(kind == "table" for kind, value, option in blocks):
++        style = state.child(automatic, "style:style", {
++            "style:name": "TableCell", "style:family": "table-cell",
++        })
++        state.child(style, "style:table-cell-properties", {
++            "fo:border": "0.02cm solid #808080", "fo:padding": "0.1cm",
++        })
++    body = state.child(root, "office:body")
++    document = state.child(body, "office:text")
++    table_number = 0
++    for kind, value, option in blocks:
++        state.checkpoint()
++        if kind in ("paragraph", "heading"):
++            if kind == "heading":
++                paragraph = state.child(document, "text:h", {
++                    "text:outline-level": str(option), "text:style-name": "Heading" + str(option),
++                })
++            else:
++                paragraph = state.child(document, "text:p")
++            _inline(paragraph, value, state)
++        elif kind == "list":
++            attributes = {"text:style-name": "ListNumbered" if option else "ListBulleted"}
++            if option:
++                attributes["text:continue-numbering"] = "false"
++            listing = state.child(document, "text:list", attributes)
++            for item in value:
++                state.checkpoint()
++                entry = state.child(listing, "text:list-item")
++                _inline(state.child(entry, "text:p"), item, state)
++        else:
++            table_number += 1
++            table = state.child(document, "table:table", {"table:name": "Table" + str(table_number)})
++            state.child(table, "table:table-column", {"table:number-columns-repeated": str(len(value[0]))})
++            for row in value:
++                state.checkpoint()
++                row_node = state.child(table, "table:table-row")
++                for cell in row:
++                    state.checkpoint()
++                    cell_node = state.child(row_node, "table:table-cell", {
++                        "office:value-type": "string", "table:style-name": "TableCell",
++                    })
++                    _inline(state.child(cell_node, "text:p"), cell, state)
++    return root
++
++
++def _styles_xml(blocks, state):
++    root = state.element("office:document-styles", {
++        "xmlns:office": OFFICE, "xmlns:style": STYLE, "xmlns:fo": FO,
++        "office:version": ODF_VERSION,
++    })
++    styles = state.child(root, "office:styles")
++    default = state.child(styles, "style:default-style", {"style:family": "paragraph"})
++    state.child(default, "style:text-properties", {"fo:font-size": "12pt"})
++    levels = sorted({option for kind, value, option in blocks if kind == "heading"})
++    sizes = ("20pt", "18pt", "16pt", "14pt", "13pt", "12pt", "12pt", "12pt", "12pt")
++    for level in levels:
++        state.checkpoint()
++        style = state.child(styles, "style:style", {
++            "style:name": "Heading" + str(level), "style:family": "paragraph",
++            "style:default-outline-level": str(level),
++        })
++        state.child(style, "style:paragraph-properties", {
++            "fo:margin-top": "0.28cm", "fo:margin-bottom": "0.14cm",
++        })
++        state.child(style, "style:text-properties", {
++            "fo:font-size": sizes[level - 1], "fo:font-weight": "bold",
++        })
++    return root
++
++
++def _meta_xml(state):
++    root = state.element("office:document-meta", {
++        "xmlns:office": OFFICE, "xmlns:meta": META, "office:version": ODF_VERSION,
++    })
++    metadata = state.child(root, "office:meta")
++    state.child(metadata, "meta:generator").text = "Friday scoped ODT creator"
++    return root
++
++
++def _manifest_xml(state):
++    root = state.element("manifest:manifest", {
++        "xmlns:manifest": MANIFEST, "manifest:version": ODF_VERSION,
++    })
++    state.child(root, "manifest:file-entry", {
++        "manifest:full-path": "/", "manifest:media-type": MIMETYPE,
++    })
++    for name in ("content.xml", "styles.xml", "meta.xml"):
++        state.checkpoint()
++        state.child(root, "manifest:file-entry", {
++            "manifest:full-path": name, "manifest:media-type": "text/xml",
++        })
++    return root
++
++
++def _serialize(root, state):
++    state.checkpoint()
++    raw = ET.tostring(root, encoding="utf-8", xml_declaration=True)
++    if len(raw) > MAX_XML_BYTES:
++        raise ODTCreateError("xml_capacity")
++    state.checkpoint()
++    return raw
++
++
++def _zip(parts, state):
++    if sum(len(raw) for name, raw in parts if name != "mimetype") > MAX_TOTAL_XML_BYTES:
++        raise ODTCreateError("xml_capacity")
++    output = BytesIO()
++    with ZipFile(output, "w", allowZip64=False) as archive:
++        for name, raw in parts:
++            state.checkpoint()
++            compression = ZIP_STORED
++            if name != "mimetype":
++                # Keep output compatible with readers enforcing inflation bounds.
++                compressor = zlib.compressobj(level=6, wbits=-15)
++                packed = compressor.compress(raw) + compressor.flush()
++                state.checkpoint()
++                if len(raw) <= max(4_096, 100 * len(packed)):
++                    compression = ZIP_DEFLATED
++            info = ZipInfo(name, (1980, 1, 1, 0, 0, 0))
++            info.create_system = 3
++            info.compress_type = compression
++            info.external_attr = (stat.S_IFREG | 0o600) << 16
++            archive.writestr(info, raw, compress_type=compression, compresslevel=6)
++            if output.tell() > MAX_PACKAGE_BYTES:
++                raise ODTCreateError("package_capacity")
++            state.checkpoint()
++    result = output.getvalue()
++    if len(result) > MAX_PACKAGE_BYTES:
++        raise ODTCreateError("package_capacity")
++    state.checkpoint()
++    return result
++
++
++def create_odt(content, *, structured=False, checkpoint=None):
++    """Return native ODT bytes, or refuse invalid input with ``ODTCreateError``.
++
++    ``checkpoint`` must be a zero-argument callable or ``None``. Cancellation
++    exceptions from this callback are deliberately neither wrapped nor caught.
++    Returned bytes are at most ``MAX_PACKAGE_BYTES``; no file is created.
++    """
++    if type(structured) is not bool:
++        raise ODTCreateError("invalid_structured_option")
++    if checkpoint is not None and not callable(checkpoint):
++        raise ODTCreateError("invalid_checkpoint")
++    state = _State(_noop if checkpoint is None else checkpoint)
++    state.checkpoint()
++    if type(content) is not str:
++        raise ODTCreateError("invalid_content_type")
++    if len(content) > MAX_INPUT_BYTES or _utf8_size(content, "invalid_utf8") > MAX_INPUT_BYTES:
++        raise ODTCreateError("input_capacity")
++    state.checkpoint()
++    blocks = _blocks(content, structured, state)
++    state.checkpoint()
++    content_root = _content_xml(blocks, state)
++    state.checkpoint()
++    styles_root = _styles_xml(blocks, state)
++    meta_root = _meta_xml(state)
++    manifest_root = _manifest_xml(state)
++    state.checkpoint()
++    parts = [("mimetype", MIMETYPE.encode("ascii")),
++             ("content.xml", _serialize(content_root, state)),
++             ("styles.xml", _serialize(styles_root, state)),
++             ("meta.xml", _serialize(meta_root, state)),
++             ("META-INF/manifest.xml", _serialize(manifest_root, state))]
++    return _zip(parts, state)
+--- /dev/null
++++ b/hermes_cli/friday_workspace_odt.py
+@@ -0,0 +1,86 @@
++"""Own-workspace ODT creation and source-preserving, create-only copies."""
++import hashlib
++import json
++from pathlib import Path
++
++from hermes_cli.friday_user_scope import ScopeDenied
++from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++from hermes_cli.friday_workspace_revision import check
++from tools.scoped_odt import ODTError, edit_document
++
++
++def _spec(content):
++    if not isinstance(content, str) or len(content.encode('utf-8')) > 100_000:
++        raise ScopeDenied()
++
++    def pairs(items):
++        result = {}
++        for key, value in items:
++            if key in result:
++                raise ScopeDenied()
++            result[key] = value
++        return result
++
++    try:
++        value = json.loads(content, object_pairs_hook=pairs)
++    except (ValueError, RecursionError):
++        raise ScopeDenied() from None
++    if not isinstance(value, dict) or set(value) != {'source', 'old_text', 'new_text'}:
++        raise ScopeDenied()
++    return value
++
++
++def create(cap, fd, leaf, path, content, *, structured=False):
++    from tools.scoped_odt_create import create_odt, ODTCreateError
++    from tools.scoped_odt import DocumentPackage
++
++    _check_parent(cap, fd, path)
++    try:
++        data = create_odt(content, structured=structured, checkpoint=lambda: check(cap))
++        DocumentPackage(data, 'odt', lambda: check(cap))
++    except (ODTCreateError, ODTError) as error:
++        return json.dumps({'success': False, 'error': 'document_create_refused',
++                           'reason': str(error), 'effect_disposition': 'none'})
++    return _create_bytes(cap, fd, leaf, path, data, output_format='odt')
++
++
++def create_edit(cap, fd, leaf, path, content):
++    from hermes_cli.friday_user_scope import workspace_document
++
++    _check_parent(cap, fd, path)
++    spec = _spec(content)
++    raw = spec['source']
++    if not isinstance(raw, str) or not raw or '\x00' in raw:
++        raise ScopeDenied()
++    root = cap.home / 'workspace'
++    source = Path(raw)
++    if not source.is_absolute():
++        source = root / source
++    try:
++        relative = source.relative_to(root)
++    except ValueError:
++        raise ScopeDenied() from None
++    if (not relative.parts or any(p in ('.', '..') or p.startswith('.') for p in relative.parts)
++            or source.suffix.lower() != '.odt' or relative.as_posix() == path):
++        raise ScopeDenied()
++    data, _, identity = workspace_document(str(source), with_identity=True)
++    try:
++        rendered = edit_document(data, spec['old_text'], spec['new_text'],
++                                 checkpoint=lambda: check(cap))
++    except ODTError as error:
++        return json.dumps({'success': False, 'error': 'document_edit_refused',
++                           'reason': str(error), 'effect_disposition': 'none'})
++
++    def verify():
++        check(cap)
++        current, _, version = workspace_document(str(source), with_identity=True)
++        if current != data or version != identity:
++            raise ScopeDenied()
++
++    result = json.loads(_create_bytes(cap, fd, leaf, path, rendered,
++                                     output_format='odt', verify_source=verify))
++    if result.get('success'):
++        result.update(source=relative.as_posix(), source_sha256=hashlib.sha256(data).hexdigest(),
++                      replacements=1, source_unchanged=True, unchanged_parts_preserved=True,
++                      edit_mode='exact_text')
++    return json.dumps(result, ensure_ascii=False)
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -880,7 +880,7 @@
+                 from hermes_cli.friday_workspace_zip import read_archive
+                 return read_archive(cap, path.as_posix(), offset=args.get('offset', 1),
+                                     limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.odt', '.ott', '.pdf', '.xlsx', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
+             extraction_metadata = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+@@ -984,7 +984,7 @@
+         if name != 'write_file':
+             raise ScopeDenied()
+         output_format = args.get('format', 'text')
+-        if output_format not in ('text', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp'):
++        if output_format not in ('text', 'odt', 'odt_structured', 'odt_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp'):
+             raise ScopeDenied()
+         if output_format in ('pptx_create', 'pptx_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp'):
+             expected = {'pptx_create': '.pptx', 'pptx_merge': '.pptx', 'pptx_edit': '.pptx', 'pptx_pdf': '.pdf',
+@@ -1038,6 +1038,13 @@
+             if path.suffix.lower() != '.xlsx': raise ScopeDenied()
+             from hermes_cli.friday_workspace_xlsx import create_copy
+             return create_copy(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format in ('odt', 'odt_structured', 'odt_edit'):
++            if path.suffix.lower() != '.odt': raise ScopeDenied()
++            from hermes_cli import friday_workspace_odt as odt
++            if output_format == 'odt_edit':
++                return odt.create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++            return odt.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
++                              structured=output_format == 'odt_structured')
+         if output_format == 'docx_pdf':
+             if path.suffix.lower() != '.pdf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_pdf import create_pdf
+@@ -1052,7 +1059,7 @@
+             from hermes_cli.friday_workspace_docx import create
+             return create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                           structured=output_format == 'docx_structured')
+-        if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.xls', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
++        if path.suffix.lower() in {'.docx', '.odt', '.ott', '.pdf', '.xlsx', '.xls', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+             if path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
+@@ -1090,6 +1097,14 @@
+             elif path.suffix.lower() == '.pdf':
+                 refusal['hint'] = ('To export an existing DOCX, use format=docx_pdf, a NEW .pdf path, '
+                     'and content JSON with exactly source (the own-workspace .docx path).')
++            elif path.suffix.lower() in {'.odt', '.ott'}:
++                refusal['hint'] = ('ODT/OTT have a bounded native reader. To create a NEW ODT use '
++                    'format=odt with plain text, or odt_structured with JSON blocks: paragraph '
++                    '(type,text), heading (type,text,level 1..9), list (type,items,ordered), '
++                    'table (type,rows of rectangular strings). For a preserving ODT copy use '
++                    'format=odt_edit and JSON source/old_text/new_text; exactly one supported '
++                    'body paragraph match is required. OTT creation/editing is unsupported. '
++                    'Do not write text or rename another format under an ODT/OTT suffix.')
+             elif path.suffix.lower() == '.docx':
+                 refusal['hint'] = ('For a preserving DOCX edit use format=docx_edit, a NEW .docx path, '
+                     'and content JSON with source, old_text, new_text. The literal old_text must '
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -162,6 +162,7 @@
+ 
+     PPT/PPTX/POTX/PPSX/PPTM/POTM/PPSM/ODP/OTP/FODP expose bounded native content,
+     separate notes and coverage. Macro projects remain opaque and are never run.
++    ODT/OTT use the bounded native text-document view.
+     DOCX/XLSX reuse bounded native parsers. PDF keeps the existing installed
+     anydoc text route, with a bounded networkless local OCR fallback only for
+     its scanned-page signal. OCR returns a string-compatible trusted metadata
+@@ -174,6 +175,12 @@
+             text = _extract_docx(io.BytesIO(data), max_xml_bytes=1000000)
+         except (ExtractionError, ValueError, RuntimeError, NotImplementedError, LookupError, zlib.error):
+             raise ScopedExtractionError('malformed_or_required_part_limit') from None
++    elif format in ('odt', 'ott'):
++        from tools.scoped_odt import extract_document, ODTError
++        try:
++            text = extract_document(data, format)
++        except ODTError as exc:
++            raise ScopedExtractionError(str(exc)) from None
+     elif format == 'xlsx':
+         try:
+             text = _extract_xlsx(io.BytesIO(data), max_xml_bytes=1000000,
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1209,6 +1209,29 @@
+         "required": ["path", "content"]
+     }
+ }
++
++
++# ODT extends the existing own-workspace native document lane.
++_ODT_GUIDANCE = (
++    'ODT/OTT expose bounded native paragraphs, headings, lists, tables and separate notes. '
++    'Fields, images, layout and external content are not evaluated. OTT is read-only. '
++    'For a NEW .odt use format=odt with plain text or odt_structured with a JSON string '
++    '{"blocks":[...]}. Blocks: paragraph {type,text}; heading {type,text,level} with '
++    'level 1..9; list {type,items,ordered} with string items and boolean ordered; '
++    'table {type,rows} with rectangular string cells. Exact keys; at most100000 UTF-8 '
++    'input bytes. For preserving ODT edits use odt_edit, NEW .odt path and JSON '
++    'source/old_text/new_text: one unique supported body paragraph match; mixed '
++    'span styles, fields, anchors and active content refuse. Other member payloads '
++    'are preserved. Never write text or rename a different format under ODT/OTT. ')
++READ_FILE_SCHEMA['description'] += (
++    ' Own-workspace ODT/OTT expose bounded native text structure and separate notes. '
++    'Fields, images, layout and external content are not evaluated; reading grants '
++    'no raw overwrite authority.')
++WRITE_FILE_SCHEMA['description'] = _ODT_GUIDANCE + WRITE_FILE_SCHEMA['description']
++WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] = (
++    _ODT_GUIDANCE + WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'])
++WRITE_FILE_SCHEMA['parameters']['properties']['format']['enum'][1:1] = [
++    'odt', 'odt_structured', 'odt_edit']
+ 
+ _PRESENTATION_WRITE_GUIDANCE = (
+     'Native presentations use exact-key JSON and NEW output paths; sources stay unchanged and existing outputs refuse. '
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -190,6 +190,12 @@
+ 
+ ORDINARY_IDENTITY = 'Ты — Пятница (Friday), ИИ-помощник с высокой, но управляемой инициативой.'
+ DOCX_EDIT_GUIDANCE = (
++    'ODT/OTT читаются штатно. Для нового ODT используй format=odt с обычным текстом или '
++    'odt_structured и JSON {blocks:[...]}: paragraph type/text, heading type/text/level 1..9, '
++    'list type/items из строк/ordered boolean, table type/rows из прямоугольных строковых ячеек. '
++    'Для сохраняющей правки ODT используй odt_edit и source/old_text/new_text в новый .odt: '
++    'ровно одно совпадение в поддержанном абзаце; смешанное форматирование и активное содержимое отказываются. '
++    'OTT только читается. Не записывай обычный текст под расширением ODT/OTT. '
+     'Для точечной правки существующего DOCX используй write_file format=docx_edit с '
+     'source/old_text/new_text и новым именем выходного файла. docx/docx_structured создают '
+     'документ заново и не сохраняют исходный пакет. Чтение текста не проверяет оформление. '
