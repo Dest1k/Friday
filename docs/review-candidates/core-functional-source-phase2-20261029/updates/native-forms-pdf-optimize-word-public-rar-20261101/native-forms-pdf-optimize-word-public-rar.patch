@@ -1,0 +1,2417 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -11,7 +11,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = "friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.word-located-edit.v2"
++DIALOGUE_REVISION = "friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1"
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -190,8 +190,16 @@
+ 
+ ORDINARY_IDENTITY = 'Ты — Пятница (Friday), ИИ-помощник с высокой, но управляемой инициативой.'
+ DOCX_EDIT_GUIDANCE = (
++    'For supported PDF text forms, read_file with pdf_form_fields=true returns field names, values and source_sha256; use default pagination. '
++    'Fill a NEW PDF with pdf_form_fill and exact JSON {"source":"form.pdf","source_sha256":"<hash from that read>","fields":{"name":"value"}}. '
++    'Only flat AcroForm text widgets, printable ASCII, standard Helvetica/Courier and fitting single-line text are supported. Native field values and appearance streams are created without flattening. '
++    'A changed field must have no existing appearance and an empty value, or an exact supported plain appearance matching its current value. Custom appearances of untouched fields are preserved. Metadata reading does not establish that visible appearances match field values. '
++    'Source and unrelated pages/resources/fields remain preserved. XFA, signatures, actions, encryption, complex fields, unsupported fonts and non-ASCII text refuse; this is not general form or typography support. '
++    'Public Word copy: docx_public_copy uses exact JSON {"source":"private.docx","source_sha256":"<read hash>","remove_strings":["sensitive literal"]} into a NEW .docx. It reconstructs only supported main-body paragraphs and plain tables, replacing exact case-sensitive literals, including across runs. Source properties, comments, headers, footers and embedded parts are excluded; formatting is not preserved. Use only when a plain public reconstruction is intended. Active, hidden/revision text, fields and unsupported body structures refuse. Any hidden marker in source styles/defaults refuses, even if unused or disabled; style visibility is not evaluated. Tracked cell revisions also refuse. The source is retained. '
++    'RAR: genuine bounded single-volume stored RAR4 and supported RAR5 reading and rar_extract with {source} into a NEW folder are supported for regular files/directories. archive_convert consumes RAR into NEW ZIP/TAR-family outputs preserving names and bytes. Compressed RAR4, RAR creation/editing, encryption, multivolume, links/special members and unsupported inputs refuse. '
+     'TAR archives: format=tar/tar.gz/tar.bz2/tar.xz/tar.zst with entries source/member creates a NEW matching archive; input aliases tgz/tbz2/txz/tzst are recognized. read_file lists checked member names and hashes; format=tar_extract with {source} publishes a NEW directory. archive_convert converts ZIP/7z/TAR families into a NEW supported archive preserving member names and bytes. Links, devices, sparse/unsupported records, unsafe paths and over-limit expansion refuse. Source archives are unchanged; never execute members. '
+     'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
++    'PDF optimization: format=pdf_optimize, NEW .pdf path, exact JSON {"source":"input.pdf","source_sha256":"<64 lowercase hex from read_file>"}. Native lossless qpdf stream/object compression; page content, resources, geometry/order, document Info and XMP are verified unchanged with bounded decoded graph digests. Original unchanged. Reports before_bytes, after_bytes and smaller/not_smaller; reduction is not guaranteed. Inert PDFs only: unfiltered/plain Flate streams, 1 MB input/output, 64 pages, 4 MB total decoded streams. Other filters/predictors, forms, annotations, links/actions, attachments, encryption, signatures, outlines, layers and unsupported structures refuse. Trailer ID may regenerate; no rasterization. '
+     'PDF page assembly uses pdf_pages, a NEW .pdf, and exact JSON {"sources":["a.pdf"],"pages":[{"source":1,"page":1,"rotation":0}]}; one or two own-workspace sources. Source/page are one-based; rotation adds clockwise 0/90/180/270 degrees. Every listed source must contribute, every selected page appears once in requested order, and sources stay unchanged. At most 64 input/output pages and 1 MB per input/output; native page content/resources are retained without rasterization. Document metadata is omitted; annotations, forms, actions, attachments, encryption, signatures, outlines, layers and unsupported document structures refuse. '
+     'XLSB читается нативно только в ограниченном инертном профиле: порядок, имена и видимость листов, типизированные сохранённые значения ячеек и отдельно помеченные кэши формул. Формулы не вычисляются, внешние ссылки не открываются; активные и неподдержанные пакеты отказываются целиком. Чтение не проверяет оформление и не разрешает создание, изменение или конвертацию XLSB. Продолжай все страницы read_file и сверяй metadata покрытия. '
+     'Старый .xls читается как ограниченная таблица BIFF8: имена и порядок листов, поддержанные значения ячеек и сохранённые результаты формул. Формулы не вычисляются, макросы не запускаются. Это не проверка оформления; смотри metadata покрытия и ограничений. Создание и изменение .xls не поддерживаются, не записывай под этим расширением текст. '
+@@ -343,6 +351,7 @@
+         'do not discover or guess a host/profile path.')
+     if function['name'] == 'read_file':
+         function['description'] = (
++            'For supported PDF text form metadata, pass pdf_form_fields=true with default pagination. The result lists field names, values and source_sha256 from the exact source snapshot; it is not page text or a full rendering, and does not establish that visible appearances match field values. '
+             'Read an own-workspace UTF-8 text file with numbered lines. Use offset, limit and the '
+             'returned next_offset/next_char_offset for continuation. PDF, Word DOCX/DOTX/DOCM/DOTM, '
+             'ODF ODT/OTT/FODT, spreadsheets XLSX/XLTX/XLSM/XLTM/ODS/OTS/FODS and RTF expose bounded '
+@@ -365,10 +374,11 @@
+             'content type and a matching opaque VBA project. Macro/project-present metadata does not '
+             'establish code safety: source/p-code are not inspected and macros are never executed. '
+             'Macro variant creation/editing/merge/conversion is unsupported. '
+-            'ZIP and supported 7z return a checked archive member registry; '
++            'ZIP and supported 7z/RAR return a checked archive member registry; '
++            'RAR reading supports bounded single-volume stored RAR4 and supported RAR5 regular files/directories only; compressed RAR4, encryption, multivolume, links/special members and unsupported inputs refuse the whole archive. '
+             'offset and limit paginate whole archive entries. If partial is true, continue at next_offset; '
+             'total_entries and sha256 identify the full archive. '
+-            'use write_file format=zip_extract or 7z_extract to extract into a NEW folder, then read those returned paths. '
++            'use write_file format=zip_extract, 7z_extract or rar_extract to extract into a NEW folder, then read those returned paths. '
+             'Legacy .doc reads stored main-story text only; notes, headers, images, formatting and layout are not covered. '
+             'Encrypted, field/object/macro-bearing or unsupported DOC refuses. DOC is read-only. '
+             'Legacy DOT requires the genuine binary template marker and supports the same bounded read-only main story; AutoText refuses. No template instantiation or writing. '
+@@ -392,16 +402,22 @@
+             'folder, then read its returned member path. '
+             'Raster JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF returns frame geometry and pixel hashes for all pages/frames via pagination, not OCR or visual meaning. Use approved vision/OCR separately. '
+             'MHTML/MHT reads root HTML text and table order from genuine MIME multipart/related, with resource/coverage metadata. Attachments, CSS, layout and images are not rendered; external resources never fetched. '
+-            'Other binary formats are unsupported; encrypted or unsupported 7z refuses. '
++            'Other binary formats are unsupported; encrypted or unsupported 7z/RAR refuses. '
+             'Before replacing an existing text file, read its complete current content in this task.')
+     else:
+         function['description'] = (
++            'PDF text forms: pdf_form_fill into a NEW .pdf, exact JSON {"source":"form.pdf","source_sha256":"<hash from that read>","fields":{"name":"value"}}. '
++            'First read with pdf_form_fields=true and default pagination. Supported flat text widgets use fitting printable ASCII with standard Helvetica/Courier and generated native values/appearance streams; source and unrelated pages/resources/fields remain preserved. '
++            'A changed field must have no existing appearance and an empty value, or an exact supported plain appearance matching its current value. Custom appearances of untouched fields are preserved; metadata reading does not establish visual consistency. '
++            'XFA, signatures, actions, encryption, complex field trees, non-ASCII text and unsupported fonts refuse. This is not general form or typography support. '
++            'Public Word copy: docx_public_copy uses exact JSON {"source":"private.docx","source_sha256":"<read hash>","remove_strings":["sensitive literal"]} into a NEW .docx. It reconstructs only supported main-body paragraphs and plain tables, replacing exact case-sensitive literals, including across runs. Source properties, comments, headers, footers and embedded parts are excluded; formatting is not preserved. Use only when a plain public reconstruction is intended. Active, hidden/revision text, fields and unsupported body structures refuse. Any hidden marker in source styles/defaults refuses, even if unused or disabled; style visibility is not evaluated. Tracked cell revisions also refuse. The source is retained. '
+             'Own-workspace write: path + content string; choose format. '
+             'MHTML/MHT: mhtml/mht creates a NEW genuine multipart HTML archive from literal text; mhtml_structured/mht_structured uses JSON {"title":"Report","blocks":[{"type":"heading","level":1,"text":"Title"},{"type":"paragraph","text":"Text"},{"type":"table","rows":[["A","B"]]}]}. mhtml_edit/mht_edit uses exactly source/old_text/new_text for one unique visible literal match within one root HTML text run. It creates a NEW archive preserving all other MIME parts and headers. Unsupported active/ambiguous MIME/HTML refuses, no external resources are fetched. Read preserves text/table order and reports missing resources; images, CSS and layout are not rendered. '
+             'ZIP/TAR preserving member edits: archive_edit into a NEW same-profile archive with exact JSON {"source":"original.zip","remove":["obsolete.txt"],"entries":[{"source":"new.txt","member":"docs/new.txt"}]}. Explicit listed members only: matching entries replace existing files; others append. Removal names must exist and remove only that exact member, not descendants. Unchanged member names/order/payload bytes are retained; original archive and input files remain unchanged. Container metadata is normalized, not byte-preserved. Duplicate/conflicting paths, directory replacement, secret-bearing payloads and empty output refuse. Supports ZIP and TAR family; 7z edit is unsupported. '
+             'Raster images: read_file on JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF returns a complete paginated frame/pixel registry, not vision or OCR. image_transform creates a NEW JPG/JPEG/PNG/TIF/TIFF/WebP/BMP file from JSON {"source":"scan.tiff","frame":2,"rotation":90,"crop":[0,0,300,200]}. Frame is required and one-based; crop is optional in EXIF-normalized pixels, then rotation is optional clockwise 0/90/180/270 degrees. Every input frame must decode within 32 frames and 16 million total pixels; 1 MB input/output. Only pixels losslessly representable as RGBA8 are supported; high-bit-depth, floating-point and non-RGB color modes refuse. Only the chosen frame is output. Other source frames are unchanged. Derivatives contain pixels only: EXIF orientation is applied, other metadata including ICC/EXIF is omitted. JPEG is lossy; alpha to JPEG/BMP refuses. No OCR, visual interpretation or fidelity claim follows from a pixel hash. '
+             'TAR archives: format=tar/tar.gz/tar.bz2/tar.xz/tar.zst with entries source/member creates a NEW matching archive; input aliases tgz/tbz2/txz/tzst are recognized. read_file lists checked member names and hashes; format=tar_extract with {source} publishes a NEW directory. archive_convert converts ZIP/7z/TAR families into a NEW supported archive preserving member names and bytes. Links, devices, sparse/unsupported records, unsafe paths and over-limit expansion refuse. Source archives are unchanged; never execute members. '
+     'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
++            'PDF optimization: format=pdf_optimize, NEW .pdf path, exact JSON {"source":"input.pdf","source_sha256":"<64 lowercase hex from read_file>"}. Native lossless qpdf stream/object compression; page content, resources, geometry/order, document Info and XMP are verified unchanged with bounded decoded graph digests. Original unchanged. Reports before_bytes, after_bytes and smaller/not_smaller; reduction is not guaranteed. Inert PDFs only: unfiltered/plain Flate streams, 1 MB input/output, 64 pages, 4 MB total decoded streams. Other filters/predictors, forms, annotations, links/actions, attachments, encryption, signatures, outlines, layers and unsupported structures refuse. Trailer ID may regenerate; no rasterization. '
+             'PDF page assembly: pdf_pages into a NEW .pdf, exact JSON {"sources":["a.pdf"],"pages":[{"source":1,"page":1,"rotation":0}]}; one or two own-workspace sources. Source/page are one-based; each selected page occurs once in requested order, and every listed source contributes. Rotation adds clockwise 0/90/180/270 degrees. At most 64 input/output pages and 1 MB per input/output. Native page content/resources are preserved without rasterization, sources stay unchanged and document metadata is omitted. Forms, annotations, links/actions, attachments, encryption, signatures, outlines, layers and unsupported structures refuse. '
+             'Native ODS: ods_chart uses exactly {source,sheet,range,title} into a NEW .ods. range is A1:Bn or A1:Cn, with headers, literal text categories and one or two literal numeric series; formula or unavailable selected cells refuse. A real editable column chart has source references and matching local caches. ods_recalculate uses exactly {source} into a NEW .ods and recalculates only existing acyclic numeric SUM ranges and two-cell products, preserving formulas and other package members. Unsupported formulas/content, missing/non-numeric dependencies, cycles and charted recalculation inputs refuse. Readback is structural, without Office or visual acceptance. '
+             'For Word reports with native TOC and page fields use docx_report, a NEW .docx, and JSON blocks plus optional toc_levels(1-9), header, page_numbers(boolean). TOC and page fields require later refresh; no layout/page-count or Office/PDF acceptance is implied. '
+@@ -430,6 +446,7 @@
+             'Extraction puts those entries under the returned folder path. '
+             'Existing destinations, unsafe paths, links, encrypted members, unsupported compression and oversized archives refuse. '
+             'Archive limits: 128 entries, 1 MB compressed and total uncompressed bytes; UTF-8 names and extensionless files are supported. '
++            'RAR: read_file lists bounded genuine single-volume stored RAR4 and supported RAR5 regular files and directories. format=rar_extract uses exactly {"source":"materials.rar"} into a NEW folder. archive_convert accepts RAR into NEW ZIP or TAR-family archives preserving member names and bytes. Encrypted, multivolume, linked, special, malformed and unsupported RAR members refuse the entire archive; no member is silently skipped. The isolated decoder needs 14 seconds remaining on the original call. Compressed RAR4, RAR creation and editing are unsupported; never rename another archive to .rar. '
+             '7z: format=7z uses the same entries JSON and a NEW .7z path. format=7z_extract uses {"source":"materials.7z"} and a NEW folder. format=archive_convert uses {"source":"materials.zip"} into NEW .7z, or source .7z into NEW .zip; real conversion preserves member names and bytes. Encoding explicit directory records to 7z refuses rather than dropping empty folders. The optional pinned codec needs 12 seconds remaining on this original call; unavailable dependency, unsupported/encrypted inputs and insufficient budget refuse without publication. '
+             'XLSX content JSON: format=xlsx_recalculate {source}; format=xlsx_merge {base,update,sheet,key,revision}; '
+             'format=xlsx {source,sheet,cell,expected,value}. XLSX outputs need NEW .xlsx names; xlsx edits never recalculate. '
+@@ -470,7 +487,7 @@
+         content = function['parameters']['properties']['content']
+         content['description'] = (
+             'ZIP content JSON: zip uses exactly {"entries":[{"source":"note","member":"Folder/note"}]}; '
+-            'zip_extract/7z_extract/archive_convert use exactly {"source":"materials.zip"} (or a .7z source as appropriate). ZIP/7z writes need matching NEW .zip/.7z paths; extraction needs a NEW folder. '
++            'zip_extract/7z_extract/rar_extract/archive_convert use exactly {"source":"materials.zip"} (or a supported .7z/.rar/TAR source as appropriate). ZIP/7z writes need matching NEW .zip/.7z paths; extraction needs a NEW folder. '
+             'XLSX content is a JSON string: xlsx_recalculate uses exactly {"source":"edited.xlsx"}; '
+             'xlsx_merge uses exactly {"base":"base.xlsx","update":"update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}; '
+             'xlsx uses exactly {"source":"orders.xlsx","sheet":"Orders","cell":"C3","expected":4,"value":5}. '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -875,8 +875,15 @@
+                         'Do not infer that the retained original is absent or substitute a '
+                         'different document from matching extracted text. '
+                         'If the source cannot be identified, ask for clarification.'})
++            if type(args.get('pdf_form_fields', False)) is not bool:
++                raise ScopeDenied()
++            if args.get('pdf_form_fields', False):
++                if path.suffix.lower() != '.pdf' or pagination != (1, 2000, 0):
++                    raise ScopeDenied()
++                from hermes_cli.friday_workspace_pdf_form import read_fields
++                return read_fields(cap, path.as_posix())
+             from hermes_cli import friday_workspace_revision as revision
+-            if path.suffix.lower() in {'.zip', '.7z', '.gz', '.bz2', '.xz', '.zst'} or path.name.lower().endswith(('.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.tar.zst', '.tzst')):
++            if path.suffix.lower() in {'.zip', '.7z', '.rar', '.gz', '.bz2', '.xz', '.zst'} or path.name.lower().endswith(('.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.tar.zst', '.tzst')):
+                 from hermes_cli.friday_workspace_zip import read_archive
+                 return read_archive(cap, path.as_posix(), offset=args.get('offset', 1),
+                                     limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+@@ -899,7 +906,7 @@
+                                                       with_identity=True)
+                         if observed != document_snapshot:
+                             raise ScopeDenied()
+-                if document_format in ('docx', 'dotx'):
++                if document_format in ('docx', 'dotx', 'pdf'):
+                     source_sha256 = hashlib.sha256(data).hexdigest()
+                 revision.check(cap)
+                 try:
+@@ -1010,8 +1017,11 @@
+                 'hint': 'DOCM/DOTM support bounded inert reading only. Macro projects are '
+                         'opaque, never executed, and not accepted as safe. Creating or editing '
+                         'these profiles is unsupported; do not drop VBA or rename another format.'})
+-        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit'):
+-            raise ScopeDenied()
++        if output_format not in ('pdf_form_fill', 'text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract'):
++            raise ScopeDenied()
++        if output_format == 'docx_public_copy':
++            from hermes_cli.friday_workspace_word_public_copy import create_public_copy
++            return create_public_copy(cap,fd,parts[-1],path.as_posix(),args.get('content'))
+         if output_format == 'docx_report':
+             from hermes_cli.friday_workspace_word_report import create_report
+             return create_report(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+@@ -1077,6 +1087,9 @@
+             if path.suffix.lower() != '.7z': raise ScopeDenied()
+             from hermes_cli.friday_workspace_zip import create_7z
+             return create_7z(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'rar_extract':
++            from hermes_cli.friday_workspace_zip import extract_zip
++            return extract_zip(cap, fd, parts[-1], path.as_posix(), args.get('content'), _format='rar')
+         if output_format == '7z_extract':
+             from hermes_cli.friday_workspace_zip import extract_zip
+             return extract_zip(cap, fd, parts[-1], path.as_posix(), args.get('content'), _format='7z')
+@@ -1130,10 +1143,18 @@
+             if path.suffix.lower() != '.docx': raise ScopeDenied()
+             from hermes_cli.friday_workspace_docx_merge import create
+             return create(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'pdf_optimize':
++            if path.suffix.lower() != '.pdf': raise ScopeDenied()
++            from hermes_cli.friday_workspace_pdf_optimize import create
++            return create(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format == 'pdf_pages':
+             if path.suffix.lower() != '.pdf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_pdf_pages import create_pages
+             return create_pages(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'pdf_form_fill':
++            if path.suffix.lower() != '.pdf': raise ScopeDenied()
++            from hermes_cli.friday_workspace_pdf_form import create_filled
++            return create_filled(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format == 'docx_pdf':
+             if path.suffix.lower() != '.pdf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_pdf import create_pdf
+@@ -1148,7 +1169,7 @@
+                                         format=profile)
+             return word.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                                format=profile, structured=output_format.endswith('_structured'))
+-        if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.mhtml', '.mht', '.doc', '.dot', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.xlsb', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
++        if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.mhtml', '.mht', '.doc', '.dot', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.xlsb', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.rar', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+             if path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
+--- /dev/null
++++ b/hermes_cli/friday_workspace_pdf_form.py
+@@ -0,0 +1,57 @@
++"""Finite own-workspace AcroForm read/fill; immutable source and create-only CAS."""
++import hashlib
++import json
++
++
++def _refusal(error):
++    from hermes_cli.friday_workspace_zip import _encode
++    return _encode(dict(success=False,error='pdf_form_refused',reason=str(error),
++        effect_disposition='unknown' if str(error)=='pdf_cleanup_unconfirmed' else 'none'))
++
++
++def read_fields(cap, relative):
++    from hermes_cli.friday_workspace_zip import _source,_verify,_inline_budget,_fits,_capacity,_encode
++    from tools.scoped_pdf_form import process,PDFFormError
++    data,identity=_source(cap,relative)
++    try:
++        _,metadata=process(cap,data)
++        _verify(cap,[(relative,data,identity)])
++        result=dict(metadata,success=True,path=relative,scope='own_user_workspace',
++            source_sha256=hashlib.sha256(data).hexdigest(),coverage='supported_AcroForm_field_metadata_only; page_text_and_rendering_not_covered')
++        budget=_inline_budget()
++        return _encode(result) if _fits(result,budget) else _capacity(budget)
++    except PDFFormError as error:
++        return _refusal(error)
++
++
++def create_filled(cap, fd, leaf, relative, content):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_revision import check
++    from hermes_cli.friday_workspace_docx import _check_parent,_create_bytes
++    from hermes_cli.friday_workspace_zip import _path,_source,_verify,_inline_budget,_fits,_capacity,_encode
++    from tools.scoped_pdf_form import request,process,PDFFormError
++    _check_parent(cap,fd,relative)
++    try:
++        spec=request(content)
++        source=_path(spec['source'])
++        if not source.lower().endswith('.pdf'): raise ScopeDenied()
++        data,identity=_source(cap,source)
++        if hashlib.sha256(data).hexdigest()!=spec['source_sha256']:
++            return _refusal('pdf_source_changed')
++        states=[(source,data,identity)]
++        output,metadata=process(cap,data,spec['fields'])
++        check(cap)
++        receipt=dict(metadata,source=source,source_sha256=spec['source_sha256'],source_unchanged=True,
++            modified_fields=list(spec['fields']),rasterized=False,
++            preservation='unrelated_catalog_pages_resources_and_fields_verified')
++        estimate=dict(receipt,success=True,path=relative,format='pdf',scope='own_user_workspace',
++            create_only=True,verified=True,bytes_written=len(output),sha256=hashlib.sha256(output).hexdigest())
++        budget=_inline_budget()
++        if not _fits(estimate,budget): return _capacity(budget)
++        _verify(cap,states)
++        result=json.loads(_create_bytes(cap,fd,leaf,relative,output,output_format='pdf',
++            verify_source=lambda:_verify(cap,states)))
++        if result.get('success'): result.update(receipt)
++        return _encode(result)
++    except PDFFormError as error:
++        return _refusal(error)
+--- /dev/null
++++ b/hermes_cli/friday_workspace_pdf_optimize.py
+@@ -0,0 +1,33 @@
++"""Create-only PDF optimization with source hash and workspace CAS."""
++import hashlib
++import json
++
++
++def create(cap, fd, leaf, relative, content):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_revision import check
++    from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++    from hermes_cli.friday_workspace_zip import _path, _source, _verify, _inline_budget, _fits, _capacity, _encode
++    from tools.scoped_pdf_optimize import request, optimize, PDFOptimizeError
++    _check_parent(cap, fd, relative)
++    try:
++        spec=request(content)
++        path=_path(spec['source'])
++        if not path.lower().endswith('.pdf'):raise ScopeDenied()
++        state=(path,*_source(cap,path))
++        if hashlib.sha256(state[1]).hexdigest()!=spec['source_sha256']:
++            raise PDFOptimizeError('pdf_source_changed')
++        data,metadata=optimize(cap,state[1],spec['source_sha256'])
++        check(cap)
++        receipt=dict(metadata,source=path,sources_unchanged=True)
++        budget=_inline_budget()
++        estimate=dict(receipt,success=True,path=relative,format='pdf',scope='own_user_workspace',
++                      create_only=True,verified=True,bytes_written=len(data),sha256=hashlib.sha256(data).hexdigest())
++        if not _fits(estimate,budget):return _capacity(budget)
++        _verify(cap,[state])
++        result=json.loads(_create_bytes(cap,fd,leaf,relative,data,output_format='pdf',verify_source=lambda:_verify(cap,[state])))
++        if result.get('success'):result.update(receipt)
++        return _encode(result)
++    except PDFOptimizeError as error:
++        return _encode(dict(success=False,error='pdf_optimize_refused',reason=str(error),
++                            effect_disposition='unknown' if str(error)=='pdf_cleanup_unconfirmed' else 'none'))
+--- /dev/null
++++ b/hermes_cli/friday_workspace_rar_codec.py
+@@ -0,0 +1,779 @@
++"""Finite inert RAR reader; no extraction, host paths or proprietary encoder.
++
++RAR4 stored members and RAR5 version-0 stored/compressed members are supported.
++RAR4 compression is refused: libarchive 3.8.5's public reader stops at the
++untrusted declared size and cannot establish the compression stream's end.
++A Python envelope pass verifies every block before a networkless bwrap worker
++loads the documented libarchive C ABI. No libarchive runs in the host process.
++The caller retains workspace/name/secret checks and its original native clock.
++"""
++import base64
++import binascii
++import json
++import os
++from pathlib import Path
++import selectors
++import shutil
++import stat
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++import unicodedata
++
++MAX_BYTES = 1_000_000
++MAX_ENTRIES = 128
++MAX_DEPTH = 16
++MAX_NAME_BYTES = 512
++WALL_SECONDS = 12
++CPU_SECONDS = 4
++MEMORY_BYTES = 384 * 1024 * 1024
++_WIRE_MAX = 2_200_000
++_LIBRARY = '/usr/lib/x86_64-linux-gnu/libarchive.so.13'
++_VERSION = 3008005
++_RAR4 = b'Rar!\x1a\x07\x00'
++_RAR5 = b'Rar!\x1a\x07\x01\x00'
++_CODES = frozenset(('rar_invalid_archive', 'rar_header_crc', 'rar_data_crc',
++    'rar_byte_limit', 'rar_entry_limit', 'rar_invalid_name', 'rar_special_member',
++    'rar_encrypted_archive', 'rar_multivolume_archive', 'rar_unsupported_archive',
++    'rar_unsupported_compression', 'rar_name_encoding_unsupported',
++    'rar_codec_unavailable', 'rar_worker_failed', 'rar_resource_limit',
++    'rar_cleanup_unconfirmed', 'rar_custody_busy', 'rar_authority_changed'))
++
++
++class RARCodecError(ValueError):
++    """Finite reason code, never dependency diagnostics or archive contents."""
++
++
++def _crc(data):
++    return binascii.crc32(data) & 0xffffffff
++
++
++def _name(value, directory):
++    try:
++        raw = value.encode('utf-8', 'strict')
++    except (AttributeError, UnicodeError):
++        raise RARCodecError('rar_invalid_name') from None
++    body = value[:-1] if directory and value.endswith('/') else value
++    pieces = body.split('/')
++    if (not body or len(raw) > MAX_NAME_BYTES or len(pieces) > MAX_DEPTH
++            or body != unicodedata.normalize('NFC', body)
++            or any(c in body for c in ('\\', ':', '\x00'))
++            or any(unicodedata.category(c).startswith('C') for c in body)
++            or any(not p or p in ('.', '..') or len(p.encode('utf-8')) > 255 for p in pieces)
++            or not directory and value.endswith('/')):
++        raise RARCodecError('rar_invalid_name')
++    return body + ('/' if directory else '')
++
++
++def _paths(rows):
++    names = {}
++    for row in rows:
++        name, directory = row['name'], row['directory']
++        body = name[:-1] if directory else name
++        if body in names:
++            raise RARCodecError('rar_invalid_name')
++        names[body] = directory
++    for body in names:
++        pieces = body.split('/')
++        if any(names.get('/'.join(pieces[:n])) is False for n in range(1, len(pieces))):
++            raise RARCodecError('rar_invalid_name')
++
++
++class _Cursor:
++    def __init__(self, data, start=0, end=None):
++        self.data, self.pos = data, start
++        self.end = len(data) if end is None else end
++        if not 0 <= start <= self.end <= len(data):
++            raise RARCodecError('rar_invalid_archive')
++
++    def take(self, length):
++        if not 0 <= length <= self.end - self.pos:
++            raise RARCodecError('rar_invalid_archive')
++        result = self.data[self.pos:self.pos + length]
++        self.pos += length
++        return result
++
++    def u8(self):
++        return self.take(1)[0]
++
++    def u16(self):
++        return int.from_bytes(self.take(2), 'little')
++
++    def u32(self):
++        return int.from_bytes(self.take(4), 'little')
++
++    def vint(self, maximum=10):
++        value = 0
++        for index in range(maximum):
++            byte = self.u8()
++            if index == 9 and byte > 1:
++                raise RARCodecError('rar_invalid_archive')
++            value |= (byte & 127) << (7 * index)
++            if byte < 128:
++                return value
++        raise RARCodecError('rar_invalid_archive')
++
++    def finish(self):
++        if self.pos != self.end:
++            raise RARCodecError('rar_unsupported_archive')
++
++
++def _attributes(host, attrs, directory, *, rar5):
++    unix = 1 if rar5 else 3
++    windows = (0,) if rar5 else (0, 1, 2)
++    if host == unix:
++        if stat.S_IFMT(attrs) != (stat.S_IFDIR if directory else stat.S_IFREG):
++            raise RARCodecError('rar_special_member')
++        if attrs & ~0xffff:
++            raise RARCodecError('rar_special_member')
++    elif host in windows:
++        # FILE_ATTRIBUTE_DEVICE / REPARSE_POINT, unknown future bits and a
++        # disagreement between the two independent directory declarations fail.
++        if attrs & ~0x27b7 or attrs & (0x40 | 0x200 | 0x400) or bool(attrs & 0x10) != directory:
++            raise RARCodecError('rar_special_member')
++    else:
++        raise RARCodecError('rar_unsupported_archive')
++
++
++def _rar4(data, checkpoint):
++    pos, main, ended, rows, total = len(_RAR4), False, False, [], 0
++    while pos < len(data):
++        checkpoint()
++        if ended:
++            raise RARCodecError('rar_invalid_archive')
++        head = _Cursor(data, pos)
++        stored_crc, kind, flags, size = head.u16(), head.u8(), head.u16(), head.u16()
++        if size < 7 or size > len(data) - pos:
++            raise RARCodecError('rar_invalid_archive')
++        end = pos + size
++        if _crc(data[pos + 2:end]) & 0xffff != stored_crc:
++            raise RARCodecError('rar_header_crc')
++        head.end = end
++        packed = 0
++        if kind == 0x73:
++            if main or rows or size != 13:
++                raise RARCodecError('rar_invalid_archive')
++            if flags & 0x101:
++                raise RARCodecError('rar_multivolume_archive')
++            if flags & 0x80:
++                raise RARCodecError('rar_encrypted_archive')
++            if flags & ~0x14 or head.take(6) != b'\0' * 6:
++                raise RARCodecError('rar_unsupported_archive')
++            main = True
++        elif kind == 0x74:
++            if not main:
++                raise RARCodecError('rar_invalid_archive')
++            if flags & 3:
++                raise RARCodecError('rar_multivolume_archive')
++            if flags & (4 | 0x400):
++                raise RARCodecError('rar_encrypted_archive')
++            if not flags & 0x8000 or flags & ~0x93e0:
++                raise RARCodecError('rar_unsupported_archive')
++            packed, unpacked, host, crc = head.u32(), head.u32(), head.u8(), head.u32()
++            dos_time = head.u32()
++            version, method, name_size, attrs = head.u8(), head.u8(), head.u16(), head.u32()
++            if flags & 0x100:
++                packed += head.u32() << 32
++                unpacked += head.u32() << 32
++            if method != 0x30:
++                raise RARCodecError('rar_unsupported_compression')
++            if version > 50:
++                raise RARCodecError('rar_unsupported_compression')
++            directory = flags & 0xe0 == 0xe0
++            _attributes(host, attrs, directory, rar5=False)
++            raw_name = head.take(name_size)
++            try:
++                if flags & 0x200 and b'\0' in raw_name:
++                    raise RARCodecError('rar_name_encoding_unsupported')
++                name = raw_name.decode('utf-8' if flags & 0x200 else 'ascii', 'strict')
++            except UnicodeError:
++                raise RARCodecError('rar_name_encoding_unsupported') from None
++            # RAR4's documented path separator is backslash, independently of
++            # the originating OS. It denotes a path boundary, not a literal '\\'.
++            name = _name(name.replace('\\', '/'), directory)
++            if flags & 0x1000:
++                times = head.u16()
++                for index in range(3, -1, -1):
++                    mode = (times >> (index * 4)) & 15
++                    if mode & 8:
++                        if index != 3:
++                            head.take(4)
++                        elif dos_time == 0:
++                            raise RARCodecError('rar_unsupported_archive')
++                        head.take(mode & 3)
++            if packed != unpacked or directory and (packed or crc):
++                raise RARCodecError('rar_invalid_archive')
++            total += unpacked
++            if total > MAX_BYTES or packed > MAX_BYTES:
++                raise RARCodecError('rar_byte_limit')
++            if packed > len(data) - end:
++                raise RARCodecError('rar_invalid_archive')
++            if _crc(data[end:end + packed]) != crc:
++                raise RARCodecError('rar_data_crc')
++            rows.append({'name': name, 'directory': directory, 'size': unpacked,
++                         'crc': crc, 'start': end, 'end': end + packed, 'method': 0})
++            if len(rows) > MAX_ENTRIES:
++                raise RARCodecError('rar_entry_limit')
++        elif kind == 0x7b:
++            if not main or flags & ~0x4000 or size != 7:
++                raise RARCodecError('rar_unsupported_archive')
++            ended = True
++        else:
++            # Includes archive comments, recovery records, substreams and all
++            # service blocks. They are never silently skipped.
++            raise RARCodecError('rar_unsupported_archive')
++        head.finish()
++        pos = end + packed
++    if not ended:
++        raise RARCodecError('rar_invalid_archive')
++    return rows
++
++
++def _extras(data, start, end, *, main):
++    extra = _Cursor(data, start, end)
++    seen = set()
++    while extra.pos < end:
++        length = extra.vint()
++        record = _Cursor(data, extra.pos, extra.pos + length)
++        extra.pos += length
++        kind = record.vint()
++        if kind in seen:
++            raise RARCodecError('rar_invalid_archive')
++        seen.add(kind)
++        if main:
++            if kind != 1:
++                raise RARCodecError('rar_unsupported_archive')
++            flags = record.vint()
++            if flags & ~3:
++                raise RARCodecError('rar_unsupported_archive')
++            # A nonzero locator promises a separate service block that this
++            # finite profile does not accept. Zero overprovisioned vints are
++            # explicitly permitted by the RAR specification.
++            for bit in (1, 2):
++                if flags & bit and record.vint():
++                    raise RARCodecError('rar_unsupported_archive')
++        elif kind == 1:
++            raise RARCodecError('rar_encrypted_archive')
++        elif kind == 5:
++            raise RARCodecError('rar_special_member')
++        elif kind == 3:
++            flags = record.vint()
++            if flags & ~0x1f or flags & 0x10 and not flags & 1:
++                raise RARCodecError('rar_unsupported_archive')
++            for bit in (2, 4, 8):
++                if flags & bit:
++                    record.take(4 if flags & 1 else 8)
++            if flags & 0x10:
++                for bit in (2, 4, 8):
++                    if flags & bit and record.u32() >= 1_000_000_000:
++                        raise RARCodecError('rar_invalid_archive')
++        else:
++            # BLAKE2sp-only checksums, versions, owner records and extra data
++            # are outside this profile. Every supported regular file has CRC32.
++            raise RARCodecError('rar_unsupported_archive')
++        record.finish()
++    extra.finish()
++
++
++def _rar5_frames(data, start, end, checkpoint):
++    """Verify physical compressed block boundaries, checksums and final marker.
++
++    Layout is published in libarchive 3.8.5 parse_block_header/bf_* functions.
++    No entropy decode happens here. A last marker must coincide with the exact
++    packed extent; unused bits must be zero. Native output is independently
++    counted using archive_read_data_block, never a declared-size copy helper.
++    """
++    block = _Cursor(data, start, end)
++    count = 0
++    while block.pos < end:
++        checkpoint()
++        count += 1
++        if count > MAX_BYTES // 3:
++            raise RARCodecError('rar_resource_limit')
++        flags, checksum = block.u8(), block.u8()
++        size_bytes = ((flags >> 3) & 7) + 1
++        if size_bytes > 3:
++            raise RARCodecError('rar_unsupported_compression')
++        length = int.from_bytes(block.take(size_bytes), 'little')
++        if checksum != (0x5a ^ flags ^ (length & 255) ^ ((length >> 8) & 255) ^ ((length >> 16) & 255)):
++            raise RARCodecError('rar_header_crc')
++        if not length:
++            raise RARCodecError('rar_invalid_archive')
++        payload = block.take(length)
++        bits = (flags & 7) + 1
++        if payload[-1] & ((1 << (8 - bits)) - 1):
++            raise RARCodecError('rar_invalid_archive')
++        if flags & 0x40:
++            block.finish()
++            return
++    raise RARCodecError('rar_invalid_archive')
++
++
++def _rar5(data, checkpoint):
++    pos, main, ended, rows, total = len(_RAR5), False, False, [], 0
++    while pos < len(data):
++        checkpoint()
++        if ended:
++            raise RARCodecError('rar_invalid_archive')
++        block = _Cursor(data, pos)
++        stored_crc = block.u32()
++        size_start = block.pos
++        size = block.vint(3)
++        end = block.pos + size
++        if end > len(data):
++            raise RARCodecError('rar_invalid_archive')
++        if _crc(data[size_start:end]) != stored_crc:
++            raise RARCodecError('rar_header_crc')
++        block.end = end
++        kind, flags = block.vint(), block.vint()
++        if flags & 0x18:
++            raise RARCodecError('rar_multivolume_archive')
++        if flags & ~7:
++            raise RARCodecError('rar_unsupported_archive')
++        extra_size = block.vint() if flags & 1 else 0
++        packed = block.vint() if flags & 2 else 0
++        field_end = end - extra_size
++        if field_end < block.pos or packed > len(data) - end:
++            raise RARCodecError('rar_invalid_archive')
++        block.end = field_end
++        if kind == 1:
++            if main or rows or packed:
++                raise RARCodecError('rar_invalid_archive')
++            archive_flags = block.vint()
++            if archive_flags & 3:
++                raise RARCodecError('rar_multivolume_archive')
++            if archive_flags & ~0x10:
++                raise RARCodecError('rar_unsupported_archive')
++            main = True
++            _extras(data, field_end, end, main=True)
++        elif kind == 2:
++            if not main:
++                raise RARCodecError('rar_invalid_archive')
++            file_flags, unpacked, attrs = block.vint(), block.vint(), block.vint()
++            if file_flags & ~7:
++                raise RARCodecError('rar_unsupported_archive')
++            directory = bool(file_flags & 1)
++            if file_flags & 2:
++                block.u32()
++            crc = block.u32() if file_flags & 4 else None
++            compression, host, name_size = block.vint(), block.vint(), block.vint()
++            method = (compression >> 7) & 7
++            if (compression & 63 or compression & 0x40 or compression >> 14
++                    or method > 5 or ((compression >> 10) & 15) > 9):
++                raise RARCodecError('rar_unsupported_compression')
++            _attributes(host, attrs, directory, rar5=True)
++            try:
++                name = _name(block.take(name_size).decode('utf-8', 'strict'), directory)
++            except UnicodeError:
++                raise RARCodecError('rar_name_encoding_unsupported') from None
++            if (directory and (packed or unpacked or crc not in (None, 0))
++                    or not directory and crc is None
++                    or not directory and not flags & 2
++                    or directory and method != 0):
++                raise RARCodecError('rar_invalid_archive')
++            total += unpacked
++            if total > MAX_BYTES or packed > MAX_BYTES:
++                raise RARCodecError('rar_byte_limit')
++            _extras(data, field_end, end, main=False)
++            if method == 0:
++                if packed != unpacked:
++                    raise RARCodecError('rar_invalid_archive')
++                if _crc(data[end:end + packed]) != (crc or 0):
++                    raise RARCodecError('rar_data_crc')
++            elif not directory:
++                _rar5_frames(data, end, end + packed, checkpoint)
++            rows.append({'name': name, 'directory': directory, 'size': unpacked,
++                         'crc': crc or 0, 'start': end, 'end': end + packed, 'method': method})
++            if len(rows) > MAX_ENTRIES:
++                raise RARCodecError('rar_entry_limit')
++        elif kind == 4:
++            raise RARCodecError('rar_encrypted_archive')
++        elif kind == 5:
++            if not main or packed or extra_size:
++                raise RARCodecError('rar_invalid_archive')
++            end_flags = block.vint()
++            if end_flags & 1:
++                raise RARCodecError('rar_multivolume_archive')
++            if end_flags:
++                raise RARCodecError('rar_unsupported_archive')
++            ended = True
++        else:
++            raise RARCodecError('rar_unsupported_archive')
++        block.finish()
++        pos = end + packed
++    if not ended:
++        raise RARCodecError('rar_invalid_archive')
++    return rows
++
++
++def _parse(data, checkpoint):
++    if type(data) is not bytes or not 0 < len(data) <= MAX_BYTES:
++        raise RARCodecError('rar_byte_limit')
++    checkpoint()
++    if data.startswith(_RAR5):
++        rows = _rar5(data, checkpoint)
++    elif data.startswith(_RAR4):
++        rows = _rar4(data, checkpoint)
++    else:
++        raise RARCodecError('rar_invalid_archive')
++    _paths(rows)
++    checkpoint()
++    return rows
++
++
++def _argv(work):
++    argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--as-pid-1',
++            '--cap-drop', 'ALL', '--clearenv', '--setenv', 'LANG', 'C.UTF-8',
++            '--setenv', 'LC_ALL', 'C.UTF-8', '--ro-bind', '/usr', '/usr']
++    for name in ('bin', 'sbin', 'lib', 'lib64'):
++        path = Path('/') / name
++        if path.exists():
++            target = path.resolve()
++            if not target.is_relative_to('/usr'):
++                raise RARCodecError('rar_codec_unavailable')
++            argv += ['--symlink', str(target), '/' + name]
++    # There is no writable host mount and no output file. The sole result pipe
++    # is bounded by the parent; all other mounts are private or read-only.
++    argv += ['--proc', '/proc', '--remount-ro', '/proc', '--dir', '/tmp',
++             '--ro-bind', str(work), '/work', '--chdir', '/work',
++             '--remount-ro', '/', '--', '/usr/bin/python3', '-I', '-B', '-S',
++             '/work/runner.py', '--child']
++    return argv
++
++
++def _run(work, checkpoint):
++    from agent.web_call_context import _current, same_web_authority
++    from tools.scoped_pdf_ocr import _Custody
++    call = _current.get()
++    custody = _Custody()
++    lock = call.turn.lock if call is not None else threading.RLock()
++    bound = False
++    deadline = time.monotonic() + WALL_SECONDS
++    output = bytearray()
++    try:
++        with lock:
++            checkpoint()
++            if call is not None:
++                call.check()
++                if not same_web_authority(call):
++                    raise RARCodecError('rar_authority_changed')
++                deadline = min(deadline, call.deadline())
++                if call.session is not None or call.registry is not None:
++                    raise RARCodecError('rar_custody_busy')
++                call.session = call.registry = custody
++                call.turn.calls.add(custody)
++                bound = True
++            if time.monotonic() >= deadline:
++                raise RARCodecError('rar_resource_limit')
++            try:
++                custody.process = subprocess.Popen(_argv(work), cwd=work,
++                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
++                    close_fds=True, start_new_session=True,
++                    env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
++            except OSError:
++                raise RARCodecError('rar_codec_unavailable') from None
++        stream = custody.process.stdout
++        os.set_blocking(stream.fileno(), False)
++        with selectors.DefaultSelector() as selector:
++            selector.register(stream, selectors.EVENT_READ)
++            while selector.get_map():
++                checkpoint()
++                if call is not None:
++                    call.check()
++                    if not same_web_authority(call):
++                        raise RARCodecError('rar_authority_changed')
++                remaining = deadline - time.monotonic()
++                if remaining <= 0:
++                    raise RARCodecError('rar_resource_limit')
++                for key, _ in selector.select(min(.05, remaining)):
++                    chunk = os.read(key.fd, min(65536, _WIRE_MAX + 1 - len(output)))
++                    if not chunk:
++                        selector.unregister(stream)
++                    else:
++                        output.extend(chunk)
++                        if len(output) > _WIRE_MAX:
++                            raise RARCodecError('rar_resource_limit')
++        while custody.process.poll() is None:
++            checkpoint()
++            if call is not None:
++                call.check()
++                if not same_web_authority(call):
++                    raise RARCodecError('rar_authority_changed')
++            if time.monotonic() >= deadline:
++                raise RARCodecError('rar_resource_limit')
++            try:
++                custody.process.wait(timeout=min(.05, max(.001, deadline - time.monotonic())))
++            except subprocess.TimeoutExpired:
++                pass
++        checkpoint()
++        if call is not None:
++            call.check()
++            if not same_web_authority(call):
++                raise RARCodecError('rar_authority_changed')
++        if custody.process.returncode != 0:
++            raise RARCodecError('rar_worker_failed')
++        return bytes(output)
++    finally:
++        receipt = custody.stop()
++        if custody.process is not None and custody.process.stdout is not None:
++            custody.process.stdout.close()
++        with lock:
++            if bound and receipt['status'] == 'QUIESCENT':
++                if call.session is not custody or call.registry is not custody:
++                    receipt = {'status': 'STOP_UNCONFIRMED'}
++                else:
++                    call.session = call.registry = None
++                    call.turn.calls.discard(custody)
++        if receipt['status'] != 'QUIESCENT':
++            if call is not None and hasattr(call, 'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise RARCodecError('rar_cleanup_unconfirmed')
++
++
++def _response(raw, expected):
++    def pairs(items):
++        result = {}
++        for key, value in items:
++            if key in result:
++                raise RARCodecError('rar_worker_failed')
++            result[key] = value
++        return result
++    try:
++        value = json.loads(raw, object_pairs_hook=pairs)
++        if type(value) is not dict:
++            raise RARCodecError('rar_worker_failed')
++        if set(value) == {'error'}:
++            code = value['error']
++            raise RARCodecError(code if type(code) is str and code in _CODES else 'rar_worker_failed')
++        if (set(value) != {'members', 'version'} or value['version'] != _VERSION
++                or type(value['members']) is not list or len(value['members']) != len(expected)):
++            raise RARCodecError('rar_worker_failed')
++        result, total = [], 0
++        for actual, wanted in zip(value['members'], expected):
++            if (type(actual) is not list or len(actual) != 2 or actual[0] != wanted['name']
++                    or type(actual[1]) is not str):
++                raise RARCodecError('rar_worker_failed')
++            payload = base64.b64decode(actual[1], validate=True)
++            total += len(payload)
++            if total > MAX_BYTES or len(payload) != wanted['size'] or _crc(payload) != wanted['crc']:
++                raise RARCodecError('rar_worker_failed')
++            result.append((wanted['name'], payload))
++        return result
++    except (TypeError, UnicodeError, binascii.Error, json.JSONDecodeError, RecursionError):
++        raise RARCodecError('rar_worker_failed') from None
++
++
++def read_rar_bytes(data, *, checkpoint=None):
++    """Return every regular file/directory in order, only after full validation.
++
++    Directories use a single trailing '/' and b''. The checkpoint callback is
++    synchronous and its original cancellation/deadline exception is propagated
++    after native custody is stopped and reaped. No output occurs before return.
++    """
++    if checkpoint is None:
++        checkpoint = lambda: None
++    if not callable(checkpoint):
++        raise RARCodecError('rar_invalid_archive')
++    rows = _parse(data, checkpoint)
++    work = None
++    try:
++        checkpoint()
++        try:
++            library = Path(_LIBRARY).resolve(strict=True)
++            info = library.stat()
++            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
++                raise RARCodecError('rar_codec_unavailable')
++            work = Path(tempfile.mkdtemp(prefix='friday-rar-'))
++            work.chmod(0o700)
++            for name, payload in (('runner.py', Path(__file__).read_bytes()), ('input.rar', data)):
++                path = work / name
++                with path.open('xb') as stream:
++                    stream.write(payload)
++                path.chmod(0o600)
++        except OSError:
++            raise RARCodecError('rar_codec_unavailable') from None
++        checkpoint()
++        result = _response(_run(work, checkpoint), rows)
++        checkpoint()
++        return result
++    finally:
++        if work is not None:
++            try:
++                shutil.rmtree(work)
++            except OSError:
++                try:
++                    from agent.web_call_context import _current
++                    call = _current.get()
++                    if call is not None and hasattr(call, 'agent'):
++                        call.agent._friday_reply_effect_unknown = True
++                finally:
++                    raise RARCodecError('rar_cleanup_unconfirmed') from None
++
++
++# Child-only ABI, as declared by official libarchive v3.8.5 archive.h and
++# archive_entry.h. Opaque pointers only: no guessed internal structs or offsets.
++def _library():
++    import ctypes as C
++    library = C.CDLL(_LIBRARY)
++    ptr, integer, string = C.c_void_p, C.c_int, C.c_char_p
++    signatures = {
++        'archive_version_number': (integer, []),
++        'archive_read_new': (ptr, []),
++        'archive_read_support_filter_none': (integer, [ptr]),
++        'archive_read_support_format_rar': (integer, [ptr]),
++        'archive_read_support_format_rar5': (integer, [ptr]),
++        'archive_read_open_memory': (integer, [ptr, ptr, C.c_size_t]),
++        'archive_read_next_header': (integer, [ptr, C.POINTER(ptr)]),
++        'archive_read_data_block': (integer, [ptr, C.POINTER(ptr), C.POINTER(C.c_size_t), C.POINTER(C.c_int64)]),
++        'archive_read_close': (integer, [ptr]), 'archive_read_free': (integer, [ptr]),
++        'archive_read_has_encrypted_entries': (integer, [ptr]),
++        'archive_filter_bytes': (C.c_int64, [ptr, integer]),
++        'archive_format': (integer, [ptr]),
++        'archive_entry_pathname_utf8': (string, [ptr]),
++        'archive_entry_filetype': (C.c_uint, [ptr]),
++        'archive_entry_size': (C.c_int64, [ptr]),
++        'archive_entry_size_is_set': (integer, [ptr]),
++        'archive_entry_is_encrypted': (integer, [ptr]),
++        'archive_entry_hardlink': (string, [ptr]),
++        'archive_entry_symlink': (string, [ptr]),
++        'archive_entry_sparse_count': (integer, [ptr]),
++    }
++    for name, (restype, argtypes) in signatures.items():
++        function = getattr(library, name)
++        function.restype, function.argtypes = restype, argtypes
++    if library.archive_version_number() != _VERSION:
++        raise RARCodecError('rar_codec_unavailable')
++    return library
++
++
++def _native_decode(data, rows):
++    import ctypes as C
++    library = _library()
++    archive = library.archive_read_new()
++    if not archive:
++        raise RARCodecError('rar_resource_limit')
++    source = C.create_string_buffer(data)
++    closed = False
++    try:
++        support = (library.archive_read_support_format_rar5 if data.startswith(_RAR5)
++                   else library.archive_read_support_format_rar)
++        if (library.archive_read_support_filter_none(archive) != 0 or support(archive) != 0
++                or library.archive_read_open_memory(archive, source, len(data)) != 0):
++            raise RARCodecError('rar_invalid_archive')
++        result, physical = [], 0
++        for expected in rows:
++            entry = C.c_void_p()
++            if library.archive_read_next_header(archive, C.byref(entry)) != 0 or not entry:
++                raise RARCodecError('rar_invalid_archive')
++            raw_name = library.archive_entry_pathname_utf8(entry)
++            if raw_name is None:
++                raise RARCodecError('rar_invalid_name')
++            name = _name(raw_name.decode('utf-8', 'strict'), expected['directory'])
++            if (name != expected['name']
++                    or not library.archive_entry_size_is_set(entry)
++                    or library.archive_entry_size(entry) != expected['size']
++                    or library.archive_entry_filetype(entry) != (stat.S_IFDIR if expected['directory'] else stat.S_IFREG)
++                    or library.archive_entry_is_encrypted(entry)
++                    or library.archive_entry_hardlink(entry) is not None
++                    or library.archive_entry_symlink(entry) is not None
++                    or library.archive_entry_sparse_count(entry)):
++                raise RARCodecError('rar_special_member')
++            payload = bytearray()
++            if not expected['directory']:
++                empty_blocks = 0
++                while True:
++                    address, size, offset = C.c_void_p(), C.c_size_t(), C.c_int64()
++                    code = library.archive_read_data_block(archive, C.byref(address), C.byref(size), C.byref(offset))
++                    if code == 1:  # ARCHIVE_EOF
++                        if size.value:
++                            raise RARCodecError('rar_invalid_archive')
++                        break
++                    if code != 0:
++                        raise RARCodecError('rar_invalid_archive')
++                    if not size.value:
++                        # RAR5 legitimately reports an intermediate successful
++                        # call with no output while its decode state advances.
++                        empty_blocks += 1
++                        if empty_blocks > 1024:
++                            raise RARCodecError('rar_resource_limit')
++                        continue
++                    empty_blocks = 0
++                    if not address:
++                        raise RARCodecError('rar_invalid_archive')
++                    physical += size.value
++                    if physical > MAX_BYTES:
++                        raise RARCodecError('rar_byte_limit')
++                    if offset.value != len(payload) or size.value > expected['size'] - len(payload):
++                        raise RARCodecError('rar_invalid_archive')
++                    payload.extend(C.string_at(address, size.value))
++            if len(payload) != expected['size'] or _crc(payload) != expected['crc']:
++                raise RARCodecError('rar_data_crc')
++            # No skip API: every payload was consumed, and libarchive must be
++            # exactly at its independently checked physical packed boundary.
++            if library.archive_filter_bytes(archive, 0) != expected['end']:
++                raise RARCodecError('rar_invalid_archive')
++            result.append([expected['name'], base64.b64encode(payload).decode('ascii')])
++        entry = C.c_void_p()
++        expected_eof = len(data)
++        if data.startswith(_RAR5):
++            # Pinned 3.8.5 process_base_block returns EOF for ENDARC after
++            # consuming its CRC32 only. Python already verified the entire
++            # end header CRC, fields, exact length and absence of tail bytes.
++            if rows:
++                end_start = rows[-1]['end']
++            else:
++                first = _Cursor(data, len(_RAR5) + 4)
++                main_size = first.vint(3)
++                end_start = first.pos + main_size
++            expected_eof = end_start + 4
++        if (library.archive_read_next_header(archive, C.byref(entry)) != 1
++                or library.archive_filter_bytes(archive, 0) != expected_eof
++                or library.archive_read_has_encrypted_entries(archive) != 0
++                or library.archive_format(archive) != (0x100000 if data.startswith(_RAR5) else 0xd0000)):
++            raise RARCodecError('rar_invalid_archive')
++        if library.archive_read_close(archive) != 0:
++            raise RARCodecError('rar_invalid_archive')
++        closed = True
++        return {'members': result, 'version': _VERSION}
++    finally:
++        if not closed:
++            library.archive_read_close(archive)
++        library.archive_read_free(archive)
++
++
++def _child():
++    import resource
++    import locale
++    locale.setlocale(locale.LC_ALL, 'C.UTF-8')
++    os.umask(0o077)
++    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:2])
++    for key, value in ((resource.RLIMIT_AS, MEMORY_BYTES), (resource.RLIMIT_CPU, CPU_SECONDS),
++                       (resource.RLIMIT_FSIZE, 0), (resource.RLIMIT_CORE, 0),
++                       (resource.RLIMIT_NOFILE, 32), (resource.RLIMIT_NPROC, 1)):
++        resource.setrlimit(key, (value, value))
++    try:
++        data = Path('/work/input.rar').read_bytes()
++        rows = _parse(data, lambda: None)
++        response = _native_decode(data, rows)
++    except RARCodecError as error:
++        response = {'error': str(error) if str(error) in _CODES else 'rar_worker_failed'}
++    except (OSError, AttributeError, ImportError):
++        response = {'error': 'rar_codec_unavailable'}
++    except MemoryError:
++        response = {'error': 'rar_resource_limit'}
++    except BaseException:
++        response = {'error': 'rar_invalid_archive'}
++    raw = json.dumps(response, ensure_ascii=True, separators=(',', ':')).encode('ascii')
++    if len(raw) > _WIRE_MAX:
++        raw = b'{"error":"rar_resource_limit"}'
++    sys.stdout.buffer.write(raw)
++    sys.stdout.buffer.flush()
++
++
++if __name__ == '__main__':
++    if sys.argv[1:] == ['--child']:
++        _child()
++    else:
++        raise SystemExit(2)
+--- /dev/null
++++ b/hermes_cli/friday_workspace_word_public_copy.py
+@@ -0,0 +1,50 @@
++"""Source-bound public Word reconstruction using the existing atomic writer."""
++import hashlib
++import json
++from pathlib import Path
++
++from hermes_cli.friday_user_scope import ScopeDenied, workspace_document
++from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++from hermes_cli.friday_workspace_revision import check
++from tools.scoped_word_public_copy import public_copy
++from tools.scoped_word_profiles import WordProfileError
++
++
++def create_public_copy(cap,fd,leaf,path,content):
++    _check_parent(cap,fd,path)
++    if Path(path).name!=leaf or Path(path).suffix.lower()!='.docx':raise ScopeDenied()
++    if type(content)is not str or len(content.encode('utf-8'))>100000:raise ScopeDenied()
++    def pairs(items):
++        result={}
++        for key,value in items:
++            if key in result:raise ScopeDenied()
++            result[key]=value
++        return result
++    try:spec=json.loads(content,object_pairs_hook=pairs)
++    except(ValueError,RecursionError):raise ScopeDenied()from None
++    if type(spec)is not dict or set(spec)!={'source','source_sha256','remove_strings'}:raise ScopeDenied()
++    expected=spec['source_sha256'];name=spec['source']
++    if type(expected)is not str or len(expected)!=64 or any(c not in '0123456789abcdef'for c in expected):raise ScopeDenied()
++    if type(name)is not str or not name or '\x00'in name:raise ScopeDenied()
++    source=Path(name);root=cap.home/'workspace'
++    if not source.is_absolute():source=root/source
++    try:relative=source.relative_to(root)
++    except ValueError:raise ScopeDenied()from None
++    if (not relative.parts or any(p in('.','..')or p.startswith('.')for p in relative.parts)
++            or source.suffix.lower()not in('.docx','.dotx')or relative.as_posix()==path):raise ScopeDenied()
++    data,_,identity=workspace_document(str(source),with_identity=True)
++    digest=hashlib.sha256(data).hexdigest()
++    if digest!=expected:
++        return json.dumps(dict(success=False,error='public_copy_refused',reason='source_hash_mismatch',effect_disposition='none'))
++    try:result,metadata=public_copy(data,spec['remove_strings'],source.suffix.lower()[1:],checkpoint=lambda:check(cap))
++    except WordProfileError as error:
++        return json.dumps(dict(success=False,error='public_copy_refused',reason=error.code,effect_disposition='none'))
++    if any(term in path for term in spec['remove_strings']):
++        return json.dumps(dict(success=False,error='public_copy_refused',reason='private_output_name',effect_disposition='none'))
++    def verify():
++        check(cap);current,_,version=workspace_document(str(source),with_identity=True)
++        if current!=data or version!=identity:raise ScopeDenied()
++    answer=json.loads(_create_bytes(cap,fd,leaf,path,result,output_format='docx_public_copy',verify_source=verify))
++    if answer.get('success'):
++        answer.update(source_sha256=digest,source_unchanged=True,**metadata)
++    return json.dumps(answer,ensure_ascii=False)
+--- a/hermes_cli/friday_workspace_zip.py
++++ b/hermes_cli/friday_workspace_zip.py
+@@ -336,6 +336,58 @@
+     return rows, guard
+ 
+ 
++def _rar_rows(cap, data):
++    """Consume the isolated RAR reader under this original native call's clock."""
++    from agent.web_call_context import _current
++    from hermes_cli import friday_workspace_rar_codec as codec
++    check(cap)
++    call = _current.get()
++    if call is None or not callable(getattr(call, 'deadline', None)):
++        raise _CodecFailure('archive_original_deadline_required')
++    deadline = call.deadline()
++    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
++            or deadline - time.monotonic() <= codec.WALL_SECONDS + 2):
++        raise _CodecFailure('archive_codec_budget_insufficient')
++    guard = lambda: _codec_guard(cap, call, deadline)
++    guard()
++    try:
++        decoded = codec.read_rar_bytes(data, checkpoint=guard)
++    except codec.RARCodecError as exc:
++        code = str(exc)
++        raise _CodecFailure('archive_codec_cleanup_unconfirmed' if
++            code == 'rar_cleanup_unconfirmed' else 'archive_codec_unavailable' if
++            code == 'rar_codec_unavailable' else 'archive_codec_refused',
++            unknown=code == 'rar_cleanup_unconfirmed') from None
++    if type(decoded) is not list or not 1 <= len(decoded) <= MAX_ENTRIES:
++        raise ScopeDenied()
++    rows = []; names = set(); files = set(); total = 0
++    scan_budget = [MAX_SECRET_SCAN]
++    for row in decoded:
++        guard()
++        if (type(row) is not tuple or len(row) != 2
++                or not isinstance(row[0], str) or type(row[1]) is not bytes):
++            raise ScopeDenied()
++        raw_name, payload = row
++        directory = raw_name.endswith('/')
++        name = _path(raw_name, directory=directory)
++        if name in names or directory and payload:
++            raise ScopeDenied()
++        names.add(name)
++        total += len(payload)
++        if total > MAX_BYTES:
++            raise ScopeDenied()
++        if not directory:
++            files.add(name)
++            _check_secrets(payload, budget=scan_budget)
++        rows.append((name, directory, payload))
++    for name in names:
++        if any(str(parent) in files for parent in PurePosixPath(name).parents
++               if str(parent) != '.'):
++            raise ScopeDenied()
++    guard()
++    return rows, guard
++
++
+ def _encode(value):
+     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+ 
+@@ -396,6 +448,11 @@
+     if source_format == '7z':
+         try:
+             rows, guard = _seven_rows(cap, data)
++        except _CodecFailure as failure:
++            return _codec_failure(failure)
++    elif source_format == 'rar':
++        try:
++            rows, guard = _rar_rows(cap, data)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+     elif source_format == 'zip':
+@@ -625,13 +682,20 @@
+     source_format = archive_format(source)
+     output_format = archive_format(relative)
+     allowed = TAR_FORMATS | {'zip', '7z'}
+-    if source_format not in allowed or output_format not in allowed or source_format == output_format:
++    if (source_format not in allowed | {'rar'} or output_format not in allowed
++            or source_format == output_format
++            or source_format == 'rar' and output_format == '7z'):
+         raise ScopeDenied()
+     data, identity = _source(cap, source)
+     guard = lambda: check(cap)
+     if source_format == '7z':
+         try:
+             rows, guard = _seven_rows(cap, data)
++        except _CodecFailure as failure:
++            return _codec_failure(failure)
++    elif source_format == 'rar':
++        try:
++            rows, guard = _rar_rows(cap, data)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+     else:
+@@ -786,6 +850,13 @@
+             rows, guard = _seven_rows(cap, data)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
++    elif _format == 'rar':
++        if archive_format(source) != 'rar':
++            raise ScopeDenied()
++        try:
++            rows, guard = _rar_rows(cap, data)
++        except _CodecFailure as failure:
++            return _codec_failure(failure)
+     elif _format == 'zip':
+         rows = _rows(data)
+     elif _format == 'tar':
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -602,7 +602,7 @@
+     return count
+ 
+ 
+-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", char_offset: int = 0) -> str:
++def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", char_offset: int = 0, pdf_form_fields: bool = False) -> str:
+     """Read a file with pagination and line numbers.
+ 
+     Guard order: NT/device-namespace prefix (raw string, no resolution) →
+@@ -612,11 +612,13 @@
+     """
+     from hermes_cli.friday_user_scope import scoped_file, ScopeDenied, ordinary_tool_error_json
+     try:
+-        scoped = scoped_file("read_file", dict(path=path, offset=offset, limit=limit, char_offset=char_offset), task_id=task_id)
++        scoped = scoped_file("read_file", dict(path=path, offset=offset, limit=limit, char_offset=char_offset, pdf_form_fields=pdf_form_fields), task_id=task_id)
+         if scoped is not None:
+             return scoped
+     except ScopeDenied:
+         return ordinary_tool_error_json("product_user_scope_refused") or json.dumps({"success": False, "error": "product_user_scope_refused"})
++    if pdf_form_fields:
++        return tool_error("pdf_form_fields requires an own-workspace scoped PDF")
+     if char_offset:
+         return tool_error("char_offset requires a scoped text continuation")
+     try:
+@@ -1193,13 +1195,13 @@
+ 
+ WRITE_FILE_SCHEMA = {
+     "name": "write_file",
+-    "description": 'Native slide text: presentation_text_edit uses exactly source/slide/role/old_text/new_text into a NEW path of the same native profile. slide is one-based; role is slide or notes. Replaces one unique literal occurrence within a supported paragraph. Equally formatted OOXML split runs and plain ODF paragraphs supported; typed/cached or repeated ODF table cells, mixed formatting, fields, links, whitespace that changes native semantics, ambiguous or missing text refuse. Only selected text-element contents are rewritten; other XML bytes and archive payloads preserved. Native presentation variants: presentation_create uses slides with title/body/notes/table/chart (the ODP schema) into a NEW .pptx/.potx/.ppsx/.odp/.otp/.fodp path. presentation_convert uses exactly {"source":"deck.odp"}; the NEW output suffix selects a supported native profile or PDF. Macro and legacy binary formats excluded. presentation_edit uses {"source":"deck.otp","edit":{"slide":1,"table":1,"row":2,"column":2,"old_value":"24","new_value":"25"}} into the same native profile at a NEW path. PPTX/POTX/PPSX edit keys: slide/old_title/new_title/category/old_value/new_value; changes one title and chart datum. ODF edit changes one numeric table cell. Cross-family conversion uses isolated Office; visual fidelity not claimed. External resources, active content and conflicting flat styles refuse. PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use only pptx_pdf, odp_pptx or pptx_odp; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. ' 'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=xlsx; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. ' "For own user workspace, format=xlsx creates a NEW workbook copy changing one numeric cell; content JSON requires source, sheet, cell, expected, value. Preserves other parts/formulas, no formula recalculation. Never write spreadsheet text under .xlsx/.xls. Explicit format=docx creates a NEW .docx from short plain paragraphs (100000 UTF-8 bytes, 2000 paragraphs); existing names are refused. For preserving revisions use docx_edit with the original source; these creation modes rebuild documents. Omit format for normal text. Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
++    "description": 'Native slide text: presentation_text_edit uses exactly source/slide/role/old_text/new_text into a NEW path of the same native profile. slide is one-based; role is slide or notes. Replaces one unique literal occurrence within a supported paragraph. Equally formatted OOXML split runs and plain ODF paragraphs supported; typed/cached or repeated ODF table cells, mixed formatting, fields, links, whitespace that changes native semantics, ambiguous or missing text refuse. Only selected text-element contents are rewritten; other XML bytes and archive payloads preserved. Native presentation variants: presentation_create uses slides with title/body/notes/table/chart (the ODP schema) into a NEW .pptx/.potx/.ppsx/.odp/.otp/.fodp path. presentation_convert uses exactly {"source":"deck.odp"}; the NEW output suffix selects a supported native profile or PDF. Macro and legacy binary formats excluded. presentation_edit uses {"source":"deck.otp","edit":{"slide":1,"table":1,"row":2,"column":2,"old_value":"24","new_value":"25"}} into the same native profile at a NEW path. PPTX/POTX/PPSX edit keys: slide/old_title/new_title/category/old_value/new_value; changes one title and chart datum. ODF edit changes one numeric table cell. Cross-family conversion uses isolated Office; visual fidelity not claimed. External resources, active content and conflicting flat styles refuse. PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/rar_extract/tar_extract use {source} and a NEW folder. Genuine bounded single-volume stored RAR4 and supported RAR5 regular files/directories can be read, extracted or converted into ZIP/TAR; Compressed RAR4, RAR creation/editing, encrypted/multivolume/linked/special/unsupported members refuse. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use only pptx_pdf, odp_pptx or pptx_odp; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. ' 'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=xlsx; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. ' "For own user workspace, format=xlsx creates a NEW workbook copy changing one numeric cell; content JSON requires source, sheet, cell, expected, value. Preserves other parts/formulas, no formula recalculation. Never write spreadsheet text under .xlsx/.xls. Explicit format=docx creates a NEW .docx from short plain paragraphs (100000 UTF-8 bytes, 2000 paragraphs); existing names are refused. For preserving revisions use docx_edit with the original source; these creation modes rebuild documents. Omit format for normal text. Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+     "parameters": {
+         "type": "object",
+         "properties": {
+             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
+             "content": {"type": "string", "description": 'For docx_pdf, JSON with exactly source (existing own-workspace DOCX). For docx_edit, JSON with exactly source, old_text, new_text; unique exact text replacement into a NEW .docx copy. ' "Complete content. With docx_structured, a JSON string {\"blocks\":[...]} using title/paragraph blocks {\"type\":\"title\",\"text\":\"Report\"}, headings {\"type\":\"heading\",\"level\":1,\"text\":\"Data\"}, and tables {\"type\":\"table\",\"rows\":[[\"Item\",\"Amount\"],[\"Work\",\"800\"]]}. Exact keys only; table cells are strings, rows rectangular (1-32 columns). 100000 UTF-8 bytes total, at most 2000 paragraphs including table cells."},
+-            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "pdf_pages", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar_extract", "gzip", "bzip2", "xz", "zstd", "stream_extract", "image_transform", "mhtml", "mht", "mhtml_structured", "mht_structured", "mhtml_edit", "mht_edit", "archive_edit", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
++            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "pdf_pages", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "rar_extract", "tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar_extract", "gzip", "bzip2", "xz", "zstd", "stream_extract", "image_transform", "mhtml", "mht", "mhtml_structured", "mht_structured", "mhtml_edit", "mht_edit", "archive_edit", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/rar_extract/tar_extract use {source} and a NEW folder. Genuine bounded single-volume stored RAR4 and supported RAR5 regular files/directories can be read, extracted or converted into ZIP/TAR; Compressed RAR4, RAR creation/editing, encrypted/multivolume/linked/special/unsupported members refuse. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
+             # NOTE: the handler still accepts `cross_profile` (bool) — it now
+             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
+             # rejection error teaches it. Unadvertised: the cross-PROFILE
+@@ -1433,7 +1435,7 @@
+ 
+ def _handle_read_file(args, **kw):
+     tid = kw.get("task_id") or "default"
+-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0))
++    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0), pdf_form_fields=args.get("pdf_form_fields", False))
+ 
+ 
+ def _handle_write_file(args, **kw):
+@@ -1601,3 +1603,33 @@
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("word_located_edit")
+ WRITE_FILE_SCHEMA["description"] = _WORD_LOCATED_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] = _WORD_LOCATED_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"]
++
++# Bounded text AcroForm support is explicit so ordinary PDF text reads keep their contract.
++READ_FILE_SCHEMA["parameters"]["properties"]["pdf_form_fields"] = {
++    "type": "boolean", "default": False,
++    "description": "For an own-workspace PDF, return supported AcroForm text field names/types/values and source_sha256. Use default pagination. Metadata only, not page text or a render."}
++READ_FILE_SCHEMA["description"] += " Use pdf_form_fields=true to inspect supported flat AcroForm text fields before pdf_form_fill."
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("pdf_form_fill")
++WRITE_FILE_SCHEMA["description"] += (' PDF text form filling: format=pdf_form_fill into a NEW .pdf with JSON '
++    '{"source":"form.pdf","source_sha256":"<exact read_file hash>","fields":{"name":"value"}}. '
++    'Read source first with pdf_form_fields=true. Only flat AcroForm text widgets, printable ASCII, '
++    'standard Helvetica/Courier, plain left-aligned single lines are supported; text must fit. '
++    'Native field values and appearance streams are generated and reparsed; no flattening. '
++    'XFA, signatures, actions, encrypted files, complex field trees, unsupported fonts, Cyrillic and other non-ASCII refuse. '
++    'Source and unrelated pages/resources/fields are preserved. Do not claim general PDF forms or arbitrary typography.')
++
++_PDF_OPTIMIZE_GUIDANCE = 'PDF optimization: format=pdf_optimize, NEW .pdf path, exact JSON {"source":"input.pdf","source_sha256":"<64 lowercase hex from read_file>"}. Native lossless qpdf stream/object compression; page content, resources, geometry/order, document Info and XMP are verified unchanged with bounded decoded graph digests. Original unchanged. Reports before_bytes, after_bytes and smaller/not_smaller; reduction is not guaranteed. Inert PDFs only: unfiltered/plain Flate streams, 1 MB input/output, 64 pages, 4 MB total decoded streams. Other filters/predictors, forms, annotations, links/actions, attachments, encryption, signatures, outlines, layers and unsupported structures refuse. Trailer ID may regenerate; no rasterization. '
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("pdf_optimize")
++WRITE_FILE_SCHEMA["description"] += _PDF_OPTIMIZE_GUIDANCE
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _PDF_OPTIMIZE_GUIDANCE
++WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _PDF_OPTIMIZE_GUIDANCE
++
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("docx_public_copy")
++WRITE_FILE_SCHEMA["description"] += (' docx_public_copy creates a NEW plain reconstructed .docx from supported DOCX/DOTX main-body paragraphs and tables, using exact JSON {"source":"private.docx","source_sha256":"<read hash>","remove_strings":["sensitive literal"]}. Exact case-sensitive literals are replaced; original retained. Source comments, properties, headers, footers and embedded parts are not copied. Formatting is not preserved; active, hidden/revision text, fields and unsupported body structures refuse. Any hidden marker in source styles/defaults refuses, even if unused or disabled; style visibility is not evaluated. Tracked cell revisions also refuse.')
++
++READ_FILE_SCHEMA['description'] += (
++    ' In the own-user workspace, genuine bounded single-volume stored RAR4 and supported RAR5 '
++    'regular files/directories return a checked member registry, without extraction. '
++    'Compressed RAR4, encryption, multivolume, links/special members and unsupported inputs '
++    'refuse the whole archive; no member is silently skipped.'
++)
+--- /dev/null
++++ b/tools/scoped_pdf_form.py
+@@ -0,0 +1,602 @@
++"""Bounded flat AcroForm text metadata and actual /V + /AP/N filling.
++
++Uses installed libqpdf 12.3.2 C ABI only after networkless native isolation.
++Printable ASCII, standard Helvetica/Courier, plain single-line widgets only.
++"""
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import stat
++import subprocess
++import sys
++import tempfile
++import time
++
++MAX_BYTES = 1_000_000
++MAX_PAGES = 32
++MAX_FIELDS = 32
++MAX_TEXT = 256
++MAX_JSON = 8_000_000
++WALL_SECONDS = 40
++CPU_SECONDS = 30
++LIBRARY = '/usr/lib/x86_64-linux-gnu/libqpdf.so.30'
++
++
++class PDFFormError(ValueError):
++    pass
++
++
++def _argv(work, count):
++    argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--as-pid-1',
++            '--cap-drop', 'ALL', '--clearenv', '--ro-bind', '/usr', '/usr']
++    for name in ('bin', 'sbin', 'lib', 'lib64'):
++        path = Path('/') / name
++        if path.exists():
++            target = path.resolve()
++            if not target.is_relative_to('/usr'):
++                raise PDFFormError('pdf_engine_unavailable')
++            argv += ['--symlink', str(target), '/' + name]
++    argv += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
++             '--bind', str(work), '/work']
++    for name in ['runner.py', 'request.json'] + [f'input{i}.pdf' for i in range(count)]:
++        argv += ['--ro-bind', str(work / name), '/work/' + name]
++    argv += ['--chdir', '/work', '--remount-ro', '/', '--',
++             '/usr/bin/python3', '-I', '-B', '-S', '/work/runner.py', '--child']
++    return argv
++
++
++def _run(cap, work, count):
++    from agent.web_call_context import _current, same_web_authority
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_pdf_ocr import _Custody
++    call = _current.get()
++    if call is None or not same_web_authority(call):
++        raise PDFFormError('native_deadline_required')
++    custody = _Custody()
++    bound = False
++    deadline = min(call.deadline(), time.monotonic() + WALL_SECONDS)
++    try:
++        with call.turn.lock:
++            check(cap)
++            call.check()
++            if call.session is not None or call.registry is not None:
++                raise PDFFormError('pdf_custody_busy')
++            if time.monotonic() >= deadline:
++                raise PDFFormError('pdf_timeout')
++            call.session = call.registry = custody
++            call.turn.calls.add(custody)
++            bound = True
++            custody.process = subprocess.Popen(_argv(work, count), cwd=work,
++                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
++                close_fds=True, start_new_session=True,
++                env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
++        while custody.process.poll() is None:
++            check(cap)
++            call.check()
++            if not same_web_authority(call):
++                raise PDFFormError('pdf_authority_changed')
++            if time.monotonic() >= deadline:
++                raise PDFFormError('pdf_timeout')
++            try:
++                custody.process.wait(timeout=min(.05, max(.001, deadline - time.monotonic())))
++            except subprocess.TimeoutExpired:
++                pass
++        check(cap)
++        call.check()
++        if custody.process.returncode != 0:
++            raise PDFFormError('pdf_engine_failed')
++    finally:
++        receipt = custody.stop()
++        with call.turn.lock:
++            if bound and receipt['status'] == 'QUIESCENT':
++                if call.session is not custody or call.registry is not custody:
++                    receipt = {'status': 'STOP_UNCONFIRMED'}
++                else:
++                    call.session = call.registry = None
++                    call.turn.calls.discard(custody)
++        if receipt['status'] != 'QUIESCENT':
++            if hasattr(call, 'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise PDFFormError('pdf_cleanup_unconfirmed')
++
++
++def _library():
++    import ctypes as C
++    lib = C.CDLL(LIBRARY)
++    ptr, uint, integer, string = C.c_void_p, C.c_uint, C.c_int, C.c_char_p
++    signatures = {
++        'qpdf_get_qpdf_version': (string, []), 'qpdf_init': (ptr, []),
++        'qpdf_cleanup': (None, [C.POINTER(ptr)]),
++        'qpdf_silence_errors': (None, [ptr]), 'qpdf_set_suppress_warnings': (None, [ptr, integer]),
++        'qpdf_set_attempt_recovery': (None, [ptr, integer]),
++        'qpdf_has_error': (integer, [ptr]), 'qpdf_more_warnings': (integer, [ptr]),
++        'qpdf_read': (integer, [ptr, string, string]), 'qpdf_is_encrypted': (integer, [ptr]),
++        'qpdf_get_pdf_version': (string, [ptr]),
++        'qpdf_set_minimum_pdf_version': (None, [ptr, string]),
++        'qpdf_check_pdf': (integer, [ptr]), 'qpdf_empty_pdf': (integer, [ptr]),
++        'qpdf_get_num_pages': (integer, [ptr]), 'qpdf_get_page_n': (uint, [ptr, C.c_size_t]),
++        'qpdf_push_inherited_attributes_to_page': (integer, [ptr]),
++        'qpdf_get_root': (uint, [ptr]), 'qpdf_oh_get_object_id': (integer, [ptr, uint]),
++        'qpdf_oh_get_generation': (integer, [ptr, uint]),
++        'qpdf_oh_new_integer': (uint, [ptr, C.c_longlong]),
++        'qpdf_oh_replace_key': (None, [ptr, uint, string, uint]),
++        'qpdf_add_page': (integer, [ptr, ptr, uint, integer]),
++        'qpdf_get_object_by_id': (uint, [ptr, integer, integer]),
++        'qpdf_oh_get_stream_data': (integer, [ptr, uint, integer, C.POINTER(integer), C.POINTER(ptr), C.POINTER(C.c_size_t)]),
++        'qpdf_oh_free_buffer': (None, [C.POINTER(ptr)]),
++        'qpdf_init_write': (integer, [ptr, string]), 'qpdf_write': (integer, [ptr]),
++        'qpdf_set_stream_data_mode': (None, [ptr, integer]),
++        'qpdf_set_decode_level': (None, [ptr, integer]),
++        'qpdf_set_compress_streams': (None, [ptr, integer]),
++        'qpdf_set_object_stream_mode': (None, [ptr, integer]),
++    }
++    signatures.update({
++        'qpdf_oh_get_key': (uint, [ptr, uint, string]),
++        'qpdf_oh_get_dict': (uint, [ptr, uint]),
++        'qpdf_oh_parse': (uint, [ptr, string]),
++        'qpdf_oh_new_string': (uint, [ptr, string]),
++        'qpdf_oh_new_null': (uint, [ptr]),
++        'qpdf_oh_new_stream': (uint, [ptr]),
++        'qpdf_oh_replace_stream_data': (None, [ptr, uint, string, C.c_size_t, uint, uint]),
++    })
++    callback = C.CFUNCTYPE(integer, ptr, C.c_size_t, ptr)
++    signatures['qpdf_write_json'] = (integer, [ptr, integer, callback, ptr, integer, integer, string, C.POINTER(string)])
++    for name, (restype, argtypes) in signatures.items():
++        function = getattr(lib, name)
++        function.restype, function.argtypes = restype, argtypes
++    if lib.qpdf_get_qpdf_version() != b'12.3.2':
++        raise PDFFormError('pdf_engine_unavailable')
++    return lib, C, callback
++
++
++def _checked(lib, handle, name, *args):
++    result = getattr(lib, name)(handle, *args)
++    if lib.qpdf_has_error(handle) or lib.qpdf_more_warnings(handle):
++        raise PDFFormError('pdf_malformed_or_unsupported')
++    return result
++
++
++
++
++def _ascii(value, maximum=MAX_TEXT):
++    return (type(value) is str and len(value) <= maximum
++            and all(32 <= ord(c) <= 126 for c in value))
++
++
++def request(content):
++    def pairs(rows):
++        out = {}
++        for key, value in rows:
++            if key in out:
++                raise PDFFormError('pdf_request_invalid')
++            out[key] = value
++        return out
++    try:
++        if type(content) is not str or len(content.encode('utf-8')) > 16_000:
++            raise ValueError()
++        spec = json.loads(content, object_pairs_hook=pairs)
++        import re
++        if (type(spec) is not dict or set(spec) != {'source', 'source_sha256', 'fields'}
++                or type(spec['source']) is not str or not 1 <= len(spec['source']) <= 512
++                or type(spec['source_sha256']) is not str
++                or not re.fullmatch('[0-9a-f]{64}', spec['source_sha256'])
++                or type(spec['fields']) is not dict or not 1 <= len(spec['fields']) <= MAX_FIELDS
++                or any(not _ascii(k, 64) or not k or not _ascii(v) for k, v in spec['fields'].items())):
++            raise ValueError()
++        return spec
++    except (ValueError, UnicodeError, RecursionError):
++        raise PDFFormError('pdf_request_invalid') from None
++
++
++def process(cap, data, fields=None):
++    """Read field metadata or return a newly rewritten, verified native PDF."""
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_pdf_ocr import _private_read, LocalOCRFailure
++    if type(data) is not bytes or not 0 < len(data) <= MAX_BYTES:
++        raise PDFFormError('pdf_input_limit')
++    if fields is not None:
++        fields = request(json.dumps(dict(source='x.pdf', source_sha256='0'*64, fields=fields)))['fields']
++    try:
++        library = Path(LIBRARY).resolve(strict=True)
++        info = library.stat()
++        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
++            raise PDFFormError('pdf_engine_unavailable')
++    except OSError:
++        raise PDFFormError('pdf_engine_unavailable') from None
++    check(cap)
++    work = Path(tempfile.mkdtemp(prefix='friday-pdf-form-'))
++    try:
++        work.chmod(0o700)
++        for name, value in {'runner.py': Path(__file__).read_bytes(), 'input0.pdf': data,
++                'request.json': json.dumps({'fields': fields}, separators=(',', ':')).encode()}.items():
++            (work / name).write_bytes(value)
++            (work / name).chmod(0o600)
++        _run(cap, work, 1)
++        result = json.loads(_private_read(work / 'result.json', 32_000))
++        if type(result) is dict and set(result) == {'error'}:
++            allowed = {'pdf_malformed_or_unsupported', 'pdf_profile_unsupported', 'pdf_page_limit',
++                'pdf_output_limit', 'pdf_engine_unavailable', 'pdf_verification_failed',
++                'pdf_no_form', 'pdf_field_unknown', 'pdf_text_does_not_fit'}
++            raise PDFFormError(result['error'] if result['error'] in allowed else 'pdf_engine_failed')
++        if (type(result) is not dict or set(result) != {'fields', 'pages', 'engine', 'profile', 'appearance'}
++                or result['engine'] != 'libqpdf-12.3.2'
++                or result['profile'] != 'flat_text_AcroForm_ASCII_Helvetica_Courier'
++                or result['appearance'] != ('generated_and_reparsed' if fields is not None else 'metadata_only')
++                or type(result['pages']) is not int or not 1 <= result['pages'] <= MAX_PAGES
++                or type(result['fields']) is not list or not 1 <= len(result['fields']) <= MAX_FIELDS):
++            raise PDFFormError('pdf_verification_failed')
++        names = set()
++        for row in result['fields']:
++            if (type(row) is not dict or set(row) != {'name', 'type', 'value', 'page', 'max_length', 'font'}
++                    or not _ascii(row['name'], 64) or not row['name'] or row['name'] in names
++                    or row['type'] != 'text' or not _ascii(row['value'])
++                    or type(row['page']) is not int or not 1 <= row['page'] <= result['pages']
++                    or type(row['max_length']) is not int or not 1 <= row['max_length'] <= MAX_TEXT
++                    or row['font'] not in ('Helvetica', 'Courier')):
++                raise PDFFormError('pdf_verification_failed')
++            names.add(row['name'])
++        if fields is not None and any(row['value'] != fields[row['name']] for row in result['fields'] if row['name'] in fields):
++            raise PDFFormError('pdf_verification_failed')
++        output = None
++        if fields is not None:
++            output = _private_read(work / 'output.pdf', MAX_BYTES)
++            if not output.startswith(b'%PDF-') or not output.rstrip().endswith(b'%%EOF'):
++                raise PDFFormError('pdf_verification_failed')
++        check(cap)
++        return output, result
++    except (OSError, LocalOCRFailure, json.JSONDecodeError):
++        raise PDFFormError('pdf_engine_failed') from None
++    finally:
++        try:
++            shutil.rmtree(work)
++        except OSError:
++            from agent.web_call_context import _current
++            call = _current.get()
++            if call is not None and hasattr(call, 'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise PDFFormError('pdf_cleanup_unconfirmed') from None
++
++
++def _objects(lib, C, callback, handle):
++    chunks, size = [], 0
++    def receive(data, count, _):
++        nonlocal size
++        size += count
++        if size > MAX_JSON:
++            return 1
++        chunks.append(C.string_at(data, count))
++        return 0
++    writer = callback(receive)
++    if _checked(lib, handle, 'qpdf_write_json', 2, writer, None, 0, 0, b'', None):
++        raise PDFFormError('pdf_malformed_or_unsupported')
++    graph = json.loads(b''.join(chunks))['qpdf'][1]
++    if len(graph) > 4096:
++        raise PDFFormError('pdf_profile_unsupported')
++    forbidden = {'/A', '/AA', '/OpenAction', '/JS', '/JavaScript', '/XFA', '/Names',
++        '/EmbeddedFiles', '/EF', '/AF', '/Collection', '/Perms', '/ByteRange', '/Encrypt',
++        '/RichMediaContent', '/RichMediaSettings', '/PieceInfo', '/PresSteps', '/OPI',
++        '/Ref', '/Alternates', '/OC', '/OCProperties', '/StructTreeRoot', '/SigFlags'}
++    def validate(node, depth=0):
++        if depth > 64:
++            raise PDFFormError('pdf_profile_unsupported')
++        if type(node) is dict:
++            if (set(node) & forbidden or node.get('/Type') in ('/Filespec', '/EmbeddedFile', '/Action', '/Sig', '/OCG', '/OCMD')
++                    or node.get('/Subtype') in ('/PS', '/FileAttachment', '/RichMedia', '/Movie', '/Sound', '/Screen', '/3D')
++                    or node.get('/FT') in ('/Btn', '/Ch', '/Sig') or '/S' in node and node.get('/Type') == '/Action'):
++                raise PDFFormError('pdf_profile_unsupported')
++            # Catch action dictionaries even without /Type; /S is legitimate in some unrelated objects.
++            if node.get('/S') in ('/JavaScript', '/Launch', '/URI', '/GoTo', '/GoToR', '/GoToE', '/SubmitForm', '/ResetForm', '/ImportData', '/Rendition', '/RichMediaExecute', '/SetOCGState', '/Sound', '/Movie', '/Named', '/Hide', '/SetState', '/Thread'):
++                raise PDFFormError('pdf_profile_unsupported')
++            for val in node.values():
++                validate(val, depth + 1)
++        elif type(node) is list:
++            for val in node:
++                validate(val, depth + 1)
++    validate(graph)
++    total = 0
++    for key, node in graph.items():
++        if 'stream' not in node:
++            continue
++        stream = node['stream']
++        if set(stream['dict']) & {'/F', '/FFilter', '/FDecodeParms'}:
++            raise PDFFormError('pdf_profile_unsupported')
++        object_id, generation, _ = key.removeprefix('obj:').split()
++        oh = _checked(lib, handle, 'qpdf_get_object_by_id', int(object_id), int(generation))
++        buf, length, filtered = C.c_void_p(), C.c_size_t(), C.c_int()
++        try:
++            if _checked(lib, handle, 'qpdf_oh_get_stream_data', oh, 0, C.byref(filtered), C.byref(buf), C.byref(length)):
++                raise PDFFormError('pdf_malformed_or_unsupported')
++            total += length.value
++            if total > 4 * MAX_BYTES:
++                raise PDFFormError('pdf_profile_unsupported')
++            stream['raw_sha256'] = hashlib.sha256(C.string_at(buf, length.value)).hexdigest()
++            stream['dict'].pop('/Length', None)
++        finally:
++            lib.qpdf_oh_free_buffer(C.byref(buf))
++    return graph
++
++
++def _ref(value):
++    import re
++    return type(value) is str and re.fullmatch(r'[1-9][0-9]* [0-9]+ R', value) is not None
++
++
++def _resolve(graph, value, *, stream=False):
++    if _ref(value):
++        node = graph.get('obj:' + value)
++        if type(node) is not dict or ('stream' if stream else 'value') not in node:
++            raise PDFFormError('pdf_profile_unsupported')
++        return node['stream' if stream else 'value']
++    if stream:
++        raise PDFFormError('pdf_profile_unsupported')
++    return value
++
++
++def _string(value, limit=MAX_TEXT):
++    if type(value) is not str or not value.startswith('u:') or not _ascii(value[2:], limit):
++        raise PDFFormError('pdf_profile_unsupported')
++    return value[2:]
++
++
++def _profile(lib, C, callback, h):
++    import re, math
++    if _checked(lib, h, 'qpdf_is_encrypted') or _checked(lib, h, 'qpdf_check_pdf'):
++        raise PDFFormError('pdf_profile_unsupported')
++    count = _checked(lib, h, 'qpdf_get_num_pages')
++    if not 1 <= count <= MAX_PAGES:
++        raise PDFFormError('pdf_page_limit')
++    graph = _objects(lib, C, callback, h)
++    trailer = graph['trailer']['value']
++    root = _resolve(graph, trailer['/Root'])
++    if '/AcroForm' not in root:
++        raise PDFFormError('pdf_no_form')
++    form = _resolve(graph, root['/AcroForm'])
++    if (type(form) is not dict or set(form) - {'/Fields', '/DA', '/DR', '/NeedAppearances', '/Q'}
++            or form.get('/NeedAppearances', False) is not False or type(form.get('/Q', 0)) is not int or form.get('/Q', 0) != 0):
++        raise PDFFormError('pdf_profile_unsupported')
++    entries = _resolve(graph, form.get('/Fields'))
++    if type(entries) is not list or not 1 <= len(entries) <= MAX_FIELDS or any(not _ref(x) for x in entries) or len(set(entries)) != len(entries):
++        raise PDFFormError('pdf_profile_unsupported')
++    for key,node in graph.items():
++        candidate=node.get('value') if type(node) is dict else None
++        if type(candidate) is dict and candidate.get('/Subtype')=='/Widget' and key.removeprefix('obj:') not in entries:
++            raise PDFFormError('pdf_profile_unsupported')
++    page_refs = {}
++    page_bounds = {}
++    annotation_refs = []
++    for i in range(count):
++        page = _checked(lib, h, 'qpdf_get_page_n', i)
++        key = f"{_checked(lib, h, 'qpdf_oh_get_object_id', page)} {_checked(lib, h, 'qpdf_oh_get_generation', page)} R"
++        page_refs[key] = i + 1
++        value = _resolve(graph, key)
++        inherited = {}; current = value; ancestors = set()
++        for _ in range(32):
++            if type(current) is not dict: raise PDFFormError('pdf_profile_unsupported')
++            for attr in ('/MediaBox','/CropBox','/Rotate'):
++                if attr not in inherited and attr in current: inherited[attr] = _resolve(graph,current[attr])
++            parent = current.get('/Parent')
++            if parent is None: break
++            if not _ref(parent) or parent in ancestors: raise PDFFormError('pdf_profile_unsupported')
++            ancestors.add(parent); current = _resolve(graph,parent)
++        else: raise PDFFormError('pdf_profile_unsupported')
++        media = inherited.get('/MediaBox'); crop = inherited.get('/CropBox',media)
++        for box in (media,crop):
++            if (type(box) is not list or len(box)!=4
++                    or any(type(x) not in (int,float) or not math.isfinite(x) or abs(x)>20000 for x in box)
++                    or not box[0]<box[2] or not box[1]<box[3]):
++                raise PDFFormError('pdf_profile_unsupported')
++        if type(inherited.get('/Rotate',0)) is not int or inherited.get('/Rotate',0) != 0: raise PDFFormError('pdf_profile_unsupported')
++        page_bounds[key]=[max(media[0],crop[0]),max(media[1],crop[1]),min(media[2],crop[2]),min(media[3],crop[3])]
++        annots = _resolve(graph, value.get('/Annots', []))
++        if type(annots) is not list or any(not _ref(x) or x not in entries for x in annots):
++            raise PDFFormError('pdf_profile_unsupported')
++        annotation_refs.extend((a, key) for a in annots)
++    if len(annotation_refs) != len(entries) or len({x[0] for x in annotation_refs}) != len(entries):
++        raise PDFFormError('pdf_profile_unsupported')
++    rows, names = [], set()
++    for ref in entries:
++        field = _resolve(graph, ref)
++        allowed = {'/Type','/Subtype','/FT','/T','/V','/DV','/Rect','/P','/F','/Ff','/MaxLen','/DA','/DR','/Q','/AP','/Border','/BS','/MK','/TU','/TM'}
++        if (type(field) is not dict or set(field) - allowed or field.get('/Type','/Annot') != '/Annot'
++                or field.get('/Subtype') != '/Widget' or field.get('/FT') != '/Tx'
++                or type(field.get('/Ff', 0)) is not int or field.get('/Ff', 0) != 0
++                or type(field.get('/F',4)) is not int or field.get('/F',4) not in (0,4)
++                or type(field.get('/Q',0)) is not int or field.get('/Q',0) != 0):
++            raise PDFFormError('pdf_profile_unsupported')
++        name = _string(field.get('/T'), 64)
++        if not name or name in names:
++            raise PDFFormError('pdf_profile_unsupported')
++        names.add(name)
++        value = _string(field.get('/V','u:'))
++        if '/DV' in field: _string(field['/DV'])
++        for key in ('/TU','/TM'):
++            if key in field: _string(field[key])
++        maximum = field.get('/MaxLen', MAX_TEXT)
++        if type(maximum) is not int or not 1 <= maximum <= MAX_TEXT or len(value) > maximum:
++            raise PDFFormError('pdf_profile_unsupported')
++        page_ref = field.get('/P')
++        if page_ref not in page_refs or (ref,page_ref) not in annotation_refs:
++            raise PDFFormError('pdf_profile_unsupported')
++        rect = _resolve(graph, field.get('/Rect'))
++        if (type(rect) is not list or len(rect) != 4
++                or any(type(x) not in (int,float) or not math.isfinite(x) or abs(x)>20000 for x in rect)
++                or not 12 <= rect[2]-rect[0] <= 2000 or not 10 <= rect[3]-rect[1] <= 500):
++            raise PDFFormError('pdf_profile_unsupported')
++        box=page_bounds[page_ref]
++        if not box[0]<=rect[0]<rect[2]<=box[2] or not box[1]<=rect[1]<rect[3]<=box[3]:
++            raise PDFFormError('pdf_profile_unsupported')
++        da = _string(field.get('/DA', form.get('/DA')), 120)
++        match = re.fullmatch(r'\s*/([A-Za-z][A-Za-z0-9]{0,31})\s+([0-9]+(?:\.[0-9]+)?)\s+Tf\s+0\s+g\s*', da)
++        if not match:
++            raise PDFFormError('pdf_profile_unsupported')
++        alias, size = match[1], float(match[2])
++        if size != 0 and not 6 <= size <= 36:
++            raise PDFFormError('pdf_profile_unsupported')
++        resources = _resolve(graph, field.get('/DR', form.get('/DR')))
++        if type(resources) is not dict or set(resources) != {'/Font'}:
++            raise PDFFormError('pdf_profile_unsupported')
++        fonts = _resolve(graph, resources['/Font'])
++        if type(fonts) is not dict or '/' + alias not in fonts:
++            raise PDFFormError('pdf_profile_unsupported')
++        font = _resolve(graph, fonts['/' + alias])
++        if (type(font) is not dict or set(font) - {'/Type','/Subtype','/BaseFont','/Encoding','/Name'}
++                or font.get('/Type') != '/Font' or font.get('/Subtype') != '/Type1'
++                or font.get('/BaseFont') not in ('/Helvetica','/Courier')
++                or font.get('/Encoding', '/WinAnsiEncoding') not in ('/WinAnsiEncoding','/StandardEncoding')):
++            raise PDFFormError('pdf_profile_unsupported')
++        if '/AP' in field:
++            ap = _resolve(graph, field['/AP'])
++            if type(ap) is not dict or set(ap) != {'/N'}:
++                raise PDFFormError('pdf_profile_unsupported')
++            _resolve(graph, ap['/N'], stream=True)
++        elif value:
++            raise PDFFormError('pdf_profile_unsupported')
++        # Appearance generation is deliberately plain. Existing decorations or
++        # rotation that this profile cannot faithfully regenerate are refused.
++        if field.get('/MK', {}) not in ({},):
++            raise PDFFormError('pdf_profile_unsupported')
++        if field.get('/Border', [0,0,0]) != [0,0,0] or field.get('/BS', {}) not in ({}, {'/W':0}):
++            raise PDFFormError('pdf_profile_unsupported')
++        rows.append(dict(name=name,type='text',value=value,page=page_refs[page_ref],max_length=maximum,
++            font=font['/BaseFont'][1:],ref=ref,rect=rect,size=size))
++    return graph, rows, count
++
++
++def _digest(graph, rows, changed):
++    masks = {row['ref'] for row in rows if row['name'] in changed}
++    seen = {}
++    def walk(value, depth=0):
++        if depth > 64:
++            raise PDFFormError('pdf_profile_unsupported')
++        if _ref(value):
++            if value in seen: return {'ref':seen[value]}
++            seen[value] = len(seen)
++            node = graph['obj:'+value]
++            if value in masks:
++                node = {'value':{k:v for k,v in node['value'].items() if k not in ('/V','/AP')}}
++            return walk(node,depth+1)
++        if type(value) is dict:
++            return {k:walk(value[k],depth+1) for k in sorted(value)}
++        if type(value) is list:
++            return [walk(x,depth+1) for x in value]
++        return value
++    trailer = {k:v for k,v in graph['trailer']['value'].items() if k not in ('/Size','/ID','/Prev','/XRefStm')}
++    return hashlib.sha256(json.dumps(walk(trailer),sort_keys=True,separators=(',',':')).encode()).hexdigest()
++
++
++def _appearance(row, text):
++    # A conservative full-em bound supports both accepted standard fonts;
++    # no approximate glyph metrics can allow text to clip silently.
++    width,height=row['rect'][2]-row['rect'][0],row['rect'][3]-row['rect'][1]
++    size=row['size'] or min(12.0,(width-4)/max(1,len(text)),(height-4)/1.3)
++    if size < 6 or len(text)*size > width-4 or size*1.3 > height-4:
++        raise PDFFormError('pdf_text_does_not_fit')
++    escaped=text.replace('\\','\\\\').replace('(','\\(').replace(')','\\)')
++    baseline=(height-size)/2+size*.2
++    stream=(f'/Tx BMC\nq\n0 0 {width:g} {height:g} re W n\nBT\n/F0 {size:g} Tf\n0 g\n1 0 0 1 2 {baseline:g} Tm\n({escaped}) Tj\nET\nQ\nEMC\n').encode('ascii')
++    dictionary=(f'<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 {width:g} {height:g}] '
++        f'/Resources << /Font << /F0 << /Type /Font /Subtype /Type1 /BaseFont /{row["font"]} /Encoding /WinAnsiEncoding >> >> >> >>').encode('ascii')
++    return stream,dictionary
++
++
++def _appearance_dictionary(row):
++    width,height=row['rect'][2]-row['rect'][0],row['rect'][3]-row['rect'][1]
++    return {'/Type':'/XObject','/Subtype':'/Form','/FormType':1,
++        '/BBox':[0,0,width,height],'/Resources':{'/Font':{'/F0':{
++            '/Type':'/Font','/Subtype':'/Type1','/BaseFont':'/'+row['font'],'/Encoding':'/WinAnsiEncoding'}}}}
++
++
++def _check_existing_appearances(graph, rows, fields):
++    # A widget's custom appearance may contain labels, images or styling that
++    # /DA, /MK and /Border do not describe. Replacing it blindly loses content.
++    # Only our exact plain appearance for the current /V is safely editable.
++    # Unchanged fields remain byte-preserved by the graph digest below.
++    for row in rows:
++        if row['name'] not in fields:
++            continue
++        field=_resolve(graph,row['ref'])
++        if '/AP' not in field:
++            continue  # _profile already requires an empty current value.
++        ap=_resolve(graph,field['/AP']);normal=_resolve(graph,ap['/N'],stream=True)
++        expected,_=_appearance(row,row['value'])
++        if (normal['raw_sha256']!=hashlib.sha256(expected).hexdigest()
++                or normal['dict']!=_appearance_dictionary(row)):
++            raise PDFFormError('pdf_profile_unsupported')
++
++
++def _child():
++    import resource
++    os.umask(0o077)
++    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:2])
++    for kind,limit in ((resource.RLIMIT_AS,1024**3),(resource.RLIMIT_CPU,CPU_SECONDS),
++            (resource.RLIMIT_FSIZE,8_000_000),(resource.RLIMIT_CORE,0),
++            (resource.RLIMIT_NOFILE,64),(resource.RLIMIT_NPROC,16)):
++        resource.setrlimit(kind,(limit,limit))
++    handles=[]
++    lib,C,callback=_library()
++    def create(path):
++        h=C.c_void_p(lib.qpdf_init());handles.append(h)
++        if not h: raise PDFFormError('pdf_engine_unavailable')
++        _checked(lib,h,'qpdf_silence_errors');_checked(lib,h,'qpdf_set_suppress_warnings',1)
++        _checked(lib,h,'qpdf_set_attempt_recovery',0)
++        if _checked(lib,h,'qpdf_read',path,None): raise PDFFormError('pdf_malformed_or_unsupported')
++        return h
++    try:
++        spec=json.loads(Path('/work/request.json').read_text());fields=spec['fields']
++        if fields is not None:
++            fields=request(json.dumps(dict(source='x.pdf',source_sha256='0'*64,fields=fields)))['fields']
++        h=create(b'/work/input0.pdf')
++        graph,rows,count=_profile(lib,C,callback,h)
++        if fields is not None:
++            if set(fields)-{r['name'] for r in rows}: raise PDFFormError('pdf_field_unknown')
++            _check_existing_appearances(graph,rows,fields)
++            expected=_digest(graph,rows,fields)
++            streams={}
++            for row in rows:
++                if row['name'] not in fields: continue
++                value=fields[row['name']]
++                if len(value)>row['max_length']: raise PDFFormError('pdf_text_does_not_fit')
++                stream,dictionary=_appearance(row,value);streams[row['name']]=hashlib.sha256(stream).hexdigest()
++                oid,gen,_=row['ref'].split()
++                field=_checked(lib,h,'qpdf_get_object_by_id',int(oid),int(gen))
++                normal=_checked(lib,h,'qpdf_oh_new_stream')
++                null=_checked(lib,h,'qpdf_oh_new_null')
++                _checked(lib,h,'qpdf_oh_replace_stream_data',normal,stream,len(stream),null,null)
++                normaldict=_checked(lib,h,'qpdf_oh_get_dict',normal)
++                values=_checked(lib,h,'qpdf_oh_parse',dictionary)
++                for key in (b'/Type',b'/Subtype',b'/FormType',b'/BBox',b'/Resources'):
++                    _checked(lib,h,'qpdf_oh_replace_key',normaldict,key,_checked(lib,h,'qpdf_oh_get_key',values,key))
++                ap=_checked(lib,h,'qpdf_oh_parse',b'<< >>')
++                _checked(lib,h,'qpdf_oh_replace_key',ap,b'/N',normal)
++                _checked(lib,h,'qpdf_oh_replace_key',field,b'/AP',ap)
++                _checked(lib,h,'qpdf_oh_replace_key',field,b'/V',_checked(lib,h,'qpdf_oh_new_string',value.encode('ascii')))
++            if _checked(lib,h,'qpdf_init_write',b'/work/output.pdf'): raise PDFFormError('pdf_engine_failed')
++            for name,arg in [('qpdf_set_stream_data_mode',1),('qpdf_set_decode_level',0),
++                    ('qpdf_set_compress_streams',0),('qpdf_set_object_stream_mode',1)]:
++                _checked(lib,h,name,arg)
++            if _checked(lib,h,'qpdf_write'): raise PDFFormError('pdf_engine_failed')
++            if not 0<Path('/work/output.pdf').stat().st_size<=MAX_BYTES: raise PDFFormError('pdf_output_limit')
++            verify=create(b'/work/output.pdf')
++            outgraph,outrows,outcount=_profile(lib,C,callback,verify)
++            if outcount!=count or _digest(outgraph,outrows,fields)!=expected: raise PDFFormError('pdf_verification_failed')
++            for row in outrows:
++                if row['name'] in fields:
++                    field=_resolve(outgraph,row['ref']);ap=_resolve(outgraph,field['/AP']);normal=_resolve(outgraph,ap['/N'],stream=True)
++                    expected_dict=_appearance_dictionary(row)
++                    if row['value']!=fields[row['name']] or normal['raw_sha256']!=streams[row['name']] or normal['dict']!=expected_dict:
++                        raise PDFFormError('pdf_verification_failed')
++            rows=outrows
++        public=[{k:row[k] for k in ('name','type','value','page','max_length','font')} for row in rows]
++        Path('/work/result.json').write_text(json.dumps(dict(fields=public,pages=count,engine='libqpdf-12.3.2',
++            profile='flat_text_AcroForm_ASCII_Helvetica_Courier',appearance='generated_and_reparsed' if fields is not None else 'metadata_only')))
++    finally:
++        for handle in reversed(handles): lib.qpdf_cleanup(C.byref(handle))
++
++
++if __name__=='__main__':
++    if sys.argv[1:]!=['--child']: raise SystemExit(2)
++    try: _child()
++    except PDFFormError as error: Path('/work/result.json').write_text(json.dumps({'error':str(error)}))
++    except BaseException: raise SystemExit(1)
+--- /dev/null
++++ b/tools/scoped_pdf_optimize.py
+@@ -0,0 +1,338 @@
++"""Bounded lossless PDF optimization; native qpdf, no rasterization.
++
++Only inert page documents with unfiltered or plain Flate streams are supported.
++The separate child bounds all native parsing to 1 GiB/2 CPUs; every stream used
++for the fidelity proof is inflated by zlib with a physical max_length buffer.
++"""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import shutil
++import stat
++import subprocess
++import sys
++import tempfile
++import time
++import zlib
++try:
++    from tools import scoped_pdf_pages as _pages
++except ModuleNotFoundError:
++    import scoped_pdf_pages as _pages
++
++PDFOptimizeError = _pages.PDFPagesError
++PDFPagesError = PDFOptimizeError
++MAX_BYTES = _pages.MAX_BYTES
++MAX_PAGES = _pages.MAX_PAGES
++WALL_SECONDS = _pages.WALL_SECONDS
++LIBRARY = _pages.LIBRARY
++MAX_DECODED = 4_000_000
++POLICY = 'document_info_and_xmp_preserved; trailer_id_regenerated'
++
++
++def request(content):
++    def pairs(items):
++        result = {}
++        for key, value in items:
++            if key in result:
++                raise PDFOptimizeError('pdf_request_invalid')
++            result[key] = value
++        return result
++    try:
++        if type(content) is not str or len(content.encode('utf-8')) > 2000:
++            raise ValueError()
++        spec = json.loads(content, object_pairs_hook=pairs)
++        if (type(spec) is not dict or set(spec) != {'source', 'source_sha256'}
++                or type(spec['source']) is not str or not spec['source']
++                or len(spec['source'].encode('utf-8')) > 512
++                or type(spec['source_sha256']) is not str
++                or not re.fullmatch('[0-9a-f]{64}', spec['source_sha256'])):
++            raise ValueError()
++        return spec
++    except (ValueError, UnicodeError, RecursionError):
++        raise PDFOptimizeError('pdf_request_invalid') from None
++
++
++def _argv(work, count):
++    argv = _pages._argv(work, count)
++    # The isolated runner imports this exact pure helper, never the host package.
++    index = argv.index('--chdir')
++    argv[index:index] = ['--ro-bind', str(work / 'scoped_pdf_pages.py'), '/work/scoped_pdf_pages.py']
++    # -I excludes the script directory: add only our protected /work explicitly.
++    argv[-2:] = ['-c', "import sys,runpy;sys.path.insert(0,'/work');sys.argv=['/work/runner.py','--child'];runpy.run_path('/work/runner.py',run_name='__main__')"]
++    return argv
++
++def _run(cap, work, count):
++    from agent.web_call_context import _current, same_web_authority
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_pdf_ocr import _Custody
++    call = _current.get()
++    if call is None or not same_web_authority(call):
++        raise PDFPagesError('native_deadline_required')
++    custody = _Custody()
++    bound = False
++    deadline = min(call.deadline(), time.monotonic() + WALL_SECONDS)
++    try:
++        with call.turn.lock:
++            check(cap)
++            call.check()
++            if call.session is not None or call.registry is not None:
++                raise PDFPagesError('pdf_custody_busy')
++            if time.monotonic() >= deadline:
++                raise PDFPagesError('pdf_timeout')
++            call.session = call.registry = custody
++            call.turn.calls.add(custody)
++            bound = True
++            custody.process = subprocess.Popen(_argv(work, count), cwd=work,
++                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
++                close_fds=True, start_new_session=True,
++                env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
++        while custody.process.poll() is None:
++            check(cap)
++            call.check()
++            if not same_web_authority(call):
++                raise PDFPagesError('pdf_authority_changed')
++            if time.monotonic() >= deadline:
++                raise PDFPagesError('pdf_timeout')
++            try:
++                custody.process.wait(timeout=min(.05, max(.001, deadline - time.monotonic())))
++            except subprocess.TimeoutExpired:
++                pass
++        check(cap)
++        call.check()
++        if custody.process.returncode != 0:
++            raise PDFPagesError('pdf_engine_failed')
++    finally:
++        receipt = custody.stop()
++        with call.turn.lock:
++            if bound and receipt['status'] == 'QUIESCENT':
++                if call.session is not custody or call.registry is not custody:
++                    receipt = {'status': 'STOP_UNCONFIRMED'}
++                else:
++                    call.session = call.registry = None
++                    call.turn.calls.discard(custody)
++        if receipt['status'] != 'QUIESCENT':
++            if hasattr(call, 'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise PDFPagesError('pdf_cleanup_unconfirmed')
++
++
++
++def optimize(cap, source, source_sha256):
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_pdf_ocr import _private_read, LocalOCRFailure
++    if (type(source) is not bytes or not 0 < len(source) <= MAX_BYTES
++            or hashlib.sha256(source).hexdigest() != source_sha256):
++        raise PDFOptimizeError('pdf_source_changed')
++    try:
++        library = Path(LIBRARY).resolve(strict=True)
++        info = library.stat()
++        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
++            raise PDFOptimizeError('pdf_engine_unavailable')
++    except OSError:
++        raise PDFOptimizeError('pdf_engine_unavailable') from None
++    check(cap)
++    work = Path(tempfile.mkdtemp(prefix='friday-pdf-optimize-'))
++    try:
++        work.chmod(0o700)
++        files = {'runner.py': Path(__file__).read_bytes(),
++                 'scoped_pdf_pages.py': Path(_pages.__file__).read_bytes(),
++                 'request.json': json.dumps({'source':'input0.pdf','source_sha256':source_sha256}).encode(),
++                 'input0.pdf': source}
++        for name, data in files.items():
++            (work/name).write_bytes(data)
++            (work/name).chmod(0o600)
++        _run(cap, work, 1)
++        result = json.loads(_private_read(work/'result.json', 32_000))
++        if type(result) is dict and set(result) == {'error'}:
++            allowed = {'pdf_malformed_or_unsupported', 'pdf_profile_unsupported', 'pdf_page_limit',
++                       'pdf_output_limit', 'pdf_engine_unavailable', 'pdf_verification_failed',
++                       'pdf_stream_filter_unsupported', 'pdf_decoded_limit', 'pdf_source_changed'}
++            raise PDFOptimizeError(result['error'] if result['error'] in allowed else 'pdf_engine_failed')
++        keys = {'pages','engine','metadata_policy','rasterized','before_bytes','after_bytes',
++                'size_result','decoded_graph_sha256','decoded_stream_bytes','source_sha256'}
++        data = _private_read(work/'output.pdf', MAX_BYTES)
++        if (type(result) is not dict or set(result) != keys or result['rasterized'] is not False
++                or result['engine'] != 'libqpdf-12.3.2' or result['metadata_policy'] != POLICY
++                or type(result['pages']) is not int or not 1 <= result['pages'] <= MAX_PAGES
++                or result['before_bytes'] != len(source) or result['after_bytes'] != len(data)
++                or result['source_sha256'] != source_sha256
++                or result['size_result'] != ('smaller' if len(data)<len(source) else 'not_smaller')
++                or not re.fullmatch('[0-9a-f]{64}',str(result['decoded_graph_sha256']))
++                or type(result['decoded_stream_bytes']) is not int
++                or not 0 <= result['decoded_stream_bytes'] <= MAX_DECODED
++                or not data.startswith(b'%PDF-') or not data.rstrip().endswith(b'%%EOF')):
++            raise PDFOptimizeError('pdf_verification_failed')
++        check(cap)
++        return data, result
++    except (OSError, LocalOCRFailure, json.JSONDecodeError):
++        raise PDFOptimizeError('pdf_engine_failed') from None
++    finally:
++        try:
++            shutil.rmtree(work)
++        except OSError:
++            from agent.web_call_context import _current
++            call = _current.get()
++            if call is not None and hasattr(call, 'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise PDFOptimizeError('pdf_cleanup_unconfirmed') from None
++
++
++def _decode(raw, filters, parms, remaining, *, storage=False):
++    if remaining < 0:
++        raise PDFOptimizeError('pdf_decoded_limit')
++    if filters in (None, []):
++        if parms not in (None, []):
++            raise PDFOptimizeError('pdf_stream_filter_unsupported')
++        decoded = raw
++    elif filters in ('/FlateDecode', ['/FlateDecode']):
++        if parms not in (None, [None]):
++            # QPDF-generated xref storage uses a bounded PNG predictor. We only
++            # prove its inflated byte bound here; it is never a page resource.
++            if not (storage and type(parms) is dict and set(parms) <= {'/Columns','/Predictor'}
++                    and parms.get('/Predictor') == 12
++                    and type(parms.get('/Columns')) is int and 1 <= parms['/Columns'] <= 64):
++                raise PDFOptimizeError('pdf_stream_filter_unsupported')
++        try:
++            decoder = zlib.decompressobj()
++            decoded = decoder.decompress(raw, remaining + 1)
++        except zlib.error:
++            raise PDFOptimizeError('pdf_malformed_or_unsupported') from None
++        if len(decoded) > remaining or decoder.unconsumed_tail:
++            raise PDFOptimizeError('pdf_decoded_limit')
++        if not decoder.eof or decoder.unused_data:
++            raise PDFOptimizeError('pdf_malformed_or_unsupported')
++    else:
++        raise PDFOptimizeError('pdf_stream_filter_unsupported')
++    if len(decoded) > remaining:
++        raise PDFOptimizeError('pdf_decoded_limit')
++    return decoded
++
++
++def _state(lib, C, callback, handle):
++    check = lambda name,*args: _pages._checked(lib,handle,name,*args)
++    if check('qpdf_is_encrypted'):
++        raise PDFOptimizeError('pdf_profile_unsupported')
++    count = check('qpdf_get_num_pages')
++    if not 1 <= count <= MAX_PAGES:
++        raise PDFOptimizeError('pdf_page_limit')
++    if check('qpdf_push_inherited_attributes_to_page'):
++        raise PDFOptimizeError('pdf_malformed_or_unsupported')
++    graph = _pages._objects(lib,C,callback,handle)
++    total = 0
++    for key,node in graph.items():
++        if 'stream' not in node:
++            continue
++        stream = node['stream']; attrs = stream['dict']
++        storage = attrs.get('/Type') in ('/XRef','/ObjStm')
++        object_id, generation, _ = key.removeprefix('obj:').split()
++        oh = check('qpdf_get_object_by_id',int(object_id),int(generation))
++        buf,length,filtered = C.c_void_p(),C.c_size_t(),C.c_int()
++        try:
++            if check('qpdf_oh_get_stream_data',oh,0,C.byref(filtered),C.byref(buf),C.byref(length)):
++                raise PDFOptimizeError('pdf_malformed_or_unsupported')
++            if length.value > MAX_BYTES:
++                raise PDFOptimizeError('pdf_decoded_limit')
++            raw = C.string_at(buf,length.value)
++        finally:
++            lib.qpdf_oh_free_buffer(C.byref(buf))
++        decoded = _decode(raw,attrs.get('/Filter'),attrs.get('/DecodeParms'),MAX_DECODED-total,storage=storage)
++        total += len(decoded)
++        stream.pop('raw_sha256',None)
++        stream['decoded_sha256'] = hashlib.sha256(decoded).hexdigest()
++        attrs.pop('/Filter',None);attrs.pop('/DecodeParms',None)
++    # This check is now restricted to the streams whose decoder/size was checked.
++    if check('qpdf_check_pdf'):
++        raise PDFOptimizeError('pdf_malformed_or_unsupported')
++    root = check('qpdf_get_root')
++    rootkey=f"obj:{check('qpdf_oh_get_object_id',root)} {check('qpdf_oh_get_generation',root)} R"
++    rootvalue=graph[rootkey]['value']
++    if set(rootvalue)-{'/Type','/Pages','/Metadata'}:
++        raise PDFOptimizeError('pdf_profile_unsupported')
++    trailer=graph['trailer']['value']
++    if set(trailer)-{'/Root','/Info','/ID','/Size','/Prev','/XRefStm','/Type','/W','/Index','/Length','/Filter','/DecodeParms'}:
++        raise PDFOptimizeError('pdf_profile_unsupported')
++    def digest(value):
++        visited={}
++        def canonical(node,depth=0):
++            if depth>64:raise PDFOptimizeError('pdf_profile_unsupported')
++            if type(node) is str and 'obj:'+node in graph:
++                ref='obj:'+node
++                if ref in visited:return {'ref':visited[ref]}
++                visited[ref]=len(visited)
++                target=graph[ref]
++                if target.get('stream',{}).get('dict',{}).get('/Type') in ('/XRef','/ObjStm'):
++                    raise PDFOptimizeError('pdf_profile_unsupported')
++                return canonical(target,depth+1)
++            if type(node) is dict:return {k:canonical(node[k],depth+1) for k in sorted(node)}
++            if type(node) is list:return [canonical(x,depth+1) for x in node]
++            return node
++        return hashlib.sha256(json.dumps(canonical(value),sort_keys=True,separators=(',',':')).encode()).hexdigest()
++    pages=[]
++    for index in range(count):
++        page=check('qpdf_get_page_n',index)
++        key=f"obj:{check('qpdf_oh_get_object_id',page)} {check('qpdf_oh_get_generation',page)} R"
++        value=dict(graph[key]['value']);value.pop('/Parent',None)
++        pages.append(digest(value))
++    metadata=digest({'info':trailer.get('/Info'),'metadata':rootvalue.get('/Metadata')})
++    fingerprint=hashlib.sha256(json.dumps({'pages':pages,'metadata':metadata},sort_keys=True).encode()).hexdigest()
++    return count,fingerprint,total
++
++
++def _child():
++    import resource
++    os.umask(0o077)
++    os.sched_setaffinity(0,sorted(os.sched_getaffinity(0))[:2])
++    for kind,limit in ((resource.RLIMIT_AS,1024**3),(resource.RLIMIT_CPU,30),
++                       (resource.RLIMIT_FSIZE,MAX_BYTES+1),(resource.RLIMIT_CORE,0),
++                       (resource.RLIMIT_NOFILE,64),(resource.RLIMIT_NPROC,16)):
++        resource.setrlimit(kind,(limit,limit))
++    lib,C,callback=_pages._library()
++    handles=[]
++    def create():
++        h=C.c_void_p(lib.qpdf_init())
++        if not h:raise PDFOptimizeError('pdf_engine_unavailable')
++        handles.append(h)
++        for name,args in [('qpdf_silence_errors',()),('qpdf_set_suppress_warnings',(1,)),('qpdf_set_attempt_recovery',(0,))]:
++            _pages._checked(lib,h,name,*args)
++        return h
++    try:
++        spec=request(Path('/work/request.json').read_text())
++        source=Path('/work/input0.pdf').read_bytes()
++        if not 0<len(source)<=MAX_BYTES or hashlib.sha256(source).hexdigest()!=spec['source_sha256']:
++            raise PDFOptimizeError('pdf_source_changed')
++        h=create()
++        if _pages._checked(lib,h,'qpdf_read',b'/work/input0.pdf',None):
++            raise PDFOptimizeError('pdf_malformed_or_unsupported')
++        expected=_state(lib,C,callback,h)
++        if _pages._checked(lib,h,'qpdf_init_write',b'/work/output.pdf'):
++            raise PDFOptimizeError('pdf_engine_failed')
++        # qpdf enums: s_compress=2, dl_generalized=1, o_generate=2.
++        for name,arg in [('qpdf_set_stream_data_mode',2),('qpdf_set_decode_level',1),
++                         ('qpdf_set_compress_streams',1),('qpdf_set_object_stream_mode',2)]:
++            _pages._checked(lib,h,name,arg)
++        if _pages._checked(lib,h,'qpdf_write'):
++            raise PDFOptimizeError('pdf_engine_failed')
++        size=Path('/work/output.pdf').stat().st_size
++        if not 0<size<=MAX_BYTES:raise PDFOptimizeError('pdf_output_limit')
++        verify=create()
++        if _pages._checked(lib,verify,'qpdf_read',b'/work/output.pdf',None):
++            raise PDFOptimizeError('pdf_verification_failed')
++        actual=_state(lib,C,callback,verify)
++        if expected[:2]!=actual[:2]:raise PDFOptimizeError('pdf_verification_failed')
++        result=dict(pages=expected[0],engine='libqpdf-12.3.2',metadata_policy=POLICY,rasterized=False,
++                    before_bytes=len(source),after_bytes=size,size_result='smaller' if size<len(source) else 'not_smaller',
++                    decoded_graph_sha256=expected[1],decoded_stream_bytes=expected[2],source_sha256=spec['source_sha256'])
++        Path('/work/result.json').write_text(json.dumps(result))
++    finally:
++        for h in reversed(handles):lib.qpdf_cleanup(C.byref(h))
++
++
++if __name__=='__main__':
++    if sys.argv[1:]!=['--child']:raise SystemExit(2)
++    try:_child()
++    except PDFOptimizeError as error:
++        Path('/work/result.json').write_text(json.dumps({'error':str(error)}))
++    except BaseException:
++        raise SystemExit(1)
+--- /dev/null
++++ b/tools/scoped_word_public_copy.py
+@@ -0,0 +1,172 @@
++"""Reconstruct a public main-text/table DOCX without carrying source parts.
++
++This is an explicit lossy text-only derivative, never a preserving edit.
++All output package members originate in the checked plain template; only
++validated main-body text and plain table cells are imported from the source.
++"""
++from io import BytesIO
++import json
++import unicodedata
++import zipfile
++
++from hermes_cli.friday_workspace_docx import render, _text
++from hermes_cli.friday_user_scope import ScopeDenied
++from tools.scoped_word_profiles import _Package, WordProfileError, W, R, _q, MAX_PARAGRAPHS
++
++REPLACEMENT = '[redacted]'
++
++
++def _fail(code):
++    raise WordProfileError(code)
++
++
++def _terms(values):
++    if type(values) is not list or not 1 <= len(values) <= 32:
++        _fail('redaction_terms_invalid')
++    if any(type(v) is not str or not 2 <= len(v) <= 512 for v in values):
++        _fail('redaction_terms_invalid')
++    for value in values:
++        try:
++            _text(value)
++            value.encode('utf-8')
++        except (ScopeDenied, UnicodeError):
++            _fail('redaction_terms_invalid')
++        if (any(ord(c) < 32 or ord(c) == 127 for c in value)
++                or value != unicodedata.normalize('NFC', value)
++                or value in REPLACEMENT):
++            _fail('redaction_terms_invalid')
++    if len(set(values)) != len(values):
++        _fail('redaction_terms_invalid')
++    # Longest first; replacements are opaque and never redacted recursively.
++    return tuple(sorted(values, key=lambda s: (-len(s), s)))
++
++
++def _replace(text, terms):
++    pieces = []; start = 0; count = 0
++    while start < len(text):
++        found = [(text.find(t, start), t) for t in terms]
++        found = [(pos, t) for pos, t in found if pos >= 0]
++        if not found:
++            pieces.append(text[start:]); break
++        pos, term = min(found, key=lambda item: (item[0], -len(item[1]), item[1]))
++        pieces.extend((text[start:pos], REPLACEMENT));start = pos + len(term);count += 1
++    return ''.join(pieces), count
++
++
++def _paragraph(node):
++    parts = []
++    for child in node:
++        name = child.tag
++        if name in {_q(W, x) for x in ('pPr','bookmarkStart','bookmarkEnd','commentRangeStart','commentRangeEnd','proofErr')}:
++            if name == _q(W,'pPr') and any(n.tag in {_q(W,x) for x in ('rPr','sectPr','pPrChange')} for n in child):
++                _fail('public_copy_unsupported_structure')
++            continue
++        if name != _q(W,'r'):
++            _fail('public_copy_unsupported_structure')
++        for atom in child:
++            if atom.tag == _q(W,'rPr'):
++                if any(n.tag in {_q(W,x) for x in ('vanish','webHidden','rPrChange')} for n in atom.iter()):
++                    _fail('public_copy_hidden_or_revision_text')
++            elif atom.tag == _q(W,'t') and not len(atom):
++                parts.append(atom.text or '')
++            elif atom.tag in (_q(W,'br'),_q(W,'cr')) and not len(atom):
++                if atom.attrib and atom.attrib.get(_q(W,'type'),'textWrapping') != 'textWrapping':
++                    _fail('public_copy_unsupported_structure')
++                parts.append('\n')
++            elif atom.tag == _q(W,'tab') and not len(atom):
++                parts.append('\t')
++            elif atom.tag == _q(W,'commentReference') and not len(atom):
++                continue
++            else:
++                _fail('public_copy_unsupported_structure')
++    return ''.join(parts)
++
++
++def _body_blocks(package, terms, checkpoint):
++    blocks=[]; changed=0; paragraphs=0
++    def text(node):
++        nonlocal changed, paragraphs
++        paragraphs += 1
++        if paragraphs > MAX_PARAGRAPHS:_fail('paragraph_count_limit')
++        if checkpoint:checkpoint()
++        result, count = _replace(_paragraph(node), terms);changed += count
++        return result
++    for index, node in enumerate(package.body):
++        if node.tag == _q(W,'sectPr') and index == len(package.body)-1:
++            continue
++        if node.tag == _q(W,'p'):
++            blocks.append(dict(type='paragraph',text=text(node)))
++        elif node.tag == _q(W,'tbl'):
++            rows=[];width=None
++            for row in node:
++                if row.tag in (_q(W,'tblPr'),_q(W,'tblGrid')):continue
++                if row.tag != _q(W,'tr'):_fail('public_copy_unsupported_table')
++                cells=[]
++                for cell in row:
++                    if cell.tag == _q(W,'trPr'):
++                        if any(n.tag in {_q(W,x) for x in ('gridBefore','gridAfter','trPrChange')} for n in cell.iter()):_fail('public_copy_unsupported_table')
++                        continue
++                    if cell.tag != _q(W,'tc'):_fail('public_copy_unsupported_table')
++                    items=[]
++                    for part in cell:
++                        if part.tag == _q(W,'tcPr'):
++                            if any(n.tag in {_q(W,x) for x in ('gridSpan','vMerge','hMerge','tcPrChange')} for n in part.iter()):_fail('public_copy_unsupported_table')
++                        elif part.tag == _q(W,'p'):items.append(text(part))
++                        else:_fail('public_copy_unsupported_table')
++                    if not items:_fail('public_copy_unsupported_table')
++                    cells.append('\n'.join(items))
++                if not 1 <= len(cells) <= 32 or width is not None and width != len(cells):_fail('public_copy_unsupported_table')
++                width=len(cells);rows.append(cells)
++            if not rows:_fail('public_copy_unsupported_table')
++            blocks.append(dict(type='table',rows=rows))
++        else:
++            _fail('public_copy_unsupported_structure')
++    if not blocks:_fail('public_copy_empty_body')
++    return blocks, changed
++
++
++def public_copy(data, terms, format='docx', *, checkpoint=None):
++    terms=_terms(terms)
++    if format not in ('docx','dotx'):_fail('public_copy_unsupported_profile')
++    package=_Package(data,format,checkpoint)
++    if package.active:_fail('public_copy_active_or_signed')
++    unsafe={_q(W,n) for n in ('ins','del','moveFrom','moveTo','delText','fldSimple','fldChar','instrText','vanish','webHidden',
++        'cellIns','cellDel','cellMerge','rPrChange','pPrChange','sectPrChange','tblPrChange','tblGridChange',
++        'trPrChange','tcPrChange','numberingChange')}
++    if any(n.tag in unsafe for n in package.body.iter()):
++        _fail('public_copy_hidden_revision_or_field')
++    # Reconstructing plain text must not turn inherited hidden content visible.
++    # We do not evaluate style cascades: any hidden marker in a style/defaults
++    # part conservatively refuses, including unreferenced styles and false flags.
++    style_parts={target for rows in package.relationships.values() for kind,target in rows.values()
++        if kind == R+'/styles'}
++    hidden={_q(W,n) for n in ('vanish','webHidden')}
++    for name,root in package.xml.items():
++        if (name in style_parts or root.tag == _q(W,'styles')
++                or package.types.get(name) == 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml'):
++            if any(n.tag in hidden for n in root.iter()):
++                _fail('public_copy_hidden_style')
++    blocks,count=_body_blocks(package,terms,checkpoint)
++    # A term may exist only in a source comment/property which is discarded.
++    corpus='\n'.join(''.join(root.itertext())+'\n'+'\n'.join(v for n in root.iter() for v in n.attrib.values()) for root in package.xml.values())
++    if any(term not in corpus for term in terms):_fail('redaction_term_missing')
++    try:output=render(json.dumps(dict(blocks=blocks),ensure_ascii=False),structured=True)
++    except ScopeDenied:_fail('public_copy_output_limit')
++    verified=_Package(output,'docx',checkpoint)
++    # Inspect every generated XML text, attribute, name and raw package part;
++    # reject a collision with template constants instead of claiming removal.
++    with zipfile.ZipFile(BytesIO(output)) as archive:
++        if archive.comment:_fail('public_copy_verification_failed')
++        for info in archive.infolist():
++            if checkpoint:checkpoint()
++            payload=archive.read(info.filename)
++            if any(term in info.filename or term.encode('utf-8') in payload for term in terms):
++                _fail('public_copy_verification_failed')
++            if info.comment or info.extra:_fail('public_copy_verification_failed')
++    for root in verified.xml.values():
++        content=''.join(root.itertext())+'\n'+'\n'.join(v for n in root.iter() for v in n.attrib.values())
++        if any(term in content for term in terms):_fail('public_copy_verification_failed')
++    if checkpoint:checkpoint()
++    return output,dict(body_replacements=count,redacted_terms=len(terms),derivative='reconstructed_main_body_and_plain_tables',
++        source_parts_copied=False,source_metadata_comments_headers_footers_embedded_parts_copied=False,
++        formatting_preserved=False,case_sensitive_exact_terms=True,all_output_parts_checked=True)
