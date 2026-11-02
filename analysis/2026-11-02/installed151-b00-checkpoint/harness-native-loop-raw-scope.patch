@@ -1,0 +1,102 @@
+--- a/b00_ancestry.py
++++ b/b00_ancestry.py
+@@ -150,6 +150,72 @@
+         if previous_scope is None:vars(c).pop('_b00_history_read_scope',None)
+         else:c._b00_history_read_scope=previous_scope
+ 
++
++def closed_history_reads(c,b,runner,validate):
++    """One exact native loop: pinned external payloads only; native reads fresh."""
++    # Existing enclosing guards retain their accepted boundaries. Never extend
++    # an enclosing memo's lifetime or register a historical proof validator.
++    if getattr(c,'_b00_history_read_scope',None)is not None:return validate()
++    root=Path(os.path.abspath(runner.store.root))
++    def namespace():
++        # Cursor memo's complete-name/directory-custody CAS, extended through
++        # this store's existing subdirectories. Include every entry, not *.json
++        # only: admissions, once/retirement witnesses and malformed names count.
++        result=[];pending=[root]
++        while pending:
++            p=c.no_symlinks(pending.pop());v=p.lstat()
++            if (not stat.S_ISDIR(v.st_mode)or v.st_uid!=os.getuid()
++                    or stat.S_IMODE(v.st_mode)!=0o700):
++                raise ValueError('B00_closed_history_directory_custody_changed')
++            entries=[]
++            for child in sorted(p.iterdir()):
++                s=child.lstat()
++                if stat.S_ISLNK(s.st_mode):
++                    raise ValueError('B00_closed_history_namespace_symlink')
++                entries.append((child.name,tuple(getattr(s,n)for n in
++                    ('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink',
++                     'st_size','st_mtime_ns','st_ctime_ns'))))
++                if stat.S_ISDIR(s.st_mode):pending.append(child)
++            result.append((str(p),tuple(getattr(v,n)for n in
++                ('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink',
++                 'st_size','st_mtime_ns','st_ctime_ns')),tuple(entries)))
++        return tuple(sorted(result))
++    before=namespace();old_read,old_safe=b.read,c.safe_read
++    def original_loop():
++        cached_read=b.read
++        # The existing helper installs both readers. This loop retains only
++        # exact immutable references outside the canonical store. Original
++        # native safe_read and every canonical-store reference stay uncached,
++        # including current cursor, own row, admission, once and retirement.
++        c.safe_read=old_safe
++        def external(pin):
++            if type(pin)is dict and type(pin.get('path'))is str:
++                path=Path(os.path.abspath(pin['path']))
++                if path==root or root in path.parents:return old_read(pin)
++            return cached_read(pin)
++        b.read=external
++        try:return validate()
++        finally:b.read=cached_read
++    value=read_history_once(c,b,original_loop,proofs=())
++    # read_history_once has authenticated all retained dependencies and restored
++    # readers before this final namespace CAS and the next original boundary.
++    if namespace()!=before:raise ValueError('B00_closed_history_namespace_CAS_changed')
++    return value
++
++
++# Two exact already-adapted native blocks only. No method/verdict is memoized.
++CLOSED_HISTORY_LOOPS = ("        for path in self.store.runs.glob('*.json'):\n            if path == self.store.run_path(run['id']):\n                continue\n            if prepared_run is not None and path == self.store.run_path(prepared_run['id']):\n                if safe_read(path) != encoded(prepared_run):\n                    raise Refused('Prepared run changed during current authority validation')\n                continue\n            old = self.store.get(path)\n            if self.source110_consumed_unknown(old):\n                continue\n            if old.get('id') == A02_PARTIAL_RUN:\n                self.a02_terminal_partial(old)\n                continue\n            if old.get('id') == 'root-s05-d745ac09dcf2':\n                self.s05_settled_partial(old)\n                if not continuation_validation:\n                    raise Refused('S05 partial closure requires explicit admitted successor')\n                continue\n            if continuation_validation and _S07_MISSING.closed_prior(self, old, getattr(self, '_s07_missing_plan', None)):\n                continue\n            if old.get('status') not in ('EVIDENCE_READY', 'STOPPED', 'FAILED') or old.get('send_state') in ('intent', 'unknown'):\n                raise Refused('Other unfinished work blocks unknown reconciliation')\n", "        for old in self.store.runs.glob('*.json'):\n            previous = self.store.get(old)\n            if admitted is not None and previous['id'] == self.store.get(self.store.root / 'reconciliations' / admitted['quarantine_key'] / 'INTENT.json')['plan']['run_id']:\n                continue\n            if admitted is not None and self.source110_consumed_unknown(previous):\n                continue\n            if previous.get('id') == A02_PARTIAL_RUN:\n                self.a02_terminal_partial(previous)\n                if admitted is None:\n                    raise Refused('A02 partial closure requires explicit admitted successor')\n                continue\n            if previous.get('id') == 'root-s05-d745ac09dcf2':\n                self.s05_settled_partial(previous)\n                if admitted is None:\n                    raise Refused('S05 partial closure requires explicit admitted successor')\n                continue\n            if _S07_MISSING.closed_prior(self, previous, admitted):\n                continue\n            if previous['status'] not in ('EVIDENCE_READY', 'STOPPED', 'FAILED'):\n                raise Refused('Unfinished prior run blocks new work')\n            if previous.get('send_state') in ('intent', 'unknown'):\n                raise Refused('Unresolved send blocks all new work')\n")
++
++def closed_history_source(source):
++    source=source.decode()
++    for index,old in enumerate(CLOSED_HISTORY_LOOPS):
++        if source.count(old)!=1:raise ValueError('B00_exact_closed_history_loop_anchor_changed')
++        name='_b00_closed_history_loop_'+str(index)
++        body=''.join('    '+line for line in old.splitlines(keepends=True))
++        source=source.replace(old,'        def '+name+'():\n'+body+
++            '        _b00_closed_history_reads(self, '+name+')\n')
++    return source.encode()
++
+ def historical_proofs(k):
+     return [*k.V03_FRONTIER_CHAIN,*[getattr(k,name)for name in
+         ('S18_PROOF','S16_PROOF','S15_PROOF','S14_PROOF','S13_PROOF','S12_PROOF',
+@@ -166,6 +232,18 @@
+ def install(c,k,load,consumer_sha,closure):
+     h=load(HISTORY,'_m06_accepted_history');ctx=load(CONTEXT,'_m06_accepted_context')
+     missing=load(h.MISSING,'_m06_missing');parent=load(h.PARENT,'_m06_parent');old=load(h.OLD_HISTORY,'_m06_old_history')
++    original_source=missing.adapted_source
++    missing.adapted_source=lambda raw:closed_history_source(original_source(raw))
++    def closed_loop(runner,validate):
++        active=getattr(c,'_units_exact_plan',None)
++        token=getattr(c,'_m06_global_scope_token',None)
++        eligible=(k.STAGE=='B00' and active is not None and token is not None
++            and getattr(runner,'_m06_global_scope_token',None)is token
++            and getattr(runner,'_m06_active_plan',None)==active
++            and runner.store.root==getattr(c,'_b00_closed_history_root',None))
++        if not eligible:return validate()
++        return closed_history_reads(c,k._b00_custody_reader,runner,validate)
++    c._b00_closed_history_reads=closed_loop
+     adapter=h.install(c,ctx,missing,parent,old,consumer_sha)
+     closure_k=types.SimpleNamespace(**vars(k));closure_k.validate_plan_shape=load(M11_CONTRACT,'_m06_accepted_m11_contract').validate_plan_shape
+     closure.install(c,closure_k,missing)
+@@ -347,6 +425,7 @@
+     return prepare
+ def install_scope(c,k,exact_plan,prepared_runner):
+     pinned=copy.deepcopy(exact_plan);k.validate_plan_shape(c,pinned)
++    c._b00_closed_history_root=prepared_runner.store.root
+     def future360(runner,projection):
+         token=getattr(c,'_m06_global_scope_token',None)
+         return (token is not None and getattr(runner,'_m06_global_scope_token',None)is token
