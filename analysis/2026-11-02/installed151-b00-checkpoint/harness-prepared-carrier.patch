@@ -1,0 +1,105 @@
+--- a/root_core.py
++++ b/root_core.py
+@@ -88,6 +88,62 @@
+     need(len(outputs)==scenario['steps'][0]['observe']['max_documents'],
+          'B198_prepared_transport_cardinality_required')
+ 
++
++def bind_prepared_carrier(c,case,scenario,index,plan,store_path):
++    """An exact prepared original may reuse a fixture for a distinct effect.
++
++    The canonical consumer still authenticates Root authority, source/current
++    state, physical file identity, predecessor, once claim and reply custody.
++    This grant changes only its output/fixture freshness predicates.
++    """
++    need(not hasattr(c,'_b00_prepared_carrier'),'B214_one_prepared_carrier_scope_per_consumer')
++    row=case['scenario_steps'][index]
++    declared=row.get('transport_output',case.get('transport_output',...))
++    pinned=json.loads(json.dumps(plan))
++    validate_prepared_transport(c,case,scenario,index,pinned)
++    step=scenario['steps'][0]
++    request=step.get('request')if 'request'in step else step['input']['caption']
++    task=pinned.get('new_task',{})
++    eligible=(declared is not ... and task.get('kind')=='ordinary-document-task'
++        and task.get('source_reference')is None and task.get('request')==request
++        and pinned.get('new_scenario')==scenario and exact_json(task.get('output'),declared))
++    def signature(s):
++        if type(s)is not dict:return None
++        if type(s.get('request'))is str:return dict(request=s['request'],input=None)
++        v=s.get('input')
++        if type(v)is dict and v.get('kind')=='document':
++            return dict(request=v['caption'],input=dict(sha256=v['sha256'],mime_type=v['mime_type']))
++        return None
++    effect=signature(step)
++    def allowed(runner,candidate,prior=None,upload=None):
++        token=getattr(c,'_m06_global_scope_token',None)
++        if (not eligible or effect is None or candidate!=pinned
++                or token is None or getattr(runner,'_m06_global_scope_token',None)is not token
++                or getattr(runner,'_m06_active_plan',None)!=pinned
++                or getattr(c,'_units_exact_plan',None)!=pinned
++                or runner.store.root!=store_path):return False
++        if effect['input'] is None:
++            if prior is not None or upload is not None:return False
++        elif (type(prior)is not dict or upload!=step.get('input')
++                or prior.get('sha256')!=effect['input']['sha256']
++                or prior.get('mime_type')!=effect['input']['mime_type']):
++            return False
++        for path in runner.store.runs.glob('*.json'):
++            saved=runner.store.get(path)
++            if saved.get('id')==pinned['new_run_id']:
++                # Existing ancestry authenticates this invocation's immutable
++                # admission, once claim and pristine anchor before native reads.
++                anchor=getattr(runner,'_b00_own_pristine',None)
++                if (type(anchor)is not dict or anchor.get('id')!=saved['id']
++                        or anchor.get('scenario')!=scenario
++                        or saved.get('scenario')!=scenario
++                        or saved.get('continuation_reference')!=anchor.get('continuation_reference')):
++                    return False
++                continue
++            if any(signature(s)==effect for s in saved.get('scenario',{}).get('steps',[])):
++                return False
++        return True
++    c._b00_prepared_carrier=allowed
+ 
+ def prepare(a):
+     package_raw=read_pin(a.package_ref);pkg=json.loads(package_raw)
+@@ -172,6 +228,7 @@
+         plan=readonly.read_reference(value['successor_admission'])['plan']
+     _,index=select_prepared(p['pkg'],p['case'],value)
+     validate_prepared_transport(p['c'],p['case'],p['scenario'],index,plan)
++    bind_prepared_carrier(p['c'],p['case'],p['scenario'],index,plan,p['store_path'])
+     scope['plan']=plan
+     return scope
+ 
+--- a/b00_history.py
++++ b/b00_history.py
+@@ -10,12 +10,25 @@
+ 
+ def future_budget_source(original,c):
+     c._b00_future360=lambda *_:False
++    # Deny by default for historical/direct callers without CORE preparation.
++    if not hasattr(c,'_b00_prepared_carrier'):c._b00_prepared_carrier=lambda *_:False
+     def adapted(raw):
+-        text=original(raw).decode()
+-        anchor='(720 if _native_web_future720(self,plan) else 300)'
+-        if text.count(anchor)!=1:raise ValueError('B205_exact_existing_budget_anchor_required')
+-        return text.replace(anchor,'(720 if _native_web_future720(self,plan) else (360 if _b00_future360(self,plan) else 300))').encode()
++        source=original(raw).decode()
++        changes=[
++            ("(720 if _native_web_future720(self,plan) else 300)",
++             "(720 if _native_web_future720(self,plan) else (360 if _b00_future360(self,plan) else 300))"),
++            ("if memory is None and output is not None and output['mime_type'] != 'text/plain':",
++             "if memory is None and output is not None and output['mime_type'] != 'text/plain' and not _b00_prepared_carrier(self,plan):"),
++            ("or (s15_grant is not None and self.ordinary_s15_original_collision(s15_grant,record,i,p,upload)))",
++             "or (s15_grant is not None and self.ordinary_s15_original_collision(s15_grant,record,i,p,upload)) or _b00_prepared_carrier(self,plan,p,upload))"),
++            ("or (serial and a01_grant is None and s07_grant is None and s06_grant is None and s12_grant is None and s14_grant is None and s15_grant is None and self.ordinary_legacy_b32_upload(plan, previous_plan, record, path)))):",
++             "or (serial and a01_grant is None and s07_grant is None and s06_grant is None and s12_grant is None and s14_grant is None and s15_grant is None and self.ordinary_legacy_b32_upload(plan, previous_plan, record, path)) or _b00_prepared_carrier(self,plan,p,upload))):")]
++        for old,new in changes:
++            if source.count(old)!=1:raise ValueError('B214_exact_native_carrier_anchor_required')
++            source=source.replace(old,new)
++        return source.encode()
+     return adapted
++
+ 
+ PLAN_FIELDS = {'schema', 'operator', 'action_id', 'new_run_id', 'new_scenario', 'new_task',
+                'quarantine_key', 'intent_sha256', 'terminal_sha256', 'response_sha256', 'clock',
