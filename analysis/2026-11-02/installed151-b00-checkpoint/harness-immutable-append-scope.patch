@@ -1,0 +1,94 @@
+--- a/b00_ancestry.py
++++ b/b00_ancestry.py
+@@ -29,14 +29,14 @@
+     """
+     proofs=tuple({id(p):p for p in proofs}.values())
+     previous_scope=getattr(c,'_b00_history_read_scope',None)
+-    proof_ids=frozenset(id(p)for p in proofs)
++    proof_ids=set(id(p)for p in proofs)
+     if (previous_scope is not None and previous_scope[0]is b
+             and proof_ids<=previous_scope[1]):
+         # The enclosing effect-free guard still checks every dependency before
+         # returning. Do not layer wrappers or cache live/native guard results.
+         return validate()
+     reads={};pins={};cached_bytes=0
+-    methods=[];validated={};states={}
++    methods=[];validated={};states={};append_sources={}
+     def state_value(value):
+         if value is None or type(value)in(str,int,float,bool,bytes):return (type(value).__name__,value)
+         if type(value)is dict:return {n:state_value(v)for n,v in value.items()}
+@@ -61,12 +61,17 @@
+                 {n:getattr(ctx,n)for n in('TUPLE','AFTER','STAGE','TUPLE_CURSOR',
+                     'INPUT_SHA','CAPTION','OUTPUT','SID','KEY','QUESTION')if hasattr(ctx,n)}))
+         return state_value((data,contexts))
+-    def retained_validator(proof,original):
++    def retained_validator(proof,original,fresh_parent=False):
+         key=id(proof)
+         def check():
++            if key in append_sources and getattr(type(proof),'validate',None)is not append_sources[key]:
++                raise ValueError('B00_immutable_proof_source_changed')
+             if key in validated:
+                 if proof_state(proof)!=states[key]:
+                     raise ValueError('B00_immutable_proof_state_changed')
++                # Newly appended frozen proofs still authenticate their parent
++                # on every hit, including any uncached native custody boundary.
++                if fresh_parent:proof.parent.validate()
+                 return copy.deepcopy(validated[key])
+             value=original()
+             states[key]=copy.deepcopy(proof_state(proof));validated[key]=copy.deepcopy(value)
+@@ -111,20 +116,27 @@
+         if not isinstance(path,(str,os.PathLike)) or not Path(path).is_absolute():
+             return old_safe(path,limit)
+         return cached(('safe',str(Path(path)),limit),path,lambda:old_safe(path,limit))
++    def register(proof,frozen_append=False):
++        # Only the owner of a newly frozen ordinary context may extend this
++        # same effect-free scope. Native/zero-wire validators never enter it.
++        if type(proof).__name__ in ('RetiredOrdinaryProof','ZeroWireProof'):return
++        if frozen_append and type(proof).__name__ not in ('OrdinarySerialProof','StoppedSentPartialProof'):
++            raise ValueError('B00_frozen_ordinary_proof_required')
++        if any(saved is proof for saved,_,_ in methods):return
++        original=getattr(proof,'validate',None)
++        if not callable(original):return
++        present='validate'in vars(proof);previous=vars(proof).get('validate')
++        methods.append((proof,present,previous));proof_ids.add(id(proof))
++        if frozen_append:append_sources[id(proof)]=getattr(type(proof),'validate',None)
++        proof.validate=retained_validator(proof,original,fresh_parent=frozen_append)
+     b.read,c.safe_read=exact,safe
+-    c._b00_history_read_scope=(b,proof_ids)
++    c._b00_history_read_scope=(b,proof_ids,lambda proof:register(proof,True))
+     try:
+-        for proof in {id(p):p for p in proofs}.values():
+-            # Native retired proofs inspect mutable claim/receive custody and
+-            # are deliberately excluded; their head/validate checks stay fresh.
+-            if type(proof).__name__ in ('RetiredOrdinaryProof','ZeroWireProof'):continue
+-            original=getattr(proof,'validate',None)
+-            if not callable(original):continue
+-            present='validate'in vars(proof);previous=vars(proof).get('validate')
+-            methods.append((proof,present,previous))
+-            proof.validate=retained_validator(proof,original)
++        for proof in proofs:register(proof)
+         value=validate()
+         for proof,_,_ in methods:
++            if id(proof)in append_sources and getattr(type(proof),'validate',None)is not append_sources[id(proof)]:
++                raise ValueError('B00_immutable_proof_source_changed')
+             if id(proof)in states and proof_state(proof)!=states[id(proof)]:
+                 raise ValueError('B00_immutable_proof_state_changed')
+         for path,pin in pins.items():
+--- a/b00_history.py
++++ b/b00_history.py
+@@ -679,7 +679,14 @@
+     frozen.validate_plan_shape=validate
+     validate(c,plan)
+     for historical in k.V03_FRONTIER_CHAIN:
+-        if getattr(historical,'k',None)is k:historical.k=frozen
++        if getattr(historical,'k',None)is k:
++            historical.k=frozen
++            # Constructors validate before this context is frozen. Retain only
++            # these exact immutable classes, and only in the current read scope.
++            active=getattr(c,'_b00_history_read_scope',None)
++            if (type(historical)in(OrdinarySerialProof,StoppedSentPartialProof)
++                    and active is not None and len(active)==3 and active[0]is historical.b):
++                active[2](historical)
+ 
+ 
+ def append_ordinary_tail(k,b,c,proof,scope,runner=None):

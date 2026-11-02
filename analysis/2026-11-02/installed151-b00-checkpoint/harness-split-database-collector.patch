@@ -1,0 +1,95 @@
+--- a/gather_g01g02_actual_receipts_once.py
++++ b/gather_g01g02_actual_receipts_once.py
+@@ -88,7 +88,21 @@
+     return dict(id=row['id'], session_id=row['session_id'], role='user', platform_message_id=row['platform_message_id'], request_sha256=hashlib.sha256(row['content'].encode()).hexdigest())
+ 
+ 
+-def snapshot(db_path, grant, *, window=None, first_user_id=None):
++def _read_route(path, scope, key, deadline):
++    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
++    db.row_factory = sqlite3.Row
++    db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
++    try:
++        db.execute('PRAGMA query_only=ON')
++        need(db.execute('PRAGMA query_only').fetchone()[0] == 1, 'query_only')
++        db.execute('BEGIN')
++        return _bounded(db, 'SELECT scope,session_key,entry_json,updated_at FROM gateway_routing WHERE scope=? AND session_key=?', (scope, key), 1)
++    finally:
++        db.rollback()
++        db.close()
++
++
++def snapshot(db_path, grant, *, routing_db_path, routing_scope, window=None, first_user_id=None):
+     """Existing mode=ro/query_only/BEGIN approach, bounded exact-session queries.
+ 
+     A missing column/table is a compatibility refusal. No schema creation,
+@@ -98,8 +112,12 @@
+     """
+     path = Path(db_path)
+     need(path.is_absolute() and not path.is_symlink() and path.is_file(), 'db_path')
++    routing_path = Path(routing_db_path)
++    need(routing_path.is_absolute() and not routing_path.is_symlink() and routing_path.is_file() and type(routing_scope) is str and bool(routing_scope), 'routing_db_path_and_scope')
+     before = path.stat()
++    routing_before = routing_path.stat()
+     deadline = time.monotonic() + 60
++    routes = _read_route(routing_path, routing_scope, grant['session_key'], deadline)
+     db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
+     db.row_factory = sqlite3.Row
+     db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+@@ -108,7 +126,6 @@
+         need(db.execute('PRAGMA query_only').fetchone()[0] == 1, 'query_only')
+         db.execute('BEGIN')
+         sessions = _bounded(db, 'SELECT ' + SESSION_COLUMNS + ' FROM sessions WHERE id=?', (grant['session_id'],), 1)
+-        routes = _bounded(db, 'SELECT scope,session_key,entry_json,updated_at FROM gateway_routing WHERE session_key=?', (grant['session_key'],), 2)
+         session = sessions[0] if sessions else None
+         _principal_session(session, routes, grant)
+         if window is not None:
+@@ -125,13 +142,17 @@
+     finally:
+         db.rollback()
+         db.close()
++    routes_after = _read_route(routing_path, routing_scope, grant['session_key'], deadline)
+     after = path.stat()
++    routing_after = routing_path.stat()
+     need((before.st_dev, before.st_ino) == (after.st_dev, after.st_ino), 'db_replaced_during_read')
++    need((routing_before.st_dev, routing_before.st_ino) == (routing_after.st_dev, routing_after.st_ino), 'routing_db_replaced_during_read')
++    need(routes_after == routes, 'routing_changed_during_profile_observation')
+     need(time.monotonic() <= deadline, 'query_deadline')
+-    return dict(storage_readonly=True, query_only=True, no_mutation=True, db_path=str(path), db_identity=dict(device=before.st_dev, inode=before.st_ino), principal=grant['principal'], session_id=grant['session_id'], session_key=grant['session_key'], session=session, routing=routes, observed_monotonic=observed, raw_rows=rows, raw_last_user_row=last)
+-
+-
+-def collect_closed_phase(db_path, pkg, selection, descriptor, operation_result, reader, c, runner, put, output_prefix):
++    return dict(storage_readonly=True, query_only=True, no_mutation=True, db_path=str(path), db_identity=dict(device=before.st_dev, inode=before.st_ino), routing_db_path=str(routing_path), routing_db_identity=dict(device=routing_before.st_dev,inode=routing_before.st_ino), routing_scope=routing_scope, routing_before_after_equal=True, principal=grant['principal'], session_id=grant['session_id'], session_key=grant['session_key'], session=session, routing=routes, observed_monotonic=observed, raw_rows=rows, raw_last_user_row=last)
++
++
++def collect_closed_phase(db_path, pkg, selection, descriptor, operation_result, reader, c, runner, put, output_prefix, *, routing_db_path, routing_scope):
+     """Emit actual host observation + existing ingress schema for a CLOSED run.
+ 
+     `put(path, doc)` must be Root's existing protected private writer. This code
+@@ -168,7 +189,7 @@
+     need(hashlib.sha256(ack_raw).hexdigest() == ack_ref['sha256'] and len(ack_raw) == ack_ref['bytes'], 'ack_pin')
+     ack = json.loads(ack_raw, object_pairs_hook=unique)
+     need(str(ack.get('chat', {}).get('id')) == PRINCIPAL['account_id'] and str(ack.get('from', {}).get('id')) == PRINCIPAL['user_id'] and ack.get('message_id') == run['sent_message_id'] and ack.get('text') == phase['request'] and type(run['sent_message_id']) is int and run['send_dispatch_at'] - 3 <= ack['date'] <= run['capture_until'] + 10, 'actual_tester_ack')
+-    host = snapshot(db_path, grant, window=(run['send_dispatch_at'] - 3, run['capture_until'] + 10))
++    host = snapshot(db_path, grant, routing_db_path=routing_db_path, routing_scope=routing_scope, window=(run['send_dispatch_at'] - 3, run['capture_until'] + 10))
+     users = [row for row in host['raw_rows'] if row['role'] == 'user']
+     need(len(users) == 1, 'missing_or_ambiguous_actual_ingress')
+     raw = users[0]
+@@ -183,7 +204,7 @@
+     return put(Path(output_prefix) / 'INGRESS.private.json', ingress)
+ 
+ 
+-def collect_before_phase(db_path, pkg, selection, reader, c, runner, put, output_prefix):
++def collect_before_phase(db_path, pkg, selection, reader, c, runner, put, output_prefix, *, routing_db_path, routing_scope):
+     """Emit existing fresh tip schema; require every exact dependency, no extras.
+ 
+     This projects active durable history availability. It does not establish the
+@@ -209,7 +230,7 @@
+         need(old_host.get('query_only') is True and old_host.get('storage_readonly') is True and ingress['row'] in old_host.get('rows', []), 'dependency_host_custody')
+         expected.append(ingress['row'])
+     need(all(a['id'] < b['id'] for a, b in zip(expected, expected[1:])), 'dependency_order')
+-    host = snapshot(db_path, grant, first_user_id=expected[0]['id'])
++    host = snapshot(db_path, grant, routing_db_path=routing_db_path, routing_scope=routing_scope, first_user_id=expected[0]['id'])
+     actual = [_row(row) for row in host['raw_rows']]
+     need(actual == expected and host['raw_last_user_row'] is not None and _row(host['raw_last_user_row']) == expected[-1], 'unaccounted_ingress_or_changed_setup')
+     host.update(rows=actual, last_user_row=expected[-1], exact_dependency_instances=dependencies, first_user_id=expected[0]['id'])
