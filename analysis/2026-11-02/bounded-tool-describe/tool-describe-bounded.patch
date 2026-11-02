@@ -1,0 +1,109 @@
+--- a/tools/tool_search.py
++++ b/tools/tool_search.py
+@@ -9,9 +9,11 @@
+ from __future__ import annotations
+ 
+ import functools
++import hashlib
+ import json
+ import logging
+ import math
++import re
+ from collections import Counter
+ from dataclasses import dataclass
+ from typing import Any, Dict, Iterable, List, Optional, Tuple
+@@ -297,13 +299,24 @@
+             TOOL_DESCRIBE_NAME,
+             f"Load the full JSON schemas for tools returned by `{TOOL_SEARCH_NAME}`. "
+             f"Required before `{TOOL_CALL_NAME}` if a tool's parameters are unknown. "
+-            "Batch every schema you need into one call.",
++            "Batch every schema you need into one call. Large descriptions return a "
++            "schema_page instead of a file path. Continue with its next_offset and "
++            "expected_sha256, or use query to locate the operation you need. "
++            "Page text is a fragment of the full JSON, not a complete schema.",
+             {
+                 "names": {
+                     "type": "array",
+                     "items": {"type": "string"},
+                     "description": "Exact tool names (as returned by tool_search). A single string is accepted and treated as one name.",
+                 },
++                "offset": {"type": "integer", "minimum": 0,
++                           "description": "Character offset into the full JSON. A positive offset requires expected_sha256 from the prior page."},
++                "limit": {"type": "integer", "minimum": 1, "maximum": 4096,
++                          "description": "Maximum page characters, default 4096."},
++                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$",
++                                    "description": "Full schema fingerprint from the prior page. A changed catalog refuses continuation; refresh the first page."},
++                "query": {"type": "string", "minLength": 1, "maxLength": 80,
++                          "description": "Optional literal case-insensitive text to locate at or after offset, such as rar or presentation_edit. No regex or file access."},
+             },
+             ["names"],
+         ),
+@@ -486,6 +499,59 @@
+     return json.dumps(payload, ensure_ascii=False)
+ 
+ 
++def _describe_response(result: Dict[str, Any], args: Dict[str, Any]) -> str:
++    """Lossless, stateless pages of the currently scoped catalog, never cache paths.
++
++    A continuation rechecks the current scope and exact full-response fingerprint.
++    It grants no tool authority and cannot recover a removed tool from stored pages.
++    """
++    raw = json.dumps(result, ensure_ascii=False)
++    fields = {"offset", "limit", "expected_sha256", "query"}
++    if len(raw) <= 8000 and not fields.intersection(args):
++        return raw
++    offset, limit = args.get("offset", 0), args.get("limit", 4096)
++    expected, query = args.get("expected_sha256"), args.get("query")
++    if (type(offset) is not int or offset < 0
++            or type(limit) is not int or not 1 <= limit <= 4096
++            or (query is not None and (type(query) is not str or not 1 <= len(query) <= 80))
++            or (expected is not None and (type(expected) is not str
++                or re.fullmatch(r"[0-9a-f]{64}", expected) is None))):
++        return json.dumps({"error": "invalid_schema_page_arguments"})
++    fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
++    if offset and expected is None:
++        return json.dumps({"error": "schema_page_fingerprint_required"})
++    if expected is not None and expected != fingerprint:
++        return json.dumps({"error": "schema_changed_refresh_first_page"})
++    if offset > len(raw):
++        return json.dumps({"error": "schema_page_offset_out_of_range"})
++    found = None
++    if query is not None:
++        match = re.search(re.escape(query), raw[offset:], re.IGNORECASE)
++        if match is None:
++            return json.dumps({"error": "schema_query_no_match", "sha256": fingerprint})
++        found = offset + match.start()
++        offset = max(offset, found - min(160, limit // 4))
++    end = min(len(raw), offset + limit)
++    page = {"sha256": fingerprint, "encoding": "json_utf8", "total_chars": len(raw),
++            "offset": offset, "next_offset": end if end < len(raw) else None,
++            "covers_entire_schema": offset == 0 and end == len(raw),
++            "text": raw[offset:end]}
++    if found is not None:
++        page["match_offset"] = found
++    response = {"schema_page": page,
++        "hint": "This is a JSON fragment. Continue tool_describe with the same names, next_offset and expected_sha256, or locate a needed operation with query. No file access is required."}
++    # JSON escaping can enlarge a requested fragment. Stay below the native
++    # minimum per-result budget as well as the large-context default.
++    encoded = json.dumps(response, ensure_ascii=False)
++    while len(encoded) > 7800:
++        end = offset + max(1, (end - offset) // 2)
++        page.update(next_offset=end if end < len(raw) else None,
++                    covers_entire_schema=offset == 0 and end == len(raw),
++                    text=raw[offset:end])
++        encoded = json.dumps(response, ensure_ascii=False)
++    return encoded
++
++
+ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
+                            config: Optional[ToolSearchConfig] = None,
+                            connector_describe: Optional[Any] = None) -> str:
+@@ -528,7 +594,7 @@
+         result["errors"] = errors
+     if hosted_failure:
+         result["connectors"] = connectors_unavailable(hosted_failure, verb="described", names=undescribed)
+-    return json.dumps(result, ensure_ascii=False)
++    return _describe_response(result, args)
+ 
+ 
+ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
