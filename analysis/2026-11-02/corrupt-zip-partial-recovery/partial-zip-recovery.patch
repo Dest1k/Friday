@@ -1,0 +1,208 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -503,6 +503,7 @@
+             'ZIP: format=zip needs a NEW .zip path and content JSON {"entries":[{"source":"report.docx","member":"Docs/report.docx"}]}; '
+             'only the exact listed files are included, with unchanged bytes and the requested nested member names. '
+             'format=zip_extract needs a NEW folder path and content JSON {"source":"materials.zip"}. '
++            'For an explicitly requested recovery of healthy members from a damaged unencrypted ZIP, add "allow_partial":true. Read inspection reports verified healthy entries and damaged_members; partial extraction returns success=false, published_partial=true and archive_complete=false with exact recovered paths. Explain the damage and incomplete result; do not retry publication or claim full extraction. Structural, path, link, encryption and resource-limit refusals cannot be bypassed by this option. '
+             'When registry_omitted is true, creation/extraction still succeeded: use read_file on '
+             'registry_read_file and continue its next_offset to inspect entries; do not repeat the write. '
+             'Extraction puts those entries under the returned folder path. '
+@@ -552,6 +553,7 @@
+         content = function['parameters']['properties']['content']
+         content['description'] = (
+             'ZIP content JSON: zip uses {"entries":[{"source":"note","member":"Folder/note"}]} with optional password; '
++            'zip_extract also accepts allow_partial=true only for explicit healthy-member recovery from an unencrypted ZIP with corrupt member payloads. Its known partial publication is incomplete, not full success: use returned recovered paths, state damaged_members and never blindly recreate it. '
+             'rar_extract/archive_convert use exactly {"source":"materials.zip"} (or a supported .7z/.rar/TAR source as appropriate); zip_extract/7z_extract also accept password. ZIP creation accepts optional password for authenticated WinZip AES-256 AE-2 (names stay visible); single-volume non-ZIP64 AES-256 AE-1/AE-2 stored/deflate reads are supported, other encrypted profiles and encrypted conversion/edit refuse. 7z creation accepts optional password/header_encryption; read_file accepts password for own-workspace ZIP/7z. ZIP/7z writes need matching NEW .zip/.7z paths; extraction needs a NEW folder. '
+             'XLSX content is a JSON string: xlsx_recalculate uses exactly {"source":"edited.xlsx"}; '
+             'xlsx_merge uses exactly {"base":"base.xlsx","update":"update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}; '
+--- a/hermes_cli/friday_workspace_zip.py
++++ b/hermes_cli/friday_workspace_zip.py
+@@ -15,7 +15,7 @@
+ import unicodedata
+ import uuid
+ from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED, ZIP_STORED, BadZipFile
+-from tools.scoped_zip import read_zip_member
++from tools.scoped_zip import read_zip_member, ZipMemberDataError
+ 
+ from hermes_cli.friday_user_scope import ScopeDenied, workspace_document
+ from hermes_cli.friday_workspace_revision import check, _move
+@@ -220,7 +220,7 @@
+             raise ScopeDenied()
+ 
+ 
+-def _rows(data):
++def _rows(data, *, allow_partial=False):
+     """Inspect everything before any write; inflate at most one MiB in total."""
+     if not isinstance(data, bytes) or len(data) > MAX_BYTES:
+         raise ScopeDenied()
+@@ -231,7 +231,7 @@
+             infos = archive.infolist()
+             if not 1 <= len(infos) <= MAX_ENTRIES:
+                 raise ScopeDenied()
+-            names = set(); files = set(); rows = []; total = 0
++            names = set(); files = set(); rows = []; total = 0; damaged = []
+             for info in infos:
+                 directory = info.is_dir()
+                 name = _path(info.filename, directory=directory)
+@@ -250,7 +250,14 @@
+                 total += info.file_size
+                 if total > MAX_BYTES:
+                     raise ScopeDenied()
+-                payload = read_zip_member(archive, data, info, MAX_BYTES)
++                try:
++                    payload = read_zip_member(archive, data, info, MAX_BYTES)
++                except ZipMemberDataError:
++                    if not allow_partial or directory:
++                        raise
++                    damaged.append(dict(path=name, reason='member_data_invalid',
++                                        declared_bytes=info.file_size))
++                    continue
+                 if len(payload) != info.file_size:
+                     raise ScopeDenied()
+                 rows.append((name, directory, payload))
+@@ -258,7 +265,7 @@
+                 if any(str(parent) in files for parent in PurePosixPath(name).parents
+                        if str(parent) != '.'):
+                     raise ScopeDenied()
+-            return rows
++            return (rows, damaged) if allow_partial else rows
+     except (BadZipFile, EOFError, OSError, RuntimeError, NotImplementedError, ValueError):
+         raise ScopeDenied() from None
+ 
+@@ -692,7 +699,7 @@
+ 
+ 
+ def _effect_receipt(result, rows, archive_path, budget, *, prefix=''):
+-    if not result.get('success'):
++    if not result.get('success') and not result.get('published_partial'):
+         return _encode(result)
+     full = dict(result, member_count=len(rows), registry_omitted=False,
+                 archive_members=_manifest(rows, prefix))
+@@ -719,6 +726,7 @@
+         raise ScopeDenied()
+     _password_path(password, relative, *(row['path'] for row in (part_manifest or [])))
+     guard = lambda: check(cap)
++    damaged = []
+     if source_format == '7z':
+         try:
+             rows, guard = _seven_rows(cap, data, password=password)
+@@ -746,7 +754,10 @@
+             return _codec_failure(failure)
+     elif source_format == 'zip':
+         try:
+-            rows, guard = _zip_rows(cap, data, password=password)
++            if _zip_encrypted(data):
++                rows, guard = _zip_rows(cap, data, password=password)
++            else:
++                rows, damaged = _rows(data, allow_partial=True)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+     elif source_format in TAR_FORMATS:
+@@ -762,6 +773,10 @@
+         scope='own_user_workspace', archive_members=[], extracted=False,
+         sha256=hashlib.sha256(data).hexdigest(), total_entries=len(rows),
+         partial=start <= len(rows), next_offset=start)
++    if damaged:
++        result.update(success=False, error='archive_member_data_invalid',
++                      archive_complete=False, damaged_members=damaged,
++                      recovery='Only verified healthy members may be extracted with explicit zip_extract allow_partial=true; output remains incomplete.')
+     if part_manifest is not None:
+         result.update(split_7z=True, source_parts=part_manifest)
+     if source_format in STREAM_FORMATS:
+@@ -1164,7 +1179,7 @@
+     _check_parent(cap, fd, relative)
+     budget = _inline_budget()
+     if _format in ('7z', 'zip'):
+-        spec = _archive_spec(content, ('source',), ('password', 'parts') if _format == '7z' else ('password',))
++        spec = _archive_spec(content, ('source',), ('password', 'parts') if _format == '7z' else ('password', 'allow_partial'))
+         source = _path(spec['source'])
+         password = _archive_password(spec.get('password'))
+         _password_path(password, source, relative)
+@@ -1179,6 +1194,10 @@
+         return _codec_failure(_CodecFailure(str(exc)))
+     _password_path(password, *(row['path'] for row in (part_manifest or [])))
+     guard = lambda: check(cap)
++    damaged = []
++    allow_partial = spec.get('allow_partial', False) if _format == 'zip' else False
++    if type(allow_partial) is not bool:
++        raise ScopeDenied()
+     if _format == '7z':
+         if archive_format(source) != '7z':
+             raise ScopeDenied()
+@@ -1216,7 +1235,14 @@
+             return _codec_failure(failure)
+     elif _format == 'zip':
+         try:
+-            rows, guard = _zip_rows(cap, data, password=password)
++            if allow_partial:
++                # Encryption/authentication and malformed structure are never
++                # downgraded to partial success, even for explicit recovery.
++                if _zip_encrypted(data) or password is not None:
++                    raise ScopeDenied()
++                rows, damaged = _rows(data, allow_partial=True)
++            else:
++                rows, guard = _zip_rows(cap, data, password=password)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+     elif _format == 'tar':
+@@ -1235,6 +1261,15 @@
+     receipt = dict(success=True, format=_format + '_extract', path=relative,
+         scope='own_user_workspace', create_only=True, verified=True,
+         source_sha256=hashlib.sha256(data).hexdigest())
++    if damaged:
++        if not any(not directory for _, directory, _ in rows):
++            verify()
++            return _encode(dict(success=False, error='archive_no_recoverable_members',
++                                effect_disposition='none', archive_complete=False,
++                                damaged_members=damaged))
++        receipt.update(success=False, error='archive_partially_extracted',
++                       archive_complete=False, published_partial=True,
++                       effect_disposition='known_partial', damaged_members=damaged)
+     if part_manifest is not None:
+         receipt.update(split_7z=True, source_parts=part_manifest)
+     if not _fits(_omitted_receipt(receipt, rows, source), budget):
+--- a/tools/scoped_zip.py
++++ b/tools/scoped_zip.py
+@@ -6,6 +6,14 @@
+ 
+ class ZipMemberLimitError(BadZipFile):
+     """The declared or actual member output exceeds its allowed bound."""
++
++
++class ZipMemberDataError(BadZipFile):
++    """A structurally admitted member's bounded payload is corrupt.
++
++    Header, name, overlap, encryption and resource-limit failures deliberately
++    remain different errors. Only this class can support explicit salvage.
++    """
+ 
+ 
+ def read_zip_member(archive, data, info, max_bytes):
+@@ -101,13 +109,13 @@
+         try:
+             payload = decoder.decompress(compressed, min(info.file_size, max_bytes) + 1)
+         except zlib.error:
+-            raise BadZipFile('Invalid deflate stream') from None
++            raise ZipMemberDataError('Invalid deflate stream') from None
+         if len(payload) > info.file_size or len(payload) > max_bytes:
+             raise ZipMemberLimitError('ZIP member limit')
+         if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+-            raise BadZipFile('Incomplete or trailing deflate stream')
++            raise ZipMemberDataError('Incomplete or trailing deflate stream')
+     else:
+         payload = compressed
+     if len(payload) != info.file_size or zlib.crc32(payload) != info.CRC:
+-        raise BadZipFile('Inconsistent ZIP member output or CRC')
++        raise ZipMemberDataError('Inconsistent ZIP member output or CRC')
+     return payload
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -1840,6 +1840,7 @@
+     'document_already_exists': PUBLIC_FILE_EXISTS_COPY,
+     'product_user_scope_refused': PUBLIC_TOOL_REFUSAL_COPY,
+     'web_call_stopped': PUBLIC_WEB_STOPPED_COPY,
++    'archive_partially_extracted': 'Архив извлечён частично; повреждённые файлы не восстановлены. Результат неполный.',
+ }
+ 
+ 
