@@ -1,0 +1,101 @@
+--- a/observer_consumer.py
++++ b/observer_consumer.py
+@@ -1946 +1946 @@
+-                # Preserve at most the two failures of the existing one-retry poll.
++                # Preserve the first and latest failures within the two-row bound.
+@@ -1951 +1951 @@
+-                self._transport_failure_diagnostics = (previous[-1:] + (detail,))
++                self._transport_failure_diagnostics = (previous[:1] + (detail,))
+@@ -13668,2 +13668,3 @@
+-            # One reserved retry per run, only ordinary bounded-reply receive;
+-            # sends, document reads and the single terminal read never enter here.
++            # Keep every retry in this invocation: a durable reservation from an
++            # earlier invocation still blocks recovery replay. Additional retries
++            # are only for local HTTP deadlines inside the original receive window.
+@@ -13671 +13672 @@
+-                    or 'receive_http_retry' in run
++                    or 'receive_http_retry' in run or 'receive_http_retry_additional' in run
+@@ -13674,31 +13675,46 @@
+-            if self.receipt_first(run) and run.get('receive_body_pending') is not None:
+-                raise  # Preserve the original partial-body transport failure; no retry reservation.
+-            self.verify_reply_custody(run)
+-            if encoded(self.store.get(self.store.root / 'cursor.json')) != encoded(cursor):
+-                raise Refused('Receive cursor changed before same-offset retry') from None
+-            if self.clock() >= self.reply_window(run):
+-                raise  # Preserve original failure; never reopen a stopped window.
+-            cause, phase = send_failure_diagnostic(first)
+-            retry = dict(offset=cursor['offset'], cause_code=cause, phase_code=phase,
+-                         failed_at=stamp(), outcome='RESERVED',
+-                         first_poll=dict(diagnostic), failed_monotonic=time.monotonic())
+-            run['receive_http_retry'] = retry
+-            self.save(run)  # Reservation is durable before another network effect.
+-            timeout = self.guard(run, http_cap=RECEIVE_POLL_HTTP_CAP)
+-            if encoded(self.store.get(self.store.root / 'cursor.json')) != encoded(cursor):
+-                raise Refused('Receive cursor changed after retry guard') from None
+-            if self.clock() >= self.reply_window(run):
+-                raise first
+-            started = time.monotonic()
+-            diagnostic.update(stop_poll_started_monotonic=started,
+-                              stop_poll_timeout_seconds=timeout,
+-                              stop_poll_deadline_monotonic=started + timeout,
+-                              stop_poll_capture_cutoff_monotonic=(
+-                                  started + run['capture_until'] - self.clock()))
+-            try:
+-                updates = self.receive_updates(run, cursor, params, timeout)
+-            except PollDispatchWindowClosed:
+-                # A retry cutoff cannot resolve the original dispatched unknown.
+-                raise first
+-            except Uncertain:
+-                retry['outcome'] = 'FAILED_UNKNOWN'
++            first_poll = dict(diagnostic)
++            failure = first
++            retry_ordinal = 0
++            while True:
++                if self.receipt_first(run) and run.get('receive_body_pending') is not None:
++                    raise failure  # Partial-body custody blocks every further poll.
++                self.verify_reply_custody(run)
++                if encoded(self.store.get(self.store.root / 'cursor.json')) != encoded(cursor):
++                    raise Refused('Receive cursor changed before same-offset retry') from None
++                if self.clock() >= self.reply_window(run):
++                    raise first  # Preserve original failure; never reopen a stopped window.
++                cause, phase = send_failure_diagnostic(failure)
++                retry = dict(offset=cursor['offset'], cause_code=cause, phase_code=phase,
++                             failed_at=stamp(), outcome='RESERVED',
++                             first_poll=dict(first_poll), failed_monotonic=time.monotonic())
++                if retry_ordinal == 0:
++                    run['receive_http_retry'] = retry
++                else:
++                    run['receive_http_retry_additional'] = run.get('receive_http_retry_additional', []) + [retry]
++                retry_ordinal += 1
++                self.save(run)  # Reservation is durable before another network effect.
++                timeout = self.guard(run, http_cap=RECEIVE_POLL_HTTP_CAP)
++                if encoded(self.store.get(self.store.root / 'cursor.json')) != encoded(cursor):
++                    raise Refused('Receive cursor changed after retry guard') from None
++                if self.clock() >= self.reply_window(run):
++                    raise first
++                started = time.monotonic()
++                diagnostic.update(stop_poll_started_monotonic=started,
++                                  stop_poll_timeout_seconds=timeout,
++                                  stop_poll_deadline_monotonic=started + timeout,
++                                  stop_poll_capture_cutoff_monotonic=(
++                                      started + run['capture_until'] - self.clock()))
++                try:
++                    updates = self.receive_updates(run, cursor, params, timeout)
++                except PollDispatchWindowClosed:
++                    # A retry cutoff cannot resolve the original dispatched unknown.
++                    raise first
++                except Uncertain as next_failure:
++                    retry['outcome'] = 'FAILED_UNKNOWN'
++                    self.save(run)
++                    cause, phase = send_failure_diagnostic(next_failure)
++                    if cause not in ('LOCAL_HTTP_ALARM_DEADLINE', 'LOCAL_HTTP_BODY_DEADLINE'):
++                        raise
++                    failure = next_failure
++                    continue
++                retry['outcome'] = 'RETURNED_UNVALIDATED'
+@@ -13706,4 +13722 @@
+-                raise
+-            retry['outcome'] = 'RETURNED_UNVALIDATED'
+-            self.save(run)
+-            return updates
++                return updates
