@@ -1,0 +1,44 @@
+--- a/r07_observed_stop.py
++++ b/r07_observed_stop.py
+@@ -24,6 +24,14 @@
+ 
+ def _identity(info):
+     return tuple(getattr(info, field) for field in _FIELDS)
++
++
++def _parent_identity(info):
++    # Staging a new child legitimately changes directory size/mtime/ctime.
++    # Keep the retained directory inode and ownership/mode pin, while the
++    # product _check_parent continues to validate the logical workspace path.
++    return tuple(getattr(info, field) for field in
++                 ("st_dev", "st_ino", "st_mode", "st_nlink", "st_uid", "st_gid"))
+ 
+ 
+ def _renamed_identity(info):
+@@ -81,7 +89,7 @@
+         self._final_report = None
+ 
+     def __enter__(self):
+-        self._parent_identity = _identity(os.fstat(self.parent_fd))
++        self._parent_identity = _parent_identity(os.fstat(self.parent_fd))
+         self._original_move = self.docx._move
+         self._patcher = patch.object(self.docx, "_move", self._observed_move)
+         self._patcher.start()
+@@ -200,7 +208,7 @@
+         try:
+             if source_fd != self.parent_fd or destination_fd != self.parent_fd:
+                 self._refuse("parent_fd_mismatch")
+-            if _identity(os.fstat(source_fd)) != self._parent_identity:
++            if _parent_identity(os.fstat(source_fd)) != self._parent_identity:
+                 self._refuse("parent_inode_mismatch")
+             if leaf != self.final_leaf:
+                 self._refuse("final_leaf_mismatch")
+@@ -257,6 +265,8 @@
+         unknown = []
+         if final_info is not None or (self.final_after_move or {}).get("present") is True:
+             failures.append("final_present_after_owned_stop")
++        if (self.final_after_move or {}).get("present") not in (True, False):
++            unknown.append("post_move_final_presence_unobserved")
+         if receipt_status != "QUIESCENT" or self.stop_error is not None or not stopped:
+             unknown.append("owned_stop_not_confirmed")
+         if stage_info is not None:

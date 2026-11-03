@@ -1,0 +1,84 @@
+--- a/b00_history.py
++++ b/b00_history.py
+@@ -8,11 +8,29 @@
+ def v02_partial_module(b):
+     b.need(V02_PARTIAL is not None,'V02_bound_helper_source_required')
+     m=types.ModuleType('_b00_exact_v02_partial');m.__file__=V02_PARTIAL['path']
+-    exec(compile(b.read(V02_PARTIAL),m.__file__,'exec'),m.__dict__)
++    raw=b.read(V02_PARTIAL)
++    scoped=getattr(b.read,'_b00_history_compile',None)
++    if scoped is not None and scoped[0]is compile:
++        import sys
++        # Preserve the actual caller's inherited future flags, even when
++        # this loader and its protected read scope were compiled differently.
++        flags=sys._getframe().f_code.co_flags & scoped[2]
++        code=scoped[1](raw,m.__file__,flags)
++    else:code=compile(raw,m.__file__,'exec')
++    exec(code,m.__dict__)
+     return m
+ 
+ def zero_wire_module(b):
+     m=types.ModuleType('_b00_exact_zero_wire');m.__file__=ZERO_WIRE['path']
+-    exec(compile(b.read(ZERO_WIRE),m.__file__,'exec'),m.__dict__)
++    raw=b.read(ZERO_WIRE)
++    scoped=getattr(b.read,'_b00_history_compile',None)
++    if scoped is not None and scoped[0]is compile:
++        import sys
++        # Preserve the actual caller's inherited future flags, even when
++        # this loader and its protected read scope were compiled differently.
++        flags=sys._getframe().f_code.co_flags & scoped[2]
++        code=scoped[1](raw,m.__file__,flags)
++    else:code=compile(raw,m.__file__,'exec')
++    exec(code,m.__dict__)
+     return m
+ 
+--- a/b00_ancestry.py
++++ b/b00_ancestry.py
+@@ -36,6 +36,30 @@
+         # returning. Do not layer wrappers or cache live/native guard results.
+         return validate()
+     reads={};pins={};cached_bytes=0
++    # Reuse only immutable exec code in this exact protected-read lifetime.
++    # Callers still perform their original source read and fresh module exec.
++    compiled_codes={};compiled_bytes=0;compile_active=True
++    original_compile=compile
++    import __future__
++    future_mask=0
++    for feature in __future__.all_feature_names:
++        future_mask|=getattr(__future__,feature).compiler_flag
++    # This historical feature flag aliases CO_NESTED; builtin compile no
++    # longer inherits it. All remaining current future compiler flags survive.
++    future_mask&=~__future__.nested_scopes.compiler_flag
++    def compiled_exec(raw,filename,flags):
++        nonlocal compiled_bytes
++        # Unknown/mutable input kinds retain the builtin's original behavior.
++        if (not compile_active or type(raw)not in(bytes,str)or type(filename)is not str
++                or type(flags)is not int or flags & ~future_mask):
++            return original_compile(raw,filename,'exec',flags=flags,dont_inherit=True)
++        key=(type(raw),raw,filename,flags)
++        if key in compiled_codes:return compiled_codes[key]
++        code=original_compile(raw,filename,'exec',flags=flags,dont_inherit=True)
++        size=len(raw)if type(raw)is bytes else len(raw.encode('utf-8','surrogatepass'))
++        if compiled_bytes+size<=8*1024*1024:
++            compiled_codes[key]=code;compiled_bytes+=size
++        return code
+     documents={};document_bytes=0
+     methods=[];validated={};states={};append_sources={};retired={};namespaces={}
+     dependencies={};selector_frames=[];dependency_codes=None;owned_methods={}
+@@ -391,6 +415,8 @@
+         proof.validate=retained_validator(proof,original,fresh_parent=frozen_append,native_retired=native_retired)
+         owned_methods[id(proof)]=(proof,proof.validate,getattr(type(proof),'validate',None))
+     exact._b00_history_original_read=getattr(old_read,'_b00_history_original_read',old_read)
++    exact._b00_history_compile=(getattr(old_read,'_b00_history_compile',None)
++        if previous_scope is not None and previous_scope[0]is b else None)or(original_compile,compiled_exec,future_mask)
+     # A nested proof scope for this same reader retains the outer parse
+     # projection's exact identity. Its hits still take the currently active
+     # b.read path; its lifetime remains the enclosing effect-free invocation.
+@@ -422,6 +448,7 @@
+             if identity(path)!=pin:raise ValueError('B00_history_validation_CAS_changed')
+         return value
+     finally:
++        compile_active=False;compiled_codes.clear()
+         for proof,present,previous in reversed(methods):
+             if present:proof.validate=previous
+             else:vars(proof).pop('validate',None)
