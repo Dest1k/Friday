@@ -1,0 +1,26 @@
+--- a/b00_ancestry.py
++++ b/b00_ancestry.py
+@@ -347,7 +347,22 @@
+             and getattr(runner,'_m06_active_plan',None)==active
+             and runner.store.root==getattr(c,'_b00_closed_history_root',None))
+         if not eligible:return validate()
+-        return closed_history_reads(c,k._b00_custody_reader,runner,validate)
++        if getattr(c,'_b00_history_read_scope',None)is not None:
++            return closed_history_reads(c,k._b00_custody_reader,runner,validate)
++        proofs=historical_proofs(k)
++        # Reuse only the existing immutable proof memo in this native loop.
++        # Ordinary tail hits keep their parent fresh; native/partial proofs
++        # remain uncached, including any native ancestor of an ordinary tail.
++        base=[p for p in proofs if type(p).__name__ not in
++              ('OrdinarySerialProof','StoppedSentPartialProof','RetiredOrdinaryProof','ZeroWireProof')]
++        def validate_rows():
++            active=getattr(c,'_b00_history_read_scope',None)
++            k.need(active is not None and active[0]is k._b00_custody_reader,
++                   'B00_native_loop_exact_history_reader_required')
++            for proof in proofs:
++                if type(proof).__name__=='OrdinarySerialProof':active[2](proof)
++            return validate()
++        return closed_history_reads(c,k._b00_custody_reader,runner,validate_rows,proofs=base)
+     c._b00_closed_history_reads=closed_loop
+     adapter=h.install(c,ctx,missing,parent,old,consumer_sha)
+     install_fresh_basename_scan(c)
