@@ -1,0 +1,46 @@
+--- a/observer_common.py
++++ b/observer_common.py
+@@ -36 +36,2 @@
+-        if source.count(F02_GUARD)!=1:
++        counts=(source.count(F02_GUARD),source.count(F02_PREPARED_GUARD))
++        if counts not in ((1,0),(0,1)):
+@@ -38 +39,38 @@
+-        source=source.replace(F02_GUARD,F02_PREPARED_GUARD,1)
++        # The accepted B00 budget wrapper already applies this exact F02 guard.
++        # Authenticate its complete statement in the same canonical method;
++        # a matching string elsewhere cannot stand in for the actual guard.
++        expected_guard=ast.parse(F02_PREPARED_GUARD+'\n    pass').body[0].test
++        raw_tree=ast.parse(canonical.decode('utf-8'))
++        raw_runner=next(n for n in raw_tree.body if isinstance(n,ast.ClassDef) and n.name=='Runner')
++        raw_test=ast.dump(ast.parse(F02_GUARD+'\n    pass').body[0].test,include_attributes=False)
++        owners=[n.name for n in raw_runner.body if isinstance(n,ast.FunctionDef)
++            and any(isinstance(q,ast.If) and ast.dump(q.test,include_attributes=False)==raw_test and ast.get_source_segment(canonical.decode('utf-8'),q).startswith(F02_GUARD+'\n') for q in ast.walk(n))]
++        checked=source.replace(F02_GUARD,F02_PREPARED_GUARD,1) if counts==(1,0) else source
++        tree=ast.parse(checked)
++        runners=[n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Runner']
++        def guard_position(owner,node):
++            parents={child:(parent,field,index) for parent in ast.walk(owner)
++                for field,value in ast.iter_fields(parent)
++                for index,child in (enumerate(value) if isinstance(value,list) else [(None,value)])
++                if isinstance(child,ast.AST)}
++            path=[]
++            while node is not owner:
++                parent,field,index=parents[node]
++                path.append((type(parent).__name__,field,index,
++                    ast.dump(parent.test,include_attributes=False) if isinstance(parent,ast.If) else None))
++                node=parent
++            return tuple(reversed(path))
++        raw_owners=[n for n in raw_runner.body if isinstance(n,ast.FunctionDef) and n.name in owners]
++        current_owners=[] if len(runners)!=1 else [n for n in runners[0].body
++            if isinstance(n,ast.FunctionDef) and n.name in owners]
++        raw_guards=[] if len(raw_owners)!=1 else [q for q in ast.walk(raw_owners[0])
++            if isinstance(q,ast.If) and ast.dump(q.test,include_attributes=False)==raw_test
++            and ast.get_source_segment(canonical.decode('utf-8'),q).startswith(F02_GUARD+'\n')]
++        matches=[] if len(owners)!=1 or len(raw_guards)!=1 or len(current_owners)!=1 else [q
++            for q in ast.walk(current_owners[0]) if isinstance(q,ast.If)
++            and ast.dump(q.test,include_attributes=False)==ast.dump(expected_guard,include_attributes=False)
++            and ast.get_source_segment(checked,q)==F02_PREPARED_GUARD+"\n                    raise Refused('Source-free ordinary request permits text or one plain-text output')"
++            and guard_position(current_owners[0],q)==guard_position(raw_owners[0],raw_guards[0])]
++        if len(matches)!=1:
++            raise ValueError('observer_materialization_exact_F02_guard_anchor_changed')
++        source=checked
