@@ -1,0 +1,255 @@
+--- a/plugins/friday_rework/user_worker_join.py
++++ b/plugins/friday_rework/user_worker_join.py
+@@ -1818,6 +1818,120 @@
+     return policy
+ 
+ 
++_POSTBOOT_DSH_INTERMEDIATE = {'intent': {'path': '/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/preparation/worker-policy-successor-0e08b561ac40654a249a52ab0224d834642ab51ff5839eb69271a58be43d5a94/intent.json', 'sha256': '5f82b21f57ab92a36346c95cdc286c14451527f4c85908ef0e04bbd9f2052aac'}, 'committed': {'path': '/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/preparation/worker-policy-successor-0e08b561ac40654a249a52ab0224d834642ab51ff5839eb69271a58be43d5a94/committed.json', 'sha256': 'd4a539615389d38c2d7bbb088df413194a62b29a243def2b8dd6309aa37797c8'}}
++
++
++def _postboot_dsh_policy_edge(home, txrefs, parent_refs, parent_intent, parent,
++                              parent_checkpoint, before):
++    """Authenticate one committed successor, including its real archive.
++
++    This is a pure retained-history check. A historical scope/expiry is never
++    accepted as a current scope; the caller checks the final live policy.
++    """
++    _postboot_dsh_need(type(txrefs) is dict and set(txrefs) == {'intent', 'committed'},
++                      'postboot_dsh_transaction_refs_required')
++    intent = _postboot_dsh_document(txrefs['intent'])
++    committed = _postboot_dsh_document(txrefs['committed'])
++    request = intent['request']
++    checkpoint = _postboot_dsh_document(request['checkpoint'])
++    tx = Path(txrefs['intent']['path']).parent
++    captured = checkpoint['current_boot']
++    semantic = {'prior_derivative': request['prior_derivative'], 'profile': str(home),
++        'identity': request['identity'], 'expired_policy': request['before']['policy'],
++        'checkpoint': request['checkpoint'], 'current_boot': captured}
++    semantic_raw = (json.dumps(semantic, ensure_ascii=False, sort_keys=True,
++                              indent=2, allow_nan=False) + '\n').encode()
++    _postboot_dsh_need(tx == _r481_H / 'preparation' /
++        ('worker-policy-successor-' + hashlib.sha256(semantic_raw).hexdigest())
++        and txrefs['intent']['path'] == str(tx / 'intent.json')
++        and txrefs['committed']['path'] == str(tx / 'committed.json')
++        and intent['schema'] == committed['schema'] == request['schema'] == _POSTBOOT_DSH_POLICY_SCHEMA
++        and intent['state'] == 'CONSUMED_NO_RETRY' and intent['resume_allowed'] is False
++        and committed['state'] == 'POLICY_ONLY_SUCCESSOR_COMMITTED'
++        and intent['clock'] == committed['clock']
++        and request['home'] == str(_r481_H) and request['profile'] == home.name
++        and request['identity'] == parent_intent['request']['identity']
++        and request['prior_derivative'] == parent_intent['request']['prior_derivative']
++        and committed['prior_derivative'] == request['prior_derivative']
++        and committed['current_scope'] == request['current_scope']
++        and committed['reuse_binding'] == request['reuse_binding']
++        and committed['runtime_acceptance'] == 'NOT_GRANTED'
++        and all(committed[k] is False for k in ('ready', 'workers_enabled',
++            'qualification_started', 'consumers_started', 'resume_allowed')),
++        'postboot_dsh_exact_committed_policy_required')
++    _postboot_dsh_need(not any(os.path.lexists(tx / name) for name in
++        ('failure.json', 'rolled-back.json', 'rollback.json')), 'postboot_dsh_policy_uncertain')
++    clock = _postboot_dsh_document(request['original_clock'])
++    _postboot_dsh_need(_postboot_dsh_same(clock, intent['clock'])
++        and clock['boot_id'] == captured, 'postboot_dsh_policy_clock_changed')
++    grant = _postboot_dsh_document(request['once_grant'])
++    request_body = {k: v for k, v in request.items() if k != 'once_grant'}
++    raw = (json.dumps(request_body, ensure_ascii=False, sort_keys=True,
++                      indent=2, allow_nan=False) + '\n').encode()
++    _postboot_dsh_need(grant == {'schema': request['schema'] + '.once-grant',
++        'request_body_sha256': hashlib.sha256(raw).hexdigest(),
++        'workers_enabled': False, 'consumers_started': False, 'resume_allowed': False},
++        'postboot_dsh_policy_grant_changed')
++    _postboot_dsh_need(checkpoint.get('predecessor_policy_transaction') ==
++        {k: parent_refs[k] for k in ('intent', 'committed')}
++        and checkpoint['before'] == request['before']
++        and checkpoint['old_boot'] == parent_intent['clock']['boot_id']
++        and all(checkpoint[k] == parent_checkpoint[k] for k in ('accepted_policy',
++            'policy_intent', 'policy_committed', 'effective_policy', 'expiry_renewal', 'retained_reuse')),
++        'postboot_dsh_policy_checkpoint_changed')
++    mapping = ('policy', 'attachment', 'dsh', 'a0')
++    _postboot_dsh_need(set(committed['beforeimages']) == set(mapping)
++        and committed['preserved_policy'] == parent['policy']
++        and committed['preserved_policy_archive'] == committed['beforeimages']['policy'],
++        'postboot_dsh_policy_archives_changed')
++    for name in mapping:
++        previous = (parent['policy'] if name == 'policy' else parent['attachment']
++                    if name == 'attachment' else parent['preparations'][name])
++        archive = committed['beforeimages'][name]
++        _postboot_dsh_need(request['before'][name] == previous
++            and archive == {'path': str(tx / 'before' / (name + '.json')),
++                            'sha256': previous['sha256']}
++            and _postboot_dsh_same(_postboot_dsh_document(archive), before[name]),
++            'postboot_dsh_child_beforeimage_changed')
++    current_scope = _postboot_dsh_document(request['current_scope'])
++    policy = _postboot_dsh_document(committed['policy'])
++    previous_policy = before['policy']
++    _postboot_dsh_need(current_scope['boot_id'] == captured
++        and previous_policy['boot_id'] == checkpoint['old_boot']
++        and type(policy['expires_unix']) is type(previous_policy['expires_unix'])
++        and type(request['validity_seconds']) is int and 0 < request['validity_seconds'] <= 86400
++        and request['issued_unix'] + request['validity_seconds'] == policy['expires_unix']
++        and request['issued_unix'] < policy['expires_unix']
++        and _postboot_dsh_same(policy, dict(previous_policy, boot_id=captured,
++            net_namespace=current_scope['net_namespace'], expires_unix=policy['expires_unix']))
++        and committed['policy'] == request['reuse_binding']['successor']
++        and committed['policy']['path'] == str(home / 'workers/dsh/inputs' /
++            ('web-policy-successor-' + committed['policy']['sha256'] + '.json')),
++        'postboot_dsh_only_current_scope_delta_required')
++    after = {'policy': policy, 'attachment': copy.deepcopy(before['attachment'])}
++    after['attachment']['runtimes']['dsh']['dsh']['web']['egress_evidence'] = committed['policy']
++    _postboot_dsh_need(committed['attachment']['path'] == str(home / 'workers/attachment.json')
++        and set(committed['preparations']) == {'dsh', 'a0'}, 'postboot_dsh_output_paths_changed')
++    for kind in ('dsh', 'a0'):
++        after[kind] = copy.deepcopy(before[kind])
++        after[kind]['attachment'] = committed['attachment']
++        if kind == 'dsh':
++            _postboot_dsh_need(after[kind]['inputs'].count(parent['policy']) == 1,
++                              'postboot_dsh_predecessor_policy_input_changed')
++            after[kind]['inputs'] = [committed['policy'] if pin == parent['policy'] else pin
++                                     for pin in after[kind]['inputs']]
++            after[kind]['runtime']['dsh']['web']['egress_evidence'] = committed['policy']
++        _postboot_dsh_need(committed['preparations'][kind]['path'] ==
++            str(home / 'workers' / kind / 'runtime-input.json'), 'postboot_dsh_preparation_path_changed')
++    for name in ('attachment', 'dsh', 'a0'):
++        pin = committed['attachment'] if name == 'attachment' else committed['preparations'][name]
++        raw = (json.dumps(after[name], ensure_ascii=False, sort_keys=True,
++                          indent=2, allow_nan=False) + '\n').encode()
++        _postboot_dsh_need(hashlib.sha256(raw).hexdigest() == pin['sha256'],
++                          'postboot_dsh_only_policy_preparation_delta_required')
++    return intent, committed, checkpoint, after
++
++
+ def _postboot_dsh_child_inputs(c, value, memo, old, snapshots, original, proof):
+     from hermes_cli import friday_user_scope as scope
+     from .host_runtime import _dsh_web
+@@ -1854,100 +1968,40 @@
+             and _postboot_dsh_same(_postboot_dsh_document(before), old[snapshot]),
+             'postboot_dsh_predecessor_beforeimage_changed')
+ 
+-    txrefs = value['policy_transaction']
+-    _postboot_dsh_need(type(txrefs) is dict and set(txrefs) == {'intent', 'committed'},
+-                      'postboot_dsh_transaction_refs_required')
+-    intent = _postboot_dsh_document(txrefs['intent'])
+-    committed = _postboot_dsh_document(txrefs['committed'])
+-    request = intent['request']; tx = Path(txrefs['intent']['path']).parent
+-    semantic = {'prior_derivative': request['prior_derivative'], 'profile': str(home),
+-        'identity': request['identity'], 'expired_policy': request['before']['policy'],
+-        'checkpoint': request['checkpoint'], 'current_boot': memo['captured_boot']}
+-    semantic_raw = (json.dumps(semantic, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + '\n').encode()
+-    _postboot_dsh_need(tx == _r481_H / 'preparation' / ('worker-policy-successor-' + hashlib.sha256(semantic_raw).hexdigest())
+-        and txrefs['intent']['path'] == str(tx / 'intent.json')
+-        and txrefs['committed']['path'] == str(tx / 'committed.json')
+-        and intent['schema'] == committed['schema'] == request['schema'] == _POSTBOOT_DSH_POLICY_SCHEMA
+-        and intent['state'] == 'CONSUMED_NO_RETRY' and intent['resume_allowed'] is False
+-        and committed['state'] == 'POLICY_ONLY_SUCCESSOR_COMMITTED'
+-        and intent['clock'] == committed['clock']
+-        and request['home'] == str(_r481_H) and request['profile'] == c['runtime_profile']
+-        and request['identity'] == parent_request['identity']
+-        and request['prior_derivative'] == parent_request['prior_derivative']
+-        and committed['prior_derivative'] == request['prior_derivative']
+-        and committed['current_scope'] == request['current_scope']
+-        and committed['runtime_acceptance'] == 'NOT_GRANTED'
+-        and all(committed[k] is False for k in ('ready', 'workers_enabled', 'qualification_started', 'consumers_started', 'resume_allowed')),
+-        'postboot_dsh_exact_committed_policy_required')
+-    for name in ('failure.json', 'rolled-back.json', 'rollback.json'):
+-        _postboot_dsh_need(not os.path.lexists(tx / name), 'postboot_dsh_policy_uncertain')
+-    clock = _postboot_dsh_document(request['original_clock'])
+-    _postboot_dsh_need(_postboot_dsh_same(clock, intent['clock'])
+-        and clock['boot_id'] == memo['captured_boot'], 'postboot_dsh_policy_clock_changed')
+-    grant = _postboot_dsh_document(request['once_grant'])
+-    request_body = {k: v for k, v in request.items() if k != 'once_grant'}
+-    request_raw = (json.dumps(request_body, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + '\n').encode()
+-    _postboot_dsh_need(grant == {'schema': request['schema'] + '.once-grant',
+-        'request_body_sha256': hashlib.sha256(request_raw).hexdigest(),
+-        'workers_enabled': False, 'consumers_started': False, 'resume_allowed': False},
+-        'postboot_dsh_policy_grant_changed')
+-    checkpoint = _postboot_dsh_document(request['checkpoint'])
+-    _postboot_dsh_need(checkpoint.get('predecessor_policy_transaction') == {
+-            'intent': _POSTBOOT_DSH_PREDECESSOR['intent'], 'committed': _POSTBOOT_DSH_PREDECESSOR['committed']}
+-        and checkpoint['before'] == request['before']
+-        and checkpoint['current_boot'] == memo['captured_boot'],
+-        'postboot_dsh_policy_checkpoint_changed')
+-    _postboot_dsh_need(set(committed['beforeimages']) == set(mapping)
+-        and committed['preserved_policy'] == parent['policy']
+-        and committed['preserved_policy_archive'] == committed['beforeimages']['policy'],
+-        'postboot_dsh_policy_archives_changed')
+-    parent_after = {}
+-    for name in mapping:
+-        parent_ref = parent['policy'] if name == 'policy' else parent['attachment'] if name == 'attachment' else parent['preparations'][name]
+-        before = committed['beforeimages'][name]
+-        _postboot_dsh_need(request['before'][name] == parent_ref
+-            and before == {'path': str(tx / 'before' / (name + '.json')), 'sha256': parent_ref['sha256']},
+-            'postboot_dsh_child_beforeimage_changed')
+-        parent_after[name] = _postboot_dsh_document(before)
+-    expected_parent_attachment = copy.deepcopy(old['attachment'])
+-    expected_parent_attachment['runtimes']['dsh']['dsh']['web']['egress_evidence'] = parent['policy']
+-    _postboot_dsh_need(_postboot_dsh_same(parent_after['attachment'], expected_parent_attachment),
+-        'postboot_dsh_predecessor_output_changed')
++    # The former child remains an immutable intermediate. Exactly one new
++    # edge is allowed; arbitrary lineage or changed historical results refuse.
++    root_refs = {k: _POSTBOOT_DSH_PREDECESSOR[k] for k in ('intent', 'committed')}
++    root_after = {'policy': _postboot_dsh_document(parent['policy']),
++                  'attachment': copy.deepcopy(old['attachment'])}
++    root_after['attachment']['runtimes']['dsh']['dsh']['web']['egress_evidence'] = parent['policy']
+     for kind in ('dsh', 'a0'):
+-        expected = copy.deepcopy(old[kind + '-preparation'])
+-        expected['attachment'] = parent['attachment']
++        root_after[kind] = copy.deepcopy(old[kind + '-preparation'])
++        root_after[kind]['attachment'] = parent['attachment']
+         if kind == 'dsh':
+             prior = snapshots['policy']['original']
+-            expected['inputs'] = [parent['policy'] if ref == prior else ref for ref in expected['inputs']]
+-            expected['runtime']['dsh']['web']['egress_evidence'] = parent['policy']
+-        _postboot_dsh_need(_postboot_dsh_same(parent_after[kind], expected),
+-            'postboot_dsh_predecessor_output_changed')
+-    parent_policy = web_policy_declaration(_dsh_web(parent_after['dsh']['runtime']['dsh']), str(home), c['runtime_profile'])
+-    parent_scope = _postboot_dsh_document(parent['current_scope'])
+-    _postboot_dsh_need(_postboot_dsh_same(parent_policy, _postboot_dsh_document(parent['policy']))
+-        and parent_policy['boot_id'] == parent_intent['clock']['boot_id'] == parent_scope['boot_id'] == checkpoint['old_boot']
+-        and parent_policy['net_namespace'] == parent_scope['net_namespace'],
+-        'postboot_dsh_predecessor_policy_changed')
+-
+-    current_attachment = _postboot_dsh_document(committed['attachment'])
+-    expected_attachment = copy.deepcopy(parent_after['attachment'])
+-    expected_attachment['runtimes']['dsh']['dsh']['web']['egress_evidence'] = committed['policy']
+-    _postboot_dsh_need(committed['attachment']['path'] == str(home / 'workers/attachment.json')
+-        and _postboot_dsh_same(current_attachment, expected_attachment), 'postboot_dsh_only_policy_attachment_delta_required')
+-    _postboot_dsh_need(set(committed['preparations']) == {'dsh', 'a0'}, 'postboot_dsh_current_preparations_changed')
+-    for kind in ('dsh', 'a0'):
+-        reference = committed['preparations'][kind]
+-        _postboot_dsh_need(reference['path'] == str(home / 'workers' / kind / 'runtime-input.json'),
+-                          'postboot_dsh_preparation_path_changed')
+-        prepared = _postboot_dsh_document(reference)
+-        expected = copy.deepcopy(parent_after[kind])
+-        expected['attachment'] = committed['attachment']
+-        if kind == 'dsh':
+-            _postboot_dsh_need(expected['inputs'].count(parent['policy']) == 1,
+-                'postboot_dsh_predecessor_policy_input_changed')
+-            expected['inputs'] = [committed['policy'] if ref == parent['policy'] else ref for ref in expected['inputs']]
+-            expected['runtime']['dsh']['web']['egress_evidence'] = committed['policy']
+-        _postboot_dsh_need(_postboot_dsh_same(prepared, expected), 'postboot_dsh_only_policy_preparation_delta_required')
++            root_after[kind]['inputs'] = [parent['policy'] if pin == prior else pin
++                                         for pin in root_after[kind]['inputs']]
++            root_after[kind]['runtime']['dsh']['web']['egress_evidence'] = parent['policy']
++    requested = value['policy_transaction']
++    edges = [_POSTBOOT_DSH_INTERMEDIATE]
++    if requested != _POSTBOOT_DSH_INTERMEDIATE:
++        edges.append(requested)
++    parent_refs = root_refs
++    for txrefs in edges:
++        parent_policy = root_after['policy']
++        parent_intent, committed, checkpoint, after = _postboot_dsh_policy_edge(
++            home, txrefs, parent_refs, parent_intent, parent, parent_checkpoint, root_after)
++        parent = committed
++        parent_refs = txrefs
++        parent_checkpoint = checkpoint
++        root_after = after
++    _postboot_dsh_need(parent_intent['clock']['boot_id'] == memo['captured_boot'],
++                      'postboot_dsh_current_leaf_boot_changed')
++    request = parent_intent['request']
++    for name in ('attachment', 'dsh', 'a0'):
++        reference = committed['attachment'] if name == 'attachment' else committed['preparations'][name]
++        _postboot_dsh_need(_postboot_dsh_same(_postboot_dsh_document(reference), root_after[name]),
++                          'postboot_dsh_current_output_changed')
+     _, current = preparation(home, c['runtime_profile'], 'dsh', committed['preparations']['dsh'])
+     _postboot_dsh_need(_postboot_dsh_same({k: v for k, v in current.items() if k != 'runtime_receipt'},
+         {k: v for k, v in c.items() if k != 'runtime_receipt'})
