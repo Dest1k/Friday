@@ -1,0 +1,86 @@
+# SOURCE ONLY UNBOUND — class delta; omitted module and operational bindings.
+# <PUBLIC_APPLICATION_ROOT>/ replaces the private application-prefix string in diff context.
+# Placeholder is deliberately unbound; this text is not an installation candidate.
+
+--- parent/NativeDiagnostics.UNBOUND
++++ candidate/NativeDiagnostics.UNBOUND
+@@ -14,17 +14,19 @@
+  MAX_ROW_BYTES=65536
+  MAX_FILE_BYTES=MAX_ROWS*MAX_ROW_BYTES
+  MAX_CODES=64
++ MAX_METADATA=256
+  MAX_STAGES=24
+  STACK_FRAMES=12
+  COUNTER_MAX=(1<<63)-1
+  CATEGORIES=('read','walk','helper','parent_validation','decode','module_load','other')
+  def __init__(self,path,deadline,package,caller):
+-  import hashlib
++  import hashlib,weakref
+   self.hashlib=hashlib;self.deadline=deadline
++  self.code_ref=weakref.ref;self.metadata_cache={}
+   self.path=path;self.package=package;self.caller=caller
+   self.fd=None;self.tool=None;self.active=False;self.busy=False;self.rows=0;self.bytes=0
+   self.started=(time.monotonic(),time.process_time());self.last_sample=self.started[0]
+-  self.total={name:0 for name in self.CATEGORIES};self.stages={};self.codes={};self.code_counts={}
++  self.total={name:0 for name in self.CATEGORIES};self.stages={};self.codes={};self.code_counts={};self.code_categories={}
+   self.overflow_calls=0;self.stage_overflow=0;self.calls=0;self.pulses=0
+   self.identity_chain=hashlib.sha256();self.identity_events=0;self.last_error_class=None;self.cleanup_error_class=None
+   self.handler=self._pulse;self.callback=self._call
+@@ -92,29 +94,48 @@
+    producer_or_history_or_native_body_executed=False,acceptance='NOT_ESTABLISHED')
+  def _metadata(self,code):
+   # No code contents, line text, globals, locals or exception strings are emitted.
+-  return dict(file=re.sub('[^A-Za-z0-9_.<>-]','_',Path(code.co_filename).name[:80]),function=re.sub('[^A-Za-z0-9_.<>-]','_',code.co_qualname[:96]),
++  # The separate bounded cache holds weak code references, never execution
++  # state or code verdicts. Check identity even after id reuse; keep the
++  # original fresh metadata-dictionary semantics on every return.
++  key=id(code);cached=self.metadata_cache.get(key)
++  if cached is not None and cached[0]()is code:return dict(cached[1])
++  metadata=dict(file=re.sub('[^A-Za-z0-9_.<>-]','_',Path(code.co_filename).name[:80]),function=re.sub('[^A-Za-z0-9_.<>-]','_',code.co_qualname[:96]),
+    first_line=code.co_firstlineno,code_sha256=self._fingerprint(code))
++  # SIGPROF snapshot can re-enter while a call updates this cache.
++  # Snapshot misses stay read-only; cached hits still return a fresh dict.
++  if self.busy:return dict(metadata)
++  if key not in self.metadata_cache and len(self.metadata_cache)>=self.MAX_METADATA:
++   del self.metadata_cache[next(iter(self.metadata_cache))]
++  self.metadata_cache[key]=(self.code_ref(code),metadata)
++  return dict(metadata)
+  def _call(self,code,offset):
+   if not self.active or self.busy or code.co_filename==__file__:return
+   # Preserve bounded counts for the composed application and actual filesystem/
+   # JSON helpers. Other library starts are deliberately outside this inventory.
+   file=code.co_filename
+   if not(file.startswith('<PUBLIC_APPLICATION_ROOT>/')or '/pathlib/' in file or file.endswith('/pathlib.py')or '/json/' in file):return
+-  self.calls=self._inc(self.calls);category=self._category(code)
+-  self.total[category]=self._inc(self.total[category])
++  # Counts and categories are unchanged. Code objects are immutable and held
++  # strongly by the bounded inventory, so their classification is reusable.
++  key=id(code)
++  category=self.code_categories.get(key)
++  if category is None:category=self._category(code)
++  if self.calls<self.COUNTER_MAX:self.calls+=1
++  if self.total[category]<self.COUNTER_MAX:self.total[category]+=1
+   phase=self.deadline.phase
+   if phase not in self.stages:
+    if len(self.stages)<self.MAX_STAGES:self.stages[phase]={name:0 for name in self.CATEGORIES}
+-   else:self.stage_overflow=self._inc(self.stage_overflow);phase=None
+-  if phase is not None:self.stages[phase][category]=self._inc(self.stages[phase][category])
+-  key=id(code)
+-  if key in self.codes:self.code_counts[key]=self._inc(self.code_counts[key])
++   else:
++    if self.stage_overflow<self.COUNTER_MAX:self.stage_overflow+=1
++    phase=None
++  if phase is not None and self.stages[phase][category]<self.COUNTER_MAX:self.stages[phase][category]+=1
++  if key in self.codes:
++   if self.code_counts[key]<self.COUNTER_MAX:self.code_counts[key]+=1
+   else:
+    metadata=self._metadata(code)
+    if len(self.codes)>=self.MAX_CODES:
+-    retired=next(iter(self.codes));del self.codes[retired];del self.code_counts[retired]
++    retired=next(iter(self.codes));del self.codes[retired];del self.code_counts[retired];del self.code_categories[retired]
+     self.overflow_calls=self._inc(self.overflow_calls)
+-   self.codes[key]=(code,metadata);self.code_counts[key]=1
++   self.codes[key]=(code,metadata);self.code_counts[key]=1;self.code_categories[key]=category
+    self.identity_chain.update(bytes.fromhex(metadata['code_sha256']));self.identity_events=self._inc(self.identity_events)
+   # A call pulse provides wall progress even for low-CPU work when it returns
+   # to Python; the CPU pulse independently covers no-call busy loops.

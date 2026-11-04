@@ -1,0 +1,98 @@
+# SOURCE ONLY UNBOUND — analysis text; surrounding module, scope and bindings omitted.
+# Exact nested source excerpts; snapshot_atomic and types are enclosing dependencies.
+# No deployment, execution, replay, or live authority.
+
+    def legacy_state_value(value,own_keys=None):
+        if value is None or type(value)in(str,int,float,bool,bytes):return (type(value).__name__,value)
+        if type(value)is dict:
+            if own_keys is not None and any(type(n)is not str and type(n)is not int
+                    and type(n)is not float and type(n)is not bool and type(n)is not bytes
+                    and n is not None for n in value):own_keys[0]=False
+            return {n:legacy_state_value(v,own_keys)for n,v in value.items()}
+        if type(value)is tuple:return ('tuple',tuple(legacy_state_value(v,own_keys)for v in value))
+        if type(value)is list:return ('list',tuple(legacy_state_value(v,own_keys)for v in value))
+        if isinstance(value,types.MethodType):
+            return ('bound_method',id(value.__self__),id(value.__func__))
+        return ('private_object',id(value))
+
+    def state_value(value,own_keys=None):
+        # A saved proof is a shared builtin graph, not an expanded tree. Own
+        # immutable shallow rows once per container; references preserve every
+        # edge (including aliases/cycles) without retaining caller containers.
+        rows=[];seen={};pending=[]
+        def pin(value):
+            kind=type(value)
+            if kind in snapshot_atomic:return ('atom',kind.__name__,value)
+            if kind in (dict,list,tuple):
+                key=id(value)
+                if key not in seen:
+                    seen[key]=len(rows);rows.append(None);pending.append(value)
+                return ('node',seen[key])
+            if isinstance(value,types.MethodType):
+                return ('bound_method',id(value.__self__),id(value.__func__))
+            return ('private_object',id(value))
+        root=pin(value)
+        while pending:
+            current=pending.pop();kind=type(current);index=seen[id(current)]
+            if kind is dict:
+                contents=[]
+                for name,item in current.items():
+                    if type(name)not in snapshot_atomic:
+                        # Preserve the generic-key deepcopy/equality fallback
+                        # for the WHOLE state, never a partly retained graph.
+                        if own_keys is not None:own_keys[0]=False
+                        return ('legacy',legacy_state_value(value,own_keys))
+                    contents.append((name,pin(item)))
+            else:
+                contents=[]
+                for item in current:contents.append(pin(item))
+            rows[index]=(kind.__name__,tuple(contents))
+        # The original recursive projection refused cyclic proof state. Keep
+        # that refusal while permitting repeated references in an acyclic DAG.
+        active=set();done=set();pending=[(root,False)]
+        while pending:
+            item,exiting=pending.pop()
+            if item[0]!='node':continue
+            index=item[1]
+            if exiting:active.remove(index);done.add(index);continue
+            if index in active:raise RecursionError('B00_cyclic_immutable_proof_state')
+            if index in done:continue
+            active.add(index);pending.append((item,True))
+            name,contents=rows[index]
+            if name=='dict':
+                for _,child in contents:pending.append((child,False))
+            else:
+                for child in contents:pending.append((child,False))
+        return ('graph',root,tuple(rows))
+
+    def state_matches(value,saved):
+        # Verify live contents on EVERY use, with no memo across callbacks or
+        # checks. Follow saved rows directly instead of allocating another deep
+        # snapshot. Value equality permits fresh equal/unaliased containers;
+        # visit each (saved row, current object) pair in this check only. Private
+        # objects/bound methods keep their original identity semantics.
+        if saved[0]=='legacy':return legacy_state_value(value)==saved[1]
+        rows=saved[2];seen=set();pending=[(value,saved[1])]
+        while pending:
+            current,pin=pending.pop();tag=pin[0];kind=type(current)
+            if tag=='atom':
+                if kind.__name__!=pin[1]or kind not in snapshot_atomic:return False
+                if current is not pin[2]and current!=pin[2]:return False
+            elif tag=='bound_method':
+                if (not isinstance(current,types.MethodType)
+                        or id(current.__self__)!=pin[1]or id(current.__func__)!=pin[2]):return False
+            elif tag=='private_object':
+                if id(current)!=pin[1]:return False
+            else:
+                index=pin[1]
+                pair=(index,id(current))
+                if pair in seen:continue
+                name,contents=rows[index]
+                if kind not in(dict,list,tuple)or kind.__name__!=name or len(current)!=len(contents):return False
+                seen.add(pair)
+                if kind is dict:
+                    for key,item in contents:
+                        if key not in current:return False
+                        pending.append((current[key],item))
+                else:pending.extend(zip(current,contents))
+        return True
