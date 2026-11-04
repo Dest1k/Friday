@@ -1,0 +1,100 @@
+# NON-EXECUTABLE REVIEW EXCERPT; UNBOUND, NOT AN INSTALLATION OR AUTHORITY.
+# Definitions below intentionally omit imports, trust anchors and dependency bindings.
+# Parse/compile verification never executes this text.
+
+# Runner methods extracted from literal source transforms; no transform is applied.
+# The existing original Source36 compatibility branch is omitted, not replaced.
+
+class UnboundRunnerMethods:
+    def engineering_closed_no_run_inventory(self):
+        module=engineering_regression_module()
+        import types
+        def read(pin):
+            raw=safe_read(pin['path'],MAX_SOURCE)
+            if digest(raw)!=pin['sha256']:raise Refused('Closed no-run evidence changed')
+            return raw
+        reader=types.SimpleNamespace(read=read,document=lambda pin:json.loads(read(pin),object_pairs_hook=unique_object))
+        return module.closed_no_run_inventory(reader,types.SimpleNamespace(safe_read=safe_read,Runner=Runner,encoded=encoded),self)
+
+    def engineering_consumed_successor(self,plan,key):
+        """Recognize an existing terminal edge; never mint a future grant."""
+        inventory={entry['key']:entry for entry in self.engineering_closed_no_run_inventory().values()}
+        seen=set()
+        while True:
+            if key in seen:raise Refused('Consumed no-run historical successor cycle')
+            seen.add(key)
+            path=self.store.root/('continue-'+key+'.json')
+            if not path.exists():return False
+            raw=safe_read(path);admission=json.loads(raw,object_pairs_hook=unique_object)
+            if admission.get('plan')==plan:break
+            entry=inventory.get(key)
+            if (entry is None or admission!=entry['row']
+                    or plan.get('predecessor')!=entry['plan'].get('predecessor')
+                    or plan.get('current_tuple')!=entry['plan'].get('current_tuple')):return False
+            key=digest(encoded(dict(consumed_admission=entry['admission'],
+                Root_operational_closure=entry['closure_reference'],predecessor_key=key)))
+        run_path=self.store.run_path(plan.get('new_run_id'))
+        if not run_path.exists():return False
+        run=self.store.get(run_path)
+        return (admission.get('schema')=='friday.tester.closed-unknown-admission.v1'
+            and admission.get('plan')==plan and admission.get('plan_sha256')==digest(encoded(plan))
+            and admission.get('status')=='ONE_NEW_EFFECT_ADMITTED_NO_RETRY'
+            and admission.get('original_outcome')=='UNKNOWN' and admission.get('original_replayed')is False
+            and admission.get('response_binding')=='UNBOUND'
+            and digest(encoded(admission.get('predecessor_cursor')))==plan['predecessor']['cursor_sha256']
+            and run.get('id')==plan['new_run_id'] and run.get('scenario')==plan['new_scenario']
+            and run.get('continuation_reference')==dict(basename=path.name,bytes=len(raw),sha256=digest(raw))
+            and run.get('status')=='EVIDENCE_READY' and run.get('send_state')=='sent'
+            and run.get('send_attempts')==1 and run.get('repeat_count')==0
+            and run.get('capture_window_complete')is True)
+
+    def engineering_successor_key(self,plan,key):
+        """Follow only authenticated consumed no-run edges in this branch."""
+        seen=set()
+        while True:
+            if key in seen:raise Refused('Consumed no-run successor cycle')
+            seen.add(key)
+            path=self.store.root/('continue-'+key+'.json')
+            if not path.exists() or self.store.get(path).get('plan')==plan:return key
+            key=self.orphan_successor_key(plan,key)
+
+    def orphan_successor_key(self, plan, original_key):
+        inventory=self.engineering_closed_no_run_inventory()
+        entries=[entry for entry in inventory.values()if entry['key']==original_key]
+        if entries:
+            material=entries[0];old=material['plan']
+            steps=plan.get('new_scenario',{}).get('steps',[])
+            if (plan.get('predecessor')!=old.get('predecessor')
+                    or plan.get('current_tuple')!=old.get('current_tuple')
+                    or plan.get('new_task',{}).get('kind')!='ordinary-document-task'
+                    or plan.get('new_task',{}).get('source_reference')is not None
+                    or plan.get('new_run_id')==old['new_run_id']
+                    or plan.get('action_id')==old['action_id']
+                    or plan.get('new_task',{}).get('nonce')==old['new_task']['nonce']
+                    or plan.get('clock')==old['clock'] or len(steps)!=1):
+                raise Refused('Consumed no-run admission requires one distinct future ordinary effect')
+            key=digest(encoded(dict(consumed_admission=material['admission'],
+                Root_operational_closure=material['closure_reference'],predecessor_key=original_key)))
+            if orphan_public_effect(steps[0])==material['signature']:
+                # The exact terminal run already occupying this slot is factual
+                # history. Only the fresh current grant can authorize a new slot.
+                if not self.engineering_consumed_successor(plan,key):
+                    grant=self.engineering_regression_material(plan)
+                    if not(grant is not None and material['effect']['id']in grant['known']
+                            and grant['known'][material['effect']['id']]['effect']['kind']=='no_run_admission'
+                            and grant['known'][material['effect']['id']]['row']==material['row']
+                            and any(x['effect']['kind']=='run'for x in grant['known'].values())):
+                        raise Refused('Same-signature no-run successor requires fresh full regression authority')
+            return key
+        # EXCERPT ENDS: unchanged original Source36 compatibility branch omitted.
+
+    def reject_consumed_orphan_effect(self, scenario, plan=None):
+        for entry in self.engineering_closed_no_run_inventory().values():
+            for step in scenario.get('steps',[]):
+                try:signature=orphan_public_effect(step)
+                except Refused:continue
+                if signature==entry['signature']:
+                    grant=self.engineering_regression_material(plan) if plan is not None else None
+                    known=None if grant is None else grant['known'].get(entry['effect']['id'])
+                    if not(known is not None and known['effect']['kind']=='no_run_admission' and known['row']==entry['row']):
+                        raise Refused('Consumed no-run public effect requires fresh reconciled authority')

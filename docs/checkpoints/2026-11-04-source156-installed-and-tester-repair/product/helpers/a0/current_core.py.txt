@@ -1,0 +1,335 @@
+# PUBLIC ANALYSIS TEXT ONLY. Redacted projection; no installation or live authority.
+"""A0 current core consumer. Source120 is an immutable input, not installation authority.
+
+All native calls remain behind a separately authenticated future binding. Reading
+historical Source83 evidence never supplies current source or per-job authority.
+"""
+from pathlib import Path, PurePosixPath
+import copy, hashlib, json, math, os, re, stat, sys
+
+SOURCE_BASE = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_095e373ee2e8__', 'sha256': '5912001a34fa4f53cab9d62260ffc8f25d6772dbdd8a7520e8e54615f3a49085'}
+BASE_INPUT = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_11fc8f21754b__', 'sha256': '9cd21d65be42d4b8611bd85d0f75b48eebe9aa709c0ff41764434c8d35d0fefd'}
+PINS = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_c47201813d13__', 'sha256': 'd806e3d60fc3abf86a14d19d7e8ec818d89d0c48c6ec811e4afd569a4deb6bee'}
+HOME = '__REDACTED_PRIVATE_ABSOLUTE_PATH_1b7e7667b8d1__'
+PRODUCT_NAMES = ('plugins/friday_rework/user_worker_join.py', 'plugins/friday_rework/worker_provision.py')
+CALLER_NAME = 'plugins/friday_rework/host_runtime.py'
+FIELDS = ('st_dev','st_ino','st_uid','st_gid','st_mode','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
+PARENT_FIELDS = ('st_dev','st_ino','st_uid','st_gid','st_mode')
+
+class Refused(ValueError):
+    pass
+
+
+def need(value, code):
+    if value is not True:
+        raise Refused(code)
+
+
+def sha(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def reference(value):
+    need(type(value) is dict and set(value)=={'path','sha256'}
+         and type(value['path']) is str and value['path'].startswith('__REDACTED_PRIVATE_ABSOLUTE_PATH_4b41533af9ba__')
+         and '..' not in PurePosixPath(value['path']).parts
+         and type(value['sha256']) is str and re.fullmatch('[a-f0-9]{64}',value['sha256']) is not None,
+         'exact_protected_reference_required')
+    return value
+
+
+def read_ref(value, *, project_source=False):
+    """Stable owned no-follow read; 0664 history is authenticated, never chmodded."""
+    reference(value)
+    path=Path(value['path'])
+    need(path.is_absolute() and path.resolve()==path,'reference_link')
+    parents={}
+    protected_anchor=False
+    for parent in reversed(path.parents):
+        s=parent.lstat()
+        # Frozen project trees may retain 0775 directories below a private
+        # owned ancestor. No outside group member can traverse that ancestor.
+        permissive_project=(project_source and protected_anchor and s.st_uid==os.getuid()
+                            and s.st_gid==os.getgid() and not s.st_mode&0o002)
+        need(stat.S_ISDIR(s.st_mode) and s.st_uid in (0,os.getuid())
+             and (not s.st_mode&0o022 or permissive_project),'protected_parent')
+        protected_anchor=protected_anchor or (s.st_uid==os.getuid() and not s.st_mode&0o077)
+        parents[parent]=tuple(getattr(s,k) for k in PARENT_FIELDS)
+    limit=(64 if project_source else 16)*1024**2
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+    try:
+        first=os.fstat(fd)
+        need(stat.S_ISREG(first.st_mode) and first.st_uid==os.getuid() and first.st_gid==os.getgid()
+             and first.st_nlink==1 and stat.S_IMODE(first.st_mode) in (0o600,0o644,0o664)
+             and first.st_size<=limit,'owned_reference_file')
+        with os.fdopen(os.dup(fd),'rb') as stream:
+            raw=stream.read(limit+1)
+        last,named=os.fstat(fd),path.lstat()
+        need(len(raw)<=limit and len(raw)==first.st_size
+             and all(getattr(first,k)==getattr(last,k)==getattr(named,k) for k in FIELDS)
+             and sha(raw)==value['sha256'],'reference_bytes_or_identity_changed')
+    finally:
+        os.close(fd)
+    need(all(tuple(getattr(p.lstat(),k) for k in PARENT_FIELDS)==s for p,s in parents.items()),'parent_identity_changed')
+    return raw
+
+
+def decode(raw):
+    def pairs(items):
+        result={}
+        for k,v in items:
+            need(k not in result,'duplicate_json_key')
+            result[k]=v
+        return result
+    return json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _: (_ for _ in ()).throw(Refused('nonfinite_json')))
+
+
+def document(value):
+    return decode(read_ref(value))
+
+
+def pinned_module(value, name):
+    namespace={'__file__':value['path'],'__name__':name}
+    exec(compile(read_ref(value),value['path'],'exec'),namespace)
+    return namespace
+
+
+def binding(reference_value):
+    """Authenticate a future successor contract before importing any native API."""
+    need(reference_value is not None, 'A0_CURRENT_CORE_UNBOUND')
+    value=document(reference_value)
+    keys={'schema','source_base','accepted_core','envelope','current_input','current_project_source',
+          'current_verifier','primitives','request','commit','refresh','native','tuple','product_after',
+          'source_delta','runtime_home','runtime_profile'}
+    need(type(value) is dict and set(value)==keys
+         and value['schema']=='frw.Root.a0-current-core-binding.v2'
+         and value['source_base']==SOURCE_BASE,'exact_current_core_binding')
+    for key in ('accepted_core','envelope','current_input','current_verifier','primitives','request','commit','refresh','source_delta'):
+        reference(value[key])
+    need(value['accepted_core']!=document(PINS)['retained_acceptance'], 'historical83_not_current_core')
+    base=document(SOURCE_BASE); previous=document(BASE_INPUT)
+    package=document(value['envelope']); current=document(value['current_input'])
+    need(base['source_only'] is True and base['installed'] is False
+         and base['current_input']==BASE_INPUT,'immutable_source120_input')
+    need(package.get('current_input')==value['current_input']
+         and package.get('current_native_verifier')==value['current_verifier']
+         and package.get('primitives')==value['primitives']
+         and package.get('source')==value['current_project_source']
+         and package.get('a0_integration_delta')==value['source_delta'],
+         'authenticated_declared_source_composition_required')
+    _source156_declared_closure(package)
+    delta=document(value['source_delta'])
+    need(type(delta) is dict and set(delta)=={'schema','source_base','base_input','current_input',
+         'project_changes','after','product_after','native_after','component_manifest','component_acceptance','relocations'}
+         and delta['schema']=='frw.Root.a0-declared-source-delta.v1'
+         and delta['source_base']==SOURCE_BASE and delta['base_input']==BASE_INPUT
+         and delta['current_input']==value['current_input'],'exact_source_delta_anchors')
+    old,new=previous['project_files'],current['project_files']
+    need(type(old) is dict and type(new) is dict,'source_project_inventory_required')
+    actual={name:{'before':old.get(name),'after':new.get(name)} for name in sorted(set(old)|set(new))
+            if old.get(name)!=new.get(name)}
+    need(delta['project_changes']==actual,'complete_declared_project_delta_required')
+    need(set(delta['after'])=={n for n,v in actual.items() if v['after'] is not None},
+         'declared_changed_after_set_required')
+    root=Path(value['current_project_source'])
+    need(root.is_absolute() and root.resolve()==root,'current_source_directory_link')
+    for name,row in actual.items():
+        need(type(name) is str and not name.startswith('/') and '..' not in PurePosixPath(name).parts,
+             'declared_source_path')
+        if row['after'] is None:
+            need(not os.path.lexists(root/name),'removed_source_still_present')
+        else:
+            expected={'path':str(root/name),'sha256':row['after']}
+            need(delta['after'][name]==expected,'declared_source_after_pin')
+            read_ref(expected,project_source=True)
+    needed=set(PRODUCT_NAMES)|{CALLER_NAME}
+    need(set(value['product_after'])==needed and delta['product_after']==value['product_after'],
+         'exact_A0_afterimages_and_existing_dispatch_caller')
+    for name in needed:
+        expected={'path':str(root/name),'sha256':new.get(name)}
+        need(value['product_after'][name]==expected and name in actual
+             and package.get('after',{}).get(name)==expected,'current_A0_product_after_pin')
+    need(package.get('a0_component_manifest')==delta['component_manifest']
+         and package.get('a0_component_acceptance')==delta['component_acceptance'],
+         'component_evidence_not_in_authenticated_package')
+    component=document(delta['component_manifest']);acceptance=document(delta['component_acceptance'])
+    need(component.get('schema')=='frw.Root.a0-source-component.v1'
+         and component.get('base_package')==SOURCE_BASE
+         and set(component.get('product_after',{}))==needed
+         and acceptance.get('state')=='SOURCE_ACCEPTED_UNINSTALLED'
+         and {k:acceptance.get('manifest',{}).get(k) for k in ('path','sha256')}==delta['component_manifest'],
+         'exact_approved_A0_component_required')
+    before_bridge=base['private_bridge'];after_bridge=package.get('private_bridge')
+    reference(after_bridge)
+    expected_relocations=[] if after_bridge==before_bridge else [{'name':PRODUCT_NAMES[0],
+        'before':before_bridge,'after':after_bridge}]
+    need(delta['relocations']==expected_relocations,'only_canonical_source_bridge_relocation')
+    for name in needed:
+        original=read_ref(component['product_after'][name],project_source=True)
+        expected=original
+        if name==PRODUCT_NAMES[0] and expected_relocations:
+            literal=repr(before_bridge).encode()
+            need(original.count(literal)==1,'single_approved_source_bridge_literal')
+            expected=original.replace(literal,repr(after_bridge).encode(),1)
+        expected=_dsh154_approved_join(expected,name,after_bridge)
+        expected=_source155_ordinary_reader_pins(expected,name)
+        need(read_ref(value['product_after'][name],project_source=True)==expected,
+             'final_A0_bytes_differ_from_approved_component_and_bridge_relocation')
+    expected_native={k:v for k,v in package.get('after',{}).items() if k.startswith('hermes-agent/')}
+    need(delta['native_after']==expected_native,'complete_declared_native_after_set')
+    for name,pin in expected_native.items():read_ref(pin,project_source=True)
+    need(type(value['runtime_home']) is str and type(value['runtime_profile']) is str
+         and value['runtime_home'].startswith('__REDACTED_PRIVATE_ABSOLUTE_PATH_4b41533af9ba__')
+         and re.fullmatch('[A-Za-z0-9_-]{1,64}',value['runtime_profile']) is not None
+         and Path(value['runtime_home']).resolve()==Path(value['runtime_home'])
+         and '..' not in PurePosixPath(value['runtime_home']).parts,
+         'exact_current_runtime_profile')
+    native=value['native']; counter=value['tuple']
+    need(type(native) is dict and type(counter) is dict
+         and set(counter)=={'source','project','installed','layers','native','service_owner'}
+         and type(counter['source']) is int and counter['source']>120
+         and counter['project']==counter['source'] and counter['service_owner']=='Root'
+         and all(type(counter[k]) is int and counter[k]>=0 for k in ('installed','layers','native')),
+         'future_current_tuple_required')
+    for key in ('python','workspace','environment','actual_native_generation'):
+        need(type(native.get(key)) is str and bool(native[key]),'bound_selected_native_required')
+    need(native.get('phase')=='after' and native.get('receipt')==value['refresh'],'current_native_refresh_join')
+    reference(native.get('facts'))
+    accepted=document(value['accepted_core'])
+    need(accepted.get('accepted_source_only') is True
+         and accepted.get('runtime_or_user_semantics_accepted') is False
+         and accepted.get('package')==value['envelope']
+         and type(accepted.get('proof')) is dict,'accepted_current_core_required')
+    proof=accepted['proof']
+    need(proof.get('package')==value['envelope'] and proof.get('request')==value['request']
+         and proof.get('commit')==value['commit'] and proof.get('current_input')==value['current_input']
+         and proof.get('native_phase')=='after' and proof.get('native')==native
+         and proof.get('actual_native_generation')==native['actual_native_generation'],
+         'current_core_exact_accepted_proof')
+    return value
+
+
+def prepare_snapshot():
+    """Bounded source inspection only; no current HOME or native reads."""
+    base=document(SOURCE_BASE); current=document(BASE_INPUT)
+    need(base['source_only'] is True and base['installed'] is False and base['current_input']==BASE_INPUT,
+         'source120_static_input_required')
+    files={name:read_ref({'path':str(Path(base['source'])/name),'sha256':current['project_files'][name]},
+                         project_source=True) for name in PRODUCT_NAMES}
+    return {'source_base':SOURCE_BASE,'base_input':BASE_INPUT,
+            'before':{name:sha(raw) for name,raw in files.items()},
+            'future_current_core':'UNBOUND','runtime_or_user_accepted':False,'per_job_authority':'NOT_GRANTED'}
+
+
+def current_core_proof(binding_ref):
+    """Future sole-integrator path: real selected native verifier, no projection."""
+    value=binding(binding_ref)
+    need(sys.executable==value['native']['python'],'selected_current_native_python_required')
+    verifier=pinned_module(value['current_verifier'],'_a0_actual_current_core')
+    method=verifier.get('verify_current_native')
+    need(callable(method),'current_native_verifier_API_required')
+    proof=method(value['envelope'],value['request'],value['commit'],value['refresh'],
+                 primitives_pin=value['primitives'])
+    need(proof==document(value['accepted_core'])['proof'],'fresh_core_differs_from_accepted_current')
+    need(proof['current_marker']['path']==str(Path(HOME)/'FRIDAY-INSTALL.json'), 'current_marker_outside_HOME')
+    current_core_CAS(proof,binding_ref)
+    return proof
+
+
+def current_core_CAS(proof,binding_ref):
+    """Reuse invocation proof and reread mutable leaves; do not re-run old effects."""
+    value=binding(binding_ref)
+    need(sys.executable==value['native']['python'],'selected_current_native_python_required')
+    need(proof==document(value['accepted_core'])['proof'],'current_core_invocation_memo_changed')
+    for key in ('current_marker','source_receipt','stamp'):
+        read_ref(proof[key])
+    read_ref(value['native']['facts'])
+    current=document(value['current_input'])
+    for name in (*PRODUCT_NAMES,CALLER_NAME):
+        read_ref({'path':str(Path(HOME)/name),'sha256':current['project_files'][name]},project_source=True)
+    return True
+
+
+_DSH154_DELTA = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_53898422c537__', 'sha256': '61fd164c1008d0eda4f12d423e0c39d5c83a4cd9380c2cebf29e941bd142cb61'}
+_DSH154_PARENT_BRIDGE = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_36e4ff0cf77e__', 'sha256': 'fe6fce7d08508146da74ed5ad0fc5eafc3c7960d58fb81be31b1175784459fad'}
+
+def _dsh154_approved_join(expected, name, bridge):
+    """Exact separately reviewed DSH extension, retaining every approved A0 byte."""
+    if name != PRODUCT_NAMES[0]:
+        return expected
+    delta=document(_DSH154_DELTA)
+    need(delta['schema']=='frw.Root.dsh154-product-delta.v1'
+         and delta['order']==[PRODUCT_NAMES[0]] and len(delta['files'])==1,
+         'exact_reviewed_dsh154_scope')
+    original=document(delta['reviewed_original_delta'])
+    review=document(delta['independent_review'])
+    need(review.get('accepted') is True and review.get('open_HIGH_MEDIUM')==0
+         and review.get('product_delta')==delta['reviewed_original_delta']
+         and review.get('base_sha256')==original['base']['sha256']
+         and review.get('after_sha256')==original['files'][0]['after']['sha256'],
+         'independent_dsh154_original_review')
+    before=read_ref(delta['base'],project_source=True)
+    after=read_ref(delta['files'][0]['after'],project_source=True)
+    need(delta['files'][0]['path']==name and delta['files'][0]['before_sha256']==delta['base']['sha256'],
+         'dsh154_exact_original_preimage')
+    reference(bridge); read_ref(bridge)
+    token=repr(_DSH154_PARENT_BRIDGE).encode()
+    need(before.count(token)==1 and after.count(token)==1,'dsh154_one_current_bridge')
+    rebound_before=before.replace(token,repr(bridge).encode(),1)
+    rebound_after=after.replace(token,repr(bridge).encode(),1)
+    need(expected==rebound_before,'dsh154_preserves_all_approved_a0_and_other_bytes')
+    return rebound_after
+
+_SOURCE155_PARENT_RUNTIME = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_7b27e1ec8541__', 'sha256': '0c642c0d13e4db2e5c379c753e47b729cc2edeba07c1cb6b4b937aeb2109fbf2'}
+_SOURCE155_PARENT_CORE = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_489ecce75e84__', 'sha256': 'db7ee4f24c24b1c56f309887ca671c41f3198af7b4f0b97ebe5b0341c17da8c2'}
+_SOURCE155_A0_PIN_EDGES = [('plugins/friday_rework/user_worker_join.py', {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_44f5f232f55b__', 'sha256': '08faf056f3f381594d7eb620dbcddbcfb9e3a7bb5f49df146a8cf65ea748b854'}, 'runtime'), ('plugins/friday_rework/worker_provision.py', {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_68493bea6905__', 'sha256': 'beeeaf5b57351fd688f4dd54738fda0f898d48579d59461f036344051c1ede57'}, 'core'), ('plugins/friday_rework/worker_provision.py', {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_44f5f232f55b__', 'sha256': '08faf056f3f381594d7eb620dbcddbcfb9e3a7bb5f49df146a8cf65ea748b854'}, 'runtime')]
+
+def _source155_ordinary_reader_pins(expected,name):
+    edges=[row for row in _SOURCE155_A0_PIN_EDGES if row[0]==name]
+    if not edges:return expected
+    self_path=Path(__file__).resolve()
+    self_ref={'path':str(self_path),'sha256':sha(self_path.read_bytes())}
+    read_ref(self_ref)
+    original=read_ref(_SOURCE155_PARENT_RUNTIME).decode()
+    old_line='ANCESTOR_ADAPTER = '+repr(_SOURCE155_PARENT_CORE)+'\n'
+    need(original.count(old_line)==1,'source155_one_runtime_ancestor_pin')
+    runtime_raw=original.replace(old_line,'ANCESTOR_ADAPTER = '+repr(self_ref)+'\n',1).encode()
+    runtime_ref={'path':str(self_path.parent/'retained_runtime_current.py'),'sha256':sha(runtime_raw)}
+    need(read_ref(runtime_ref)==runtime_raw,'source155_exact_retained_runtime_bytes')
+    for _,before,kind in edges:
+        token=repr(before).encode();after=self_ref if kind=='core' else runtime_ref
+        need(expected.count(token)==1,'source155_one_ordinary_reader_literal')
+        expected=expected.replace(token,repr(after).encode(),1)
+    return expected
+
+_SOURCE156_PARENT_CLOSURE = '__PUBLIC_ANALYSIS_UNBOUND_PRIVATE_HISTORY__'
+
+def _source156_declared_closure(package):
+    """Authenticate the complete declared routing graph, including sibling helper."""
+    import ast
+    declared=package.get('a0_private_closure')
+    need(type(declared) is dict and set(declared)=={'source','copies'},'source156_closure_shape')
+    parent=_SOURCE156_PARENT_CLOSURE
+    need(set(declared['source'])==set(declared['copies'])==set(parent['copies']),'source156_closure_names')
+    self_path=Path(__file__).resolve()
+    self_ref={'path':str(self_path),'sha256':sha(self_path.read_bytes())}
+    need(declared['source']['current_core.py']==declared['copies']['current_core.py']==self_ref,'source156_actual_core_route')
+    copies=declared['copies']
+    routes=(('compose_source_delta.py', {'CORE': 'current_core.py'}), ('retained_runtime_current.py', {'ANCESTOR_ADAPTER': 'current_core.py'}), ('source_current_a0_adapter.py', {'CURRENT_CORE': 'current_core.py', 'RUNTIME_VERIFIER': 'retained_runtime_current.py'}), ('publisher_current.UNBOUND.py', {'CURRENT_SOURCE_ADAPTER': 'source_current_a0_adapter.py', 'RUNTIME83_VERIFIER': 'retained_runtime_current.py'}), ('root_use_current.py', {'PUBLISHER': 'publisher_current.UNBOUND.py'}))
+    for name,keys in routes:
+        expected=read_ref(parent['copies'][name]).decode()
+        for key,target in keys.items():
+            nodes=[n for n in ast.parse(expected).body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id==key for t in n.targets)]
+            need(len(nodes)==1,'source156_one_assignment_'+key)
+            n=nodes[0];lines=expected.splitlines(keepends=True)
+            expected=''.join(lines[:n.lineno-1])+key+' = '+repr(copies[target])+'\n'+''.join(lines[n.end_lineno:])
+        need(copies[name]['path']==str(self_path.parent/name) and declared['source'][name]==copies[name]
+             and read_ref(copies[name])==expected.encode(),'source156_exact_route_'+name)
+    for name in copies:
+        read_ref(copies[name]);read_ref(declared['source'][name])
+        if name=='ordinary_primitives.py':
+            need(copies[name]['path']==str(self_path.parent/name) and copies[name]['sha256']==parent['copies'][name]['sha256']
+                 and declared['source'][name]==parent['source'][name],'source156_sibling_ordinary_primitives')
+        elif name.startswith('dependencies/'):
+            need(copies[name]==parent['copies'][name] and declared['source'][name]==parent['source'][name],'source156_unchanged_dependencies')
+    return True

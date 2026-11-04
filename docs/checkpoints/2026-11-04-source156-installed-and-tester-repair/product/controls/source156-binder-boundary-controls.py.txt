@@ -1,0 +1,94 @@
+# PUBLIC ANALYSIS TEXT ONLY. Redacted projection; no installation or live authority.
+"""Exercise the actual binder with real metadata to its clock/effect boundary.
+Owned preview PACKAGE.json is temporarily late-bound and restored in finally;
+the installed runtime is read-only. The clock boundary is intercepted before any clock read or
+creation. No operation, clock, grant, plan or installed file is written.
+"""
+from pathlib import Path
+import copy, importlib.util, json, os, stat
+HERE=Path(__file__).resolve().parent
+s=importlib.util.spec_from_file_location('_preflight',HERE/'source_preflight.py');h=importlib.util.module_from_spec(s);s.loader.exec_module(h);p=h.p
+class ClockBoundaryReached(Exception):pass
+
+def run(initial_ref, review_ref, output, assembly=None):
+    initial=p.document(initial_ref);assembly=Path(assembly) if assembly is not None else Path(initial['package']['path']).parent
+    p.need(assembly.is_relative_to(HERE) and assembly.resolve()==assembly,'owned_source_assembly')
+    package_ref=p.pin(assembly/'PACKAGE.json');package=p.document(package_ref)
+    core=h.load(package['adapter']);pr=core['_primitives'](package['primitives'])
+    assert core['OPERATION_RELATIVE_PATH']=='engineering156-source-operation-r2'
+    original=copy.deepcopy(package);original_raw=(assembly/'PACKAGE.json').read_bytes()
+    # Capture the actual mutable input properties. No installed state is changed.
+    bound=copy.deepcopy(package);bound['baseline']={};bound['before_custody']={}
+    for name in package['order']:
+        raw,st=pr['read'](core['HOME']/name)
+        bound['before_custody'][name]=core['identity'](st)
+        bound['baseline'][name]={'sha256':pr['sha'](raw),'bytes':len(raw),'mode':stat.S_IMODE(st.st_mode),'identity':[getattr(st,k) for k in core['IDENTITY5']]}
+    bound['directory_custody']={str(path):core['identity'](path.lstat(),core['PARENT_FIELDS']) for path in core['target_directories'](package['order'])}
+    oldbound=p.document(p.pin(Path('__REDACTED_PRIVATE_ABSOLUTE_PATH_e7270ac7f854__')))
+    for name in ('service_implementation',):bound[name]=oldbound[name];p.raw_ref(bound[name])
+    bound['refresh_boundary']['guard_module']=oldbound['refresh_boundary']['guard_module'];p.raw_ref(bound['refresh_boundary']['guard_module'])
+    # This is an actual owned preview artifact, with real custody values and
+    # cryptographic refs. Preserve the immutable static copy; restore preview
+    # PACKAGE.json in finally. No original A156 or installed file is edited.
+    (assembly/'PACKAGE.json').write_bytes(p.encode(bound))
+    try:
+        return check_bound(assembly,initial_ref,review_ref,output,core,pr,original)
+    finally:
+        (assembly/'PACKAGE.json').write_bytes(original_raw)
+
+def check_bound(assembly,initial_ref,review_ref,output,core,pr,original):
+    package_ref=p.pin(assembly/'PACKAGE.json');package=p.document(package_ref)
+    bound=package
+    bound_snapshot=p.put(output.parent/(output.stem+'-BOUND-PACKAGE.json'),p.raw_ref(package_ref))
+    review_path=output.parent/(output.stem+'-BOUND-REVIEW.json')
+    review_ref=p.put(review_path,h.review_envelope(package_ref,initial_ref))
+    review=p.document(review_ref)
+    reads=[];boundary=[];rows=[]
+    actual_doc=pr['document']
+    overlay={}
+    def document(ref):
+        reads.append(ref['path'])
+        if ref['path'] in overlay:
+            expected=package_ref if ref['path']==package_ref['path'] else review_ref
+            p.need(ref==expected,'overlay_exact_reference')
+            return copy.deepcopy(overlay[ref['path']])
+        return actual_doc(ref)
+    actual_p=dict(pr,document=document)
+    core['_primitives']=lambda pin:actual_p if pin==package['primitives'] else (_ for _ in ()).throw(ValueError('wrong_primitives'))
+    def stop_before_clock(*args):boundary.append('clock');raise ClockBoundaryReached()
+    core['successor_clock_checked']=stop_before_clock
+    def invoke():return core['bind_root_operation'](package_ref,primitives_pin=package['primitives'],accepted_review=review_ref,original_clock=None)
+    def success():
+        before=len(boundary)
+        try:invoke()
+        except ClockBoundaryReached:pass
+        else:raise AssertionError('clock boundary not reached')
+        assert len(boundary)==before+1
+    def refused(change,code):
+        saved=copy.deepcopy(overlay);before=len(boundary)
+        overlay[package_ref['path']]=copy.deepcopy(package);overlay[review_ref['path']]=copy.deepcopy(review)
+        try:
+            change()
+            try:invoke()
+            except (ValueError,RuntimeError) as e:assert code in str(e),(code,str(e))
+            else:raise AssertionError('missing refusal '+code)
+            assert len(boundary)==before
+        finally:overlay.clear();overlay.update(saved)
+    success();rows.append('real_bound_package_and_review_reach_clock_boundary')
+    for field in ('composition_finalized','component_slot'):
+        def mutate(field=field):
+            if field=='composition_finalized':overlay[package_ref['path']][field]=False
+            else:overlay[package_ref['path']][field]['state']='SOURCE_REVIEW_PENDING'
+        refused(mutate,'source156_finalized_component_slot');rows.append('reject_'+field+'_before_clock')
+    for field,value in [('schema','wrong'),('accepted',False),('open_HIGH_MEDIUM',1),('package',{'path':'/wrong','sha256':'0'*64})]+[(x,{'path':'/wrong','sha256':'0'*64}) for x in h.FIELDS]:
+        refused(lambda field=field,value=value:overlay[review_ref['path']].__setitem__(field,value),'accepted_exact_review');rows.append('reject_review_'+field+'_before_clock')
+    # CAS corruption is rejected by actual package_checked before metadata/clock.
+    refused(lambda:overlay[package_ref['path']]['baseline'][package['order'][0]].__setitem__('sha256','0'*64),'source119_before_custody');rows.append('reject_current_baseline_before_clock')
+    core['cpu_admission'](package['budgets']['source']['seconds']);rows.append('real_inherited_CPU_budget_admission')
+    assert not os.path.lexists(assembly/core['OPERATION_RELATIVE_PATH']);rows.append('new_R2_operation_absent')
+    assert p.document(package_ref)==package
+    for path in (assembly/core['OPERATION_RELATIVE_PATH'],HERE/'ROOT-OPERATION.json',HERE/'REQUEST.json',HERE/'PLAN.json'):assert not os.path.lexists(path)
+    return p.put(output,dict(schema='frw.Root.source156-binder-boundary-controls.v1',package_at_invocation=package_ref,archived_bound_package=bound_snapshot,review=review_ref,all_passed=True,controls=rows,count=len(rows),real_source_metadata_reads=sorted(set(reads)),isolation='Positive path uses actual owned bound preview files and cryptographic refs; only negative tampering uses document overlay; successor_clock_checked intercepted before clock; all protected material/CAS consumers actual',live_effects=False,clocks_grants_operations_created=False))
+if __name__=='__main__':
+    import argparse
+    ap=argparse.ArgumentParser();ap.add_argument('--initial-ref',type=json.loads,required=True);ap.add_argument('--review-ref',type=json.loads,required=True);ap.add_argument('--output',type=Path,required=True);a=ap.parse_args();print(json.dumps(run(a.initial_ref,a.review_ref,a.output)))

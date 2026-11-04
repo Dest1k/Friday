@@ -1,0 +1,9 @@
+# Source156 product implementation analysis
+
+`modules/` contains the three complete installed product module projections. `helpers/` adds the actual current DSH/A0 repair implementation reached through the new Source155/156 pins: durable current-core/retained-runtime validation and routing, ordinary adapter, delta composer, publisher and its current entry, DSH current-parent bridge, and the exact Source156 source finalization/refresh/native-proof entries. The earlier two historical diffs primarily show changes to bindings; the helper bodies show the algorithms behind those bindings.
+
+These are complete code bodies for the selected current endpoints, with deterministic private literal redactions. The one embedded `_SOURCE156_PARENT_CLOSURE` historical operational manifest is explicitly replaced by an unbound placeholder. Its route validation algorithm remains visible. `HELPERS-MANIFEST.json` records every original/public hash, exact logical package pin, purpose, redaction and omission. `MANIFEST.json` and its initial files remain unchanged.
+
+Historical transitive helper implementations, closure/history JSON documents and operational receipts are intentionally omitted. This is an analysis snapshot, not a standalone build or installable release. Redacted paths, missing private graph and unbound constants provide no live authority. `.py.txt` files must not be installed or executed. The control programs also require private dependencies; binder controls can rewrite their owned package and must not be run from this publication.
+
+Source and installed native acceptance are separate from worker execution and user semantics. Existing component/source checks are reported without rerunning them. No product tests, installed imports, live checks or user sends were performed to prepare these materials; no new installed156 user PASS is claimed.

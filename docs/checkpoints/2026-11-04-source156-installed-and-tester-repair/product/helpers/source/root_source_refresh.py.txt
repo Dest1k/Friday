@@ -1,0 +1,256 @@
+# PUBLIC ANALYSIS TEXT ONLY. Redacted projection; no installation or live authority.
+"""Root-only Source119 native refresh. Inert without all actual future exact pins.
+
+Use a fresh clean selected117 process (-I -B, accepted clean environment). The
+current stopped/ACL/resource guard is constructed before native imports. Source
+apply and this refresh share the SAME original source4800/reserve300 clock.
+Forward expiry requests cooperative PM cancellation; total expiry bounds recovery.
+A late/interrupted/ambiguous selection is UNKNOWN and must never be blindly retried.
+"""
+from __future__ import annotations
+import argparse, hashlib, json, math, os, signal, threading, time
+from pathlib import Path
+
+HOME = Path('__REDACTED_PRIVATE_ABSOLUTE_PATH_1b7e7667b8d1__')
+REFRESH_IMPLEMENTATION = {'path': str(HOME / 'hermes-agent/pm/source_refresh.py'), 'sha256': 'a299e97dfeb11ff7a476a6cb34d3a6aef1f9c0bc8fa8149daa6b03282ba27f7c'}
+NATIVE_FORWARD_MINIMUM_SECONDS = 60
+GUARD_MODULE = None  # exact reviewed module is supplied by the final pinned package
+
+def pin(value):
+    row = json.loads(value)
+    if set(row) != {'path', 'sha256'} or not Path(row['path']).is_absolute():
+        raise ValueError('exact absolute artifact pin required')
+    return row
+
+def load_adapter(package):
+    ref = package['adapter']
+    raw = Path(ref['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != ref['sha256']:
+        raise ValueError('adapter pin changed')
+    namespace = {'__file__': ref['path'], '__name__': '_bound_source119_adapter'}
+    exec(compile(raw, ref['path'], 'exec'), namespace)
+    return namespace
+
+def stopped_guard(args, p, request, operation, clock):
+    expected_guard = p['document'](request['package'])['refresh_boundary']['guard_module']
+    if type(expected_guard) is not dict or args.guard_module != expected_guard:
+        raise ValueError('exact accepted Root guard module required')
+    if (args.phase_clock != operation['original_clock']
+            or args.phase_operation != clock['operation']
+            or clock.get('operation_id', args.phase_operation) != args.phase_operation):
+        raise ValueError('same original source phase clock and operation required')
+    raw = p['pinned'](args.guard_module)
+    namespace = {'__file__': args.guard_module['path'], '__name__': '_exact_Root_stopped_guard'}
+    exec(compile(raw, args.guard_module['path'], 'exec'), namespace)
+    # FIRST native initialization: guard factory owns selected117 clean bootstrap.
+    guard = namespace['make_stopped_guard'](args.stop_input, args.stopped_evidence,
+        phase_clock_ref=args.phase_clock, phase_operation=args.phase_operation, receipt_phase='after_apply')
+    if not callable(guard):
+        raise ValueError('actual stopped guard callback required')
+    return guard
+
+class RecoveryDeadlineExceeded(TimeoutError):
+    pass
+
+class GuardedCancellation:
+    """Event-like cancellation checked by actual PM refresh before publication.
+
+    Direct accepted PM implementation retains this callback at its final precommit
+    check. No worker transport or forced process termination is introduced. Any
+    publication that races expiry still remains UNKNOWN for Root reconciliation.
+    """
+    def __init__(self, guard, deadline):
+        self.event = threading.Event()
+        self.guard, self.deadline, self.failure = guard, deadline, None
+    def set(self):
+        self.event.set()
+    def is_set(self):
+        if self.event.is_set():
+            return True
+        try:
+            if time.monotonic() >= self.deadline:
+                raise TimeoutError('forward source refresh deadline exhausted')
+            if self.guard(deadline_monotonic=self.deadline, cleanup=False) is not True:
+                raise ValueError('actual current stopped guard refused')
+            if time.monotonic() >= self.deadline:
+                raise TimeoutError('current guard crossed forward deadline')
+        except RecoveryDeadlineExceeded:
+            raise
+        except Exception as exc:
+            self.failure = type(exc).__name__
+            self.event.set()
+        return self.event.is_set()
+
+SOURCE_BUILD_IMPLEMENTATION = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_c7ab21720f36__', 'sha256': '9fc26b645e39241a4627d3f778f58cd9556573cd09e51939d9c4dd2470c8aec9'}
+WEB_FRESHNESS_MAXIMUM_SECONDS = 60
+
+class FrontendFreshnessAborted(RuntimeError):
+    pass
+
+def require_current_web(p, *, deadline_monotonic):
+    """Refuse native publication until canonical web output has a current receipt."""
+    if not math.isfinite(deadline_monotonic):
+        raise ValueError('finite original forward deadline required')
+    finish_by = min(deadline_monotonic, time.monotonic() + WEB_FRESHNESS_MAXIMUM_SECONDS)
+    remaining = finish_by - time.monotonic()
+    if remaining <= 0:
+        raise FrontendFreshnessAborted('canonical web freshness deadline exhausted')
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM)}
+    if signal.getitimer(signal.ITIMER_REAL)[0] > 0:
+        raise ValueError('fresh frontend check process must have no inherited alarm')
+    def abort(signum, _frame):
+        # RuntimeError deliberately escapes source_product_current's OSError /
+        # SubprocessError catch, letting subprocess.run kill and reap its child.
+        reason = 'deadline exhausted' if signum == signal.SIGALRM else 'interrupted'
+        raise FrontendFreshnessAborted('canonical web freshness ' + reason)
+    try:
+        for sig in previous:
+            signal.signal(sig, abort)
+        signal.setitimer(signal.ITIMER_REAL, remaining)
+        p['pinned'](SOURCE_BUILD_IMPLEMENTATION)
+        from hermes_cli import source_build
+        if Path(source_build.__file__).resolve() != Path(SOURCE_BUILD_IMPLEMENTATION['path']):
+            raise ValueError('exact canonical source build helper required')
+        source = HOME / 'hermes-agent'
+        if not source_build.source_product_current(source, 'web', source / 'hermes_cli/web_dist'):
+            raise ValueError('canonical web build required before native source identity')
+        if time.monotonic() >= finish_by:
+            raise FrontendFreshnessAborted('canonical web freshness deadline exhausted')
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--execute', action='store_true')
+    for name in ('package','request','committed','primitives','stopped-evidence',
+                 'stop-input','guard-module','phase-clock'):
+        parser.add_argument('--'+name, type=pin, required=True)
+    parser.add_argument('--phase-operation', required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    if not args.execute:
+        raise SystemExit('INERT: exact future Root authority, committed Source119 refs and original clock are required')
+    if not args.output.is_absolute() or os.path.lexists(args.output):
+        raise ValueError('new absolute Root-owned output required; no retry')
+    package_raw = Path(args.package['path']).read_bytes()
+    if hashlib.sha256(package_raw).hexdigest() != args.package['sha256']:
+        raise ValueError('package pin changed')
+    package = json.loads(package_raw)
+    adapter = load_adapter(package)
+    p = adapter['_primitives'](args.primitives)
+    request = p['document'](args.request)
+    operation = p['document'](request['root_operation'])
+    clock = p['document'](operation['original_clock'])
+    deadline, rollback = operation['deadline_monotonic'], clock['deadline_monotonic']
+    p['check_clock'](clock, deadline, rollback)
+    # No source/native package imports or verification before actual guard bootstrap.
+    guard = stopped_guard(args, p, request, operation, clock)
+    cancelled = GuardedCancellation(guard, deadline)
+    if cancelled.is_set():
+        raise ValueError('current stopped/ACL/resources guard refused before refresh')
+    adapter['verify_source_journal'](args.package, args.request, args.committed, primitives_pin=args.primitives)
+    source_intent = p['document'](p['ref'](adapter['transaction_path'](args.request) / 'intent.json'))
+    if source_intent['stopped_evidence'] != args.stopped_evidence:
+        raise ValueError('same exact source transaction stopped evidence required')
+    adapter['cpu_admission'](request['budgets']['source']['seconds'])
+    parent_native = adapter['native_continuity_checked'](package, p)
+    p['pinned'](REFRESH_IMPLEMENTATION)
+    from pm.environments import selected_venv
+    from pm.source_refresh import source_identity, refresh_source
+    from pm import paths
+    from pm.registry import get_package
+    from pm.packages import Venv
+    native_package = get_package('venv')
+    if (Path(refresh_source.__code__.co_filename).resolve() != Path(REFRESH_IMPLEMENTATION['path'])
+            or paths.repo_root().resolve() != HOME / 'hermes-agent'
+            or paths.lockfile_path().resolve() != HOME / 'hermes-agent/pm/lock.json'
+            or type(native_package) is not Venv
+            or native_package.project_root().resolve() != HOME / 'hermes-agent'):
+        raise ValueError('exact installed PM root and builtin Venv required')
+    selected = selected_venv(HOME / 'hermes-agent').resolve()
+    if selected != Path(parent_native['environment']):
+        raise ValueError('selected Source119 environment changed')
+    previous = source_identity(selected.parent / 'workspace')
+    if previous != parent_native['source_identity']:
+        raise ValueError('selected Source119 source ancestry changed')
+    require_current_web(p, deadline_monotonic=deadline)
+    expected = source_identity(HOME / 'hermes-agent')
+    if (expected != previous or package.get('native_refresh_mode') != 'retain_exact_parent_native' or adapter['HERMES_TARGETS'] != () or adapter['LEAF_PINS'] != {}):
+        raise ValueError('exact project-only unchanged Source154 native required')
+
+    previous_term = signal.getsignal(signal.SIGTERM)
+    previous_int = signal.getsignal(signal.SIGINT)
+    previous_alarm = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    if previous_timer[0] > 0:
+        raise ValueError('fresh refresh process must have no inherited alarm')
+    def cancel(_signum, _frame):
+        cancelled.set()
+    def expire(_signum, _frame):
+        cancelled.set()
+        remaining = rollback - time.monotonic()
+        if time.monotonic() >= rollback or remaining <= 0:
+            raise RecoveryDeadlineExceeded('original total Source119 refresh recovery deadline exhausted')
+        # Forward alarm first requests cooperative cancellation; reserve is recovery.
+        signal.setitimer(signal.ITIMER_REAL, remaining)
+    attempted = False
+    signal.signal(signal.SIGTERM, cancel)
+    signal.signal(signal.SIGINT, cancel)
+    signal.signal(signal.SIGALRM, expire)
+    try:
+        p['check_clock'](clock, deadline, rollback)
+        if (request['budgets']['source'] != package['refresh_boundary']['source_budget']
+                or package['refresh_boundary']['source_budget'] != package['budgets']['source']
+                or package['refresh_boundary']['native_forward_minimum_seconds'] != NATIVE_FORWARD_MINIMUM_SECONDS
+                or deadline - time.monotonic() < NATIVE_FORWARD_MINIMUM_SECONDS):
+            raise ValueError('insufficient original forward budget for actual native build consumers')
+        if cancelled.is_set():
+            raise TimeoutError('source refresh forward boundary refused')
+        signal.setitimer(signal.ITIMER_REAL, max(0.000001, deadline - time.monotonic()))
+        attempted = True
+        result = {'state':'retained','environment':str(selected),'source_identity':expected,'source_parent':parent_native['source_parent']}
+        committed = time.monotonic()
+        if cancelled.is_set() or committed >= deadline:
+            raise TimeoutError('Source119 refresh interrupted/late; reconcile selection')
+        p['check_clock'](clock, deadline, rollback)
+        document = {'schema': 'frw.kimi.engineering152-source-refresh-result.v1',
+                    'package': args.package, 'request': args.request, 'commit': args.committed,
+                    'root_operation': request['root_operation'], 'parent_acceptance': adapter['PARENT_ACCEPTED'],
+                    'stopped_evidence': args.stopped_evidence, 'stop_input': args.stop_input,
+                    'guard_module': args.guard_module, 'phase_clock': args.phase_clock,
+                    'phase_operation': args.phase_operation,
+                    'expected_source': expected, 'expected_previous_source': previous,
+                    'selected_environment': str(selected), 'result': result,
+                    'committed_monotonic': committed, 'boot_id': clock['boot_id'],
+                    'service_acceptance': False, 'fresh_process_verification_required': True}
+        # Do not publish a success receipt after guard/write preparation consumed forward budget.
+        if cancelled.is_set() or time.monotonic() >= deadline:
+            raise TimeoutError('Source119 refresh success publication exceeded forward deadline')
+        p['write'](args.output, p['encode'](document))
+        print(json.dumps({'output': str(args.output), 'sha256': p['sha'](p['encode'](document)), 'result': result}))
+    except BaseException as exc:
+        if attempted and not os.path.lexists(args.output):
+            unknown = {'schema': 'frw.kimi.engineering152-source-refresh-result.v1',
+                       'state': 'UNKNOWN_RECONCILE_SELECTION_NO_RETRY',
+                       'package': args.package, 'request': args.request, 'commit': args.committed,
+                       'root_operation': request['root_operation'], 'parent_acceptance': adapter['PARENT_ACCEPTED'],
+                       'stopped_evidence': args.stopped_evidence, 'stop_input': args.stop_input,
+                       'guard_module': args.guard_module, 'phase_clock': args.phase_clock,
+                       'phase_operation': args.phase_operation,
+                       'expected_source': expected, 'expected_previous_source': previous,
+                       'selected_environment': str(selected), 'error_type': type(exc).__name__,
+                       'boot_id': clock['boot_id'], 'retry': False,
+                       'reconciliation': 'Preserve selected facts and every candidate generation; Root must reconcile actual PM selection before any new operation.'}
+            p['write'](args.output, p['encode'](unknown))
+        raise
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
+        signal.signal(signal.SIGALRM, previous_alarm)
+
+if __name__ == '__main__':
+    main()

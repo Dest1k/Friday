@@ -1,0 +1,313 @@
+# NON-EXECUTABLE REVIEW EXCERPT; UNBOUND, NOT AN INSTALLATION OR AUTHORITY.
+# Definitions below intentionally omit imports, trust anchors and dependency bindings.
+# Parse/compile verification never executes this text.
+
+# _ADMISSION_CODES, canonical source identity and all supporting helpers are omitted.
+
+def _admission_source_read(path, limit=2*1024*1024):
+    # Authenticate only executable source. Consumer observational wrappers are
+    # left intact for every original admission/history read.
+    path = Path(os.path.abspath(path))
+    if any(p.is_symlink() for p in (path,*path.parents)):
+        raise ValueError('B00_admission_source_symlink')
+    fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(fd,'rb') as stream:
+        s = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(s.st_mode) or s.st_nlink != 1 or s.st_size > limit
+                or s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode) != 0o600):
+            raise ValueError('B00_admission_source_custody_changed')
+        raw = stream.read(limit+1)
+    if len(raw) > limit: raise ValueError('B00_admission_source_too_large')
+    return raw
+
+def _admission_codes(c):
+    global _ADMISSION_CODES
+    raw = _admission_source_read(_CANONICAL_PATH)
+    if hashlib.sha256(raw).hexdigest() != _CANONICAL_SHA256:
+        raise ValueError('B00_admission_exact_source_changed')
+    if _ADMISSION_CODES is not None and raw == _ADMISSION_CODES[0]:
+        return _ADMISSION_CODES[1:]
+    tree = ast.parse(raw, filename=_CANONICAL_PATH)
+    def codes(tree):
+        module = compile(tree, _CANONICAL_PATH, 'exec', flags=0, dont_inherit=True, optimize=0)
+        owner = [v for v in module.co_consts if isinstance(v, types.CodeType) and v.co_name == 'Runner']
+        method = [] if len(owner) != 1 else [v for v in owner[0].co_consts
+            if isinstance(v, types.CodeType) and v.co_name == 'continuation_receipt']
+        guards = {v.co_name:v for v in module.co_consts if isinstance(v, types.CodeType)
+            and v.co_name in ('safe_read', 'no_symlinks')}
+        if len(method) != 1 or len(guards) != 2:
+            raise ValueError('B00_admission_exact_owner_changed')
+        return method[0], guards
+    expected, guards = codes(tree)
+    owner = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Runner']
+    method = [] if len(owner) != 1 else [n for n in owner[0].body
+        if isinstance(n, ast.FunctionDef) and n.name == 'continuation_receipt']
+    anchor = ast.parse("for path in self.store.root.glob('continue-*.json'):\n    pass\n").body[0]
+    loops = [] if len(method) != 1 else [n for n in ast.walk(method[0])
+        if isinstance(n, ast.For) and ast.dump(n.iter, include_attributes=False)
+        == ast.dump(anchor.iter, include_attributes=False)]
+    if len(loops) != 1 or ast.dump(loops[0].target) != ast.dump(anchor.target):
+        raise ValueError('B00_admission_exact_selection_anchor_changed')
+    loops[0].iter = ast.parse('_b00_admission_candidates(self, run)', mode='eval').body
+    replacement, _ = codes(ast.fix_missing_locations(tree))
+    _ADMISSION_CODES = (raw, expected, replacement, types.MappingProxyType(guards))
+    return expected, replacement, _ADMISSION_CODES[3]
+
+def _admission_callable(fn):
+    if isinstance(fn, types.MethodType):
+        return (id(fn.__self__), _function(fn.__func__))
+    return _function(fn)
+
+def _admission_projection_signature(cls):
+    if type(cls) is not type or cls.__bases__ != (object,):
+        raise ValueError('B00_admission_nested_scope_conflict')
+    names = ('__init__','check','eligible','allow_history_reader','admission_path',
+        'namespace','candidates','finish','close')
+    first = getattr(cls, '__init__', None)
+    if type(first) is not types.FunctionType:
+        raise ValueError('B00_admission_nested_scope_conflict')
+    namespace = first.__globals__; filename = first.__code__.co_filename
+    if namespace.get('AdmissionSelectionProjection') is not cls:
+        raise ValueError('B00_admission_nested_scope_conflict')
+    methods = [(name,getattr(cls,name,None)) for name in names]
+    helpers = [(name,namespace.get(name)) for name in (
+        '_admission_callable','_function','_shape','_parser_state','_json_state',
+        '_global_cells','_same_cells','executable_snapshot','_source_value',
+        '_code_fingerprint','_admission_source_read','_admission_projection_signature','_admission_projection_origin')]
+    code = []
+    for name,fn in methods+helpers:
+        if (type(fn) is not types.FunctionType or fn.__globals__ is not namespace
+                or fn.__code__.co_filename != filename or fn.__closure__ is not None):
+            raise ValueError('B00_admission_nested_scope_conflict')
+        code.append((name,_shape(fn.__code__),_source_value(fn.__defaults__),
+            _source_value(fn.__kwdefaults__)))
+    globals_ = tuple((name,id(namespace.get(name))) for name in
+        ('types','sys','builtins','os','stat','Path','hashlib'))
+    pins = tuple(namespace.get(name) for name in ('_CANONICAL_PATH','_CANONICAL_SHA256'))
+    if any(type(value) is not str for value in pins):
+        raise ValueError('B00_admission_nested_scope_conflict')
+    return filename,tuple(cls.__dict__),tuple(code),globals_,pins
+
+def _admission_projection_origin(c, filename):
+    path = Path(os.path.abspath(filename))
+    def identity():
+        s = path.lstat(); parents = []
+        for p in path.parents:
+            v = p.lstat()
+            parents.append((str(p),tuple(getattr(v,n) for n in
+                ('st_dev','st_ino','st_mode','st_uid','st_gid'))))
+        return tuple(getattr(s,n) for n in ('st_dev','st_ino','st_mode',
+            'st_uid','st_gid','st_nlink','st_size','st_mtime_ns','st_ctime_ns')),tuple(parents)
+    before = identity()
+    raw = _admission_source_read(path)
+    if identity() != before:
+        raise ValueError('B00_admission_projection_source_CAS_changed')
+    return str(path),hashlib.sha256(raw).hexdigest(),before
+
+class AdmissionSelectionProjection:
+    """Paths only, within an already effect-free closed-history invocation."""
+    def __init__(self, c, method, helper, initially_eligible):
+        self.c, self.method, self.helper = c, method, helper
+        self.origin_signature = _admission_projection_signature(type(self))
+        self.origin = _admission_projection_origin(c,self.origin_signature[0])
+        self.active = True; self.stores = {}; self.scans = self.rows = self.hits = 0
+        self.initially_eligible = initially_eligible
+        try:self.parser = _parser_state(c); self.cells = _global_cells(c)
+        except Exception:self.parser = None; self.cells = ()
+        # Only the already-supported exact builtin JSON graph contract
+        # permits a string-key index. Other stable parsers keep the native
+        # complete scan, including custom equality and refusal semantics.
+        self.parser_eligible = DecodeProjection(c).eligible
+        try:self.refs = _parser_refs(c)
+        except Exception:self.refs = ()
+        self.readers = {id(c.safe_read):(c.safe_read, _admission_callable(c.safe_read))}
+        self.original_reader = c.safe_read
+        self.reader_dependencies = executable_snapshot(c.safe_read, dependencies=('no_symlinks',))
+        self.bindings = tuple((owner, name, value, _admission_callable(value))
+            for owner, name in ((c.Store, 'get'), (c, 'no_symlinks'))
+            for value in (getattr(owner, name),))
+        self.method_binding = _admission_callable(method)
+        self.helper_binding = _admission_callable(helper)
+        self.selection_bindings = tuple((type(self), name, value, _admission_callable(value))
+            for name in ('check','eligible','allow_history_reader','admission_path','namespace','candidates','finish','close')
+            for value in (getattr(type(self),name),))
+    def check(self):
+        c = self.c
+        if (not self.active or c.Runner.continuation_receipt is not self.method
+                or _admission_callable(self.method) != self.method_binding
+                or getattr(c, '_b00_admission_candidates', None) is not self.helper
+                or _admission_callable(self.helper) != self.helper_binding
+                or getattr(c, '_b00_admission_selection_scope', None) is not self
+                or any(getattr(owner, name) is not value or _admission_callable(value) != saved
+                    for owner, name, value, saved in self.selection_bindings)):
+            raise ValueError('B00_admission_selection_binding_changed')
+    def eligible(self):
+        self.check(); c = self.c
+        try:
+            return (self.initially_eligible and self.parser_eligible and self.parser is not None
+                and _parser_state(c) == self.parser and _same_cells(self.cells)
+                and executable_snapshot(self.original_reader, dependencies=('no_symlinks',)) == self.reader_dependencies
+                and id(c.safe_read) in self.readers
+                and self.readers[id(c.safe_read)] == (c.safe_read, _admission_callable(c.safe_read))
+                and all(getattr(owner,name) is value and _admission_callable(value) == saved
+                    for owner,name,value,saved in self.bindings))
+        except Exception:return False
+    def allow_history_reader(self, reader, previous):
+        self.check()
+        if self.c.safe_read is not previous or not self.eligible():return
+        # Called solely by this module's existing effect-free reader scope,
+        # immediately before installing its exact newly created local wrapper.
+        self.readers[id(reader)] = (reader, _admission_callable(reader))
+    @staticmethod
+    def admission_path(path):
+        if not isinstance(path, (str, os.PathLike)): return False
+        p = Path(path)
+        return p.is_absolute() and p.name.startswith('continue-') and p.name.endswith('.json')
+    def namespace(self, root):
+        # All physical entries and their custody cover every scanned row,
+        # including rows not selected, names added/removed, and parent identity.
+        result = []; pending = [root]
+        for parent in root.parents:
+            v = parent.lstat()
+            if not stat.S_ISDIR(v.st_mode):
+                raise NotADirectoryError('B00_admission_namespace_unavailable')
+            result.append((str(parent), tuple(getattr(v, n) for n in
+                ('st_dev','st_ino','st_mode','st_uid','st_gid'))))
+        while pending:
+            p = pending.pop(); v = p.lstat()
+            if not stat.S_ISDIR(v.st_mode):
+                raise NotADirectoryError('B00_admission_namespace_unavailable')
+            entries = []
+            for child in sorted(p.iterdir()):
+                s = child.lstat()
+                # Record unrelated links and permissions without adding a
+                # policy refusal. Never traverse a link; canonical reads
+                # and the existing closed validators retain their policy.
+                entries.append((child.name, tuple(getattr(s, n) for n in
+                    ('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink',
+                     'st_size','st_mtime_ns','st_ctime_ns'))))
+                if stat.S_ISDIR(s.st_mode): pending.append(child)
+            result.append((str(p), tuple(getattr(v, n) for n in
+                ('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink',
+                 'st_size','st_mtime_ns','st_ctime_ns')), tuple(entries)))
+        return tuple(result)
+    def candidates(self, runner, run):
+        self.check()
+        # Preserve original errors/comparisons for noncanonical run arguments.
+        if (not self.eligible() or type(run) is not dict
+                or type(run.get('id')) is not str):
+            return runner.store.root.glob('continue-*.json')
+        store = runner.store; root = store.root
+        if (type(runner) is not self.c.Runner or type(store) is not self.c.Store
+                or not isinstance(store.get, types.MethodType) or store.get.__func__ is not self.c.Store.get
+                or type(root) is not type(Path()) or not root.is_absolute()):
+            return root.glob('continue-*.json')
+        key = id(store)
+        if key not in self.stores:
+            try:
+                before = self.namespace(root)
+            except OSError:
+                # Snapshot capability is optional. An unreadable unrelated
+                # directory or non-directory ancestor must preserve the
+                # native complete scan, not become a new admission policy.
+                return root.glob('continue-*.json')
+            index = {}
+            get_binding = _admission_callable(store.get)
+            # Same complete glob and same native row expression as the original.
+            # Malformed rows raise; duplicate admissions remain separate paths.
+            for path in root.glob('continue-*.json'):
+                value = store.get(path)
+                selected = value.get('plan', {}).get('new_run_id')
+                if type(selected) is str: index.setdefault(selected, []).append(path)
+                self.rows += 1
+            if self.namespace(root) != before:
+                raise ValueError('B00_admission_scan_CAS_changed')
+            self.stores[key] = (store, root, get_binding, before,
+                {name:tuple(paths) for name,paths in index.items()})
+            self.scans += 1
+        saved, saved_root, get_binding, before, index = self.stores[key]
+        if (saved is not store or root != saved_root
+                or _admission_callable(store.get) != get_binding):
+            return root.glob('continue-*.json')
+        self.hits += 1
+        # Only path selection is reused. Original loop body freshly gets and
+        # parses each selected row, hashes its protected bytes, detects duplicates,
+        # and runs ALL original admission/scenario/prior/current custody checks.
+        return index.get(run['id'], ())
+    def finish(self):
+        self.check()
+        if (_admission_projection_signature(type(self)) != self.origin_signature
+                or _admission_projection_origin(self.c,self.origin_signature[0]) != self.origin):
+            raise ValueError('B00_admission_projection_source_changed')
+        for store, root, get_binding, before, index in self.stores.values():
+            if store.root != root or self.namespace(root) != before:
+                raise ValueError('B00_admission_selection_CAS_changed')
+        raw = _admission_source_read(_CANONICAL_PATH)
+        if type(raw) is not bytes or hashlib.sha256(raw).hexdigest() != _CANONICAL_SHA256:
+            raise ValueError('B00_admission_exact_source_changed')
+    def close(self):
+        self.active = False; self.stores.clear(); self.readers.clear(); self.refs = ()
+
+@contextlib.contextmanager
+def native_admission_selection_scope(c):
+    previous = getattr(c, '_b00_admission_selection_scope', None)
+    if previous is not None:
+        if type(previous) is not AdmissionSelectionProjection:
+            if _admission_projection_signature(type(previous)) != _admission_projection_signature(AdmissionSelectionProjection):
+                raise ValueError('B00_admission_nested_scope_conflict')
+        if previous.c is not c:
+            raise ValueError('B00_admission_nested_scope_conflict')
+        if type(previous) is not AdmissionSelectionProjection:
+            if _admission_projection_origin(c,_admission_projection_signature(AdmissionSelectionProjection)[0]) != previous.origin:
+                raise ValueError('B00_admission_nested_scope_conflict')
+        previous.check()
+        yield previous
+        previous.check()
+        return
+    if hasattr(c, '_b00_admission_candidates'):
+        raise ValueError('B00_admission_helper_binding_conflict')
+    old_method = c.Runner.continuation_receipt
+    if (type(old_method) is not types.FunctionType or old_method.__globals__ is not vars(c)
+            or old_method.__defaults__ is not None or old_method.__kwdefaults__ != {'with_prior':False}
+            or old_method.__closure__ is not None):
+        raise ValueError('B00_admission_exact_namespace_changed')
+    expected, code, guards = _admission_codes(c)
+    native, decoded = _canonical_method_codes(types.SimpleNamespace(safe_read=_admission_source_read))
+    get = c.Store.get
+    initially_eligible = True
+    if (type(get) is not types.FunctionType or get.__globals__ is not vars(c)
+            or get.__code__.co_filename != _CANONICAL_PATH
+            or _shape(get.__code__) not in (_shape(native[('Store','get')]),
+                _shape(decoded[('Store','get')])) or get.__defaults__ != (None,)
+            or get.__kwdefaults__ is not None or get.__closure__ is not None):
+        initially_eligible = False
+    for name, guard in guards.items():
+        fn = getattr(c, name)
+        if (type(fn) is not types.FunctionType or fn.__globals__ is not vars(c)
+                or fn.__code__.co_filename != _CANONICAL_PATH
+                or _shape(fn.__code__) != _shape(guard) or fn.__closure__ is not None
+                or fn.__kwdefaults__ is not None
+                or fn.__defaults__ != ((1024*1024, True) if name == 'safe_read' else None)):
+            initially_eligible = False
+    method = _replacement(old_method, expected, code)
+    projection = None
+    def helper(runner, run): return projection.candidates(runner, run)
+    projection = AdmissionSelectionProjection(c, method, helper, initially_eligible)
+    selection_bindings = projection.selection_bindings
+    finish, close = projection.finish, projection.close
+    original_binding = _admission_callable(old_method)
+    c.Runner.continuation_receipt = method
+    c._b00_admission_candidates = helper
+    c._b00_admission_selection_scope = projection
+    try:
+        yield projection
+        if (any(getattr(owner,name) is not value or _admission_callable(value) != saved
+                for owner,name,value,saved in selection_bindings)
+                or _admission_callable(old_method) != original_binding):
+            raise ValueError('B00_admission_selection_source_changed')
+        finish()
+    finally:
+        c.Runner.continuation_receipt = old_method
+        vars(c).pop('_b00_admission_candidates', None)
+        vars(c).pop('_b00_admission_selection_scope', None)
+        close()

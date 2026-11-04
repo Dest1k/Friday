@@ -1,0 +1,112 @@
+# PUBLIC ANALYSIS TEXT ONLY. Redacted projection; no installation or live authority.
+"""Current-source A0 publisher and per-job source consumer; import is inert.
+
+This composes current installed-core proof with the retained Source83 runtime.
+It never converts Source83 history into current authority or grants a worker.
+"""
+from pathlib import Path
+import copy, math, time
+
+ROOT_CONTRACT = None
+CURRENT_CORE = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_98039cd564fe__', 'sha256': '920a9611226c00a764af8293e5fc6af6e247ac5ef2f11686c2d274e70dec441f'}
+RUNTIME_VERIFIER = {'path': '__REDACTED_PRIVATE_ABSOLUTE_PATH_f513bdc30b73__', 'sha256': '698322a6398a55a249cc6e31447c74f6fb4112d606f98a85a835e00bf8fadc59'}
+FOURLINK_NAMES = ('workers/a0/runtime-receipt.json','config.yaml','.friday-onboarding.json','.friday-user-scope.json')
+
+
+def _common():
+    # The retained verifier already has the same stable no-follow bootstrap.
+    # Loading it via the identical bootstrap avoids an unauthenticated import.
+    from pathlib import Path
+    import hashlib, os, stat
+    path=Path(CURRENT_CORE['path'])
+    if path.resolve()!=path:raise ValueError('current_core_link')
+    parents={}
+    for parent in path.parents:
+        s=parent.lstat();parents[parent]=(s.st_dev,s.st_ino,s.st_uid,s.st_gid,s.st_mode)
+        if not stat.S_ISDIR(s.st_mode) or s.st_uid not in (0,os.getuid()) or s.st_mode&0o022:
+            raise ValueError('current_core_parent')
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        first=os.fstat(fd)
+        if (not stat.S_ISREG(first.st_mode) or first.st_uid!=os.getuid() or first.st_gid!=os.getgid()
+            or first.st_nlink!=1 or stat.S_IMODE(first.st_mode)!=0o600):
+            raise ValueError('current_core_custody')
+        with os.fdopen(os.dup(fd),'rb') as f:raw=f.read(2*1024**2+1)
+        fields=('st_dev','st_ino','st_uid','st_gid','st_mode','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
+        if (len(raw)>2*1024**2 or len(raw)!=first.st_size or hashlib.sha256(raw).hexdigest()!=CURRENT_CORE['sha256']
+            or any(getattr(first,k)!=getattr(os.fstat(fd),k) or getattr(first,k)!=getattr(path.lstat(),k) for k in fields)):
+            raise ValueError('current_core_changed')
+    finally:os.close(fd)
+    if any((p.lstat().st_dev,p.lstat().st_ino,p.lstat().st_uid,p.lstat().st_gid,p.lstat().st_mode)!=s for p,s in parents.items()):
+        raise ValueError('current_core_parent_changed')
+    ns={'__file__':str(path),'__name__':'_a0_current_source_core'}
+    exec(compile(raw,str(path),'exec'),ns)
+    return ns
+
+
+def _runtime(contract_ref,config):
+    a=_common();ns=a['pinned_module'](RUNTIME_VERIFIER,'_a0_retained_runtime')
+    ns['ROOT_BINDING']={'current_core_contract':contract_ref,'runtime_config':config}
+    return a,ns
+
+
+def prepare_snapshot():
+    return _common()['prepare_snapshot']()
+
+
+def validate_current480(a,contract,observed,runtime_config):
+    a['need'](type(observed) is dict and set(observed)=={'request','receipt','proof'},'current480_result_shape')
+    pins=a['document'](a['PINS']);retained=a['document'](pins['retained_acceptance']);proof=observed['proof']
+    a['need'](proof['source_acceptance']==pins['retained_acceptance']
+        and proof['current_input']==retained['current_input'] and proof['source_marker']==retained['marker']
+        and proof['historical_source_projection_only'] is True and proof['current_source_authority'] is False,
+        'retained83_history_is_not_current_core')
+    a['need'](proof['current_core_acceptance']==contract['accepted_core']
+        and proof['current_core_proof']==a['document'](contract['accepted_core'])['proof']
+        and proof['runtime']==runtime_config and proof['worker_or_user_success'] is False
+        and proof['runtime_qualification'] is None and proof['per_job_authority']=='NOT_GRANTED',
+        'separate_current_core_and_retained_runtime_required')
+    a['reference'](observed['request']);a['reference'](observed['receipt'])
+    return {'schema':'friday.worker-current480-source.v1',
+            'native480':dict(observed,proof={k:v for k,v in proof.items() if k!='runtime'}),
+            'proof':copy.deepcopy(proof),'reattachment_authority':False}
+
+
+def source_now(source,modules):
+    if ROOT_CONTRACT is None:raise ValueError('A0_CURRENT_PUBLICATION_UNBOUND')
+    a=_common();a['need'](set(ROOT_CONTRACT)=={'source'} and source==ROOT_CONTRACT['source'],
+                          'exact_current_publisher_contract')
+    keys={'current_core_contract','runtime_config','installed_acceptance','source_review','source_package',
+          'native_request','native_receipt','native480_request','native480_receipt'}
+    a['need'](type(source) is dict and set(source)==keys,'split_publisher_source_contract')
+    contract=a['binding'](source['current_core_contract'])
+    a,verifier=_runtime(source['current_core_contract'],source['runtime_config'])
+    observed=verifier['current480'](config=source['runtime_config'])
+    validate_current480(a,contract,observed,source['runtime_config'])
+    proof=observed['proof'];pins=a['document'](a['PINS']);retained=a['document'](pins['retained_acceptance'])
+    a['need'](source['installed_acceptance']==pins['retained_acceptance']
+        and source['source_package']==pins['retained_package']
+        and source['source_review']==a['document'](retained['request'])['source_review']
+        and source['native480_request']==observed['request'] and source['native480_receipt']==observed['receipt']
+        and source['native_request']==proof['native_request_retained']
+        and source['native_receipt']==proof['native_receipt_retained'],'retained_publisher_references')
+    core=proof['current_core_proof'];current=a['document'](contract['current_input'])
+    for name,module in modules.items():
+        relative='plugins/friday_rework/'+name+'.py'
+        a['need'](relative in current['project_files']
+            and Path(module.__file__)==Path(core['current_marker']['path']).parent/relative,
+            'publisher_module_outside_current_source')
+        a['read_ref']({'path':str(module.__file__),'sha256':current['project_files'][relative]},project_source=True)
+    a['current_core_CAS'](core,source['current_core_contract'])
+    return {'schema':'frw.Root.a0-current-publisher-source-view.v1',
+        'marker':core['current_marker'],'current_input':core['current_input'],'source_receipt':core['source_receipt'],
+        'current_core_acceptance':contract['accepted_core'],'retained_a0_acceptance':pins['retained_acceptance'],
+        'runtime_or_user_accepted':False,'per_job_authority':'NOT_GRANTED'}
+
+
+def check_runtime_source(runtime,contract_ref):
+    """Concrete source check used before native Host admission and capability."""
+    a,verifier=_runtime(contract_ref,runtime)
+    contract=a['binding'](contract_ref)
+    observed=verifier['current480'](config=runtime)
+    return validate_current480(a,contract,observed,runtime)

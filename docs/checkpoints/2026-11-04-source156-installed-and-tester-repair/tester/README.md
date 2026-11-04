@@ -1,0 +1,12 @@
+These are non-executable, unbound excerpts of the tester repair prepared for external source analysis. The installed product is Source156; this tester candidate remains source-only. Product version, native identity, tester source and runtime acceptance are separate facts. No exact closure, receipt, grant, principal, session, endpoint or private filesystem binding is included.
+
+- `admission-path-index.py.txt` shows the optional per-invocation path index, native full-scan fallback, selected-row rereads, namespace checks and executable-source CAS.
+- `sealed-history-and-fresh-grant.py.txt` separates authenticated closed-no-run history from a fresh future grant, including complete collisions and current cursor CAS.
+- `closed-slot-successor-chain.py.txt` shows traversal of individually authenticated consumed slots, terminal historical successor recognition and the no-replay guard.
+- `retired-selector.patch.txt` removes one duplicate complete-frame check while retaining traversed-path checks and the strict boundary.
+
+The `.py.txt` files omit their imports, helpers and private trust anchors. Their definitions were parsed and compiled as text, never imported or executed. The successor excerpt omits the unchanged original Source36 compatibility branch. These files cannot install or authorize an operation. `MANIFEST.json` records exact full private-source SHA-256 provenance, original extraction locations, declared redactions and public file hashes/byte counts; the hashes are provenance, not operational references. Exact original bytes stay private. The manifest excludes its own hash to avoid a self-reference.
+
+`RECORDED-CONTROLS.json` summarizes existing recorded controls without rerunning them: 36 continuity controls, 15 AP compatibility controls and the selector's synthetic positive/negative controls. It retains the initial continuity failure and fixture-checker corrections. AP's actual observed-reader transition refused after 37.94 seconds before the original baseline boundary; no actual speedup was established. Synthetic selector counts/timings cover only that extracted geometry.
+
+The latest supplied F03 R4 observation is 990.097 seconds, no send, product NOT_RUN. That original failure remains. Actual installed/current/partial/history qualification gates on this coherent tester composition are NOT_RUN; runtime and semantic acceptance are false. Until-send improvement is NOT_ESTABLISHED. Publishing the source excerpts changes none of those results.
