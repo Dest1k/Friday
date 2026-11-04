@@ -30,3 +30,7 @@ The current coherent tester repair combines the reviewed admission path index an
 The 36 continuity controls are source-level evidence. Actual current and partial qualifications passed. The historical qualification refused after 199.968 seconds with unchanged cursor, namespace and read identities; its full read-only qualification did not pass. Static reconstruction located the same original occupied no-run boundary as the prior measurement: the saved Source151 plan cannot authorize a Source156 successor. This is no new product execution or established performance gain. These results are reported separately in `OBSERVATIONS.json`; none is a user acceptance result. The tester subdirectory retains the earlier source-preparation observations, while `OBSERVATIONS.json` records these subsequent actual qualifications. The next useful result must come from a real functional execution and its independently checked returned artifact.
 
 Prepared input packages cover the remaining engineering queue, including spreadsheet recalculation, rendering and provenance requirements. Their source preparation does not establish final runtime bindings, application evidence, execution or completion of the full 170-scenario/120-format B00 scope.
+
+## Later observations, 4 November 2026
+
+[The additive R7–R9 tester delta](tester/later-delta-2026-11-04-r9/) records accepted source qualifications and later pre-admission refusals. The original R4 report remains unchanged; the later results establish no user PASS or successful-path speedup.
