@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: STATE_OWNERS_PUBLISHED
+- state: ADMISSION_STALENESS_PUBLISHED
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -12,6 +12,7 @@
 - config_provenance_observed_at: 2026-11-05T13:43:23Z
 - worker_chain_observed_at: 2026-11-05T14:41:35Z
 - state_owners_observed_at: 2026-11-05T14:55:42Z
+- admission_observed_at: 2026-11-05T15:23:35Z
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -19,14 +20,25 @@
 - reviewer_002_package_read: true
 - reviewer_002_decrypted: true
 - reviewer_002_integrity_confirmed: true
+- reviewer_003_package_read: true
+- reviewer_003_decrypted: true
+- reviewer_003_integrity_confirmed: true
+- reviewer_004_package_read: true
+- reviewer_004_decrypted: true
+- reviewer_004_integrity_confirmed: true
 - config_provenance_accepted: true
 - live_turn_context_observed: false
 - tester_history_dependence: retracted
+- tester_history_dependence_scope: traced_worker_path
 - telegram_cold_boot_policy: preserve
+- telegram_cold_boot_acceptance: config_and_code_not_recovery
+- admission_refresh: absent
+- finding_F-005: ADMISSION_STALE
 - breadth_status: INTERMEDIATE
 - excess_complexity_proven_by_counts: false
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc
+- coverage_matrix: reports/005-coverage-matrix.csv
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
@@ -34,4 +46,4 @@
 - product_code_changed_by_this_task: false
 - private_start_folder: вынесена из Git-деревьев; файлы команды не изменялись и не добавлялись
 
-Ревьюер прочитал и расшифровал пакет 002. Целостность подтверждена. Разбор конфигурации принят. Ограничение сохранено: контекст конкретного живого обращения не наблюдался. Вывод о зависимости продукта от истории тестера снят. Фактическая политика холодного старта Telegram этой установки — сохранить очередь. Три `state.db` прочитаны по схеме и счётчикам, без текстов. Аудит не завершён, план реализации не написан. Код продукта не менялся. Воркеры не включались, процессы не перезапускались.
+Ревьюер прочитал и расшифровал пакеты 003 и 004, включая приложения. Размеры, SHA-256 и целостность подтверждены. Снятие тестерной зависимости сохранено в пределах прослеженного worker-пути. Политика сохранения Telegram-очереди принята как вывод по конфигурации и коду, не как проверка восстановления. Finding F-005-ADMISSION-STALE: включённая карта воркеров, квитанции и установленный плагин расходятся, а механизма, который обновляет допуск после включения, нет. C25 конфигурацию и установку не меняет. Хеши не подменялись. Полная матрица покрытия исходного задания опубликована; итоговый план ещё не написан и обязан нести эту матрицу целиком. Код продукта не менялся. Воркеры не включались, процессы не перезапускались.
