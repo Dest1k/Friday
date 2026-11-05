@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: AUXILIARY_CONDITIONS_PUBLISHED
+- state: USER_PATHS_PUBLISHED
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -15,6 +15,7 @@
 - admission_observed_at: 2026-11-05T15:23:35Z
 - route_observed_at: 2026-11-05T15:58:39Z
 - auxiliary_conditions_observed_at: 2026-11-05T16:30:50Z
+- user_paths_observed_at: 2026-11-05T16:54:53Z
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -35,7 +36,11 @@
 - reviewer_006_decrypted: true
 - reviewer_006_integrity_confirmed: true
 - reviewer_006_note: оба файла зашифрованного приложения прочитаны; размер, SHA-256 и целостность подтверждены
-- reviewer_007_package_read: false
+- reviewer_007_package_read: true
+- reviewer_007_decrypted: true
+- reviewer_007_integrity_confirmed: true
+- reviewer_007_note: оба файла приложения расшифрованы; размер, SHA-256 и целостность подтверждены
+- reviewer_008_package_read: false
 - config_provenance_accepted: true
 - live_turn_context_observed: false
 - tester_history_dependence: retracted
@@ -58,14 +63,20 @@
 - nineteen_assignments_are_not_nineteen_calls: accepted
 - yaml_optimization_cycle: not_started
 - new_live_load: not_started
+- settings_research_cycle: not_started
 - auxiliary_call_conditions: traced_code_and_stored_usage
 - auxiliary_semaphore: compression_only_limit_1
 - stored_usage_tasks: main_and_compression_only
+- call_counts_are_not_time_shares: true
+- plan_inputs_from_007: semaphore_scope compression_budget_with_queue sync_async_retry_difference internal_local_role_transition
+- plan_inputs_status: static_contract_questions_not_reproduced_hangs
+- user_paths: static_inference_reply_file_cancel
+- user_paths_executed: false
 - breadth_status: INTERMEDIATE
 - excess_complexity_proven_by_counts: false
-- coverage_matrix: reports/007-coverage-matrix.csv
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc
+- coverage_matrix: reports/008-coverage-matrix.csv
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
@@ -74,8 +85,8 @@
 - implementation_this_turn: false
 - private_start_folder: вынесена из Git-деревьев; файлы команды не изменялись и не добавлялись
 
-Ревьюер прочитал пакет 006, включая оба файла зашифрованного приложения. Размер, SHA-256 и целостность подтверждены. Отчёт 006 не переписывался. F-006 остаётся наблюдением конфигурации и статическим разбором контракта, не доказанным дефектом и не доказанным тормозом. Девятнадцать назначений не равны девятнадцати службам, одновременным запросам или вызовам на один turn. Полный успешный local_route не установлен.
+Ревьюер прочитал пакет 007, включая оба файла приложения. Размер, SHA-256 и целостность подтверждены. Отчёт 007 не переписывался. Четыре наблюдения 007 зарезервированы для итогового плана: область семафора, бюджет сжатия вместе с очередью, различие sync и async повторов, внутренний переход между локальными ролями. Это статические вопросы контракта, не воспроизведённые зависания. Счётчики вызовов в доли времени не переводятся. Отдельный цикл исследований по этим настройкам не начинался.
 
-Условия вызова вспомогательных ролей, повторения, ожидания и освобождения прослежены по составленному коду и по уже записанным session_model_usage. Семафор задан только у сжатия, предел 1. В трёх state.db учтены только пустой task и compression. Новый цикл оптимизации YAML не начинался. Новая живая нагрузка не запускалась. Пакет 007 ревьюер ещё не подтверждал.
+Обычный ответ, следующее сообщение, чтение, создание, точечная правка, доставка и отмена прочитаны по составленному коду. Функции не исполнялись. Созданный файл и доставленный файл разделены. Contextvar живого turn не наблюдался. Пакет 008 ревьюер ещё не подтверждал.
 
-F-005 не переоткрывался. Полный результат установленного DSH-sidecar не установлен. Итоговый план ещё не написан и обязан нести матрицу 007 целиком, переход F-005 к проверенной композиции без подмены хешей и без исключения профиля, и функции postboot в исходниковой капсуле. Код продукта не менялся. Воркеры не включались.
+F-005 не переоткрывался. F-006 не переоткрывался. Полный результат установленного DSH-sidecar не установлен. Итоговый план ещё не написан. Он обязан нести матрицу 008 целиком, переход F-005 к проверенной композиции без подмены хешей и без исключения профиля, функции postboot в исходниковой капсуле и четыре статических вопроса контракта. Код продукта не менялся. Воркеры не включались.
