@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: WORKER_CHAIN_AND_COLD_BOOT_PUBLISHED
+- state: STATE_OWNERS_PUBLISHED
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -11,6 +11,7 @@
 - breadth_published_at: 2026-11-05T13:02:56Z
 - config_provenance_observed_at: 2026-11-05T13:43:23Z
 - worker_chain_observed_at: 2026-11-05T14:41:35Z
+- state_owners_observed_at: 2026-11-05T14:55:42Z
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -24,8 +25,8 @@
 - telegram_cold_boot_policy: preserve
 - breadth_status: INTERMEDIATE
 - excess_complexity_proven_by_counts: false
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
@@ -33,4 +34,4 @@
 - product_code_changed_by_this_task: false
 - private_start_folder: вынесена из Git-деревьев; файлы команды не изменялись и не добавлялись
 
-Ревьюер прочитал и расшифровал пакет 002. Целостность подтверждена. Разбор конфигурации принят. Ограничение сохранено: контекст конкретного живого обращения не наблюдался. Вывод о зависимости продукта от истории тестера снят. Фактическая политика холодного старта Telegram этой установки — сохранить очередь. Аудит не завершён, план реализации не написан. Код продукта не менялся. Воркеры не включались, процессы не перезапускались.
+Ревьюер прочитал и расшифровал пакет 002. Целостность подтверждена. Разбор конфигурации принят. Ограничение сохранено: контекст конкретного живого обращения не наблюдался. Вывод о зависимости продукта от истории тестера снят. Фактическая политика холодного старта Telegram этой установки — сохранить очередь. Три `state.db` прочитаны по схеме и счётчикам, без текстов. Аудит не завершён, план реализации не написан. Код продукта не менялся. Воркеры не включались, процессы не перезапускались.
