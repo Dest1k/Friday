@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: STATIC_SECTIONS_PUBLISHED
+- state: REMARKS_PUBLISHED
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -19,6 +19,7 @@
 - plan_observed_at: 2026-11-05T17:09:30Z
 - plan_supplement_observed_at: 2026-11-05T17:42:42Z
 - static_sections_observed_at: 2026-11-05T18:18:17Z
+- remarks_observed_at: 2026-11-05T22:55:50Z
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -57,9 +58,16 @@
 - reviewer_010_integrity_confirmed: true
 - reviewer_010_note: все 13 файлов приложения расшифрованы и просмотрены; размер, SHA-256 и целостность архива подтверждены; 010 принят как уточнение требований
 - reviewer_010_acceptance: requirements_clarification_not_implementation_procedure_not_audit_closure
-- reviewer_011_package_read: false
-- reviewer_011_decrypted: false
-- reviewer_011_integrity_confirmed: false
+- reviewer_011_package_read: true
+- reviewer_011_decrypted: true
+- reviewer_011_integrity_confirmed: true
+- reviewer_011_attachment_files: 3
+- reviewer_011_new_function_bodies: false
+- reviewer_011_independent_reproduction: not_claimed
+- reviewer_011_note: все три файла приложения расшифрованы и просмотрены; размер, SHA-256 и целостность подтверждены; новых тел исходных функций нет; независимое воспроизведение не заявлено
+- reviewer_012_package_read: false
+- reviewer_012_decrypted: false
+- reviewer_012_integrity_confirmed: false
 - config_provenance_accepted: true
 - live_turn_context_observed: false
 - tester_history_dependence: retracted
@@ -117,26 +125,45 @@
 - queue_variant: justified_enqueue_time_spool_not_implemented
 - queue_current_behavior_accepted_by_this_package: false
 - outbound_confirmation: platform_send_result_not_human_read
+- outbound_send_is_inbound_confirmation: false
+- queue_loss_observed: false
 - admin_gates_read: slash_allowed_then_slash_access
 - admin_gates_executed: false
 - admin_lists_reread: false
 - command_registry_fully_classified: builtin_102_plugin_scan_not_executed
 - command_registry_builtin_count: 102
-- busy_pre_gate: status_and_context
+- busy_pre_gate: status_and_context_return_before_gate
+- busy_status_context_checks: differ
+- stranger_access_observed: false
+- config_durability_windows: file_fsync_then_os_replace_without_dir_fsync_and_later_receipt_reseal
+- config_durability_injected: false
 - s12_subject: tester_cursor_and_product_intake
-- s12_canonical_body: unavailable_public_pin_withholds_path
-- s12_writer_body_read: false
+- s12_compiled_source_path: withheld_by_local_binding_in_memory
+- s12_compiled_body_read: false
+- s12_ordinary_bytes: 1185085
+- s12_ordinary_sha256: c5d47d141439e6e31557e250f1ee53381d1c96dd9c604445b2d38cdeaf1fe6b5
+- s12_canonical_consumer_read: true
+- s12_canonical_consumer_bytes: 1090631
+- s12_canonical_consumer_sha256: 1c0dc0ebf94a7147d2545a4f7843ba31fe61f587cdd4dedf1deb000001f2eb2c
+- s12_writer_body_read: true
+- s12_writer_body_executed: false
+- s12_parent_template_read: false
 - s12_live_cursor_opened: false
+- s12_live_state_changed: false
 - embeddings_path: stops_at_unopened_a0_image_callees
 - embeddings_key_opened: false
 - breadth_status: INTERMEDIATE
 - excess_complexity_proven_by_counts: false
 - audit_closed: false
 - implementation_directive: false
+- execution_only_remaining: false
+- unread_sources_remain: true
+- read_behavior_untested: true
+- new_general_plan: false
 - c03: NOT_CHECKED
-- coverage_matrix: reports/011-coverage-matrix.csv
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc
+- coverage_matrix: reports/012-coverage-matrix.csv
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv, reports/012-remarks.md, reports/012-coverage-matrix.csv
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc, artifacts/012-remarks.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
@@ -145,10 +172,18 @@
 - implementation_this_turn: false
 - private_start_folder: вынесена из Git-деревьев; файлы команды не изменялись и не добавлялись
 
-Ревьюер прочитал пакет 010. Все 13 файлов приложения расшифрованы и просмотрены. Размер, SHA-256 и целостность архива подтверждены. 010 принят как уточнение требований. Готовой процедурой внедрения оно не является. Аудит им не закрыт. Редакционный цикл плана остановлен. 009 остаётся предварительным планом. Отчёты 001–010 не переписывались.
+Ревьюер прочитал пакет 011. Все три файла приложения расшифрованы и просмотрены. Размер, SHA-256 и целостность подтверждены. Новых тел исходных функций в приложении нет. Независимое воспроизведение кодовых выводов ревьюер не заявляет. 011 остаётся статическим чтением. 010 остаётся уточнением требований. 009 остаётся предварительным планом. Отчёты 001–011 не переписывались. Пакет 012 ревьюер ещё не подтверждал.
 
-Пакет 011 закрывает доступные статическому чтению участки и даёт варианты с критериями. Проверка состава кандидата отделена от окончательного допуска. Разрешение владельца проверку поведения не заменяет. Безопасный отказ восстановленной работоспособностью не является. Для очереди записан вариант доработки. Приёмка сегодняшнего поведения этим пакетом не фиксируется. Пакет 011 ревьюер ещё не подтверждал.
+Пакет 012 фиксирует три отдельных замечания и проверку локальной привязки выбранного исходника тестера. Нового общего плана нет. Аудит формулировкой «осталось только исполнение» не закрывается. Непрочитанные источники отделены от уже прочитанного и не испытанного поведения.
 
-Цепочка записи конфигурации прочитана до файлового fsync и os.replace. Синхронизации каталога у этой цепочки нет. Повторная квалификация уже включённой карты не пишет. Первая публикация идёт только из выключенной карты. activate уже включённую строку пользователя отвергает и воркер не запускает. Валидатор DSH прочитан и не вызывался. Ранний возврат — проверка состава при NOT_GRANTED. Текущий проход sidecar не установлен. Каноническое тело cursor тестера недоступно: публичный pin даёт размер и SHA-256 и не даёт путь. Spool очереди пишется только на останове, ошибку глотает, восстановление дописывает историю. Встроенный реестр из 102 команд разобран. Обход команд плагинов не исполнялся. Путь embeddings обрывается на двух телах образа A0, которых в исходниках Friday нет.
+Очередь пишется на диск только на двух крючках останова действующего hermes-agent. Ошибка записи глотается, после этого слот памяти очищается. Восстановление дописывает историю и в слот не возвращает. Результат исходящей отправки подтверждением входящего update не служит. Потеря сообщения не наблюдалась.
+
+При занятой сессии /status и /context возвращаются до проверки затворов, и сами проверки различаются. status входит в первый затвор и на холодном пути встречает второй. context в первый затвор не входит. ordinary_presentation сокращает только ответ status. Доступ постороннего не наблюдался.
+
+Содержимое конфигурации синхронизируется до os.replace. Каталог этой замены не синхронизируется. Квитанция онбординга запечатывается следующим вызовом и синхронизирует свой каталог. Окна не вспрыскивались. Разрыв не наблюдался.
+
+Публичный pin C26 путь обычного исходника не называет. Это не доказательство локальной недоступности. Локальная привязка текущего кандидата хранит обычный источник в памяти, без пути, и байткод не сохраняет. Тело не открывалось. Случайная копия не выбиралась. Канонический потребитель bot_tester.py прочитан и не исполнялся. Живой cursor.json не открывался. Живое состояние не менялось.
+
+Непрочитанными остаются обычное скомпилированное тело, тела двух функций эмбеддинга образа A0, обход команд плагинов, тело _rescue_orphaned_overflow, живые списки и ledger, коммит смещения входящего update Telegram, другие монтирования tmp и шаблон родителя. Прочитаны и не испытаны цепочка записи, оба окна долговечности, ранний возврат DSH, очередь, оба затвора и четыре метода cursor потребителя.
 
 F-005 не переоткрывался как finding. F-006 не переоткрывался. Матрица несётся целиком. C03 остаётся NOT_CHECKED. Ширина остаётся промежуточной. Внедрение не начато. Код продукта не менялся. Воркеры не включались. Новый живой прогон не запускался. Астра от B00 не отвлекалась.
