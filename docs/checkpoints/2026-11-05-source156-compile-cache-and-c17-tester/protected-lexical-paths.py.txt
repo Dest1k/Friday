@@ -1,0 +1,130 @@
+# SOURCE ONLY UNBOUND — inert source-analysis text; no execution authority.
+# Dependencies, operational bindings and enclosing implementation are omitted.
+# Parse/compile inspection must not import or execute this text.
+
+# PUBLICATION SCAFFOLD: bind nonlocals only; all actual readers and ledgers are absent.
+def _publication_history_scope_excerpt():
+    cached_bytes=0;document_bytes=0
+    lexical_paths={};lexical_bytes=0
+    def path_info(path):
+        nonlocal lexical_bytes
+        if type(path)is str and path in lexical_paths:return lexical_paths[path]
+        p=Path(path);absolute=p.is_absolute();name=str(p)
+        if absolute and name in lexical_paths:return lexical_paths[name]
+        parents=tuple(str(q)for q in p.parents)
+        value=(absolute,name,parents)
+        key=path if type(path)is str else name
+        if absolute and len(lexical_paths)<4096:
+            size=sum(len(q.encode('utf-8','surrogatepass'))for q in(key,name,*parents))
+            if lexical_bytes+size<=4*1024*1024:
+                lexical_paths[key]=value;lexical_bytes+=size
+        return value
+
+    def identity(path):
+        absolute,name,parent_names=path_info(path)
+        if not absolute:raise ValueError('B00_history_absolute_path_required')
+        s=os.lstat(name)
+        if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_uid!=os.getuid():
+            raise ValueError('B00_history_file_custody_changed')
+        parents=[]
+        for name in parent_names:
+            t=os.lstat(name)
+            if not stat.S_ISDIR(t.st_mode) or t.st_uid not in (0,os.getuid()):
+                raise ValueError('B00_history_parent_custody_changed')
+            parents.append((name,t.st_dev,t.st_ino,t.st_mode,t.st_uid,t.st_gid))
+        return tuple(getattr(s,n)for n in('st_dev','st_ino','st_mode','st_uid','st_gid',
+            'st_nlink','st_size','st_mtime_ns','st_ctime_ns')),tuple(parents)
+
+    def record_pin(path,before):
+        # One authenticated physical read supplies custody to every active
+        # guard. Each guard still checks its own ledger at its original exit.
+        name=path_info(path)[1]
+        for ledger in physical_pins:
+            if name in ledger and ledger[name]!=before:
+                raise ValueError('B00_history_read_identity_race')
+            ledger[name]=before
+
+    def cached(key,path,read):
+        nonlocal cached_bytes
+        if key in reads:
+            record_pin(path,pins[path_info(path)[1]])
+            return reads[key]
+        before=identity(path);raw=read()
+        if identity(path)!=before:raise ValueError('B00_history_read_identity_race')
+        record_pin(path,before)
+        if cached_bytes+len(raw)<=128*1024*1024:
+            reads[key]=raw;cached_bytes+=len(raw)
+        return raw
+
+    def native_path(path):
+        if native_root is None or not isinstance(path,(str,os.PathLike)):return False
+        path=os.path.abspath(path)
+        # POSIX double-slash anchors are distinct in pathlib too. Segment
+        # delimiters keep sibling-prefix collisions outside the native store.
+        if native_root=='/':return path.startswith('/')and not path.startswith('//')
+        if native_root=='//':return path.startswith('//')
+        return path==native_root or path.startswith(native_root+'/')
+
+    def uncached(path,read):
+        before=identity(path);raw=read()
+        if identity(path)!=before:raise ValueError('B00_history_read_identity_race')
+        record_pin(path,before)
+        return raw
+
+    def exact(pin):
+        # Malformed refs always reach the original validator, including on hits.
+        if (type(pin)is not dict or set(pin)!={'path','sha256'}
+                or type(pin['path'])is not str or not path_info(pin['path'])[0]
+                or type(pin['sha256'])is not str or len(pin['sha256'])!=64
+                or any(n not in '0123456789abcdef'for n in pin['sha256'])):
+            return old_read(pin)
+        selection=getattr(c,'_b00_admission_selection_scope',None)
+        if (native_path(pin['path'])or getattr(c,'_b00_native_prewrite_active',None)is not None
+                or(selection is not None and selection.admission_path(pin['path']))):
+            return uncached(pin['path'],lambda:old_read(pin))
+        return cached(('pin',pin['path'],pin['sha256']),pin['path'],lambda:old_read(pin))
+
+    def document(pin):
+        nonlocal document_bytes
+        # This is only a parse projection within the existing effect-free
+        # read scope. Every hit still takes the active protected read path:
+        # canonical native references deliberately bypass its byte memo.
+        if (type(pin)is not dict or set(pin)!={'path','sha256'}
+                or type(pin['path'])is not str or not path_info(pin['path'])[0]
+                or type(pin['sha256'])is not str or len(pin['sha256'])!=64
+                or any(n not in '0123456789abcdef'for n in pin['sha256'])):
+            return old_document(pin)
+        key=(pin['path'],pin['sha256'])
+        if key in documents:
+            raw=b.read(pin)
+            saved_raw,value=documents[key]
+            if raw!=saved_raw:raise ValueError('B00_history_document_bytes_changed')
+            return copy.deepcopy(value)
+        # Keep the exact original unique-key parser and its refusal behavior.
+        # No parse exception or caller-owned object is retained.
+        value=old_document(pin)
+        raw=b.read(pin)
+        if document_bytes+len(raw)<=16*1024*1024:
+            documents[key]=(raw,copy.deepcopy(value));document_bytes+=len(raw)
+        return value
+
+    def safe(path,limit=c.MAX_JSON,*args,**kw):
+        selection=getattr(c,'_b00_admission_selection_scope',None)
+        if (native_root is not None or getattr(c,'_b00_native_prewrite_active',None)is not None or args or kw
+                or (selection is not None and selection.admission_path(path))):
+            # Preserve the canonical read policy and complete call interface.
+            # Explicit policies bypass byte memoization, while retaining the
+            # same per-read identity and enclosing-scope CAS obligations.
+            if not isinstance(path,(str,os.PathLike)) or not path_info(path)[0]:
+                return old_safe(path,limit,*args,**kw)
+            before=identity(path);raw=old_safe(path,limit,*args,**kw)
+            if identity(path)!=before:raise ValueError('B00_history_read_identity_race')
+            record_pin(path,before)
+            return raw
+        if not isinstance(path,(str,os.PathLike)) or not path_info(path)[0]:
+            return old_safe(path,limit)
+        return cached(('safe',path_info(path)[1],limit),path,lambda:old_safe(path,limit))
+
+    # Exact final file/parent CAS; other exit guards and cleanup are omitted.
+    for path,pin in pins.items():
+        if identity(path)!=pin:raise ValueError('B00_history_validation_CAS_changed')
