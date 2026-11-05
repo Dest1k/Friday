@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: LOCAL_ROUTE_PUBLISHED
+- state: AUXILIARY_CONDITIONS_PUBLISHED
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -14,6 +14,7 @@
 - state_owners_observed_at: 2026-11-05T14:55:42Z
 - admission_observed_at: 2026-11-05T15:23:35Z
 - route_observed_at: 2026-11-05T15:58:39Z
+- auxiliary_conditions_observed_at: 2026-11-05T16:30:50Z
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -30,7 +31,11 @@
 - reviewer_005_package_read: true
 - reviewer_005_decrypted: true
 - reviewer_005_integrity_confirmed: true
-- reviewer_006_package_read: false
+- reviewer_006_package_read: true
+- reviewer_006_decrypted: true
+- reviewer_006_integrity_confirmed: true
+- reviewer_006_note: оба файла зашифрованного приложения прочитаны; размер, SHA-256 и целостность подтверждены
+- reviewer_007_package_read: false
 - config_provenance_accepted: true
 - live_turn_context_observed: false
 - tester_history_dependence: retracted
@@ -48,12 +53,19 @@
 - postboot_functions_capsule: reserved_for_final_source_capsule
 - finding_F-006: LOCAL_ROUTE_PIN
 - finding_F-006_status: STATIC_INFERENCE
+- finding_F-006_acceptance: config_observation_and_static_contract_not_a_proven_defect
 - local_route_executed: false
+- nineteen_assignments_are_not_nineteen_calls: accepted
+- yaml_optimization_cycle: not_started
+- new_live_load: not_started
+- auxiliary_call_conditions: traced_code_and_stored_usage
+- auxiliary_semaphore: compression_only_limit_1
+- stored_usage_tasks: main_and_compression_only
 - breadth_status: INTERMEDIATE
 - excess_complexity_proven_by_counts: false
-- coverage_matrix: reports/006-coverage-matrix.csv
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc
+- coverage_matrix: reports/007-coverage-matrix.csv
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
@@ -62,8 +74,8 @@
 - implementation_this_turn: false
 - private_start_folder: вынесена из Git-деревьев; файлы команды не изменялись и не добавлялись
 
-Ревьюер прочитал и расшифровал пакет 005, включая приложение. Размер, SHA-256 и целостность подтверждены. Отчёт 005 не переписывался. F-005 остаётся наблюдаемым рассогласованием поколений и статически обоснованным пробелом обновления допуска в обследованных процедурах. Это не утверждение, что во всей системе нет никакого другого обслуживания. Полный результат установленного DSH-sidecar не установлен. Сравнение source_pins у A0 в обследованном коде стоит до sidecar и на DSH не переносится. Итоговый план для F-005 обязан описать управляемый переход к новой проверенной композиции без подмены исторических хешей и без исключения под профиль. Полные релевантные функции установленного postboot-пути войдут в итоговую исходниковую капсулу. Отдельный цикл исследований ради этих функций не открывался. Сейчас ничего не внедрялось.
+Ревьюер прочитал пакет 006, включая оба файла зашифрованного приложения. Размер, SHA-256 и целостность подтверждены. Отчёт 006 не переписывался. F-006 остаётся наблюдением конфигурации и статическим разбором контракта, не доказанным дефектом и не доказанным тормозом. Девятнадцать назначений не равны девятнадцати службам, одновременным запросам или вызовам на один turn. Полный успешный local_route не установлен.
 
-Finding F-006-LOCAL-ROUTE-PIN: девятнадцать скаляров custom:friday-local вне шаблонов onboarding — один локальный маршрут, повторённый в семнадцати слотах auxiliary, в delegation и в model. Сжатие — единственная вторая локальная роль. local_route не исполнялся. Пакет 006 ревьюер ещё не подтверждал.
+Условия вызова вспомогательных ролей, повторения, ожидания и освобождения прослежены по составленному коду и по уже записанным session_model_usage. Семафор задан только у сжатия, предел 1. В трёх state.db учтены только пустой task и compression. Новый цикл оптимизации YAML не начинался. Новая живая нагрузка не запускалась. Пакет 007 ревьюер ещё не подтверждал.
 
-Документальный пакет C26 (9fd84272, merge c31355c8) уже был в main до этой записи. Он сам оставляет продукт, конфигурацию и установку без изменений и за доказательство маршрута не принимался. Код продукта не менялся. Воркеры не включались, процессы не перезапускались. Полная матрица — reports/006-coverage-matrix.csv. План ещё не написан и обязан нести её целиком.
+F-005 не переоткрывался. Полный результат установленного DSH-sidecar не установлен. Итоговый план ещё не написан и обязан нести матрицу 007 целиком, переход F-005 к проверенной композиции без подмены хешей и без исключения профиля, и функции postboot в исходниковой капсуле. Код продукта не менялся. Воркеры не включались.
