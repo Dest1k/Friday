@@ -1,0 +1,57 @@
+--- a/b00_ancestry_engineering156.py
++++ b/b00_ancestry_engineering156.py
+@@ -611,8 +611,21 @@
+                 if isinstance(owner,types.CodeType)and owner.co_name in ('OrdinarySerialProof', 'PolicySerialProof', 'StoppedSentPartialProof', 'RetiredOrdinaryProof'):
+                     codes[owner.co_name]=next(n for n in owner.co_consts
+                         if isinstance(n,types.CodeType)and n.co_name=='validate')
++                    if owner.co_name=='RetiredOrdinaryProof':
++                        for method in ('_native_retired','_with_native_admission'):
++                            codes[(owner.co_name,method)]=next((n for n in owner.co_consts
++                                if isinstance(n,types.CodeType)and n.co_name==method),None)
+             dependency_codes[source_key]=codes
+         if function.__code__!=dependency_codes[source_key].get(cls.__name__):return None
++        if cls.__name__=='RetiredOrdinaryProof':
++            for name in ('_native_retired','_with_native_admission'):
++                method=getattr(proof,name,None);target=getattr(method,'__func__',None)
++                if (type(method)is not types.MethodType or method.__self__ is not proof
++                        or target is not getattr(cls,name,None)
++                        or target.__code__!=dependency_codes[source_key].get((cls.__name__,name))
++                        or target.__globals__ is not function.__globals__
++                        or target.__defaults__ is not None or target.__kwdefaults__ is not None
++                        or target.__closure__ is not None):return None
+         g=function.__globals__;helper=getattr(proof,'v02',None)
+         helper_state=None if helper is None else {n:v for n,v in vars(helper).items()if n!='__builtins__'}
+         value=(cls,function,proof.k.need,proof.k.sha,proof.k.enc,
+@@ -849,6 +862,10 @@
+         if any(saved is proof for saved,_,_ in methods):return
+         original=getattr(proof,'validate',None)
+         if not callable(original):return
++        if native_retired and (not frozen_append
++                or type(proof).__name__!='RetiredOrdinaryProof'
++                or dependency_binding(proof,original)is None):
++            raise ValueError('B00_exact_native_retired_source_required')
+         present='validate'in vars(proof);previous=vars(proof).get('validate')
+         methods.append((proof,present,previous));proof_ids.add(id(proof))
+         if frozen_append:append_sources[id(proof)]=getattr(type(proof),'validate',None)
+@@ -1310,9 +1327,10 @@
+         if getattr(c,'_b00_history_read_scope',None)is not None:
+             return closed_history_reads(c,k._b00_custody_reader,runner,validate)
+         proofs=historical_proofs(k)
+-        # Reuse only the existing immutable proof memo in this native loop.
+-        # Ordinary tail hits keep their parent fresh; native/partial proofs
+-        # remain uncached, including any native ancestor of an ordinary tail.
++        # Reuse the existing scoped proof mechanism, including its exact
++        # retired-native mode. Retired hits keep original dynamic selectors,
++        # fresh headers/claims/time and final namespace CAS. Partial and
++        # zero-wire boundaries remain uncached.
+         base=[p for p in proofs if type(p).__name__ not in
+               ('OrdinarySerialProof', 'PolicySerialProof', 'StoppedSentPartialProof', 'RetiredOrdinaryProof', 'ZeroWireProof')]
+         def validate_rows():
+@@ -1321,6 +1339,7 @@
+                    'B00_native_loop_exact_history_reader_required')
+             for proof in proofs:
+                 if type(proof).__name__=='OrdinarySerialProof':active[2](proof)
++                elif type(proof).__name__=='RetiredOrdinaryProof':active[2](proof,True)
+             return validate()
+         return closed_history_reads(c,k._b00_custody_reader,runner,validate_rows,proofs=base)
+     c._b00_closed_history_reads=closed_loop
