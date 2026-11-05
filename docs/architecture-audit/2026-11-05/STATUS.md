@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: REMARKS_PUBLISHED
+- state: CONTINUED_STATIC_PUBLISHED
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -20,6 +20,7 @@
 - plan_supplement_observed_at: 2026-11-05T17:42:42Z
 - static_sections_observed_at: 2026-11-05T18:18:17Z
 - remarks_observed_at: 2026-11-05T22:55:50Z
+- continued_static_observed_at: 2026-11-05T23:46:01Z
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -65,9 +66,16 @@
 - reviewer_011_new_function_bodies: false
 - reviewer_011_independent_reproduction: not_claimed
 - reviewer_011_note: все три файла приложения расшифрованы и просмотрены; размер, SHA-256 и целостность подтверждены; новых тел исходных функций нет; независимое воспроизведение не заявлено
-- reviewer_012_package_read: false
-- reviewer_012_decrypted: false
-- reviewer_012_integrity_confirmed: false
+- reviewer_012_package_read: true
+- reviewer_012_decrypted: true
+- reviewer_012_integrity_confirmed: true
+- reviewer_012_attachment_files: 3
+- reviewer_012_product_functions_executed: false
+- reviewer_012_acceptance: three_static_grounds_for_future_work
+- reviewer_012_note: все три файла приложения расшифрованы и просмотрены; размер SHA-256 и целостность подтверждены; ключевой порядок вызовов в трёх замечаниях и четырёх методах тестера независимо сверен по выдержкам; продуктовые функции ревьюер не исполнял
+- reviewer_013_package_read: false
+- reviewer_013_decrypted: false
+- reviewer_013_integrity_confirmed: false
 - config_provenance_accepted: true
 - live_turn_context_observed: false
 - tester_history_dependence: retracted
@@ -137,6 +145,12 @@
 - stranger_access_observed: false
 - config_durability_windows: file_fsync_then_os_replace_without_dir_fsync_and_later_receipt_reseal
 - config_durability_injected: false
+- config_dir_fsync_requested: false
+- config_later_sync_directory: home
+- config_sync_directory_necessarily_different: false
+- config_same_directory_on_shown_home_write: true
+- config_symlink_resolution_checked: false
+- config_root_vs_home_established: false
 - s12_subject: tester_cursor_and_product_intake
 - s12_compiled_source_path: withheld_by_local_binding_in_memory
 - s12_compiled_body_read: false
@@ -150,6 +164,18 @@
 - s12_parent_template_read: false
 - s12_live_cursor_opened: false
 - s12_live_state_changed: false
+- s12_capture_calls_cursor_offsets: true
+- s12_global_walks: runs_glob_receipt_iterdir_capture_iterdir
+- s12_global_walks_scope: shown_canonical_consumer_capture_branch
+- s12_transferred_to_final_transformed_method: false
+- s12_final_transformed_method_read: false
+- s12_measured_delay_attributed: false
+- rescue_orphaned_overflow_read: true
+- rescue_orphaned_overflow_executed: false
+- rescue_writes_spool: false
+- telegram_offset_library_body_read: false
+- telegram_local_receipt_is_answer: false
+- telegram_live_receipt_opened: false
 - embeddings_path: stops_at_unopened_a0_image_callees
 - embeddings_key_opened: false
 - breadth_status: INTERMEDIATE
@@ -161,9 +187,9 @@
 - read_behavior_untested: true
 - new_general_plan: false
 - c03: NOT_CHECKED
-- coverage_matrix: reports/012-coverage-matrix.csv
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv, reports/012-remarks.md, reports/012-coverage-matrix.csv
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc, artifacts/012-remarks.tar.gz.gpg.asc
+- coverage_matrix: reports/013-coverage-matrix.csv
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv, reports/012-remarks.md, reports/012-coverage-matrix.csv, reports/013-continued-static.md, reports/013-coverage-matrix.csv
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc, artifacts/012-remarks.tar.gz.gpg.asc, artifacts/013-continued-static.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
@@ -172,18 +198,14 @@
 - implementation_this_turn: false
 - private_start_folder: вынесена из Git-деревьев; файлы команды не изменялись и не добавлялись
 
-Ревьюер прочитал пакет 011. Все три файла приложения расшифрованы и просмотрены. Размер, SHA-256 и целостность подтверждены. Новых тел исходных функций в приложении нет. Независимое воспроизведение кодовых выводов ревьюер не заявляет. 011 остаётся статическим чтением. 010 остаётся уточнением требований. 009 остаётся предварительным планом. Отчёты 001–011 не переписывались. Пакет 012 ревьюер ещё не подтверждал.
+Ревьюер прочитал пакет 012. Все три файла приложения расшифрованы и просмотрены. Размер, SHA-256 и целостность подтверждены. Ключевой порядок вызовов в трёх замечаниях и четырёх методах тестера независимо сверен по приложенным выдержкам. Продуктовые функции ревьюер не исполнял. Три замечания приняты как статические основания для будущих работ. 011 остаётся статическим чтением. 010 остаётся уточнением требований. 009 остаётся предварительным планом. Отчёты 000–012 не переписывались. Пакет 013 ревьюер ещё не подтверждал.
 
-Пакет 012 фиксирует три отдельных замечания и проверку локальной привязки выбранного исходника тестера. Нового общего плана нет. Аудит формулировкой «осталось только исполнение» не закрывается. Непрочитанные источники отделены от уже прочитанного и не испытанного поведения.
+Пакет 013 проверяет оговорку каталога и продолжает разрешённое статическое чтение. Нового общего плана нет. Аудит формулировкой «осталось только исполнение» не закрывается. Непрочитанные источники отделены от уже прочитанного и не испытанного поведения.
 
-Очередь пишется на диск только на двух крючках останова действующего hermes-agent. Ошибка записи глотается, после этого слот памяти очищается. Восстановление дописывает историю и в слот не возвращает. Результат исходящей отправки подтверждением входящего update не служит. Потеря сообщения не наблюдалась.
+Непосредственная запись конфигурации fsync_dir не запрашивает. Последующий finish_admin_config_edit вызывает _sync_directory(home). На показанных местах путь непосредственно перед finish — home/config.yaml, и его неразрешённый родитель совпадает с аргументом _sync_directory. Обязательное различие каталогов не установлено. Разрешение symlink не проверялось. Равенство root и home не установлено. Окно между возвратом записи и поздним fsync остаётся. Вспрыскивания не было.
 
-При занятой сессии /status и /context возвращаются до проверки затворов, и сами проверки различаются. status входит в первый затвор и на холодном пути встречает второй. context в первый затвор не входит. ordinary_presentation сокращает только ответ status. Доступ постороннего не наблюдался.
+В показанной ветке capture канонического потребителя вызывается cursor_offsets. Этот метод обходит накопленные прогоны, имена квитанций и файлы captures. Вывод на окончательный преобразованный метод текущего кандидата не переносится. Измеренная задержка не приписывается. Обычное тело остаётся непрочитанным. Живой cursor.json не открывался.
 
-Содержимое конфигурации синхронизируется до os.replace. Каталог этой замены не синхронизируется. Квитанция онбординга запечатывается следующим вызовом и синхронизирует свой каталог. Окна не вспрыскивались. Разрыв не наблюдался.
-
-Публичный pin C26 путь обычного исходника не называет. Это не доказательство локальной недоступности. Локальная привязка текущего кандидата хранит обычный источник в памяти, без пути, и байткод не сохраняет. Тело не открывалось. Случайная копия не выбиралась. Канонический потребитель bot_tester.py прочитан и не исполнялся. Живой cursor.json не открывался. Живое состояние не менялось.
-
-Непрочитанными остаются обычное скомпилированное тело, тела двух функций эмбеддинга образа A0, обход команд плагинов, тело _rescue_orphaned_overflow, живые списки и ledger, коммит смещения входящего update Telegram, другие монтирования tmp и шаблон родителя. Прочитаны и не испытаны цепочка записи, оба окна долговечности, ранний возврат DSH, очередь, оба затвора и четыре метода cursor потребителя.
+_rescue_orphaned_overflow переставляет FIFO в памяти на праздном пути и spool не пишет. Локальная квитанция Telegram хранит идентификаторы update и ответом не является. Тело библиотеки, которое двигает смещение getUpdates, не читалось. Потеря сообщения не наблюдалась. Доступ постороннего не наблюдался.
 
 F-005 не переоткрывался как finding. F-006 не переоткрывался. Матрица несётся целиком. C03 остаётся NOT_CHECKED. Ширина остаётся промежуточной. Внедрение не начато. Код продукта не менялся. Воркеры не включались. Новый живой прогон не запускался. Астра от B00 не отвлекалась.
