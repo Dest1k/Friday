@@ -1,0 +1,109 @@
+--- a/b00_ancestry_engineering156.py
++++ b/b00_ancestry_engineering156.py
+@@ -53,8 +53,43 @@
+     physical_names={'exact','safe','cached','uncached','native_path','path_info','identity','record_pin'}
+     def effective_global(fn,name):
+         return fn.__globals__[name]if name in fn.__globals__ else fn.__builtins__[name]
++    native_unpack=getattr(dis,'_unpack_opargs',None)
++    native_load_global=getattr(dis,'LOAD_GLOBAL',None)
++    native_supported=False
++    try:
++        native_deoptop=effective_global(native_unpack,'_deoptop')
++        native_cache_size=effective_global(native_unpack,'_get_cache_size')
++        native_all_opname=effective_global(native_unpack,'_all_opname')
++        native_hasarg=effective_global(native_unpack,'hasarg')
++        native_extended_arg=effective_global(native_unpack,'EXTENDED_ARG')
++        native_int_overflow=effective_global(native_unpack,'_INT_OVERFLOW')
++        native_all_opmap=effective_global(native_deoptop,'_all_opmap')
++        native_deoptmap=effective_global(native_deoptop,'deoptmap')
++        native_inline_cache_entries=effective_global(native_cache_size,'_inline_cache_entries')
++        native_range=effective_global(native_unpack,'range')
++        native_len=effective_global(native_unpack,'len')
++        native_supported=(type(native_unpack)is types.FunctionType
++                and type(native_deoptop)is types.FunctionType
++                and type(native_cache_size)is types.FunctionType
++                and type(native_load_global)is int and type(native_extended_arg)is int
++                and type(native_int_overflow)is int and type(native_all_opname)is list
++                and type(native_all_opmap)is dict and type(native_deoptmap)is dict
++                and type(native_inline_cache_entries)is dict and type(native_hasarg)is list
++                and native_unpack.__globals__ is vars(dis)
++                and native_deoptop.__globals__ is native_unpack.__globals__
++                and native_cache_size.__globals__ is native_unpack.__globals__
++                and native_range is range and native_len is len
++                and all(fn.__defaults__ is None and fn.__kwdefaults__ is None
++                    and fn.__closure__ is None for fn in
++                    (native_unpack,native_deoptop,native_cache_size)))
++    except (AttributeError,KeyError,TypeError):
++        pass
+     def global_names(code):
+-        names=[i.argval for i in dis.get_instructions(code)if i.opname=='LOAD_GLOBAL']
++        if native_supported:
++            names=[code.co_names[arg//2]for _,_,op,arg in native_unpack(code.co_code)
++                if op==native_load_global]
++        else:
++            names=[i.argval for i in dis.get_instructions(code)if i.opname=='LOAD_GLOBAL']
+         for child in code.co_consts:
+             if isinstance(child,types.CodeType):names.extend(global_names(child))
+         return tuple(dict.fromkeys(names))
+@@ -65,6 +100,18 @@
+     names_source=global_names
+     names_cached=functools.lru_cache(maxsize=128)(names_source)
+     clear_names_cache=names_cached.cache_clear
++    names_native_binding=((native_unpack,native_unpack.__code__,native_unpack.__defaults__,
++        native_unpack.__kwdefaults__,native_unpack.__closure__,native_unpack.__globals__,
++        native_unpack.__builtins__),(native_deoptop,native_deoptop.__code__,
++        native_deoptop.__defaults__,native_deoptop.__kwdefaults__,native_deoptop.__closure__,
++        native_deoptop.__globals__,native_deoptop.__builtins__),(native_cache_size,
++        native_cache_size.__code__,native_cache_size.__defaults__,native_cache_size.__kwdefaults__,
++        native_cache_size.__closure__,native_cache_size.__globals__,native_cache_size.__builtins__),
++        tuple(native_all_opname),tuple(native_all_opmap.items()),tuple(native_deoptmap.items()),
++        tuple(native_inline_cache_entries.items()),tuple(native_hasarg),native_extended_arg,
++        native_int_overflow,native_load_global,native_range,native_len,
++        (native_all_opname,native_all_opmap,native_deoptmap,
++         native_inline_cache_entries,native_hasarg))if native_supported else None
+     def global_names(code):
+         if (type(code)is not types.CodeType
+                 or type(names_cached)is not _functools._lru_cache_wrapper
+@@ -75,13 +122,40 @@
+                 or names_binding[1].__defaults__ is not None or names_binding[1].__kwdefaults__ is not None
+                 or any(cell.cell_contents is not value for cell,value in names_binding[3])
+                 or any(effective_global(names_binding[1],key)is not value for key,value in names_binding[4])
+-                or dis.get_instructions is not names_binding[5]):
++                or dis.get_instructions is not names_binding[5]
++                or native_supported is not names_binding[6]
++                or names_native_binding is not names_binding[7]
++                or (native_supported and (
++                    dis._unpack_opargs is not native_unpack
++                    or native_unpack is not names_native_binding[0][0]
++                    or dis.LOAD_GLOBAL is not native_load_global
++                    or native_load_global is not names_native_binding[10]
++                    or effective_global(native_unpack,'_deoptop') is not names_native_binding[1][0]
++                    or effective_global(native_unpack,'_get_cache_size') is not names_native_binding[2][0]
++                    or any(row[0].__code__ is not row[1]or row[0].__defaults__ is not row[2]
++                        or row[0].__kwdefaults__ is not row[3]or row[0].__closure__ is not row[4]
++                        or row[0].__globals__ is not row[5]or row[0].__builtins__ is not row[6]
++                        for row in names_native_binding[:3])
++                    or effective_global(native_unpack,'_all_opname')is not names_native_binding[13][0]
++                    or effective_global(names_native_binding[1][0],'_all_opmap')is not names_native_binding[13][1]
++                    or effective_global(names_native_binding[1][0],'deoptmap')is not names_native_binding[13][2]
++                    or effective_global(names_native_binding[2][0],'_inline_cache_entries')is not names_native_binding[13][3]
++                    or effective_global(native_unpack,'hasarg')is not names_native_binding[13][4]
++                    or tuple(effective_global(native_unpack,'_all_opname'))!=names_native_binding[3]
++                    or tuple(effective_global(names_native_binding[1][0],'_all_opmap').items())!=names_native_binding[4]
++                    or tuple(effective_global(names_native_binding[1][0],'deoptmap').items())!=names_native_binding[5]
++                    or tuple(effective_global(names_native_binding[2][0],'_inline_cache_entries').items())!=names_native_binding[6]
++                    or tuple(effective_global(native_unpack,'hasarg'))!=names_native_binding[7]
++                    or effective_global(native_unpack,'EXTENDED_ARG')is not names_native_binding[8]
++                    or effective_global(native_unpack,'_INT_OVERFLOW')is not names_native_binding[9]
++                    or effective_global(native_unpack,'range')is not names_native_binding[11]
++                    or effective_global(native_unpack,'len')is not names_native_binding[12]))):
+             raise ValueError('B00_native_read_code_names_cache_changed')
+         return names_cached(code)
+     names_binding=(names_cached,names_source,names_source.__code__,
+         tuple((cell,cell.cell_contents)for cell in names_source.__closure__ or ()),
+         tuple((key,effective_global(names_source,key))for key in('dict','tuple','isinstance','types')),
+-        dis.get_instructions)
++        dis.get_instructions,native_supported,names_native_binding)
+     names_lookup_binding=(global_names,global_names.__code__,global_names.__defaults__,
+         global_names.__kwdefaults__,global_names.__closure__)
+     def owner_rows(callback):
