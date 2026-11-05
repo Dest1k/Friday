@@ -1,0 +1,191 @@
+--- a/run_engineering_once156.py
++++ b/run_engineering_once156.py
+@@ -111,2 +111,3 @@
+- No Python-call observer runs. Category call counts are not collected. A CPU
+- pulse captures stacks and available cumulative helper stats at intervals;
++ No global Python-call observer runs. Legacy category counts are not collected.
++ Exact native-material local counters share the existing CPU pulse and writer;
++ a pulse captures stacks and available cumulative helper stats at intervals;
+@@ -126,0 +128 @@
++ MAX_MATERIAL_INTERMEDIATE=4
+@@ -132,2 +134,15 @@
+- PROGRESS_OPTIONAL_INTS=('inventory_calls','helper_module_loads','fresh_grant_calls')
+- PROGRESS_OPTIONAL_FLOATS=('inventory_wall_seconds','inventory_cpu_seconds','fresh_grant_wall_seconds','fresh_grant_cpu_seconds')
++ PROGRESS_OPTIONAL_INTS=('inventory_calls','helper_module_loads','fresh_grant_calls',
++  'material_parent_entered','material_parent_completed','material_parent_raised',
++  'material_claim_entered','material_claim_completed','material_claim_raised',
++  'material_absent_initial_entered','material_absent_initial_completed','material_absent_initial_raised',
++  'material_absent_final_entered','material_absent_final_completed','material_absent_final_raised',
++  'material_serial_entered','material_serial_completed','material_serial_raised',
++  'material_key_cache_hits','material_key_computations','material_lifetime_id',
++  'material_parent_lifetime_id','material_lifetime_depth','material_branch',
++  'material_serial_lifetime_id','material_serial_depth')
++ PROGRESS_OPTIONAL_FLOATS=('inventory_wall_seconds','inventory_cpu_seconds','fresh_grant_wall_seconds','fresh_grant_cpu_seconds',
++  'material_parent_wall_seconds','material_parent_cpu_seconds',
++  'material_claim_wall_seconds','material_claim_cpu_seconds',
++  'material_absent_initial_wall_seconds','material_absent_initial_cpu_seconds',
++  'material_absent_final_wall_seconds','material_absent_final_cpu_seconds',
++  'material_serial_wall_seconds','material_serial_cpu_seconds')
+@@ -153,0 +169,116 @@
++  self.material_counter=None;self.material_bindings=None;self.material_identities=None
++  self.material_intermediate_samples=0;self.material_final=None;self.material_sample_at=None
++  self.material_start_attempted=False;self.material_initializing=False;self.material_unreliable_reason=None
++  self.material_callback_codes=()
++ def attach_material_counters(self,consumer,runner,counter_type,ancestry_path):
++  # Capture the final live native class after original history/scope binding.
++  # This neither constructs historical owners nor replaces target functions.
++  if self.active or self.material_counter is not None:raise ValueError('fresh_material_observer_required')
++  if type(consumer)is not types.ModuleType or type(vars(consumer).get('Runner'))is not type:raise ValueError('actual_native_consumer_required')
++  cls=vars(consumer)['Runner']
++  names=(('continuation_key','continuation_key'),('serial_history_guard','serial_predecessor'),
++   ('retired_prepared','retired_prepared'),('prepared_unsent','prepared_unsent'),
++   ('prepared_claim_pin','prepared_claim_pin'),('prepared_absent_claim_pin','prepared_absent_claim_pin'))
++  if type(runner)is not cls or any(name in vars(runner)for label,name in names):raise ValueError('actual_native_runner_class_methods_required')
++  functions={label:vars(cls).get(name)for label,name in names}
++  if any(type(fn)is not types.FunctionType or fn.__code__.co_name!=label for label,fn in functions.items()):raise ValueError('exact_final_native_function_codes_required')
++  if functions['serial_history_guard'].__code__.co_filename!=ancestry_path:raise ValueError('actual_history_serial_guard_required')
++  bindings=tuple((name,fn,fn.__code__,fn.__globals__,fn.__defaults__,fn.__kwdefaults__,fn.__closure__)
++   for label,name in names for fn in(functions[label],))
++  free=next((slot for slot in(3,4,5)if sys.monitoring.get_tool(slot)is None),None)
++  if free is None:raise ValueError('material_observer_no_free_tool_no_steal')
++  selected=('continuation_key','serial_history_guard','retired_prepared','prepared_unsent')
++  callers=('prepared_unsent','prepared_claim_pin','prepared_absent_claim_pin')
++  counter=counter_type({name:functions[name].__code__ for name in selected},
++   {name:functions[name].__code__ for name in callers},tool_id=free)
++  self.material_bindings=(consumer,cls,runner,bindings)
++  self.material_identities=[dict(role=label,**self._metadata(fn.__code__))for label,fn in functions.items()]
++  self.material_counter=counter
++  self.material_callback_codes=tuple(getattr(counter,name).__func__.__code__ for name in('_start','_return','_frame_key'))
++ def _material_bookkeeping_frame(self,frame):
++  try:
++   for unused in range(2048):
++    if frame is None:return False
++    if any(frame.f_code is code for code in self.material_callback_codes):return True
++    frame=frame.f_back
++   if frame is not None:
++    if self.material_unreliable_reason is None:self.material_unreliable_reason='BOOKKEEPING_SCAN_LIMIT'
++    self.material_final=None
++    return True
++   return False
++  finally:del frame
++ def _material_note_interruption(self,frame=None,error=None):
++  if self.material_counter is None:return
++  reason=None
++  if self.material_initializing:reason='INITIALIZATION_INTERRUPTED'
++  elif self._material_bookkeeping_frame(frame if frame is not None else sys._getframe(1)):
++   reason='BOOKKEEPING_INTERRUPTED'
++  else:
++   trace=error.__traceback__ if error is not None else sys.exc_info()[2]
++   try:
++    for unused in range(2048):
++     if trace is None:break
++     if any(trace.tb_frame.f_code is code for code in self.material_callback_codes):
++      reason='BOOKKEEPING_INTERRUPTED';break
++     trace=trace.tb_next
++    else:
++     if trace is not None:reason='BOOKKEEPING_SCAN_LIMIT'
++   finally:del trace
++  if reason is not None:
++   if self.material_unreliable_reason is None:self.material_unreliable_reason=reason
++   self.material_final=None
++ def _material_status(self):
++  counter=self.material_counter;started=counter is not None and counter.started
++  return dict(native_material_status=self.material_unreliable_reason or('INITIALIZING'if self.material_initializing else'CLOSED'if started and counter.end_wall is not None else'IN_PROGRESS'if started else'NOT_STARTED'),
++   native_material_counts_reliable=False if self.material_unreliable_reason is not None else None if not started or self.material_initializing else True,
++   native_material_cleanup_confirmed=None if not self.material_start_attempted else counter.cleanup_confirmed)
++ def _material_bindings_preserved(self):
++  consumer,cls,runner,bindings=self.material_bindings
++  return(vars(consumer).get('Runner')is cls and type(runner)is cls
++   and all(name not in vars(runner)and vars(cls).get(name)is fn
++    and fn.__code__ is code and fn.__globals__ is namespace and fn.__defaults__ is defaults
++    and fn.__kwdefaults__ is kwdefaults and fn.__closure__ is closure
++    for name,fn,code,namespace,defaults,kwdefaults,closure in bindings))
++ def _material_snapshot(self,event):
++  counter=self.material_counter
++  if counter is None or not counter.started or self.material_initializing:return None
++  if counter.observer_refused and self.material_unreliable_reason is None:self.material_unreliable_reason='OBSERVER_REFUSED'
++  if self.material_unreliable_reason is not None:return None
++  if event=='INTERMEDIATE':
++   if self.deadline.phase!='NATIVE_NEW_MATERIAL'or counter.end_wall is not None:return None
++   if self.material_intermediate_samples>=self.MAX_MATERIAL_INTERMEDIATE:return None
++   if time.monotonic()<self.material_sample_at[self.material_intermediate_samples]:return None
++   self.material_intermediate_samples+=1
++  value=counter.snapshot()
++  value['original_function_bindings_preserved']=self._material_bindings_preserved()
++  return value
++ def material_phase_enter(self):
++  counter=self.material_counter
++  if counter is None:return
++  if counter.started:raise ValueError('single_native_material_lifetime_required')
++  if not self._material_bindings_preserved():raise ValueError('material_function_binding_changed_before_native')
++  # Cadence observes the remaining existing cutoff; it grants/resets no time.
++  now=time.monotonic();remaining=max(0.0,self.deadline.cutoff-now)
++  self.material_sample_at=tuple(now+remaining*fraction for fraction in(0.0,1/3,2/3,0.9))
++  self.material_start_attempted=True;self.material_initializing=True
++  try:counter.__enter__()
++  except BaseException:
++   if self.material_unreliable_reason is None:self.material_unreliable_reason='INITIALIZATION_INTERRUPTED'
++   raise
++  finally:self.material_initializing=False
++ def material_phase_exit(self,error=None):
++  counter=self.material_counter
++  if counter is None:return
++  owned=sys.monitoring.get_tool(counter.tool_id)==counter.name
++  if not counter.started and not owned:return
++  original=sys.exc_info()
++  if error is not None and original[0]is None:original=(type(error),error,None)
++  if original[0]is not None:self._material_note_interruption(error=original[1])
++  try:
++   if counter.end_wall is None or owned:counter.__exit__(*original)
++  except BaseException as cleanup_error:
++   self.cleanup_error_class=type(cleanup_error).__name__
++   if original[0]is None:raise
++  finally:
++   try:self.material_final=self._material_snapshot('CLOSED')
++   except Exception as snapshot_error:self.last_error_class=type(snapshot_error).__name__
+@@ -341 +472 @@
+-   semantics='SAMPLED_CURRENT_BUILTIN_COUNTERS_NOT_CALL_COUNTS_OR_VERDICTS',check_in_progress=code.co_name=='check')
++   semantics='SAMPLED_CUMULATIVE_PER_INVOCATION_STATS_CALLSITE_COUNTERS_AND_INCLUSIVE_NESTED_SPANS_NOT_STACK_OCCURRENCES_OR_VERDICTS',check_in_progress=code.co_name=='check')
+@@ -343,0 +475,2 @@
++  # A signal may interrupt local-event bookkeeping before a row is published.
++  if self.material_counter is not None and self._material_bookkeeping_frame(frame):return
+@@ -385 +518,2 @@
+-    counter_semantics='NOT_COLLECTED_NO_PYTHON_CALL_OBSERVER',cpu_pulses=self.pulses,
++    counter_semantics='LEGACY_CATEGORY_COUNTS_UNCOLLECTED_EXACT_MATERIAL_COUNTS_SEPARATE',cpu_pulses=self.pulses,
++    native_material_counts=self._material_snapshot(event),**self._material_status(),
+@@ -394 +528,3 @@
+-     code_inventory_policy='BOUNDED_STACK_SAMPLES_ONLY',python_call_observer='NONE',
++     code_inventory_policy='BOUNDED_STACK_SAMPLES_ONLY',python_call_observer='EXACT_FOUR_LOCAL_CODES_ONLY',
++     native_material_intermediate_sample_cap=self.MAX_MATERIAL_INTERMEDIATE,
++     native_material_schedule='EXISTING_REMAINING_CUTOFF_FRACTIONS_0_1over3_2over3_0point9',
+@@ -411 +547,4 @@
+-  try:self.snapshot(event,frame,error_class)
++  try:
++   # Persist taint before the writer can refuse a busy/full/failed snapshot.
++   if event in('DEADLINE','CANCEL','ERROR'):self._material_note_interruption(frame)
++   self.snapshot(event,frame,error_class)
+@@ -416,0 +556,3 @@
++   native_material_final=self.material_final,native_material_exact_code=self.material_identities,**self._material_status(),
++   native_material_intermediate_samples=self.material_intermediate_samples,
++   native_material_sample_at_monotonic=self.material_sample_at,
+@@ -443 +585,7 @@
+-  conflicts=[];self.active=False
++  conflicts=[];self.active=False;original_exception=sys.exc_info();material_cleanup_error=None
++  if self.material_counter is not None and(self.material_counter.started or
++      sys.monitoring.get_tool(self.material_counter.tool_id)==self.material_counter.name):
++   try:
++    self.material_phase_exit()
++   except BaseException as error:
++    material_cleanup_error=error;self.cleanup_error_class=type(error).__name__
+@@ -457,0 +606 @@
++  if material_cleanup_error is not None and original_exception[0]is None:raise material_cleanup_error
+@@ -560,0 +710 @@
++  if name=='NATIVE_NEW_MATERIAL'and self.native_diagnostics is not None:self.native_diagnostics.material_phase_enter()
+@@ -564,0 +715 @@
++  if name=='NATIVE_NEW_MATERIAL'and self.native_diagnostics is not None:self.native_diagnostics.material_phase_exit(error)
+@@ -1036 +1187,4 @@
+-   diagnostics=NativeDiagnostics(out/'NATIVE-INTERMEDIATE.jsonl',deadline,spec['production_package'],spec['caller']);diagnostics.start()
++   diagnostics=NativeDiagnostics(out/'NATIVE-INTERMEDIATE.jsonl',deadline,spec['production_package'],spec['caller'])
++   material_counter_source=core['load'](pkg['files']['native_material_counters.py'],'_Root_exact_native_material_counters')
++   diagnostics.attach_material_counters(c,runner,material_counter_source.ExactLocalCounters,pkg['files']['b00_ancestry.py']['path'])
++   diagnostics.start()
