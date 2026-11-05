@@ -1,0 +1,97 @@
+# SOURCE ONLY UNBOUND — source-analysis excerpt; no execution authority.
+# Dependencies, operational bindings and enclosing implementation are omitted.
+# Parse/compile inspection must not import or execute this text.
+
+# Exact source replacement string from the reviewed adapter, decoded as Python.
+# Original consumer context supplies contextlib, threading, signal, time, Refused
+# and Uncertain. Whole adapter and its operational source pins are omitted.
+
+def preparation_deadline_owner():
+    """Resolve the exact finite caller lease; an ambient object grants nothing."""
+    import types
+    owner = globals().get('_caller_preparation_deadline')
+    getter = globals().get('_caller_preparation_deadline_getter')
+    binding = globals().get('_caller_preparation_deadline_binding')
+    if owner is None and getter is None and binding is None:
+        return None
+    if (owner is None or type(getter) is not types.FunctionType
+            or type(binding) is not tuple or len(binding) != 6
+            or binding[0] is not getter or binding[1] is not getter.__code__
+            or binding[2] is not getter.__defaults__ or binding[3] is not getter.__kwdefaults__
+            or binding[4] is not getter.__closure__ or binding[5] is not getter.__globals__
+            or getter() is not owner):
+        raise Refused('Exact preparation caller owner binding required')
+    return owner
+
+
+def network_deadline_available():
+    owner = preparation_deadline_owner()
+    if owner is not None:
+        owner.check()
+        return
+    if (threading.current_thread() is not threading.main_thread()
+            or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0)):
+        raise Refused('Network deadline requires exclusive main-thread alarm ownership before intent')
+
+
+@contextlib.contextmanager
+def network_deadline(seconds):
+    """Existing whole HTTP timer borrows only an authenticated caller CPU alarm."""
+    import math
+    if (threading.current_thread() is not threading.main_thread()
+            or type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds <= 0):
+        raise Refused('Network requires main thread and positive total deadline')
+    owner = preparation_deadline_owner()
+    if owner is not None:
+        owner.check()
+    previous = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    if owner is None and previous_timer != (0.0, 0.0):
+        raise Refused('Existing process alarm prevents safe network deadline ownership')
+    owns_http = False
+    def expired(signum, frame):
+        raise Uncertain('Whole HTTP deadline expired; preserve uncertain send',
+                        cause_code='LOCAL_HTTP_ALARM_DEADLINE', phase_code='HTTP_WHOLE_CALL')
+    # The finally also owns phase-journal and handler/arming setup failures.
+    try:
+        absolute = owner.suspend_http(seconds) if owner is not None else time.monotonic() + seconds
+        owns_http = True
+        signal.signal(signal.SIGALRM, expired)
+        remaining = absolute - time.monotonic()
+        if remaining <= 0:
+            expired(signal.SIGALRM, None)
+        signal.setitimer(signal.ITIMER_REAL, remaining)
+        yield
+    finally:
+        if owns_http or (owner is not None and owner.http_active):
+            try:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            finally:
+                signal.signal(signal.SIGALRM, previous)
+                if owner is not None:
+                    owner.resume_cpu()
+                else:
+                    signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+
+@contextlib.contextmanager
+def preparation_phase(name):
+    owner = preparation_deadline_owner()
+    if owner is None:
+        yield
+        return
+    started = owner.phase_enter(name)
+    failure = None
+    try:
+        yield
+    except BaseException as exc:
+        failure = exc
+        raise
+    finally:
+        owner.phase_exit(name, started, failure)
+
+
+def preparation_effect_fit(plan, *, dispatch=False):
+    owner = preparation_deadline_owner()
+    if owner is not None:
+        owner.effect_fit(plan, dispatch=dispatch)

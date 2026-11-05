@@ -1,0 +1,285 @@
+# SOURCE ONLY UNBOUND — source-analysis excerpt; no execution authority.
+# Dependencies, operational bindings and enclosing implementation are omitted.
+# Parse/compile inspection must not import or execute this text.
+
+# Original imports/context: os, re, signal, time, json, types; NativeDiagnostics
+# is supplied by the omitted caller. No timers are armed by text preparation.
+
+class PreparationBudgetExpired(BaseException):
+ """The existing absolute operation budget expired; never retry an effect."""
+
+class PreparationCancelled(BaseException):
+ """External cancellation must leave through native cleanup, never HTTP retry."""
+
+class PreparationDeadline:
+ """One main-thread alarm owner shared with the existing native HTTP timer.
+
+ The original clock is retained. CPU work ends before its declared cleanup
+ reserve; real HTTP borrows the alarm only until that same absolute cutoff.
+ Phase records contain fixed labels, numeric clocks and exception classes only.
+ """
+ def __init__(self,origin,budget,reserve):
+  import math,threading
+  if (threading.current_thread()is not threading.main_thread()
+      or signal.getitimer(signal.ITIMER_REAL)!=(0.0,0.0)
+      or any(type(v)not in(int,float)or not math.isfinite(v)for v in(origin,budget,reserve))
+      or not 0<reserve<budget):raise ValueError('exclusive_preparation_timer_required')
+  self.origin=origin;self.hard_deadline=origin+budget;self.cutoff=self.hard_deadline-reserve
+  self.cleanup_deadline=self.hard_deadline;self.postcheck_anchor=None;self.effect_anchor=None;self.effect_admission=None
+  self.reserve=reserve;self.phase='INITIAL_PREPARATION';self.clock=None;self.scenario_seconds=None
+  self.phase_started=(time.monotonic(),time.process_time())
+  self.fd=None;self.rows=0;self.active=True;self.http_active=False;self.expired=False;self.native_diagnostics=None
+  self.previous=signal.getsignal(signal.SIGALRM);self.previous_term=signal.getsignal(signal.SIGTERM)
+  self.handler=self._expired;self.term_handler=self._cancelled
+  signal.signal(signal.SIGALRM,self.handler)
+  if self.previous_term is signal.SIG_DFL:signal.signal(signal.SIGTERM,self.term_handler)
+  self._arm()
+ def attach_journal(self,path):
+  if self.fd is not None:raise ValueError('one_phase_journal_required')
+  self.fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+  directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+  try:os.fsync(directory)
+  finally:os.close(directory)
+  self.record('ENTER',self.phase)
+ def record(self,event,phase,error_class=None,wall=None,cpu=None):
+  if self.fd is None:return
+  if (event not in('ENTER','EXIT','DEADLINE','CANCEL','HARD_DEADLINE')
+      or type(phase)is not str or re.fullmatch(r'[A-Z_]{1,64}',phase)is None
+      or (error_class is not None and(type(error_class)is not str
+          or re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]{0,95}',error_class)is None))):
+   raise ValueError('safe_phase_metadata_required')
+  # Reserve terminal rows even after the bounded normal phase inventory fills.
+  if self.rows>=128 or(self.rows>=120 and event in('ENTER','EXIT')):return
+  if event in('EXIT','DEADLINE','CANCEL','HARD_DEADLINE')and phase==self.phase:
+   if wall is None:wall=time.monotonic()-self.phase_started[0]
+   if cpu is None:cpu=time.process_time()-self.phase_started[1]
+  row=dict(schema='frw.Root.native-preparation-phase.v1',ordinal=self.rows,
+   event=event,phase=phase,monotonic=time.monotonic(),cpu_seconds=time.process_time(),
+   origin_monotonic=self.origin,deadline_monotonic=self.hard_deadline,
+   phase_hard_deadline_monotonic=self.cleanup_deadline,
+   preparation_cutoff_monotonic=self.cutoff,error_class=error_class,
+   wall_elapsed_seconds=wall,cpu_elapsed_seconds=cpu)
+  raw=(json.dumps(row,sort_keys=True,separators=(',',':'))+'\n').encode('ascii')
+  if len(raw)>1536:raise ValueError('bounded_phase_record_required')
+  remaining=memoryview(raw)
+  while remaining:
+   written=os.write(self.fd,remaining)
+   if written<=0:raise OSError('phase_journal_write_failed')
+   remaining=remaining[written:]
+  os.fsync(self.fd);self.rows+=1
+ def _arm(self):
+  remaining=self.cutoff-time.monotonic()
+  if remaining<=0:self._expired(signal.SIGALRM,None)
+  signal.setitimer(signal.ITIMER_REAL,remaining)
+ def check(self):
+  import threading
+  if (not self.active or self.http_active or threading.current_thread()is not threading.main_thread()
+      or signal.getsignal(signal.SIGALRM)is not self.handler
+      or signal.getitimer(signal.ITIMER_REAL)[1]!=0.0):
+   raise ValueError('preparation_timer_ownership_changed')
+  remaining=self.cutoff-time.monotonic();timer=signal.getitimer(signal.ITIMER_REAL)[0]
+  if remaining<=0:self._expired(signal.SIGALRM,None)
+  if timer<=0 or abs(timer-remaining)>0.025:raise ValueError('preparation_timer_deadline_changed')
+ def _expired(self,signum,frame):
+  if self.expired:
+   try:self.record('HARD_DEADLINE',self.phase)
+   finally:os._exit(124)
+  self.expired=True
+  # Cleanup receives only the time remaining on the same declared clock.
+  signal.setitimer(signal.ITIMER_REAL,max(0.000001,self.cleanup_deadline-time.monotonic()))
+  try:
+   if self.native_diagnostics is not None:self.native_diagnostics.safe_snapshot('DEADLINE',frame,error_class='PreparationBudgetExpired')
+   self.record('DEADLINE',self.phase,error_class='PreparationBudgetExpired')
+  finally:raise PreparationBudgetExpired()
+ def _cancelled(self,signum,frame):
+  try:
+   if self.native_diagnostics is not None:self.native_diagnostics.safe_snapshot('CANCEL',frame,error_class='PreparationCancelled')
+   self.record('CANCEL',self.phase,error_class='PreparationCancelled')
+  finally:raise PreparationCancelled()
+ def start_outer(self,clock,scenario,reserve):
+  self.check()
+  if (self.clock is not None or type(clock)is not dict
+      or clock['deadline_monotonic']<=clock['origin_monotonic']
+      or type(scenario)is not int or type(reserve)is not int or not 0<reserve<scenario):
+   raise ValueError('original_outer_clock_required')
+  self.record('EXIT',self.phase)
+  self.clock=dict(clock);self.origin=clock['origin_monotonic'];self.hard_deadline=clock['deadline_monotonic']
+  self.cleanup_deadline=self.hard_deadline
+  self.reserve=reserve;self.scenario_seconds=scenario;self.cutoff=self.hard_deadline-scenario-reserve
+  self.phase='OUTER_PREPARATION';self.phase_started=(time.monotonic(),time.process_time())
+  self._arm();self.record('ENTER',self.phase)
+ def phase_enter(self,name):
+  self.check();previous=(self.phase,self.phase_started);self.phase=name
+  self.phase_started=(time.monotonic(),time.process_time());self.record('ENTER',name)
+  return(*self.phase_started,*previous)
+ def phase_exit(self,name,started,error=None):
+  self.record('EXIT',name,error_class=None if error is None else type(error).__name__,
+   wall=time.monotonic()-started[0],cpu=time.process_time()-started[1])
+  self.phase=started[2];self.phase_started=started[3]
+ def suspend_http(self,seconds):
+  import math
+  self.check()
+  if type(seconds)not in(int,float)or not math.isfinite(seconds)or seconds<=0:
+   raise ValueError('positive_HTTP_deadline_required')
+  # Fix the endpoint before durable phase IO. Keep the CPU alarm armed until
+  # the native helper installs its own handler and absolute timer.
+  absolute=min(self.cutoff,time.monotonic()+seconds)
+  if absolute<=time.monotonic():self._expired(signal.SIGALRM,None)
+  self.http_phase_started=self.phase_enter('NATIVE_HTTP')
+  self.http_active=True
+  return absolute
+ def resume_cpu(self):
+  if not self.http_active or signal.getitimer(signal.ITIMER_REAL)!=(0.0,0.0):
+   raise ValueError('HTTP_timer_not_released')
+  self.http_active=False
+  if signal.getsignal(signal.SIGALRM)is not self.handler:raise ValueError('HTTP_handler_not_restored')
+  try:
+   if self.expired:
+    # An interruption while lending may have already started cleanup.
+    signal.setitimer(signal.ITIMER_REAL,max(0.000001,self.cleanup_deadline-time.monotonic()))
+   else:self._arm()
+  finally:self.phase_exit('NATIVE_HTTP',self.http_phase_started)
+ def effect_fit(self,plan,*,dispatch=False):
+  self.check()
+  if (self.clock is None or type(plan)is not dict or plan.get('clock')!=self.clock
+      or plan.get('new_scenario',{}).get('deadline_seconds')!=self.scenario_seconds
+      or type(dispatch)is not bool or self.effect_anchor is not None):
+   raise ValueError('effect_original_clock_binding_changed')
+  now=time.monotonic()
+  if now+self.scenario_seconds+self.reserve>self.hard_deadline:
+   raise ValueError('whole_native_scenario_and_postcheck_must_fit_at_effect_boundary')
+  if dispatch:
+   # Only the exact SEND_API_CALL boundary admits the original full scenario.
+   # Admission, new-run history and GET-only preparation keep the earlier alarm.
+   if type(self.effect_admission)is not types.FunctionType:
+    raise ValueError('exact_effect_admission_required')
+   self.effect_admission(plan,now)
+   self.effect_anchor=now;self.cutoff=self.hard_deadline-self.reserve
+   self._arm()
+   self.record('ENTER','NATIVE_EFFECT_ADMITTED')
+ def postcheck(self,native_finished):
+  self.check()
+  if (self.postcheck_anchor is not None or type(native_finished)is not float
+      or not self.origin<=native_finished<=time.monotonic()):
+   raise ValueError('actual_native_return_clock_required')
+  # Anchor and arm before journal IO, so EXIT cannot start a new interval.
+  self.postcheck_anchor=native_finished
+  self.cutoff=min(self.hard_deadline,native_finished+self.reserve)
+  self.cleanup_deadline=self.cutoff
+  self._arm();self.record('EXIT',self.phase);self.phase='OUTER_POSTCHECK'
+  self.phase_started=(time.monotonic(),time.process_time());self.record('ENTER',self.phase)
+ def close(self):
+  # Never silently disarm a foreign timer or replace its handler.
+  if self.http_active or signal.getsignal(signal.SIGALRM)is not self.handler:
+   raise ValueError('preparation_timer_not_returned_at_cleanup')
+  signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,self.previous)
+  if signal.getsignal(signal.SIGTERM)is self.term_handler:signal.signal(signal.SIGTERM,self.previous_term)
+  self.active=False
+  if self.fd is not None:os.close(self.fd);self.fd=None
+
+def handoff_native_deadline(c,deadline):
+ # One finite exact caller lease; mutable module metadata cannot spoof it.
+ if type(deadline)is not PreparationDeadline:raise ValueError('exact_preparation_owner_required')
+ existing=vars(c).get('_caller_preparation_deadline_getter')
+ if existing is not None:
+  if c.preparation_deadline_owner()is not deadline:raise ValueError('preparation_owner_rebind_refused')
+  return
+ if any(vars(c).get(name)is not None for name in('_caller_preparation_deadline','_caller_preparation_deadline_binding')):
+  raise ValueError('preparation_owner_rebind_refused')
+ deadline.check()
+ if deadline.effect_anchor is not None:
+  raise ValueError('preparation_effect_admission_rebind_refused')
+ cls=PreparationDeadline;members=tuple(vars(cls).items())
+ clock=(deadline.origin,deadline.hard_deadline,deadline.reserve,deadline.scenario_seconds,None if deadline.clock is None else dict(deadline.clock))
+ handler=deadline.handler;term_handler=deadline.term_handler
+ def pin(fn):
+  functions=(fn,)if getattr(fn,'__wrapped__',None)is None else(fn,fn.__wrapped__)
+  return tuple((f,f.__code__,f.__defaults__,f.__kwdefaults__,f.__closure__,
+    tuple(cell.cell_contents for cell in f.__closure__ or()))for f in functions)
+ methods=tuple((name,fn,pin(fn))for name,fn in members if type(fn)is types.FunctionType)
+ names=('network_deadline_available','network_deadline','preparation_deadline_owner','preparation_phase','preparation_effect_fit')
+ helpers=tuple((name,getattr(c,name),pin(getattr(c,name)))for name in names)
+ def unchanged(records):
+  return all(f.__code__ is code and f.__defaults__ is defaults and f.__kwdefaults__ is kwdefaults
+   and f.__closure__ is cells and all(cell.cell_contents is value for cell,value in zip(cells or(),values))
+   for f,code,defaults,kwdefaults,cells,values in records)
+ # This private closure cell is the authenticated transition record. Mutable
+ # owner fields alone cannot grant the longer native effect allowance. The
+ # initial and CORE-materialized consumer retain this same authenticated state.
+ effect_state=None
+ def admit_effect(plan=None,now=None):
+  nonlocal effect_state
+  getter()
+  if plan is None and now is None:return effect_state
+  deadline.check()
+  if (effect_state is not None or type(now)is not float
+      or not clock[0]<=now<=min(clock[1]-clock[2]-clock[3],time.monotonic())
+      or type(plan)is not dict or plan.get('clock')!=clock[4]
+      or plan.get('new_scenario',{}).get('deadline_seconds')!=clock[3]):
+   raise ValueError('exact_effect_admission_binding_changed')
+  effect_state=now
+ previous_admission=deadline.effect_admission
+ effect_admission=admit_effect if previous_admission is None else previous_admission
+ if previous_admission is not None:
+  if (type(previous_admission)is not types.FunctionType
+      or previous_admission.__code__ is not admit_effect.__code__
+      or previous_admission.__defaults__ is not admit_effect.__defaults__
+      or previous_admission.__closure__ is None
+      or previous_admission.__closure__[admit_effect.__code__.co_freevars.index('deadline')].cell_contents is not deadline
+      or previous_admission.__kwdefaults__ is not None):
+   raise ValueError('exact_prior_effect_admission_required')
+ def getter():
+  if (vars(c).get('_caller_preparation_deadline')is not deadline
+      or vars(c).get('_caller_preparation_deadline_getter')is not getter
+      or vars(c).get('_caller_preparation_deadline_binding')is not binding
+      or type(deadline)is not cls or tuple(vars(cls).items())!=members
+      or deadline.handler is not handler or deadline.term_handler is not term_handler
+      or deadline.effect_admission is not effect_admission
+      or effect_admission.__code__ is not effect_binding[0]
+      or effect_admission.__defaults__ is not effect_binding[1]
+      or effect_admission.__kwdefaults__ is not effect_binding[2]
+      or effect_admission.__closure__ is not effect_binding[3]
+      or handler.__self__ is not deadline or handler.__func__ is not cls._expired
+      or term_handler.__self__ is not deadline or term_handler.__func__ is not cls._cancelled
+      or any(name in vars(deadline)or getattr(deadline,name).__func__ is not fn
+         or not unchanged(records)for name,fn,records in methods)
+      or any(getattr(c,name)is not fn or not unchanged(records)for name,fn,records in helpers)
+      or (deadline.origin,deadline.hard_deadline,deadline.reserve,deadline.scenario_seconds,deadline.clock)!=clock):
+   raise ValueError('exact_preparation_owner_binding_changed')
+  anchor=deadline.postcheck_anchor
+  effect=deadline.effect_anchor
+  preparation_cutoff=clock[1]-clock[2]-(0 if clock[3]is None else clock[3])
+  cutoff=(preparation_cutoff if effect is None else clock[1]-clock[2])if anchor is None else min(clock[1],anchor+clock[2])
+  hard=clock[1]if anchor is None else cutoff
+  expected_effect=effect_state if previous_admission is None else previous_admission()
+  if (effect is not expected_effect or deadline.cutoff!=cutoff or deadline.cleanup_deadline!=hard
+      or(effect is not None and(type(effect)is not float or not clock[0]<=effect<=min(preparation_cutoff,time.monotonic())))
+      or(anchor is not None and(type(anchor)is not float or not clock[0]<=anchor<=time.monotonic()
+          or(effect is not None and anchor<effect)))):
+   raise ValueError('exact_preparation_clock_binding_changed')
+  return deadline
+ if previous_admission is not None:
+  prior_getter=previous_admission.__closure__[admit_effect.__code__.co_freevars.index('getter')].cell_contents
+  if (type(prior_getter)is not types.FunctionType or prior_getter.__code__ is not getter.__code__
+      or prior_getter.__globals__ is not getter.__globals__ or prior_getter.__defaults__ is not None
+      or prior_getter.__kwdefaults__ is not None or prior_getter.__closure__ is None):
+   raise ValueError('exact_prior_preparation_getter_required')
+  prior_cells=dict(zip(prior_getter.__code__.co_freevars,prior_getter.__closure__))
+  prior_consumer=prior_cells['c'].cell_contents
+  prior_binding=vars(prior_consumer).get('_caller_preparation_deadline_binding')
+  if (type(prior_consumer)is not types.ModuleType
+      or prior_cells['deadline'].cell_contents is not deadline
+      or prior_cells['effect_admission'].cell_contents is not previous_admission
+      or vars(prior_consumer).get('_caller_preparation_deadline_getter')is not prior_getter
+      or type(prior_binding)is not tuple or len(prior_binding)!=6
+      or any(a is not b for a,b in zip(prior_binding,(prior_getter,prior_getter.__code__,
+          prior_getter.__defaults__,prior_getter.__kwdefaults__,prior_getter.__closure__,prior_getter.__globals__)))
+      or prior_getter()is not deadline or previous_admission()is not None):
+   raise ValueError('exact_prior_preparation_lease_required')
+ effect_binding=(effect_admission.__code__,effect_admission.__defaults__,effect_admission.__kwdefaults__,effect_admission.__closure__)
+ deadline.effect_admission=effect_admission
+ binding=(getter,getter.__code__,getter.__defaults__,getter.__kwdefaults__,getter.__closure__,getter.__globals__)
+ c._caller_preparation_deadline=deadline
+ c._caller_preparation_deadline_getter=getter
+ c._caller_preparation_deadline_binding=binding
+ c.network_deadline_available()
