@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: PLAN_PUBLISHED
+- state: PLAN_SUPPLEMENT_PUBLISHED
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -17,6 +17,7 @@
 - auxiliary_conditions_observed_at: 2026-11-05T16:30:50Z
 - user_paths_observed_at: 2026-11-05T16:54:53Z
 - plan_observed_at: 2026-11-05T17:09:30Z
+- plan_supplement_observed_at: 2026-11-05T17:42:42Z
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -41,12 +42,23 @@
 - reviewer_007_decrypted: true
 - reviewer_007_integrity_confirmed: true
 - reviewer_007_note: оба файла приложения расшифрованы; размер, SHA-256 и целостность подтверждены
-- reviewer_008_package_read: false
-- reviewer_009_package_read: false
+- reviewer_008_package_read: true
+- reviewer_008_decrypted: true
+- reviewer_008_integrity_confirmed: true
+- reviewer_008_note: оба файла приложения расшифрованы и прочитаны; размер, SHA-256 и целостность подтверждены
+- reviewer_009_package_read: true
+- reviewer_009_decrypted: true
+- reviewer_009_integrity_confirmed: true
+- reviewer_009_note: оба файла приложения расшифрованы и прочитаны; размер, SHA-256 и целостность подтверждены; 009 принят как предварительный архитектурный план
+- reviewer_009_acceptance: preliminary_plan_not_implementation_directive_not_audit_closure
+- reviewer_010_package_read: false
+- reviewer_010_decrypted: false
+- reviewer_010_integrity_confirmed: false
 - config_provenance_accepted: true
 - live_turn_context_observed: false
 - tester_history_dependence: retracted
 - tester_history_dependence_scope: traced_worker_path
+- tester_import_absence_proves_no_analogous_excess: false
 - telegram_cold_boot_policy: preserve
 - telegram_cold_boot_acceptance: config_and_code_not_recovery
 - admission_refresh: absent_in_examined_procedures
@@ -54,9 +66,11 @@
 - finding_F-005_acceptance: observed_generation_mismatch_and_static_gap_in_examined_procedures
 - dsh_sidecar_full_result: not_established
 - a0_source_pins_before_sidecar: static_fail_closed
-- f005_plan_requirement: controlled_transition_verified_composition
+- f005_plan_requirement: three_phases_composition_requalification_activation
 - f005_hash_substitution: forbidden
 - f005_profile_exception: forbidden
+- hash_recalculation_confirms_readiness: false
+- f005_future_operation_present_in_code: false
 - postboot_functions_capsule: published_redacted_in_009
 - finding_F-006: LOCAL_ROUTE_PIN
 - finding_F-006_status: STATIC_INFERENCE
@@ -74,11 +88,23 @@
 - plan_inputs_status: static_contract_questions_not_reproduced_hangs
 - user_paths: static_inference_reply_file_cancel
 - user_paths_executed: false
+- follow_up_queue: process_memory_pending_messages
+- follow_up_queue_crash_tested: false
+- follow_up_queue_other_journal_searched: false
+- admin_gates_read: slash_allowed_then_slash_access
+- admin_gates_executed: false
+- admin_lists_reread: false
+- command_registry_fully_classified: false
+- s12_subject: tester_cursor_and_product_intake
+- s12_writer_body_read: false
+- s12_live_cursor_opened: false
 - breadth_status: INTERMEDIATE
 - excess_complexity_proven_by_counts: false
-- coverage_matrix: reports/009-coverage-matrix.csv
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc
+- audit_closed: false
+- implementation_directive: false
+- coverage_matrix: reports/010-coverage-matrix.csv
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
@@ -87,8 +113,8 @@
 - implementation_this_turn: false
 - private_start_folder: вынесена из Git-деревьев; файлы команды не изменялись и не добавлялись
 
-Ревьюер прочитал пакет 007, включая оба файла приложения. Размер, SHA-256 и целостность подтверждены. Отчёт 007 не переписывался. Четыре наблюдения 007 записаны в плане 009: область семафора, бюджет сжатия вместе с очередью, различие sync и async повторов, внутренний переход между локальными ролями. Это статические вопросы контракта, не воспроизведённые зависания. Счётчики вызовов в доли времени не переводятся. Отдельный цикл исследований по этим настройкам не начинался.
+Ревьюер прочитал пакеты 008 и 009. Все четыре файла приложений расшифрованы и прочитаны. Размеры, SHA-256 и целостность подтверждены. 009 принят как предварительный архитектурный план. Директивой внедрения он не является. Аудит не закрыт. Отчёты 001–009 не переписывались.
 
-Обычный ответ, следующее сообщение, чтение, создание, точечная правка, доставка и отмена прочитаны по составленному коду. Функции не исполнялись. Созданный файл и доставленный файл разделены. Contextvar живого turn не наблюдался. Пакет 008 ревьюер ещё не подтверждал. Пакет 009 ревьюер ещё не подтверждал.
+Дополнение 010 разделяет проверку состава, повторную квалификацию и активацию. Пересчёт хеша готовность не подтверждает. Очередь следующего сообщения остаётся в памяти процесса. Права команд прочитаны как два затвора; живые списки не перечитывались; полный реестр не разобран. S12 уточнён как cursor тестера и его связь с продуктовым приёмом. Тело писателя не прочитано. Пустой поиск имён тестера аналогичную избыточную работу не закрывает. Пакет 010 ревьюер ещё не подтверждал.
 
-F-005 не переоткрывался. Переход задан отдельной операцией новой проверенной композиции, без подмены исторических хешей и без исключения профиля. F-006 не переоткрывался. Полный результат установленного DSH-sidecar не установлен. План опубликован и несёт матрицу целиком, включая строки NOT_CHECKED. Капсула postboot приложена в зашифрованном виде; литерал профиля и жёстко заданные дайджесты вырезаны. Внедрение не начато. Код продукта не менялся. Воркеры не включались.
+F-005 не переоткрывался как finding. Будущей трёхфазной операции в коде нет. F-006 не переоткрывался. Полный результат установленного DSH-sidecar не установлен. Матрица несётся целиком. C03 остаётся NOT_CHECKED. Внедрение не начато. Код продукта не менялся. Воркеры не включались. Новый живой прогон не запускался.
