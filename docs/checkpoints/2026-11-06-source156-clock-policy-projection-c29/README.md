@@ -1,0 +1,15 @@
+# Source156: C29 clock-policy projection
+
+This checkpoint publishes a narrow tester source patch and a curated summary of existing observations. C29 source composition and its local Current/partial-authority qualifications were accepted. Installed Source156 is unchanged. Product PASS, complete native material execution and full-path acceleration remain unestablished; one genuinely new narrow F03 operation is pending at this checkpoint.
+
+R28 ran for **297.515 seconds** and ended `PRE_ADMISSION_NATIVE_READONLY_REFUSED` before native material entry, with **0 native material counter samples**. No product request was sent and no admission, Run or send occurred. Its original 1560-second window and closed effect remain preserved; the patch does not replay that attempt.
+
+The reconstructed final history source shows that the engineering clock policy was looked up on a reconciliation projection, which lacks the full frozen plan required by the authenticated policy callback. The lookup therefore fell back to 300 seconds and refused the 1560-second clock. An earlier M12 attribution used a pre-history line map and was corrected. This diagnosis reconstructs pinned source; it is not a runtime bytecode capture.
+
+`SOURCE-DELTA.patch` changes only the existing `history.future_budget_source` clock replacement expression, plus two comments. It uses the unchanged authenticated callback on the full frozen plan and checks that the projection has the exact same clock and `current_tuple`. Public 120-second reconciliation and the existing worker, stopped, M12 and S05 priority/context guards remain intact. Existing identity, credential, recovery and physical-dispatch guards remain unchanged by this delta.
+
+The accepted evidence comprises 49 inert controls using the actual AST, independent source review and the integrator's inverse-AST review. New exact C29 local qualifications completed in **67.3899 seconds** (Current) and **41.7394 seconds** (partial authority: three routes and three changed-pin negative controls); both processes were reaped. These qualifications ran concurrently. Their times are separate measurements, and nested R28 phase intervals must not be added. Local/source controls receive no baseline or product coverage credit.
+
+The patch uses relative paths. Its exact input is `regression/b00_history_engineering156.py`, SHA-256 `f0b30c84006c2799cebc0437b99517cc40ecc13eb5382487387220c2687093cc`; its resulting source SHA-256 is `5a216b9f94311867a0929fd4c3b73869f8616ca7b0528e9fcb3efb31b48fd863`. It is a delta against that exact source, not a standalone executable or a complete published source tree. Installation-specific composition bindings, private evidence and operational authority documents are excluded.
+
+`MEASURED-EVIDENCE.json` records the bounded facts, limitations and input digests. It is a curated summary, not a copy of private proof. `SHA256SUMS` covers the three public payload files. No test, qualification, model, native material, Telegram, network, service, installation or Git operation was performed to prepare this publication package.
