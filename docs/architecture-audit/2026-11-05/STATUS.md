@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: CONTINUED_STATIC_PUBLISHED
+- state: INBOUND_OFFSET_STATIC_PUBLISHED
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -21,6 +21,7 @@
 - static_sections_observed_at: 2026-11-05T18:18:17Z
 - remarks_observed_at: 2026-11-05T22:55:50Z
 - continued_static_observed_at: 2026-11-05T23:46:01Z
+- inbound_offset_observed_at: 2026-11-06T00:24:16Z
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -73,9 +74,17 @@
 - reviewer_012_product_functions_executed: false
 - reviewer_012_acceptance: three_static_grounds_for_future_work
 - reviewer_012_note: все три файла приложения расшифрованы и просмотрены; размер SHA-256 и целостность подтверждены; ключевой порядок вызовов в трёх замечаниях и четырёх методах тестера независимо сверен по выдержкам; продуктовые функции ревьюер не исполнял
-- reviewer_013_package_read: false
-- reviewer_013_decrypted: false
-- reviewer_013_integrity_confirmed: false
+- reviewer_013_package_read: true
+- reviewer_013_decrypted: true
+- reviewer_013_integrity_confirmed: true
+- reviewer_013_attachment_files: 3
+- reviewer_013_product_functions_executed: false
+- reviewer_013_new_call_orders_cross_checked: true
+- reviewer_013_acceptance: config_directory_caveat_accepted_cursor_limits_preserved_fifo_rescue_memory_reorder_not_durable
+- reviewer_013_note: три файла приложения расшифрованы и просмотрены; размер SHA-256 и целостность подтверждены; новые порядки вызовов независимо сверены по выдержкам; продуктовые функции не исполнялись; поправка каталога принята; ограничения cursor сохранены; FIFO-rescue принят как перестановка в памяти
+- reviewer_014_package_read: false
+- reviewer_014_decrypted: false
+- reviewer_014_integrity_confirmed: false
 - config_provenance_accepted: true
 - live_turn_context_observed: false
 - tester_history_dependence: retracted
@@ -173,7 +182,22 @@
 - rescue_orphaned_overflow_read: true
 - rescue_orphaned_overflow_executed: false
 - rescue_writes_spool: false
-- telegram_offset_library_body_read: false
+- telegram_offset_library_body_read: true
+- telegram_offset_library_name: python-telegram-bot
+- telegram_offset_library_version: 22.8
+- telegram_offset_library_identity: site_packages_mapped_by_acting_gateway_record_matched
+- telegram_offset_library_executed: false
+- telegram_offset_polling_started: false
+- telegram_offset_dependencies_updated: false
+- telegram_offset_wheel_blob_compared: false
+- telegram_offset_advanced_after_queue_put: true
+- telegram_offset_confirmation_is_next_getupdates: true
+- telegram_offset_loss_observed: false
+- unconditional_retry_proposed: false
+- started_action_repeat_guard: seen_or_inflight_receipt_after_accept_and_gateway_accepted
+- not_started_recovery: pending_slot_and_held_inbound_memory
+- not_started_recovery_durable: false
+- not_started_recovery_executed: false
 - telegram_local_receipt_is_answer: false
 - telegram_live_receipt_opened: false
 - embeddings_path: stops_at_unopened_a0_image_callees
@@ -187,9 +211,9 @@
 - read_behavior_untested: true
 - new_general_plan: false
 - c03: NOT_CHECKED
-- coverage_matrix: reports/013-coverage-matrix.csv
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv, reports/012-remarks.md, reports/012-coverage-matrix.csv, reports/013-continued-static.md, reports/013-coverage-matrix.csv
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc, artifacts/012-remarks.tar.gz.gpg.asc, artifacts/013-continued-static.tar.gz.gpg.asc
+- coverage_matrix: reports/014-coverage-matrix.csv
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv, reports/012-remarks.md, reports/012-coverage-matrix.csv, reports/013-continued-static.md, reports/013-coverage-matrix.csv, reports/014-getupdates-static.md, reports/014-coverage-matrix.csv
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc, artifacts/012-remarks.tar.gz.gpg.asc, artifacts/013-continued-static.tar.gz.gpg.asc, artifacts/014-getupdates-static.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
