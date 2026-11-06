@@ -1,0 +1,13 @@
+# Source156: prospective timing-qualification repair
+
+This checkpoint publishes an independently accepted source repair for the tester defect observed in R36. It does not install a new product composition and does not authorize another F03/G07 operation. Fresh package qualifications and final C37 entry provenance remain separate requirements.
+
+The helper previously required the legacy ten-field timing-acceptance document. The new prospective document has two additional fields linking fresh Current and partial qualifications. The exact-shape comparison therefore refused R36 before local plan creation. The repair keeps the legacy shape by default and adds an explicit `require_qualifications` mode for prospective calls. Required mode accepts exactly twelve fields: either missing qualification or any additional field still fails whole-document equality.
+
+The validator authenticates both qualification documents and checks their package, Current result, tester identity, fresh-process and canonical-consumer joins, partial routes, denied/forbidden fences and three stale-pin negative controls. These checks establish coherence, not Root authorship. Final literal source and evidence pins remain mandatory in the outer C37 guards; the helper does not embed future result hashes or create a package/helper/qualification hash cycle.
+
+Independent review initially rejected the repair because `bind_future_timing → bind_policy` still used legacy mode. That path is now explicitly prospective and requires qualifications, while historical `validate_policy_closed` retains the legacy default. The two direct caller policy sites, grant validation through `tester_package`, and both `bind_policy` forms (`plan=None` and formed plan) are covered. A plan-less validation grants no plan authority; a formed plan still requires exact token and plan identity.
+
+The inert suite passes 41/41 checks. It reproduces the original helper failure, verifies the C36 extended and C35 legacy documents, and rejects missing/extra fields, stale or swapped references, altered Current/tester/partial semantics, and mutations of observation, scenario, case, package, caller and plan joins. Earlier harness errors and the independent `bind_policy` rejection are retained in the development history; they are not converted into product passes.
+
+[SOURCE-DELTA.patch](SOURCE-DELTA.patch) contains only the reviewed helper and caller changes. [MEASURED-EVIDENCE.json](MEASURED-EVIDENCE.json) records aggregate results and limits. [SHA256SUMS](SHA256SUMS) covers all three files. Private paths, credentials, tokens, user contents and raw private evidence are excluded.
