@@ -1,0 +1,671 @@
+--- a/regression/native_material_counters.py
++++ b/regression/native_material_counters.py
+@@ -16,7 +16,9 @@
+ 
+ 
+ class ExactLocalCounters:
+-    def __init__(self, exact_codes, exact_callers, *, lifetime_id=1, tool_id=5):
++    def __init__(self, exact_codes, exact_callers, *, lifetime_id=1, tool_id=5,
++                 proof_bindings=(), ancestry_codes=None, consumer=None,
++                 retained_original_line=None, ancestry_namespace=None):
+         if (type(exact_codes) is not dict or set(exact_codes) != LABELS
+                 or any(type(code) is not types.CodeType or code.co_name != label
+                        or code.co_flags & (0x20 | 0x80 | 0x200)
+@@ -39,17 +41,286 @@
+         self.owner_thread = None
+         self.lifetime_id = lifetime_id
+         self.tool_id = tool_id
+-        self.name = "frw-r27-exact-local-retired-counts-" + str(time.monotonic_ns())
++        self.name = "frw-exact-local-counts-" + str(lifetime_id) + "-" + str(time.monotonic_ns())
+         self.active = {}
+         self.rows = {label: dict(entered=0, completed=0, raised=None,
+             max_selected_depth=0, completed_inclusive_wall_seconds=0.0,
+             completed_inclusive_cpu_seconds=0.0,
+             unresolved_frame_identity_reuse=0) for label in LABELS}
++        self._configure_proofs(proof_bindings, ancestry_codes, consumer,
++                               retained_original_line, ancestry_namespace)
+         self.started = False
+         self.observer_refused = False
+         self.cleanup_confirmed = False
++        self.selected_local_masks_cleared = False
+         self.start_wall = self.start_cpu = None
+         self.end_wall = self.end_cpu = None
++
++    PROOF_CAP = 64
++    PROOF_SCOPE_CAP = 24
++    PROOF_ROW_CAP = 64
++    PROOF_STACK_CAP = 256
++    PROOF_ACTIVE_CAP = 256
++
++    def _configure_proofs(self, bindings, ancestry_codes, consumer, raw_line, namespace):
++        self.proof_codes = {}; self.proof_bindings = {}
++        self.proof_objects = {}; self.proof_scopes = {}; self.proof_rows = {}
++        self.proof_active = {}; self.proof_code_roles = {}
++        self.proof_overflow = dict(objects=0, scopes=0, rows=0, spans=0,
++                                   stack=0, unknown_scope=0, scope_authentication_unknown=0, unresolved_reuse=0)
++        self.proof_next = self.scope_next = 0
++        self.proof_consumer = consumer
++        self.proof_scope_codes = ancestry_codes if ancestry_codes is not None else {}
++        self.proof_scope_namespace = namespace
++        self.proof_raw_line = raw_line
++        self.proof_frame_locals_type = type(sys._getframe().f_locals)
++        if type(bindings) is not tuple:
++            raise ValueError("builtin_proof_binding_tuple_required")
++        if not bindings:
++            if (ancestry_codes is not None or consumer is not None or raw_line is not None
++                    or namespace is not None):
++                raise ValueError("complete_optional_proof_binding_required")
++            return
++        required = {"register_frozen", "register", "retained_validator", "check",
++                    "verify_physical_policy", "selector_parent", "check_parent"}
++        if (type(bindings) is not tuple or not 1 <= len(bindings) <= self.PROOF_CAP
++                or type(consumer) is not types.ModuleType
++                or type(namespace) is not dict
++                or type(ancestry_codes) is not dict or set(ancestry_codes) != required
++                or any(type(c) is not types.CodeType for c in ancestry_codes.values())
++                or type(raw_line) is not int or raw_line <= ancestry_codes["check"].co_firstlineno):
++            raise ValueError("bounded_authenticated_proof_bindings_required")
++        for binding in bindings:
++            if type(binding) is not tuple or len(binding) != 4:
++                raise ValueError("builtin_proof_binding_row_required")
++            cls, function, expected, kind = binding
++            if (type(cls) is not type or type(function) is not types.FunctionType
++                    or type(expected) is not types.CodeType or type(kind) is not int or kind not in (1, 2)
++                    or cls.__name__ != ("StoppedSentPartialProof" if kind == 1 else "ZeroWireProof")
++                    or vars(cls).get("validate") is not function
++                    or function.__globals__.get(cls.__name__) is not cls
++                    or function.__code__ != expected or function.__code__.co_flags & (0x20 | 0x80 | 0x200)
++                    or function.__defaults__ is not None or function.__kwdefaults__ is not None
++                    or function.__closure__ is not None):
++                raise ValueError("exact_original_proof_class_function_required")
++            descriptor = next((vars(base).get("__dict__") for base in cls.__mro__
++                if type(vars(base).get("__dict__")) is types.GetSetDescriptorType), None)
++            if descriptor is None:
++                raise ValueError("builtin_proof_state_descriptor_required")
++            self.proof_bindings[cls] = (function, descriptor, kind)
++            self.proof_codes[id(function.__code__)] = function.__code__
++        # Source comparison is bounded to first encounter of an actual code.
++        # No per-event hashing, compilation, AST or source reads occur.
++
++    def _proof_field(self, mapping, name):
++        # Direct builtin iteration avoids foreign colliding-key callbacks.
++        if type(mapping) is not dict or len(mapping) > 1024:
++            raise ValueError("bounded_builtin_proof_namespace_required")
++        for key, value in mapping.items():
++            if type(key) is str and key == name:
++                return value
++        return None
++
++    def _proof_closure(self, function, role, name):
++        defaults = {"register_frozen": (False,), "register": (False, False),
++                    "retained_validator": (False, False)}.get(role)
++        if (type(function) is not types.FunctionType
++                or function.__code__ != self.proof_scope_codes[role]
++                or function.__globals__ is not self.proof_scope_namespace
++                or function.__kwdefaults__ is not None
++                or (function.__defaults__ is not None if defaults is None else
++                    type(function.__defaults__) is not tuple
++                    or len(function.__defaults__) != len(defaults)
++                    or any(actual is not expected for actual, expected
++                           in zip(function.__defaults__, defaults)))
++                or function.__closure__ is None):
++            raise ValueError("exact_proof_scope_function_required")
++        return function.__closure__[function.__code__.co_freevars.index(name)].cell_contents
++
++    def _proof_scope(self, scope):
++        try:
++            return self._proof_scope_known(scope)
++        except (ValueError, AttributeError, KeyError, IndexError):
++            # Older/foreign source owners are unavailable diagnostic evidence.
++            # Their original validation and custody checks still execute.
++            self.proof_overflow["scope_authentication_unknown"] += 1
++            return 0
++
++    def _proof_scope_known(self, scope):
++        if scope is None:
++            return 0
++        saved = self.proof_scopes.get(id(scope))
++        if (type(scope) is not tuple or len(scope) != 4
++                or type(scope[3]) is not tuple or len(scope[3]) != 2):
++            raise ValueError("exact_proof_scope_tuple_required")
++        verify = scope[3][1]
++        if (self._proof_closure(verify, "verify_physical_policy", "owned_scope") is not scope
++                or self._proof_closure(verify, "verify_physical_policy", "c") is not self.proof_consumer):
++            raise ValueError("exact_proof_scope_owner_required")
++        register = self._proof_closure(scope[2], "register_frozen", "register")
++        retained = self._proof_closure(register, "register", "retained_validator")
++        validated = self._proof_closure(retained, "retained_validator", "validated")
++        if type(validated) is not dict:
++            raise ValueError("builtin_proof_scope_ledger_required")
++        previous = self._proof_closure(register, "register", "previous_scope")
++        # Scope tuples retain mutable functions and closure cells. Recheck the
++        # live source/owner joins before reusing an ordinal or ledger identity.
++        if saved is not None and saved[0] is scope:
++            if any(actual is not expected for actual, expected in zip(
++                    (validated, register, retained, previous), saved[2:])):
++                raise ValueError("proof_scope_binding_changed")
++            return saved[1]
++        if len(self.proof_scopes) >= self.PROOF_SCOPE_CAP:
++            self.proof_overflow["scopes"] += 1
++            return 0
++        self.scope_next += 1
++        self.proof_scopes[id(scope)] = (scope, self.scope_next, validated,
++                                      register, retained, previous)
++        # Publish only after every required local join is authenticated.
++        # Publication before bounded outer-scope discovery also bounds cycles.
++        if previous is not None:
++            self._proof_scope(previous)
++        return self.scope_next if previous is None else self.proof_scopes[id(scope)][1]
++
++    def _proof_role(self, code):
++        entry = self.proof_code_roles.get(id(code))
++        if entry is not None and entry[0] is code:
++            return entry[1]
++        role = next((name for name in ("check", "selector_parent", "check_parent")
++                     if code == self.proof_scope_codes[name]), None)
++        if role is not None and len(self.proof_code_roles) < self.PROOF_CAP:
++            self.proof_code_roles[id(code)] = (code, role)
++        return role
++
++    def _proof_frame(self, code):
++        frame = sys._getframe(3)
++        if frame.f_code is not code or threading.get_ident() != self.owner_thread:
++            self.observer_refused = True
++            raise RuntimeError("exact_same_thread_proof_frame_required")
++        return frame
++
++    def _proof_start(self, code):
++        wall, cpu = time.monotonic(), time.process_time()
++        frame = self._proof_frame(code)
++        try:
++            # An unobserved unwind may leave this now-reused frame id behind.
++            # Retire it before any bounded drop can leave its return matchable.
++            key = id(frame)
++            if self.proof_active.pop(key, None) is not None:
++                self.proof_overflow["unresolved_reuse"] += 1
++            owner = frame.f_locals["self"]
++            owner_type = type(owner)
++            if type(owner_type) is not type:
++                self.observer_refused = True
++                raise RuntimeError("builtin_proof_metaclass_required")
++            binding = self.proof_bindings.get(owner_type)
++            if (binding is None or binding[0].__code__ is not code
++                    or vars(type(owner)).get("validate") is not binding[0]
++                    or binding[0].__globals__.get(owner_type.__name__) is not owner_type
++                    or binding[0].__defaults__ is not None or binding[0].__kwdefaults__ is not None
++                    or binding[0].__closure__ is not None):
++                self.observer_refused = True
++                raise RuntimeError("proof_original_binding_changed")
++            state = binding[1].__get__(owner, type(owner))
++            if type(state) is not dict or self._proof_field(state, "c") is not self.proof_consumer:
++                self.observer_refused = True
++                raise RuntimeError("proof_actual_consumer_required")
++            saved = self.proof_objects.get(id(owner))
++            if saved is None:
++                if len(self.proof_objects) >= self.PROOF_CAP:
++                    self.proof_overflow["objects"] += 1
++                    return
++                self.proof_next += 1
++                saved = (owner, self.proof_next)
++                self.proof_objects[id(owner)] = saved
++            current_scope = self._proof_field(vars(self.proof_consumer), "_b00_history_read_scope")
++            scope_ordinal = self._proof_scope(current_scope)
++            if current_scope is not None and not scope_ordinal:
++                self.proof_overflow["unknown_scope"] += 1
++            # route: 0 raw/no scope; 1 scoped original; 2 own retained miss;
++            # 3 strict boundary reentry. A retained hit itself invokes no original.
++            route = 0 if current_scope is None else 1 if scope_ordinal else 4
++            unknown_scope = current_scope is not None and not scope_ordinal
++            wrapper_owner = 0; ancestor_hit = 0
++            cursor = frame.f_back
++            for unused in range(self.PROOF_STACK_CAP):
++                if cursor is None:
++                    break
++                role = self._proof_role(cursor.f_code)
++                if role is not None and cursor.f_globals is not self.proof_scope_namespace:
++                    self.proof_overflow["scope_authentication_unknown"] += 1
++                    unknown_scope = True
++                    role = None
++                if role in ("selector_parent", "check_parent"):
++                    route = 3
++                elif role == "check":
++                    local = cursor.f_locals
++                    # Only pointer identity of the builtin ledger is observed.
++                    # No verdict, proof contents, key membership or repr is read.
++                    ledger = local.get("validated")
++                    same = local.get("proof") is owner
++                    if same:
++                        wrapper_owner = next((row[1] for row in self.proof_scopes.values()
++                            if row[2] is ledger and self._proof_scope(row[0]) == row[1]), 0)
++                        if cursor.f_lineno == self.proof_raw_line and route != 3:
++                            route = 2
++                    elif cursor.f_lineno < self.proof_raw_line:
++                        ancestor_hit = 1
++                cursor = cursor.f_back
++            else:
++                if cursor is not None:
++                    self.proof_overflow["stack"] += 1
++                    route = 4  # unknown/truncated
++            if unknown_scope:
++                route = 4
++            row_key = (binding[2], saved[1], scope_ordinal, wrapper_owner, route, ancestor_hit)
++            if row_key not in self.proof_rows:
++                if len(self.proof_rows) >= self.PROOF_ROW_CAP:
++                    self.proof_overflow["rows"] += 1
++                    return
++                self.proof_rows[row_key] = dict(entered=0, completed=0,
++                    completed_inclusive_wall_seconds=0.0, completed_inclusive_cpu_seconds=0.0)
++            if len(self.proof_active) >= self.PROOF_ACTIVE_CAP:
++                self.proof_overflow["spans"] += 1
++                return
++            self.proof_active[key] = (code, row_key, wall, cpu)
++            self.proof_rows[row_key]["entered"] += 1
++        finally:
++            del frame
++
++    def _proof_return(self, code):
++        wall, cpu = time.monotonic(), time.process_time()
++        frame = self._proof_frame(code)
++        try:
++            span = self.proof_active.pop(id(frame), None)
++            if span is None:
++                return  # bounded dropped start; overflow is explicit
++            if span[0] is not code:
++                self.observer_refused = True
++                raise RuntimeError("matching_proof_start_required")
++            row = self.proof_rows[span[1]]
++            row["completed"] += 1
++            row["completed_inclusive_wall_seconds"] += wall - span[2]
++            row["completed_inclusive_cpu_seconds"] += cpu - span[3]
++        finally:
++            del frame
++
++    def _proof_snapshot(self):
++        return dict(enabled=bool(self.proof_codes),
++            rows=[dict(kind=k[0], proof_ordinal=k[1], active_scope_ordinal=k[2],
++                       retained_owner_scope_ordinal=k[3], route=k[4],
++                       ancestor_retained_hit=k[5], **row)
++                  for k, row in sorted(self.proof_rows.items())],
++            overflow=dict(self.proof_overflow),
++            unresolved_spans=(sum(r["entered"]-r["completed"] for r in self.proof_rows.values())),
++            proof_cap=self.PROOF_CAP, scope_cap=self.PROOF_SCOPE_CAP,
++            row_cap=self.PROOF_ROW_CAP, active_span_cap=self.PROOF_ACTIVE_CAP,
++            stack_cap=self.PROOF_STACK_CAP,
++            semantics="LOCAL_ORIGINAL_VALIDATOR_SPANS_ONLY;1=STOPPED;2=ZERO_WIRE;ROUTE0=RAW,1=SCOPED,2=OWN_RETAINED_MISS,3=STRICT,4=UNKNOWN;ORDINAL0=NO_SCOPE_OR_UNKNOWN_OWNER;ANCESTOR_HIT_DOES_NOT_COUNT_OWN_CACHE_HITS",
++            own_retained_hit_totals_available=False,
++            actual_read_scope_completion_observed=False,
++            object_ids_exported=False, proof_contents_exported=False,
++            strong_identity_references_released=self.cleanup_confirmed)
+ 
+     def _frame_key(self, code):
+         frame = sys._getframe(2)
+@@ -81,6 +352,8 @@
+         return key, depth, callsite
+ 
+     def _start(self, code, offset):
++        if id(code) in self.proof_codes:
++            return self._proof_start(code)
+         entry = self.codes.get(id(code))
+         if entry is None or entry[0] is not code:
+             self.observer_refused = True
+@@ -111,6 +384,8 @@
+         row["max_selected_depth"] = max(row["max_selected_depth"], depth)
+ 
+     def _return(self, code, offset, value):
++        if id(code) in self.proof_codes:
++            return self._proof_return(code)
+         # Return payload is never inspected, retained, serialized, or logged.
+         wall, cpu = time.monotonic(), time.process_time()
+         key, unused_depth, unused_callsite = self._frame_key(code)
+@@ -143,6 +418,9 @@
+             for code, label in self.codes.values():
+                 mon.set_local_events(self.tool_id, code,
+                     mon.events.PY_START | mon.events.PY_RETURN)
++            for code in self.proof_codes.values():
++                mon.set_local_events(self.tool_id, code,
++                    mon.events.PY_START | mon.events.PY_RETURN)
+             return self
+         except BaseException:
+             try:
+@@ -157,11 +435,22 @@
+             if mon.get_tool(self.tool_id) != self.name:
+                 self.observer_refused = True
+                 raise RuntimeError("monitor_ownership_changed_no_foreign_cleanup")
+-            # The native CPython3.14 bdb tracer uses clear_tool_id followed by
+-            # free_tool_id. Never free a still-instrumented dirty slot.
++            # In this exact CPython 3.14, clear/free leaves local masks set.
++            # Clear only our bounded exact code set before releasing the slot.
++            selected = tuple(code for code, label in self.codes.values()) + tuple(self.proof_codes.values())
++            for code in selected:
++                mon.set_local_events(self.tool_id, code, 0)
++            if any(mon.get_local_events(self.tool_id, code) != 0 for code in selected):
++                self.observer_refused = True
++                raise RuntimeError("selected_local_event_cleanup_unconfirmed")
++            self.selected_local_masks_cleared = True
+             mon.clear_tool_id(self.tool_id)
+             mon.free_tool_id(self.tool_id)
+             self.cleanup_confirmed = True
++            # Strong references disambiguate ids only for this finite lifetime.
++            self.proof_objects.clear()
++            self.proof_scopes.clear()
++            self.proof_active.clear()
+         finally:
+             self.end_wall, self.end_cpu = time.monotonic(), time.process_time()
+ 
+@@ -212,6 +501,7 @@
+             state="IN_PROGRESS" if self.end_wall is None else "CLOSED", rows=rows,
+             observer_refused=self.observer_refused,
+             cleanup_confirmed=self.cleanup_confirmed,
++            selected_local_masks_cleared=self.selected_local_masks_cleared,
+             interval_wall_seconds=wall-self.start_wall,
+             interval_cpu_seconds=cpu-self.start_cpu,
+             continuation_key_callsites=[dict(caller_category=key[0], caller_f_lasti=key[1], **row)
+@@ -227,7 +517,8 @@
+             unresolved_span_times_and_raised_counts_are_unmeasured=True,
+             CPU_semantics="process_time includes every process thread",
+             configured_global_events=0, observed_owned_slot_global_events=actual_global_events,
+-            target_function_or_code_replacements=0)
++            target_function_or_code_replacements=0,
++            partial_proof_identity=self._proof_snapshot())
+ 
+ 
+ if __name__ == "__main__":
+--- a/regression/run_missing_ordinary_once_r8.py
++++ b/regression/run_missing_ordinary_once_r8.py
+@@ -126,6 +126,7 @@
+  COUNTER_MAX=(1<<63)-1
+  MAX_PROGRESS_KEYS=64
+  MAX_MATERIAL_INTERMEDIATE=4
++ COUNTER_PHASES=('NATIVE_NEW_MATERIAL','NATIVE_NEW_RUN_INVENTORY')
+  MAX_CLASS_KEYS=64
+  MAX_LOCALS_KEYS=128
+  CATEGORIES=('read','walk','helper','parent_validation','decode','module_load')
+@@ -167,10 +168,8 @@
+   self.frame_locals_type=type(sys._getframe().f_locals)
+   self._prepare_progress(package)
+   self.material_counter=None;self.material_bindings=None;self.material_identities=None
+-  self.material_intermediate_samples=0;self.material_final=None;self.material_sample_at=None
+-  self.material_start_attempted=False;self.material_initializing=False;self.material_unreliable_reason=None
+-  self.material_callback_codes=()
+- def attach_material_counters(self,consumer,runner,counter_type,ancestry_path):
++  self.material_callback_codes=();self.phase_counters={};self.active_counter_phase=None
++ def attach_material_counters(self,consumer,runner,counter_type,ancestry_path,*,proofs=None,proof_sources=None,source_reader=None):
+   # Capture the final live native class after original history/scope binding.
+   # This neither constructs historical owners nor replaces target functions.
+   if self.active or self.material_counter is not None:raise ValueError('fresh_material_observer_required')
+@@ -189,12 +188,61 @@
+   if free is None:raise ValueError('material_observer_no_free_tool_no_steal')
+   selected=('continuation_key','serial_history_guard','retired_prepared','prepared_unsent')
+   callers=('prepared_unsent','prepared_claim_pin','prepared_absent_claim_pin')
++  proof_options={}
++  if proofs is not None:
++   # Reuse the existing retained owner's finite list; no graph construction,
++   # parent walk, native API, new scope or validator invocation is performed.
++   if(type(proofs)is not tuple or not 1<=len(proofs)<=128
++       or type(proof_sources)is not dict or set(proof_sources)!={'history','zero','ancestry'}
++       or not callable(source_reader)):raise ValueError('finite_existing_proof_owner_list_required')
++   proof_raw={name:source_reader(pin)for name,pin in proof_sources.items()}
++   compiled={name:compile(proof_raw[name],pin['path'],'exec',dont_inherit=True)
++    for name,pin in proof_sources.items()}
++   def nested(code):
++    yield code
++    for child in code.co_consts:
++     if type(child)is types.CodeType:yield from nested(child)
++   expected={name:{code.co_qualname:code for code in nested(module)}for name,module in compiled.items()}
++   proof_bindings=[]
++   for proof in proofs:
++    proof_cls=type(proof);name=proof_cls.__name__
++    if name not in('StoppedSentPartialProof','ZeroWireProof'):continue
++    role,kind=('history',1)if name=='StoppedSentPartialProof'else('zero',2)
++    fn=vars(proof_cls).get('validate');code=expected[role][name+'.validate']
++    proof_bindings.append((proof_cls,fn,code,kind))
++   scope_codes={name:expected['ancestry']['_history_read_context.<locals>.'+name]
++    for name in('register','retained_validator','verify_physical_policy','selector_parent','check_parent')}
++   scope_codes['check']=expected['ancestry']['_history_read_context.<locals>.retained_validator.<locals>.check']
++   candidates=[code for code in nested(compiled['ancestry'])
++    if code.co_qualname=='_history_read_context.<locals>.<lambda>'and code.co_freevars==('register',)]
++   if len(candidates)!=1:raise ValueError('exact_scope_register_lambda_required')
++   scope_codes['register_frozen']=candidates[0]
++   # The exact original() dispatch line classifies an already suspended check
++   # frame. No mutable verdict mapping is inspected to infer the branch.
++   import ast
++   tree=ast.parse(proof_raw['ancestry'])
++   checks=[node for node in ast.walk(tree)if type(node)is ast.FunctionDef
++    and node.name=='check'and node.lineno==scope_codes['check'].co_firstlineno]
++   if len(checks)!=1:raise ValueError('exact_retained_check_source_required')
++   raw_calls=[node.lineno for node in ast.walk(checks[0])if type(node)is ast.Assign
++    and type(node.value)is ast.Call and type(node.value.func)is ast.Name
++    and node.value.func.id=='original'and any(type(t)is ast.Name and t.id=='value'for t in node.targets)]
++   if len(raw_calls)!=1:raise ValueError('exact_retained_original_dispatch_line_required')
++   if not proof_bindings:raise ValueError('existing_partial_or_zero_proofs_required')
++   proof_options=dict(proof_bindings=tuple(proof_bindings),ancestry_codes=scope_codes,
++    consumer=consumer,retained_original_line=raw_calls[0],
++    ancestry_namespace=functions['serial_history_guard'].__globals__)
+   counter=counter_type({name:functions[name].__code__ for name in selected},
+-   {name:functions[name].__code__ for name in callers},tool_id=free)
++   {name:functions[name].__code__ for name in callers},tool_id=free,**proof_options)
+   self.material_bindings=(consumer,cls,runner,bindings)
+   self.material_identities=[dict(role=label,**self._metadata(fn.__code__))for label,fn in functions.items()]
+   self.material_counter=counter
+-  self.material_callback_codes=tuple(getattr(counter,name).__func__.__code__ for name in('_start','_return','_frame_key'))
++  self.phase_counters={phase:dict(counter=(counter if index==1 else counter_type(
++   {name:functions[name].__code__ for name in selected},
++   {name:functions[name].__code__ for name in callers},tool_id=free,lifetime_id=index,**proof_options)),
++   intermediate=0,final=None,sample_at=None,attempted=False,initializing=False,unreliable=None)
++   for index,phase in enumerate(self.COUNTER_PHASES,1)}
++  self.material_callback_codes=tuple(getattr(counter,name).__func__.__code__ for name in('_start','_return','_frame_key','_proof_start','_proof_return','_proof_frame','_proof_scope','_proof_scope_known','_proof_role','_proof_closure','_proof_field'))
+  def _material_bookkeeping_frame(self,frame):
+   try:
+    for unused in range(2048):
+@@ -202,15 +250,18 @@
+     if any(frame.f_code is code for code in self.material_callback_codes):return True
+     frame=frame.f_back
+    if frame is not None:
+-    if self.material_unreliable_reason is None:self.material_unreliable_reason='BOOKKEEPING_SCAN_LIMIT'
+-    self.material_final=None
++    state=self.phase_counters.get(self.active_counter_phase)
++    if state is not None:
++     if state['unreliable']is None:state['unreliable']='BOOKKEEPING_SCAN_LIMIT'
++     state['final']=None
+     return True
+    return False
+   finally:del frame
+  def _material_note_interruption(self,frame=None,error=None):
+-  if self.material_counter is None:return
++  state=self.phase_counters.get(self.active_counter_phase)
++  if state is None:return
+   reason=None
+-  if self.material_initializing:reason='INITIALIZATION_INTERRUPTED'
++  if state['initializing']:reason='INITIALIZATION_INTERRUPTED'
+   elif self._material_bookkeeping_frame(frame if frame is not None else sys._getframe(1)):
+    reason='BOOKKEEPING_INTERRUPTED'
+   else:
+@@ -225,13 +276,17 @@
+      if trace is not None:reason='BOOKKEEPING_SCAN_LIMIT'
+    finally:del trace
+   if reason is not None:
+-   if self.material_unreliable_reason is None:self.material_unreliable_reason=reason
+-   self.material_final=None
+- def _material_status(self):
+-  counter=self.material_counter;started=counter is not None and counter.started
+-  return dict(native_material_status=self.material_unreliable_reason or('INITIALIZING'if self.material_initializing else'CLOSED'if started and counter.end_wall is not None else'IN_PROGRESS'if started else'NOT_STARTED'),
+-   native_material_counts_reliable=False if self.material_unreliable_reason is not None else None if not started or self.material_initializing else True,
+-   native_material_cleanup_confirmed=None if not self.material_start_attempted else counter.cleanup_confirmed)
++   if state['unreliable']is None:state['unreliable']=reason
++   state['final']=None
++ def _material_status(self,phase='NATIVE_NEW_MATERIAL'):
++  if phase not in self.COUNTER_PHASES:raise ValueError('fixed_native_counter_phase_required')
++  state=self.phase_counters.get(phase)
++  counter=None if state is None else state['counter'];started=counter is not None and counter.started
++  unreliable=None if state is None else state['unreliable'];initializing=False if state is None else state['initializing']
++  prefix='native_material_'if phase=='NATIVE_NEW_MATERIAL'else'native_inventory_'
++  return {prefix+'status':unreliable or('INITIALIZING'if initializing else'CLOSED'if started and counter.end_wall is not None else'IN_PROGRESS'if started else'NOT_STARTED'),
++   prefix+'counts_reliable':False if unreliable is not None else None if not started or initializing else True,
++   prefix+'cleanup_confirmed':None if state is None or not state['attempted']else counter.cleanup_confirmed}
+  def _material_bindings_preserved(self):
+   consumer,cls,runner,bindings=self.material_bindings
+   return(vars(consumer).get('Runner')is cls and type(runner)is cls
+@@ -239,37 +294,43 @@
+     and fn.__code__ is code and fn.__globals__ is namespace and fn.__defaults__ is defaults
+     and fn.__kwdefaults__ is kwdefaults and fn.__closure__ is closure
+     for name,fn,code,namespace,defaults,kwdefaults,closure in bindings))
+- def _material_snapshot(self,event):
+-  counter=self.material_counter
+-  if counter is None or not counter.started or self.material_initializing:return None
+-  if counter.observer_refused and self.material_unreliable_reason is None:self.material_unreliable_reason='OBSERVER_REFUSED'
+-  if self.material_unreliable_reason is not None:return None
++ def _material_snapshot(self,event,phase='NATIVE_NEW_MATERIAL'):
++  if phase not in self.COUNTER_PHASES:raise ValueError('fixed_native_counter_phase_required')
++  state=self.phase_counters.get(phase)
++  if state is None:return None
++  counter=state['counter']
++  if not counter.started or state['initializing']:return None
++  if counter.observer_refused and state['unreliable']is None:state['unreliable']='OBSERVER_REFUSED'
++  if state['unreliable']is not None:return None
+   if event=='INTERMEDIATE':
+-   if self.deadline.phase!='NATIVE_NEW_MATERIAL'or counter.end_wall is not None:return None
+-   if self.material_intermediate_samples>=self.MAX_MATERIAL_INTERMEDIATE:return None
+-   if time.monotonic()<self.material_sample_at[self.material_intermediate_samples]:return None
+-   self.material_intermediate_samples+=1
+-  value=counter.snapshot()
++   if self.deadline.phase!=phase or counter.end_wall is not None:return None
++   if state['intermediate']>=self.MAX_MATERIAL_INTERMEDIATE:return None
++   if time.monotonic()<state['sample_at'][state['intermediate']]:return None
++   state['intermediate']+=1
++  value=counter.snapshot();value['phase']=phase
+   value['original_function_bindings_preserved']=self._material_bindings_preserved()
+   return value
+- def material_phase_enter(self):
+-  counter=self.material_counter
+-  if counter is None:return
+-  if counter.started:raise ValueError('single_native_material_lifetime_required')
++ def material_phase_enter(self,phase='NATIVE_NEW_MATERIAL'):
++  if phase not in self.COUNTER_PHASES:raise ValueError('fixed_native_counter_phase_required')
++  state=self.phase_counters.get(phase)
++  if state is None:return
++  counter=state['counter']
++  if counter.started or self.active_counter_phase is not None:raise ValueError('single_fresh_native_phase_lifetime_required')
+   if not self._material_bindings_preserved():raise ValueError('material_function_binding_changed_before_native')
+-  # Cadence observes the remaining existing cutoff; it grants/resets no time.
++  # Observe the remaining existing cutoff independently; grant/reset no time.
+   now=time.monotonic();remaining=max(0.0,self.deadline.cutoff-now)
+-  self.material_sample_at=tuple(now+remaining*fraction for fraction in(0.0,1/3,2/3,0.9))
+-  self.material_start_attempted=True;self.material_initializing=True
++  state['sample_at']=tuple(now+remaining*fraction for fraction in(0.0,1/3,2/3,0.9))
++  state['attempted']=True;state['initializing']=True;self.active_counter_phase=phase
+   try:counter.__enter__()
+   except BaseException:
+-   if self.material_unreliable_reason is None:self.material_unreliable_reason='INITIALIZATION_INTERRUPTED'
++   if state['unreliable']is None:state['unreliable']='INITIALIZATION_INTERRUPTED'
+    raise
+-  finally:self.material_initializing=False
+- def material_phase_exit(self,error=None):
+-  counter=self.material_counter
+-  if counter is None:return
+-  owned=sys.monitoring.get_tool(counter.tool_id)==counter.name
++  finally:state['initializing']=False
++ def material_phase_exit(self,error=None,phase='NATIVE_NEW_MATERIAL'):
++  if phase not in self.COUNTER_PHASES:raise ValueError('fixed_native_counter_phase_required')
++  state=self.phase_counters.get(phase)
++  if state is None:return
++  counter=state['counter'];owned=sys.monitoring.get_tool(counter.tool_id)==counter.name
+   if not counter.started and not owned:return
+   original=sys.exc_info()
+   if error is not None and original[0]is None:original=(type(error),error,None)
+@@ -280,8 +341,9 @@
+    self.cleanup_error_class=type(cleanup_error).__name__
+    if original[0]is None:raise
+   finally:
+-   try:self.material_final=self._material_snapshot('CLOSED')
++   try:state['final']=self._material_snapshot('CLOSED',phase)
+    except Exception as snapshot_error:self.last_error_class=type(snapshot_error).__name__
++   if self.active_counter_phase==phase:self.active_counter_phase=None
+  def _inc(self,value):return min(self.COUNTER_MAX,value+1)
+  def _fingerprint(self,code):
+   # Canonical static code fields, independent of marshal reference flags or
+@@ -517,6 +579,7 @@
+     observed_python_calls=None,observed_selected_python_calls=None,
+     counter_semantics='LEGACY_CATEGORY_COUNTS_UNCOLLECTED_EXACT_MATERIAL_COUNTS_SEPARATE',cpu_pulses=self.pulses,
+     native_material_counts=self._material_snapshot(event),**self._material_status(),
++    native_inventory_counts=self._material_snapshot(event,'NATIVE_NEW_RUN_INVENTORY'),**self._material_status('NATIVE_NEW_RUN_INVENTORY'),
+     progress=progress,progress_status='SAMPLED'if progress is not None else self.progress_sample_status,
+     progress_authentication=self.progress_authentication,progress_authentication_error_class=self.progress_error_class,
+     code_inventory=[dict(metadata,stack_sample_occurrences=count)for code,metadata,count in self.codes.values()],
+@@ -525,8 +588,10 @@
+     stack=stack,stack_truncated=frame is not None,
+     sampling=dict(wall_interval_seconds=self.SAMPLE_SECONDS,cpu_pulse_seconds=self.CPU_PULSE_SECONDS,
+      blocked_C_or_IO_wall_sampling=False,arbitrary_C_signal_delivery_may_defer=True,
+-     code_inventory_policy='BOUNDED_STACK_SAMPLES_ONLY',python_call_observer='EXACT_FOUR_LOCAL_CODES_ONLY',
++     code_inventory_policy='BOUNDED_STACK_SAMPLES_ONLY',python_call_observer='EXACT_FOUR_NATIVE_PLUS_AUTHENTICATED_RETAINED_PROOF_LOCAL_CODES_ONLY',
+      native_material_intermediate_sample_cap=self.MAX_MATERIAL_INTERMEDIATE,
++     native_inventory_intermediate_sample_cap=self.MAX_MATERIAL_INTERMEDIATE,
++     native_counter_phase_cap=len(self.COUNTER_PHASES),native_counter_total_intermediate_sample_cap=len(self.COUNTER_PHASES)*self.MAX_MATERIAL_INTERMEDIATE,
+      native_material_schedule='EXISTING_REMAINING_CUTOFF_FRACTIONS_0_1over3_2over3_0point9',
+      selected_categories=self.CATEGORIES,category_call_counts='NOT_COLLECTED',
+      progress_policy='FIXED_EXACT_BUILTIN_NUMERIC_STATS_FROM_PINNED_HELPER_FRAME',
+@@ -551,11 +616,17 @@
+   except Exception as diagnostic_error:self.last_error_class=type(diagnostic_error).__name__
+ 
+  def summary(self):
++  material=self.phase_counters.get('NATIVE_NEW_MATERIAL',{})
++  inventory=self.phase_counters.get('NATIVE_NEW_RUN_INVENTORY',{})
+   return dict(path=str(self.path),rows=self.rows,bytes=self.bytes,
+    diagnostic_error_class=self.last_error_class,cleanup_error_class=self.cleanup_error_class,
+-   native_material_final=self.material_final,native_material_exact_code=self.material_identities,**self._material_status(),
+-   native_material_intermediate_samples=self.material_intermediate_samples,
+-   native_material_sample_at_monotonic=self.material_sample_at,
++   native_material_final=material.get('final'),native_material_exact_code=self.material_identities,**self._material_status(),
++   native_material_intermediate_samples=material.get('intermediate',0),
++   native_material_sample_at_monotonic=material.get('sample_at'),
++   native_inventory_final=inventory.get('final'),**self._material_status('NATIVE_NEW_RUN_INVENTORY'),
++   native_inventory_intermediate_samples=inventory.get('intermediate',0),
++   native_inventory_sample_at_monotonic=inventory.get('sample_at'),
++   native_counter_phase_lifetimes={phase:index for index,phase in enumerate(self.COUNTER_PHASES,1)},
+    acceptance='NOT_ESTABLISHED')
+ 
+  def start(self):
+@@ -583,12 +654,14 @@
+   return self
+  def close(self):
+   conflicts=[];self.active=False;original_exception=sys.exc_info();material_cleanup_error=None
+-  if self.material_counter is not None and(self.material_counter.started or
+-      sys.monitoring.get_tool(self.material_counter.tool_id)==self.material_counter.name):
+-   try:
+-    self.material_phase_exit()
+-   except BaseException as error:
+-    material_cleanup_error=error;self.cleanup_error_class=type(error).__name__
++  for phase,state in self.phase_counters.items():
++   counter=state['counter']
++   # A closed material lifetime must never clear the shared slot while the
++   # distinct inventory lifetime owns it. Only this exact counter name owns it.
++   if(counter.started and counter.end_wall is None)or sys.monitoring.get_tool(counter.tool_id)==counter.name:
++    try:self.material_phase_exit(phase=phase)
++    except BaseException as error:
++     material_cleanup_error=error;self.cleanup_error_class=type(error).__name__
+   if self.deadline.native_diagnostics is self:self.deadline.native_diagnostics=None
+   if self.signal_claimed:
+    handler=signal.getsignal(signal.SIGPROF);timer=signal.getitimer(signal.ITIMER_PROF)
+@@ -707,12 +780,12 @@
+  def phase_enter(self,name):
+   self.check();previous=(self.phase,self.phase_started);self.phase=name
+   self.phase_started=(time.monotonic(),time.process_time());self.record('ENTER',name)
+-  if name=='NATIVE_NEW_MATERIAL'and self.native_diagnostics is not None:self.native_diagnostics.material_phase_enter()
++  if name in NativeDiagnostics.COUNTER_PHASES and self.native_diagnostics is not None:self.native_diagnostics.material_phase_enter(name)
+   return(*self.phase_started,*previous)
+  def phase_exit(self,name,started,error=None):
+   self.record('EXIT',name,error_class=None if error is None else type(error).__name__,
+    wall=time.monotonic()-started[0],cpu=time.process_time()-started[1])
+-  if name=='NATIVE_NEW_MATERIAL'and self.native_diagnostics is not None:self.native_diagnostics.material_phase_exit(error)
++  if name in NativeDiagnostics.COUNTER_PHASES and self.native_diagnostics is not None:self.native_diagnostics.material_phase_exit(error,phase=name)
+   self.phase=started[2];self.phase_started=started[3]
+  def suspend_http(self,seconds):
+   import math
+@@ -1186,7 +1259,7 @@
+    native_started=time.monotonic();deadline.phase_enter('NATIVE_CONTINUE_UNKNOWN')
+    diagnostics=NativeDiagnostics(out/'NATIVE-INTERMEDIATE.jsonl',deadline,spec['production_package'],spec['caller'])
+    material_counter_source=core['load'](pkg['files']['native_material_counters.py'],'_Root_exact_native_material_counters')
+-   diagnostics.attach_material_counters(c,runner,material_counter_source.ExactLocalCounters,pkg['files']['b00_ancestry.py']['path'])
++   diagnostics.attach_material_counters(c,runner,material_counter_source.ExactLocalCounters,pkg['files']['b00_ancestry.py']['path'],proofs=tuple(vars(history.contract)['V03_FRONTIER_CHAIN']),proof_sources={role:pkg['files'][name]for role,name in(('history','b00_history.py'),('zero','zero_wire.py'),('ancestry','b00_ancestry.py'))},source_reader=read)
+    diagnostics.start()
+    native_failure=False
+    try:
