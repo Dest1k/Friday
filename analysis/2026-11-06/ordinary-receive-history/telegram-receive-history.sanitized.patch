@@ -1,0 +1,84 @@
+--- a/bot_tester.py
++++ b/bot_tester.py
+@@ -12344,0 +12345,50 @@
++    B00_CLOSED_PARTIAL_HISTORY = {}  # Private deployment pins are not public evidence.
++
++    def b00_closed_partial_history(self, run):
++        if not isinstance(run, dict) or run.get('id') not in self.B00_CLOSED_PARTIAL_HISTORY:
++            return None
++        expected = self.B00_CLOSED_PARTIAL_HISTORY[run['id']]
++        raw = safe_read(self.store.run_path(run['id']))
++        reference = expected['closure']
++        closure_raw = safe_read(Path(reference['path']))
++        closure = json.loads(closure_raw, object_pairs_hook=unique_object)
++        run_reference = {'path': str(self.store.run_path(run['id'])),
++                         'sha256': expected['run_sha256']}
++        if (digest(raw) != expected['run_sha256'] or encoded(run) != raw
++                or len(closure_raw) != reference['bytes']
++                or digest(closure_raw) != reference['sha256']
++                or closure.get('schema') != 'frw.Root.B00-ordinary-operational-closure.v1'
++                or closure.get('operator') != 'Root' or closure.get('accepted') is not True
++                or closure.get('run') not in (run_reference, dict(run_reference, bytes=len(raw)))
++                or closure.get('original_replayed') is not False
++                or closure.get('original_root_deadline_expired', True) is not True
++                or closure.get('resource0') is not True
++                or closure.get('full180') is not expected['terminal_complete']
++                or closure.get('terminal_complete', expected['terminal_complete']) is not expected['terminal_complete']
++                or run.get('status') != expected['status'] or run.get('send_state') != 'sent'
++                or run.get('send_attempts') != 1
++                or run.get('stop_phase') != expected['stop_phase']
++                or run.get('stop_reason_code') != expected['stop_reason_code']
++                or self.clock() < run['deadline']):
++            raise Refused('Exact Root-closed B00 partial history required')
++        pending = expected['pending_update']
++        if pending is not None:
++            if type(pending) is not int or pending not in run['seen']:
++                raise Refused('Closed B00 pending update identity invalid')
++            update = json.loads(safe_read(self.store.captures / (str(pending) + '.json')),
++                                object_pairs_hook=unique_object)
++            message = update.get('message', {})
++            if not isinstance(message, dict):
++                raise Refused('Closed B00 pending message custody invalid')
++            message_id = message.get('message_id')
++            chat = message.get('chat', {}); sender = message.get('from', {})
++            reply = message.get('reply_to_message', {})
++            if (update.get('update_id') != pending or type(message_id) is not int or message_id <= 0
++                    or run['message_ids'][-1:] != [message_id]
++                    or not isinstance(chat, dict) or chat.get('id') != PEER
++                    or not isinstance(sender, dict) or sender.get('id') != PEER or sender.get('is_bot') is not True
++                    or not isinstance(reply, dict) or reply.get('message_id') != run['sent_message_id']):
++                raise Refused('Closed B00 pending raw reply does not join the original ACK')
++            expected = dict(expected, pending_message_id=message_id)
++        return expected
++
+@@ -12345,0 +12396 @@
++        history = self.b00_closed_partial_history(run)
+@@ -12401 +12452,4 @@
+-                        or not 0 < timeout <= min(10, run['deadline'] - started - REPLY_WINDOW_RESERVE)
++                        or not (0 < timeout <= min(10, run['deadline'] - started - REPLY_WINDOW_RESERVE)
++                                or (history is not None and history['pending_update'] is None
++                                    and record.get('http_timeout_cap') == 10
++                                    and 10 < timeout <= run['deadline'] - started - REPLY_WINDOW_RESERVE))
+@@ -12503 +12557,3 @@
+-        if processing and not (stopped1667 or stopped1754 or stopped_r02 or stopped_w03):
++        history_pending = history['pending_update'] if history is not None else None
++        if processing and not (stopped1667 or stopped1754 or stopped_r02 or stopped_w03
++                              or (history_pending is not None and processing == {history_pending})):
+@@ -12504,0 +12561,10 @@
++        if history is not None:
++            if history_pending is None:
++                intent = drain.get('intent', {})
++                expected_drain = {'intent', 'response', 'complete'} if history['terminal_complete'] else {'intent'}
++                if (set(drain) != expected_drain or intent.get('http_timeout_cap') != 10
++                        or intent.get('budget_semantics') != 'VALIDATION_PLUS_HTTP_WITHIN_ORIGINAL_DEADLINE'
++                        or not 10 < intent.get('timeout_seconds', 0) <= run['deadline'] - intent['started_at'] - REPLY_WINDOW_RESERVE):
++                    raise Refused('Exact historical terminal custody required')
++            elif drain or processing != {history_pending}:
++                raise Refused('Exact stopped processing custody required; never invent completion')
+@@ -12516 +12582,2 @@
+-        if run.get('message_ids') != (message_ids + [1669] if stopped1667 else message_ids + [1756] if stopped1754 else message_ids + [1859] if stopped_r02 else message_ids + [1883] if stopped_w03 else message_ids):
++        committed_message_ids = message_ids + ([history['pending_message_id']] if history_pending is not None else [1669] if stopped1667 else [1756] if stopped1754 else [1859] if stopped_r02 else [1883] if stopped_w03 else [])
++        if run.get('message_ids') != committed_message_ids:
+@@ -12518 +12585 @@
+-        if set(run.get('seen', [])) != set(processed) | ({261479189} if stopped1667 else {261479248} if stopped1754 else {261479318} if stopped_r02 else {261479334} if stopped_w03 else set()):
++        if set(run.get('seen', [])) != set(processed) | ({history_pending} if history_pending is not None else set()) | ({261479189} if stopped1667 else {261479248} if stopped1754 else {261479318} if stopped_r02 else {261479334} if stopped_w03 else set()):
