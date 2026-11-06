@@ -1,6 +1,115 @@
 --- a/bot_tester.py
 +++ b/bot_tester.py
-@@ -12344,0 +12345,50 @@
+@@ -2114,0 +2115,3 @@
++    ORDINARY_INDEPENDENT_SCENARIOS = {}
++    ORDINARY_INDEPENDENT_AUTHORITY = None
++
+@@ -11426,0 +11430,79 @@
++    def ordinary_independent_admission(self, name, scenario):
++        expected_sha = self.ORDINARY_INDEPENDENT_SCENARIOS.get(name)
++        if expected_sha is None:
++            return None
++        reference = self.ORDINARY_INDEPENDENT_AUTHORITY
++        raw = safe_read(Path(reference['path']))
++        document = json.loads(raw, object_pairs_hook=unique_object)
++        now = self.clock()
++        if (len(raw) != reference['bytes'] or digest(raw) != reference['sha256']
++                or encoded(document) != raw
++                or document.get('schema') != 'frw.Root.ordinary-independent-history-admission.v1'
++                or document.get('authority_id') != 'ordinary-independent-s156-20261106-r2'
++                or document.get('operator') != 'Root' or document.get('accepted') is not True
++                or document.get('run_scenarios') != self.ORDINARY_INDEPENDENT_SCENARIOS
++                or digest(encoded(scenario)) != expected_sha
++                or type(document.get('created_at')) not in (int, float)
++                or type(document.get('expires_at')) not in (int, float)
++                or not document['created_at'] <= now < document['expires_at']
++                or document.get('boot_id') != Path('/proc/sys/kernel/random/boot_id').read_text().strip()
++                or document.get('new_independent_inputs_only') is not True
++                or document.get('no_old_task_replay') is not True
++                or document.get('old_rows_modified') is not False
++                or document.get('unknown_effects_resolved') is not False
++                or document.get('product_or_B00_acceptance') is not False
++                or document.get('new_trial_for_historical_task') is not False
++                or not isinstance(document.get('history'), dict) or len(document['history']) != 40):
++            raise Refused('Exact ordinary independent admission required')
++        gateway = document.get('gateway', {})
++        state_path = no_symlinks(Path(gateway['state_path']))
++        state_info = state_path.stat()
++        state_identity = (state_info.st_dev, state_info.st_ino, state_info.st_mode,
++                          state_info.st_nlink, state_info.st_uid, state_info.st_gid,
++                          state_info.st_size, state_info.st_mtime_ns, state_info.st_ctime_ns)
++        if state_info.st_uid != os.getuid() or stat.S_IMODE(state_info.st_mode) & 0o002:
++            raise Refused('Unsafe gateway state ownership or write mode')
++        state_raw = safe_read(state_path, private=False)
++        state_info = state_path.stat()
++        if state_identity != (state_info.st_dev, state_info.st_ino, state_info.st_mode,
++                              state_info.st_nlink, state_info.st_uid, state_info.st_gid,
++                              state_info.st_size, state_info.st_mtime_ns, state_info.st_ctime_ns):
++            raise Refused('Gateway state changed during independent admission read')
++        state = json.loads(state_raw, object_pairs_hook=unique_object)
++        updated = dt.datetime.fromisoformat(state['updated_at']).timestamp()
++        telegram = state.get('platforms', {}).get('telegram', {})
++        if (state.get('pid') != gateway['pid'] or state.get('start_time') != gateway['start_time']
++                or state.get('gateway_state') != 'running' or state.get('active_agents') != 0
++                or state.get('active_work') is not None or state.get('restart_requested') is not False
++                or state.get('session_store', {}).get('status') != 'ok'
++                or telegram.get('state') != 'connected' or telegram.get('needs_attention') is not False
++                or telegram.get('writer_pid') != gateway['pid']
++                or telegram.get('writer_start_time') != gateway['start_time']
++                or not 0 <= now - updated <= gateway['maximum_staleness_seconds']):
++            raise Refused('Fresh quiescent gateway required for independent ordinary input')
++        stat_path = Path('/proc') / str(gateway['pid']) / 'stat'
++        if not stat_path.exists() or stat_path.read_text().split()[21] != str(gateway['start_time']):
++            raise Refused('Independent admission gateway process identity changed')
++        for run_id in document['history']:
++            previous = self.store.get(self.store.run_path(run_id))
++            if not self.ordinary_independent_history_row(document, previous):
++                raise Refused('Independent admission history bytes changed')
++        return document
++
++    def ordinary_independent_history_row(self, admission, previous):
++        if not isinstance(admission, dict) or not isinstance(previous, dict):
++            return False
++        reference = admission['history'].get(previous.get('id'))
++        if not isinstance(reference, dict):
++            return False
++        raw = safe_read(self.store.run_path(previous['id']))
++        if (digest(raw) != reference['sha256'] or encoded(previous) != raw
++                or previous.get('status') != reference['status']
++                or previous.get('send_state') != reference['send_state']
++                or previous.get('deadline') != reference['deadline']
++                or self.clock() < previous['deadline']
++                or reference['new_effect_replay_authorized'] is not False
++                or reference['unknown_retained'] is not (previous['send_state'] == 'unknown')):
++            return False
++        return True
++
+@@ -11468,0 +11551 @@
++        independent = self.ordinary_independent_admission(name, scenario) if continuation is None else None
+@@ -11477 +11560 @@
+-                if admitted is None:
++                if admitted is None and not self.ordinary_independent_history_row(independent, previous):
+@@ -11482 +11565 @@
+-                if admitted is None:
++                if admitted is None and not self.ordinary_independent_history_row(independent, previous):
+@@ -11485 +11568,2 @@
+-            if previous['status'] not in ('EVIDENCE_READY', 'STOPPED', 'FAILED'):
++            if (previous['status'] not in ('EVIDENCE_READY', 'STOPPED', 'FAILED')
++                    and not self.ordinary_independent_history_row(independent, previous)):
+@@ -11487 +11571,2 @@
+-            if previous.get('send_state') in ('intent', 'unknown'):
++            if (previous.get('send_state') in ('intent', 'unknown')
++                    and not self.ordinary_independent_history_row(independent, previous)):
+@@ -11840 +11925,4 @@
+-        if admitted is None and any(self.store.get(p).get('send_state') in ('intent', 'unknown') for p in self.store.runs.glob('*.json') if p != self.store.run_path(run['id'])):
++        independent = self.ordinary_independent_admission(run['id'], run['scenario']) if admitted is None else None
++        if admitted is None and any(self.store.get(p).get('send_state') in ('intent', 'unknown')
++                                    and not self.ordinary_independent_history_row(independent, self.store.get(p))
++                                    for p in self.store.runs.glob('*.json') if p != self.store.run_path(run['id'])):
+@@ -11892,0 +11981,2 @@
++        if admitted is None:
++            self.ordinary_independent_admission(run['id'], run['scenario'])
+@@ -12344,0 +12435,50 @@
 +    B00_CLOSED_PARTIAL_HISTORY = {}  # Private deployment pins are not public evidence.
 +
 +    def b00_closed_partial_history(self, run):
@@ -51,20 +160,20 @@
 +            expected = dict(expected, pending_message_id=message_id)
 +        return expected
 +
-@@ -12345,0 +12396 @@
+@@ -12345,0 +12486 @@
 +        history = self.b00_closed_partial_history(run)
-@@ -12401 +12452,4 @@
+@@ -12401 +12542,4 @@
 -                        or not 0 < timeout <= min(10, run['deadline'] - started - REPLY_WINDOW_RESERVE)
 +                        or not (0 < timeout <= min(10, run['deadline'] - started - REPLY_WINDOW_RESERVE)
 +                                or (history is not None and history['pending_update'] is None
 +                                    and record.get('http_timeout_cap') == 10
 +                                    and 10 < timeout <= run['deadline'] - started - REPLY_WINDOW_RESERVE))
-@@ -12503 +12557,3 @@
+@@ -12503 +12647,3 @@
 -        if processing and not (stopped1667 or stopped1754 or stopped_r02 or stopped_w03):
 +        history_pending = history['pending_update'] if history is not None else None
 +        if processing and not (stopped1667 or stopped1754 or stopped_r02 or stopped_w03
 +                              or (history_pending is not None and processing == {history_pending})):
-@@ -12504,0 +12561,10 @@
+@@ -12504,0 +12651,10 @@
 +        if history is not None:
 +            if history_pending is None:
 +                intent = drain.get('intent', {})
@@ -75,10 +184,10 @@
 +                    raise Refused('Exact historical terminal custody required')
 +            elif drain or processing != {history_pending}:
 +                raise Refused('Exact stopped processing custody required; never invent completion')
-@@ -12516 +12582,2 @@
+@@ -12516 +12672,2 @@
 -        if run.get('message_ids') != (message_ids + [1669] if stopped1667 else message_ids + [1756] if stopped1754 else message_ids + [1859] if stopped_r02 else message_ids + [1883] if stopped_w03 else message_ids):
 +        committed_message_ids = message_ids + ([history['pending_message_id']] if history_pending is not None else [1669] if stopped1667 else [1756] if stopped1754 else [1859] if stopped_r02 else [1883] if stopped_w03 else [])
 +        if run.get('message_ids') != committed_message_ids:
-@@ -12518 +12585 @@
+@@ -12518 +12675 @@
 -        if set(run.get('seen', [])) != set(processed) | ({261479189} if stopped1667 else {261479248} if stopped1754 else {261479318} if stopped_r02 else {261479334} if stopped_w03 else set()):
 +        if set(run.get('seen', [])) != set(processed) | ({history_pending} if history_pending is not None else set()) | ({261479189} if stopped1667 else {261479248} if stopped1754 else {261479318} if stopped_r02 else {261479334} if stopped_w03 else set()):
