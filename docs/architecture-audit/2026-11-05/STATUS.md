@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: AUTONOMOUS_COMPLETION_IN_PROGRESS
+- state: PERMITTED_MODE_ACCEPTED_WITH_LIMITS
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -27,6 +27,11 @@
 - autonomous_completion_is_new_audit: false
 - reviewer_reply_required_between_sections: false
 - acceptance_only_package: false
+- permitted_mode_delivered_at: 2026-11-06T01:46:57Z
+- permitted_mode_report: reports/015-permitted-mode.md
+- permitted_mode_is_implementation_permission: false
+- permitted_mode_is_runtime_acceptance: false
+- permitted_mode_closes_b00: false
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -87,9 +92,26 @@
 - reviewer_013_new_call_orders_cross_checked: true
 - reviewer_013_acceptance: config_directory_caveat_accepted_cursor_limits_preserved_fifo_rescue_memory_reorder_not_durable
 - reviewer_013_note: три файла приложения расшифрованы и просмотрены; размер SHA-256 и целостность подтверждены; новые порядки вызовов независимо сверены по выдержкам; продуктовые функции не исполнялись; поправка каталога принята; ограничения cursor сохранены; FIFO-rescue принят как перестановка в памяти
-- reviewer_014_package_read: false
-- reviewer_014_decrypted: false
-- reviewer_014_integrity_confirmed: false
+- reviewer_014_package_read: true
+- reviewer_014_decrypted: true
+- reviewer_014_integrity_confirmed: true
+- reviewer_014_acceptance: confirmed_by_prior_review
+- reviewer_014_unconfirmed_mark_in_015: stale
+- reviewer_014_report_rewritten: false
+- reviewer_014_note: предыдущее ревью уже подтвердило 014; отметка о неподтверждении в отчёте 015 устарела; отчёт 015 не переписывается; отдельный пакет ради этой поправки не создаётся
+- reviewer_015_package_read: true
+- reviewer_015_decrypted: true
+- reviewer_015_integrity_confirmed: true
+- reviewer_015_attachment_files: 14
+- reviewer_015_git_blob_confirmed: true
+- reviewer_015_vm_regathered: false
+- reviewer_015_six_file_recompare: false
+- reviewer_015_wording_cycle: not_required
+- reviewer_015_acceptance: permitted_mode_accepted_with_listed_limits_not_implementation_procedure_not_runtime_acceptance
+- reviewer_015_recorded_at: 2026-11-06T02:06:28Z
+- stamp_clone_mismatch: reproducibility_question_not_proven_corruption
+- f005_whole_publish: design_task
+- interrupted_activation_recovery: design_task
 - config_provenance_accepted: true
 - live_turn_context_observed: false
 - tester_history_dependence: retracted
@@ -175,7 +197,10 @@
 - s12_canonical_consumer_sha256: 1c0dc0ebf94a7147d2545a4f7843ba31fe61f587cdd4dedf1deb000001f2eb2c
 - s12_writer_body_read: true
 - s12_writer_body_executed: false
-- s12_parent_template_read: false
+- s12_parent_template_read: true
+- s12_parent_template_bytes: 1118443
+- s12_parent_template_sha256: 0ee503772c380f969304141e5ce473f5004214987892ee4a5619be3fd8cb34ac
+- s12_parent_template_executed: false
 - s12_live_cursor_opened: false
 - s12_live_state_changed: false
 - s12_capture_calls_cursor_offsets: true
@@ -205,7 +230,7 @@
 - not_started_recovery_executed: false
 - telegram_local_receipt_is_answer: false
 - telegram_live_receipt_opened: false
-- embeddings_path: stops_at_unopened_a0_image_callees
+- embeddings_path: donor_pin_bodies_read_guard_chooses_directory_image_layer_not_reextracted
 - embeddings_key_opened: false
 - breadth_status: INTERMEDIATE
 - excess_complexity_proven_by_counts: false
@@ -216,9 +241,9 @@
 - read_behavior_untested: true
 - new_general_plan: false
 - c03: NOT_CHECKED
-- coverage_matrix: reports/014-coverage-matrix.csv
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv, reports/012-remarks.md, reports/012-coverage-matrix.csv, reports/013-continued-static.md, reports/013-coverage-matrix.csv, reports/014-getupdates-static.md, reports/014-coverage-matrix.csv
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc, artifacts/012-remarks.tar.gz.gpg.asc, artifacts/013-continued-static.tar.gz.gpg.asc, artifacts/014-getupdates-static.tar.gz.gpg.asc
+- coverage_matrix: reports/015-coverage-matrix.csv
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv, reports/012-remarks.md, reports/012-coverage-matrix.csv, reports/013-continued-static.md, reports/013-coverage-matrix.csv, reports/014-getupdates-static.md, reports/014-coverage-matrix.csv, reports/015-permitted-mode.md, reports/015-coverage-matrix.csv
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc, artifacts/012-remarks.tar.gz.gpg.asc, artifacts/013-continued-static.tar.gz.gpg.asc, artifacts/014-getupdates-static.tar.gz.gpg.asc, artifacts/015-permitted-mode.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
@@ -227,10 +252,14 @@
 - implementation_this_turn: false
 - private_start_folder: вынесена из Git-деревьев; файлы команды не изменялись и не добавлялись
 
-Ревьюер прочитал пакет 013. Три файла приложения расшифрованы и просмотрены. Размер, SHA-256 и целостность подтверждены. Новые порядки вызовов независимо сверены по выдержкам. Продуктовые функции не исполнялись. Поправка каталога принята. Ограничения cursor сохранены. FIFO-rescue принят как перестановка очереди в памяти, не как долговечное восстановление. Пакет 014 опубликован и ревьюером ещё не подтверждён. Отчёты 000–014 не переписываются.
+Ревьюер прочитал пакет 013. Три файла приложения расшифрованы и просмотрены. Размер, SHA-256 и целостность подтверждены. Новые порядки вызовов независимо сверены по выдержкам. Продуктовые функции не исполнялись. Поправка каталога принята. Ограничения cursor сохранены. FIFO-rescue принят как перестановка очереди в памяти, не как долговечное восстановление. Пакет 014 предыдущим ревью уже подтверждён. Отчёты 000–015 не переписываются.
 
 014 прочитал установленную библиотеку getUpdates версии 22.8 в site-packages, который сопоставлен действующему gateway. RECORD совпал с байтами на диске. Библиотека не исполнялась, polling не запускался, зависимости не обновлялись, blob колеса из lock не сравнивался. Локальное смещение продвигается после помещения update в очередь библиотеки. Следующий getUpdates подтверждает его серверу. accepted, освобождение claim, запись квитанции и ожидающая задача в памяти остаются разными состояниями. Повтор уже начатого действия и восстановление ещё не начатого показаны раздельно. Потеря сообщения не наблюдалась. Безусловный повтор после любой ошибки не предлагается. Доступ постороннего не наблюдался.
 
-6 ноября 2026 владелец сменил режим продолжения. Текст записан в requests/002-autonomous-completion.md. Это не новый аудит и не отчёт о принятии. Исследование продолжается до одного содержательного итога. Ответ ревьюера между разделами не требуется. 009 остаётся предварительным планом, 010 — уточнением требований, пока итог их не соберёт. Аудит формулировкой «осталось только исполнение» не закрывается.
+6 ноября 2026 владелец сменил режим продолжения. Текст записан в requests/002-autonomous-completion.md. Это не новый аудит и не отчёт о принятии. Ответ ревьюера между разделами не требовался.
 
-F-005 не переоткрывался как finding. F-006 не переоткрывался. Матрица несётся целиком и пока указывает на 014. C03 остаётся NOT_CHECKED. Ширина остаётся промежуточной. Внедрение не начато. Код продукта не менялся. Воркеры не включались. Новый живой прогон не запускался. Астра от B00 не отвлекалась.
+Независимый аудит в разрешённом режиме завершён и передан; ограничения и будущие проверки перечислены. Ревьюер прочитал отчёт 015, всю матрицу и все 14 файлов капсулы. Размер, SHA-256, Git blob и целостность архива подтверждены. Сбор сведений на VM и сверку всех шести файлов публикации ревьюер повторно не выполнял. Результат принят с перечисленными ограничениями. Цикл дополнений ради формулировок не требуется. Итог является основанием для архитектурной работы Астры после B00 и отдельного решения владельца. Готовой процедурой внедрения и runtime acceptance он не является. B00 не закрыт.
+
+Расхождения штампа и clone остаются вопросом воспроизводимости, не доказанной порчей. Цельная публикация F-005 и восстановление после прерванной активации остаются задачами проектирования. Отметка в отчёте 015, что пакет 014 ещё не подтверждён, устарела: предыдущее ревью 014 уже подтвердило. Отчёт 015 из-за этой поправки не переписывается.
+
+009 остаётся предварительным планом. 010 остаётся уточнением требований. Очередь Астры стоит в 015. F-005 и F-006 как finding не переоткрывались. C03 остаётся NOT_CHECKED. Окончательное тело тестера, 88 манифестов штампа и повторное извлечение слоя образа не получены. Поведение не исполнялось. Код продукта не менялся. Воркеры не включались. Астра от B00 не отвлекалась.
