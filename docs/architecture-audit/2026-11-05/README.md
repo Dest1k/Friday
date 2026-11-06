@@ -6,6 +6,7 @@ Grok Build ведёт аудит и публикует документы тол
 
 - Задание: [requests/001-global-audit.md](requests/001-global-audit.md).
 - Уточнение режима 6 ноября 2026: [requests/002-autonomous-completion.md](requests/002-autonomous-completion.md). Это продолжение того же аудита, не новый аудит и не закрытие.
+- Итог разрешённого режима: [reports/015-permitted-mode.md](reports/015-permitted-mode.md). Аудит передан с названными ограничениями. Это не разрешение на внедрение, не runtime acceptance и не закрытие B00.
 - Текущее состояние: [STATUS.md](STATUS.md).
 - Список фактически опубликованных результатов: [INDEX.json](INDEX.json).
 - Краткие безопасные выводы: reports/.

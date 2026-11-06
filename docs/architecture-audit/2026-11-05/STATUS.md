@@ -1,7 +1,7 @@
 # Статус AA-001
 
 - task_id: AA-001
-- state: AUTONOMOUS_COMPLETION_IN_PROGRESS
+- state: PERMITTED_MODE_DELIVERED_LIMITS_LISTED
 - executor: Grok Build
 - publisher: Grok Build
 - branch: main
@@ -27,6 +27,11 @@
 - autonomous_completion_is_new_audit: false
 - reviewer_reply_required_between_sections: false
 - acceptance_only_package: false
+- permitted_mode_delivered_at: 2026-11-06T01:46:57Z
+- permitted_mode_report: reports/015-permitted-mode.md
+- permitted_mode_is_implementation_permission: false
+- permitted_mode_is_runtime_acceptance: false
+- permitted_mode_closes_b00: false
 - transport_probe: PUBLISHED
 - reviewer_transport_verified: true
 - reviewer_transport_verified_commit: 9400b6494077000b7eb9fb39c8e41961516eda37
@@ -175,7 +180,10 @@
 - s12_canonical_consumer_sha256: 1c0dc0ebf94a7147d2545a4f7843ba31fe61f587cdd4dedf1deb000001f2eb2c
 - s12_writer_body_read: true
 - s12_writer_body_executed: false
-- s12_parent_template_read: false
+- s12_parent_template_read: true
+- s12_parent_template_bytes: 1118443
+- s12_parent_template_sha256: 0ee503772c380f969304141e5ce473f5004214987892ee4a5619be3fd8cb34ac
+- s12_parent_template_executed: false
 - s12_live_cursor_opened: false
 - s12_live_state_changed: false
 - s12_capture_calls_cursor_offsets: true
@@ -205,7 +213,7 @@
 - not_started_recovery_executed: false
 - telegram_local_receipt_is_answer: false
 - telegram_live_receipt_opened: false
-- embeddings_path: stops_at_unopened_a0_image_callees
+- embeddings_path: donor_pin_bodies_read_guard_chooses_directory_image_layer_not_reextracted
 - embeddings_key_opened: false
 - breadth_status: INTERMEDIATE
 - excess_complexity_proven_by_counts: false
@@ -216,9 +224,9 @@
 - read_behavior_untested: true
 - new_general_plan: false
 - c03: NOT_CHECKED
-- coverage_matrix: reports/014-coverage-matrix.csv
-- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv, reports/012-remarks.md, reports/012-coverage-matrix.csv, reports/013-continued-static.md, reports/013-coverage-matrix.csv, reports/014-getupdates-static.md, reports/014-coverage-matrix.csv
-- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc, artifacts/012-remarks.tar.gz.gpg.asc, artifacts/013-continued-static.tar.gz.gpg.asc, artifacts/014-getupdates-static.tar.gz.gpg.asc
+- coverage_matrix: reports/015-coverage-matrix.csv
+- current_reports: reports/001-breadth.md, reports/001-coverage.csv, reports/002-config-provenance.md, reports/003-worker-chain-telegram-cold-boot.md, reports/004-state-owners.md, reports/005-admission-staleness.md, reports/005-coverage-matrix.csv, reports/006-local-route.md, reports/006-coverage-matrix.csv, reports/007-auxiliary-calls.md, reports/007-coverage-matrix.csv, reports/008-user-paths.md, reports/008-coverage-matrix.csv, reports/009-plan.md, reports/009-coverage-matrix.csv, reports/010-plan-supplement.md, reports/010-coverage-matrix.csv, reports/011-static-sections.md, reports/011-coverage-matrix.csv, reports/012-remarks.md, reports/012-coverage-matrix.csv, reports/013-continued-static.md, reports/013-coverage-matrix.csv, reports/014-getupdates-static.md, reports/014-coverage-matrix.csv, reports/015-permitted-mode.md, reports/015-coverage-matrix.csv
+- current_artifacts: artifacts/000-transport-probe.tar.gz.gpg.asc, artifacts/001-breadth.tar.gz.gpg.asc, artifacts/002-config-provenance.tar.gz.gpg.asc, artifacts/003-worker-chain-telegram-cold-boot.tar.gz.gpg.asc, artifacts/004-state-owners.tar.gz.gpg.asc, artifacts/005-admission-staleness.tar.gz.gpg.asc, artifacts/006-local-route.tar.gz.gpg.asc, artifacts/007-auxiliary-calls.tar.gz.gpg.asc, artifacts/008-user-paths.tar.gz.gpg.asc, artifacts/009-plan.tar.gz.gpg.asc, artifacts/010-plan-supplement.tar.gz.gpg.asc, artifacts/011-static-sections.tar.gz.gpg.asc, artifacts/012-remarks.tar.gz.gpg.asc, artifacts/013-continued-static.tar.gz.gpg.asc, artifacts/014-getupdates-static.tar.gz.gpg.asc, artifacts/015-permitted-mode.tar.gz.gpg.asc
 - product_changes_authorized: false
 - workers_enabled_by_this_task: false
 - authorization_changed_by_this_task: false
@@ -231,6 +239,6 @@
 
 014 прочитал установленную библиотеку getUpdates версии 22.8 в site-packages, который сопоставлен действующему gateway. RECORD совпал с байтами на диске. Библиотека не исполнялась, polling не запускался, зависимости не обновлялись, blob колеса из lock не сравнивался. Локальное смещение продвигается после помещения update в очередь библиотеки. Следующий getUpdates подтверждает его серверу. accepted, освобождение claim, запись квитанции и ожидающая задача в памяти остаются разными состояниями. Повтор уже начатого действия и восстановление ещё не начатого показаны раздельно. Потеря сообщения не наблюдалась. Безусловный повтор после любой ошибки не предлагается. Доступ постороннего не наблюдался.
 
-6 ноября 2026 владелец сменил режим продолжения. Текст записан в requests/002-autonomous-completion.md. Это не новый аудит и не отчёт о принятии. Исследование продолжается до одного содержательного итога. Ответ ревьюера между разделами не требуется. 009 остаётся предварительным планом, 010 — уточнением требований, пока итог их не соберёт. Аудит формулировкой «осталось только исполнение» не закрывается.
+6 ноября 2026 владелец сменил режим продолжения. Текст записан в requests/002-autonomous-completion.md. Это не новый аудит и не отчёт о принятии. Ответ ревьюера между разделами не требовался.
 
-F-005 не переоткрывался как finding. F-006 не переоткрывался. Матрица несётся целиком и пока указывает на 014. C03 остаётся NOT_CHECKED. Ширина остаётся промежуточной. Внедрение не начато. Код продукта не менялся. Воркеры не включались. Новый живой прогон не запускался. Астра от B00 не отвлекалась.
+Независимый аудит в разрешённом режиме завершён и передан; ограничения и будущие проверки перечислены. Итог: reports/015-permitted-mode.md и матрица reports/015-coverage-matrix.csv. Это не разрешение на внедрение, не runtime acceptance и не завершённый B00. 009 остаётся предварительным планом. 010 остаётся уточнением требований. Очередь Астры стоит в 015. F-005 и F-006 как finding не переоткрывались. C03 остаётся NOT_CHECKED. Окончательное тело тестера, 88 манифестов штампа и повторное извлечение слоя образа не получены. Поведение не исполнялось. Пакет 014 ревьюер ещё не подтверждал. Код продукта не менялся. Воркеры не включались. Астра от B00 не отвлекалась.
