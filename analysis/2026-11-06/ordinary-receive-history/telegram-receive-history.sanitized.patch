@@ -4,7 +4,7 @@
 +    ORDINARY_INDEPENDENT_SCENARIOS = {}
 +    ORDINARY_INDEPENDENT_AUTHORITY = None
 +
-@@ -11426,0 +11430,79 @@
+@@ -11426,0 +11430,90 @@
 +    def ordinary_independent_admission(self, name, scenario):
 +        expected_sha = self.ORDINARY_INDEPENDENT_SCENARIOS.get(name)
 +        if expected_sha is None:
@@ -84,32 +84,44 @@
 +            return False
 +        return True
 +
-@@ -11468,0 +11551 @@
++    def ordinary_independent_current_rows(self, admission, current_run_id):
++        for path in self.store.runs.glob('*.json'):
++            if path == self.store.run_path(current_run_id):
++                continue
++            previous = self.store.get(path)
++            if ((previous.get('status') not in ('EVIDENCE_READY', 'STOPPED', 'FAILED')
++                 or previous.get('send_state') in ('intent', 'unknown'))
++                    and not self.ordinary_independent_history_row(admission, previous)):
++                raise Refused('Current unresolved run outside exact independent history')
++        return True
++
+@@ -11468,0 +11562 @@
 +        independent = self.ordinary_independent_admission(name, scenario) if continuation is None else None
-@@ -11477 +11560 @@
+@@ -11477 +11571 @@
 -                if admitted is None:
 +                if admitted is None and not self.ordinary_independent_history_row(independent, previous):
-@@ -11482 +11565 @@
+@@ -11482 +11576 @@
 -                if admitted is None:
 +                if admitted is None and not self.ordinary_independent_history_row(independent, previous):
-@@ -11485 +11568,2 @@
+@@ -11485 +11579,2 @@
 -            if previous['status'] not in ('EVIDENCE_READY', 'STOPPED', 'FAILED'):
 +            if (previous['status'] not in ('EVIDENCE_READY', 'STOPPED', 'FAILED')
 +                    and not self.ordinary_independent_history_row(independent, previous)):
-@@ -11487 +11571,2 @@
+@@ -11487 +11582,2 @@
 -            if previous.get('send_state') in ('intent', 'unknown'):
 +            if (previous.get('send_state') in ('intent', 'unknown')
 +                    and not self.ordinary_independent_history_row(independent, previous)):
-@@ -11840 +11925,4 @@
+@@ -11840 +11936,4 @@
 -        if admitted is None and any(self.store.get(p).get('send_state') in ('intent', 'unknown') for p in self.store.runs.glob('*.json') if p != self.store.run_path(run['id'])):
 +        independent = self.ordinary_independent_admission(run['id'], run['scenario']) if admitted is None else None
 +        if admitted is None and any(self.store.get(p).get('send_state') in ('intent', 'unknown')
 +                                    and not self.ordinary_independent_history_row(independent, self.store.get(p))
 +                                    for p in self.store.runs.glob('*.json') if p != self.store.run_path(run['id'])):
-@@ -11892,0 +11981,2 @@
+@@ -11892,0 +11992,3 @@
 +        if admitted is None:
-+            self.ordinary_independent_admission(run['id'], run['scenario'])
-@@ -12344,0 +12435,50 @@
++            independent = self.ordinary_independent_admission(run['id'], run['scenario'])
++            self.ordinary_independent_current_rows(independent, run['id'])
+@@ -12344,0 +12447,50 @@
 +    B00_CLOSED_PARTIAL_HISTORY = {}  # Private deployment pins are not public evidence.
 +
 +    def b00_closed_partial_history(self, run):
@@ -160,20 +172,20 @@
 +            expected = dict(expected, pending_message_id=message_id)
 +        return expected
 +
-@@ -12345,0 +12486 @@
+@@ -12345,0 +12498 @@
 +        history = self.b00_closed_partial_history(run)
-@@ -12401 +12542,4 @@
+@@ -12401 +12554,4 @@
 -                        or not 0 < timeout <= min(10, run['deadline'] - started - REPLY_WINDOW_RESERVE)
 +                        or not (0 < timeout <= min(10, run['deadline'] - started - REPLY_WINDOW_RESERVE)
 +                                or (history is not None and history['pending_update'] is None
 +                                    and record.get('http_timeout_cap') == 10
 +                                    and 10 < timeout <= run['deadline'] - started - REPLY_WINDOW_RESERVE))
-@@ -12503 +12647,3 @@
+@@ -12503 +12659,3 @@
 -        if processing and not (stopped1667 or stopped1754 or stopped_r02 or stopped_w03):
 +        history_pending = history['pending_update'] if history is not None else None
 +        if processing and not (stopped1667 or stopped1754 or stopped_r02 or stopped_w03
 +                              or (history_pending is not None and processing == {history_pending})):
-@@ -12504,0 +12651,10 @@
+@@ -12504,0 +12663,10 @@
 +        if history is not None:
 +            if history_pending is None:
 +                intent = drain.get('intent', {})
@@ -184,10 +196,10 @@
 +                    raise Refused('Exact historical terminal custody required')
 +            elif drain or processing != {history_pending}:
 +                raise Refused('Exact stopped processing custody required; never invent completion')
-@@ -12516 +12672,2 @@
+@@ -12516 +12684,2 @@
 -        if run.get('message_ids') != (message_ids + [1669] if stopped1667 else message_ids + [1756] if stopped1754 else message_ids + [1859] if stopped_r02 else message_ids + [1883] if stopped_w03 else message_ids):
 +        committed_message_ids = message_ids + ([history['pending_message_id']] if history_pending is not None else [1669] if stopped1667 else [1756] if stopped1754 else [1859] if stopped_r02 else [1883] if stopped_w03 else [])
 +        if run.get('message_ids') != committed_message_ids:
-@@ -12518 +12675 @@
+@@ -12518 +12687 @@
 -        if set(run.get('seen', [])) != set(processed) | ({261479189} if stopped1667 else {261479248} if stopped1754 else {261479318} if stopped_r02 else {261479334} if stopped_w03 else set()):
 +        if set(run.get('seen', [])) != set(processed) | ({history_pending} if history_pending is not None else set()) | ({261479189} if stopped1667 else {261479248} if stopped1754 else {261479318} if stopped_r02 else {261479334} if stopped_w03 else set()):
