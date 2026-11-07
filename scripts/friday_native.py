@@ -148,7 +148,18 @@ def stage_dashboard_tls(value, home):
     if not inputs:
         return
     folder = home / 'dashboard-tls'
-    require(not folder.exists() and not folder.is_symlink(), 'existing_dashboard_tls_not_adopted')
+    if folder.exists() or folder.is_symlink():
+        # An earlier stage in the same installation may already have written the
+        # exact declared set. Adopt only that exact set; anything else still refuses.
+        from scripts.friday_install import owned_file
+        for key, data in inputs.items():
+            path = home / value['product']['dashboard']['tls'][key]
+            require(path.is_file() and not path.is_symlink() and owned_file(path) == data,
+                    'existing_dashboard_tls_not_adopted')
+        from hermes_cli.friday_dashboard_tls import checked
+        dash = value['product']['dashboard']
+        checked(home, dash['tls'], dash['host'], dash['port'], dash['public_url'])
+        return
     folder.mkdir(mode=0o700); directory(folder)
     for key, data in inputs.items():
         path = home / value['product']['dashboard']['tls'][key]
@@ -192,13 +203,35 @@ def complete(value, home, receipt, *, budget=None, cli_host=False):
     written = ensure_install_launchers(source, source / '.hermes/bin')
     require(len(written) == len(ENTRY_POINTS), 'native_launcher_publication_failed')
     # Truthful upstream base plus overlays; never claim a clean upstream build.
-    publish(source / 'install-stamp.json', install_stamp(receipt))
+    stamp_path = source / 'install-stamp.json'
+    stamp = install_stamp(receipt)
+    if stamp_path.exists() or stamp_path.is_symlink():
+        # A preceding stage of the same installation may already have written the
+        # identical stamp. Adopt only exact equality; anything else still refuses.
+        import json as _json
+        from scripts.friday_install import owned_file
+        existing = _json.loads(owned_file(stamp_path))
+        # builtAt and other volatile fields differ between builds; the source
+        # binding is what must agree, and the existing file is kept as written.
+        require(isinstance(existing, dict)
+                and existing.get('fridaySource') == stamp.get('fridaySource')
+                and existing.get('commit') == stamp.get('commit')
+                and existing.get('dirty') is True, 'existing_install_stamp_not_adopted')
+    else:
+        publish(stamp_path, stamp)
     target = home / 'plugins/friday_rework'
-    require(not target.exists() and not target.is_symlink(), 'existing_plugin_not_adopted')
-    target.parent.mkdir(mode=0o700, exist_ok=True)
     from scripts.friday_install import directory
-    directory(target.parent)
-    shutil.copytree(ROOT / 'plugins/friday_rework', target)
+    if target.exists() or target.is_symlink():
+        # An earlier stage may already have copied the same tree; adopt it only when
+        # the file set is exactly the declared one. The digest loop below still verifies.
+        declared = {name[len('plugins/friday_rework/'):] for name in value['project_files']
+                    if name.startswith('plugins/friday_rework/')}
+        present = {str(q.relative_to(target)) for q in target.rglob('*') if q.is_file()}
+        require(present == declared, 'existing_plugin_not_adopted')
+    else:
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        directory(target.parent)
+        shutil.copytree(ROOT / 'plugins/friday_rework', target)
     for name, sha in value['project_files'].items():
         prefix = 'plugins/friday_rework/'
         if name.startswith(prefix):

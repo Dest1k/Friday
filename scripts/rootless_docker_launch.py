@@ -33,7 +33,7 @@ NSENTER = Path('/usr/bin/nsenter')
 BRIDGE = 'br-frwa0local'
 ENDPOINTS = [{'ip': '192.168.1.195', 'port': 30000, 'transport': 'tcp'},
              {'ip': '192.168.1.78', 'port': 8001, 'transport': 'tcp'},
-             {'ip': '192.168.1.78', 'port': 8002, 'transport': 'tcp'}]
+             {'ip': '192.168.1.195', 'port': 8002, 'transport': 'tcp'}]
 NS_GET_USERNS = 0xb701
 
 

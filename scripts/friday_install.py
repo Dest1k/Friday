@@ -167,7 +167,8 @@ def safe_diagnostic(exc, phase):
                 safe['mismatch'] = mismatch
             result['identity'] = safe
     elif isinstance(exc, OSError):
-        result.update(reason='native_io_failed', errno=exc.errno)
+        result.update(reason='native_io_failed', errno=exc.errno,
+                      filename=(str(exc.filename) if exc.filename is not None else '')[:200])
     elif isinstance(exc, (KeyError, TypeError)):
         result['reason'] = 'invalid_input_shape'
     elif isinstance(exc, ValueError) and exc.args == ('original_install_budget_exhausted',):
@@ -181,6 +182,10 @@ def diagnostic_text(value):
         identity = value['identity']
         parts.append("identify=" + identity.get('outcome', 'unobserved'))
         parts.append("mismatch=" + ','.join(identity.get('mismatch', [])))
+    if 'errno' in value:
+        parts.append(f"errno={value['errno']}")
+        if value.get('filename'):
+            parts.append("file=" + str(value['filename']))
     if 'returncode' in value:
         parts.extend([f"child_exit={value['returncode']}",
                       f"timeout={str(value['timeout']).lower()}",
