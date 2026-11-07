@@ -1,0 +1,70 @@
+{
+  "schema": "frw.public.v3.original-context-overhead-diagnosis.v1",
+  "recorded_at_moscow": "2026-11-07T18:55:00+03:00",
+  "state": "ROOT_CAUSE_MEASURED_TOOL_SCHEMA_OVERHEAD",
+  "reproduced_after_repair": true,
+  "measurement_on_real_path": {
+    "method": "built the actual wire body with the real system prompt, the real active history, and the discovered tool schemas, then priced it with the same serialized_bytes the admission guard uses",
+    "system_prompt_bytes": 160346,
+    "history_bytes": 6621,
+    "tool_schemas_bytes": 317200,
+    "whole_request_bytes_with_schemas": 471871,
+    "admission_budget": 252928,
+    "over_by_bytes": 218943,
+    "verdict": "the request is refused before any model call; the compressor never runs, which is why every compression_* counter is clean"
+  },
+  "concentration": {
+    "total_schema_bytes": 317200,
+    "distinct_schemas": 68,
+    "top_share": {
+      "WRITE_FILE_SCHEMA": 177262,
+      "READ_FILE_SCHEMA": 27261,
+      "CRONJOB_SCHEMA": 6972,
+      "COMPUTER_USE_SCHEMA": 5844,
+      "KANBAN_CREATE_SCHEMA": 5359
+    },
+    "top5_bytes": 222698,
+    "note": "one schema alone is 55.9 percent of all tool schema bytes"
+  },
+  "field_level_cause": {
+    "WRITE_FILE_SCHEMA/description": 74575,
+    "WRITE_FILE_SCHEMA/parameters/properties/format/description": 49902,
+    "WRITE_FILE_SCHEMA/parameters/properties/content/description": 44358,
+    "READ_FILE_SCHEMA/description": 23930,
+    "what_they_contain": "long natural-language catalogues of every supported format and operation, embedded verbatim in the schema text that is sent on every single call"
+  },
+  "why_the_installed_repair_did_not_cover_it": {
+    "repair_path": "compressor structural fallback when fixed system+tools exceed the soft trigger",
+    "actual_path": "bounded-context admission check_request raises BoundedContextOverflowError before the compressor is consulted",
+    "conclusion": "the repair is correct for its own class and remains installed; it simply is not the gate that fires here"
+  },
+  "honest_assessment": {
+    "is_this_a_regression_from_my_change": false,
+    "evidence": "the same three files only ever changed compressor behaviour; tool schema text and the admission budget were untouched, and the pre-install failure had the same shape",
+    "is_the_repair_useless": false,
+    "is_the_symptom_explained": true,
+    "is_it_fixed": false
+  },
+  "candidate_fixes_and_why_each_needs_owner_input": [
+    {
+      "id": "TRIM_OR_INJECT_SCHEMA_TEXT",
+      "what": "move the giant format catalogues out of the always-sent schema description and let the tool validate at call time",
+      "saves": "at least 168835 bytes from the two worst fields",
+      "risk": "changes the tool-calling contract a model sees; needs its own regression on the document paths that rely on those catalogues"
+    },
+    {
+      "id": "RAISE_THE_BUDGET",
+      "what": "increase server_max_input_tokens or the model context pin",
+      "risk": "only valid if the local Qwen server really accepts the larger prompt; otherwise failures move to the provider"
+    },
+    {
+      "id": "REDUCE_TOOLSET_FOR_THIS_PROFILE",
+      "what": "do not offer document-writing schemas to a chat profile",
+      "risk": "removes capabilities the owner may expect in that chat"
+    }
+  ],
+  "recommended_order": ["TRIM_OR_INJECT_SCHEMA_TEXT", "REDUCE_TOOLSET_FOR_THIS_PROFILE", "RAISE_THE_BUDGET"],
+  "why_owner_input_is_required": "all three change either the tool-calling contract or the effective limits of the product model, which the standing rule reserves for an explicit owner decision",
+  "no_effects_this_turn": ["no product code changed", "no limits changed", "no model changed", "no history touched"],
+  "private_material_omitted": true
+}
