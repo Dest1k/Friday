@@ -1,11 +1,15 @@
 {
-  "schema": "frw.public.v3.b00-defect-record.v1",
-  "state": "D12_WRITE_FILE_LOOP_ROOT_CAUSE_IDENTIFIED",
   "at_moscow": "2026-11-08T06:10:00+03:00",
   "case": "D-12 with a pre-pinned 600 s window and 900 s deadline",
-  "run_id": "root-b00-d12-long-1-physical-01-r26",
-  "what_the_long_window_proved": "the window was not the cause: the answer arrived well inside 600 s, and the product used that time to attempt the work and then report failure",
-  "product_answer": "«I stopped retrying because I kept running write_file 8 times without making progress» followed by «Не все изменения файлов выполнены: 5» with letter_0001..letter_0005 all marked as not written",
+  "code_path": {
+    "after_scope": "if format != 'text': return {\"success\": false, \"error\": \"document_creation_requires_user_scope\"}",
+    "scope": "hermes_cli/friday_user_scope.scoped_file('write_file', {path, content, format}) raises ScopeDenied, which is turned into product_user_scope_refused",
+    "tool": "hermes-agent/tools/file_tools.py, write_file_tool, signature format: str = 'text'"
+  },
+  "honest_limits": [
+    "no product code has been changed yet; this is a diagnosis, not an applied repair",
+    "the exact reason scoped_file denied this particular write was not read line by line in friday_user_scope; the repair must confirm it before touching behaviour"
+  ],
   "log_evidence": [
     {
       "at": "2026-11-07 22:55:43",
@@ -28,24 +32,35 @@
       "reading": "the agent framework then hard-stopped the tool and the turn ended with an honest failure list"
     }
   ],
-  "code_path": {
-    "tool": "hermes-agent/tools/file_tools.py, write_file_tool, signature format: str = 'text'",
-    "after_scope": "if format != 'text': return {\"success\": false, \"error\": \"document_creation_requires_user_scope\"}",
-    "scope": "hermes_cli/friday_user_scope.scoped_file('write_file', {path, content, format}) raises ScopeDenied, which is turned into product_user_scope_refused"
+  "product_answer": "«I stopped retrying because I kept running write_file 8 times without making progress» followed by «Не все изменения файлов выполнены: 5» with letter_0001..letter_0005 all marked as not written",
+  "proposed_repair": {
+    "regression": "the existing file-writing cases already captured must keep their verdicts",
+    "shape": "validate format against the published enum before the scope call, and return an explicit error naming the allowed values; keep the scope refusal for genuinely out-of-scope paths",
+    "size": "small, local to write_file_tool's entry",
+    "verification": "on an isolated copy: (a) format 'utf-8_no_bom' returns a precise enum error, (b) format 'text' still writes normally, (c) an out-of-scope path still returns product_user_scope_refused"
+  },
+  "repair_prepared": {
+    "change": "six added lines: the format argument is checked against the published WRITE_FILE_SCHEMA enum before scoped_file is called; an unknown value returns {\"success\": false, \"error\": \"unsupported_format\", \"format\": ..., \"allowed\": [...]}",
+    "file": "hermes-agent/tools/file_tools.py, write_file_tool",
+    "inertness": "the running gateway already imported the old module, so replacing the file on disk does not change live behaviour until a Friday restart",
+    "not_done": "no restart, no installation; a restart needs a safe boundary and is the owner's call",
+    "state": "prepared and syntax-checked; not installed, not active",
+    "syntax_check": "ast.parse passes on the patched file",
+    "verification_plan": [
+      "format 'utf-8_no_bom' returns unsupported_format with the allowed list instead of an opaque refusal",
+      "format 'text' still writes a normal file on the same path",
+      "a genuinely out-of-scope path still returns product_user_scope_refused",
+      "the already captured file-writing cases keep their verdicts"
+    ],
+    "why_it_is_safe": "it only changes which error text an invalid call receives; every allow or deny decision stays with scoped_file"
   },
   "root_cause": {
     "primary": "an unsupported format value is not rejected as a plain argument error; it falls through to the scope gate and comes back as «Это действие недоступно.», which gives the model no way to correct itself",
     "secondary": "the model guessed a format name instead of using the default, then repeated the identical call under the loop guard"
   },
-  "why_this_matters_beyond_d12": "every case that asks the product to create a file by name can hit the same trap, because the failure message hides the real cause",
-  "proposed_repair": {
-    "shape": "validate format against the published enum before the scope call, and return an explicit error naming the allowed values; keep the scope refusal for genuinely out-of-scope paths",
-    "size": "small, local to write_file_tool's entry",
-    "verification": "on an isolated copy: (a) format 'utf-8_no_bom' returns a precise enum error, (b) format 'text' still writes normally, (c) an out-of-scope path still returns product_user_scope_refused",
-    "regression": "the existing file-writing cases already captured must keep their verdicts"
-  },
-  "honest_limits": [
-    "no product code has been changed yet; this is a diagnosis, not an applied repair",
-    "the exact reason scoped_file denied this particular write was not read line by line in friday_user_scope; the repair must confirm it before touching behaviour"
-  ]
+  "run_id": "root-b00-d12-long-1-physical-01-r26",
+  "schema": "frw.public.v3.b00-defect-record.v1",
+  "state": "D12_WRITE_FILE_LOOP_ROOT_CAUSE_IDENTIFIED",
+  "what_the_long_window_proved": "the window was not the cause: the answer arrived well inside 600 s, and the product used that time to attempt the work and then report failure",
+  "why_this_matters_beyond_d12": "every case that asks the product to create a file by name can hit the same trap, because the failure message hides the real cause"
 }
