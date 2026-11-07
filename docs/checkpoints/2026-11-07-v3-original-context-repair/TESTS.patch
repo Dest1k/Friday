@@ -1,0 +1,272 @@
+--- a/tests/agent/test_compression_attempt_ownership.py
++++ b/tests/agent/test_compression_attempt_ownership.py
+@@ -109,6 +109,31 @@
+         )
+ 
+         assert compressor._previous_summary == "primary-era summary"
++
++    def test_current_attempt_restore_rolls_back_structural_fallback_flag(self):
++        compressor = _compressor(
++            _bounded_summary_force_deterministic=False,
++            _last_feasibility_skip=False,
++        )
++        snapshot = _snapshot_compressor_attempt_state(compressor)
++        gen = _claim_compressor_attempt(compressor)
++        compressor._bounded_summary_force_deterministic = True
++        compressor._last_feasibility_skip = True
++
++        _restore_compressor_attempt_state(compressor, snapshot, attempt_generation=gen)
++
++        assert compressor._bounded_summary_force_deterministic is False
++        assert compressor._last_feasibility_skip is False
++
++        del compressor._bounded_summary_force_deterministic
++        del compressor._last_feasibility_skip
++        snapshot = _snapshot_compressor_attempt_state(compressor)
++        gen = _claim_compressor_attempt(compressor)
++        compressor._bounded_summary_force_deterministic = True
++        compressor._last_feasibility_skip = True
++        _restore_compressor_attempt_state(compressor, snapshot, attempt_generation=gen)
++        assert not hasattr(compressor, "_bounded_summary_force_deterministic")
++        assert not hasattr(compressor, "_last_feasibility_skip")
+ 
+     def test_legacy_callers_without_generation_are_unchanged(self):
+         """attempt_generation=None preserves the historical always-restore."""
+--- a/tests/agent/test_bounded_structural_summary.py
++++ b/tests/agent/test_bounded_structural_summary.py
+@@ -0,0 +1,235 @@
++import copy
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import pytest
++
++from agent.bounded_context import (
++    BoundedContextError,
++    BoundedContextPolicy,
++    BoundedContextOverflowError,
++    BoundedSummaryHeadroomError,
++    bounded_compaction_request,
++    bounded_summary_headroom,
++    guard_bounded_compaction,
++)
++from agent.context_compressor import ContextCompressor
++
++MODEL = "qwen38-flash-next-abliterated"
++PROVIDER = "custom:friday-local"
++BASE = "http://local.test/v1"
++
++
++def make_agent():
++    policy = BoundedContextPolicy(
++        provider=PROVIDER,
++        model=MODEL,
++        base_url=BASE,
++        context_length=262144,
++        server_max_input_tokens=262138,
++        main_max_output_tokens=8192,
++        compression_max_output_tokens=8192,
++        safety_margin_tokens=1024,
++        template_overhead_tokens=2048,
++    )
++    compressor = ContextCompressor(
++        MODEL,
++        config_context_length=262144,
++        provider=PROVIDER,
++        base_url=BASE,
++        api_mode="chat_completions",
++        max_tokens=8192,
++        quiet_mode=True,
++    )
++    compressor.bounded_context_policy = policy
++    agent = SimpleNamespace(
++        model=MODEL,
++        provider=PROVIDER,
++        requested_provider=PROVIDER,
++        base_url=BASE,
++        api_mode="chat_completions",
++        max_tokens=8192,
++        context_compressor=compressor,
++        _bounded_context_policy=policy,
++        _current_turn_timestamp=1794005707,
++        _copy_reasoning_content_for_api=lambda source, target: None,
++        _should_sanitize_tool_calls=lambda: False,
++        _sanitize_api_messages=lambda messages: messages,
++        _drop_thinking_only_and_merge_users=lambda messages, **kwargs: messages,
++        _reapply_reasoning_echo_for_provider=lambda messages: None,
++        _use_prompt_caching=False,
++        _usage_anchor=None,
++        _empty_content_retries=0,
++        _image_rejecting_models=set(),
++        _force_ascii_payload=False,
++        _is_copilot_url=lambda: False,
++        _is_openrouter_url=lambda: False,
++        _emit_warning=lambda *args: None,
++        client=None,
++        session_id="fixture",
++        platform="test",
++        tools=[],
++        valid_tool_names=set(),
++        prefill_messages=[],
++        request_overrides={},
++        reasoning_config={},
++        ephemeral_system_prompt="",
++    )
++    agent._build_api_kwargs = lambda messages, tools_for_api=None: {
++        "model": agent.model,
++        "messages": messages,
++        "tools": tools_for_api if tools_for_api is not None else agent.tools,
++        "max_tokens": agent.max_tokens,
++    }
++    return agent
++
++
++def structural_overhead(agent):
++    agent.tools = [{
++        "type": "function",
++        "function": {
++            "name": "tool",
++            "description": "t" * 151601,
++            "parameters": {"type": "object", "properties": {}},
++        },
++    }]
++    agent.valid_tool_names = {"tool"}
++
++
++SYSTEM_PROMPT = "s" * 60558
++
++
++def live_messages():
++    return [
++        {
++            "role": "user" if index % 2 == 0 else "assistant",
++            "content": "Привет" if index == 80 else f"msg{index}",
++        }
++        for index in range(81)
++    ]
++
++
++def compacted_messages():
++    original = live_messages()
++    return [
++        {"role": "assistant", "content": "deterministic fixture summary", "_compressed_summary": True},
++        original[-1],
++    ]
++
++
++def bind_current(agent, messages):
++    agent._bounded_compaction_request_context = {
++        "incoming": messages[-1],
++        "ext": None,
++        "plugin": None,
++        "moa": None,
++        "original": messages[-1]["content"],
++    }
++
++
++def test_structural_summary_fallback_preserves_hard_limit():
++    agent = make_agent()
++    structural_overhead(agent)
++    messages = compacted_messages()
++    bind_current(agent, messages)
++
++    headroom = bounded_summary_headroom(agent, messages, SYSTEM_PROMPT)
++
++    assert headroom == 0
++    assert agent.context_compressor._bounded_summary_force_deterministic is True
++    estimated = guard_bounded_compaction(agent, messages, SYSTEM_PROMPT)
++    assert agent._bounded_context_policy.trigger_tokens < estimated <= agent._bounded_context_policy.input_budget(8192)
++
++
++@pytest.mark.parametrize("system_prompt", [SYSTEM_PROMPT, "s" * 92000])
++def test_full_compress_uses_structural_fallback_without_summary_call(system_prompt):
++    agent = make_agent()
++    structural_overhead(agent)
++    compressor = agent.context_compressor
++    compressor.abort_on_summary_failure = True
++    messages = live_messages()
++    bind_current(agent, messages)
++    compressor._bounded_summary_fit_callback = lambda skeleton: bounded_summary_headroom(
++        agent, skeleton, system_prompt
++    )
++    before = copy.deepcopy(messages)
++
++    with patch("agent.context_compressor.call_llm", side_effect=AssertionError("summary model called")):
++        compressed = compressor.compress(messages, force=True)
++
++    assert messages == before
++    assert len(compressed) < len(messages)
++    assert compressed[-1] == messages[-1]
++    assert compressor._last_summary_fallback_used is True
++    assert compressor._last_feasibility_skip is True
++    assert compressor._last_compression_telemetry["failure_class"] == "bounded_fixed_overhead"
++    agent._cached_system_prompt = system_prompt
++    variants = bounded_compaction_request(agent, compressed, system_prompt)
++    estimates = [agent._bounded_context_policy.check_request(request)["estimated_input"] for request in variants]
++    estimated = guard_bounded_compaction(agent, compressed, system_prompt)
++    assert estimated == max(estimates) > agent._bounded_context_policy.trigger_tokens
++    if len(system_prompt) == 92000:
++        assert 0 < agent._bounded_context_policy.input_budget(8192) - estimated < 7300
++    compressor._fallback_compression_streak = 3
++    with patch.object(compressor, "_persist_fallback_compression_streak") as persist_streak:
++        compressor.record_completed_compaction(used_fallback=True, feasibility_skip=True)
++    assert compressor._fallback_compression_streak == 3
++    persist_streak.assert_not_called()
++
++
++def test_structural_headroom_rejects_streaming_hard_overflow(monkeypatch):
++    agent = make_agent()
++    structural_overhead(agent)
++    messages = compacted_messages()
++    request = {
++        "model": MODEL,
++        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
++        "tools": agent.tools,
++        "max_tokens": agent.max_tokens,
++    }
++    streaming = copy.deepcopy(request)
++    streaming["stream"] = True
++    streaming["stream_options"] = {"include_usage": True}
++    streaming["messages"][-1]["content"] += "x" * 40000
++    monkeypatch.setattr(
++        "agent.bounded_context.bounded_compaction_request",
++        lambda *args, **kwargs: (request, streaming),
++    )
++
++    with pytest.raises(BoundedContextOverflowError, match="exceeds input budget"):
++        bounded_summary_headroom(agent, messages, SYSTEM_PROMPT)
++
++
++def test_structural_fallback_still_rejects_hard_overflow():
++    agent = make_agent()
++    structural_overhead(agent)
++    messages = live_messages()
++    messages.extend(
++        {"role": "user" if index % 2 == 0 else "assistant", "content": f"x{index}" * 5000}
++        for index in range(120)
++    )
++    bind_current(agent, messages)
++    agent.context_compressor._bounded_summary_force_deterministic = True
++
++    with pytest.raises(BoundedContextError, match="exceeds input budget"):
++        guard_bounded_compaction(agent, messages, SYSTEM_PROMPT)
++
++
++def test_oversized_anchor_without_structural_overhead_keeps_refusal():
++    agent = make_agent()
++    messages = [{"role": "system", "content": "short"}, {"role": "user", "content": "x" * 250000}]
++    bind_current(agent, messages)
++
++    with pytest.raises(BoundedSummaryHeadroomError, match="leaves no summary headroom"):
++        bounded_summary_headroom(agent, messages, "short")
++
++
++def test_small_request_keeps_normal_headroom():
++    agent = make_agent()
++    messages = [{"role": "system", "content": "short"}, {"role": "user", "content": "Привет"}]
++    bind_current(agent, messages)
++
++    headroom = bounded_summary_headroom(agent, messages, "short")
++
++    assert headroom >= 6
++    assert not getattr(agent.context_compressor, "_bounded_summary_force_deterministic", False)
