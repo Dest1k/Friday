@@ -475,6 +475,7 @@ def clean_environment(home):
     # Preserve the OS account HOME: native host rendezvous remains host-wide.
     # No ambient provider/token/auth/profile/runtime/PYTHONPATH influences PM.
     names = ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM',
+             'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS',
              'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy')
     env = {k: os.environ[k] for k in names if k in os.environ}
     env.update(HERMES_HOME=str(home), PYTHONDONTWRITEBYTECODE='1', GIT_OPTIONAL_LOCKS='0',
