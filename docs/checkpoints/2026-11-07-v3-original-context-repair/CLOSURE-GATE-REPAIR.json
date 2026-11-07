@@ -1,0 +1,50 @@
+{
+  "schema": "frw.Kimi.tester-closure-gate-repair.v1",
+  "at_moscow": "2026-11-07T23:05:00+03:00",
+  "trigger": "independent review by one background subagent on NordRouter/DeepSeek found a real defect in the first version of the closure repair",
+  "review": {
+    "agent": "agent-83",
+    "profile": "explore (read-only tool set)",
+    "model_alias": "nord-payg/deepseek-v4.1-1017-thinking",
+    "actual_provider_model": "openai / deepseek/deepseek-v4.1-flash-1017",
+    "materials": "/home/jericho/.cache/FRW-KIMI-TESTER-PATCH-REVIEW-20261107 (brief, functional diff, before/after functions)",
+    "verdicts": {
+      "no_invented_closure": "FAIL",
+      "no_real_error_becomes_pass": "PASS with caveats"
+    }
+  },
+  "defect_found": {
+    "summary": "close_refused_processing closed the marker without repeating the message-eligibility gate the normal path applies",
+    "missing_checks": [
+      "chat id and chat type",
+      "sender id and is_bot",
+      "reply_to_message against the original request",
+      "unsupported media keys",
+      "deduplication of the message id"
+    ],
+    "why_it_matters": "when a refusal fired before those checks (update bound, capture-context verification, continuation admission), the closure could record an unrelated message as the step's answer; the tester's own verify_reply_custody rejects exactly such observations, so the marker would be closed with evidence the codebase itself refuses",
+    "secondary": [
+      "harness-integrity refusals were closed as ordinary product refusals, losing the distinction",
+      "only Refused was caught, so a closure error could replace the original refusal",
+      "the dedupe keyed on update_id while the normal path keys on message_id"
+    ]
+  },
+  "repair": {
+    "installed_sha256": "031d0dea9999c486d054859c",
+    "changes": [
+      "new close_eligible() mirrors the normal path gate: document, non-empty text, positive message id, chat id PEER and type private, sender id PEER and is_bot, no unsupported media key, message date inside the committed window, arrival before the window close, no observation yet for this update, text within budget, message budget not exhausted",
+      "reply target is re-derived from the protected send-ACK receipt rather than from the mutable run field, and must equal both the ACK message id and run['sent_message_id']",
+      "new committed_message_ids() collects message ids already committed by processed receipts, so the dedupe uses the receipt chain instead of the mutable run field",
+      "the closure call is wrapped so a closure failure can never mask the original refusal; the marker then simply stays open"
+    ],
+    "why_the_receipt_chain_for_dedupe": "the normal path appends the message id to run['message_ids'] before a post-gate refusal can fire, so the mutable field cannot distinguish a fresh message from one already committed by an earlier update"
+  },
+  "verification": {
+    "gate_unit_cases": "17 of 17 correct: valid reply accepted; missing or wrong reply_to, document, photo, wrong chat id, non-private chat, non-bot sender, wrong sender id, arrival after window, arrival without timestamp, message dated before send, already committed message id, existing observation, text over budget, missing ACK reference, ACK/sent-id disagreement all rejected",
+    "end_to_end_positive": "a post-gate refusal (repeated no-progress) on an eligible message still closes the chain with one observation and local_refusal_closure=true",
+    "end_to_end_pre_gate": "a pre-gate refusal (update bound) on an eligible message also closes, which is correct because the message itself passes the full gate",
+    "negative_combination": "a pre-gate refusal on a message that is not a reply is rejected by the gate, so the marker stays open - this is the case the review identified",
+    "live_store": "cursor_offsets OK at offset 261479702, zero inventory failures across all runs"
+  },
+  "acknowledgement": "the first version of this repair was wrong in the way the review describes; the live store was never exposed to the defect because no refusal of that shape occurred while the earlier version was installed"
+}
