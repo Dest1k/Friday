@@ -1,0 +1,3089 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -11,7 +11,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = "friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1"
++DIALOGUE_REVISION = "friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.word-located-edit.v2"
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -192,6 +192,8 @@
+ DOCX_EDIT_GUIDANCE = (
+     'TAR archives: format=tar/tar.gz/tar.bz2/tar.xz/tar.zst with entries source/member creates a NEW matching archive; input aliases tgz/tbz2/txz/tzst are recognized. read_file lists checked member names and hashes; format=tar_extract with {source} publishes a NEW directory. archive_convert converts ZIP/7z/TAR families into a NEW supported archive preserving member names and bytes. Links, devices, sparse/unsupported records, unsafe paths and over-limit expansion refuse. Source archives are unchanged; never execute members. '
+     'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
++    'PDF page assembly uses pdf_pages, a NEW .pdf, and exact JSON {"sources":["a.pdf"],"pages":[{"source":1,"page":1,"rotation":0}]}; one or two own-workspace sources. Source/page are one-based; rotation adds clockwise 0/90/180/270 degrees. Every listed source must contribute, every selected page appears once in requested order, and sources stay unchanged. At most 64 input/output pages and 1 MB per input/output; native page content/resources are retained without rasterization. Document metadata is omitted; annotations, forms, actions, attachments, encryption, signatures, outlines, layers and unsupported document structures refuse. '
++    'XLSB читается нативно только в ограниченном инертном профиле: порядок, имена и видимость листов, типизированные сохранённые значения ячеек и отдельно помеченные кэши формул. Формулы не вычисляются, внешние ссылки не открываются; активные и неподдержанные пакеты отказываются целиком. Чтение не проверяет оформление и не разрешает создание, изменение или конвертацию XLSB. Продолжай все страницы read_file и сверяй metadata покрытия. '
+     'Старый .xls читается как ограниченная таблица BIFF8: имена и порядок листов, поддержанные значения ячеек и сохранённые результаты формул. Формулы не вычисляются, макросы не запускаются. Это не проверка оформления; смотри metadata покрытия и ограничений. Создание и изменение .xls не поддерживаются, не записывай под этим расширением текст. '
+     'EPUB читается по порядку XHTML-разделов книги, включая отдельно помеченные вспомогательные разделы. Это логический текст, не вид страниц: CSS, изображения, аудио и видео не проверяются; внешние ссылки не открываются. EPUB нельзя создать или изменить этой файловой операцией. '
+     'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. No cross-family/Office conversion in this path. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
+@@ -201,6 +203,7 @@
+     'Merge requires identical ordered headers; newer nonnegative integer numeric revision wins, '
+     'equal-revision value conflicts refuse. Selected formula, merged or protected cells refuse. '
+     'Native ODS: ods_create creates a NEW .ods from exactly {sheets:[{name,rows}]}, using explicit scalar cells as xlsx_create. String IDs and prefixes remain literal; bounded acyclic SUM ranges and two-cell multiplication are calculated locally. ods_edit creates a NEW .ods from {source,sheet,cell,expected,value}: exact float/string/boolean target only, same type, no repeated/merged/formula/protected target. Other member payloads preserved; existing formula caches are not recalculated after edits. ODS/OTS reading separates values, formula cache and display. Use spreadsheet modes for OTS/FODS. '
++    'Для редактируемой столбчатой диаграммы ODS используй ods_chart с новым путём .ods и JSON {source,sheet,range,title}. Диапазон A1:Bn или A1:Cn содержит строку заголовков, текстовые категории в первом столбце и одну или две числовые серии; формульные/пустые выбранные ячейки отклоняются. Создаются настоящие ODF chart objects, ссылки на исходные ячейки и совпадающий локальный кеш, не изображение. ods_recalculate с новым путём .ods и JSON {source} пересчитывает только существующие ациклические числовые SUM и произведения двух ячеек после правки, сохраняя формулы и остальные части пакета. Отсутствующие/нечисловые значения, циклы, неподдержанные формулы и файлы с диаграммами при пересчёте отклоняются. read_file показывает поддерживаемые ссылки диаграммы и проверенный кеш; Office/визуальная приёмка не утверждается. '
+     'RTF читается без выполнения полей, объектов и внешних ссылок. Для нового .rtf используй '
+     'rtf_create с обычным текстом или rtf_structured с JSON blocks: paragraph type/text, '
+     'heading type/text/level 1..9, list type/items/ordered (буквальные метки, без автонумерации), '
+@@ -209,6 +212,18 @@
+     'без смешанного форматирования, полей, объектов и отслеживаемых изменений. Остальные байты '
+     'сохраняются; чтение не проверяет внешний вид. '
+     'Word DOCX/DOTX и ODF ODT/OTT/FODT читаются и создаются штатно в ограниченном native-профиле. '
++    'При исправлениях Word читай раздельные FINAL/ORIGINAL, TRACKED и COMMENT записи. '
++    'Это сохранённые текстовые слои, а не принятие или отклонение правок: неподдержанные '
++    'структурные изменения явно отмечаются review_gaps; при неполной проекции не называй текст итоговым. '
++    'Для отчёта с настоящим оглавлением и полями номеров страниц используй docx_report: '
++    'JSON blocks по правилам docx_structured, необязательные toc_levels 1..9 (по умолчанию 3), '
++    'header и page_numbers boolean (по умолчанию true), выход — новый .docx. Поля требуют '
++    'обновления в совместимом офисном приложении; создание не проверяет страницы или внешний вид. '
++    'Не выдавай незаполненный кэш оглавления или номеров за вычисленный результат. '
++    'Для правки ровно одного указанного абзаца DOCX/DOTX используй word_located_edit: '
++    'source, source_sha256 (точный хеш из того же актуального чтения), paragraph (номер из этого чтения, включая абзацы ячеек), old_text, new_text. '
++    'В выбранном абзаце требуется одно буквальное совпадение; совпадения в других абзацах не меняются. '
++    'Если исходник изменился после чтения, перечитай его и заново выбери абзац; не подставляй новый хеш автоматически. Выход — новый файл того же профиля. Не принимай и не отклоняй отслеживаемые правки этим действием. '
+     'Для нового документа используй format с именем профиля (docx/dotx/odt/ott/fodt); '
+     'для структурного создания добавь _structured, для сохраняющей копии _edit. '
+     'Выход всегда в НОВЫЙ файл с соответствующим расширением и настоящим content type/MIME/manifest. '
+@@ -331,8 +346,13 @@
+             'Read an own-workspace UTF-8 text file with numbered lines. Use offset, limit and the '
+             'returned next_offset/next_char_offset for continuation. PDF, Word DOCX/DOTX/DOCM/DOTM, '
+             'ODF ODT/OTT/FODT, spreadsheets XLSX/XLTX/XLSM/XLTM/ODS/OTS/FODS and RTF expose bounded '
+-            'native text or cell views; images and layout are not covered. DOCM/DOTM are inert read-only '
++            'native text or cell views; images and layout are not covered. DOCX/DOTX pages also return source_sha256 of the exact package read; keep it with the selected paragraph for word_located_edit. DOCM/DOTM are inert read-only '
+             'profiles: VBA remains opaque and is never executed; cached fields are never evaluated. '
++            'Supported native ODS charts expose source ranges and verified matching local caches; chart metadata is not visual or Office acceptance. '
++            'Word review documents expose separate FINAL/ORIGINAL paragraph views, TRACKED changes and '
++            'COMMENT text/anchors for supported stored run insertions/deletions. Never call these accepted '
++            'revisions. Inspect review_gaps and main_text_projections_complete; unsupported structural '
++            'changes omit original/final projections rather than silently accepting them. '
+             'XLSX also supplies bounded escaped typed cell JSON '
+             'records with native coordinates/types and separate formula/cache fields; inspect '
+             'extraction.cell_records for omissions/truncation and concatenate char_offset segments '
+@@ -355,6 +375,12 @@
+             'Legacy .xls reads bounded BIFF8 stored cells and saved formula caches with sheet order and visibility. '
+             'Formulas are not evaluated. Unsupported, encrypted or active XLS refuses. No XLS write or conversion support is implied. '
+             'Legacy XLT requires its BIFF8 template record and supports the same bounded stored-cell/cache view. No XLT writing or template instantiation. DOC/DOT and XLS/XLT content markers must match their suffixes. '
++            'XLSB reads a bounded native BIFF12 stored-cell subset with original coordinates, cell types, '
++            'sheet order/visibility and separately labelled saved formula caches; formulas are never evaluated. '
++            'Every page retains full-source identity and coverage metadata. Concatenate char_offset segments '
++            'of one JSON line before parsing; continue every page when partial is true. Active, encrypted, '
++            'external-link, malformed or unsupported XLSB packages refuse without a converter fallback. '
++            'No XLSB creation, editing, conversion, layout or rendering support is implied. '
+             'EPUB 2/3 with UTF-8 XHTML spine chapters returns logical book text in declared reading order; '
+             'auxiliary chapters are labelled. No CSS, page-layout, image or multimedia rendering, no '
+             'external fetches. Scripts, encryption, unsupported spine formats and ambiguous packages refuse. '
+@@ -376,6 +402,10 @@
+             'Raster images: read_file on JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF returns a complete paginated frame/pixel registry, not vision or OCR. image_transform creates a NEW JPG/JPEG/PNG/TIF/TIFF/WebP/BMP file from JSON {"source":"scan.tiff","frame":2,"rotation":90,"crop":[0,0,300,200]}. Frame is required and one-based; crop is optional in EXIF-normalized pixels, then rotation is optional clockwise 0/90/180/270 degrees. Every input frame must decode within 32 frames and 16 million total pixels; 1 MB input/output. Only pixels losslessly representable as RGBA8 are supported; high-bit-depth, floating-point and non-RGB color modes refuse. Only the chosen frame is output. Other source frames are unchanged. Derivatives contain pixels only: EXIF orientation is applied, other metadata including ICC/EXIF is omitted. JPEG is lossy; alpha to JPEG/BMP refuses. No OCR, visual interpretation or fidelity claim follows from a pixel hash. '
+             'TAR archives: format=tar/tar.gz/tar.bz2/tar.xz/tar.zst with entries source/member creates a NEW matching archive; input aliases tgz/tbz2/txz/tzst are recognized. read_file lists checked member names and hashes; format=tar_extract with {source} publishes a NEW directory. archive_convert converts ZIP/7z/TAR families into a NEW supported archive preserving member names and bytes. Links, devices, sparse/unsupported records, unsafe paths and over-limit expansion refuse. Source archives are unchanged; never execute members. '
+     'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
++            'PDF page assembly: pdf_pages into a NEW .pdf, exact JSON {"sources":["a.pdf"],"pages":[{"source":1,"page":1,"rotation":0}]}; one or two own-workspace sources. Source/page are one-based; each selected page occurs once in requested order, and every listed source contributes. Rotation adds clockwise 0/90/180/270 degrees. At most 64 input/output pages and 1 MB per input/output. Native page content/resources are preserved without rasterization, sources stay unchanged and document metadata is omitted. Forms, annotations, links/actions, attachments, encryption, signatures, outlines, layers and unsupported structures refuse. '
++            'Native ODS: ods_chart uses exactly {source,sheet,range,title} into a NEW .ods. range is A1:Bn or A1:Cn, with headers, literal text categories and one or two literal numeric series; formula or unavailable selected cells refuse. A real editable column chart has source references and matching local caches. ods_recalculate uses exactly {source} into a NEW .ods and recalculates only existing acyclic numeric SUM ranges and two-cell products, preserving formulas and other package members. Unsupported formulas/content, missing/non-numeric dependencies, cycles and charted recalculation inputs refuse. Readback is structural, without Office or visual acceptance. '
++            'For Word reports with native TOC and page fields use docx_report, a NEW .docx, and JSON blocks plus optional toc_levels(1-9), header, page_numbers(boolean). TOC and page fields require later refresh; no layout/page-count or Office/PDF acceptance is implied. '
++            'Word located edit: word_located_edit with exact JSON source/source_sha256/paragraph/old_text/new_text and a NEW matching .docx/.dotx. Use source_sha256 and the one-based paragraph number from the same current native reading (including table cells); a changed source refuses. Reread and reselect after a refusal, never just substitute a new hash. Change one literal match only there, preserving all other occurrences. No field/anchor-spanning edit or acceptance of tracked changes. '
+             'Word DOCX/DOTX and ODF ODT/OTT/FODT: profile name creates plain text natively; '
+             'profile_structured creates typed JSON blocks; profile_edit uses exact '
+             'source/old_text/new_text into a NEW same-profile file. Native MIME/content types '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -884,11 +884,23 @@
+                 from hermes_cli.friday_workspace_raster import read_image
+                 return read_image(cap, path.as_posix(), offset=args.get('offset', 1),
+                                   limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.mhtml', '.mht', '.doc', '.dot', '.xls', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.mhtml', '.mht', '.doc', '.dot', '.xls', '.xlsb', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'} else None
+             extraction_metadata = None
++            source_sha256 = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+-                data, _ = workspace_document(str(root / path), max_bytes=1000000)
++                document_snapshot = workspace_document(str(root / path), max_bytes=1000000,
++                                                       with_identity=document_format == 'xlsb')
++                data = document_snapshot[0]
++                def check_document():
++                    revision.check(cap)
++                    if document_format == 'xlsb':
++                        observed = workspace_document(str(root / path), max_bytes=1000000,
++                                                      with_identity=True)
++                        if observed != document_snapshot:
++                            raise ScopeDenied()
++                if document_format in ('docx', 'dotx'):
++                    source_sha256 = hashlib.sha256(data).hexdigest()
+                 revision.check(cap)
+                 try:
+                     text = extract_scoped_document_bytes(data, document_format,
+@@ -899,7 +911,7 @@
+                     revision.check(cap)
+                     return json.dumps({'success': False, 'error': 'document_extraction_failed',
+                                        'format': document_format, 'reason': exc.code})
+-                revision.check(cap)
++                check_document()
+                 lines = text.splitlines()
+             else:
+                 data, version = revision.snapshot(fd, parts[-1])
+@@ -912,7 +924,7 @@
+             seen=[]
+             def record_read(rendered):
+                 if document_format:
+-                    revision.check(cap)
++                    check_document()
+                     return  # Extracted text never grants raw binary overwrite coverage.
+                 revision.note_read(cap,task_id,path.as_posix(),version,
+                                    seen if lines else [(1,1)],total_units,rendered)
+@@ -937,12 +949,14 @@
+                 if document_format:
+                     result.update(extracted_document=True, format=document_format,
+                                   coverage='text_only; images_and_layout_not_covered')
++                    if source_sha256 is not None:
++                        result['source_sha256'] = source_sha256
+                     if extraction_metadata is not None:
+                         result.update(extraction=extraction_metadata,
+                                       coverage=extraction_metadata['coverage'])
+                 encode = lambda: json.dumps(result, ensure_ascii=False, separators=(',', ':'))
+                 if serialized_bytes(encode()) > budget:
+-                    if document_format: revision.check(cap)
++                    if document_format: check_document()
+                     return json.dumps({'success': False, 'error': 'capacity: file metadata exceeds inline budget'})
+                 for n in range(offset-1, min(len(lines), offset-1+limit)):
+                     start = char_offset if n == offset-1 else 0
+@@ -966,7 +980,7 @@
+                     if serialized_bytes(encode()) > budget or (not complete and low == 0):
+                         result.update(content=prior, partial=True, next_offset=n+1, next_char_offset=start)
+                         if not prior:
+-                            if document_format: revision.check(cap)
++                            if document_format: check_document()
+                             return json.dumps({'success': False, 'error': 'capacity: no text character fits'})
+                         break
+                     if low or complete:
+@@ -996,8 +1010,14 @@
+                 'hint': 'DOCM/DOTM support bounded inert reading only. Macro projects are '
+                         'opaque, never executed, and not accepted as safe. Creating or editing '
+                         'these profiles is unsupported; do not drop VBA or rename another format.'})
+-        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'docx_merge', 'archive_edit'):
+-            raise ScopeDenied()
++        if output_format not in ('text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit'):
++            raise ScopeDenied()
++        if output_format == 'docx_report':
++            from hermes_cli.friday_workspace_word_report import create_report
++            return create_report(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'word_located_edit':
++            from hermes_cli.friday_workspace_word_located import create_located_edit
++            return create_located_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format in ('spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert'):
+             from hermes_cli.friday_workspace_spreadsheet import execute
+             return execute(cap, fd, parts[-1], path.as_posix(), args.get('content'), operation=output_format)
+@@ -1007,7 +1027,7 @@
+         if output_format == 'odf_merge':
+             from hermes_cli.friday_workspace_presentation_odf_merge import create_merge
+             return create_merge(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+-        if output_format in ('ods_create', 'ods_edit', 'ods_join', 'ods_merge'):
++        if output_format in ('ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate'):
+             from hermes_cli.friday_workspace_ods import execute
+             return execute(cap, fd, parts[-1], path.as_posix(), args.get('content'), operation=output_format)
+         if output_format == 'presentation_text_edit':
+@@ -1110,6 +1130,10 @@
+             if path.suffix.lower() != '.docx': raise ScopeDenied()
+             from hermes_cli.friday_workspace_docx_merge import create
+             return create(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'pdf_pages':
++            if path.suffix.lower() != '.pdf': raise ScopeDenied()
++            from hermes_cli.friday_workspace_pdf_pages import create_pages
++            return create_pages(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format == 'docx_pdf':
+             if path.suffix.lower() != '.pdf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_pdf import create_pdf
+@@ -1124,7 +1148,7 @@
+                                         format=profile)
+             return word.create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                                format=profile, structured=output_format.endswith('_structured'))
+-        if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.mhtml', '.mht', '.doc', '.dot', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
++        if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.mhtml', '.mht', '.doc', '.dot', '.xlt', '.epub', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.xls', '.xlsb', '.tar', '.tgz', '.tbz2', '.txz', '.tzst', '.gz', '.bz2', '.xz', '.zst', '.zip', '.7z', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+             if path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
+@@ -1148,7 +1172,12 @@
+                 refusal['hint'] = ('Use the explicit native presentation formats pptx_create/pptx_edit/pptx_pdf '
+                     'or odp_create/odp_edit/odp_pptx/pptx_odp with their typed JSON contract and a NEW output path. '
+                     'UTF-8 text, CSV or XML under a presentation suffix is not a native presentation.')
+-            if path.suffix.lower() == '.xlsx':
++            if path.suffix.lower() == '.xlsb':
++                refusal['hint'] = ('XLSB supports bounded native stored-cell reading only. '
++                    'Formula values are saved caches, never evaluated. Creation, editing and '
++                    'conversion are unsupported; do not write text or rename another format '
++                    'under the XLSB suffix.')
++            elif path.suffix.lower() == '.xlsx':
+                 refusal['hint'] = (
+                     'To create a workbook use format=xlsx_create and JSON sheets/name/rows; strings remain literal. Explicit type=formula supports bounded C2*D2 and SUM range formulas; optional sheet table and top-level names create native structures. Sheet freeze=A2 freezes row 1, print_area=A1:G5 sets one bounded local print range, and decimal/formula objects accept number_format=0.00 for two-decimal display. '
+                     'For an exact-text left join of two different sheets in one workbook use format=xlsx_join and JSON source/left_sheet/right_sheet/key/sheet; unique text keys and noncolliding headers required. '
+@@ -1162,12 +1191,18 @@
+             elif path.suffix.lower() in {'.ods', '.ots'}:
+                 refusal['hint'] = ('ODS/OTS have native readers. Create a NEW .ods with ods_create '
+                     'and JSON sheets/name/rows; ods_edit uses source/sheet/cell/expected/value. '
++                    'ods_chart uses source/sheet/range/title for one editable column chart from '
++                    'a header row, text categories and one or two literal numeric series. '
++                    'ods_recalculate uses exactly source and recalculates only supported existing '
++                    'numeric SUM/two-cell product formulas into a NEW .ods. '
+                     'ods_join uses source/left_sheet/right_sheet/key/sheet for exact-text LEFT JOIN. '
+                     'ods_merge uses base/update/sheet/key/revision; newest numeric integer revision '
+                     'wins and equal-revision conflicts refuse. Join and merge create plain tables '
+                     'without source formatting. OTS creation/editing is unsupported.')
+             elif path.suffix.lower() == '.pdf':
+-                refusal['hint'] = ('To export an existing DOCX, use format=docx_pdf, a NEW .pdf path, '
++                refusal['hint'] = ('For native PDF merge/select/reorder/rotation use format=pdf_pages, a NEW .pdf path, '
++                    'and exact JSON sources plus pages entries with one-based source/page and rotation=0/90/180/270. '
++                    'To export an existing DOCX, use format=docx_pdf, a NEW .pdf path, '
+                     'and content JSON with exactly source (the own-workspace .docx path).')
+             elif path.suffix.lower() == '.rtf':
+                 refusal['hint'] = ('Use rtf_create or rtf_structured for a NEW native RTF, '
+--- a/hermes_cli/friday_workspace_ods.py
++++ b/hermes_cli/friday_workspace_ods.py
+@@ -64,6 +64,23 @@
+             extra = dict(source=relative, source_sha256=hashlib.sha256(data).hexdigest(),
+                          source_unchanged=True, other_parts_preserved=True,
+                          formula_caches_not_recalculated=True)
++        elif operation in ('ods_chart', 'ods_recalculate'):
++            keys = ('source', 'sheet', 'range', 'title') if operation == 'ods_chart' else ('source',)
++            spec = json_object(content, keys)
++            source, relative, data, identity = _read_source(spec['source'], cap, '.ods')
++            if operation == 'ods_chart':
++                from tools.scoped_ods_chart import add_chart
++                rendered = add_chart(data, spec, checkpoint=lambda: check(cap))
++                extra = dict(native_editable=True, native_charts=1, chart_type='column',
++                             chart_cache='source_and_local_cache_match', formulas_executed=False)
++            else:
++                from tools.scoped_ods_recalculate import recalculate
++                rendered = recalculate(data, spec, checkpoint=lambda: check(cap))
++                extra = dict(formula_caches_recalculated=True, formulas_preserved=True,
++                             calculation='bounded_existing_numeric_SUM_and_multiply_only')
++            state = source, data, identity
++            extra.update(source=relative, source_sha256=hashlib.sha256(data).hexdigest(),
++                         source_unchanged=True, other_parts_preserved=True)
+         elif operation == 'ods_create':
+             spec = json_object(content, ('sheets',))
+             rendered = create_spreadsheet(spec, checkpoint=lambda: check(cap))
+--- /dev/null
++++ b/hermes_cli/friday_workspace_pdf_pages.py
+@@ -0,0 +1,37 @@
++"""Own-workspace native PDF pages; existing create-only CAS publication."""
++import hashlib
++import json
++
++
++def create_pages(cap, fd, leaf, relative, content):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_revision import check
++    from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++    from hermes_cli.friday_workspace_zip import _path, _source, _verify, _inline_budget, _fits, _capacity, _encode
++    from tools.scoped_pdf_pages import request, assemble, PDFPagesError
++    _check_parent(cap, fd, relative)
++    try:
++        spec = request(content)
++        paths = [_path(s) for s in spec['sources']]
++        if any(not s.lower().endswith('.pdf') for s in paths) or len(set(paths)) != len(paths):
++            raise ScopeDenied()
++        states = [(s, *_source(cap, s)) for s in paths]
++        data, metadata = assemble(cap, [s[1] for s in states], spec['pages'])
++        check(cap)
++        receipt = dict(metadata, sources=paths, sources_unchanged=True,
++            source_sha256=[hashlib.sha256(s[1]).hexdigest() for s in states])
++        budget = _inline_budget()
++        estimate = dict(receipt, success=True, path=relative, format='pdf',
++            scope='own_user_workspace', create_only=True, verified=True,
++            bytes_written=len(data), sha256=hashlib.sha256(data).hexdigest())
++        if not _fits(estimate, budget):
++            return _capacity(budget)
++        _verify(cap, states)
++        result = json.loads(_create_bytes(cap, fd, leaf, relative, data, output_format='pdf',
++                                         verify_source=lambda: _verify(cap, states)))
++        if result.get('success'):
++            result.update(receipt)
++        return _encode(result)
++    except PDFPagesError as error:
++        return _encode(dict(success=False, error='pdf_pages_refused', reason=str(error),
++                            effect_disposition='unknown' if str(error) == 'pdf_cleanup_unconfirmed' else 'none'))
+--- /dev/null
++++ b/hermes_cli/friday_workspace_word_located.py
+@@ -0,0 +1,51 @@
++"""Existing source custody and create-only publisher for a numbered Word edit."""
++import hashlib
++import json
++from pathlib import Path
++
++from hermes_cli.friday_user_scope import ScopeDenied,workspace_document
++from hermes_cli.friday_workspace_docx import _check_parent,_create_bytes
++from hermes_cli.friday_workspace_revision import check
++from tools.scoped_word_located import edit_paragraph
++from tools.scoped_word_profiles import WordProfileError
++
++
++def create_located_edit(cap,fd,leaf,path,content):
++    _check_parent(cap,fd,path)
++    if Path(path).name!=leaf or Path(path).suffix.lower()not in('.docx','.dotx'):raise ScopeDenied()
++    if not isinstance(content,str)or len(content.encode('utf-8'))>100000:raise ScopeDenied()
++    def pairs(items):
++        result={}
++        for key,value in items:
++            if key in result:raise ScopeDenied()
++            result[key]=value
++        return result
++    try:spec=json.loads(content,object_pairs_hook=pairs)
++    except(ValueError,RecursionError):raise ScopeDenied()from None
++    if not isinstance(spec,dict)or set(spec)!={'source','source_sha256','paragraph','old_text','new_text'}:raise ScopeDenied()
++    expected=spec['source_sha256']
++    if (not isinstance(expected,str)or len(expected)!=64
++            or any(c not in '0123456789abcdef'for c in expected)):raise ScopeDenied()
++    source=spec['source']
++    if not isinstance(source,str)or not source or '\x00'in source:raise ScopeDenied()
++    source=Path(source);root=cap.home/'workspace'
++    if not source.is_absolute():source=root/source
++    try:relative=source.relative_to(root)
++    except ValueError:raise ScopeDenied()from None
++    profile=Path(path).suffix.lower()[1:]
++    if (not relative.parts or any(p in('.','..')or p.startswith('.')for p in relative.parts)
++            or source.suffix.lower()!='.'+profile or relative.as_posix()==path):raise ScopeDenied()
++    data,_,identity=workspace_document(str(source),with_identity=True)
++    source_sha256=hashlib.sha256(data).hexdigest()
++    if source_sha256!=expected:
++        return json.dumps(dict(success=False,error='document_edit_refused',reason='source_hash_mismatch',effect_disposition='none'))
++    try:result=edit_paragraph(data,spec['old_text'],spec['new_text'],spec['paragraph'],profile,checkpoint=lambda:check(cap))
++    except WordProfileError as error:
++        return json.dumps(dict(success=False,error='document_edit_refused',reason=error.code,effect_disposition='none'))
++    def verify():
++        check(cap);current,_,version=workspace_document(str(source),with_identity=True)
++        if current!=data or version!=identity:raise ScopeDenied()
++    answer=json.loads(_create_bytes(cap,fd,leaf,path,result,output_format='word_located_edit',verify_source=verify))
++    if answer.get('success'):
++        answer.update(source=relative.as_posix(),source_sha256=source_sha256,source_unchanged=True,paragraph=spec['paragraph'],replacements=1,unchanged_parts_preserved=True)
++    return json.dumps(answer,ensure_ascii=False)
+--- /dev/null
++++ b/hermes_cli/friday_workspace_word_report.py
+@@ -0,0 +1,20 @@
++"""Admitted own-workspace native report creation; no automatic Office launch."""
++import json
++from pathlib import Path
++
++from hermes_cli.friday_user_scope import ScopeDenied
++from hermes_cli.friday_workspace_docx import _check_parent,_create_bytes
++from hermes_cli.friday_workspace_revision import check
++from tools.scoped_word_report import render_report
++from tools.scoped_word_profiles import WordProfileError
++
++
++def create_report(cap,fd,leaf,path,content):
++    _check_parent(cap,fd,path)
++    if Path(path).name!=leaf or Path(path).suffix.lower()!='.docx':raise ScopeDenied()
++    try:data,metadata=render_report(content,checkpoint=lambda:check(cap))
++    except WordProfileError as error:
++        return json.dumps(dict(success=False,error='document_create_refused',reason=error.code,effect_disposition='none'))
++    result=json.loads(_create_bytes(cap,fd,leaf,path,data,output_format='docx_report'))
++    if result.get('success'):result.update(report=metadata)
++    return json.dumps(result,ensure_ascii=False)
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1199,7 +1199,7 @@
+         "properties": {
+             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
+             "content": {"type": "string", "description": 'For docx_pdf, JSON with exactly source (existing own-workspace DOCX). For docx_edit, JSON with exactly source, old_text, new_text; unique exact text replacement into a NEW .docx copy. ' "Complete content. With docx_structured, a JSON string {\"blocks\":[...]} using title/paragraph blocks {\"type\":\"title\",\"text\":\"Report\"}, headings {\"type\":\"heading\",\"level\":1,\"text\":\"Data\"}, and tables {\"type\":\"table\",\"rows\":[[\"Item\",\"Amount\"],[\"Work\",\"800\"]]}. Exact keys only; table cells are strings, rows rectangular (1-32 columns). 100000 UTF-8 bytes total, at most 2000 paragraphs including table cells."},
+-            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar_extract", "gzip", "bzip2", "xz", "zstd", "stream_extract", "image_transform", "mhtml", "mht", "mhtml_structured", "mht_structured", "mhtml_edit", "mht_edit", "archive_edit", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
++            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "pdf_pages", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "tar", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar_extract", "gzip", "bzip2", "xz", "zstd", "stream_extract", "image_transform", "mhtml", "mht", "mhtml_structured", "mht_structured", "mhtml_edit", "mht_edit", "archive_edit", "archive_convert", "pptx_create", "pptx_merge", "odf_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp", "presentation_create", "presentation_edit", "presentation_convert", "presentation_text_edit"], "description": 'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/tar_extract use {source} and a NEW folder. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
+             # NOTE: the handler still accepts `cross_profile` (bool) — it now
+             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
+             # rejection error teaches it. Unadvertised: the cross-PROFILE
+@@ -1554,6 +1554,13 @@
+ WRITE_FILE_SCHEMA["description"] = _ODS_TABLE_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["ods_join", "ods_merge"]
+ 
++_ODS_CHART_GUIDANCE = 'Native ODS chart/recalculation: ods_chart uses exactly {source,sheet,range,title} into a NEW .ods. range is A1:Bn or A1:Cn with a header row, literal text categories in the first column and one or two literal numeric series. It creates a real editable column chart with source references and matching local cache; no image substitute or formula execution. ods_recalculate uses exactly {source} into a NEW .ods and recalculates only existing acyclic numeric SUM ranges and two-cell products, preserving formulas and other package members. Missing/non-numeric values, cycles, unsupported formulas/content and charted recalculation inputs refuse. Ordinary ODS readback reports supported chart source ranges and verified local caches; no Office/render acceptance is implied. '
++WRITE_FILE_SCHEMA["description"] = _ODS_CHART_GUIDANCE + WRITE_FILE_SCHEMA["description"]
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["ods_chart", "ods_recalculate"]
++WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] = _ODS_CHART_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"]
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] = _ODS_CHART_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"]
++READ_FILE_SCHEMA["description"] += " Supported native ODS charts return source ranges, series values and verified local cache records; rendering is not covered."
++
+ # Native spreadsheet profiles extend the existing scoped document contracts.
+ _SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. No cross-family/Office conversion in this path. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
+ WRITE_FILE_SCHEMA["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+@@ -1561,6 +1568,7 @@
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"]
+ READ_FILE_SCHEMA["description"] += " Native XLSX/XLTX/XLSM/XLTM/ODS/OTS/FODS reading reports its coverage; macros are opaque and never executed."
+ 
++_PDF_PAGES_GUIDANCE = 'PDF page assembly: format=pdf_pages, NEW .pdf path, exact JSON {"sources":["a.pdf","b.pdf"],"pages":[{"source":2,"page":1,"rotation":90},{"source":1,"page":2,"rotation":0}]}. One or two distinct own-workspace PDF sources; source/page are one-based. Each selected page appears once in the exact requested order, and every listed source contributes. Each page rotation is additional clockwise 0/90/180/270 degrees. At most 64 input/output pages and 1 MB per input/output. Native page content/resources are preserved; document-level metadata is omitted. No rasterization. Forms, annotations, links/actions, attachments, encryption, signatures, outlines, layers and unsupported document structures refuse. Original PDFs are unchanged. '
+ _RASTER_GUIDANCE = 'Raster images: read_file on JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF returns a complete paginated frame/pixel registry, not vision or OCR. image_transform creates a NEW JPG/JPEG/PNG/TIF/TIFF/WebP/BMP file from JSON {"source":"scan.tiff","frame":2,"rotation":90,"crop":[0,0,300,200]}. Frame is required and one-based; crop is optional in EXIF-normalized pixels, then rotation is optional clockwise 0/90/180/270 degrees. Every input frame must decode within 32 frames and 16 million total pixels; 1 MB input/output. Only pixels losslessly representable as RGBA8 are supported; high-bit-depth, floating-point and non-RGB color modes refuse. Only the chosen frame is output. Other source frames are unchanged. Derivatives contain pixels only: EXIF orientation is applied, other metadata including ICC/EXIF is omitted. JPEG is lossy; alpha to JPEG/BMP refuses. No OCR, visual interpretation or fidelity claim follows from a pixel hash. '
+ WRITE_FILE_SCHEMA["description"] = _RASTER_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ 
+@@ -1569,3 +1577,27 @@
+ 
+ _ARCHIVE_EDIT_GUIDANCE = 'ZIP/TAR preserving member edits: archive_edit into a NEW same-profile archive with exact JSON {"source":"original.zip","remove":["obsolete.txt"],"entries":[{"source":"new.txt","member":"docs/new.txt"}]}. Explicit listed members only: matching entries replace existing files; others append. Removal names must exist and remove only that exact member, not descendants. Unchanged member names/order/payload bytes are retained; original archive and input files remain unchanged. Container metadata is normalized, not byte-preserved. Duplicate/conflicting paths, directory replacement, secret-bearing payloads and empty output refuse. Supports ZIP and TAR family; 7z edit is unsupported. '
+ WRITE_FILE_SCHEMA["description"] = _ARCHIVE_EDIT_GUIDANCE + WRITE_FILE_SCHEMA["description"]
++
++WRITE_FILE_SCHEMA['description'] += _PDF_PAGES_GUIDANCE
++WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'] += _PDF_PAGES_GUIDANCE
++
++
++_REPORT_GUIDANCE = (
++    'Word report: format=docx_report, NEW .docx, content JSON {"blocks":[...],"toc_levels":3,"header":"Report","page_numbers":true}. '
++    'Blocks use docx_structured title/heading/paragraph/table rules. toc_levels is 1-9, header optional, page_numbers defaults true. '
++    'Real TOC and PAGE/NUMPAGES fields are created; their displayed values require refresh in a compatible office engine. '
++    'Creation does not verify page counts, table-of-contents page references or visual layout. No automatic rendering or PDF export is claimed. '
++)
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("docx_report")
++WRITE_FILE_SCHEMA["description"] = _REPORT_GUIDANCE + WRITE_FILE_SCHEMA["description"]
++
++
++_WORD_LOCATED_GUIDANCE = (
++    'Word located edit: format=word_located_edit, NEW .docx/.dotx matching the source profile, exact JSON {"source":"draft.docx","source_sha256":"<64 lowercase hex from read_file>","paragraph":3,"old_text":"Old","new_text":"New"}. '
++    'Read the current Word paragraph records first; use exact source_sha256 from that page and its one-based paragraph number including table-cell paragraphs. If the source changed, reread and reselect; do not merely refresh the hash. '
++    'Exactly one literal occurrence within that paragraph changes; repeated text in other paragraphs is preserved. '
++    'Fields, mixed-format or anchor-spanning selections, stale source and existing output refuse. This does not accept tracked changes. '
++)
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("word_located_edit")
++WRITE_FILE_SCHEMA["description"] = _WORD_LOCATED_GUIDANCE + WRITE_FILE_SCHEMA["description"]
++WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] = _WORD_LOCATED_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"]
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -29,10 +29,10 @@
+ __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_bytes",
+            "extract_document_text", "is_extractable_document"]
+ 
+-EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".db", ".sqlite", ".sqlite3"})
++EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".xlsb", ".db", ".sqlite", ".sqlite3"})
+ ANYDOC_EXTENSIONS = frozenset({
+     ".doc", ".docm", ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+-    ".xls", ".xlsm", ".xlsb", ".odt", ".ods", ".odp", ".rtf", ".epub", ".pdf"})
++    ".xls", ".xlsm", ".odt", ".ods", ".odp", ".rtf", ".epub", ".pdf"})
+ # anydoc loads whole files (no streaming); read_file's char budget applies only post-conversion.
+ MAX_ANYDOC_BYTES = 50 * 1024 * 1024
+ MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
+@@ -129,6 +129,11 @@
+ 
+ def extract_document_text(path: str) -> str:
+     ext = _extension(path)
++    if ext == ".xlsb":
++        # XLSB is always native and bounded, including outside the scoped lane.
++        # Read one extra byte so the same pure-module input limit remains exact.
++        with open(path, "rb") as source:
++            return extract_scoped_document_bytes(source.read(1000001), 'xlsb')
+     if ext in _STDLIB_EXTRACTORS:
+         return _STDLIB_EXTRACTORS[ext](path)
+     if ext in ANYDOC_EXTENSIONS:
+@@ -140,6 +145,8 @@
+     """Extract a document already fetched across a file backend boundary."""
+     _check_size(len(data), MAX_DOCUMENT_BYTES)
+     ext = _extension(path)
++    if ext == ".xlsb":
++        return extract_scoped_document_bytes(data, 'xlsb')
+     if ext in ANYDOC_EXTENSIONS:
+         return _extract_anydoc_bytes(data, path)
+     if ext not in EXTRACTABLE_EXTENSIONS:
+@@ -205,6 +212,12 @@
+             text = extract_xlt(data) if format == 'xlt' else extract_xls(data)
+         except XLSExtractionError as exc:
+             raise ScopedExtractionError(str(exc)) from None
++    elif format == 'xlsb':
++        from tools.scoped_xlsb import extract_xlsb, XLSBExtractionError
++        try:
++            text = extract_xlsb(data, checkpoint=checkpoint)
++        except XLSBExtractionError as exc:
++            raise ScopedExtractionError(exc.code) from None
+     elif format == 'epub':
+         from tools.scoped_epub import extract_epub, EPUBError
+         try:
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -292,9 +292,22 @@
+                     if total > 900000:
+                         fail('spreadsheet_output_limit')
+                     rows.append(item)
++    charts = []
++    if any(node.get(q(XL, 'href'), '').startswith('./Charts/') for sheet in book.sheets for node in sheet.iter()):
++        from tools.scoped_ods_chart import chart_records
++        charts = chart_records(book)
++        for chart in charts:
++            item = '[CHART ' + json.dumps(chart, ensure_ascii=False, sort_keys=True) + ']'
++            total += len(item.encode('utf-8'))
++            if total > 900000:
++                fail('spreadsheet_output_limit')
++            rows.append(item)
+     metadata = dict(native_container=True, format=format, sheets=len(book.sheets), cells=count,
+                     coverage='native_cells_values_formulas_and_cached_results; drawings_layout_not_covered',
+                     formulas_evaluated=False, unsupported=sorted(book.unsupported))
++    if charts:
++        metadata.update(charts=len(charts), chart_cache='source_and_local_cache_match',
++                        coverage='native_cells_values_formulas_cached_results_and_chart_source_cache; other_drawings_layout_not_covered')
+     return SpreadsheetText('\n'.join(rows), metadata)
+ 
+ 
+@@ -395,6 +408,7 @@
+     for name, rows in sheets:
+         tick(checkpoint)
+         content.append('<table:table table:name=' + quoteattr(name) + '>')
++        content.append('<table:table-column table:number-columns-repeated="' + str(len(rows[0])) + '"/>')
+         for row_index, values in enumerate(rows, 1):
+             tick(checkpoint)
+             content.append('<table:table-row>')
+--- /dev/null
++++ b/tools/scoped_ods_chart.py
+@@ -0,0 +1,361 @@
++"""Bounded native ODS column charts with source references and a local cache."""
++from io import BytesIO
++import re
++import zipfile
++from xml.etree import ElementTree as ET
++from xml.parsers import expat
++from xml.sax.saxutils import escape, quoteattr
++
++from tools.scoped_ods import (
++    Spreadsheet, ODSError, O, T, TB, M, ST, XL, q, _literal, address, colname,
++    decimal, tick,
++)
++from tools.scoped_odt import _text
++
++DR = 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0'
++CH = 'urn:oasis:names:tc:opendocument:xmlns:chart:1.0'
++SVG = 'urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0'
++CHART_MIME = 'application/vnd.oasis.opendocument.chart'
++MAX_POINTS = 128
++
++
++def fail(code):
++    raise ODSError(code)
++
++
++def _input_range(raw):
++    if not isinstance(raw, str) or not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}', raw):
++        fail('chart_range_schema')
++    first, last = raw.split(':')
++    r1, c1 = address(first)
++    r2, c2 = address(last)
++    if r2 <= r1 or c2 <= c1 or c2 - c1 + 1 not in (2, 3) or r2 - r1 > MAX_POINTS:
++        fail('chart_range_bounds')
++    return r1, c1, r2, c2
++
++
++def _cell_values(book):
++    result = {}
++    count = 0
++    for sheet in book.sheets:
++        name = sheet.get(q(TB, 'name'))
++        for row, column, height, width, node, _ in book.cells(sheet):
++            tick(book.checkpoint)
++            value = book.value(node)
++            if any(node.get(q(TB, field)) for field in ('number-columns-spanned', 'number-rows-spanned', 'content-validation-name', 'protect')):
++                value['constrained'] = True
++            count += height * width
++            if count > 4096:
++                fail('chart_cell_limit')
++            for r in range(row, row + height):
++                for c in range(column, column + width):
++                    result[name, r, c] = value
++    return result
++
++
++def _sheet_ref(name):
++    return "$'" + name.replace("'", "''") + "'"
++
++
++def _cell_ref(sheet, row, column):
++    return _sheet_ref(sheet) + '.$' + colname(column) + '$' + str(row)
++
++
++def _range_ref(sheet, row1, column, row2):
++    first = _cell_ref(sheet, row1, column)
++    return first if row2 == row1 else first + ':.$' + colname(column) + '$' + str(row2)
++
++
++def _chart_xml(title, sheet_name, r1, c1, r2, c2, values):
++    labels = [values[r1, c][0] for c in range(c1 + 1, c2 + 1)]
++    category_ref = _range_ref(sheet_name, r1 + 1, c1, r2)
++    series = []
++    for column in range(c1 + 1, c2 + 1):
++        series.append(
++            '<chart:series chart:class="chart:bar" chart:values-cell-range-address='
++            + quoteattr(_range_ref(sheet_name, r1 + 1, column, r2))
++            + ' chart:label-cell-address=' + quoteattr(_cell_ref(sheet_name, r1, column)) + '/>'
++        )
++    rows = []
++    for r in range(r1 + 1, r2 + 1):
++        cells = ['<table:table-cell office:value-type="string"><text:p>' + _literal(values[r, c1][0]) + '</text:p></table:table-cell>']
++        for c in range(c1 + 1, c2 + 1):
++            number = format(decimal(values[r, c][0]), 'f')
++            cells.append('<table:table-cell office:value-type="float" office:value="' + number + '"><text:p>' + number + '</text:p></table:table-cell>')
++        rows.append('<table:table-row>' + ''.join(cells) + '</table:table-row>')
++    header = ['<table:table-cell office:value-type="string"><text:p>Category</text:p></table:table-cell>']
++    header += ['<table:table-cell office:value-type="string"><text:p>' + _literal(label) + '</text:p></table:table-cell>' for label in labels]
++    cache = ('<table:table table:name="local-table"><table:table-column table:number-columns-repeated="'
++             + str(c2 - c1 + 1) + '"/><table:table-row>' + ''.join(header) + '</table:table-row>' + ''.join(rows) + '</table:table>')
++    declarations = ('xmlns:office="' + O + '" xmlns:chart="' + CH + '" xmlns:table="' + TB
++                    + '" xmlns:text="' + T + '" xmlns:style="' + ST + '"')
++    return ('<?xml version="1.0" encoding="UTF-8"?><office:document-content ' + declarations + ' office:version="1.3">'
++            '<office:automatic-styles><style:style style:name="plot" style:family="chart">'
++            '<style:chart-properties chart:vertical="false"/></style:style></office:automatic-styles>'
++            '<office:body><office:chart><chart:chart chart:class="chart:bar"><chart:title><text:p>'
++            + _literal(title) + '</text:p></chart:title><chart:plot-area chart:data-source-has-labels="both" chart:style-name="plot">'
++            '<chart:axis chart:dimension="x" chart:name="primary-x"><chart:categories table:cell-range-address='
++            + quoteattr(category_ref) + '/></chart:axis><chart:axis chart:dimension="y" chart:name="primary-y"/>'
++            + ''.join(series) + '</chart:plot-area>' + cache + '</chart:chart></office:chart></office:body></office:document-content>').encode('utf-8')
++
++
++def _insertions(raw, sheet_index, manifest=False):
++    parser = expat.ParserCreate(namespace_separator='}')
++    depth = spreadsheet_depth = target_depth = None
++    tables = 0
++    insertion = None
++    row_groups = {TB + '}' + n for n in ('table-column', 'table-columns', 'table-column-group', 'table-header-columns', 'table-row', 'table-header-rows', 'table-row-group', 'table-rows')}
++    def start(name, attrs):
++        nonlocal depth, spreadsheet_depth, target_depth, tables, insertion
++        depth = 0 if depth is None else depth + 1
++        if name == O + '}spreadsheet':
++            spreadsheet_depth = depth
++        elif spreadsheet_depth is not None and depth == spreadsheet_depth + 1 and name == TB + '}table':
++            if tables == sheet_index:
++                target_depth = depth
++            tables += 1
++        elif target_depth is not None and depth == target_depth + 1 and name in row_groups and insertion is None:
++            insertion = parser.CurrentByteIndex
++    def end(name):
++        nonlocal depth, target_depth, insertion
++        if manifest and name == M + '}manifest':
++            insertion = parser.CurrentByteIndex
++        if target_depth == depth:
++            target_depth = None
++        depth -= 1
++    def refuse(*args):
++        fail('active_xml')
++    parser.StartElementHandler = start
++    parser.EndElementHandler = end
++    parser.StartDoctypeDeclHandler = refuse
++    parser.EntityDeclHandler = refuse
++    parser.ProcessingInstructionHandler = refuse
++    try:
++        parser.Parse(raw, True)
++    except expat.ExpatError:
++        fail('invalid_xml')
++    if insertion is None or (not manifest and tables <= sheet_index):
++        fail('chart_insertion_point')
++    return insertion
++
++
++def _write_package(data, content, manifest, chart_path, chart_xml, checkpoint):
++    out = BytesIO()
++    with zipfile.ZipFile(BytesIO(data)) as source, zipfile.ZipFile(out, 'w') as dest:
++        dest.comment = source.comment
++        for info in source.infolist():
++            tick(checkpoint)
++            payload = source.read(info)
++            if info.filename == 'content.xml':
++                payload = content
++            elif info.filename == 'META-INF/manifest.xml':
++                payload = manifest
++            dest.writestr(info, payload)
++        dest.writestr(chart_path, chart_xml, compress_type=zipfile.ZIP_DEFLATED)
++    result = out.getvalue()
++    if len(result) > 1000000:
++        fail('output_limit')
++    return result
++
++
++def add_chart(data, spec, *, checkpoint=None):
++    if not isinstance(spec, dict) or set(spec) != {'source', 'sheet', 'range', 'title'}:
++        fail('ods_chart_schema')
++    book = Spreadsheet(data, checkpoint=checkpoint)
++    if book.unsupported:
++        fail('unsupported_chart_input')
++    if not isinstance(spec['title'], str) or not spec['title'] or len(spec['title'].encode('utf-8')) > 256:
++        fail('chart_title')
++    _literal(spec['title'])
++    r1, c1, r2, c2 = _input_range(spec['range'])
++    sheets = [s for s in book.sheets if s.get(q(TB, 'name')) == spec['sheet']]
++    if len(sheets) != 1:
++        fail('chart_sheet_not_found')
++    sheet = sheets[0]
++    if sheet.get(q(TB, 'protected'), 'false') != 'false' or sheet.find(q(TB, 'shapes')) is not None:
++        fail('chart_sheet_not_empty_or_protected')
++    cells = _cell_values(book)
++    values = {}
++    for r in range(r1, r2 + 1):
++        for c in range(c1, c2 + 1):
++            value = cells.get((spec['sheet'], r, c))
++            if value is None or value.get('covered') or value.get('constrained'):
++                fail('chart_cell_unavailable')
++            expected = 'string' if r == r1 or c == c1 else 'float'
++            if value['type'] != expected or not value['value'] and expected == 'string' or 'formula' in value:
++                fail('chart_cell_type')
++            values[r, c] = value['value'], value
++    labels = [values[r1, c][0] for c in range(c1 + 1, c2 + 1)]
++    if len(set(labels)) != len(labels) or book.unsupported:
++        fail('chart_labels_or_unsupported')
++    manifest = book.xml['META-INF/manifest.xml']
++    occupied = {name.casefold() for name in book.parts}
++    occupied |= {n.get(q(M, 'full-path'), '').casefold() for n in manifest.findall(q(M, 'file-entry'))}
++    for index in range(1, 129):
++        base = 'Charts/chart' + str(index)
++        if base.casefold() not in occupied and (base + '/').casefold() not in occupied and (base + '/content.xml').casefold() not in occupied:
++            break
++    else:
++        fail('chart_resource_limit')
++    chart_xml = _chart_xml(spec['title'], spec['sheet'], r1, c1, r2, c2, values)
++    chart_path = base + '/content.xml'
++    declarations = 'xmlns:table="' + TB + '" xmlns:draw="' + DR + '" xmlns:svg="' + SVG + '" xmlns:xlink="' + XL + '"'
++    shapes = ('<table:shapes ' + declarations + '><draw:frame draw:name=' + quoteattr('Chart ' + str(index))
++              + ' svg:width="12cm" svg:height="8cm" svg:x="1cm" svg:y="1cm"><draw:object xlink:href="./'
++              + base + '" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></table:shapes>').encode('utf-8')
++    raw = book.parts['content.xml']
++    at = _insertions(raw, book.sheets.index(sheet))
++    content = raw[:at] + shapes + raw[at:]
++    entries = ('<manifest:file-entry xmlns:manifest="' + M + '" manifest:full-path="' + base + '/" manifest:media-type="' + CHART_MIME + '"/>'
++               '<manifest:file-entry xmlns:manifest="' + M + '" manifest:full-path="' + chart_path + '" manifest:media-type="text/xml"/>').encode('utf-8')
++    raw_manifest = book.parts['META-INF/manifest.xml']
++    at = _insertions(raw_manifest, 0, manifest=True)
++    manifest_bytes = raw_manifest[:at] + entries + raw_manifest[at:]
++    result = _write_package(data, content, manifest_bytes, chart_path, chart_xml, checkpoint)
++    after = Spreadsheet(result, checkpoint=checkpoint)
++    records = chart_records(after)
++    if len(records) != 1 or records[0]['title'] != spec['title'] or records[0]['source_sheet'] != spec['sheet']:
++        fail('chart_readback_mismatch')
++    return result
++
++
++def _odf_range(raw):
++    sheet = r"(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)"
++    cell = r'\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}'
++    match = re.fullmatch(r'\$?(' + sheet + r')?\.(' + cell + r')(?::(?:\$?(' + sheet + r'))?\.(' + cell + r'))?', raw or '')
++    if not match or not match[1]:
++        fail('chart_reference_unsupported')
++    def name(token):
++        return token[1:-1].replace("''", "'") if token and token.startswith("'") else token
++    first_sheet = name(match[1])
++    second_sheet = name(match[3]) or first_sheet
++    if second_sheet != first_sheet:
++        fail('chart_reference_sheet_mismatch')
++    r1, c1 = address(match[2].replace('$', ''))
++    r2, c2 = address((match[4] or match[2]).replace('$', ''))
++    if r2 < r1 or c2 < c1 or (r2-r1+1)*(c2-c1+1) > MAX_POINTS:
++        fail('chart_reference_bounds')
++    return first_sheet, r1, c1, r2, c2
++
++
++def _referenced(values, reference):
++    sheet, r1, c1, r2, c2 = _odf_range(reference)
++    result = []
++    for r in range(r1, r2 + 1):
++        for c in range(c1, c2 + 1):
++            value = values.get((sheet, r, c))
++            if value is None:
++                fail('chart_reference_unavailable')
++            result.append(value)
++    return result
++
++
++def _plain_title(chart, book):
++    titles = chart.findall(q(CH, 'title'))
++    if len(titles) != 1 or len(titles[0]) != 1 or titles[0][0].tag != q(T, 'p'):
++        fail('chart_title_structure')
++    return _text(titles[0][0], book)
++
++
++def _cache_rows(table, book):
++    rows = []
++    for row in table.findall(q(TB, 'table-row')):
++        if row.get(q(TB, 'number-rows-repeated')):
++            fail('chart_cache_repeat')
++        values = []
++        for cell in row:
++            if cell.tag != q(TB, 'table-cell') or cell.get(q(TB, 'number-columns-repeated')):
++                fail('chart_cache_cell_structure')
++            values.append(book.value(cell))
++        rows.append(values)
++    return rows
++
++
++def chart_records(book):
++    objects = []
++    for sheet in book.sheets:
++        for node in sheet.iter(q(DR, 'object')):
++            objects.append((sheet.get(q(TB, 'name')), node))
++    if not objects:
++        return []
++    manifest = book.xml.get('META-INF/manifest.xml')
++    entries = {n.get(q(M, 'full-path')): n.get(q(M, 'media-type')) for n in manifest.findall(q(M, 'file-entry'))}
++    values = _cell_values(book)
++    records = []
++    linked = []
++    for part, root in book.xml.items():
++        for node in root.iter():
++            href = node.get(q(XL, 'href'))
++            if href or node.get('{http://www.w3.org/XML/1998/namespace}base'):
++                linked.append((node, href))
++    for source_sheet, node in objects:
++        href = node.get(q(XL, 'href'), '')
++        match = re.fullmatch(r'\./(Charts/[A-Za-z0-9][A-Za-z0-9_-]{0,63})', href)
++        if not match or len(node) or node.get(q(XL, 'type')) != 'simple' or node.get(q(XL, 'show')) != 'embed':
++            fail('chart_object_relationship')
++        base = match[1]
++        if entries.get(base + '/') != CHART_MIME or entries.get(base + '/content.xml') != 'text/xml':
++            fail('chart_manifest_relationship')
++        root = book.xml.get(base + '/content.xml')
++        if root is None or root.tag != q(O, 'document-content'):
++            fail('chart_content_missing')
++        charts = root.findall('./' + q(O, 'body') + '/' + q(O, 'chart') + '/' + q(CH, 'chart'))
++        if len(charts) != 1 or charts[0].get(q(CH, 'class')) != 'chart:bar':
++            fail('chart_native_structure')
++        chart = charts[0]
++        plots = chart.findall(q(CH, 'plot-area'))
++        tables = chart.findall(q(TB, 'table'))
++        styles = root.findall('./' + q(O, 'automatic-styles') + '/' + q(ST, 'style'))
++        vertical = [s for s in styles if s.get(q(ST, 'name')) == 'plot' and s.get(q(ST, 'family')) == 'chart']
++        properties = vertical[0].find(q(ST, 'chart-properties')) if len(vertical) == 1 else None
++        if (len(plots) != 1 or len(tables) != 1 or plots[0].get(q(CH, 'data-source-has-labels')) != 'both'
++                or plots[0].get(q(CH, 'style-name')) != 'plot' or properties is None
++                or properties.get(q(CH, 'vertical')) != 'false'):
++            fail('chart_plot_or_cache')
++        axes = plots[0].findall(q(CH, 'axis'))
++        categories = plots[0].findall('./' + q(CH, 'axis') + '/' + q(CH, 'categories'))
++        series = plots[0].findall(q(CH, 'series'))
++        if (len(axes) != 2 or {axis.get(q(CH, 'dimension')) for axis in axes} != {'x', 'y'}
++                or len(categories) != 1 or not 1 <= len(series) <= 2
++                or any(item.get(q(CH, 'class')) != 'chart:bar' for item in series)):
++            fail('chart_axis_or_series')
++        cache = _cache_rows(tables[0], book)
++        category_ref = categories[0].get(q(TB, 'cell-range-address'))
++        source_categories = _referenced(values, category_ref)
++        def literal(value, kind):
++            return (value['type'] == kind and not any(value.get(flag) for flag in ('formula', 'covered', 'constrained'))
++                    and (kind != 'string' or bool(value['value'])))
++        if any(not literal(value, 'string') for value in source_categories):
++            fail('chart_cell_type')
++        if len(cache) != len(source_categories) + 1 or any(len(row) != len(series) + 1 for row in cache):
++            fail('chart_cache_dimensions')
++        output_series = []
++        for index, item in enumerate(series, 1):
++            label_ref = item.get(q(CH, 'label-cell-address'))
++            value_ref = item.get(q(CH, 'values-cell-range-address'))
++            labels = _referenced(values, label_ref)
++            source_values = _referenced(values, value_ref)
++            if len(labels) != 1 or len(source_values) != len(source_categories):
++                fail('chart_series_dimensions')
++            if (not literal(labels[0], 'string') or not literal(cache[0][index], 'string')
++                    or labels[0]['value'] != cache[0][index]['value']
++                    or any(not literal(value, 'float') for value in source_values + [row[index] for row in cache[1:]])):
++                fail('chart_series_cache_mismatch')
++            expected = labels + source_values
++            if [(v['type'], v['value']) for v in expected] != [(v['type'], v['value']) for v in [cache[0][index]] + [row[index] for row in cache[1:]]]:
++                fail('chart_series_cache_mismatch')
++            output_series.append({'label': labels[0]['value'], 'label_range': label_ref,
++                                  'value_range': value_ref, 'values': [v['value'] for v in source_values]})
++        expected_categories = [v['value'] for v in source_categories]
++        if any(not literal(row[0], 'string') for row in cache[1:]) or expected_categories != [row[0]['value'] for row in cache[1:]]:
++            fail('chart_category_cache_mismatch')
++        records.append({'source_sheet': source_sheet, 'object': base, 'title': _plain_title(chart, book),
++                        'class': 'chart:bar', 'orientation': 'column', 'category_range': category_ref,
++                        'categories': expected_categories, 'series': output_series,
++                        'native_editable': True, 'cache_status': 'source_and_local_cache_match'})
++    if len(records) != len(objects) or len(linked) != len(objects) or any(node.tag != q(DR, 'object') for node, _ in linked):
++        fail('chart_or_external_link_structure')
++    book.unsupported.discard('linked_or_embedded_content')
++    if book.unsupported:
++        fail('unsupported_chart_content')
++    return records
+--- /dev/null
++++ b/tools/scoped_ods_recalculate.py
+@@ -0,0 +1,201 @@
++"""Inert bounded recalculation of existing native ODS SUM/product formulas."""
++from decimal import Decimal, localcontext
++from io import BytesIO
++import re
++import zipfile
++from xml.sax.saxutils import escape
++
++from tools.scoped_ods import (
++    Spreadsheet, ODSError, O, T, TB, ST, NUM, XL, OF, q, _cell_span, _literal,
++    address, decimal, tick,
++)
++
++
++def fail(code):
++    raise ODSError(code)
++
++
++def _sheet_name(token, current):
++    if token is None:
++        return current
++    return token[1:-1].replace("''", "'") if token.startswith("'") else token
++
++
++def _reference(raw, current):
++    sheet = r"(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)"
++    match = re.fullmatch(r'\$?(' + sheet + r')?\.(\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6})', raw)
++    if not match:
++        fail('ods_formula_reference')
++    name = _sheet_name(match[1], current)
++    row, column = address(match[2].replace('$', '').upper())
++    return name, row, column
++
++
++def _formula(raw, current):
++    if not isinstance(raw, str) or len(raw) > 4096:
++        fail('formula_text_limit')
++    multiply = re.fullmatch(r'of:=\[([^\[\]]+)\]\*\[([^\[\]]+)\]', raw)
++    if multiply:
++        return 'multiply', [_reference(multiply[1], current), _reference(multiply[2], current)]
++    total = re.fullmatch(r'of:=SUM\(\[([^\[\]]+):([^\[\]]+)\]\)', raw, re.I)
++    if not total:
++        fail('ods_formula_unsupported')
++    first = _reference(total[1], current)
++    last = _reference(total[2], first[0])
++    if first[0] != last[0] or first[1] > last[1] or first[2] > last[2]:
++        fail('ods_formula_range')
++    width = last[2] - first[2] + 1
++    height = last[1] - first[1] + 1
++    if width * height > 4096:
++        fail('ods_formula_range_limit')
++    return 'sum', [(first[0], r, c) for r in range(first[1], last[1] + 1)
++                   for c in range(first[2], last[2] + 1)]
++
++
++def _inventory(book):
++    values = {}
++    plans = {}
++    count = dependencies = 0
++    for sheet in book.sheets:
++        name = sheet.get(q(TB, 'name'))
++        if sheet.get(q(TB, 'protected'), 'false') != 'false':
++            fail('unsupported_recalculation_input')
++        for row, column, height, width, node, _ in book.cells(sheet):
++            tick(book.checkpoint)
++            count += height * width
++            if count > 4096:
++                fail('ods_recalculate_cell_limit')
++            value = book.value(node)
++            if value.get('covered') or any(node.get(q(TB, field)) for field in ('number-columns-spanned', 'number-rows-spanned', 'content-validation-name', 'protect')):
++                fail('unsupported_recalculation_input')
++            for r in range(row, row + height):
++                for c in range(column, column + width):
++                    values[name, r, c] = value
++            if 'formula' not in value:
++                continue
++            if height != 1 or width != 1 or value.get('covered'):
++                fail('repeated_or_covered_formula')
++            if value['type'] != 'float' or node.tag != q(TB, 'table-cell'):
++                fail('formula_result_type')
++            operation, refs = _formula(value['formula'], name)
++            dependencies += len(refs)
++            if dependencies > 20000:
++                fail('ods_formula_dependency_limit')
++            plans[name, row, column] = operation, refs, node
++    if book.unsupported:
++        fail('unsupported_recalculation_input')
++    if not plans:
++        fail('no_supported_formulas')
++    scalars = {}
++    for key, value in values.items():
++        if key not in plans and value['type'] == 'float':
++            scalars[key] = decimal(value['value'])
++    waiting = {}
++    dependents = {}
++    for key, (_, refs, _) in plans.items():
++        missing = set()
++        for ref in refs:
++            value = values.get(ref)
++            if value is None:
++                fail('ods_formula_value_unavailable')
++            if value['type'] != 'float':
++                fail('ods_formula_nonnumeric_dependency')
++            if ref in plans:
++                missing.add(ref)
++        waiting[key] = len(missing)
++        for ref in missing:
++            dependents.setdefault(ref, set()).add(key)
++    ready = [key for key, count in waiting.items() if not count]
++    with localcontext() as precision:
++        precision.prec = 34
++        while ready:
++            tick(book.checkpoint)
++            key = ready.pop()
++            operation, refs, _ = plans[key]
++            result = scalars[refs[0]] * scalars[refs[1]] if operation == 'multiply' else sum((scalars[ref] for ref in refs), Decimal(0))
++            decimal(str(result))
++            scalars[key] = result
++            for dependent in dependents.get(key, ()):
++                waiting[dependent] -= 1
++                if not waiting[dependent]:
++                    ready.append(dependent)
++    if not plans.keys() <= scalars.keys():
++        fail('ods_formula_cycle')
++    return values, plans, scalars
++
++
++def _formula_cell(node, value):
++    paragraphs = list(node)
++    if len(paragraphs) != 1 or paragraphs[0].tag != q(T, 'p') or paragraphs[0].attrib or len(paragraphs[0]):
++        fail('formula_cell_content')
++    prefixes = {O: 'office', TB: 'table', T: 'text', ST: 'style', NUM: 'number', XL: 'xlink', OF: 'of'}
++    attributes = dict(node.attrib)
++    attributes[q(O, 'value')] = value
++    used = {O, TB, T}
++    rendered = []
++    for key, raw in attributes.items():
++        if key.startswith('{'):
++            uri, local = key[1:].split('}', 1)
++            if uri == 'http://www.w3.org/XML/1998/namespace':
++                prefix = 'xml'
++            elif uri in prefixes:
++                prefix = prefixes[uri]
++                used.add(uri)
++            else:
++                fail('formula_cell_attribute_namespace')
++            name = prefix + ':' + local
++        else:
++            name = key
++        rendered.append(' ' + name + '="' + escape(raw, {'"': '&quot;'}) + '"')
++    declarations = ''.join(' xmlns:' + prefixes[uri] + '="' + uri + '"' for uri in (TB, O, T) if uri in used)
++    declarations += ''.join(' xmlns:' + prefixes[uri] + '="' + uri + '"' for uri in sorted(used - {TB, O, T}))
++    return ('<table:table-cell' + declarations + ''.join(rendered) + '><text:p>' + _literal(value)
++            + '</text:p></table:table-cell>').encode('utf-8')
++
++
++def _rewrite(data, replacements, checkpoint):
++    out = BytesIO()
++    with zipfile.ZipFile(BytesIO(data)) as source, zipfile.ZipFile(out, 'w') as dest:
++        dest.comment = source.comment
++        for info in source.infolist():
++            tick(checkpoint)
++            dest.writestr(info, replacements.get(info.filename, source.read(info)))
++    result = out.getvalue()
++    if len(result) > 1000000:
++        fail('output_limit')
++    return result
++
++
++def recalculate(data, spec, *, checkpoint=None):
++    if not isinstance(spec, dict) or set(spec) != {'source'}:
++        fail('ods_recalculate_schema')
++    book = Spreadsheet(data, checkpoint=checkpoint)
++    if book.unsupported:
++        fail('unsupported_recalculation_input')
++    values, plans, scalars = _inventory(book)
++    root = book.xml['content.xml']
++    cells = [n for n in root.iter() if n.tag in (q(TB, 'table-cell'), q(TB, 'covered-table-cell'))]
++    raw = book.parts['content.xml']
++    replacements = []
++    for key, (_, _, node) in plans.items():
++        number = format(scalars[key], 'f')
++        begin, end = _cell_span(raw, cells.index(node))
++        replacements.append((begin, end, _formula_cell(node, number)))
++    for begin, end, replacement in sorted(replacements, reverse=True):
++        raw = raw[:begin] + replacement + raw[end:]
++    result = _rewrite(data, {'content.xml': raw}, checkpoint)
++    after = Spreadsheet(result, checkpoint=checkpoint)
++    if after.unsupported:
++        fail('recalculation_readback_unsupported')
++    after_values, after_plans, after_scalars = _inventory(after)
++    if set(values) != set(after_values) or set(plans) != set(after_plans):
++        fail('recalculation_cell_identity_mismatch')
++    for key, before in values.items():
++        other = after_values[key]
++        if before.get('formula') != other.get('formula') or before['type'] != other['type']:
++            fail('recalculation_formula_changed')
++        if key not in plans and before['value'] != other['value']:
++            fail('recalculation_unrelated_value_changed')
++        if key in plans and other['value'] != format(scalars[key], 'f'):
++            fail('recalculation_value_mismatch')
++    return result
+--- /dev/null
++++ b/tools/scoped_pdf_pages.py
+@@ -0,0 +1,444 @@
++"""Finite native PDF page assembly in a networkless private namespace.
++
++Uses the installed libqpdf 12.3 C ABI, never a PDF parser implemented here.
++Only plain page documents are accepted. No renderer or raster substitution.
++"""
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import stat
++import subprocess
++import sys
++import tempfile
++import time
++
++MAX_BYTES = 1_000_000
++MAX_PAGES = 64
++MAX_JSON = 8_000_000
++WALL_SECONDS = 40
++CPU_SECONDS = 30
++LIBRARY = '/usr/lib/x86_64-linux-gnu/libqpdf.so.30'
++
++
++class PDFPagesError(ValueError):
++    pass
++
++
++def request(content):
++    def pairs(items):
++        out = {}
++        for key, value in items:
++            if key in out:
++                raise PDFPagesError('pdf_request_invalid')
++            out[key] = value
++        return out
++    try:
++        if not isinstance(content, str) or len(content.encode('utf-8')) > 16_000:
++            raise PDFPagesError('pdf_request_invalid')
++    except UnicodeError:
++        raise PDFPagesError('pdf_request_invalid') from None
++    try:
++        spec = json.loads(content, object_pairs_hook=pairs)
++    except (ValueError, RecursionError):
++        raise PDFPagesError('pdf_request_invalid') from None
++    if (type(spec) is not dict or set(spec) != {'sources', 'pages'}
++            or type(spec['sources']) is not list or not 1 <= len(spec['sources']) <= 2
++            or any(type(s) is not str or not s for s in spec['sources'])
++            or len(set(spec['sources'])) != len(spec['sources'])
++            or type(spec['pages']) is not list or not 1 <= len(spec['pages']) <= MAX_PAGES):
++        raise PDFPagesError('pdf_request_invalid')
++    try:
++        if any(len(name.encode('utf-8')) > 512 for name in spec['sources']):
++            raise PDFPagesError('pdf_request_invalid')
++    except UnicodeError:
++        raise PDFPagesError('pdf_request_invalid') from None
++    seen = set()
++    for row in spec['pages']:
++        if (type(row) is not dict or set(row) != {'source', 'page', 'rotation'}
++                or type(row['source']) is not int or not 1 <= row['source'] <= len(spec['sources'])
++                or type(row['page']) is not int or not 1 <= row['page'] <= MAX_PAGES
++                or type(row['rotation']) is not int or row['rotation'] not in (0, 90, 180, 270)):
++            raise PDFPagesError('pdf_request_invalid')
++        key = row['source'], row['page']
++        if key in seen:
++            raise PDFPagesError('pdf_duplicate_page_unsupported')
++        seen.add(key)
++    if {r['source'] for r in spec['pages']} != set(range(1, len(spec['sources']) + 1)):
++        raise PDFPagesError('pdf_source_unused')
++    return spec
++
++
++def _argv(work, count):
++    argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--as-pid-1',
++            '--cap-drop', 'ALL', '--clearenv', '--ro-bind', '/usr', '/usr']
++    for name in ('bin', 'sbin', 'lib', 'lib64'):
++        path = Path('/') / name
++        if path.exists():
++            target = path.resolve()
++            if not target.is_relative_to('/usr'):
++                raise PDFPagesError('pdf_engine_unavailable')
++            argv += ['--symlink', str(target), '/' + name]
++    argv += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
++             '--bind', str(work), '/work']
++    for name in ['runner.py', 'request.json'] + [f'input{i}.pdf' for i in range(count)]:
++        argv += ['--ro-bind', str(work / name), '/work/' + name]
++    argv += ['--chdir', '/work', '--remount-ro', '/', '--',
++             '/usr/bin/python3', '-I', '-B', '-S', '/work/runner.py', '--child']
++    return argv
++
++
++def _run(cap, work, count):
++    from agent.web_call_context import _current, same_web_authority
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_pdf_ocr import _Custody
++    call = _current.get()
++    if call is None or not same_web_authority(call):
++        raise PDFPagesError('native_deadline_required')
++    custody = _Custody()
++    bound = False
++    deadline = min(call.deadline(), time.monotonic() + WALL_SECONDS)
++    try:
++        with call.turn.lock:
++            check(cap)
++            call.check()
++            if call.session is not None or call.registry is not None:
++                raise PDFPagesError('pdf_custody_busy')
++            if time.monotonic() >= deadline:
++                raise PDFPagesError('pdf_timeout')
++            call.session = call.registry = custody
++            call.turn.calls.add(custody)
++            bound = True
++            custody.process = subprocess.Popen(_argv(work, count), cwd=work,
++                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
++                close_fds=True, start_new_session=True,
++                env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
++        while custody.process.poll() is None:
++            check(cap)
++            call.check()
++            if not same_web_authority(call):
++                raise PDFPagesError('pdf_authority_changed')
++            if time.monotonic() >= deadline:
++                raise PDFPagesError('pdf_timeout')
++            try:
++                custody.process.wait(timeout=min(.05, max(.001, deadline - time.monotonic())))
++            except subprocess.TimeoutExpired:
++                pass
++        check(cap)
++        call.check()
++        if custody.process.returncode != 0:
++            raise PDFPagesError('pdf_engine_failed')
++    finally:
++        receipt = custody.stop()
++        with call.turn.lock:
++            if bound and receipt['status'] == 'QUIESCENT':
++                if call.session is not custody or call.registry is not custody:
++                    receipt = {'status': 'STOP_UNCONFIRMED'}
++                else:
++                    call.session = call.registry = None
++                    call.turn.calls.discard(custody)
++        if receipt['status'] != 'QUIESCENT':
++            if hasattr(call, 'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise PDFPagesError('pdf_cleanup_unconfirmed')
++
++
++def assemble(cap, inputs, pages):
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_pdf_ocr import _private_read, LocalOCRFailure
++    if (type(inputs) is not list or not 1 <= len(inputs) <= 2
++            or any(type(data) is not bytes or not 0 < len(data) <= MAX_BYTES for data in inputs)):
++        raise PDFPagesError('pdf_input_limit')
++    # Revalidate the entire operation independently of the outer file adapter.
++    spec = request(json.dumps({'sources': [str(i) for i in range(len(inputs))], 'pages': pages}))
++    try:
++        library = Path(LIBRARY).resolve(strict=True)
++        info = library.stat()
++        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
++            raise PDFPagesError('pdf_engine_unavailable')
++    except OSError:
++        raise PDFPagesError('pdf_engine_unavailable') from None
++    check(cap)
++    work = Path(tempfile.mkdtemp(prefix='friday-pdf-pages-'))
++    try:
++        work.chmod(0o700)
++        files = {'runner.py': Path(__file__).read_bytes(),
++                 'request.json': json.dumps(spec, separators=(',', ':')).encode()}
++        files.update({f'input{i}.pdf': data for i, data in enumerate(inputs)})
++        for name, data in files.items():
++            (work / name).write_bytes(data)
++            (work / name).chmod(0o600)
++        _run(cap, work, len(inputs))
++        result = json.loads(_private_read(work / 'result.json', 32_000))
++        if set(result) == {'error'}:
++            allowed = {'pdf_malformed_or_unsupported', 'pdf_page_out_of_range',
++                       'pdf_profile_unsupported', 'pdf_page_limit', 'pdf_output_limit',
++                       'pdf_engine_unavailable', 'pdf_verification_failed'}
++            raise PDFPagesError(result['error'] if result['error'] in allowed else 'pdf_engine_failed')
++        expected_keys = {'pages', 'input_page_counts', 'engine', 'metadata_policy', 'rasterized'}
++        if (type(result) is not dict or set(result) != expected_keys
++                or result['rasterized'] is not False or result['pages'] != pages
++                or result['engine'] != 'libqpdf-12.3.2'
++                or result['metadata_policy'] != 'page_content_resources_preserved; document_metadata_omitted'
++                or type(result['input_page_counts']) is not list
++                or len(result['input_page_counts']) != len(inputs)
++                or any(type(n) is not int or not 1 <= n <= MAX_PAGES for n in result['input_page_counts'])):
++            raise PDFPagesError('pdf_verification_failed')
++        data = _private_read(work / 'output.pdf', MAX_BYTES)
++        if not data.startswith(b'%PDF-') or not data.rstrip().endswith(b'%%EOF'):
++            raise PDFPagesError('pdf_verification_failed')
++        check(cap)
++        return data, result
++    except (OSError, LocalOCRFailure, json.JSONDecodeError):
++        raise PDFPagesError('pdf_engine_failed') from None
++    finally:
++        try:
++            shutil.rmtree(work)
++        except OSError:
++            from agent.web_call_context import _current
++            call = _current.get()
++            if call is not None and hasattr(call, 'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise PDFPagesError('pdf_cleanup_unconfirmed') from None
++
++
++# Child-only code: libqpdf's published 12.3.2 qpdf-c.h and Constants.h define
++# every ABI signature below. User bytes are opened only after bwrap isolation.
++def _library():
++    import ctypes as C
++    lib = C.CDLL(LIBRARY)
++    ptr, uint, integer, string = C.c_void_p, C.c_uint, C.c_int, C.c_char_p
++    signatures = {
++        'qpdf_get_qpdf_version': (string, []), 'qpdf_init': (ptr, []),
++        'qpdf_cleanup': (None, [C.POINTER(ptr)]),
++        'qpdf_silence_errors': (None, [ptr]), 'qpdf_set_suppress_warnings': (None, [ptr, integer]),
++        'qpdf_set_attempt_recovery': (None, [ptr, integer]),
++        'qpdf_has_error': (integer, [ptr]), 'qpdf_more_warnings': (integer, [ptr]),
++        'qpdf_read': (integer, [ptr, string, string]), 'qpdf_is_encrypted': (integer, [ptr]),
++        'qpdf_get_pdf_version': (string, [ptr]),
++        'qpdf_set_minimum_pdf_version': (None, [ptr, string]),
++        'qpdf_check_pdf': (integer, [ptr]), 'qpdf_empty_pdf': (integer, [ptr]),
++        'qpdf_get_num_pages': (integer, [ptr]), 'qpdf_get_page_n': (uint, [ptr, C.c_size_t]),
++        'qpdf_push_inherited_attributes_to_page': (integer, [ptr]),
++        'qpdf_get_root': (uint, [ptr]), 'qpdf_oh_get_object_id': (integer, [ptr, uint]),
++        'qpdf_oh_get_generation': (integer, [ptr, uint]),
++        'qpdf_oh_new_integer': (uint, [ptr, C.c_longlong]),
++        'qpdf_oh_replace_key': (None, [ptr, uint, string, uint]),
++        'qpdf_add_page': (integer, [ptr, ptr, uint, integer]),
++        'qpdf_get_object_by_id': (uint, [ptr, integer, integer]),
++        'qpdf_oh_get_stream_data': (integer, [ptr, uint, integer, C.POINTER(integer), C.POINTER(ptr), C.POINTER(C.c_size_t)]),
++        'qpdf_oh_free_buffer': (None, [C.POINTER(ptr)]),
++        'qpdf_init_write': (integer, [ptr, string]), 'qpdf_write': (integer, [ptr]),
++        'qpdf_set_stream_data_mode': (None, [ptr, integer]),
++        'qpdf_set_decode_level': (None, [ptr, integer]),
++        'qpdf_set_compress_streams': (None, [ptr, integer]),
++        'qpdf_set_object_stream_mode': (None, [ptr, integer]),
++    }
++    callback = C.CFUNCTYPE(integer, ptr, C.c_size_t, ptr)
++    signatures['qpdf_write_json'] = (integer, [ptr, integer, callback, ptr, integer, integer, string, C.POINTER(string)])
++    for name, (restype, argtypes) in signatures.items():
++        function = getattr(lib, name)
++        function.restype, function.argtypes = restype, argtypes
++    if lib.qpdf_get_qpdf_version() != b'12.3.2':
++        raise PDFPagesError('pdf_engine_unavailable')
++    return lib, C, callback
++
++
++def _checked(lib, handle, name, *args):
++    result = getattr(lib, name)(handle, *args)
++    if lib.qpdf_has_error(handle) or lib.qpdf_more_warnings(handle):
++        raise PDFPagesError('pdf_malformed_or_unsupported')
++    return result
++
++
++def _objects(lib, C, callback, handle):
++    chunks, size = [], 0
++    def receive(data, count, _):
++        nonlocal size
++        size += count
++        if size > MAX_JSON:
++            return 1
++        chunks.append(C.string_at(data, count))
++        return 0
++    writer = callback(receive)
++    if _checked(lib, handle, 'qpdf_write_json', 2, writer, None, 0, 0, b'', None):
++        raise PDFPagesError('pdf_malformed_or_unsupported')
++    value = json.loads(b''.join(chunks))
++    graph = value['qpdf'][1]
++    if len(graph) > 4096:
++        raise PDFPagesError('pdf_profile_unsupported')
++    forbidden = {'/A', '/AA', '/OpenAction', '/JS', '/JavaScript', '/AcroForm', '/XFA',
++                 '/Annots', '/Names', '/EmbeddedFiles', '/EF', '/AF', '/Collection', '/Perms',
++                 '/ByteRange', '/Outlines', '/PageLabels', '/StructTreeRoot', '/OCProperties',
++                 '/RichMediaContent', '/RichMediaSettings', '/PieceInfo', '/PresSteps', '/OPI', '/Ref', '/Alternates', '/OC', '/StructParents', '/StructParent'}
++    def validate(node, depth=0):
++        if depth > 64:
++            raise PDFPagesError('pdf_profile_unsupported')
++        if type(node) is dict:
++            if set(node) & forbidden or node.get('/Type') in ('/Filespec', '/EmbeddedFile', '/Action', '/Sig', '/Annot', '/OCG', '/OCMD'):
++                raise PDFPagesError('pdf_profile_unsupported')
++            if node.get('/S') in ('/JavaScript', '/Launch', '/URI', '/GoTo', '/GoToR', '/GoToE', '/SubmitForm', '/ResetForm', '/ImportData', '/Rendition', '/RichMediaExecute', '/SetOCGState', '/Sound', '/Movie', '/Named', '/Hide', '/SetState', '/Thread'):
++                raise PDFPagesError('pdf_profile_unsupported')
++            if node.get('/Subtype') in ('/PS', '/Widget', '/FileAttachment', '/RichMedia', '/Movie', '/Sound', '/Screen', '/3D'):
++                raise PDFPagesError('pdf_profile_unsupported')
++            for val in node.values():
++                validate(val, depth + 1)
++        elif type(node) is list:
++            for val in node:
++                validate(val, depth + 1)
++    validate(graph)
++    # Disallow external stream files, including escaped PDF names (already
++    # canonicalized by qpdf), and preserve/hash every remaining raw stream.
++    total = 0
++    for key, node in graph.items():
++        if 'stream' not in node:
++            continue
++        stream = node['stream']
++        if set(stream['dict']) & {'/F', '/FFilter', '/FDecodeParms'}:
++            raise PDFPagesError('pdf_profile_unsupported')
++        object_id, generation, _ = key.removeprefix('obj:').split()
++        oh = _checked(lib, handle, 'qpdf_get_object_by_id', int(object_id), int(generation))
++        buf, length, filtered = C.c_void_p(), C.c_size_t(), C.c_int()
++        try:
++            if _checked(lib, handle, 'qpdf_oh_get_stream_data', oh, 0, C.byref(filtered), C.byref(buf), C.byref(length)):
++                raise PDFPagesError('pdf_malformed_or_unsupported')
++            total += length.value
++            if total > 4 * MAX_BYTES:
++                raise PDFPagesError('pdf_profile_unsupported')
++            stream['raw_sha256'] = hashlib.sha256(C.string_at(buf, length.value)).hexdigest()
++            stream['dict'].pop('/Length', None)
++        finally:
++            lib.qpdf_oh_free_buffer(C.byref(buf))
++    return graph
++
++
++def _page_state(lib, C, callback, handle):
++    if _checked(lib, handle, 'qpdf_is_encrypted'):
++        raise PDFPagesError('pdf_profile_unsupported')
++    if _checked(lib, handle, 'qpdf_check_pdf'):
++        raise PDFPagesError('pdf_malformed_or_unsupported')
++    count = _checked(lib, handle, 'qpdf_get_num_pages')
++    if not 1 <= count <= MAX_PAGES:
++        raise PDFPagesError('pdf_page_limit')
++    if _checked(lib, handle, 'qpdf_push_inherited_attributes_to_page'):
++        raise PDFPagesError('pdf_malformed_or_unsupported')
++    graph = _objects(lib, C, callback, handle)
++    root = _checked(lib, handle, 'qpdf_get_root')
++    key = f"obj:{_checked(lib, handle, 'qpdf_oh_get_object_id', root)} {_checked(lib, handle, 'qpdf_oh_get_generation', root)} R"
++    if set(graph[key]['value']) - {'/Type', '/Pages', '/Metadata'}:
++        raise PDFPagesError('pdf_profile_unsupported')
++    states = []
++    for i in range(count):
++        page = _checked(lib, handle, 'qpdf_get_page_n', i)
++        key = f"obj:{_checked(lib, handle, 'qpdf_oh_get_object_id', page)} {_checked(lib, handle, 'qpdf_oh_get_generation', page)} R"
++        value = dict(graph[key]['value'])
++        value.pop('/Parent', None)
++        angle = value.pop('/Rotate', 0)
++        if type(angle) is not int or angle % 90:
++            raise PDFPagesError('pdf_profile_unsupported')
++        visited = {}
++        def canonical(node, depth=0):
++            if depth > 64:
++                raise PDFPagesError('pdf_profile_unsupported')
++            if type(node) is str and 'obj:' + node in graph:
++                ref = 'obj:' + node
++                if ref in visited:
++                    return {'ref': visited[ref]}
++                visited[ref] = len(visited)
++                return canonical(graph[ref], depth + 1)
++            if type(node) is dict:
++                return {k: canonical(node[k], depth + 1) for k in sorted(node)}
++            if type(node) is list:
++                return [canonical(x, depth + 1) for x in node]
++            return node
++        digest = hashlib.sha256(json.dumps(canonical(value), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
++        states.append((page, angle % 360, digest))
++    return states
++
++
++def _child():
++    import resource
++    os.umask(0o077)
++    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:2])
++    for kind, limit in ((resource.RLIMIT_AS, 1024**3), (resource.RLIMIT_CPU, CPU_SECONDS),
++                        (resource.RLIMIT_FSIZE, 8_000_000), (resource.RLIMIT_CORE, 0),
++                        (resource.RLIMIT_NOFILE, 64), (resource.RLIMIT_NPROC, 16)):
++        resource.setrlimit(kind, (limit, limit))
++    handles = []
++    lib, C, callback = _library()
++    def create():
++        h = C.c_void_p(lib.qpdf_init())
++        if not h:
++            raise PDFPagesError('pdf_engine_unavailable')
++        handles.append(h)
++        _checked(lib, h, 'qpdf_silence_errors')
++        _checked(lib, h, 'qpdf_set_suppress_warnings', 1)
++        _checked(lib, h, 'qpdf_set_attempt_recovery', 0)
++        return h
++    try:
++        spec = request(Path('/work/request.json').read_text())
++        sources, states, versions = [], [], []
++        for i in range(len(spec['sources'])):
++            h = create()
++            if _checked(lib, h, 'qpdf_read', f'/work/input{i}.pdf'.encode(), None):
++                raise PDFPagesError('pdf_malformed_or_unsupported')
++            version = _checked(lib, h, 'qpdf_get_pdf_version')
++            if version not in [f'1.{i}'.encode() for i in range(8)] + [b'2.0']:
++                raise PDFPagesError('pdf_profile_unsupported')
++            versions.append(version)
++            sources.append(h)
++            states.append(_page_state(lib, C, callback, h))
++        output = create()
++        if _checked(lib, output, 'qpdf_empty_pdf'):
++            raise PDFPagesError('pdf_engine_failed')
++        expected = []
++        for row in spec['pages']:
++            source, number = row['source'] - 1, row['page'] - 1
++            if number >= len(states[source]):
++                raise PDFPagesError('pdf_page_out_of_range')
++            page, angle, digest = states[source][number]
++            if _checked(lib, output, 'qpdf_add_page', sources[source], page, 0):
++                raise PDFPagesError('pdf_engine_failed')
++            newpage = _checked(lib, output, 'qpdf_get_page_n', len(expected))
++            rotation = (angle + row['rotation']) % 360
++            integer = _checked(lib, output, 'qpdf_oh_new_integer', rotation)
++            _checked(lib, output, 'qpdf_oh_replace_key', newpage, b'/Rotate', integer)
++            expected.append((rotation, digest))
++        if _checked(lib, output, 'qpdf_init_write', b'/work/output.pdf'):
++            raise PDFPagesError('pdf_engine_failed')
++        minimum_version = max(versions)
++        _checked(lib, output, 'qpdf_set_minimum_pdf_version', minimum_version)
++        for name, arg in [('qpdf_set_stream_data_mode', 1), ('qpdf_set_decode_level', 0),
++                          ('qpdf_set_compress_streams', 0), ('qpdf_set_object_stream_mode', 1)]:
++            _checked(lib, output, name, arg)
++        if _checked(lib, output, 'qpdf_write'):
++            raise PDFPagesError('pdf_engine_failed')
++        if not 0 < Path('/work/output.pdf').stat().st_size <= MAX_BYTES:
++            raise PDFPagesError('pdf_output_limit')
++        verify = create()
++        if _checked(lib, verify, 'qpdf_read', b'/work/output.pdf', None):
++            raise PDFPagesError('pdf_verification_failed')
++        if _checked(lib, verify, 'qpdf_get_pdf_version') < minimum_version:
++            raise PDFPagesError('pdf_verification_failed')
++        actual = [(angle, digest) for _, angle, digest in _page_state(lib, C, callback, verify)]
++        if expected != actual:
++            raise PDFPagesError('pdf_verification_failed')
++        result = dict(pages=spec['pages'], input_page_counts=[len(x) for x in states],
++            engine='libqpdf-12.3.2', rasterized=False,
++            metadata_policy='page_content_resources_preserved; document_metadata_omitted')
++        Path('/work/result.json').write_text(json.dumps(result))
++    finally:
++        for handle in reversed(handles):
++            lib.qpdf_cleanup(C.byref(handle))
++
++
++if __name__ == '__main__':
++    if sys.argv[1:] != ['--child']:
++        raise SystemExit(2)
++    try:
++        _child()
++    except PDFPagesError as error:
++        Path('/work/result.json').write_text(json.dumps({'error': str(error)}))
++    except BaseException:
++        raise SystemExit(1)
+--- /dev/null
++++ b/tools/scoped_word_located.py
+@@ -0,0 +1,68 @@
++"""One explicit numbered Word paragraph, preserving all other package bytes."""
++from xml.etree import ElementTree as ET
++from xml.sax.saxutils import escape
++
++from hermes_cli.friday_workspace_docx import (
++    _text, _edit_xml, _check_edit_fields, _check_edit_runs, _EditRefused, _XML_SPACE,
++)
++from tools.scoped_word_profiles import (
++    _Package, WordProfileError, _q, W, MAX_PARAGRAPHS, MAX_BYTES, _rewrite, _preserved,
++)
++
++
++def edit_paragraph(data,old,new,paragraph,format,*,checkpoint=None):
++    if format not in ('docx','dotx'):
++        raise WordProfileError('unsupported_located_edit_profile')
++    if type(paragraph)is not int or not 1<=paragraph<=MAX_PARAGRAPHS:
++        raise WordProfileError('invalid_paragraph_number')
++    for value in (old,new):
++        _text(value)
++        if any(ord(c)<32 for c in value):raise WordProfileError('unsupported_text')
++    if not old or old==new:raise WordProfileError('invalid_replacement')
++    package=_Package(data,format,checkpoint)
++    if package.active:raise WordProfileError('unsupported_active_or_signed_edit')
++    raw=package.parts['word/document.xml']
++    try:
++        root,spans=_edit_xml(raw)
++        body=root.find(_q(W,'body'));paragraphs=list(body.iter(_q(W,'p')))
++        if len(paragraphs)>MAX_PARAGRAPHS:raise WordProfileError('paragraph_count_limit')
++        if paragraph>len(paragraphs):raise WordProfileError('paragraph_missing')
++        target=paragraphs[paragraph-1]
++        parents={child:parent for parent in root.iter()for child in parent}
++        if parents.get(target) is None or parents[target].tag not in (_q(W,'body'),_q(W,'tc')):
++            raise WordProfileError('unsupported_structure')
++        if any(n.tag in (_q(W,'fldChar'),_q(W,'instrText'),_q(W,'fldSimple'))for n in target.iter()):
++            raise WordProfileError('field_owned_text')
++        texts=list(target.iter(_q(W,'t')));value=''.join(n.text or ''for n in texts)
++        begin=value.find(old)
++        if begin<0:raise WordProfileError('match_missing_in_paragraph')
++        if value.find(old,begin+1)>=0:raise WordProfileError('ambiguous_match_in_paragraph')
++        finish=begin+len(old);selected=[];cursor=0
++        for node in texts:
++            end=cursor+len(node.text or '')
++            if cursor<finish and end>begin:selected.append((node,max(0,begin-cursor),min(len(node.text or ''),finish-cursor)))
++            cursor=end
++        _check_edit_fields(root,selected);_check_edit_runs(parents,target,selected)
++        alltext=list(root.iter(_q(W,'t')))
++        if len(alltext)!=len(spans):raise WordProfileError('unsupported_structure')
++        offsets=dict(zip(alltext,spans));changes=[];remaining=new
++        for index,(node,lo,hi)in enumerate(selected):
++            piece=remaining if index==len(selected)-1 else remaining[:hi-lo];remaining=remaining[len(piece):]
++            value=(node.text or '')[:lo]+piece+(node.text or '')[hi:]
++            if (value[:1].isspace()or value[-1:].isspace())and node.get(_XML_SPACE)!='preserve':
++                raise WordProfileError('unsupported_whitespace')
++            start,end,empty=offsets[node]
++            if empty or b'<'in raw[start:end]:raise WordProfileError('unsupported_structure')
++            changes.append((start,end,escape(value).encode('utf-8')));node.text=value or None
++        changed=raw
++        for start,end,value in reversed(changes):changed=changed[:start]+value+changed[end:]
++        checked,_=_edit_xml(changed)
++        if ET.tostring(checked)!=ET.tostring(root):raise WordProfileError('invalid_edit')
++        if checkpoint:checkpoint()
++        result=_rewrite(data,{'word/document.xml':changed})
++        if len(result)>MAX_BYTES:raise WordProfileError('output_limit')
++        _Package(result,format,checkpoint);_preserved(data,result,{'word/document.xml'})
++        if checkpoint:checkpoint()
++        return result
++    except _EditRefused as error:
++        raise WordProfileError(str(error))from None
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -426,6 +426,9 @@
+ def extract(data, format, *, checkpoint=None):
+     """Return only inert stored text plus explicit trusted coverage metadata."""
+     package = _Package(data, format, checkpoint)
++    from tools.scoped_word_review import has_review_layers, extract_review_layers
++    if has_review_layers(package):
++        return extract_review_layers(package, checkpoint=checkpoint)
+     rows = []
+     output_bytes = 0
+     paragraphs = tables = 0
+--- /dev/null
++++ b/tools/scoped_word_report.py
+@@ -0,0 +1,115 @@
++"""New native Word reports with real TOC and page-number fields.
++
++Field caches are intentionally pending, never fabricated page numbers. Opening
++and refreshing in a compatible office engine is a separate rendering operation.
++"""
++from io import BytesIO
++import json
++from xml.etree import ElementTree as ET
++import zipfile
++
++from hermes_cli.friday_workspace_docx import _text, _paragraph, render as render_docx
++from hermes_cli.friday_user_scope import ScopeDenied
++from tools.scoped_word_profiles import _Package, WordProfileError, MAX_BYTES, W, R, PKG, CT, _q
++
++
++def _request(content):
++    _text(content)
++    def pairs(items):
++        result={}
++        for key,value in items:
++            if key in result:raise WordProfileError('duplicate_report_key')
++            result[key]=value
++        return result
++    try:value=json.loads(content,object_pairs_hook=pairs)
++    except (ValueError,RecursionError):raise WordProfileError('invalid_report_json') from None
++    allowed={'blocks','toc_levels','header','page_numbers'}
++    if not isinstance(value,dict)or 'blocks'not in value or set(value)-allowed:
++        raise WordProfileError('invalid_report_contract')
++    level=value.get('toc_levels',3);header=value.get('header','');pages=value.get('page_numbers',True)
++    if type(level)is not int or not 1<=level<=9 or type(pages)is not bool or not isinstance(header,str):
++        raise WordProfileError('invalid_report_contract')
++    _text(header)
++    if len(header.encode('utf-8'))>1024:raise WordProfileError('report_header_limit')
++    return value['blocks'],level,header,pages
++
++
++def _run(paragraph,text=None,field=None):
++    run=ET.SubElement(paragraph,_q(W,'r'))
++    if field is not None:
++        ET.SubElement(run,_q(W,'fldChar'),{_q(W,'fldCharType'):field})
++    else:
++        ET.SubElement(run,_q(W,'t'),{'{http://www.w3.org/XML/1998/namespace}space':'preserve'}).text=text
++    return run
++
++
++def _field(paragraph,instruction,pending):
++    begin=_run(paragraph,field='begin')
++    begin[0].set(_q(W,'dirty'),'true')
++    instr=ET.SubElement(paragraph,_q(W,'r'))
++    ET.SubElement(instr,_q(W,'instrText'),{'{http://www.w3.org/XML/1998/namespace}space':'preserve'}).text=' '+instruction+' '
++    _run(paragraph,field='separate');_run(paragraph,pending);_run(paragraph,field='end')
++
++
++def render_report(content,*,checkpoint=None):
++    blocks,level,header,pages=_request(content)
++    if checkpoint:checkpoint()
++    try:raw=render_docx(json.dumps({'blocks':blocks},ensure_ascii=False),structured=True)
++    except ScopeDenied:raise WordProfileError('invalid_report_blocks') from None
++    with zipfile.ZipFile(BytesIO(raw))as archive:
++        infos=archive.infolist();parts={i.filename:archive.read(i.filename)for i in infos}
++    document=ET.fromstring(parts['word/document.xml']);body=document.find(_q(W,'body'))
++    section=body.find(_q(W,'sectPr'))
++    if section is None:raise WordProfileError('report_template_structure')
++    title=ET.Element(_q(W,'p'))
++    props=ET.SubElement(title,_q(W,'pPr'))
++    ET.SubElement(props,_q(W,'pStyle'),{_q(W,'val'):'TOCHeading'})
++    _run(title,'Оглавление')
++    toc=ET.Element(_q(W,'p'))
++    # TOC field itself is not a heading and never includes itself in its index.
++    _field(toc,'TOC \\o "1-'+str(level)+'" \\u','Оглавление требует обновления полей.')
++    position=1 if blocks and blocks[0].get('type')=='title'else 0
++    body.insert(position,title);body.insert(position+1,toc)
++    rels=ET.fromstring(parts['word/_rels/document.xml.rels'])
++    types=ET.fromstring(parts['[Content_Types].xml'])
++    ids={n.get('Id')for n in rels}
++    def part(kind,data):
++        rid='fridayReport'+kind.title();name='word/friday-report-'+kind+'.xml'
++        if rid in ids or name in parts:raise WordProfileError('report_template_structure')
++        ids.add(rid);parts[name]=ET.tostring(data,encoding='utf-8',xml_declaration=True)
++        ET.SubElement(rels,_q(PKG,'Relationship'),{'Id':rid,'Type':R+'/'+kind,'Target':name[5:]})
++        ET.SubElement(types,_q(CT,'Override'),{'PartName':'/'+name,'ContentType':'application/vnd.openxmlformats-officedocument.wordprocessingml.'+kind+'+xml'})
++        reference=ET.Element(_q(W,kind+'Reference'),{_q(W,'type'):'default',_q(R,'id'):rid})
++        position=sum(n.tag in (_q(W,'headerReference'),_q(W,'footerReference'))for n in section)
++        section.insert(position,reference)
++    if header:
++        root=ET.Element(_q(W,'hdr'));_paragraph(root,header);part('header',root)
++    if pages:
++        root=ET.Element(_q(W,'ftr'));paragraph=ET.SubElement(root,_q(W,'p'))
++        properties=ET.SubElement(paragraph,_q(W,'pPr'));ET.SubElement(properties,_q(W,'jc'),{_q(W,'val'):'center'})
++        _run(paragraph,'Страница ');_field(paragraph,'PAGE','?');_run(paragraph,' из ');_field(paragraph,'NUMPAGES','?');part('footer',root)
++    settings_raw=parts['word/settings.xml']
++    settings=ET.fromstring(settings_raw)
++    if settings.find(_q(W,'updateFields'))is not None:
++        raise WordProfileError('report_template_structure')
++    # The hash-pinned template has compat as its first setting after the
++    # CT_Settings updateFields position. Insert before it, retaining every
++    # existing byte, namespace prefix and mc:Ignorable binding.
++    anchor=b'<w:compat>'
++    if settings.find(_q(W,'compat'))is None or settings_raw.count(anchor)!=1:
++        raise WordProfileError('report_template_structure')
++    position=settings_raw.index(anchor)
++    addition=('<fr:updateFields xmlns:fr="'+W+'" fr:val="true"/>').encode()
++    parts['word/settings.xml']=settings_raw[:position]+addition+settings_raw[position:]
++    for name,root in [('word/document.xml',document),('word/_rels/document.xml.rels',rels),('[Content_Types].xml',types)]:
++        parts[name]=ET.tostring(root,encoding='utf-8',xml_declaration=True)
++    output=BytesIO()
++    with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED)as archive:
++        for info in infos:archive.writestr(info,parts.pop(info.filename))
++        for name,data in parts.items():archive.writestr(name,data)
++    result=output.getvalue()
++    if len(result)>MAX_BYTES:raise WordProfileError('report_output_limit')
++    _Package(result,'docx',checkpoint)
++    if checkpoint:checkpoint()
++    return result,dict(toc_levels=level,page_numbers=pages,header_present=bool(header),
++        fields_require_refresh=True,toc_and_page_values_verified=False,office_rendered=False)
+--- /dev/null
++++ b/tools/scoped_word_review.py
+@@ -0,0 +1,244 @@
++"""Inert stored Word review layers; never accept/reject or execute revisions.
++
++Only direct paragraph run insertions/deletions have reconstructed text views.
++Moves, paragraph/table/property revisions and secondary-story revisions remain
++explicit gaps. Comments are read from their real main-part relationship.
++"""
++from __future__ import annotations
++
++import re
++
++from tools.scoped_word_profiles import (
++    W, R, DocumentText, MAX_BYTES, MAX_PARAGRAPHS, _encoded, _fail, _q, _tick,
++)
++
++COMMENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml'
++MAX_REVIEW_ITEMS = 4096
++W14 = 'http://schemas.microsoft.com/office/word/2010/wordml'
++_MARKERS = {_q(W, name) for name in ('commentRangeStart', 'commentRangeEnd', 'commentReference')}
++_SKIP = {'pPr', 'rPr', 'rt', 'proofErr', 'bookmarkStart', 'bookmarkEnd'}
++
++
++def _local(tag):
++    return tag.rsplit('}', 1)[-1] if isinstance(tag, str) else ''
++
++
++def _revision(tag):
++    if not isinstance(tag, str) or not tag.startswith(('{' + W + '}', '{' + W14 + '}')):
++        return False
++    name = _local(tag)
++    return (name in {'ins', 'del', 'delText', 'delInstrText', 'cellIns', 'cellDel',
++                     'cellMerge', 'conflictIns', 'conflictDel', 'numberingChange',
++                     'tblGridChange', 'tblPrExChange'}
++            or name.endswith('PrChange') or name.startswith(('moveFrom', 'moveTo'))
++            or name.startswith('customXml') and 'Range' in name)
++
++
++def has_review_layers(package):
++    return (any(kind == R + '/comments' for kind, _ in
++                package.relationships.get('word/document.xml', {}).values())
++            or any(kind == COMMENT_TYPE for kind in package.types.values())
++            or any(_revision(node.tag) or node.tag in _MARKERS
++                   for root in package.xml.values() for node in root.iter()))
++
++
++def _id(node):
++    value = node.get(_q(W, 'id'))
++    if not isinstance(value, str) or not re.fullmatch(r'0|[1-9][0-9]{0,9}', value):
++        _fail('invalid_review_id')
++    return value
++
++
++def _provenance(node):
++    result = {'id': _id(node)}
++    for key in ('author', 'date', 'initials'):
++        value = node.get(_q(W, key))
++        if value is not None:
++            if len(value.encode('utf-8')) > 1024:
++                _fail('review_metadata_limit')
++            result[key] = value
++    return result
++
++
++def _literal(node):
++    if node.tag in (_q(W, 't'), _q(W, 'delText')):
++        return node.text or ''
++    if node.tag == _q(W, 'tab'):
++        return '\t'
++    if node.tag in (_q(W, 'br'), _q(W, 'cr')):
++        return '\n'
++    if node.tag == _q(W, 'noBreakHyphen'):
++        return '\u2011'
++    if node.tag == _q(W, 'softHyphen'):
++        return '\u00ad'
++    return ''
++
++
++def extract_review_layers(package, *, checkpoint=None):
++    parents = {child: parent for parent in package.body.iter() for child in parent}
++    paragraphs = list(package.body.iter(_q(W, 'p')))
++    if len(paragraphs) > MAX_PARAGRAPHS:
++        _fail('paragraph_count_limit')
++    pnum = {p: i for i, p in enumerate(paragraphs, 1)}
++    gaps = set()
++    supported = set()
++    revisions = []
++    seen_revisions = set()
++    for node in package.body.iter():
++        _tick(checkpoint)
++        if not _revision(node.tag) or node.tag == _q(W, 'delText'):
++            continue
++        parent = parents.get(node)
++        kind = _local(node.tag)
++        record = dict(type=kind, **_provenance(node))
++        ancestor = parent
++        while ancestor is not None and ancestor not in pnum:
++            ancestor = parents.get(ancestor)
++        record['paragraph'] = pnum.get(ancestor)
++        key = (kind, record['id'])
++        if key in seen_revisions:
++            _fail('duplicate_review_id')
++        seen_revisions.add(key)
++        is_supported = (node.tag in (_q(W, 'ins'), _q(W, 'del'))
++                        and parent in pnum and bool(list(node))
++                        and all(child.tag == _q(W, 'r') for child in node))
++        if is_supported:
++            for child in node.iter():
++                if child is node:
++                    continue
++                if _revision(child.tag) and child.tag != _q(W, 'delText'):
++                    is_supported = False
++                if (node.tag == _q(W, 'del') and child.tag == _q(W, 't')
++                        or node.tag == _q(W, 'ins') and child.tag == _q(W, 'delText')):
++                    _fail('mismatched_revision_text')
++        record['supported_text_projection'] = is_supported
++        if is_supported:
++            supported.add(node)
++            record['text'] = ''.join(_literal(child) for child in node.iter())
++        else:
++            gaps.add('unsupported_main_revision:' + kind)
++        revisions.append(record)
++        if len(revisions) > MAX_REVIEW_ITEMS:
++            _fail('review_item_limit')
++    for node in package.body.iter(_q(W, 'delText')):
++        ancestor = parents.get(node)
++        while ancestor is not None and ancestor not in supported:
++            ancestor = parents.get(ancestor)
++        if ancestor is None:
++            gaps.add('deleted_text_outside_supported_deletion')
++    for part, root in package.xml.items():
++        if part != 'word/document.xml' and any(_revision(n.tag) for n in root.iter()):
++            gaps.add('secondary_story_revisions_not_projected')
++
++    comments = {}
++    targets = [target for kind, target in package.relationships.get('word/document.xml', {}).values()
++               if kind == R + '/comments']
++    typed = [name for name, kind in package.types.items() if kind == COMMENT_TYPE]
++    if len(targets) > 1 or typed != targets:
++        _fail('ambiguous_comments_part')
++    if targets:
++        root = package.xml.get(targets[0])
++        if root is None or root.tag != _q(W, 'comments'):
++            _fail('invalid_comments_part')
++        for node in root:
++            _tick(checkpoint)
++            if node.tag != _q(W, 'comment'):
++                _fail('unsupported_comments_structure')
++            record = _provenance(node)
++            cid = record['id']
++            if cid in comments:
++                _fail('duplicate_comment_id')
++            texts = []
++            for paragraph in node.iter(_q(W, 'p')):
++                if any(n is not paragraph and n.tag == _q(W, 'p') for n in paragraph.iter()):
++                    _fail('unsupported_nested_paragraph')
++                if any(_revision(n.tag) for n in paragraph.iter()):
++                    gaps.add('comment_revision_text_not_projected')
++                texts.append(''.join(_literal(n) for n in paragraph.iter() if n.tag != _q(W, 'delText')))
++            record.update(text='\n'.join(texts), text_view='stored_comment_text', anchor='unreferenced')
++            comments[cid] = record
++        if len(comments) > MAX_REVIEW_ITEMS:
++            _fail('review_item_limit')
++    if any('comments' in kind.lower() and kind not in (COMMENT_TYPE,)
++           for kind in package.types.values()):
++        gaps.add('extended_comment_metadata_not_read')
++
++    views = []
++    anchors = {}
++    processed_markers = set()
++    order = 0
++    for paragraph in paragraphs:
++        _tick(checkpoint)
++        if any(n is not paragraph and n.tag == _q(W, 'p') for n in paragraph.iter()):
++            _fail('unsupported_nested_paragraph')
++        original, final = [], []
++        original_count = final_count = 0
++        def walk(node, revision=None):
++            nonlocal order, original_count, final_count
++            name = _local(node.tag)
++            if node in supported:
++                revision = name
++            elif name in _SKIP:
++                return
++            if node.tag in _MARKERS:
++                processed_markers.add(node)
++                cid = _id(node)
++                if cid not in comments:
++                    _fail('comment_anchor_without_body')
++                entries = anchors.setdefault(cid, {})
++                if name in entries:
++                    _fail('duplicate_comment_anchor')
++                order += 1
++                entries[name] = dict(paragraph=pnum[paragraph],
++                    original_offset=original_count, final_offset=final_count, order=order)
++            text = _literal(node)
++            if text:
++                if revision != 'ins':
++                    original.append(text); original_count += len(text)
++                if revision != 'del':
++                    final.append(text); final_count += len(text)
++            for child in node:
++                walk(child, revision)
++        walk(paragraph)
++        parent = parents.get(paragraph)
++        views.append(dict(number=pnum[paragraph],role='table_cell' if parent is not None and parent.tag == _q(W, 'tc') else 'body',
++                          original_text=''.join(original), final_text=''.join(final)))
++    if any(node.tag in _MARKERS and node not in processed_markers for node in package.body.iter()):
++        gaps.add('comment_anchors_outside_supported_text_flow')
++    for cid, value in anchors.items():
++        start, end, reference = (value.get(key) for key in ('commentRangeStart','commentRangeEnd','commentReference'))
++        if (start is None) != (end is None) or reference is None:
++            _fail('incomplete_comment_anchor')
++        if start and not start['order'] <= end['order'] <= reference['order']:
++            _fail('invalid_comment_anchor_order')
++        for point in value.values():point.pop('order')
++        comments[cid]['anchor'] = dict(kind='range' if start else 'point', **value)
++
++    # Unsupported revision semantics prevent a falsely labelled original/final.
++    projection_complete = not any(g.startswith(('unsupported_main_revision:', 'deleted_text_outside')) for g in gaps)
++    limitations = set(package.limitations)
++    limitations.discard('headers_footers_notes_and_comments_not_read')
++    if any(_local(root.tag) in {'hdr','ftr','footnotes','endnotes'} for root in package.xml.values()):
++        limitations.add('headers_footers_notes_not_read')
++    metadata = dict(format=package.format,native_container=True,view='separated_stored_word_review_layers',
++        paragraphs=len(paragraphs),tables=sum(n.tag==_q(W,'tbl') for n in package.body.iter()),
++        main_text_projections_complete=projection_complete,review_layers_complete=not gaps,
++        tracked_changes=len(revisions),comments=len(comments),accepted_or_rejected_revisions=False,
++        macro_enabled_profile=package.format in ('docm','dotm'),macro_project_present=bool(package.vba_parts),
++        macros_executed=False,fields_evaluated=False,
++        coverage='main_body_run_insert_delete_original_and_final_views; traditional_comment_text_and_anchors; stored_only_no_rendering',
++        limitations=sorted(limitations),review_gaps=sorted(gaps))
++    rows=['[DOCUMENT '+_encoded(metadata)+']']
++    if projection_complete:
++        for view in views:
++            for key,label in (('final_text','FINAL'),('original_text','ORIGINAL')):
++                rows.append('['+label+' '+_encoded(dict(number=view['number'],role=view['role'],text=view[key]))+']')
++    else:
++        rows.append('[REVIEW-GAP '+_encoded(dict(original_and_final_text='unavailable_for_unsupported_revision_semantics'))+']')
++    rows += ['[TRACKED '+_encoded(record)+']' for record in revisions]
++    rows += ['[COMMENT '+_encoded(record)+']' for record in comments.values()]
++    result='\n'.join(rows)
++    if len(result.encode('utf-8'))>MAX_BYTES:
++        _fail('extracted_text_limit')
++    _tick(checkpoint)
++    return DocumentText(result,metadata)
+--- /dev/null
++++ b/tools/scoped_xlsb.py
+@@ -0,0 +1,1100 @@
++"""Bounded inert OPC/BIFF12 XLSB reader; no filesystem or external execution.
++
++MS-XLSB v22: §§2.1.4, 2.4.316, 2.4.319-330, 2.4.684-687,
++2.4.770, 2.5.10, 2.5.98.4, 2.5.122-123 and 2.5.167-169.
++Only explicitly recognized records/parts are accepted. Layout/style payloads are
++not interpreted; formulas are limited to local arithmetic/literal/reference and
++SUM token forms, and only their stored caches are emitted, never evaluated.
++"""
++import hashlib
++import io
++import json
++import math
++import posixpath
++import re
++import struct
++import xml.etree.ElementTree as ET
++import zipfile
++
++from .scoped_zip import read_zip_member
++
++MAX_INPUT = 1_000_000
++MAX_EXPANDED = 1_000_000
++MAX_RECORDS = 50_000
++MAX_PARTS = 128
++MAX_SHEETS = 32
++MAX_CELLS = 8192
++MAX_ROWS = 4096
++MAX_STRINGS = 8192
++MAX_STRING = 32767
++MAX_TEXT = 800_000
++REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
++CT_NS = 'http://schemas.openxmlformats.org/package/2006/content-types'
++OD_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
++PKG_REL = 'http://schemas.openxmlformats.org/package/2006/relationships/'
++MS_REL = 'http://schemas.microsoft.com/office/2006/relationships/xlBinaryIndex'
++CT = {
++    'workbook': 'application/vnd.ms-excel.sheet.binary.macroEnabled.main',
++    'worksheet': 'application/vnd.ms-excel.worksheet',
++    'strings': 'application/vnd.ms-excel.sharedStrings',
++    'styles': 'application/vnd.ms-excel.styles',
++    'index': 'application/vnd.ms-excel.binIndexWs',
++    'theme': 'application/vnd.openxmlformats-officedocument.theme+xml',
++    'core': 'application/vnd.openxmlformats-package.core-properties+xml',
++    'app': 'application/vnd.openxmlformats-officedocument.extended-properties+xml',
++    'rels': 'application/vnd.openxmlformats-package.relationships+xml',
++}
++_ERRORS = {0:'#NULL!', 7:'#DIV/0!', 15:'#VALUE!', 23:'#REF!', 29:'#NAME?',
++           36:'#NUM!', 42:'#N/A', 43:'#GETTING_DATA'}
++
++
++class XLSBExtractionError(ValueError):
++    """A fixed safe refusal code; no untrusted input appears in its message."""
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++def _fail(code):
++    raise XLSBExtractionError('xlsb_' + code)
++
++
++class _Text(str):
++    def __new__(cls, value, metadata):
++        obj = super().__new__(cls, value)
++        obj.extraction_metadata = metadata
++        return obj
++
++
++class _Context:
++    def __init__(self, checkpoint):
++        self.checkpoint = checkpoint
++        self.records = 0
++        self.cells = 0
++        self.string_refs = 0
++        self.ignored = set()
++
++    def check(self):
++        if self.checkpoint is not None:
++            self.checkpoint()
++
++
++def _u32(data, at=0):
++    if at < 0 or at + 4 > len(data):
++        _fail('truncated_field')
++    return struct.unpack_from('<I', data, at)[0]
++
++
++def _wide(data, at=0, *, maximum=MAX_STRING, nullable=False):
++    count = _u32(data, at)
++    at += 4
++    if nullable and count == 0xffffffff:
++        return None, at
++    if count > maximum or count * 2 > len(data) - at:
++        _fail('string_bounds')
++    try:
++        value = data[at:at + count * 2].decode('utf-16le', 'strict')
++    except UnicodeError:
++        _fail('string_encoding')
++    return value, at + count * 2
++
++
++def _rich(data, font_count):
++    if not data:
++        _fail('rich_string_bounds')
++    flags = data[0]
++    value, at = _wide(data, 1)
++    units = len(value.encode('utf-16le')) // 2
++    if flags & 1:
++        count = _u32(data, at)
++        at += 4
++        if count > MAX_STRING or at + 4 * count > len(data):
++            _fail('rich_string_runs')
++        last = -1
++        for _ in range(count):
++            pos, font = struct.unpack_from('<HH', data, at)
++            if not last < pos < units or font >= font_count:
++                _fail('rich_string_runs')
++            last = pos
++            at += 4
++    if flags & 2:
++        phonetic, at = _wide(data, at)
++        phonetic_units = len(phonetic.encode('utf-16le')) // 2
++        count = _u32(data, at)
++        at += 4
++        if count > MAX_STRING or at + 10 * count > len(data):
++            _fail('phonetic_string_runs')
++        last_first = last_mom = -1
++        total = 0
++        for _ in range(count):
++            first, mom, length, font, ignored = struct.unpack_from('<HHHHH', data, at)
++            if (not last_first < first < phonetic_units or not last_mom < mom < units or
++                    length > units - mom or font >= font_count):
++                _fail('phonetic_string_runs')
++            total += length
++            if total > units:
++                _fail('phonetic_string_runs')
++            last_first, last_mom = first, mom
++            at += 10
++    if at != len(data):
++        _fail('string_trailing')
++    return value
++
++
++def _records(data, ctx):
++    at = 0
++    while at < len(data):
++        ctx.check()
++        start = at
++        kind = data[at]
++        at += 1
++        if kind & 128:
++            if at >= len(data):
++                _fail('record_header')
++            high = data[at]
++            at += 1
++            # Accept the canonical two-byte type representation only.
++            if high & 128 or high == 0:
++                _fail('record_type_encoding')
++            kind = (kind & 127) | (high << 7)
++        size = 0
++        for n in range(4):
++            if at >= len(data):
++                _fail('record_header')
++            byte = data[at]
++            at += 1
++            size |= (byte & 127) << (7 * n)
++            if n == 3 or byte < 128:
++                break
++        # Fourth-byte high bit is ignored by MS-XLSB §2.1.4.
++        if size > MAX_EXPANDED or size > len(data) - at:
++            _fail('record_length')
++        ctx.records += 1
++        if ctx.records > MAX_RECORDS:
++            _fail('record_limit')
++        yield start, kind, data[at:at + size]
++        at += size
++
++
++def _size(data, expected):
++    if len(data) != expected:
++        _fail('record_size')
++
++
++def _path(name):
++    if (not isinstance(name, str) or not name or len(name) > 255 or
++            name.startswith('/') or name.endswith('/') or '\\' in name or
++            any(ord(c) < 33 or ord(c) > 126 for c in name) or
++            any(c in name for c in '%:#?') or
++            any(p in ('', '.', '..') for p in name.split('/'))):
++        _fail('package_path')
++    return name
++
++
++def _target(source, value):
++    if not value or value.startswith('/') or any(c in value for c in '%\\:#?'):
++        _fail('relationship_target')
++    # This narrow profile allows direct relative part names, not dot segments.
++    target = posixpath.join(posixpath.dirname(source), value)
++    return _path(target)
++
++
++def _xml(data):
++    if len(data) > MAX_EXPANDED or b'\x00' in data:
++        _fail('xml_encoding')
++    try:
++        data.decode('utf-8-sig', 'strict')
++    except UnicodeError:
++        _fail('xml_encoding')
++    if re.search(br'<\?xml[^>]*encoding\s*=\s*[\"\'](?!utf-8[\"\'])', data, re.I):
++        _fail('xml_encoding')
++    if re.search(br'<!|<\?(?!xml\s)', data, re.I):
++        _fail('xml_declaration')
++    try:
++        root = ET.fromstring(data)
++    except (ET.ParseError, UnicodeError, LookupError):
++        _fail('xml_malformed')
++    stack = [(root, 0)]
++    count = 0
++    while stack:
++        node, depth = stack.pop()
++        count += 1
++        if depth > 64 or count > 20000 or len(node.attrib) > 64:
++            _fail('xml_limit')
++        stack.extend((child, depth + 1) for child in node)
++    return root
++
++
++class _Package:
++    def __init__(self, data, ctx):
++        self.parts = {}
++        self.types = {}
++        self.rels = {}
++        self.used = {'[Content_Types].xml'}
++        # A narrow exact ZIP envelope: no prefix, suffix, spanning, ZIP64,
++        # orphan local members or hidden data between described members.
++        if len(data) < 22 or data[:4] != b'PK\x03\x04' or data[-22:-18] != b'PK\x05\x06':
++            _fail('zip_envelope')
++        signature, disk, cd_disk, disk_entries, entries, cd_size, cd_at, comment = struct.unpack('<4sHHHHIIH', data[-22:])
++        if disk or cd_disk or disk_entries != entries or comment or cd_at + cd_size != len(data) - 22:
++            _fail('zip_envelope')
++        try:
++            archive = zipfile.ZipFile(io.BytesIO(data))
++        except (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, OSError, struct.error, UnicodeError):
++            _fail('invalid_zip')
++        with archive:
++            infos = archive.infolist()
++            if not infos or len(infos) > MAX_PARTS or len(infos) != entries or archive.start_dir != cd_at:
++                _fail('package_parts')
++            names = set()
++            total = 0
++            ordered = sorted(infos, key=lambda item: item.header_offset)
++            expected_at = 0
++            for i, info in enumerate(ordered):
++                ctx.check()  # Outside parser-error handlers: cancellation survives.
++                name = _path(info.filename)
++                if (name.casefold() in names or info.flag_bits & ~0x80e or
++                        (info.flag_bits & 6 and info.compress_type != zipfile.ZIP_DEFLATED)):
++                    _fail('package_duplicate_or_flags')
++                names.add(name.casefold())
++                if info.external_attr >> 16 & 0o170000 not in (0, 0o100000):
++                    _fail('package_member_type')
++                if info.header_offset != expected_at or expected_at + 30 > cd_at:
++                    _fail('zip_member_layout')
++                local = struct.unpack_from('<4sHHHHHIIIHH', data, expected_at)
++                if local[0] != b'PK\x03\x04' or 0xffffffff in local[7:9]:
++                    _fail('zip_member_layout')
++                end = expected_at + 30 + local[9] + local[10] + info.compress_size
++                boundary = ordered[i + 1].header_offset if i + 1 < len(ordered) else cd_at
++                if info.flag_bits & 8:
++                    # Helper verifies the descriptor itself; require exact occupancy.
++                    if boundary - end not in (12, 16):
++                        _fail('zip_member_layout')
++                elif end != boundary:
++                    _fail('zip_member_layout')
++                expected_at = boundary
++                total += info.file_size
++                if total > MAX_EXPANDED:
++                    _fail('expanded_limit')
++                try:
++                    self.parts[name] = read_zip_member(archive, data, info, MAX_EXPANDED)
++                except (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, OSError, struct.error, UnicodeError):
++                    _fail('invalid_zip')
++        if '[Content_Types].xml' not in self.parts or '_rels/.rels' not in self.parts:
++            _fail('package_required_parts')
++        root = _xml(self.parts['[Content_Types].xml'])
++        if root.tag != '{' + CT_NS + '}Types' or root.attrib:
++            _fail('content_types')
++        defaults = {}
++        overrides = {}
++        permitted = set(CT.values()) | {'application/xml'}
++        for node in root:
++            if len(node) or (node.text and node.text.strip()):
++                _fail('content_types')
++            if node.tag == '{' + CT_NS + '}Default' and set(node.attrib) == {'Extension', 'ContentType'}:
++                ext, typ = node.get('Extension'), node.get('ContentType')
++                if not re.fullmatch(r'[a-zA-Z0-9]+', ext) or ext.casefold() in defaults:
++                    _fail('content_types')
++                defaults[ext.casefold()] = typ
++            elif node.tag == '{' + CT_NS + '}Override' and set(node.attrib) == {'PartName', 'ContentType'}:
++                name = node.get('PartName')
++                if not name.startswith('/'):
++                    _fail('content_types')
++                name = _path(name[1:])
++                if name in overrides or name not in self.parts:
++                    _fail('content_types')
++                overrides[name] = node.get('ContentType')
++                typ = node.get('ContentType')
++            else:
++                _fail('content_types')
++            if typ not in permitted:
++                _fail('part_type_unsupported')
++        for name, payload in self.parts.items():
++            if name == '[Content_Types].xml':
++                continue
++            typ = overrides.get(name, defaults.get(name.rsplit('.', 1)[-1].casefold()))
++            if typ is None:
++                _fail('part_type_missing')
++            self.types[name] = typ
++            if name.endswith('.rels'):
++                if typ != CT['rels']:
++                    _fail('relationship_part_type')
++                self.rels[name] = self._relationships(payload, self._source(name))
++
++    @staticmethod
++    def _source(name):
++        if name == '_rels/.rels':
++            return ''
++        parent, _, leaf = name.rpartition('/')
++        if not parent.endswith('/_rels') or not leaf.endswith('.rels'):
++            _fail('relationship_part_path')
++        return posixpath.join(parent[:-6], leaf[:-5])
++
++    def _relationships(self, payload, source):
++        root = _xml(payload)
++        if root.tag != '{' + REL_NS + '}Relationships' or root.attrib:
++            _fail('relationships')
++        result = {}
++        targets = set()
++        for node in root:
++            if (node.tag != '{' + REL_NS + '}Relationship' or len(node) or
++                    (node.text and node.text.strip()) or
++                    not {'Id', 'Type', 'Target'} <= set(node.attrib) or
++                    set(node.attrib) - {'Id', 'Type', 'Target', 'TargetMode'}):
++                _fail('relationships')
++            if node.get('TargetMode', 'Internal') != 'Internal':
++                _fail('external_relationship')
++            rid = node.get('Id')
++            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.-]{0,254}', rid) or rid in result:
++                _fail('relationship_id')
++            target = _target(source, node.get('Target'))
++            if target not in self.parts or target in targets:
++                _fail('relationship_missing_or_duplicate')
++            targets.add(target)
++            result[rid] = (node.get('Type'), target)
++        return result
++
++    def relationships(self, source, roles):
++        name = '_rels/.rels' if not source else posixpath.join(posixpath.dirname(source), '_rels', posixpath.basename(source) + '.rels')
++        rels = self.rels.get(name, {})
++        if name in self.parts:
++            self.used.add(name)
++        result = {}
++        for rid, (typ, target) in rels.items():
++            if typ not in roles:
++                _fail('relationship_type_unsupported')
++            role = roles[typ]
++            if self.types[target] != CT[role]:
++                _fail('relationship_content_type')
++            self.used.add(target)
++            result[rid] = (role, target)
++        return result
++
++    def finish(self):
++        if self.used != set(self.parts):
++            _fail('unreferenced_or_unsupported_part')
++
++
++def _wrappers(kind, payload, stack):
++    if kind in (0x23, 0x25):
++        if len(stack) >= 8:
++            _fail('record_nesting')
++        if kind == 0x23:
++            _size(payload, 4)
++        else:
++            if len(payload) < 2:
++                _fail('alternate_content')
++            count = struct.unpack_from('<H', payload)[0]
++            if not count or len(payload) != 2 + 4 * count:
++                _fail('alternate_content')
++        stack.append(kind)
++        return True
++    if kind in (0x24, 0x26):
++        _size(payload, 0)
++        if not stack or stack.pop() != kind - 1:
++            _fail('record_nesting')
++        return True
++    return False
++
++
++def _future(payload):
++    # MS-XLSB §2.1.6 infers FRTBlank when a future payload is below4 bytes.
++    if len(payload) < 4:
++        return payload
++    if payload[:4] != b'\0' * 4:
++        _fail('future_header_unsupported')
++    return payload[4:]
++
++
++def _book(data, rels, ctx):
++    records = list(_records(data, ctx))
++    if len(records) < 5 or records[0][1:] != (0x83, b'') or records[-1][1:] != (0x84, b''):
++        _fail('workbook_stream')
++    sheets = []
++    state = 0
++    stack = []
++    date1904 = False
++    seen = set()
++    views = False
++    for _, kind, payload in records[1:-1]:
++        if _wrappers(kind, payload, stack):
++            continue
++        if kind == 0x8f:
++            _size(payload, 0)
++            if state != 0 or views or stack:
++                _fail('sheet_bundle_order')
++            state = 1
++        elif kind == 0x90:
++            _size(payload, 0)
++            if state != 1 or not sheets or stack:
++                _fail('sheet_bundle_order')
++            state = 2
++        elif kind == 0x9c:
++            if state != 1 or stack or len(payload) < 16:
++                _fail('sheet_bundle')
++            vis, sheet_id = struct.unpack_from('<II', payload)
++            rid, at = _wide(payload, 8, maximum=255, nullable=True)
++            name, at = _wide(payload, at, maximum=31)
++            if (at != len(payload) or vis > 2 or not 1 <= sheet_id <= 65535 or
++                    not name or any(c in name for c in '\x00\x03:\\*?/[]') or
++                    name[0] == "'" or name[-1] == "'" or not rid or '\0' in rid):
++                _fail('sheet_bundle')
++            if rid not in rels or rels[rid][0] != 'worksheet':
++                _fail('worksheet_relationship')
++            sheets.append(dict(name=name, visibility=('visible', 'hidden', 'very_hidden')[vis],
++                               id=sheet_id, rid=rid, part=rels[rid][1]))
++            if len(sheets) > MAX_SHEETS:
++                _fail('sheet_limit')
++        elif kind == 0x87:
++            _size(payload, 0)
++            if views or state or stack:
++                _fail('book_view_order')
++            views = True
++        elif kind == 0x88:
++            _size(payload, 0)
++            if not views or stack:
++                _fail('book_view_order')
++            views = False
++        elif kind == 0x9e:
++            if not views or len(payload) != 29:
++                _fail('book_view_size')
++        elif kind in (0x80, 0x99, 0x9d, 0x9b, 0x817, 0x82b):
++            if state == 1 or views or kind in seen:
++                _fail('workbook_record_order')
++            seen.add(kind)
++            if kind == 0x99:
++                if len(payload) < 12:
++                    _fail('workbook_properties')
++                _, at = _wide(payload, 8, maximum=255)
++                if at != len(payload):
++                    _fail('workbook_properties')
++                date1904 = bool(_u32(payload) & 1)
++            elif kind == 0x9d:
++                _size(payload, 26)
++            elif kind == 0x9b:
++                _size(payload, 1)
++            elif kind == 0x817:
++                _, at = _wide(payload, 0, maximum=4096)
++                if at != len(payload) or not stack or stack[-1] != 0x25:
++                    _fail('absolute_path_record')
++            elif kind == 0x82b:
++                _size(_future(payload), 1)
++                if not stack or stack[-1] != 0x23:
++                    _fail('workbook_extension')
++            elif kind == 0x80:
++                if len(payload) < 16:
++                    _fail('file_version')
++                at = 16
++                for _ in range(4):
++                    _, at = _wide(payload, at, maximum=255)
++                if at != len(payload):
++                    _fail('file_version')
++            ctx.ignored.add(kind)
++        else:
++            _fail('workbook_record_unsupported')
++    if state != 2 or views or stack:
++        _fail('workbook_incomplete')
++    for key in ('id', 'rid', 'part'):
++        if len({s[key] for s in sheets}) != len(sheets):
++            _fail('duplicate_sheet')
++    if len({s['name'].casefold() for s in sheets}) != len(sheets):
++        _fail('duplicate_sheet')
++    if {s['rid'] for s in sheets} != {r for r, (role, _) in rels.items() if role == 'worksheet'}:
++        _fail('unlisted_sheet')
++    return sheets, date1904
++
++
++def _strings(data, ctx, font_count):
++    records = list(_records(data, ctx))
++    if len(records) < 2 or records[0][1] != 0x9f or records[-1][1:] != (0xa0, b''):
++        _fail('sst_stream')
++    _size(records[0][2], 8)
++    total, unique = struct.unpack('<II', records[0][2])
++    if not unique <= total <= MAX_CELLS or unique > MAX_STRINGS or len(records) != unique + 2:
++        _fail('sst_counts')
++    values = []
++    for _, kind, payload in records[1:-1]:
++        if kind != 0x13:
++            _fail('sst_record_unsupported')
++        values.append(_rich(payload, font_count))
++    return values, total
++
++
++# Style families contain only rendering data. Counts and complete nesting are
++# checked, but individual style payload semantics are deliberately omitted.
++_STYLE_GROUPS = {0x267:(0x268,0x2c), 0x263:(0x264,0x2b), 0x25b:(0x25c,0x2d),
++                 0x265:(0x266,0x2e), 0x272:(0x273,0x2f), 0x269:(0x26a,0x2f),
++                 0x26b:(0x26c,0x30), 0x1f9:(0x1fa,None)}
++_STYLE_PAIRS = {0x46b:0x46c, 0x476:0x477, 0x830:0x831, 0x832:0x833}
++
++
++def _styles(data, ctx):
++    records = list(_records(data, ctx))
++    if len(records) < 2 or records[0][1:] != (0x116, b'') or records[-1][1:] != (0x117, b''):
++        _fail('styles_stream')
++    wrappers = []
++    group = None
++    nested = []
++    counts = {}
++    formats = set()
++    xfs = []
++    style_ids = []
++    for _, kind, payload in records[1:-1]:
++        if _wrappers(kind, payload, wrappers):
++            continue
++        ctx.ignored.add(kind)
++        if kind in _STYLE_GROUPS:
++            if group is not None or kind in counts or nested or wrappers:
++                _fail('style_group')
++            _size(payload, 4)
++            count = _u32(payload)
++            if count > 8192 or (kind in (0x263, 0x265, 0x272, 0x269) and not count):
++                _fail('style_count')
++            counts[kind] = count
++            group = [kind, count, 0]
++        elif group is not None and kind == _STYLE_GROUPS[group[0]][0]:
++            _size(payload, 0)
++            if wrappers or group[1] != group[2]:
++                _fail('style_count')
++            group = None
++        elif group is not None and kind == _STYLE_GROUPS[group[0]][1]:
++            if wrappers:
++                _fail('style_record_nesting')
++            if kind == 0x2f:
++                _size(payload, 16)
++                xfs.append((group[0], struct.unpack_from('<HHHHH', payload)))
++            elif kind == 0x2b:
++                if len(payload) < 25:
++                    _fail('font_record')
++                _, at = _wide(payload, 21, maximum=255)
++                if at != len(payload):
++                    _fail('font_record')
++            elif kind == 0x2c:
++                if len(payload) < 6:
++                    _fail('format_record')
++                fmt = struct.unpack_from('<H', payload)[0]
++                _, at = _wide(payload, 2, maximum=255)
++                if at != len(payload) or fmt in formats or not 164 <= fmt <= 0xffff:
++                    _fail('format_record')
++                formats.add(fmt)
++            elif kind == 0x2d:
++                # BrtFill has68 bytes plus16 bytes per gradient stop.
++                if len(payload) < 68 or len(payload) != 68 + _u32(payload, 64) * 16:
++                    _fail('fill_record')
++            elif kind == 0x2e:
++                _size(payload, 51)
++            elif kind == 0x30:
++                if len(payload) < 12:
++                    _fail('style_record')
++                _, at = _wide(payload, 8, maximum=255, nullable=True)
++                if at != len(payload):
++                    _fail('style_record')
++                style_ids.append(_u32(payload))
++            group[2] += 1
++        elif kind == 0x401:
++            _size(payload, 0)
++            if group is None or group[0] != 0x263 or not wrappers or wrappers[-1] != 0x25:
++                _fail('known_fonts_record')
++        elif kind in _STYLE_PAIRS:
++            if group is not None or len(nested) >= 4 or not wrappers or wrappers[-1] != 0x23:
++                _fail('style_nesting')
++            if kind in (0x46b, 0x830):
++                _size(_future(payload), 0)
++                if nested:
++                    _fail('style_nesting')
++            else:
++                if nested != ([0x46c] if kind == 0x476 else [0x831]):
++                    _fail('style_nesting')
++                value, at = _wide(_future(payload), 0, maximum=255)
++                if not value or at != len(_future(payload)):
++                    _fail('style_extension_string')
++            nested.append(_STYLE_PAIRS[kind])
++        elif nested and kind == nested[-1]:
++            _size(_future(payload) if kind != 0x1fd else payload, 0)
++            nested.pop()
++        elif kind == 0x1fc:
++            if group is not None or nested or wrappers or len(payload) < 12 or _u32(payload):
++                _fail('custom_table_styles_unsupported')
++            _, at = _wide(payload, 4, maximum=255)
++            _, at = _wide(payload, at, maximum=255)
++            if at != len(payload):
++                _fail('table_style_group')
++            nested.append(0x1fd)
++        else:
++            _fail('styles_record_unsupported')
++    if wrappers or group is not None or nested or not all(k in counts for k in (0x263, 0x25b, 0x265, 0x272, 0x269)):
++        _fail('styles_incomplete')
++    for group_kind, (parent, fmt, font, fill, border) in xfs:
++        if ((group_kind == 0x272 and parent != 0xffff) or
++                (group_kind == 0x269 and parent >= counts[0x272]) or
++                font >= counts[0x263] or fill >= counts[0x25b] or border >= counts[0x265] or
++                (fmt >= 164 and fmt not in formats)):
++            _fail('style_reference')
++    if any(value >= counts[0x272] for value in style_ids):
++        _fail('style_reference')
++    return {'xf':counts[0x269], 'font':counts[0x263]}
++
++
++def _number(data):
++    _size(data, 8)
++    result = struct.unpack('<d', data)[0]
++    if not math.isfinite(result):
++        _fail('nonfinite_number')
++    return result
++
++
++def _rk(data):
++    _size(data, 4)
++    raw = _u32(data)
++    value = (struct.unpack('<i', data)[0] >> 2 if raw & 2 else
++             _number(b'\0' * 4 + struct.pack('<I', raw & 0xfffffffc)))
++    return value / 100 if raw & 1 else value
++
++
++def _formula(data, at):
++    if at + 10 > len(data):
++        _fail('formula_bounds')
++    # Flags are inert and no expression is evaluated. Validate the bounded token
++    # sublanguage to refuse XLM, external names, external references and UDFs.
++    at += 2
++    count = _u32(data, at)
++    at += 4
++    if not 1 <= count <= 16384 or at + count + 4 > len(data):
++        _fail('formula_bounds')
++    tokens = data[at:at + count]
++    at += count
++    extra = _u32(data, at)
++    at += 4
++    if extra or at != len(data):
++        _fail('formula_extra_unsupported')
++    pos = 0
++    depth = 0
++    while pos < len(tokens):
++        token = tokens[pos]
++        pos += 1
++        if 0x03 <= token <= 0x11:  # binary arithmetic/comparison/reference ops
++            if depth < 2:
++                _fail('formula_stack')
++            depth -= 1
++        elif 0x12 <= token <= 0x15:  # unary plus/minus/percent/parentheses
++            if depth < 1:
++                _fail('formula_stack')
++        elif token == 0x16:  # missing argument
++            depth += 1
++        elif token in (0x1c, 0x1d, 0x1e, 0x1f):
++            n = {0x1c:1, 0x1d:1, 0x1e:2, 0x1f:8}[token]
++            if pos + n > len(tokens):
++                _fail('formula_token_bounds')
++            if token == 0x1d and tokens[pos] not in (0, 1):
++                _fail('formula_literal')
++            if token == 0x1c and tokens[pos] not in _ERRORS:
++                _fail('formula_literal')
++            if token == 0x1f:
++                _number(tokens[pos:pos + n])
++            pos += n
++            depth += 1
++        elif token == 0x17:
++            if pos + 2 > len(tokens):
++                _fail('formula_token_bounds')
++            n = struct.unpack_from('<H', tokens, pos)[0]
++            pos += 2
++            if n > 255 or pos + n * 2 > len(tokens):
++                _fail('formula_token_bounds')
++            try:
++                tokens[pos:pos + n * 2].decode('utf-16le', 'strict')
++            except UnicodeError:
++                _fail('formula_string_encoding')
++            pos += n * 2
++            depth += 1
++        elif token in (0x24, 0x44, 0x64, 0x25, 0x45, 0x65):
++            n = 6 if token & 31 == 4 else 12
++            if pos + n > len(tokens):
++                _fail('formula_token_bounds')
++            if n == 6:
++                row, col = struct.unpack_from('<IH', tokens, pos)
++                if row >= 1048576:
++                    _fail('formula_reference')
++            else:
++                first, last, cfirst, clast = struct.unpack_from('<IIHH', tokens, pos)
++                if not first <= last < 1048576 or (cfirst & 0x3fff) > (clast & 0x3fff):
++                    _fail('formula_reference')
++            pos += n
++            depth += 1
++        elif token == 0x19:
++            if pos + 3 > len(tokens) or tokens[pos] != 0x10 or depth < 1:
++                _fail('formula_attribute_unsupported')
++            pos += 3
++        else:
++            _fail('formula_token_unsupported')
++    if depth != 1:
++        _fail('formula_stack')
++
++
++def _cell(row, column, style, kind, value, **extra):
++    col = column + 1
++    letters = ''
++    while col:
++        col, rem = divmod(col - 1, 26)
++        letters = chr(65 + rem) + letters
++    return dict(cell=f'{letters}{row + 1}', row=row + 1, column=column + 1,
++                type=kind, value=value, xf_index=style, **extra)
++
++
++def _sheet(data, strings, xf_count, ctx):
++    records = list(_records(data, ctx))
++    if len(records) < 4 or records[0][1:] != (0x81, b'') or records[-1][1:] != (0x82, b''):
++        _fail('worksheet_stream')
++    cells = []
++    anchors = {}
++    wrappers = []
++    views = []
++    colinfos = False
++    state = 0
++    row = -1
++    row_spans = []
++    row_cols = []
++    row_count = 0
++    last_col = -1
++    dim = None
++    seen = set()
++
++    def finish_row():
++        actual = {}
++        for column in row_cols:
++            segment = column // 1024
++            actual.setdefault(segment, [column, column])[1] = column
++        if list(actual.values()) != [list(span) for span in row_spans]:
++            _fail('row_span_count_or_bounds')
++
++    for offset, kind, payload in records[1:-1]:
++        if _wrappers(kind, payload, wrappers):
++            continue
++        if kind == 0x91:
++            _size(payload, 0)
++            if state or wrappers or views or colinfos:
++                _fail('sheet_data_order')
++            state = 1
++        elif kind == 0x92:
++            _size(payload, 0)
++            if state != 1 or wrappers:
++                _fail('sheet_data_order')
++            finish_row()
++            state = 2
++        elif kind == 0:
++            if state != 1 or wrappers or len(payload) < 17:
++                _fail('row_header')
++            finish_row()
++            new_row = _u32(payload)
++            n = _u32(payload, 13)
++            if (not row < new_row < 1048576 or n > 16 or len(payload) != 17 + 8 * n or
++                    (payload[11] & 0x40 and _u32(payload, 4) >= xf_count)):
++                _fail('row_header')
++            row = new_row
++            row_count += 1
++            if row_count > MAX_ROWS:
++                _fail('row_limit')
++            row_spans = []
++            row_cols = []
++            last_col = -1
++            for i in range(n):
++                first, last = struct.unpack_from('<II', payload, 17 + 8 * i)
++                if (not first <= last < 16384 or first // 1024 != last // 1024 or
++                        row_spans and row_spans[-1][1] // 1024 >= first // 1024):
++                    _fail('row_span_bounds')
++                row_spans.append((first, last))
++        elif 1 <= kind <= 11:
++            if state != 1 or row < 0 or wrappers or len(payload) < 8:
++                _fail('cell_record_order')
++            column, rawstyle = struct.unpack_from('<II', payload)
++            style = rawstyle & 0xffffff
++            if column >= 16384 or column <= last_col or style >= xf_count:
++                _fail('cell_column_or_style')
++            if not any(first <= column <= last for first, last in row_spans):
++                _fail('cell_outside_row_span')
++            if dim is not None and not (dim[0] <= row <= dim[1] and dim[2] <= column <= dim[3]):
++                _fail('cell_outside_dimension')
++            last_col = column
++            row_cols.append(column)
++            anchors[offset] = (row, column, not row_cols[:-1] or row_cols[-2] // 1024 != column // 1024)
++            ctx.cells += 1
++            if ctx.cells > MAX_CELLS:
++                _fail('cell_limit')
++            if kind == 1:
++                _size(payload, 8)
++                cell = _cell(row, column, style, 'blank', None)
++            elif kind == 2:
++                _size(payload, 12)
++                cell = _cell(row, column, style, 'number', _rk(payload[8:]))
++            elif kind in (3, 4):
++                _size(payload, 9)
++                v = payload[8]
++                if kind == 4:
++                    if v not in (0, 1):
++                        _fail('boolean_value')
++                    typ, v = 'boolean', bool(v)
++                else:
++                    if v not in _ERRORS:
++                        _fail('error_value')
++                    typ, v = 'error', _ERRORS[v]
++                cell = _cell(row, column, style, typ, v)
++            elif kind == 5:
++                _size(payload, 16)
++                cell = _cell(row, column, style, 'number', _number(payload[8:]))
++            elif kind == 6:
++                value, at = _wide(payload, 8)
++                if at != len(payload):
++                    _fail('inline_string_trailing')
++                cell = _cell(row, column, style, 'string', value)
++            elif kind == 7:
++                _size(payload, 12)
++                idx = _u32(payload, 8)
++                if idx >= len(strings):
++                    _fail('sst_reference')
++                ctx.string_refs += 1
++                cell = _cell(row, column, style, 'string', strings[idx])
++            else:
++                if kind == 8:
++                    value, at = _wide(payload, 8)
++                    typ = 'string'
++                elif kind == 9:
++                    if len(payload) < 16:
++                        _fail('formula_bounds')
++                    value = _number(payload[8:16])
++                    at, typ = 16, 'number'
++                else:
++                    if len(payload) < 9:
++                        _fail('formula_bounds')
++                    value = payload[8]
++                    at = 9
++                    if kind == 10:
++                        if value not in (0, 1):
++                            _fail('boolean_value')
++                        value, typ = bool(value), 'boolean'
++                    else:
++                        if value not in _ERRORS:
++                            _fail('error_value')
++                        value, typ = _ERRORS[value], 'error'
++                _formula(payload, at)
++                cell = _cell(row, column, style, 'formula', value, cached_type=typ,
++                             formula='restricted_binary_tokens_not_evaluated',
++                             evaluated=False, cache_freshness='unknown')
++            cells.append(cell)
++        elif kind == 0x94:
++            if state or kind in seen or wrappers or views:
++                _fail('dimension_order')
++            _size(payload, 16)
++            dim = struct.unpack('<IIII', payload)
++            if not (dim[0] <= dim[1] < 1048576 and dim[2] <= dim[3] < 16384):
++                _fail('dimension_bounds')
++            seen.add(kind)
++        elif kind in (0x85, 0x89):
++            if state or wrappers or (kind == 0x85 and views) or (kind == 0x89 and views != [0x85]):
++                _fail('sheet_view_order')
++            if kind == 0x85:
++                _size(payload, 0)
++            elif len(payload) != 30:
++                _fail('sheet_view_size')
++            views.append(kind)
++        elif kind in (0x86, 0x8a):
++            _size(payload, 0)
++            if not views or views.pop() != kind - 1:
++                _fail('sheet_view_order')
++        elif kind == 0x98:
++            if views != [0x85, 0x89] or len(payload) < 36:
++                _fail('selection_record')
++            ctx.ignored.add(kind)
++        elif kind in (0x186, 0x187):
++            _size(payload, 0)
++            if state or views or wrappers or colinfos != (kind == 0x187):
++                _fail('column_info_order')
++            colinfos = kind == 0x186
++        elif kind == 0x3c:
++            _size(payload, 18)
++            if not colinfos:
++                _fail('column_info_order')
++            first, last = struct.unpack_from('<II', payload)
++            if not first <= last < 16384 or _u32(payload, 12) >= xf_count:
++                _fail('column_info_bounds')
++            ctx.ignored.add(kind)
++        elif kind in (0x93, 0x1e5, 0x415, 0x400, 0x217, 0x1dd, 0x1dc):
++            if kind == 0x400:
++                _size(payload, 2)
++                if state != 1 or not wrappers or wrappers[-1] != 0x25:
++                    _fail('row_descent_order')
++            else:
++                if kind in seen:
++                    _fail('duplicate_sheet_record')
++                seen.add(kind)
++                if kind in (0x93, 0x1e5, 0x415) and state:
++                    _fail('sheet_record_order')
++                if kind in (0x217, 0x1dd, 0x1dc) and state != 2:
++                    _fail('sheet_record_order')
++                if kind == 0x93:
++                    if len(payload) < 23 or payload[0] & 0x10:
++                        _fail('dialog_or_sheet_properties')
++                    _, at = _wide(payload, 19, maximum=255)
++                    if at != len(payload):
++                        _fail('sheet_properties')
++                elif kind == 0x1e5:
++                    _size(payload, 12)
++                elif kind == 0x415:
++                    _size(payload, 2)
++                    if not wrappers or wrappers[-1] != 0x25:
++                        _fail('sheet_format_extension')
++                elif kind == 0x217:
++                    _size(payload, 66)
++                elif kind == 0x1dd:
++                    _size(payload, 2)
++                elif kind == 0x1dc:
++                    _size(payload, 48)
++            ctx.ignored.add(kind)
++        else:
++            _fail('worksheet_record_unsupported')
++    if state != 2 or wrappers or views or colinfos:
++        _fail('worksheet_incomplete')
++    return cells, anchors
++
++
++def _index(data, anchors, ctx):
++    records = list(_records(data, ctx))
++    if not records or records[-1][1:] != (0x115, b''):
++        _fail('index_stream')
++    block = None
++    indexed = set()
++    last_end = 0
++    for _, kind, payload in records[:-1]:
++        if kind == 0x2a:
++            if len(payload) < 20:
++                _fail('index_block')
++            first, end = struct.unpack_from('<II', payload)
++            if not last_end <= first < end <= min(first + 32, 1048576):
++                _fail('index_block_bounds')
++            _size(payload, 16 + ((end - first + 32) // 32) * 4)
++            block = (first, end)
++            last_end = end
++        elif kind == 0x28:
++            if block is None or len(payload) < 12:
++                _fail('index_row_order')
++            mask = _u32(payload)
++            base = struct.unpack_from('<Q', payload, 4)[0]
++            count = mask.bit_count()
++            if not mask or mask >> (block[1] - block[0]) or len(payload) < 12 + 2 * count:
++                _fail('index_mask')
++            masks = struct.unpack_from('<' + 'H' * count, payload, 12)
++            if any(not m for m in masks):
++                _fail('index_mask')
++            n = sum(m.bit_count() for m in masks)
++            _size(payload, 12 + 2 * count + 4 * n)
++            at = 12 + 2 * count
++            mi = 0
++            for r in range(32):
++                if not mask & (1 << r):
++                    continue
++                cmask = masks[mi]
++                mi += 1
++                for segment in range(16):
++                    if not cmask & (1 << segment):
++                        continue
++                    offset = base + _u32(payload, at)
++                    at += 4
++                    value = anchors.get(offset)
++                    if value is None or value[0] != block[0] + r or value[1] // 1024 != segment or not value[2] or offset in indexed:
++                        _fail('index_offset')
++                    indexed.add(offset)
++            block = None
++        else:
++            _fail('index_record_unsupported')
++    if indexed != {offset for offset, value in anchors.items() if value[2]}:
++        _fail('index_coverage')
++
++
++def _extract(data, ctx):
++    package = _Package(data, ctx)
++    roots = package.relationships('', {
++        OD_REL + 'officeDocument':'workbook', PKG_REL + 'metadata/core-properties':'core',
++        OD_REL + 'extended-properties':'app'})
++    for role in ('core', 'app'):
++        if sum(r == role for r, _ in roots.values()) > 1:
++            _fail('duplicate_part_role')
++    books = [part for role, part in roots.values() if role == 'workbook']
++    if len(books) != 1:
++        _fail('workbook_relationship')
++    book = books[0]
++    rels = package.relationships(book, {OD_REL + 'worksheet':'worksheet',
++        OD_REL + 'sharedStrings':'strings', OD_REL + 'styles':'styles', OD_REL + 'theme':'theme'})
++    unique = {}
++    for role, part in rels.values():
++        if role != 'worksheet':
++            if role in unique:
++                _fail('duplicate_part_role')
++            unique[role] = part
++    sheets, date1904 = _book(package.parts[book], rels, ctx)
++    style_counts = _styles(package.parts[unique['styles']], ctx) if 'styles' in unique else {'xf':1, 'font':1}
++    xf_count = style_counts['xf']
++    strings, total = _strings(package.parts[unique['strings']], ctx, style_counts['font']) if 'strings' in unique else ([], 0)
++    parsed = []
++    for sheet in sheets:
++        ctx.check()
++        cells, anchors = _sheet(package.parts[sheet['part']], strings, xf_count, ctx)
++        sheetrels = package.relationships(sheet['part'], {MS_REL:'index'})
++        if len(sheetrels) > 1:
++            _fail('duplicate_index')
++        for _, indexpart in sheetrels.values():
++            _index(package.parts[indexpart], anchors, ctx)
++        parsed.append(cells)
++    if ctx.string_refs != total:
++        _fail('sst_reference_count')
++    # XML metadata is inert but still syntax/bounds checked. No XML part is
++    # allowed to carry another relationship graph or a disguised extra part.
++    for role, part in list(roots.values()) + list(rels.values()):
++        if role in ('core', 'app', 'theme'):
++            root = _xml(package.parts[part])
++            expected = {'core':'{http://schemas.openxmlformats.org/package/2006/metadata/core-properties}coreProperties',
++                        'app':'{http://schemas.openxmlformats.org/officeDocument/2006/extended-properties}Properties',
++                        'theme':'{http://schemas.openxmlformats.org/drawingml/2006/main}theme'}[role]
++            if root.tag != expected:
++                _fail('metadata_root')
++    package.finish()
++    metadata = {
++        'format':'xlsb', 'native_type':'OPC/BIFF12',
++        'coverage':'stored_cell_values_and_formula_caches_only',
++        'source_sha256':hashlib.sha256(data).hexdigest(), 'source_bytes':len(data),
++        'formula_evaluation':False, 'formulas_evaluated':False,
++        'formula_cache_freshness':'unknown',
++        'formula_profile':'local arithmetic, literals, references and optimized SUM only; other tokens refused',
++        'security_scope':'external relationships, unknown parts/records and non-profile formula tokens refused; recognized inert layout/style payloads not semantically validated',
++        'date_system':'1904' if date1904 else '1900',
++        'date_display':'not_interpreted; numeric_serials_retained',
++        'sheets':[dict(index=i + 1, name=s['name'], visibility=s['visibility'], cells=len(parsed[i]))
++                  for i, s in enumerate(sheets)],
++        'cell_records':{'included':ctx.cells, 'truncated':False, 'limit':MAX_CELLS},
++        'limits':{'input_bytes':MAX_INPUT, 'expanded_bytes':MAX_EXPANDED, 'parts':MAX_PARTS,
++                  'records':MAX_RECORDS, 'sheets':MAX_SHEETS, 'cells':MAX_CELLS,
++                  'strings':MAX_STRINGS, 'rows_per_sheet':MAX_ROWS, 'columns':16384},
++        'omissions':['formula_expressions', 'styles_and_number_formats', 'visual_layout',
++                     'row_column_visibility', 'rich_string_formatting', 'phonetic_annotations', 'document_properties', 'theme'],
++        'ignored_structural_record_types':[f'{k:04x}' for k in sorted(ctx.ignored)],
++    }
++    lines = [json.dumps({'xlsb_workbook':metadata}, ensure_ascii=True, separators=(',', ':'))]
++    size = len(lines[0])
++    for i, sheet in enumerate(sheets):
++        ctx.check()
++        for cell in parsed[i]:
++            line = json.dumps({'xlsb_cell':dict(sheet=i + 1, sheet_name=sheet['name'],
++                sheet_visibility=sheet['visibility'], **cell)}, ensure_ascii=True, separators=(',', ':'))
++            size += len(line) + 1
++            if size > MAX_TEXT:
++                _fail('extracted_text_limit')
++            lines.append(line)
++    return _Text('\n'.join(lines), metadata)
++
++
++def extract_xlsb(data: bytes, *, checkpoint=None) -> str:
++    """Extract a bounded inert XLSB; preserve exceptions from cancellation checks."""
++    if not isinstance(data, bytes) or not data or len(data) > MAX_INPUT:
++        _fail('input_limit')
++    ctx = _Context(checkpoint)
++    ctx.check()
++    # All parser failures are raised as fixed codes at the point of detection.
++    # In particular no broad exception handler may swallow checkpoint failures.
++    return _extract(data, ctx)

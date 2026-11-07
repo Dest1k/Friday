@@ -1,0 +1,25 @@
+--- a/hermes_cli/friday_credential_admission.py
++++ b/hermes_cli/friday_credential_admission.py
+@@ -264,7 +264,12 @@
+             and a.get('fallback_chain') == []
+             and a.get('api_mode', 'chat_completions') == 'chat_completions',
+             'compression_role_mismatch')
+-    for selected, capacity, block in ((main, 262144, cfg['model']), (route, 40960, a)):
++    # Keep the admitted historical lane and the explicitly configured current lane.
++    # Do not infer capacity from server metadata or relax the pinned main route.
++    compression_capacity = a.get('context_length', 40960)
++    require(type(compression_capacity) is int and compression_capacity in (40960, 65536),
++            'compression_capacity_mismatch')
++    for selected, capacity, block in ((main, 262144, cfg['model']), (route, compression_capacity, a)):
+         entry = cfg['providers'][selected[0].split(':', 1)[1]]
+         model = (entry.get('models') or {}).get(selected[1]) or {}
+         require(model.get('context_length') == capacity
+@@ -273,7 +278,7 @@
+     from agent.bounded_context import compression_policy_from_config
+     policy = compression_policy_from_config(cfg)
+     require(policy is not None and (policy.provider, policy.model, policy.base_url) == route[:3]
+-            and policy.context_length == 40960, 'compression_policy_mismatch')
++            and policy.context_length == compression_capacity, 'compression_policy_mismatch')
+     return route
+ 
+ 

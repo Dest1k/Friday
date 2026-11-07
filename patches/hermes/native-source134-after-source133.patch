@@ -1,0 +1,921 @@
+--- a/hermes_cli/friday_ordinary_gateway.py
++++ b/hermes_cli/friday_ordinary_gateway.py
+@@ -123,6 +123,38 @@
+     return sha(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode())
+ 
+ 
++
++# This UI-only pair has no provider, credential, tool, or network meaning. Keep
++# normalized_configuration unchanged: existing install receipts still name the
++# original complete configuration, including an omitted theme.
++DASHBOARD_APPEARANCE_THEMES = frozenset({'default', 'default-large'})
++
++
++def configuration_matches(cfg, expected):
++    """Prove the original deployment hash with only an allowed theme changed.
++
++    Reconstruct the three permitted original theme states independently. Never
++    adopt the current configuration as a new seal or remove the dashboard map:
++    its auth/URL/TLS fields and all other settings remain inside the old hash.
++    Exact legacy configurations (including other themes) remain valid unchanged.
++    """
++    if normalized_configuration(cfg) == expected:
++        return True
++    dashboard = cfg.get('dashboard')
++    if (type(dashboard) is not dict or type(dashboard.get('theme')) is not str
++            or dashboard['theme'] not in DASHBOARD_APPEARANCE_THEMES):
++        return False
++    for original in (None, 'default', 'default-large'):
++        sealed = copy.deepcopy(cfg)
++        if original is None:
++            sealed['dashboard'].pop('theme', None)
++        else:
++            sealed['dashboard']['theme'] = original
++        if normalized_configuration(sealed) == expected:
++            return True
++    return False
++
++
+ def dynamic_configuration(cfg, base):
+     """Check native prepare's route/account/profile references, including tombstones.
+ 
+@@ -282,7 +314,7 @@
+             and old.get('cli_segment') == marker.get('cli_segment'), 'historical_scope_changed')
+     allowlist_current(home, phase['baseline']['telegram_allowed_users'])
+     cfg = configuration(home)
+-    require(normalized_configuration(cfg) == phase['configuration_sha256'], 'configuration_changed')
++    require(configuration_matches(cfg, phase['configuration_sha256']), 'configuration_changed')
+     contract = configuration_contract(cfg, phase['baseline'])
+     if role:
+         invocation(home, contract, phase)
+@@ -372,7 +404,7 @@
+     # watchdog setting; full gateway config would re-enter restart admission.
+     phase = check(home, role=False)
+     cfg = configuration(home)
+-    require(normalized_configuration(cfg) == phase['configuration_sha256'], 'configuration_changed')
++    require(configuration_matches(cfg, phase['configuration_sha256']), 'configuration_changed')
+     configuration_contract(cfg, phase['baseline'])
+     expected = gw.generate_systemd_unit(
+         system=False, watchdog_seconds=cfg['gateway'].get('systemd_watchdog_seconds'))
+--- a/hermes_cli/friday_product_access.py
++++ b/hermes_cli/friday_product_access.py
+@@ -204,6 +204,11 @@
+             return False
+         if not path.startswith("/api/"):
+             return True
++        if request.method == "PUT" and path == "/api/dashboard/theme":
++            # Appearance belongs only to this Dashboard's own home. A permitted
++            # admin profile is not permission to edit another user's settings.
++            from hermes_cli.web_server_profiles import _is_other_profile
++            return not _is_other_profile(requested_profile)
+         return (path.startswith("/api/plugins/friday_rework/")
+                 or (request.method == "GET" and path in {"/api/auth/me", "/api/plugins", "/api/dashboard/plugins", "/api/host/identity", "/api/status", "/api/health", "/api/model/info", "/api/config/defaults", "/api/config/schema", "/api/dashboard/themes"})
+                 or (request.method == "POST" and path in {"/api/auth/ws-ticket", "/api/auth/legacy-retirement"}))
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -12,7 +12,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1'
++DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1.macro-spreadsheet-edit.v1'
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -225,7 +225,7 @@
+     'XLSB читается нативно только в ограниченном инертном профиле: порядок, имена и видимость листов, типизированные сохранённые значения ячеек и отдельно помеченные кэши формул. Формулы не вычисляются, внешние ссылки не открываются; активные и неподдержанные пакеты отказываются целиком. Чтение не проверяет оформление и не разрешает создание, изменение или конвертацию XLSB. Продолжай все страницы read_file и сверяй metadata покрытия. '
+     'Старый .xls читается как ограниченная таблица BIFF8: имена и порядок листов, поддержанные значения ячеек и сохранённые результаты формул. Формулы не вычисляются, макросы не запускаются. Это не проверка оформления; смотри metadata покрытия и ограничений. Создание и изменение .xls не поддерживаются, не записывай под этим расширением текст. '
+     'EPUB читается по порядку XHTML-разделов книги, включая отдельно помеченные вспомогательные разделы. Это логический текст, не вид страниц: CSS, изображения, аудио и видео не проверяются; внешние ссылки не открываются. EPUB нельзя создать или изменить этой файловой операцией. '
+-    'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. No cross-family/Office conversion in this path. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
++    'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value} for nonmacro profiles, or exact {source,source_sha256,sheet,cell,expected,value} for existing XLSM/XLTM, into a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. For XLSM/XLTM, read_file first supplies source_sha256; only exact-value numeric edits retaining one opaque VBA payload are supported, never macro creation/execution or a safety claim. Signed, protected, hidden, external/active, formula-target and other unsupported packages refuse; old macro create/convert refusals remain. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. The XLSX/ODS pair uses a separately validated isolated Office conversion; other cross-family pairs are unsupported. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: macros are opaque and never executed. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
+     'ODS table operations ods_join {source,left_sheet,right_sheet,key,sheet} and ods_merge '
+     '{base,update,sheet,key,revision} create NEW plain .ods tables, without source formatting. '
+     'Join is an exact text LEFT JOIN with unique nonempty text keys and noncolliding headers. '
+--- a/hermes_cli/friday_workspace_spreadsheet.py
++++ b/hermes_cli/friday_workspace_spreadsheet.py
+@@ -21,7 +21,8 @@
+         try: os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+         except FileNotFoundError: pass
+         else: raise ODSError('document_already_exists')
+-        if target not in WRITABLE: raise ODSError('macro_profile_read_only')
++        if target not in WRITABLE and not (operation == 'spreadsheet_edit' and target in ('xlsm', 'xltm')):
++            raise ODSError('macro_profile_read_only')
+         state = None
+         if operation == 'spreadsheet_create':
+             # Rich XLSX creation validates its own exact optional keys.
+@@ -30,6 +31,12 @@
+             extra = dict(native_editable=True, formulas_recalculated=False)
+         else:
+             keys = ('source',) if operation == 'spreadsheet_convert' else ('source','sheet','cell','expected','value')
++            if operation == 'spreadsheet_edit':
++                try: probe = json.loads(content)
++                except (ValueError,TypeError,RecursionError): probe = None
++                if (isinstance(probe,dict) and isinstance(probe.get('source'),str)
++                        and Path(probe['source']).suffix.lower() in ('.xlsm', '.xltm')):
++                    keys = ('source','source_sha256','sheet','cell','expected','value')
+             spec = json_object(content,keys)
+             source_name = spec.pop('source')
+             if not isinstance(source_name,str): raise ScopeDenied()
+@@ -49,6 +56,11 @@
+             extra = dict(source=relative,source_sha256=hashlib.sha256(data).hexdigest(),source_unchanged=True,
+                          formulas_recalculated=False, macros_executed=False,
+                          preservation='native_profile_conversion' if operation == 'spreadsheet_convert' else 'other_XML_bytes_and_package_payloads_preserved')
++            if operation == 'spreadsheet_edit' and source_format in ('xlsm', 'xltm'):
++                extra.update(native_numeric_cell_edited=True, vba_projects_retained=1,
++                             macro_content='opaque_VBA_retained; never_executed; not_security_verified',
++                             macro_security_verified=False, formula_caches_recalculated=False,
++                             preservation='only_target_numeric_value_and_ZIP_repack_changed; all_other_part_payloads_byte_identical')
+         check(cap)
+         return _publish(cap,fd,leaf,path,rendered,target,state,extra)
+     except ScopeDenied: raise
+--- a/hermes_cli/friday_workspace_xlsx.py
++++ b/hermes_cli/friday_workspace_xlsx.py
+@@ -10,6 +10,7 @@
+ import re
+ import stat
+ from xml.etree import ElementTree as ET
++from xml.parsers import expat
+ from zipfile import ZipFile, ZIP_STORED, ZIP_DEFLATED, BadZipFile
+ from hermes_cli.friday_user_scope import ScopeDenied, workspace_document
+ from hermes_cli.friday_workspace_revision import check
+@@ -117,6 +118,83 @@
+         raise ScopeDenied() from None
+ 
+ 
++def _macro_numeric_span(raw, cell):
++    """Locate the selected XML text by parser byte offsets, never by tag regex."""
++    parser = expat.ParserCreate(namespace_separator='}')
++    names = [S[1:] + name for name in ('worksheet', 'sheetData', 'row', 'c')]
++    value_path = names + [S[1:] + 'v']
++    path = []
++    selected = False
++    starts = []
++    spans = []
++
++    def start(name, attrs):
++        nonlocal selected
++        path.append(name)
++        if path == names:
++            selected = attrs.get('r') == cell
++        if selected and path == value_path:
++            if attrs:
++                raise ScopeDenied()
++            starts.append(raw.index(b'>', parser.CurrentByteIndex) + 1)
++
++    def end(name):
++        nonlocal selected
++        if selected and path == value_path:
++            if len(starts) != 1:
++                raise ScopeDenied()
++            spans.append((starts[0], parser.CurrentByteIndex))
++        if path == names:
++            selected = False
++        path.pop()
++
++    parser.StartElementHandler = start
++    parser.EndElementHandler = end
++    parser.Parse(raw, True)
++    if len(spans) != 1 or spans[0][0] >= spans[0][1]:
++        raise ScopeDenied()
++    return spans[0]
++
++
++def render_macro_copy(data, book, sheet, cell, expected, value):
++    if not isinstance(data,bytes) or len(data)>MAX_BYTES: raise ScopeDenied()
++    if not isinstance(sheet,str) or not 1<=len(sheet)<=31: raise ScopeDenied()
++    if not isinstance(cell,str) or not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]{0,6}',cell): raise ScopeDenied()
++    col=0
++    for char in re.match('[A-Z]+',cell)[0]: col=col*26+ord(char)-64
++    if col>16384 or int(re.search('[0-9]+',cell)[0])>1048576: raise ScopeDenied()
++    old=_number(expected);new=_number(value)
++    try:
++        workbook=book.root('xl/workbook.xml',S+'workbook')
++        sheets=[n for n in workbook.findall(S+'sheets/'+S+'sheet') if n.get('name')==sheet]
++        if len(sheets)!=1: raise ScopeDenied()
++        target=book.target('xl/workbook.xml',sheets[0].get(R+'id'),'worksheet')
++        raw=book.parts[target];root=book.xml[target]
++        if any(f.get('t') not in (None,'normal') or 'ref' in f.attrib for f in root.iter(S+'f')): raise ScopeDenied()
++        cells=[n for n in root.findall(S+'sheetData/'+S+'row/'+S+'c') if n.get('r')==cell]
++        if len(cells)!=1 or cells[0].get('t','n')!='n' or cells[0].find(S+'f') is not None: raise ScopeDenied()
++        vals=cells[0].findall(S+'v')
++        if len(vals)!=1 or len(vals[0]) or Decimal(vals[0].text)!=old: raise ScopeDenied()
++        start,end=_macro_numeric_span(raw,cell)
++        numeric=raw[start:end].decode('ascii').strip()
++        if (len(numeric)>128 or not re.fullmatch(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[Ee][+-]?[0-9]+)?',numeric)
++                or Decimal(numeric)!=old): raise ScopeDenied()
++        changed=raw[:start]+str(new).encode('ascii')+raw[end:]
++        checked=ET.fromstring(changed)
++        check_cell=[n for n in checked.findall(S+'sheetData/'+S+'row/'+S+'c') if n.get('r')==cell]
++        if len(check_cell)!=1 or Decimal(check_cell[0].find(S+'v').text)!=new: raise ScopeDenied()
++        result=BytesIO()
++        with ZipFile(BytesIO(data)) as source, ZipFile(result,'w') as out:
++            out.comment=source.comment
++            for info in source.infolist():
++                out.writestr(info,changed if info.filename==target else source.read(info))
++        rendered=result.getvalue()
++        if len(rendered)>MAX_BYTES: raise ScopeDenied()
++        return rendered,target
++    except (BadZipFile,ET.ParseError,expat.ExpatError,KeyError,ValueError,TypeError,InvalidOperation,RuntimeError,OSError,NotImplementedError):
++        raise ScopeDenied() from None
++
++
+ def create_copy(cap,fd,leaf,path,content):
+     check(cap)
+     if not isinstance(content,str) or len(content)>4096: raise ScopeDenied()
+--- a/hermes_cli/web_models.py
++++ b/hermes_cli/web_models.py
+@@ -5,7 +5,7 @@
+ import math
+ from typing import Any, Dict, List, Literal, Optional
+ 
+-from pydantic import BaseModel, SecretStr, StrictBool, field_validator
++from pydantic import BaseModel, ConfigDict, SecretStr, StrictBool, field_validator
+ 
+ 
+ class ConfigUpdate(BaseModel):
+@@ -520,6 +520,7 @@
+     profile: Optional[str] = None
+ 
+ class ThemeSetBody(BaseModel):
++    model_config = ConfigDict(extra="forbid")
+     name: str
+ 
+ class FontSetBody(BaseModel):
+--- a/hermes_cli/web_routers/dashboard_ui.py
++++ b/hermes_cli/web_routers/dashboard_ui.py
+@@ -5,6 +5,7 @@
+ """
+ 
+ import asyncio
++import copy
+ import logging
+ from pathlib import Path
+ from typing import Callable, Optional
+@@ -68,10 +69,69 @@
+     return await config_scoped_to_thread(profile, _run)
+ 
+ 
++def _set_product_dashboard_theme(name: str, profile: Optional[str], session) -> None:
++    """Change one appearance key under the original deployment seal and lock."""
++    from hermes_constants import get_hermes_home, get_process_hermes_home
++    from hermes_cli import config as native
++    from hermes_cli.config_effective import _effective
++    from hermes_cli.friday_ordinary_gateway import (
++        DASHBOARD_APPEARANCE_THEMES, check, configuration_matches, normalized_configuration,
++    )
++    from hermes_cli.friday_product_access import admin_policy, session_allowed
++    from hermes_cli.web_server_profiles import _is_other_profile
++
++    if type(name) is not str or name not in DASHBOARD_APPEARANCE_THEMES:
++        raise HTTPException(status_code=400, detail="Unsupported Dashboard theme")
++    if _is_other_profile(profile):
++        raise HTTPException(status_code=403, detail="Dashboard appearance belongs to its serving profile")
++    with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
++        home = get_hermes_home()
++        if home != get_process_hermes_home():
++            raise HTTPException(status_code=403, detail="Dashboard appearance belongs to its serving profile")
++        path = native.get_config_path()
++        with native.config_write_transaction(path):
++            # Recheck current authority at the write boundary, after both locks.
++            # A removed product policy must not fall back to donor permissions.
++            if admin_policy() is None or not session_allowed(session):
++                raise HTTPException(status_code=403, detail="product_dashboard_forbidden")
++            phase = check(home, role=False)
++            current = native.require_readable_config_before_write(path)
++            updated = copy.deepcopy(current)
++            dashboard = updated.get("dashboard")
++            if type(dashboard) is not dict:
++                raise HTTPException(status_code=409, detail="Dashboard configuration is not writable")
++            dashboard["theme"] = name
++            effective = _effective(updated)
++            if effective.get("dashboard", {}).get("theme") != name:
++                raise HTTPException(status_code=409, detail="Dashboard theme is managed by the installation")
++            if not configuration_matches(effective, phase['configuration_sha256']):
++                raise HTTPException(status_code=409, detail="Dashboard appearance does not match its installation")
++            if name == "default":
++                # The original deployment often omitted this default key. If
++                # removing only this key exactly restores its seal, restore its
++                # absence too; otherwise preserve the explicit user value.
++                restored = copy.deepcopy(updated)
++                restored["dashboard"].pop("theme", None)
++                if normalized_configuration(_effective(restored)) == phase['configuration_sha256']:
++                    updated = restored
++            if updated != current:
++                # Raw narrow RMW avoids merged defaults or model normalization
++                # becoming unrelated writes. Native YAML persistence preserves
++                # comments, mode, locks and unreadable-file refusal.
++                native.atomic_config_replace(path, updated)
++
++
+ @router.put("/api/dashboard/theme")
+-async def set_dashboard_theme(body: ThemeSetBody, profile: Optional[str] = None):
+-    """Set the active dashboard theme (persists to config.yaml)."""
+-    await asyncio.to_thread(_set_dashboard_key, "theme", body.name, profile)
++async def set_dashboard_theme(body: ThemeSetBody, request: Request, profile: Optional[str] = None):
++    """Set appearance through the native operator/profile and config boundary."""
++    from hermes_cli.friday_dashboard_owner import enabled
++    from hermes_cli.friday_product_access import admin_policy
++    if enabled() or admin_policy() is not None:
++        await asyncio.to_thread(
++            _set_product_dashboard_theme, body.name, profile, getattr(request.state, "session", None)
++        )
++    else:
++        await asyncio.to_thread(_set_dashboard_key, "theme", body.name, profile)
+     return {"ok": True, "theme": body.name}
+ 
+ 
+--- a/hermes_state_common.py
++++ b/hermes_state_common.py
+@@ -162,6 +162,7 @@
+     stats older than idx_messages_session_id, SQLite otherwise reads and sorts the whole session (#119403)."""
+     return (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m INDEXED BY idx_messages_session"
+         f" WHERE m.session_id = {session_id_expr} AND m.role = 'user' AND m.content IS NOT NULL"
++        " AND (m.active = 1 OR m.compacted = 1)"
+         f" AND {_PREVIEW_ELIGIBLE_SQL} ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
+ 
+ # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -1436,6 +1436,32 @@
+             if latest:
+                 rows.reverse()
+         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
++
++    def get_session_recall_page(self, session_id: str, head: int = 20,
++                                tail: int = 10) -> Dict[str, Any]:
++        """Active head/tail plus exact count in one SQLite read snapshot.
++
++        The edge queries select only IDs. Message payloads are fetched after
++        LIMIT, so retained middle rows are never decoded just to omit them.
++        This preserves the existing read-mode active-only visibility policy.
++        """
++        if type(head) is not int or type(tail) is not int or not 1 <= head <= 30 or not 0 <= tail <= 30:
++            raise ValueError('invalid recall page bounds')
++        sql = """WITH
++            first_ids AS (SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?),
++            last_ids AS (SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id DESC LIMIT ?),
++            selected_ids AS (SELECT id FROM first_ids UNION SELECT id FROM last_ids),
++            totals AS (SELECT COUNT(*) AS recall_count FROM messages WHERE session_id = ? AND active = 1)
++            SELECT m.*, totals.recall_count FROM messages m
++            JOIN selected_ids x ON x.id = m.id CROSS JOIN totals ORDER BY m.id"""
++        rows = self._read_all(sql, (session_id, head, session_id, tail, session_id))
++        total = rows[0]['recall_count'] if rows else 0
++        messages = []
++        for row in rows:
++            clean = dict(row)
++            clean.pop('recall_count')
++            messages.append(self._row_to_message_dict(clean, warn_context='session_recall_page', summary_flag=True))
++        return {'messages': messages, 'message_count': total, 'truncated': total > head + tail}
+ 
+     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
+         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1590,7 +1590,7 @@
+ READ_FILE_SCHEMA["description"] += " Supported native ODS charts return source ranges, series values and verified local cache records; rendering is not covered."
+ 
+ # Native spreadsheet profiles extend the existing scoped document contracts.
+-_SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. The XLSX/ODS pair uses a separately validated isolated Office conversion; other cross-family pairs are unsupported. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
++_SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value} for nonmacro profiles, or exact {source,source_sha256,sheet,cell,expected,value} for existing XLSM/XLTM, into a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. For XLSM/XLTM, read_file first supplies source_sha256; only exact-value numeric edits retaining one opaque VBA payload are supported, never macro creation/execution or a safety claim. Signed, protected, hidden, external/active, formula-target and other unsupported packages refuse; old macro create/convert refusals remain. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. The XLSX/ODS pair uses a separately validated isolated Office conversion; other cross-family pairs are unsupported. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: macros are opaque and never executed. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
+ WRITE_FILE_SCHEMA["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["spreadsheet_create", "spreadsheet_edit", "spreadsheet_convert"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"]
+--- a/tools/scoped_spreadsheet_profiles.py
++++ b/tools/scoped_spreadsheet_profiles.py
+@@ -1,6 +1,7 @@
+ """Native spreadsheet profiles; immutable bounded bytes, no engine or macro execution."""
+ from copy import deepcopy
+ from io import BytesIO
++import re
+ import zipfile
+ import zlib
+ from xml.etree import ElementTree as ET
+@@ -22,6 +23,22 @@
+ WRITABLE = FORMATS - {'xlsm', 'xltm'}
+ VBA_TYPE = 'application/vnd.ms-office.vbaProject'
+ RELS_TYPE = 'application/vnd.openxmlformats-package.relationships+xml'
++VBA_REL = 'http://schemas.microsoft.com/office/2006/relationships/vbaProject'
++# The preserving editor admits a bounded passive worksheet package plus one
++# opaque VBA project. Other relationships/content types need a separate profile.
++MACRO_REL_TYPES = {
++    R+'/officeDocument': None,  # The exact source profile supplies this MIME.
++    R+'/worksheet': 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml',
++    R+'/styles': 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml',
++    R+'/sharedStrings': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml',
++    R+'/theme': 'application/vnd.openxmlformats-officedocument.theme+xml',
++    R+'/calcChain': 'application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml',
++    R+'/extended-properties': 'application/vnd.openxmlformats-officedocument.extended-properties+xml',
++    R+'/custom-properties': 'application/vnd.openxmlformats-officedocument.custom-properties+xml',
++    'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties': 'application/vnd.openxmlformats-package.core-properties+xml',
++    VBA_REL: VBA_TYPE,
++}
++MACRO_PASSIVE_TYPES = frozenset(MACRO_REL_TYPES.values()) - {None} | {RELS_TYPE}
+ FORMULA_FIELDS = frozenset(q(S, field) for field in (
+     'f', 'definedName', 'formula', 'formula1', 'formula2',
+     'calculatedColumnFormula', 'totalsRowFormula'))
+@@ -41,8 +58,10 @@
+     return result
+ 
+ 
+-def ooxml(data, format, *, writing=False, checkpoint=None):
++def ooxml(data, format, *, writing=False, preserve_vba=False, checkpoint=None):
+     if format not in OOXML: fail('unsupported_spreadsheet_profile')
++    if preserve_vba and (not writing or format not in ('xlsm', 'xltm')):
++        fail('macro_preservation_profile_mismatch')
+     tick(checkpoint)
+     try:
+         book = Package(data)
+@@ -73,6 +92,7 @@
+         for node in groups[0]:
+             name, rid = node.get('name'), node.get(q(R, 'id'))
+             if node.tag != q(S, 'sheet') or not name or name in names or not rid or rid in ids: fail('ambiguous_sheet_name')
++            if preserve_vba and node.get('state', 'visible') != 'visible': fail('hidden_sheet_mutation_unsupported')
+             names.add(name); ids.add(rid)
+             part = book.target('xl/workbook.xml', rid, 'worksheet')
+             if part in targets or overrides.get('/'+part) != 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml': fail('worksheet_identity')
+@@ -80,8 +100,19 @@
+             sheet_parts[rid] = part
+             if writing and sheet.find(q(S,'sheetProtection')) is not None:
+                 fail('protected_sheet')
++            if preserve_vba and any(node.get('hidden', 'false') not in ('0', 'false')
++                                    for tag in ('row', 'col') for node in sheet.iter(q(S, tag))):
++                fail('hidden_sheet_structure_mutation_unsupported')
++            if preserve_vba and any(node.get('zeroHeight', 'false') not in ('0', 'false')
++                                    for node in sheet.iter(q(S, 'sheetFormatPr'))):
++                fail('hidden_sheet_structure_mutation_unsupported')
+         if writing and root.find(q(S,'workbookProtection')) is not None:
+             fail('protected_workbook')
++        if preserve_vba and root.find(q(S, 'fileSharing')) is not None:
++            fail('protected_or_shared_workbook_mutation_unsupported')
++        if preserve_vba and any(node.get('visibility', 'visible') != 'visible'
++                                for node in root.iter(q(S, 'workbookView'))):
++            fail('hidden_workbook_mutation_unsupported')
+         shared = book.targets('xl/workbook.xml', 'sharedStrings')
+         if len(shared) > 1:
+             fail('shared_strings_relationship')
+@@ -104,6 +135,8 @@
+                 fail('missing_part_content_type')
+             if name.endswith('.rels') and typ != RELS_TYPE:
+                 fail('relationship_content_type')
++            if preserve_vba and name != '[Content_Types].xml' and typ not in MACRO_PASSIVE_TYPES | {OOXML[format]}:
++                fail('unsupported_macro_preservation_part')
+             if 'vba' in typ.lower() or 'vba' in name.lower():
+                 if typ != VBA_TYPE or not name.lower().endswith('vbaproject.bin'): fail('unsupported_macro_part')
+                 macro_parts.append(name)
+@@ -115,15 +148,43 @@
+         links = [(owner,target) for owner, rows in book.relationships.items() for _, (typ,target) in rows.items() if typ.endswith('/vbaProject')]
+         if macro_parts or links:
+             if format not in ('xlsm', 'xltm') or len(macro_parts) != 1 or links != [('xl/workbook.xml', macro_parts[0])]: fail('macro_profile_mismatch')
++        if preserve_vba:
++            if len(macro_parts) != 1 or links != [('xl/workbook.xml', macro_parts[0])]:
++                fail('macro_profile_mismatch')
++            root_relations = {R+'/officeDocument', R+'/extended-properties', R+'/custom-properties',
++                'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties'}
++            seen_targets = set(); seen_kinds = set()
++            for owner, rows in book.relationships.items():
++                for typ, target in rows.values():
++                    if typ not in MACRO_REL_TYPES:
++                        fail('unsupported_macro_preservation_relationship')
++                    expected_owner = '' if typ in root_relations else 'xl/workbook.xml'
++                    target_type = overrides.get('/'+(target or ''), defaults.get((target or '').rpartition('.')[2].lower()))
++                    expected_type = MACRO_REL_TYPES[typ] or OOXML[format]
++                    if (owner != expected_owner or target_type != expected_type or target in seen_targets
++                            or (typ != R+'/worksheet' and typ in seen_kinds)):
++                        fail('ambiguous_macro_preservation_relationship')
++                    seen_targets.add(target); seen_kinds.add(typ)
++            active = [(owner, rid) for owner, rows in book.relationships.items()
++                      for rid, (typ, target) in rows.items()
++                      if typ.rsplit('/', 1)[-1] in ('oleObject', 'control', 'vbaProject', 'audio', 'video')
++                      and not (owner == 'xl/workbook.xml' and typ.endswith('/vbaProject'))]
++            if active: fail('active_content_mutation_unsupported')
++            book.unsupported.discard('embedded_media_or_active_content_not_read')
+         for name, tree in book.xml.items():
+             tick(checkpoint)
+             for node in tree.iter():
+-                if node.tag in FORMULA_FIELDS and active_formula(node.text):
++                formula = node.text or ''
++                if node.tag in FORMULA_FIELDS and (active_formula(formula) or
++                        (preserve_vba and (any(char in formula for char in '[]') or
++                         re.search(r'\b(?:CALL|EXEC|REGISTER(?:\.ID)?)\s*\(', formula, re.I)))):
+                     book.unsupported.add('active_or_external_formula_not_evaluated')
+-        if writing and (format not in WRITABLE or macro_parts or links or book.external or book.unsupported):
++        if writing and ((format not in WRITABLE and not preserve_vba)
++                        or ((macro_parts or links) and not preserve_vba)
++                        or book.external or book.unsupported):
+             fail('macro_external_or_active_mutation_unsupported')
+-        if format in ('xlsm', 'xltm'):
+-            book.unsupported.add('macro_profile_read_only; VBA_opaque_never_executed')
++        if format in ('xlsm', 'xltm') and not preserve_vba:
++            book.unsupported.add('macro_profile_numeric_edit_only; VBA_opaque_never_executed')
+         book.macro_parts = macro_parts
+         book.sheet_parts = sheet_parts
+         book.shared_strings_part = shared_part
+@@ -263,6 +324,27 @@
+ 
+ 
+ def edit(data, source, spec, *, checkpoint=None):
++    if source in ('xlsm', 'xltm'):
++        if not isinstance(spec,dict) or set(spec) != {'source_sha256','sheet','cell','expected','value'}:
++            fail('spreadsheet_edit_schema')
++        import hashlib
++        bound = spec['source_sha256']
++        if (not isinstance(bound,str) or len(bound) != 64
++                or any(c not in '0123456789abcdef' for c in bound)
++                or bound != hashlib.sha256(data).hexdigest()):
++            fail('source_hash_mismatch')
++        book = ooxml(data,source,writing=True,preserve_vba=True,checkpoint=checkpoint)
++        macro_spec = {key:value for key,value in spec.items() if key != 'source_sha256'}
++        from hermes_cli.friday_workspace_xlsx import render_macro_copy
++        from hermes_cli.friday_user_scope import ScopeDenied
++        tick(checkpoint)
++        try: result,target = render_macro_copy(data,book,**macro_spec)
++        except ScopeDenied: fail('numeric_cell_edit_unsupported_or_expected_mismatch')
++        checked = ooxml(result,source,writing=True,preserve_vba=True,checkpoint=checkpoint)
++        if (set(checked.parts) != set(book.parts)
++                or any(checked.parts[name] != book.parts[name] for name in book.parts if name != target)):
++            fail('macro_preservation_verification_failed')
++        return result
+     if source not in WRITABLE: fail('macro_profile_read_only')
+     if source in ODF:
+         from tools.scoped_ods import edit_spreadsheet
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -40,6 +40,10 @@
+ # Bounding message COUNT (head/tail) is not enough when content per message is
+ # unbounded; the agent can scroll around a message for detail (#114344).
+ _READ_MAX_CONTENT = 2000
++# Field pages bound UTF-8 text bytes; the response bound includes JSON escaping.
++# Neither is a model-token estimate.
++_FIELD_MAX_BYTES = 6000
++_RESPONSE_MAX_BYTES = 131072
+ # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
+ # returns, so interactive matches buried under cron hits survive the demotion pass.
+ _DISCOVER_SCAN_LIMIT = 300
+@@ -111,8 +115,80 @@
+             "model": meta.get("model"), "title": meta.get("title")}
+ 
+ 
++def _utf8_prefix(text: str, limit: int) -> str:
++    return text.encode('utf-8')[:limit].decode('utf-8', errors='ignore')
++
++
++def _json_field_page(value, offset: int, limit: int):
++    """A bounded page of canonical JSON, with character offsets for exact recovery."""
++    result, consumed, used, more = [], 0, 0, False
++    for chunk in json.JSONEncoder(ensure_ascii=False, separators=(',', ':')).iterencode(value):
++        end = consumed + len(chunk)
++        if end <= offset:
++            consumed = end
++            continue
++        remaining = chunk[max(0, offset - consumed):]
++        piece = _utf8_prefix(remaining, limit - used)
++        result.append(piece)
++        used += len(piece.encode('utf-8'))
++        consumed = end
++        if len(piece) < len(remaining):
++            more = True
++            break
++    text = ''.join(result)
++    if offset and not text:
++        raise ValueError('field_offset must point inside the requested field')
++    return text, more
++
++
++def _message_pages(value):
++    if isinstance(value, dict):
++        if 'id' in value and 'role' in value and 'content' in value:
++            yield value
++        else:
++            for child in value.values():
++                yield from _message_pages(child)
++    elif isinstance(value, list):
++        for child in value:
++            yield from _message_pages(child)
++
++
+ def _ok(**payload) -> str:
+-    return json.dumps({"success": True, **payload}, ensure_ascii=False)
++    result = {'success': True, **payload}
++    encode = lambda: json.dumps(result, ensure_ascii=False)
++    text = encode()
++    if len(text.encode('utf-8')) <= _RESPONSE_MAX_BYTES:
++        return text
++    # Keep every message/session anchor. Detailed text can be recovered through
++    # scroll, including tool-call JSON. Never spill another user's data to disk.
++    # Keep a positive page so following next_*_offset always makes progress.
++    # Metadata that cannot fit even with small pages receives the typed refusal.
++    for limit in (512, 128, 32):
++        for message in _message_pages(result):
++            content = message.get('content')
++            if isinstance(content, str) and len(content.encode('utf-8')) > limit:
++                prefix = _utf8_prefix(content, limit)
++                message['content'] = prefix
++                message['content_truncated'] = True
++                message['next_content_offset'] = message.get('content_offset', 0) + len(prefix)
++            if 'tool_calls' in message:
++                page, more = _json_field_page(message.pop('tool_calls'), 0, limit)
++                message.update(tool_calls_page=page, tool_calls_offset=0,
++                               tool_calls_truncated=more, tool_calls_encoding='json',
++                               tool_calls_offset_unit='unicode_characters')
++                if more:
++                    message['next_tool_calls_offset'] = len(page)
++            elif len(message.get('tool_calls_page', '').encode('utf-8')) > limit:
++                page = _utf8_prefix(message['tool_calls_page'], limit)
++                message.update(tool_calls_page=page, tool_calls_truncated=True,
++                               next_tool_calls_offset=message.get('tool_calls_offset', 0) + len(page))
++        result['response_truncated'] = True
++        result['response_byte_limit'] = _RESPONSE_MAX_BYTES
++        text = encode()
++        if len(text.encode('utf-8')) <= _RESPONSE_MAX_BYTES:
++            return text
++    return json.dumps({'success': False, 'error': 'session_search_response_too_large',
++                       'response_byte_limit': _RESPONSE_MAX_BYTES})
+ 
+ 
+ def _is_compaction_summary(content: str) -> bool:
+@@ -250,21 +326,40 @@
+ 
+ 
+ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None,
+-                   max_content_len: Optional[int] = None, content_offset: int = 0) -> Dict[str, Any]:
++                   max_content_len: Optional[int] = None, content_offset: int = 0,
++                   message_field: str = 'content') -> Dict[str, Any]:
+     """Slim a message row; keeps ``content`` even when empty (tool-call-only turns)."""
+     content = m.get("content")
+     if isinstance(content, str) and "\x1b" in content:  # archived terminal output carries ANSI
+         from tools.ansi_strip import strip_ansi
+         content = strip_ansi(content)
+     entry = {"id": m.get("id"), "role": m.get("role"), "content": content, "timestamp": m.get("timestamp")}
+-    entry.update({k: m.get(k) for k in ("tool_name", "tool_calls", "tool_call_id") if m.get(k)})
++    entry.update({k: m.get(k) for k in ('tool_name', 'tool_call_id') if m.get(k)})
++    if m.get('tool_calls'):
++        offset = content_offset if message_field == 'tool_calls' else 0
++        page, more = _json_field_page(m['tool_calls'], offset, _FIELD_MAX_BYTES)
++        if not offset and not more and message_field == 'content':
++            entry['tool_calls'] = m['tool_calls']
++        else:
++            entry.update(tool_calls_page=page, tool_calls_offset=offset,
++                         tool_calls_truncated=more, tool_calls_encoding='json',
++                         tool_calls_offset_unit='unicode_characters')
++            if more:
++                entry['next_tool_calls_offset'] = offset + len(page)
++    elif message_field == 'tool_calls':
++        raise ValueError('anchor has no tool_calls field')
+     if anchor_id is not None and m.get("id") == anchor_id:
+         entry["anchor"] = True
++    content_offset = content_offset if message_field == 'content' else 0
+     if content_offset and (not isinstance(content, str) or content_offset >= len(content)):
+         raise ValueError("content_offset must point inside the anchor message text")
+-    if max_content_len and isinstance(content, str) and (content_offset or len(content) > max_content_len):
++    if isinstance(content, str) and (content_offset or (max_content_len and len(content) > max_content_len)
++                                    or len(content.encode('utf-8')) > _FIELD_MAX_BYTES):
++        max_content_len = max_content_len or len(content)
+         end = min(len(content), content_offset + max_content_len)
+-        entry.update(content=content[content_offset:end] + ("…" if end < len(content) else ""),
++        piece = _utf8_prefix(content[content_offset:end], _FIELD_MAX_BYTES)
++        end = content_offset + len(piece)
++        entry.update(content=piece + ("…" if end < len(content) else ""),
+                      content_truncated=True, original_content_chars=len(content),
+                      content_offset=content_offset)
+         if end < len(content):
+@@ -313,7 +408,9 @@
+                           "get_session failed for title match %s", session_id) or {}
+     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
+         return None
+-    messages = _quiet(lambda: db.get_messages(session_id), [], "get_messages failed for title match %s", session_id)
++    page = _quiet(lambda: db.get_session_recall_page(session_id, head=5, tail=3), {},
++                  'get_session_recall_page failed for title match %s', session_id)
++    messages = page.get('messages', [])
+     anchor_id = messages[0].get("id") if messages else None
+     view = {} if anchor_id is None else _quiet(
+         lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
+@@ -331,7 +428,7 @@
+         bookend_start=shape("bookend_start", messages[:3]),
+         messages=shape("window", messages[:5], anchor_id, max_content_len=4000),
+         bookend_end=shape("bookend_end", messages[-3:]), messages_before=view.get("messages_before", 0),
+-        messages_after=view.get("messages_after", max(len(messages) - 5, 0)), detail="full"),
++        messages_after=view.get("messages_after", max(page.get('message_count', len(messages)) - 5, 0)), detail="full"),
+         "_lineage_root": lineage_root}
+ 
+ 
+@@ -514,15 +611,15 @@
+     meta = _get_session_meta(db, session_id)
+     if not meta:
+         return tool_error(f"session_id not found: {session_id}", success=False)
+-    rows, err = _loud(lambda: db.get_messages(session_id), "get_messages failed for %s: %s", "failed to load session",
++    page, err = _loud(lambda: db.get_session_recall_page(session_id, head=head, tail=tail), "get_messages failed for %s: %s", "failed to load session",
+                       session_id)
+     if err:
+         return err
+-    shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in rows]
+-    total, truncated = len(shaped), len(shaped) > head + tail
++    shaped = [_shape_message(m, max_content_len=_READ_MAX_CONTENT) for m in page['messages']]
++    total, truncated = page['message_count'], page['truncated']
+     return _ok(mode="read", session_id=session_id, link=_session_link(session_id, link_profile),
+                session_meta=_session_meta_block(meta), message_count=total, truncated=truncated,
+-               messages=shaped[:head] + shaped[-tail:] if truncated else shaped,
++               messages=shaped,
+                **({"message": (f"Session has {total} messages; showing first {head} + last {tail}. "
+                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
+ 
+@@ -594,7 +691,8 @@
+ 
+ 
+ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
+-            current_session_id: str = None, content_offset: int = 0) -> str:
++            current_session_id: str = None, content_offset: int = 0,
++            message_field: str = 'content') -> str:
+     """Scroll shape: a window centered on an anchor (no FTS5, no bookends)."""
+     try:
+         around_message_id = int(around_message_id)
+@@ -630,7 +728,8 @@
+         return tool_error(f"around_message_id {around_message_id} not in session_id {session_id}", success=False)
+     try:
+         shaped = [_shape_message(m, anchor_id=around_message_id, max_content_len=4000,
+-                                 content_offset=content_offset if m.get("id") == around_message_id else 0)
++                                 content_offset=content_offset if m.get("id") == around_message_id else 0,
++                                 message_field=message_field if m.get('id') == around_message_id else 'content')
+                   for m in messages]
+     except ValueError as exc:
+         return tool_error(str(exc), success=False)
+@@ -640,7 +739,9 @@
+         messages=shaped,
+         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
+         hint=("To continue a truncated message, re-call with its id as around_message_id "
+-              "and its next_content_offset as content_offset. Offsets count displayed text characters. "
++              "and its next_content_offset as content_offset. For tool_calls_page, set message_field=tool_calls "
++              "and use next_tool_calls_offset as content_offset; concatenate tool_calls_page chunks then parse JSON. "
++              "Offsets count Unicode characters, not tokens or UTF-8 bytes. "
+               "Scroll forward: re-call with around_message_id = the LAST message's "
+               "id; backward: the FIRST message's id (the boundary message repeats "
+               "as an orientation marker). messages_before/messages_after < window "
+@@ -649,7 +750,8 @@
+ 
+ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
+               around_message_id, window, sort, profile, detail, owned_dbs,
+-              after=None, before=None, exclude_session_ids=None, content_offset=0) -> str:
++              after=None, before=None, exclude_session_ids=None, content_offset=0,
++              message_field='content') -> str:
+     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
+     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
+     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
+@@ -672,7 +774,7 @@
+         owned_dbs.append(profile_db)
+     if isinstance(session_id, str) and session_id.strip():
+         if around_message_id is not None:
+-            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id, content_offset)
++            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id, content_offset, message_field)
+         return _read_scoped(db, session_id.strip(), profile)
+     limit = _clamp_int(limit, 3, 1, 10)
+     if not query or not isinstance(query, str) or not query.strip():
+@@ -694,7 +796,7 @@
+                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
+                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
+                    after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None,
+-                   content_offset: int = 0) -> str:
++                   content_offset: int = 0, message_field: str = 'content') -> str:
+     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
+     new parameters are appended after ``detail``."""
+     from hermes_cli.friday_user_scope import check_search, ScopeDenied, ordinary_tool_error_json
+@@ -705,6 +807,10 @@
+                 or (len(parts) == 2 and profile not in (None, "", parts[0]))):
+             return tool_error("Invalid or conflicting session link", success=False)
+     content_offset = 0 if content_offset is None else content_offset
++    if message_field not in ('content', 'tool_calls'):
++        return tool_error('message_field must be content or tool_calls', success=False)
++    if message_field != 'content' and (not isinstance(session_id, str) or not session_id.strip() or around_message_id is None):
++        return tool_error('message_field requires session_id and around_message_id', success=False)
+     if type(content_offset) is not int or content_offset < 0:
+         return tool_error("content_offset must be a non-negative integer", success=False)
+     if content_offset and (not isinstance(session_id, str) or not session_id.strip() or around_message_id is None):
+@@ -725,7 +831,9 @@
+         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
+                          around_message_id, window, sort, profile, detail, owned_dbs,
+                          after=after, before=before, exclude_session_ids=exclude_session_ids,
+-                         content_offset=content_offset)
++                         content_offset=content_offset, message_field=message_field)
++    except (UnicodeError, RecursionError):
++        return tool_error('session_search_invalid_data', success=False)
+     finally:
+         for owned_db in reversed(owned_dbs):
+             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
+@@ -841,6 +949,10 @@
+                     "its next_content_offset here. Defaults to 0; does not alter saved history."
+                 ),
+             },
++            "message_field": {
++                "type": "string", "enum": ["content", "tool_calls"], "default": "content",
++                "description": "Scroll anchor field. For a truncated tool_calls_page, select tool_calls and use next_tool_calls_offset as content_offset. Concatenate JSON text pages before parsing; offsets are Unicode characters. Original archived rows remain unchanged.",
++            },
+             "around_message_id": {
+                 "type": "integer",
+                 "description": (
+@@ -889,7 +1001,7 @@
+     schema=SESSION_SEARCH_SCHEMA,
+     handler=lambda args, **kw: session_search(
+         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
+-        content_offset=args.get("content_offset", 0),
++        content_offset=args.get("content_offset", 0), message_field=args.get('message_field', 'content'),
+         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
+         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
+                                     "after", "before", "exclude_session_ids")}),
+--- a/web/src/themes/context.tsx
++++ b/web/src/themes/context.tsx
+@@ -4,6 +4,7 @@
+   useContext,
+   useEffect,
+   useMemo,
++  useRef,
+   useState,
+   type ReactNode,
+ } from "react";
+@@ -29,6 +30,9 @@
+   ThemeTypography,
+ } from "./types";
+ import { api } from "@/lib/api";
++import { errorMessage } from "@/lib/api-error";
++import { useToast } from "@nous-research/ui/hooks/use-toast";
++import { Toast } from "@nous-research/ui/ui/components/toast";
+ 
+ /** LocalStorage key — pre-applied before the React tree mounts to avoid
+  *  a visible flash of the default palette on theme-overridden installs. */
+@@ -409,6 +413,9 @@
+ // ---------------------------------------------------------------------------
+ 
+ export function ThemeProvider({ children }: { children: ReactNode }) {
++  const { toast, showToast } = useToast();
++  const themeWrites = useRef<Promise<void>>(Promise.resolve());
++  const themeRevision = useRef(0);
+   /** Name of the currently active theme (built-in id or user YAML name). */
+   const [themeName, setThemeName] = useState<string>(() => {
+     if (typeof window === "undefined") return "default";
+@@ -473,6 +480,7 @@
+   // Load server-side themes (built-ins + user YAMLs) once on mount.
+   useEffect(() => {
+     let cancelled = false;
++    const loadRevision = themeRevision.current;
+     api
+       .getThemes()
+       .then((resp) => {
+@@ -495,7 +503,8 @@
+           }
+           if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
+         }
+-        if (resp.active) {
++        // A stale startup read cannot overwrite a newer user choice.
++        if (resp.active && loadRevision === themeRevision.current) {
+           const migratedActive = migrateThemeName(resp.active);
+           if (migratedActive !== themeName) {
+             setThemeName(migratedActive);
+@@ -505,7 +514,11 @@
+           // migrated value back so it converges too — otherwise every
+           // future page load would re-trigger this branch.
+           if (migratedActive !== resp.active) {
+-            api.setTheme(migratedActive).catch(() => {});
++            themeWrites.current = themeWrites.current.then(async () => {
++              if (loadRevision === themeRevision.current) {
++                await api.setTheme(migratedActive);
++              }
++            }).catch(() => {});
+           }
+         }
+       })
+@@ -549,13 +562,20 @@
+         ...Object.keys(userThemeDefs),
+       ]);
+       const next = knownNames.has(name) ? name : "default";
+-      setThemeName(next);
+-      if (typeof window !== "undefined") {
+-        window.localStorage.setItem(STORAGE_KEY, next);
+-      }
+-      api.setTheme(next).catch(() => {});
++      themeRevision.current += 1;
++      // Serialize clicks and publish the selection only after persistence.
++      // A rejected write must not masquerade as a saved localStorage theme.
++      themeWrites.current = themeWrites.current.then(async () => {
++        await api.setTheme(next);
++        setThemeName(next);
++        if (typeof window !== "undefined") {
++          window.localStorage.setItem(STORAGE_KEY, next);
++        }
++      }).catch((error) => {
++        showToast(`Could not save Dashboard theme: ${errorMessage(error)}`, "error");
++      });
+     },
+-    [availableThemes, userThemeDefs],
++    [availableThemes, userThemeDefs, showToast],
+   );
+ 
+   const setFont = useCallback((id: string) => {
+@@ -580,7 +600,10 @@
+     [themeName, availableThemes, setTheme, resolveTheme, fontId, setFont],
+   );
+ 
+-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
++  return <ThemeContext.Provider value={value}>
++    {children}
++    <Toast toast={toast} />
++  </ThemeContext.Provider>;
+ }
+ 
+ export function useTheme(): ThemeContextValue {

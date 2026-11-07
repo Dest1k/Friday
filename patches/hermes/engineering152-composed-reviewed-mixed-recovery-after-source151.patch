@@ -1,0 +1,1534 @@
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -889,6 +889,19 @@
+     return not main_base or normalize_route_base_url(aux_base_url) == main_base
+ 
+ 
++def _bounded_wire_text(content: Any) -> str | None:
++    """Exact text carried directly or split into native prompt-cache blocks."""
++    if isinstance(content, str):
++        return content
++    if isinstance(content, list) and content and all(
++            isinstance(part, dict) and part.get("type") == "text"
++            and isinstance(part.get("text"), str)
++            and set(part) <= {"type", "text", "cache_control"}
++            for part in content):
++        return "".join(part["text"] for part in content)
++    return None
++
++
+ def bounded_tool_groups(messages: list, *, allow_pending_tail: bool = False):
+     """Validate text tool exchanges without repairing or dropping their evidence.
+ 
+@@ -934,12 +947,12 @@
+         result_ids = [m.get("tool_call_id") for m in results]
+         if (any(not isinstance(v, str) or not v for v in result_ids)
+                 or len(set(result_ids)) != len(result_ids) or not set(result_ids).issubset(ids)
+-                or any(not isinstance(m.get("content"), str) for m in results)):
++                or any(_bounded_wire_text(m.get("content")) is None for m in results)):
+             return None
+         complete = len(results) == len(ids)
+         if not complete and not (allow_pending_tail and end == len(messages)):
+             return None
+-        material = complete and all(m["content"].strip() for m in results)
++        material = complete and all(_bounded_wire_text(m["content"]).strip() for m in results)
+         groups.append((i, end, tuple(ids), complete, bool(material)))
+         i = end
+     return groups
+@@ -1061,17 +1074,51 @@
+     contract = getattr(agent.context_compressor, "_bounded_protected_rows", None)
+     if contract is None:
+         return
+-    from agent.turn_context import build_api_messages
++    from agent.turn_context import build_api_messages, normalize_api_message_text
+     head, tail = contract
+     anchors = _bounded_protected_wire_anchors(agent.context_compressor, head, tail)
+-    current = next((i for i in range(len(anchors)-1, -1, -1)
+-                    if anchors[i].get("role") == "user"), None)
++    context = getattr(agent, "_bounded_compaction_request_context", None)
++    incoming = context.get("incoming") if isinstance(context, dict) else None
++    if isinstance(incoming, dict):
++        from agent.conversation_compression import _strip_marker_for_comparison
++        def user_identity(row):
++            # Turn-start compaction precedes the native sidecar stamp. Match
++            # its still-immutable user row, then derive expected stamped bytes
++            # from the protected original plus this turn's known context.
++            # Never adopt the incoming sidecar as the protected expectation.
++            row = dict(row)
++            for key in ("api_content", "_row_id", "_submit_row_session_id"):
++                row.pop(key, None)
++            return _strip_marker_for_comparison([row])
++        indices = [i for i, row in enumerate(anchors)
++                   if user_identity(row) == user_identity(incoming)]
++        if len(indices) > 1:
++            raise BoundedContextError("bounded_context: current user anchor is ambiguous")
++        current = indices[0] if indices else None
++    else:
++        current = next((i for i in range(len(anchors)-1, -1, -1)
++                        if anchors[i].get("role") == "user"), None)
+     # The native formatter combines cached and ephemeral authority into ONE
+     # system row. An empty cached prompt still emits ephemeral authority, so it
+     # cannot be used as a neutral projection of the stored head/tail.
+     expected, effective_system = build_api_messages(agent, anchors, current_turn_user_idx=current,
+-        ext_prefetch_cache="", plugin_user_context="", moa_config=None,
+-        active_system_prompt=getattr(agent, "_cached_system_prompt", None) or "")
++        ext_prefetch_cache=context.get("ext", "") if current is not None and isinstance(context, dict) else "",
++        plugin_user_context=context.get("plugin", "") if current is not None and isinstance(context, dict) else "",
++        moa_config=None,
++        active_system_prompt=getattr(agent, "_cached_system_prompt", None) or "",
++        replay_all=isinstance(incoming, dict) and current is None)
++    # A contract retained from an earlier turn contains only historical rows.
++    # Protect the real incoming ask separately; do not misclassify the old last
++    # user as current or leave a later turn's user content outside the guard.
++    current_group = []
++    if isinstance(incoming, dict) and current is None:
++        current_view, _ = build_api_messages(agent, [incoming], current_turn_user_idx=0,
++            ext_prefetch_cache=context.get("ext", ""),
++            plugin_user_context=context.get("plugin", ""), moa_config=None,
++            active_system_prompt="")
++        current_group = [row for row in current_view if row.get("role") == "user"]
++        if len(current_group) != 1:
++            raise BoundedContextError("bounded_context: incoming user projection is invalid")
+     # Native assembly inserts current prefills immediately after the system row.
+     # They are authority too: compare their exact wire projection, rather than
+     # rejecting valid prefills or ignoring an extra system/developer instruction.
+@@ -1082,7 +1129,10 @@
+         if isinstance(row.get("content"), str):
+             row["content"] = row["content"].strip()
+         expected.insert(offset + idx, row)
++    normalize_api_message_text(expected)
++    normalize_api_message_text(current_group)
+     readonly_utf8_messages(agent, expected)
++    readonly_utf8_messages(agent, current_group)
+     # Request assembly canonicalizes tool-call argument JSON after the native
+     # message projection. Compare that exact wire representation, rather than
+     # rejecting harmless key ordering, whitespace, or Unicode escape changes.
+@@ -1128,13 +1178,26 @@
+     for row in expected:
+         if row.get("tool_calls") is not None:
+             row["tool_calls"] = project_tool_calls(row["tool_calls"])
++    from agent.message_sanitization import _sanitize_messages_surrogates
++    _sanitize_messages_surrogates(expected)
++    _sanitize_messages_surrogates(current_group)
++    def content_without_cache_markers(content):
++        # Cache plans may split exact text into multiple text blocks and add
++        # markers. Compare the complete text; never discard non-text payloads,
++        # unknown block fields, or any changed character.
++        text = _bounded_wire_text(content)
++        if text is not None:
++            return text
++        return content
+     # Optional prompt construction may add one system row ahead of stored
+     # authority. Protected stored head/tail projections must remain contiguous.
+     def matches(wanted, candidate):
+         if not isinstance(candidate, dict):
+             return False
+-        fields = ("role", "content", "tool_call_id", "reasoning_content")
++        fields = ("role", "tool_call_id", "reasoning_content")
+         if not all(candidate.get(k) == wanted.get(k) for k in fields):
++            return False
++        if content_without_cache_markers(candidate.get("content")) != content_without_cache_markers(wanted.get("content")):
+             return False
+         return project_tool_calls(candidate.get("tool_calls")) == wanted.get("tool_calls")
+     # Check complete actual authority, including cached+ephemeral system text,
+@@ -1147,7 +1210,7 @@
+         raise BoundedContextError("bounded_context: formatter changed protected system authority")
+     injected = int(bool(effective_system)) + len(prefills)
+     split = injected + len(head)
+-    groups = (expected[:injected], expected[injected:split], expected[split:])
++    groups = (expected[:injected], expected[injected:split], expected[split:], current_group)
+     cursor = 0
+     for group_index, group in enumerate(groups):
+         if not group:
+--- /dev/null
++++ b/agent/replay_user_content.py
+@@ -0,0 +1,47 @@
++"""Pure replay projection for gateway control notes and user context sidecars."""
++
++from typing import Any
++
++_AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
++_AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
++
++
++def _is_auto_continue_noise(content: Any) -> bool:
++    return isinstance(content, str) and content.startswith(
++        (_AUTO_CONTINUE_NOTE_PREFIX, _AUTO_CONTINUE_FALLBACK_PREFIX))
++
++
++def _strip_auto_continue_noise(content: Any) -> Any:
++    """Remove only the existing leading gateway note protocol on replay."""
++    if not _is_auto_continue_noise(content):
++        return content
++    text = content
++    while _is_auto_continue_noise(text):
++        end = text.find("]")
++        if end < 0:
++            return ""
++        text = text[end + 1:].lstrip()
++    return text
++
++
++def project_replayed_user_row(row: dict) -> dict:
++    """Drop stale control notes without dropping the attached source evidence.
++
++    The sidecar is retained only when its normalized base exactly matches the
++    normalized user text, followed by the existing context separator. Its suffix
++    is never reconstructed, shortened, or borrowed from another user row.
++    """
++    if row.get("role") != "user" or not isinstance(row.get("content"), str):
++        return row
++    content = _strip_auto_continue_noise(row["content"])
++    sidecar = row.get("api_content")
++    projected = _strip_auto_continue_noise(sidecar)
++    if content == row["content"] and projected == sidecar:
++        return row
++    result = dict(row, content=content)
++    if isinstance(projected, str) and content and (
++            projected == content or projected.startswith(content + "\n\n")):
++        result["api_content"] = projected
++    else:
++        result.pop("api_content", None)
++    return result
+--- a/agent/session_persistence.py
++++ b/agent/session_persistence.py
+@@ -402,6 +402,14 @@
+     taken at most once (``adoption_budget``)."""
+     agent._last_persistence_failure = _db_flush_failure_metadata(agent, e)
+     agent._db_flush_scan_prefix = None  # full re-scan next flush: an exception mid-loop leaves mixed dispositions
++    from hermes_cli.friday_user_scope import ScopeDenied
++    if (isinstance(e, ScopeDenied) and getattr(agent, "_db_flush_phase", None) == "guard_generated_rows"
++            and getattr(agent, "_friday_no_dispatch_tool_calls", ())
++            and getattr(agent, "_friday_reply_withheld_reason", None) in {
++                "restricted_deployment_value", "unsupported_self_deployment_claim"}):
++        # The finalizer may close this exact undispatched call safely; the failed
++        # pre-dispatch flush itself still returns False and cannot run the tools.
++        agent._friday_withheld_tool_call_flush = True
+     # The only place the SQLite error is visible before it becomes a bare False — classify it so the turn-end
+     # explanation names the real cause.
+     from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
+@@ -561,6 +569,8 @@
+             self._last_flushed_db_idx = len(messages)
+             # Snapshot for the bounded scan — only on full success, so a partial list is never treated as settled.
+             self._db_flush_scan_prefix = messages[:]
++            self._friday_withheld_tool_call_flush = False
++            self._friday_withheld_tool_call_close_pending = False
+             return True
+         except Exception as e:
+             retry = _db_flush_failed(self, e, batch_rows, _adoption_budget, messages)
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -1258,9 +1258,17 @@
+     return _sanitize_model
+ 
+ 
++def normalize_api_message_text(messages: List[Dict[str, Any]]) -> None:
++    """Apply the shared send-time whitespace projection on a request copy."""
++    for row in messages:
++        if isinstance(row.get("content"), str):
++            row["content"] = row["content"].strip()
++
++
+ def build_api_messages(
+     agent: Any, messages: List[Dict[str, Any]], *, current_turn_user_idx: Any,
+     ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
++    replay_all: bool = False,
+ ) -> Tuple[List[Dict[str, Any]], str]:
+     """Build the wire copy of ``messages`` for one API call plus the effective system
+     message. Returns ``(api_messages, effective_system)``.
+@@ -1289,8 +1297,10 @@
+     # _reset_per_turn_agent_state; a caller that skipped the prologue fails loudly here
+     # rather than silently un-freezing it.
+     turn_now = agent._current_turn_timestamp
+-    split = current_turn_user_idx if has_current else 0
+-    canonical_messages = canonicalize_replay_history(messages[:split], now=turn_now) + messages[split:]
++    from agent.replay_user_content import project_replayed_user_row
++    split = len(messages) if replay_all else current_turn_user_idx if has_current else 0
++    replay_prefix = [project_replayed_user_row(row) for row in messages[:split]]
++    canonical_messages = canonicalize_replay_history(replay_prefix, now=turn_now) + messages[split:]
+ 
+     api_messages = []
+     for idx, msg in enumerate(canonical_messages):
+--- a/agent/turn_finalizer.py
++++ b/agent/turn_finalizer.py
+@@ -551,6 +551,53 @@
+     agent._friday_reply_effect_unknown = _private_effect_unknown
+ 
+     from hermes_cli.friday_user_scope import managed_reply_stream, guard_generated_reply, _retain_private_reply, current
++    if (not final_response and not interrupted and str(_turn_exit_reason) == "session_persistence_failed"
++            and getattr(agent, "_friday_withheld_tool_call_flush", False)):
++        from agent.tool_result_classification import tool_call_identity
++        from hermes_cli.friday_user_scope import _withheld_reply_copy
++        denied = {tuple(item) for item in _no_dispatch_calls
++                  if isinstance(item, (list, tuple)) and len(item) == 2
++                  and all(isinstance(value, str) and value for value in item)}
++        matches = []
++        for index in range(len(conversation_history or []), len(messages)):
++            row = messages[index]
++            if (not isinstance(row, dict) or row.get("role") != "assistant"
++                    or row.get(_DB_PERSISTED_MARKER) or not row.get("tool_calls")):
++                continue
++            identities = [tool_call_identity(call) for call in row["tool_calls"]]
++            if identities and all(identity in denied for identity in identities):
++                matches.append(index)
++        if len(matches) == 1:
++            rejected_index = matches[0]
++            rejected_calls = {tool_call_identity(call)
++                              for call in messages[rejected_index]["tool_calls"]}
++            # Mixed invalid-name batches stage native error results before the
++            # pre-dispatch flush. Their names/content may repeat the same private
++            # value, so remove only adjacent, unpersisted results belonging to
++            # this exact undispatched batch. Other history/effect evidence stays.
++            staged_results = []
++            for index in range(rejected_index + 1, len(messages)):
++                row = messages[index]
++                if not isinstance(row, dict) or row.get("role") != "tool":
++                    break
++                call_id = row.get("tool_call_id")
++                name = row.get("name") or row.get("tool_name")
++                if (not row.get(_DB_PERSISTED_MARKER)
++                        and isinstance(call_id, str) and isinstance(name, str)
++                        and (call_id, name) in rejected_calls
++                        and all(not row.get(key) or row[key] == name
++                                for key in ("name", "tool_name"))):
++                    staged_results.append(index)
++            # The original candidate and conservative effect reduction above
++            # remain privately retained; neither is rewritten by this close.
++            messages[rejected_index] = {"role": "assistant", "content": _withheld_reply_copy(agent)}
++            stamp_message_timestamp(messages[rejected_index])
++            final_response = messages[rejected_index]["content"]
++            for index in reversed(staged_results):
++                del messages[index]
++            _turn_exit_reason = "private_reply_withheld"
++            failed = True
++            agent._friday_withheld_tool_call_close_pending = True
+     if managed_reply_stream(agent) and not final_response:
+         pending_text = ''.join(getattr(agent, '_friday_buffered_reply_parts', []))
+         if pending_text:
+@@ -662,6 +709,12 @@
+         agent._persist_session(messages, conversation_history)
+ 
+     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
++    if getattr(agent, "_friday_withheld_tool_call_close_pending", False):
++        # A successful recovered flush clears this marker. Any later failure is
++        # still a real persistence failure, not a safely settled refusal.
++        final_response = ""
++        _turn_exit_reason = "session_persistence_failed"
++        failed = True
+ 
+     # Keep the gateway's separate in-memory history snapshot current even on
+     # cleanup error, so a later prompt isn't sent with a pre-turn snapshot.
+@@ -714,7 +767,10 @@
+     from hermes_cli.friday_user_scope import guard_generated_reply, managed_reply_stream
+     final_response, _private_blocked = guard_generated_reply(agent, final_response)
+     if _private_blocked:
+-        failed, completed, _turn_exit_reason = True, False, 'private_reply_withheld'
++        failed, completed = True, False
++        _turn_exit_reason = ('session_persistence_failed'
++            if getattr(agent, '_friday_withheld_tool_call_close_pending', False)
++            else 'private_reply_withheld')
+     elif managed_reply_stream(agent) and final_response and not getattr(agent, '_friday_reply_stream_published', False):
+         agent._friday_approved_final = final_response
+         deliver = getattr(agent, '_deliver_to_stream_callbacks', None)
+--- a/agent/turn_request_assembly.py
++++ b/agent/turn_request_assembly.py
+@@ -16,7 +16,7 @@
+ from agent.message_sanitization import _sanitize_messages_surrogates
+ from agent.usage_anchor import anchored_context_tokens
+ from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
+-from agent.turn_context import build_api_messages
++from agent.turn_context import build_api_messages, normalize_api_message_text
+ 
+ logger = logging.getLogger("agent.conversation_loop")
+ 
+@@ -204,9 +204,7 @@
+ 
+     # Normalize whitespace and tool-call JSON for bit-perfect prefixes across turns
+     # (KV-cache reuse on local servers, better cloud cache hits); API copy only.
+-    for am in api_messages:
+-        if isinstance(am.get("content"), str):
+-            am["content"] = am["content"].strip()
++    normalize_api_message_text(api_messages)
+     from agent.bounded_context import readonly_utf8_messages
+     if not readonly_utf8_messages(agent, api_messages):
+         _canonicalize_api_tool_calls(api_messages)
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -1297,11 +1297,19 @@
+             if role == "user":
+                 if isinstance(content, str):
+                     body, embedded_timestamp = _strip_msg_ts(content, tz=_msg_tz)
+-                    clean_body = _strip_auto_continue_noise(body)
++                    # Replay may retire a gateway control note, but the same
++                    # note in api_content must be retired independently so its
++                    # attachment provenance/context suffix survives.
++                    from agent.replay_user_content import project_replayed_user_row
++                    replay_row = project_replayed_user_row({**msg, "content": body})
++                    clean_body = replay_row["content"]
+                     if clean_body != body:
+                         content = clean_body
++                        msg = replay_row
+                         if embedded_timestamp is not None:
+                             replay_timestamp = embedded_timestamp
++                    elif replay_row.get("api_content") != msg.get("api_content"):
++                        msg = {**msg, "api_content": replay_row.get("api_content")}
+                 if not content:
+                     continue
+             # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
+@@ -1404,27 +1412,10 @@
+ from agent.replay_cleanup import canonicalize_replay_history  # noqa: E402
+ 
+ 
+-_AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
+-_AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
+-
+-
+-def _is_auto_continue_noise(content: Any) -> bool:
+-    """Return True if this user-message content is a gateway-injected auto-continue note (never replay it)."""
+-    return isinstance(content, str) and content.startswith(
+-        (_AUTO_CONTINUE_NOTE_PREFIX, _AUTO_CONTINUE_FALLBACK_PREFIX))
+-
+-
+-def _strip_auto_continue_noise(content: Any) -> Any:
+-    """Strip leading persisted auto-continue notes from user text; the trailing real question is preserved."""
+-    if not _is_auto_continue_noise(content):
+-        return content
+-    text = str(content)
+-    while _is_auto_continue_noise(text):
+-        end = text.find("]")
+-        if end < 0:
+-            return ""
+-        text = text[end + 1 :].lstrip()
+-    return text
++from agent.replay_user_content import (  # noqa: E402
++    _AUTO_CONTINUE_NOTE_PREFIX, _AUTO_CONTINUE_FALLBACK_PREFIX,
++    _is_auto_continue_noise, _strip_auto_continue_noise,
++)
+ 
+ # Tools whose deliverable is a JSON payload with a local-file path field rather than a literal ``MEDIA:`` tag.
+ _JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -14,7 +14,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1.macro-spreadsheet-edit.v1.document-pdf-export.v2.vdx-read.v1.visio-opc-profiles.v1.vsd-partial-read.v1.svg-static.v1.msg-partial-read.v1.msg-native-write.v1.fb2-native.v1.legacy-openoffice-read.v1.dbf-tables.v1.xps-read.v1.dif-slk-tables.v1.abw-native.v1.lha-read-extract.v1.odf-formula-write.v1.arj-native.v1.xps-text-write.v1.vdx-native-write.v1.xlsb-write.v1.epub-native.v1.access-read.v1.pub-stored-text.v1.onenote-current-text.v1.mpp-task-name-edit.v1.mpp9-task-catalog.v1.pub-text-edit.v1.mpp12-mpp14-task-catalog.v1.onenote-text-edit.v1.eml-attachment.v1'
++DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1.macro-spreadsheet-edit.v1.document-pdf-export.v2.vdx-read.v1.visio-opc-profiles.v1.vsd-partial-read.v1.svg-static.v1.msg-partial-read.v1.msg-native-write.v1.fb2-native.v1.legacy-openoffice-read.v1.dbf-tables.v1.xps-read.v1.dif-slk-tables.v1.abw-native.v1.lha-read-extract.v1.odf-formula-write.v1.arj-native.v1.xps-text-write.v1.vdx-native-write.v1.xlsb-write.v1.epub-native.v1.access-read.v1.pub-stored-text.v1.onenote-current-text.v1.mpp-task-name-edit.v1.mpp9-task-catalog.v1.pub-text-edit.v1.mpp12-mpp14-task-catalog.v1.onenote-text-edit.v1.eml-attachment.v1.text-edit.v1.source-semantic-edit-contract.v1'
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -76,7 +76,28 @@
+     'и сопоставь их с указаниями пользователя; если соответствие всё ещё неоднозначно, '
+     'кратко уточни исходник. Не заявляй полное сравнение или сохранение всего документа '
+     'по одному извлечённому тексту: text_only не покрывает оформление, изображения и '
+-    'скрытые части пакета. Неподтверждённые различия не выдавай за добавления или удаления.'
++    'скрытые части пакета. Неподтверждённые различия не выдавай за добавления или удаления. '
++    'При пересказе, сравнении и подготовке файлов сохраняй факты источника: значения, '
++    'единицы, даты, имена, количество элементов и их происхождение. Отделяй прочитанное '
++    'от вычисленного и предположенного. Итог по группе не является значением каждого '
++    'элемента; наличие похожей таблицы не доказывает, что это обещанный результат; '
++    'совпадение строк не доказывает их присутствие в обоих источниках. Проверяй '
++    'добавляемые подсчёты, интервалы дат, номера абзацев и ссылки на части документа; '
++    'не добавляй их по памяти. Сокращая свой прежний ответ, сверяй сохраняемые '
++    'утверждения с доступным исходником: прежняя формулировка сама по себе не '
++    'подтверждает факт. '
++    'Перед изменением файла должны быть определены исходник, нужный участок и новое '
++    'значение. Если существенно неоднозначны исходник или замена, сначала кратко '
++    'уточни недостающее и не создавай изменённый файл с догаданным значением. Это не '
++    'мешает выбирать там, где пользователь явно поручил выбор, или создавать явно '
++    'обозначенный пример с условными данными. '
++    'Соблюдай явно заданные заголовки, разделы, порядок, объём и обязательные пункты '
++    'брифа. При узкой правке сохраняй остальной текст, оформление и структуру; при '
++    'работе по шаблону сохраняй требуемый стиль. Используй доступную сохраняющую '
++    'операцию. Если она не поддерживает нужную правку, объясни предел до замены '
++    'подхода; не выдавай создание нового документа за сохранение шаблона. '
++    'Пометки и данные, которые пользователь явно просит исключить из результата, '
++    'не повторяй и в сопроводительном ответе, в том числе как доказательство удаления.'
+ )
+ 
+ 
+@@ -307,8 +328,9 @@
+     'Для пересчёта XLSX используй write_file format=xlsx_recalculate, новое имя .xlsx и JSON {"source":"edited.xlsx"}; после правки пересчитывай уже возвращённый файл, не повторяй правку. '
+     'При отказе сохраняющего редактирования не подменяй его пересборкой из извлечённого текста; '
+     'сообщи ограничение или уточни нужный уникальный фрагмент. '
+-    'Для фактического PPTX по XLSX/CSV используй pptx_create с точными source/data: {"source":"input.xlsx","data":{"sheet":"Orders","group":"sku","order":"order_id","amount":{"product":["qty","unit_price"]},"currency":"currency"}}. Имена полей — выбранные точные заголовки реального источника, не фиксированная схема. amount: {"column":"net"} либо {"product":["quantity","price"]}; currency — исходная текстовая колонка либо null; для UTF-8 comma CSV sheet=null. Инструмент сам строит пять редактируемых слайдов, таблицу, один график, числа строк/различных ключей, суммы и вывод; фактический текст не задаётся моделью. Формулы выбранных колонок и неподдержанные входы честно отказываются; кеши формул не используются. До 100 строк и восьми групп, плюс ограничения читаемого размещения. Проверяй source_facts и source_sha256 в результате. Авторский режим source/slides/series сохранён, но его свободный текст не проверен по таблице и не предназначен для утверждений о числах или происхождении расчёта. '
++    'Для фиксированного отчёта по XLSX/CSV используй pptx_create с точными source/data: {"source":"input.xlsx","data":{"sheet":"Orders","group":"sku","order":"order_id","amount":{"product":["qty","unit_price"]},"currency":"currency"}}. Имена полей — выбранные точные заголовки реального источника, не фиксированная схема. amount: {"column":"net"} либо {"product":["quantity","price"]}; currency — исходная текстовая колонка либо null; для UTF-8 comma CSV sheet=null. Инструмент сам строит пять редактируемых слайдов, таблицу, один график, числа строк/различных ключей, суммы и вывод; фактический текст не задаётся моделью. Этот режим не принимает пользовательские заголовки, план, шаблон или стиль; не подменяй им презентацию с такими требованиями. Формулы выбранных колонок и неподдержанные входы честно отказываются; кеши формул не используются. До 100 строк и восьми групп, плюс ограничения читаемого размещения. Проверяй source_facts и source_sha256 в результате. Для своего плана доступен авторский режим source/slides/series в пределах его схемы: пять слайдов, одна таблица и один график. Для сохранения оформления совместимого PPTX добавь необязательное поле template с путём своего исходного PPTX. Его свободный текст не проверен по таблице и не подтверждает числа или происхождение расчёта. '
+     'pptx_edit меняет только указанную пару заголовок/значение графика и встроенную книгу; source-bound таблица, вывод и основание расчёта не пересчитываются. Для обновлённых фактов строй новую source-bound презентацию по текущей таблице. Авторский режим также отказывает при превышении читаемых размеров; прежняя приёмка oversized-контента не сохраняется. '
++    'Авторский pptx_create принимает {"source":"orders.xlsx","slides":[{"title":"Заголовок","body":"Текст","table":false,"chart":false},...],"series":"Продажи","template":"template.pptx"}. Источник — XLSX с листом Orders и полями order_id/sku/qty/unit_price/currency/revision; JSON предварительно перенеси в такую таблицу без потери значений. Внешний шаблон должен иметь ровно пять слайдов, на каждом один заголовок и один текстовый блок; ровно одна существующая таблица и один график в позициях, совпадающих с флагами slides. Сохраняются шрифты, тема, макеты, позиции и оформление существующих элементов. Таблица использует столбцы исходных ключей из своих заголовков и требует того же числа строк; график — один ряд bar/line из проверенных агрегатов Orders. Неподдержанные элементы и смешанное оформление текстового блока вызывают явный отказ. Примечания, комментарии, старые книги графиков, превью и свойства автора не копируются. Проверяй template_sha256/source_sha256 и обе отметки неизменности; произвольный текст остаётся непроверенным и требует сверки с источником. Новое заполнение не является визуальной приёмкой: проверяй читаемость, не утверждай её по native_editable. '
+     'Для сохраняющей правки PPTX используй pptx_edit и новое имя, например {"source":"deck.pptx","slide":3,"old_title":"Sales","new_title":"Sales corrected","category":"A01","old_value":"3601.50","new_value":"3602.50"}; slide однобазовый, уникальные заголовок и значение меняются вместе с кешем графика и встроенной книгой. '
+     'Для ODP используй odp_create: {"slides":[{"title":"Report","body":"Summary","notes":"Speaker only","table":[["SKU","Value"],["A01",{"type":"decimal","value":"3601.50"}]],"chart":{"categories":["A01"],"values":["3601.50"]}}]}. 1-20 слайдов; table=null либо 1-128 прямоугольных строк по 1-32 строковых/decimal ячейки, chart=null либо равные categories/values 1-128; decimal задаётся точным объектом type/value. '
+     'Для ODP edit: {"source":"deck.odp","slide":1,"table":1,"row":2,"column":2,"old_value":"3601.50","new_value":"3602.50"}; адреса однобазовые логические с учётом предшествующих повторов. Только простая неформульная числовая ячейка; повторяемая/объединённая/покрытая/formula/span/mixed цель и неоднозначность отклоняются до записи. '
+@@ -503,6 +525,7 @@
+             'ZIP: format=zip needs a NEW .zip path and content JSON {"entries":[{"source":"report.docx","member":"Docs/report.docx"}]}; '
+             'only the exact listed files are included, with unchanged bytes and the requested nested member names. '
+             'format=zip_extract needs a NEW folder path and content JSON {"source":"materials.zip"}. '
++            'For an explicitly requested recovery of healthy members from a damaged unencrypted ZIP, add "allow_partial":true. Read inspection reports verified healthy entries and damaged_members; partial extraction returns success=false, published_partial=true and archive_complete=false with exact recovered paths. Explain the damage and incomplete result; do not retry publication or claim full extraction. Structural, path, link, encryption and resource-limit refusals cannot be bypassed by this option. '
+             'When registry_omitted is true, creation/extraction still succeeded: use read_file on '
+             'registry_read_file and continue its next_offset to inspect entries; do not repeat the write. '
+             'Extraction puts those entries under the returned folder path. '
+@@ -552,6 +575,7 @@
+         content = function['parameters']['properties']['content']
+         content['description'] = (
+             'ZIP content JSON: zip uses {"entries":[{"source":"note","member":"Folder/note"}]} with optional password; '
++            'zip_extract also accepts allow_partial=true only for explicit healthy-member recovery from an unencrypted ZIP with corrupt member payloads. Its known partial publication is incomplete, not full success: use returned recovered paths, state damaged_members and never blindly recreate it. '
+             'rar_extract/archive_convert use exactly {"source":"materials.zip"} (or a supported .7z/.rar/TAR source as appropriate); zip_extract/7z_extract also accept password. ZIP creation accepts optional password for authenticated WinZip AES-256 AE-2 (names stay visible); single-volume non-ZIP64 AES-256 AE-1/AE-2 stored/deflate reads are supported, other encrypted profiles and encrypted conversion/edit refuse. 7z creation accepts optional password/header_encryption; read_file accepts password for own-workspace ZIP/7z. ZIP/7z writes need matching NEW .zip/.7z paths; extraction needs a NEW folder. '
+             'XLSX content is a JSON string: xlsx_recalculate uses exactly {"source":"edited.xlsx"}; '
+             'xlsx_merge uses exactly {"base":"base.xlsx","update":"update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}; '
+@@ -614,6 +638,14 @@
+         content['description'] += XPS_WRITE_GUIDANCE
+     if function['name'] in ('read_file', 'write_file'):
+         function['description'] += ACCESS_READ_GUIDANCE
++    if function['name'] in ('read_file', 'write_file'):
++        from hermes_cli.friday_workspace_text import GUIDANCE as TEXT_EDIT_GUIDANCE
++        function['description'] += TEXT_EDIT_GUIDANCE
++        if function['name'] == 'write_file':
++            formats = function['parameters']['properties']['format']['enum']
++            if 'text_edit' not in formats:
++                formats.append('text_edit')
++            function['parameters']['properties']['content']['description'] += TEXT_EDIT_GUIDANCE
+     return value
+ 
+ 
+--- /dev/null
++++ b/hermes_cli/friday_schema_guidance.py
+@@ -0,0 +1,70 @@
++"""Share repeated documentation inside a file-tool schema without losing it.
++
++Format implementations put the same guidance in the tool, content and format
++descriptions. Repeating that prose can exceed a bounded request before a single
++ordinary question reaches the model. Only complete, identical description
++fragments are shared here; schema validation and executable tools are untouched.
++"""
++from __future__ import annotations
++
++import copy
++import re
++
++# Include the request projection in ordinary persisted tool-pin identity. The
++# donor build/version may stay unchanged when this product overlay is updated.
++PROJECTION_REVISION = "friday.file-schema-guidance.v1"
++
++_SHARED_PREFIX = "The shared requirements in "
++
++
++def _parts(text: str) -> list[str]:
++    return re.split(r"(?<=[.!?])(?=\s)", text)
++
++
++def share_file_schema_guidance(definition: dict) -> dict:
++    """Return a request-local schema with each shared requirement present once.
++
++    The caller selects an admitted ordinary file schema. No registry lookup,
++    capability cache or privilege decision belongs in this pure projection.
++    The complete tool description is kept byte-for-byte. Unique parameter prose,
++    even a near-duplicate differing by one character, is also kept byte-for-byte.
++    """
++    function = definition.get("function", {})
++    if function.get("name") not in {"read_file", "write_file"}:
++        return definition
++    main = function.get("description")
++    properties = function.get("parameters", {}).get("properties")
++    if not isinstance(main, str) or not isinstance(properties, dict):
++        return definition
++    sources = [("the tool description", {part.strip() for part in _parts(main)})]
++    replacements = {}
++    for name, prop in properties.items():
++        if not isinstance(prop, dict) or not isinstance(prop.get("description"), str):
++            continue
++        text = prop["description"]
++        parts = _parts(text)
++        kept = []
++        shared = []
++        for part in parts:
++            literal = part.strip()
++            source = next((label for label, sentences in sources
++                           if len(literal) >= 40 and not literal.startswith(_SHARED_PREFIX)
++                           and literal in sentences), None)
++            if source is None:
++                kept.append(part)
++            elif source not in shared:
++                shared.append(source)
++        remaining = "".join(kept)
++        if shared:
++            # Reference only descriptions that are still in this same schema.
++            # No file fetch or extra model round trip is needed to recover them.
++            pointer = _SHARED_PREFIX + " and ".join(shared) + " also apply. "
++            replacements[name] = pointer + remaining
++        sources.append((f"the {name} parameter description",
++                        {part.strip() for part in _parts(remaining)}))
++    if not replacements:
++        return definition
++    result = copy.deepcopy(definition)
++    for name, description in replacements.items():
++        result["function"]["parameters"]["properties"][name]["description"] = description
++    return result
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -1018,7 +1018,8 @@
+                 result = {'success': True, 'content': '', 'total_lines': len(lines),
+                           'path': path.as_posix(), 'scope': 'own_user_workspace',
+                           'partial': offset <= len(lines), 'next_offset': offset,
+-                          'next_char_offset': char_offset}
++                          'next_char_offset': char_offset,
++                          'source_sha256': hashlib.sha256(data).hexdigest()}
+                 if document_format:
+                     result.update(extracted_document=True, format=document_format,
+                                   source_sha256=hashlib.sha256(data).hexdigest(),
+@@ -1075,9 +1076,8 @@
+             if len(rendered) <= 100000:
+                 seen.extend((starts[n],starts[n]+len(lines[n])) for n in range(offset-1,min(len(lines),offset-1+limit)))
+             result = {'success': True, 'content': content, 'total_lines': len(lines),
+-                      'path': path.as_posix(), 'scope': 'own_user_workspace'}
+-            if document_format:
+-                result['source_sha256'] = hashlib.sha256(data).hexdigest()
++                      'path': path.as_posix(), 'scope': 'own_user_workspace',
++                      'source_sha256': hashlib.sha256(data).hexdigest()}
+             rendered = json.dumps(result)
+             record_read(rendered)
+             return rendered
+@@ -1136,11 +1136,15 @@
+             return json.dumps({'success': False, 'error': 'document_write_unsupported',
+                 'reason': 'macro_profile_requires_preserving_edit', 'effect_disposition': 'none',
+                 'hint': 'Use word_macro_edit for a source-hash-bound unique literal correction into a new same-profile DOCM/DOTM. VBA remains opaque and never executes; creation, conversion and raw writes remain unsupported.'})
+-        if output_format not in ('pub_text_edit', 'onenote_text_edit', 'mpp_task_name_edit', 'xps_create', 'xps_edit', 'vdx_create', 'vdx_text_edit', 'legacy_openoffice_create', 'legacy_openoffice_edit', 'msg_create', 'msg_edit', 'xlsb_create', 'xlsb_edit', 'odf_formula_create', 'odf_formula_edit', 'abw_create', 'abw_edit', 'dif_create', 'dif_edit', 'slk_create', 'slk_edit', 'dbf_create', 'dbf_edit', 'fb2_create', 'fb2_edit', 'svg_create', 'svg_text_edit', 'word_macro_edit', 'diagram_create', 'diagram_text_edit', 'pdf_report', 'pdf_form_fill', 'text', 'eml_create', 'eml_edit', 'eml_extract_attachment', 'ics_create', 'ics_edit', 'vcf_create', 'vcf_edit', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'docx_odt', 'odt_docx', 'odt_pdf', 'xlsx_pdf', 'ods_pdf', 'delimited_convert', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'presentation_macro_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'lha_extract', 'cab_extract', 'arj_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit', 'epub_create', 'epub_edit'):
++        if output_format not in ('pub_text_edit', 'onenote_text_edit', 'mpp_task_name_edit', 'xps_create', 'xps_edit', 'vdx_create', 'vdx_text_edit', 'legacy_openoffice_create', 'legacy_openoffice_edit', 'msg_create', 'msg_edit', 'xlsb_create', 'xlsb_edit', 'odf_formula_create', 'odf_formula_edit', 'abw_create', 'abw_edit', 'dif_create', 'dif_edit', 'slk_create', 'slk_edit', 'dbf_create', 'dbf_edit', 'fb2_create', 'fb2_edit', 'svg_create', 'svg_text_edit', 'word_macro_edit', 'diagram_create', 'diagram_text_edit', 'pdf_report', 'pdf_form_fill', 'text', 'text_edit', 'eml_create', 'eml_edit', 'eml_extract_attachment', 'ics_create', 'ics_edit', 'vcf_create', 'vcf_edit', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'docx_odt', 'odt_docx', 'odt_pdf', 'xlsx_pdf', 'ods_pdf', 'delimited_convert', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'presentation_macro_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'lha_extract', 'cab_extract', 'arj_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit', 'epub_create', 'epub_edit'):
+             raise ScopeDenied()
+         if output_format == 'mpp_task_name_edit':
+             from hermes_cli.friday_workspace_mpp import execute
+             return execute(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'text_edit':
++            from hermes_cli.friday_workspace_text import create_edit
++            return create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++
+         if output_format == 'pub_text_edit':
+             from hermes_cli.friday_workspace_pub import execute
+             return execute(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+@@ -1840,6 +1844,7 @@
+     'document_already_exists': PUBLIC_FILE_EXISTS_COPY,
+     'product_user_scope_refused': PUBLIC_TOOL_REFUSAL_COPY,
+     'web_call_stopped': PUBLIC_WEB_STOPPED_COPY,
++    'archive_partially_extracted': 'Архив извлечён частично; повреждённые файлы не восстановлены. Результат неполный.',
+ }
+ 
+ 
+--- a/hermes_cli/friday_workspace_presentation.py
++++ b/hermes_cli/friday_workspace_presentation.py
+@@ -61,12 +61,13 @@
+     from hermes_cli.friday_workspace_revision import check
+     verify = None
+     if source_state is not None:
+-        source, original, identity = source_state
++        states = [source_state] if isinstance(source_state, tuple) else source_state
+         def verify():
+             check(cap)
+-            current, _, version = workspace_document(str(source), with_identity=True)
+-            if current != original or version != identity:
+-                raise ScopeDenied()
++            for source, original, identity in states:
++                current, _, version = workspace_document(str(source), with_identity=True)
++                if current != original or version != identity:
++                    raise ScopeDenied()
+     result = json.loads(_create_bytes(cap, fd, leaf, path, data,
+                                      output_format=output_format, verify_source=verify))
+     if result.get('success') and extra:
+@@ -79,10 +80,14 @@
+     from hermes_cli.friday_workspace_revision import check
+     from tools.scoped_presentation_write import create_pptx as render, pptx_request, create_data_pptx, orders_facts, PresentationRefused
+     bound = False
++    templated = False
+     try:
+         check(cap)
+         spec = pptx_request(content)
+         bound = 'data' in spec
++        templated = 'template' in spec
++        template_state = []
++        template_info = {}
+         if bound:
+             if not isinstance(spec['source'], str):
+                 raise ScopeDenied()
+@@ -94,16 +99,27 @@
+         else:
+             source, relative, data, identity = _read_source(spec['source'], cap, '.xlsx')
+             facts = orders_facts(data)
+-            rendered = render(facts, spec)
++            if templated:
++                from tools.scoped_presentation_template import create_template_pptx
++                template, template_relative, template_data, template_identity = _read_source(spec['template'], cap, '.pptx')
++                template_state = [(template, template_data, template_identity)]
++                rendered = create_template_pptx(template_data, facts, spec)
++                template_info = {'template': template_relative,
++                                 'template_sha256': hashlib.sha256(template_data).hexdigest(),
++                                 'template_unchanged': True, 'template_style_preserved': True,
++                                 'template_private_parts_removed': True}
++            else:
++                rendered = render(facts, spec)
+             facts_public = {key: facts[key] for key in ('totals', 'grand_total', 'currency', 'largest_sku')}
+-        return _publish(cap, fd, leaf, path, rendered, 'pptx', (source, data, identity),
++        return _publish(cap, fd, leaf, path, rendered, 'pptx', [(source, data, identity)] + template_state,
+                         {'source': relative, 'source_sha256': hashlib.sha256(data).hexdigest(),
+                          'source_unchanged': True, 'native_editable': True,
+                          'slides': 5, 'native_charts': 1, 'source_facts': facts_public,
+-                         'factual_mode': 'source_bound' if bound else 'authored_prose_unverified'})
++                         'factual_mode': 'source_bound' if bound else 'authored_prose_unverified',
++                         **template_info})
+     except PresentationRefused as error:
+-        if bound:
+-            return json.dumps({'success': False, 'error': 'presentation_data_refused',
++        if bound or templated:
++            return json.dumps({'success': False, 'error': 'presentation_template_refused' if templated else 'presentation_data_refused',
+                                'reason': str(error), 'effect_disposition': 'none'})
+         raise ScopeDenied() from None
+ 
+--- /dev/null
++++ b/hermes_cli/friday_workspace_text.py
+@@ -0,0 +1,87 @@
++"""Hash-bound, byte-preserving literal TXT edits through the existing publisher."""
++import hashlib
++import json
++from pathlib import PurePosixPath
++import re
++
++from hermes_cli.friday_user_scope import ScopeDenied
++from hermes_cli.friday_workspace_revision import check
++from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++from hermes_cli.friday_workspace_zip import _archive_spec, _path, _source, _verify, _inline_budget, _fits, _encode
++
++GUIDANCE = (
++    'For an exact literal correction of an existing UTF-8 TXT, use format=text_edit '
++    'and a NEW .txt output path. Content is JSON exactly {source,source_sha256,old_text,new_text}; '
++    'use the current read_file hash and explicitly requested old/new literals. '
++    'The old literal must occur exactly once. Every other source byte, including BOM, '
++    'line endings and the presence or absence of a final newline, is retained. '
++    'Do not reconstruct the entire file from a displayed excerpt. The source stays unchanged. '
++)
++
++
++class TextEditRefused(ValueError):
++    pass
++
++
++def replace_literal(original, expected_sha256, old_text, new_text):
++    """Change one explicitly identified UTF-8 byte span, with no newline normalization."""
++    if (type(original) is not bytes or len(original) > 1000000
++            or type(expected_sha256) is not str
++            or re.fullmatch(r'[0-9a-f]{64}', expected_sha256) is None):
++        raise TextEditRefused('source_identity_required')
++    if hashlib.sha256(original).hexdigest() != expected_sha256:
++        raise TextEditRefused('source_hash_mismatch')
++    if type(old_text) is not str or type(new_text) is not str or not old_text:
++        raise TextEditRefused('literal_required')
++    if old_text == new_text:
++        raise TextEditRefused('edit_is_unchanged')
++    try:
++        original.decode('utf-8')
++        old, new = old_text.encode('utf-8'), new_text.encode('utf-8')
++    except UnicodeError:
++        raise TextEditRefused('utf8_required') from None
++    if b'\x00' in original or b'\x00' in old or b'\x00' in new:
++        raise TextEditRefused('plain_text_required')
++    start = original.find(old)
++    if start < 0:
++        raise TextEditRefused('literal_not_found')
++    if original.find(old, start + 1) >= 0:
++        raise TextEditRefused('literal_ambiguous')
++    result = original[:start] + new + original[start + len(old):]
++    if len(result) > 1000000:
++        raise TextEditRefused('output_capacity')
++    return result
++
++
++def create_edit(cap, fd, leaf, relative, content):
++    """Create a new scoped file; never overwrite or silently retry an uncertain effect."""
++    _check_parent(cap, fd, relative)
++    relative = _path(relative)
++    if PurePosixPath(relative).suffix.lower() != '.txt' or leaf != PurePosixPath(relative).name:
++        raise ScopeDenied()
++    spec = _archive_spec(content, {'source', 'source_sha256', 'old_text', 'new_text'})
++    source = _path(spec['source'])
++    if PurePosixPath(source).suffix.lower() != '.txt' or source == relative:
++        raise ScopeDenied()
++    check(cap)
++    original, identity = _source(cap, source)
++    try:
++        data = replace_literal(original, spec['source_sha256'], spec['old_text'], spec['new_text'])
++    except TextEditRefused as error:
++        return _encode(dict(success=False, error='text_edit_refused', reason=str(error),
++                            effect_disposition='none'))
++    sources = [(source, original, identity)]
++    receipt = dict(operation='text_edit', source=source,
++                   source_sha256=hashlib.sha256(original).hexdigest(), source_unchanged=True,
++                   unselected_bytes_preserved=True, replacements=1)
++    estimate = dict(receipt, success=True, path=relative, format='txt',
++                    scope='own_user_workspace', create_only=True, verified=True,
++                    bytes_written=len(data), sha256=hashlib.sha256(data).hexdigest())
++    if not _fits(estimate, _inline_budget()):
++        return _encode(dict(success=False, error='text_edit_result_capacity', effect_disposition='none'))
++    _verify(cap, sources)
++    result = json.loads(_create_bytes(cap, fd, leaf, relative, data, output_format='txt',
++                                    verify_source=lambda: _verify(cap, sources)))
++    if result.get('success'):
++        result.update(receipt)
++    return _encode(result)
+--- a/hermes_cli/friday_workspace_zip.py
++++ b/hermes_cli/friday_workspace_zip.py
+@@ -15,7 +15,7 @@
+ import unicodedata
+ import uuid
+ from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED, ZIP_STORED, BadZipFile
+-from tools.scoped_zip import read_zip_member
++from tools.scoped_zip import read_zip_member, ZipMemberDataError
+ 
+ from hermes_cli.friday_user_scope import ScopeDenied, workspace_document
+ from hermes_cli.friday_workspace_revision import check, _move
+@@ -220,7 +220,7 @@
+             raise ScopeDenied()
+ 
+ 
+-def _rows(data):
++def _rows(data, *, allow_partial=False):
+     """Inspect everything before any write; inflate at most one MiB in total."""
+     if not isinstance(data, bytes) or len(data) > MAX_BYTES:
+         raise ScopeDenied()
+@@ -231,7 +231,7 @@
+             infos = archive.infolist()
+             if not 1 <= len(infos) <= MAX_ENTRIES:
+                 raise ScopeDenied()
+-            names = set(); files = set(); rows = []; total = 0
++            names = set(); files = set(); rows = []; total = 0; damaged = []
+             for info in infos:
+                 directory = info.is_dir()
+                 name = _path(info.filename, directory=directory)
+@@ -250,7 +250,14 @@
+                 total += info.file_size
+                 if total > MAX_BYTES:
+                     raise ScopeDenied()
+-                payload = read_zip_member(archive, data, info, MAX_BYTES)
++                try:
++                    payload = read_zip_member(archive, data, info, MAX_BYTES)
++                except ZipMemberDataError:
++                    if not allow_partial or directory:
++                        raise
++                    damaged.append(dict(path=name, reason='member_data_invalid',
++                                        declared_bytes=info.file_size))
++                    continue
+                 if len(payload) != info.file_size:
+                     raise ScopeDenied()
+                 rows.append((name, directory, payload))
+@@ -258,7 +265,7 @@
+                 if any(str(parent) in files for parent in PurePosixPath(name).parents
+                        if str(parent) != '.'):
+                     raise ScopeDenied()
+-            return rows
++            return (rows, damaged) if allow_partial else rows
+     except (BadZipFile, EOFError, OSError, RuntimeError, NotImplementedError, ValueError):
+         raise ScopeDenied() from None
+ 
+@@ -692,7 +699,7 @@
+ 
+ 
+ def _effect_receipt(result, rows, archive_path, budget, *, prefix=''):
+-    if not result.get('success'):
++    if not result.get('success') and not result.get('published_partial'):
+         return _encode(result)
+     full = dict(result, member_count=len(rows), registry_omitted=False,
+                 archive_members=_manifest(rows, prefix))
+@@ -719,6 +726,7 @@
+         raise ScopeDenied()
+     _password_path(password, relative, *(row['path'] for row in (part_manifest or [])))
+     guard = lambda: check(cap)
++    damaged = []
+     if source_format == '7z':
+         try:
+             rows, guard = _seven_rows(cap, data, password=password)
+@@ -746,7 +754,10 @@
+             return _codec_failure(failure)
+     elif source_format == 'zip':
+         try:
+-            rows, guard = _zip_rows(cap, data, password=password)
++            if _zip_encrypted(data):
++                rows, guard = _zip_rows(cap, data, password=password)
++            else:
++                rows, damaged = _rows(data, allow_partial=True)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+     elif source_format in TAR_FORMATS:
+@@ -762,6 +773,10 @@
+         scope='own_user_workspace', archive_members=[], extracted=False,
+         sha256=hashlib.sha256(data).hexdigest(), total_entries=len(rows),
+         partial=start <= len(rows), next_offset=start)
++    if damaged:
++        result.update(success=False, error='archive_member_data_invalid',
++                      archive_complete=False, damaged_members=damaged,
++                      recovery='Only verified healthy members may be extracted with explicit zip_extract allow_partial=true; output remains incomplete.')
+     if part_manifest is not None:
+         result.update(split_7z=True, source_parts=part_manifest)
+     if source_format in STREAM_FORMATS:
+@@ -1164,7 +1179,7 @@
+     _check_parent(cap, fd, relative)
+     budget = _inline_budget()
+     if _format in ('7z', 'zip'):
+-        spec = _archive_spec(content, ('source',), ('password', 'parts') if _format == '7z' else ('password',))
++        spec = _archive_spec(content, ('source',), ('password', 'parts') if _format == '7z' else ('password', 'allow_partial'))
+         source = _path(spec['source'])
+         password = _archive_password(spec.get('password'))
+         _password_path(password, source, relative)
+@@ -1179,6 +1194,10 @@
+         return _codec_failure(_CodecFailure(str(exc)))
+     _password_path(password, *(row['path'] for row in (part_manifest or [])))
+     guard = lambda: check(cap)
++    damaged = []
++    allow_partial = spec.get('allow_partial', False) if _format == 'zip' else False
++    if type(allow_partial) is not bool:
++        raise ScopeDenied()
+     if _format == '7z':
+         if archive_format(source) != '7z':
+             raise ScopeDenied()
+@@ -1216,7 +1235,14 @@
+             return _codec_failure(failure)
+     elif _format == 'zip':
+         try:
+-            rows, guard = _zip_rows(cap, data, password=password)
++            if allow_partial:
++                # Encryption/authentication and malformed structure are never
++                # downgraded to partial success, even for explicit recovery.
++                if _zip_encrypted(data) or password is not None:
++                    raise ScopeDenied()
++                rows, damaged = _rows(data, allow_partial=True)
++            else:
++                rows, guard = _zip_rows(cap, data, password=password)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+     elif _format == 'tar':
+@@ -1235,6 +1261,15 @@
+     receipt = dict(success=True, format=_format + '_extract', path=relative,
+         scope='own_user_workspace', create_only=True, verified=True,
+         source_sha256=hashlib.sha256(data).hexdigest())
++    if damaged:
++        if not any(not directory for _, directory, _ in rows):
++            verify()
++            return _encode(dict(success=False, error='archive_no_recoverable_members',
++                                effect_disposition='none', archive_complete=False,
++                                damaged_members=damaged))
++        receipt.update(success=False, error='archive_partially_extracted',
++                       archive_complete=False, published_partial=True,
++                       effect_disposition='known_partial', damaged_members=damaged)
+     if part_manifest is not None:
+         receipt.update(split_7z=True, source_parts=part_manifest)
+     if not _fits(_omitted_receipt(receipt, rows, source), budget):
+--- a/model_tools.py
++++ b/model_tools.py
+@@ -485,7 +485,11 @@
+ 
+ def _rewrite_ordinary_file(td: Dict[str, Any], available: set) -> Dict[str, Any]:
+     from hermes_cli.friday_prompt_scope import ordinary_file_schema
+-    return ordinary_file_schema(td)
++    selected = ordinary_file_schema(td)
++    if selected is td:
++        return td
++    from hermes_cli.friday_schema_guidance import share_file_schema_guidance
++    return share_file_schema_guidance(selected)
+ 
+ 
+ _DYNAMIC_SCHEMA_REWRITERS = {
+--- a/tools/mcp_tool_agent.py
++++ b/tools/mcp_tool_agent.py
+@@ -161,7 +161,8 @@
+     from hermes_cli.friday_user_scope import current
+     if current() is not None:
+         from hermes_cli.friday_prompt_scope import DIALOGUE_REVISION
+-        return version + ":" + DIALOGUE_REVISION
++        from hermes_cli.friday_schema_guidance import PROJECTION_REVISION
++        return version + ":" + DIALOGUE_REVISION + ":" + PROJECTION_REVISION
+     return version
+ 
+ 
+--- /dev/null
++++ b/tools/scoped_presentation_template.py
+@@ -0,0 +1,424 @@
++"""Narrow authored PPTX adapter: replace existing editable template slots.
++
++The existing writer owns the package limits, data projection and output format.
++This adapter never renders, executes, converts, or fetches template resources.
++"""
++from copy import deepcopy
++import math
++import posixpath
++from xml.etree import ElementTree as ET
++
++from tools.scoped_presentation_write import (
++    A, C, P, PR, R, PresentationRefused, _parts, _rels, _resolve,
++    _slide_paths, _tostring, _workbook, _xml, _zip, text,
++)
++
++CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
++_ALLOWED = {
++    'presentation': {'slide', 'slideMaster', 'theme', 'tableStyles'},
++    'sld': {'slideLayout', 'chart'},
++    'sldLayout': {'slideMaster'},
++    'sldMaster': {'slideLayout', 'theme'},
++    'chartSpace': {'package'},
++    'theme': set(), 'tblStyleLst': set(),
++}
++_EXCLUDED = {'notesMaster', 'notesSlide', 'comments', 'commentAuthors',
++             'person', 'threadedComment', 'tags', 'presProps', 'viewProps',
++             'printerSettings'}
++
++
++def _sanitize_metadata(root):
++    changed = False
++    for node in root.iter():
++        if node.tag == '{%s}cNvPr' % P:
++            if node.get('hidden', '0') not in ('0', 'false'):
++                raise PresentationRefused('template_hidden_shape')
++            safe = {'id': node.get('id', ''), 'name': 'Shape ' + node.get('id', '')}
++            if node.attrib != safe:
++                node.attrib.clear(); node.attrib.update(safe); changed = True
++        elif node.tag == '{%s}cSld' % P:
++            if 'name' in node.attrib:
++                del node.attrib['name']; changed = True
++        elif node.tag in ('{%s}theme' % A, '{%s}clrScheme' % A,
++                          '{%s}fontScheme' % A, '{%s}fmtScheme' % A):
++            if node.get('name') != 'Template':
++                node.set('name', 'Template'); changed = True
++    return changed
++
++
++def _max_font(root, default=None):
++    """Conservatively cover every explicit paragraph/run size in a slot."""
++    sizes = []
++    for tag in ('rPr', 'defRPr'):
++        for node in root.iter('{%s}%s' % (A, tag)):
++            if node.get('sz') is not None:
++                try:
++                    size = int(node.get('sz'))
++                except ValueError:
++                    raise PresentationRefused('template_text_font') from None
++                if not 100 <= size <= 40000:
++                    raise PresentationRefused('template_text_font')
++                sizes.append(size)
++    return max(sizes) if sizes else default
++
++
++def _text_capacity(parts, owner, shape, value):
++    """Conservative slot budget, independent of rendering/autofit behavior."""
++    body = shape.find('{%s}txBody' % P)
++    old = '\n'.join(''.join(n.text or '' for n in p.iter('{%s}t' % A))
++                    for p in body.findall('{%s}p' % A))
++    # Reusing unchanged template text cannot introduce a new overflow.
++    if value == old:
++        return
++    ph = shape.find('{%s}nvSpPr/{%s}nvPr/{%s}ph' % (P, P, P))
++    chain = [shape]; master = None
++    current = owner
++    for kind in ('slideLayout', 'slideMaster'):
++        matches = [r for r in _rels(parts, _relpath(current)).values()
++                   if r.get('Type') == R + '/' + kind]
++        if len(matches) != 1:
++            raise PresentationRefused('template_text_inheritance')
++        current = _resolve(current, matches[0].get('Target', ''))
++        inherited = _xml(parts[current])
++        if kind == 'slideMaster':
++            master = inherited
++        if ph is not None:
++            candidates = []
++            for candidate in inherited.findall('.//{%s}sp' % P):
++                other = candidate.find('{%s}nvSpPr/{%s}nvPr/{%s}ph' % (P, P, P))
++                if other is not None and ((ph.get('idx') is not None and other.get('idx') == ph.get('idx')) or
++                        (ph.get('idx') is None and other.get('type', 'obj') == ph.get('type', 'obj'))):
++                    candidates.append(candidate)
++            if len(candidates) > 1:
++                raise PresentationRefused('template_text_inheritance')
++            chain.extend(candidates)
++    bounds = font = None
++    for candidate in chain:
++        if bounds is None:
++            ext = candidate.find('{%s}spPr/{%s}xfrm/{%s}ext' % (P, A, A))
++            if ext is not None:
++                try:
++                    bounds = (int(ext.get('cx', '0')) / 12700, int(ext.get('cy', '0')) / 12700)
++                except ValueError:
++                    raise PresentationRefused('template_text_geometry') from None
++        if font is None:
++            font = _max_font(candidate)
++    if font is None:
++        role = ph.get('type', 'obj') if ph is not None else ''
++        style = 'titleStyle' if role in ('title', 'ctrTitle') else 'bodyStyle' if role in ('body', 'obj') else 'otherStyle'
++        default = master.find('{%s}txStyles/{%s}%s/{%s}lvl1pPr/{%s}defRPr' % (P, P, style, A, A))
++        if default is not None:
++            font = default.get('sz')
++    try:
++        points = int(font) / 100
++    except (ValueError, TypeError):
++        raise PresentationRefused('template_text_font') from None
++    if bounds is None or not 1 <= points <= 400 or min(bounds) <= 0:
++        raise PresentationRefused('template_text_geometry')
++    # Reserve default Office cell margins; use wide glyph estimates. Exact
++    # shaping/kerning still requires visual acceptance, never claimed here.
++    width, height = bounds[0] - 14.4, bounds[1] - 7.2
++    wraps = body.find('{%s}bodyPr' % A)
++    wraps = wraps is None or wraps.get('wrap') != 'none'
++    lines = 0
++    for line in value.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
++        units = sum(1 if c in 'WM@#%&' or ord(c) > 0x2fff else .8 for c in line)
++        text_width = units * points
++        if width <= 0 or (not wraps and text_width > width):
++            raise PresentationRefused('template_text_capacity')
++        lines += max(1, math.ceil(text_width / width))
++    if lines * points * 1.2 > height:
++        raise PresentationRefused('template_text_capacity')
++
++
++def _relpath(owner):
++    folder, name = posixpath.split(owner)
++    return folder + '/_rels/' + name + '.rels'
++
++
++def _template_parts(data):
++    """Copy only supported reachable styling/content, excluding private parts."""
++    _, source = _parts(data)
++    if not {'[Content_Types].xml', 'ppt/presentation.xml', '_rels/.rels'} <= source.keys():
++        raise PresentationRefused('template_required_parts')
++    # Apply a stricter URI/member policy to templates without changing old modes.
++    for name in source:
++        if (any(char in name for char in '%?#:') or
++                any(ord(char) < 32 for char in name) or
++                any(piece in ('', '.', '..') for piece in name.split('/'))):
++            raise PresentationRefused('template_package_path')
++        if name.endswith('.rels'):
++            for rel in _rels(source, name).values():
++                target = rel.get('Target', '')
++                if (any(char in target for char in '%?#:') or target.startswith('//') or
++                        any(ord(char) < 32 for char in target)):
++                    raise PresentationRefused('template_relationship_uri')
++                kind = rel.get('Type', '')
++                if not kind.startswith(R + '/') and not kind.startswith(PR + '/'):
++                    raise PresentationRefused('template_relationship_type')
++    paths = _slide_paths(source)
++    if len(paths) != 5 or len(set(paths)) != 5:
++        raise PresentationRefused('template_exactly_five_slides')
++    office = [rel for rel in _rels(source, '_rels/.rels').values()
++              if rel.get('Type') == R + '/officeDocument']
++    if len(office) != 1 or _resolve('', office[0].get('Target', '')) != 'ppt/presentation.xml':
++        raise PresentationRefused('template_main_part')
++    content_types = _xml(source['[Content_Types].xml'])
++    main = [entry for entry in content_types
++            if entry.get('PartName') == '/ppt/presentation.xml']
++    if (len(main) != 1 or main[0].get('ContentType') !=
++            'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml'):
++        raise PresentationRefused('template_main_type')
++    parts = {}; pending = ['ppt/presentation.xml']
++    while pending:
++        name = pending.pop()
++        if name in parts:
++            continue
++        root = _xml(source[name])
++        role = root.tag.rsplit('}', 1)[-1]
++        namespace = root.tag.split('}', 1)[0].lstrip('{')
++        if (role not in _ALLOWED or namespace !=
++                (C if role == 'chartSpace' else A if role in ('theme', 'tblStyleLst') else P)):
++            raise PresentationRefused('template_unsupported_part')
++        parts[name] = _tostring(root) if _sanitize_metadata(root) else source[name]
++        relname = _relpath(name)
++        relroot = ET.Element('{%s}Relationships' % PR)
++        changed = False
++        for rel in _rels(source, relname).values():
++            kind = rel.get('Type', '').rsplit('/', 1)[-1]
++            if kind in _EXCLUDED:
++                changed = True
++                continue
++            if kind not in _ALLOWED[role] or rel.get('Type') != R + '/' + kind:
++                raise PresentationRefused('template_unsupported_relationship')
++            target = _resolve(name, rel.get('Target', ''))
++            relroot.append(deepcopy(rel))
++            if kind == 'package':
++                # Rebuilt from bound facts below, never copy historical workbook data.
++                if not target.lower().endswith('.xlsx'):
++                    raise PresentationRefused('template_chart_workbook')
++                parts[target] = b''
++            else:
++                pending.append(target)
++        if len(relroot):
++            parts[relname] = _tostring(relroot) if changed else source[relname]
++    pres = _xml(parts['ppt/presentation.xml'])
++    if pres.find('{%s}extLst' % P) is not None:
++        raise PresentationRefused('template_presentation_extension')
++    for name in ('notesMasterIdLst', 'custDataLst'):
++        for node in list(pres.findall('{%s}%s' % (P, name))):
++            pres.remove(node)
++    parts['ppt/presentation.xml'] = _tostring(pres)
++    # Standard document properties are intentionally new; no personal metadata,
++    # previews, custom properties, notes, comments or unattached source parts survive.
++    parts['docProps/core.xml'] = (
++        '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"/>'
++    ).encode()
++    parts['docProps/app.xml'] = (
++        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">'
++        '<Application>Friday</Application><Slides>5</Slides><Notes>0</Notes></Properties>'
++    ).encode()
++    parts['_rels/.rels'] = (
++        f'<Relationships xmlns="{PR}"><Relationship Id="rId1" Type="{R}/officeDocument" Target="ppt/presentation.xml"/>'
++        f'<Relationship Id="rId2" Type="{PR}/metadata/core-properties" Target="docProps/core.xml"/>'
++        f'<Relationship Id="rId3" Type="{R}/extended-properties" Target="docProps/app.xml"/></Relationships>'
++    ).encode()
++    types = _xml(source['[Content_Types].xml'])
++    for entry in list(types):
++        if entry.tag == '{%s}Override' % CT and entry.get('PartName', '').lstrip('/') not in parts:
++            types.remove(entry)
++    parts['[Content_Types].xml'] = _tostring(types)
++    return parts, paths
++
++
++def _set_text(body, value):
++    """Retain the slot's paragraph/run style, refusing mixed-style replacement."""
++    paragraphs = body.findall('{%s}p' % A)
++    if not paragraphs:
++        raise PresentationRefused('template_text_slot')
++    sample = paragraphs[0]
++    runs = sample.findall('{%s}r' % A)
++    if len(runs) > 1 or sample.find('{%s}fld' % A) is not None:
++        raise PresentationRefused('template_mixed_text_style')
++    for paragraph in paragraphs[1:]:
++        if (ET.tostring(paragraph.find('{%s}pPr' % A)) if paragraph.find('{%s}pPr' % A) is not None else b'') != (
++                ET.tostring(sample.find('{%s}pPr' % A)) if sample.find('{%s}pPr' % A) is not None else b''):
++            raise PresentationRefused('template_mixed_text_style')
++        extra = paragraph.findall('{%s}r' % A)
++        if len(extra) > 1 or paragraph.find('{%s}fld' % A) is not None:
++            raise PresentationRefused('template_mixed_text_style')
++        left = runs[0].find('{%s}rPr' % A) if runs else None
++        right = extra[0].find('{%s}rPr' % A) if extra else None
++        if (ET.tostring(left) if left is not None else b'') != (ET.tostring(right) if right is not None else b''):
++            raise PresentationRefused('template_mixed_text_style')
++    for paragraph in paragraphs:
++        body.remove(paragraph)
++    for line in value.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
++        paragraph = deepcopy(sample)
++        for child in list(paragraph):
++            if child.tag not in ('{%s}pPr' % A, '{%s}endParaRPr' % A):
++                paragraph.remove(child)
++        run = deepcopy(runs[0]) if runs else ET.Element('{%s}r' % A)
++        for child in list(run):
++            if child.tag != '{%s}rPr' % A:
++                run.remove(child)
++        node = ET.SubElement(run, '{%s}t' % A)
++        node.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
++        node.text = line
++        end = paragraph.find('{%s}endParaRPr' % A)
++        paragraph.insert(list(paragraph).index(end) if end is not None else len(paragraph), run)
++        body.append(paragraph)
++
++
++def _table(table, facts):
++    rows = table.findall('{%s}tr' % A)
++    grid = table.find('{%s}tblGrid' % A)
++    if grid is None or len(rows) < 2:
++        raise PresentationRefused('template_table_shape')
++    keys = [''.join(node.text or '' for node in cell.iter('{%s}t' % A))
++            for cell in rows[0].findall('{%s}tc' % A)]
++    allowed = {'order_id', 'sku', 'qty', 'unit_price', 'currency', 'revision'}
++    if (not keys or len(keys) != len(grid) or len(set(keys)) != len(keys) or
++            not set(keys) <= allowed or len(facts['rows']) + 1 > 12):
++        raise PresentationRefused('template_table_columns')
++    # Preserve exact row geometry; unsupported row-count changes are explicit.
++    if len(rows) != len(facts['rows']) + 1:
++        raise PresentationRefused('template_table_row_count')
++    for row, fact in zip(rows[1:], facts['rows']):
++        cells = row.findall('{%s}tc' % A)
++        if len(cells) != len(keys):
++            raise PresentationRefused('template_table_shape')
++        for cell, key in zip(cells, keys):
++            if cell.get('gridSpan') or cell.get('rowSpan') or cell.get('hMerge') or cell.get('vMerge'):
++                raise PresentationRefused('template_merged_table')
++            body = cell.find('{%s}txBody' % A)
++            if body is None:
++                raise PresentationRefused('template_table_shape')
++            try:
++                width = int(grid[list(cells).index(cell)].get('w', '0')) / 12700 - 14.4
++                height = int(row.get('h', '0')) / 12700 - 7.2
++                explicit = _max_font(body, 1800)
++                points = int(explicit) / 100
++            except (ValueError, TypeError):
++                raise PresentationRefused('template_table_geometry') from None
++            if (width <= 0 or points < 1 or points * 1.2 > height or
++                    sum(1 if c in 'WM@#%&' or ord(c) > 0x2fff else .8 for c in fact[key]) * points > width):
++                raise PresentationRefused('template_table_capacity')
++            _set_text(body, fact[key])
++
++
++def _chart(parts, owner, frame, rid, facts, series):
++    rel = _rels(parts, _relpath(owner)).get(rid)
++    if rel is None or rel.get('Type') != R + '/chart':
++        raise PresentationRefused('template_chart_relationship')
++    name = _resolve(owner, rel.get('Target', ''))
++    root = _xml(parts[name])
++    plot = root.find('{%s}chart/{%s}plotArea' % (C, C))
++    groups = [] if plot is None else [n for n in plot if n.tag.endswith('Chart')]
++    if len(groups) != 1 or groups[0].tag not in ('{%s}barChart' % C, '{%s}lineChart' % C):
++        raise PresentationRefused('template_chart_type')
++    series_nodes = groups[0].findall('{%s}ser' % C)
++    if len(series_nodes) != 1 or any(root.find('.//{%s}%s' % (C, tag)) is not None
++            for tag in ('title', 'dLbls', 'trendline', 'errBars', 'extLst')):
++        raise PresentationRefused('template_chart_series')
++    if any(root.find('.//{%s}scaling/{%s}%s' % (C, C, tag)) is not None
++           for tag in ('min', 'max', 'logBase')):
++        raise PresentationRefused('template_chart_fixed_scale')
++    node = series_nodes[0]
++    refs = [('tx/strRef', 'strCache', [series], 'Sheet1!$B$1'),
++            ('cat/strRef', 'strCache', list(facts['totals']), f"Sheet1!$A$2:$A${len(facts['totals'])+1}"),
++            ('val/numRef', 'numCache', list(facts['totals'].values()), f"Sheet1!$B$2:$B${len(facts['totals'])+1}")]
++    if not 1 <= len(facts['totals']) <= 8:
++        raise PresentationRefused('template_chart_capacity')
++    try:
++        ext = frame.find('{%s}xfrm/{%s}ext' % (P, A))
++        width = int(ext.get('cx', '0')) / 12700
++        explicit = _max_font(root, 1800)
++        points = int(explicit) / 100
++        limit = max(1, int((width * .75 / len(facts['totals'])) / points))
++    except (AttributeError, ValueError, TypeError, ZeroDivisionError):
++        raise PresentationRefused('template_chart_geometry') from None
++    if any(len(category) > limit for category in facts['totals']):
++        raise PresentationRefused('template_chart_label_capacity')
++    for path, cache_name, values, formula in refs:
++        ref = node.find('/'.join('{%s}%s' % (C, part) for part in path.split('/')))
++        if ref is None:
++            raise PresentationRefused('template_chart_cache')
++        ref.clear()
++        ET.SubElement(ref, '{%s}f' % C).text = formula
++        cache = ET.SubElement(ref, '{%s}%s' % (C, cache_name))
++        if cache_name == 'numCache':
++            ET.SubElement(cache, '{%s}formatCode' % C).text = '0.00'
++        ET.SubElement(cache, '{%s}ptCount' % C, val=str(len(values)))
++        for index, value in enumerate(values):
++            point = ET.SubElement(cache, '{%s}pt' % C, idx=str(index))
++            ET.SubElement(point, '{%s}v' % C).text = value
++    external = root.find('{%s}externalData' % C)
++    rels = _rels(parts, _relpath(name))
++    book = rels.get(external.get('{%s}id' % R)) if external is not None else None
++    if len(rels) != 1 or book is None or book.get('Type') != R + '/package':
++        raise PresentationRefused('template_chart_workbook')
++    for child in list(external):
++        external.remove(child)
++    ET.SubElement(external, '{%s}autoUpdate' % C, val='0')
++    parts[_resolve(name, book.get('Target', ''))] = _workbook(facts, series)
++    parts[name] = _tostring(root)
++
++
++def create_template_pptx(data, facts, spec):
++    """Five existing title/body slots and one existing native table/chart.
++
++    Positions, template fonts, palette and master/layout topology are preserved.
++    Table header keys select source columns; row count and requested flags must
++    match the existing template. Authored prose remains explicitly unverified.
++    """
++    parts, paths = _template_parts(data)
++    slides = spec['slides']; series = text(spec['series'], limit=256)
++    if not isinstance(slides, list) or len(slides) != 5:
++        raise PresentationRefused('exactly_five_slides')
++    count_table = count_chart = 0
++    for name, slide in zip(paths, slides):
++        if not isinstance(slide, dict) or set(slide) != {'title', 'body', 'table', 'chart'}:
++            raise PresentationRefused('slide_schema')
++        title = text(slide['title'], limit=256); body = text(slide['body'], empty=True)
++        if type(slide['table']) is not bool or type(slide['chart']) is not bool:
++            raise PresentationRefused('slide_flags')
++        root = _xml(parts[name]); tree = root.find('{%s}cSld/{%s}spTree' % (P, P))
++        if (tree is None or root.find('{%s}timing' % P) is not None or
++                root.get('show', '1') not in ('1', 'true')):
++            raise PresentationRefused('template_slide_shape')
++        title_shapes = []; body_shapes = []; tables = []; charts = []
++        for shape in tree:
++            if shape.tag in ('{%s}nvGrpSpPr' % P, '{%s}grpSpPr' % P):
++                continue
++            if shape.tag == '{%s}sp' % P:
++                text_body = shape.find('{%s}txBody' % P)
++                ph = shape.find('{%s}nvSpPr/{%s}nvPr/{%s}ph' % (P, P, P))
++                if text_body is None:
++                    raise PresentationRefused('template_nontext_shape')
++                (title_shapes if ph is not None and ph.get('type') in ('title', 'ctrTitle')
++                 else body_shapes).append(shape)
++            elif shape.tag == '{%s}graphicFrame' % P:
++                table = shape.find('.//{%s}tbl' % A); chart = shape.find('.//{%s}chart' % C)
++                if (table is None) == (chart is None):
++                    raise PresentationRefused('template_graphic_shape')
++                (tables if table is not None else charts).append(table if table is not None else (shape, chart))
++            else:
++                raise PresentationRefused('template_unsupported_shape')
++        if (len(title_shapes) != 1 or len(body_shapes) != 1 or len(tables) > 1 or len(charts) > 1 or
++                bool(tables) != slide['table'] or bool(charts) != slide['chart']):
++            raise PresentationRefused('template_slot_topology')
++        for shape, value in ((title_shapes[0], title), (body_shapes[0], body)):
++            _text_capacity(parts, name, shape, value)
++            _set_text(shape.find('{%s}txBody' % P), value)
++        if tables:
++            _table(tables[0], facts); count_table += 1
++        if charts:
++            frame, chart = charts[0]
++            _chart(parts, name, frame, chart.get('{%s}id' % R), facts, series); count_chart += 1
++        parts[name] = _tostring(root)
++    if count_table != 1 or count_chart != 1:
++        raise PresentationRefused('one_native_table_and_chart')
++    result = _zip(parts)
++    _parts(result)  # The published bytes must pass the same native package gate.
++    return result
+--- a/tools/scoped_presentation_write.py
++++ b/tools/scoped_presentation_write.py
+@@ -384,11 +384,14 @@
+ 
+ 
+ def pptx_request(content):
+-    """Two explicit modes: existing authored deck, or source-bound data deck."""
++    """Source-bound data, authored deck, or authored existing-template deck."""
+     try:
+         return json_object(content, ('source', 'data'))
+     except PresentationRefused:
+-        return json_object(content, ('source', 'slides', 'series'))
++        try:
++            return json_object(content, ('source', 'slides', 'series'))
++        except PresentationRefused:
++            return json_object(content, ('source', 'slides', 'series', 'template'))
+ 
+ 
+ def table_facts(data, suffix, request, checkpoint=lambda: None):
+--- a/tools/scoped_zip.py
++++ b/tools/scoped_zip.py
+@@ -6,6 +6,14 @@
+ 
+ class ZipMemberLimitError(BadZipFile):
+     """The declared or actual member output exceeds its allowed bound."""
++
++
++class ZipMemberDataError(BadZipFile):
++    """A structurally admitted member's bounded payload is corrupt.
++
++    Header, name, overlap, encryption and resource-limit failures deliberately
++    remain different errors. Only this class can support explicit salvage.
++    """
+ 
+ 
+ def read_zip_member(archive, data, info, max_bytes):
+@@ -101,13 +109,13 @@
+         try:
+             payload = decoder.decompress(compressed, min(info.file_size, max_bytes) + 1)
+         except zlib.error:
+-            raise BadZipFile('Invalid deflate stream') from None
++            raise ZipMemberDataError('Invalid deflate stream') from None
+         if len(payload) > info.file_size or len(payload) > max_bytes:
+             raise ZipMemberLimitError('ZIP member limit')
+         if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+-            raise BadZipFile('Incomplete or trailing deflate stream')
++            raise ZipMemberDataError('Incomplete or trailing deflate stream')
+     else:
+         payload = compressed
+     if len(payload) != info.file_size or zlib.crc32(payload) != info.CRC:
+-        raise BadZipFile('Inconsistent ZIP member output or CRC')
++        raise ZipMemberDataError('Inconsistent ZIP member output or CRC')
+     return payload
+--- a/tools/tool_search.py
++++ b/tools/tool_search.py
+@@ -9,9 +9,11 @@
+ from __future__ import annotations
+ 
+ import functools
++import hashlib
+ import json
+ import logging
+ import math
++import re
+ from collections import Counter
+ from dataclasses import dataclass
+ from typing import Any, Dict, Iterable, List, Optional, Tuple
+@@ -297,13 +299,24 @@
+             TOOL_DESCRIBE_NAME,
+             f"Load the full JSON schemas for tools returned by `{TOOL_SEARCH_NAME}`. "
+             f"Required before `{TOOL_CALL_NAME}` if a tool's parameters are unknown. "
+-            "Batch every schema you need into one call.",
++            "Batch every schema you need into one call. Large descriptions return a "
++            "schema_page instead of a file path. Continue with its next_offset and "
++            "expected_sha256, or use query to locate the operation you need. "
++            "Page text is a fragment of the full JSON, not a complete schema.",
+             {
+                 "names": {
+                     "type": "array",
+                     "items": {"type": "string"},
+                     "description": "Exact tool names (as returned by tool_search). A single string is accepted and treated as one name.",
+                 },
++                "offset": {"type": "integer", "minimum": 0,
++                           "description": "Character offset into the full JSON. A positive offset requires expected_sha256 from the prior page."},
++                "limit": {"type": "integer", "minimum": 1, "maximum": 4096,
++                          "description": "Maximum page characters, default 4096."},
++                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$",
++                                    "description": "Full schema fingerprint from the prior page. A changed catalog refuses continuation; refresh the first page."},
++                "query": {"type": "string", "minLength": 1, "maxLength": 80,
++                          "description": "Optional literal case-insensitive text to locate at or after offset, such as rar or presentation_edit. No regex or file access."},
+             },
+             ["names"],
+         ),
+@@ -486,6 +499,59 @@
+     return json.dumps(payload, ensure_ascii=False)
+ 
+ 
++def _describe_response(result: Dict[str, Any], args: Dict[str, Any]) -> str:
++    """Lossless, stateless pages of the currently scoped catalog, never cache paths.
++
++    A continuation rechecks the current scope and exact full-response fingerprint.
++    It grants no tool authority and cannot recover a removed tool from stored pages.
++    """
++    raw = json.dumps(result, ensure_ascii=False)
++    fields = {"offset", "limit", "expected_sha256", "query"}
++    if len(raw) <= 8000 and not fields.intersection(args):
++        return raw
++    offset, limit = args.get("offset", 0), args.get("limit", 4096)
++    expected, query = args.get("expected_sha256"), args.get("query")
++    if (type(offset) is not int or offset < 0
++            or type(limit) is not int or not 1 <= limit <= 4096
++            or (query is not None and (type(query) is not str or not 1 <= len(query) <= 80))
++            or (expected is not None and (type(expected) is not str
++                or re.fullmatch(r"[0-9a-f]{64}", expected) is None))):
++        return json.dumps({"error": "invalid_schema_page_arguments"})
++    fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
++    if offset and expected is None:
++        return json.dumps({"error": "schema_page_fingerprint_required"})
++    if expected is not None and expected != fingerprint:
++        return json.dumps({"error": "schema_changed_refresh_first_page"})
++    if offset > len(raw):
++        return json.dumps({"error": "schema_page_offset_out_of_range"})
++    found = None
++    if query is not None:
++        match = re.search(re.escape(query), raw[offset:], re.IGNORECASE)
++        if match is None:
++            return json.dumps({"error": "schema_query_no_match", "sha256": fingerprint})
++        found = offset + match.start()
++        offset = max(offset, found - min(160, limit // 4))
++    end = min(len(raw), offset + limit)
++    page = {"sha256": fingerprint, "encoding": "json_utf8", "total_chars": len(raw),
++            "offset": offset, "next_offset": end if end < len(raw) else None,
++            "covers_entire_schema": offset == 0 and end == len(raw),
++            "text": raw[offset:end]}
++    if found is not None:
++        page["match_offset"] = found
++    response = {"schema_page": page,
++        "hint": "This is a JSON fragment. Continue tool_describe with the same names, next_offset and expected_sha256, or locate a needed operation with query. No file access is required."}
++    # JSON escaping can enlarge a requested fragment. Stay below the native
++    # minimum per-result budget as well as the large-context default.
++    encoded = json.dumps(response, ensure_ascii=False)
++    while len(encoded) > 7800:
++        end = offset + max(1, (end - offset) // 2)
++        page.update(next_offset=end if end < len(raw) else None,
++                    covers_entire_schema=offset == 0 and end == len(raw),
++                    text=raw[offset:end])
++        encoded = json.dumps(response, ensure_ascii=False)
++    return encoded
++
++
+ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
+                            config: Optional[ToolSearchConfig] = None,
+                            connector_describe: Optional[Any] = None) -> str:
+@@ -528,7 +594,7 @@
+         result["errors"] = errors
+     if hosted_failure:
+         result["connectors"] = connectors_unavailable(hosted_failure, verb="described", names=undescribed)
+-    return json.dumps(result, ensure_ascii=False)
++    return _describe_response(result, args)
+ 
+ 
+ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:

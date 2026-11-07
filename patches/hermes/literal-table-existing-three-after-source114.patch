@@ -1,0 +1,255 @@
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -48,6 +48,10 @@
+ _MAX_XLSX_STRUCTURE_TEXT_CHARS = 4096
+ _MAX_XLSX_MERGE_RANGES = 256
+ _MAX_XLSX_MERGE_CELLS = 4096
++_MAX_XLSX_CELL_RECORDS = 1024
++_MAX_XLSX_CELL_TEXT_CHARS = 4096
++_MAX_XLSX_CELL_RECORD_BYTES = 32768
++_MAX_XLSX_CELL_PREVIEW_BYTES = 256000
+ 
+ _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+ _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+@@ -634,12 +638,12 @@
+ 
+ class _ScopedXlsxText(str):
+     """Keep workbook evidence and its coverage on the existing document carrier."""
+-    def __new__(cls, text, *, inventory_included=True, formula_preview, structure_preview):
++    def __new__(cls, text, *, inventory_included=True, formula_preview, structure_preview, cell_records):
+         result = super().__new__(cls, text)
+         result.extraction_metadata = {
+             "coverage": ("xlsx_workbook_inventory_and_visible_sheet_cell_value_preview" if inventory_included
+                          else "xlsx_visible_sheet_cell_value_preview; workbook_inventory_omitted_size_limit")
+-                        + "; bounded_inert_formula_and_structure_previews; charts_comments_layout_not_inspected",
++                        + "; bounded_inert_formula_and_structure_previews; bounded_inert_typed_cell_records; charts_comments_layout_not_inspected",
+             "workbook_inventory": ("in_content; read_all_pages_for_complete_lists" if inventory_included
+                                    else "omitted_size_limit; no_sheet_or_defined_name_inventory"),
+             "cell_value_preview": {
+@@ -651,6 +655,7 @@
+             },
+             "formula_source_preview": formula_preview,
+             "structure_preview": structure_preview,
++            "cell_records": cell_records,
+             "recalculated": False,
+             "filter_or_visibility_evaluated": False,
+         }
+@@ -674,7 +679,8 @@
+     lines += ["# End of workbook inventory",
+               f"# Cell-value preview of visible sheets: at most {_MAX_XLSX_ROWS_PER_SHEET} rows "
+               f"and {_MAX_XLSX_COLS} columns per sheet; hidden rows and columns are not filtered. "
+-              "Saved values only; no recalculation. "
++              "Saved values only; no recalculation. TAB/LF display is not a lossless table stream; "
++               "literal values may contain these separators. Use bounded typed cell records and their limits. "
+               "Formula-source coverage is separately bounded; inspect extraction metadata. "
+               "Charts, comments and layout are not inspected. "
+               "Past descriptions or preservation results do not establish extra sheet/name declarations.", ""]
+@@ -697,6 +703,113 @@
+         self.structure_observed = dict(hidden_row=0, hidden_column=0, auto_filter=0, merge=0)
+         self.merge_rectangles = []
+         self.merge_cells_listed = 0
++        self.cell_records = []
++        self.cell_bytes = 0
++        self.cells_observed = 0
++
++    def add_cell(self, sheet, row, row_index, cell, col, shared, s):
++        """One stored source cell, never a synthetic sparse/merged display follower.
++
++        Text/number/date/boolean values retain their native lexical representation;
++        only shared/inline strings are resolved. A formula is not a literal value.
++        """
++        self.cells_observed += 1
++        if len(self.cell_records) >= _MAX_XLSX_CELL_RECORDS:
++            return
++        truncated = []
++
++        def bounded(key, value):
++            if value is not None and len(value) > _MAX_XLSX_CELL_TEXT_CHARS:
++                truncated.append(key)
++                return value[:_MAX_XLSX_CELL_TEXT_CHARS]
++            return value
++
++        typ = cell.get("t", "n")
++        node = cell.find(f"{s}v")
++        raw = None if node is None else (node.text or "")
++        state = "missing" if raw is None else "empty" if raw == "" else "present"
++        formula = cell.find(f"{s}f")
++        record = dict(sheet=sheet, cell=cell.get("r"), row_declared=row.get("r"),
++                      row_element_index=row_index + 1, preview_column=col + 1,
++                      source="stored_cell; no_sparse_or_merged_fill",
++                      native_type=typ, type_declared=cell.get("t"),
++                      style_index=cell.get("s"), formula_present=formula is not None)
++        if formula is not None:
++            record.update(literal_value=None, literal_state="not_literal_formula",
++                          formula=dict(text=bounded("formula.text", formula.text or ""),
++                                       attributes=dict(formula.attrib)),
++                          saved_cache=dict(state=state, native_type=typ,
++                                           raw_value=bounded("saved_cache.raw_value", raw)))
++        else:
++            value = raw
++            if typ == "inlineStr":
++                inline = cell.find(f"{s}is")
++                value = None if inline is None else _xlsx_string_text(inline, s)
++                state = "missing" if value is None else "empty" if value == "" else "present"
++            elif typ == "s":
++                # Unlike a display fallback, an invalid index must not masquerade as
++                # the literal empty string (negative Python indexes are not XLSX indexes).
++                try:
++                    index = int(raw) if raw is not None else -1
++                    if not 0 <= index < len(shared):
++                        raise ValueError
++                    value = shared[index]
++                    state = "empty" if value == "" else "present"
++                except ValueError:
++                    value, state = None, "unresolved_shared_string"
++            record.update(literal_value=bounded("literal_value", value), literal_state=state,
++                          raw_value=bounded("raw_value", raw))
++        record["truncated_fields"] = truncated
++        line = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
++        size = len(line.encode("utf-8")) + 1
++        if size > _MAX_XLSX_CELL_RECORD_BYTES or self.cell_bytes + size > _MAX_XLSX_CELL_PREVIEW_BYTES:
++            return
++        unresolved = record.get("literal_state") == "unresolved_shared_string"
++        self.cell_records.append((line, bool(truncated), unresolved))
++        self.cell_bytes += size
++
++    def render_cells(self, available_bytes):
++        header = ("\n# XLSX typed cell records (inert escaped JSON; stored visible preview cells only)\n"
++                  "# Each record describes one stored cell; TAB/LF/CR in values are JSON escapes, not rows. "
++                  "Native types and lexical values are not formatted display text. Formula text and saved "
++                  "caches are separate, never evaluated or copied as literal results. Missing coordinates "
++                  "remain null; row_element_index/preview_column are preview positions only. "
++                  "No inferred sparse or merged followers. Check extraction.cell_records for limits.\n")
++        available_bytes = min(available_bytes, _MAX_XLSX_CELL_PREVIEW_BYTES)
++        lines, used, truncated, unresolved = [], len(header.encode("utf-8")), 0, 0
++        if used <= available_bytes:
++            for line, cut, missing in self.cell_records:
++                size = len(line.encode("utf-8")) + 1
++                if used + size > available_bytes:
++                    break
++                lines.append(line)
++                used += size
++                truncated += cut
++                unresolved += missing
++        metadata = dict(location="in_content; read_all_pages_for_available_records",
++                        scope="stored_cells_in_visible_sheet_preview_only; not_full_workbook",
++                        coordinate="cell_is_native_r_or_null; preview_positions_are_not_native_coordinates",
++                        native_values="lexical; no_style_or_date_format_interpretation",
++                        strings="XML_parsed_inline_or_shared_base_text; no_OOXML_escape_or_rich_format_interpretation",
++                        merged_and_sparse="stored_cells_only; no_fill; see_structure_preview",
++                        pagination="read_file_may_split_lines; join_same_line_char_offset_segments_before_JSON_parse",
++                        max_row_elements_per_sheet=_MAX_XLSX_ROWS_PER_SHEET,
++                        max_columns=_MAX_XLSX_COLS, max_records=_MAX_XLSX_CELL_RECORDS,
++                        max_text_chars=_MAX_XLSX_CELL_TEXT_CHARS,
++                        max_record_bytes=_MAX_XLSX_CELL_RECORD_BYTES,
++                        max_preview_bytes=_MAX_XLSX_CELL_PREVIEW_BYTES,
++                        observed_cells=self.cells_observed, included_records=len(lines),
++                        omitted_records=self.cells_observed - len(lines),
++                        records_with_truncated_fields=truncated, unresolved_literal_records=unresolved,
++                        truncated=bool(self.cells_observed - len(lines) or truncated or unresolved),
++                        sheets=self.sheets, rows_omitted_by_preview_limit=self.rows_omitted,
++                        cells_omitted_by_column_limit=self.cells_omitted,
++                        hidden_rows_and_columns="not_filtered", evaluated=False,
++                        full_workbook=False)
++        if used > available_bytes:
++            metadata["location"] = "omitted_size_limit"
++            return "", metadata
++        return header + "".join(line + "\n" for line in lines), metadata
+ 
+     def _structure_add(self, kind, sheet, record, *, truncated=False):
+         self.structure_observed[kind] += 1
+@@ -998,8 +1111,11 @@
+         combined = text + formula_text
+         structure_text, structure_metadata = formulas.render_structure(
+             1000000-len(combined.encode("utf-8")))
+-        return _ScopedXlsxText(combined + structure_text, inventory_included=inventory_included,
+-                               formula_preview=metadata, structure_preview=structure_metadata)
++        combined += structure_text
++        cell_text, cell_metadata = formulas.render_cells(1000000-len(combined.encode("utf-8")))
++        return _ScopedXlsxText(combined + cell_text, inventory_included=inventory_included,
++                               formula_preview=metadata, structure_preview=structure_metadata,
++                               cell_records=cell_metadata)
+     return text
+ 
+ 
+@@ -1029,6 +1145,7 @@
+             if col < _MAX_XLSX_COLS:
+                 if formulas is not None:
+                     formulas.add(sheet, cell, s)
++                    formulas.add_cell(sheet, row, index, cell, col, shared, s)
+                 # Missing/blank formula caches are not FALSE or #ERROR results.
+                 no_cache = (formulas is not None and cell.find(f"{s}f") is not None
+                             and not cell.findtext(f"{s}v"))
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -11,7 +11,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = "friday.public-identity.v14"
++DIALOGUE_REVISION = "friday.public-identity.v15"
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -193,6 +193,14 @@
+     'source/old_text/new_text и новым именем выходного файла. docx/docx_structured создают '
+     'документ заново и не сохраняют исходный пакет. Чтение текста не проверяет оформление. '
+     'Для экспорта DOCX в новый PDF используй write_file format=docx_pdf и JSON {"source":"report.docx"}; исходник остаётся неизменным. '
++    'Если пользователь просит одну таблицу с буквальным текстом, создай один .xlsx через write_file '
++    'format=xlsx_create, если он явно не выбрал другой формат. Копируй текст строками: сохраняй '
++    'ведущие нули, пробелы, переносы и префиксы =,+,-,@; не превращай их в формулы или числа. '
++    'Не добавляй альтернативные CSV/TSV без запроса; соблюдай запрошенное число файлов. '
++    'Явно запрошенные несколько файлов и иной формат сохраняются. Кавычки CSV/TSV не задают '
++    'строковый тип при открытии в табличной программе; не обещай сохранение типов по текстовому перечитыванию. '
++    'При чтении XLSX сверяй экранированные typed cell records и их limits/omissions/truncated_fields; '
++    'обычный TAB/LF preview не является точным потоком строк таблицы. '
+     'Для создания обычного XLSX используй xlsx_create с sheets/name/rows: строки буквальны, decimal/date задаются явным type/value, null — пустая ячейка. Нативные формулы только явные type=formula: C2*D2 или SUM(Orders!G2:G5); table задаёт name/ref листа, names — именованные диапазоны. Для закрепления первой строки задай freeze=A2; print_area=A1:G5 задаёт одну локальную область печати в пределах листа. Объекты decimal/formula принимают number_format=0.00 для двух знаков после запятой. Пересчитывай возвращённый файл отдельно. '
+     'Для точного текстового LEFT JOIN двух разных листов одного XLSX используй xlsx_join с source/left_sheet/right_sheet/key/sheet; уникальные текстовые ключи, без нормализации, совпадающие имена неключевых колонок отклоняются. '
+     'Для объединения двух XLSX используй write_file format=xlsx_merge с новым именем и JSON base/update/sheet/key/revision. Ключи сохраняются текстом; равные строки не дублируются; выбирается строго большая целая revision, равная revision с разным содержимым отклоняется. Сложные структуры отклоняются; кеши очищаются без пересчёта. '
+@@ -277,7 +285,11 @@
+         function['description'] = (
+             'Read an own-workspace UTF-8 text file with numbered lines. Use offset, limit and the '
+             'returned next_offset/next_char_offset for continuation. PDF, DOCX and XLSX extract text '
+-            'only; images and layout are not covered. ZIP and supported 7z return a checked archive member registry; '
++            'only; images and layout are not covered. XLSX also supplies bounded escaped typed cell JSON '
++            'records with native coordinates/types and separate formula/cache fields; inspect '
++            'extraction.cell_records for omissions/truncation and concatenate char_offset segments '
++            'of one line before JSON parsing. The TAB/LF display is not a lossless table stream. '
++            'ZIP and supported 7z return a checked archive member registry; '
+             'offset and limit paginate whole archive entries. If partial is true, continue at next_offset; '
+             'total_entries and sha256 identify the full archive. '
+             'use write_file format=zip_extract or 7z_extract to extract into a NEW folder, then read those returned paths. '
+--- a/hermes_cli/friday_workspace_xlsx_table.py
++++ b/hermes_cli/friday_workspace_xlsx_table.py
+@@ -17,7 +17,7 @@
+ from hermes_cli.friday_workspace_docx import _create_bytes
+ from hermes_cli.friday_workspace_xlsx_recalculate import Book, S, R, P, RecalculationRefused
+ 
+-GUIDANCE = 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} (two-cell multiplication) or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. '
++GUIDANCE = 'For one requested literal-text table, create one XLSX with xlsx_create unless the user explicitly requests another format. Preserve string content, leading zeros, whitespace, line breaks and =,+,-,@ prefixes as strings; never infer formulas from text. Respect the requested output count; do not add alternate CSV/TSV copies. Explicit multi-file/other-format requests remain valid; CSV/TSV quoting alone does not preserve spreadsheet cell types. XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} (two-cell multiplication) or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. '
+ 
+ MAX_CONTENT = 100000
+ MAX_ROWS = 512
+@@ -371,8 +371,9 @@
+     named = ET.SubElement(styles, S+'cellStyles', count='1'); ET.SubElement(named, S+'cellStyle', name='Normal', xfId='0', builtinId='0')
+     parts.update({'[Content_Types].xml':types, '_rels/.rels':package_rels, 'xl/workbook.xml':workbook, 'xl/_rels/workbook.xml.rels':rels, 'xl/styles.xml':styles})
+     output = BytesIO()
++    # XML parsers normalize literal CR/CRLF; character references preserve the source text.
+     with ZipFile(output, 'w', compression=ZIP_DEFLATED) as package:
+-        for name, root in parts.items(): package.writestr(name, ET.tostring(root, encoding='utf-8', xml_declaration=True))
++        for name, root in parts.items(): package.writestr(name, ET.tostring(root, encoding='utf-8', xml_declaration=True).replace(b'\r', b'&#13;'))
+     result = output.getvalue()
+     if len(result) > 1000000: deny('xlsx_table_output_limit')
+     # Admit our output through the existing guarded consumer before publication.
+@@ -463,9 +464,10 @@
+     named = ET.SubElement(styles, S+'cellStyles', count='1'); ET.SubElement(named, S+'cellStyle', name='Normal', xfId='0', builtinId='0')
+     parts.update({'[Content_Types].xml':types, '_rels/.rels':package_rels, 'xl/workbook.xml':workbook, 'xl/_rels/workbook.xml.rels':rels, 'xl/styles.xml':styles})
+     output = BytesIO()
++    # XML parsers normalize literal CR/CRLF; character references preserve the source text.
+     with ZipFile(output, 'w', compression=ZIP_DEFLATED) as package:
+         for name, root in parts.items():
+-            package.writestr(name, ET.tostring(root, encoding='utf-8', xml_declaration=True))
++            package.writestr(name, ET.tostring(root, encoding='utf-8', xml_declaration=True).replace(b'\r', b'&#13;'))
+     result = output.getvalue()
+     if len(result) > 1000000: deny('xlsx_table_output_limit')
+     return result

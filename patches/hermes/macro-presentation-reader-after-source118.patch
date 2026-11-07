@@ -1,0 +1,197 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -296,10 +296,13 @@
+             'records with native coordinates/types and separate formula/cache fields; inspect '
+             'extraction.cell_records for omissions/truncation and concatenate char_offset segments '
+             'of one line before JSON parsing. The TAB/LF display is not a lossless table stream. '
+-            'PPTX and ODP return native slide text, tables and cached chart data with slide order, '
++            'PPTX/POTX/PPSX/PPTM/POTM/PPSM and ODP/OTP return native slide text, tables and cached chart data with slide order, '
+             'separate speaker notes, source labels and coverage/unsupported-feature metadata; follow all '
+             'pages when partial is true. Hidden content is labelled; notes are not public slide content. '
+-            'Images, layout and rendering are not covered. '
++            'Images, layout and rendering are not covered. Macro variants require their genuine native '
++            'content type and a matching opaque VBA project. Macro/project-present metadata does not '
++            'establish code safety: source/p-code are not inspected and macros are never executed. '
++            'Macro variant creation/editing/merge/conversion is unsupported. '
+             'ZIP and supported 7z return a checked archive member registry; '
+             'offset and limit paginate whole archive entries. If partial is true, continue at next_offset; '
+             'total_entries and sha256 identify the full archive. '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -880,7 +880,7 @@
+                 from hermes_cli.friday_workspace_zip import read_archive
+                 return read_archive(cap, path.as_posix(), offset=args.get('offset', 1),
+                                     limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.pptx', '.potx', '.ppsx', '.odp', '.otp'} else None
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp'} else None
+             extraction_metadata = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+@@ -1052,10 +1052,15 @@
+             from hermes_cli.friday_workspace_docx import create
+             return create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                           structured=output_format == 'docx_structured')
+-        if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.xls', '.zip', '.7z', '.pptx', '.potx', '.ppsx', '.odp', '.otp'}:
++        if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.xls', '.zip', '.7z', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+-            if path.suffix.lower() in {'.potx', '.ppsx', '.otp'}:
++            if path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
++                refusal['hint'] = ('Native macro presentation variants can be read. Creating, '
++                    'editing, merging, converting or executing these formats is unsupported. Macro projects '
++                    'are opaque and their safety is unproven. Do not write text/XML '
++                    'under these suffixes or rename an ordinary presentation to claim these formats.')
++            elif path.suffix.lower() in {'.potx', '.ppsx', '.otp'}:
+                 refusal['hint'] = ('Native presentation templates and slideshows can be read. Creating '
+                     'or editing these formats is not supported by this writer. Do not write text/XML '
+                     'under these suffixes or rename an ordinary presentation to claim these formats.')
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1181,7 +1181,9 @@
+ READ_FILE_SCHEMA['description'] += (
+     ' In the own-user workspace, native POTX/OTP templates and PPSX slideshows also expose slide text, '
+     'tables, cached chart data and separate speaker notes. This reading does not render layout '
+-    'or authorize template/slideshow creation/editing; macro-enabled OOXML presentation formats are unsupported.')
++    'or authorize template/slideshow creation/editing. Genuine PPTM/POTM/PPSM expose the same bounded '
++    'native reading plus opaque project-present/hash metadata; no macro source or p-code is inspected, '
++    'no macro runs, and safety is unproven. Macro variant creation/editing/merging/conversion is unsupported.')
+ 
+ WRITE_FILE_SCHEMA = {
+     "name": "write_file",
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -160,7 +160,8 @@
+ def extract_scoped_document_bytes(data: bytes, format: str) -> str:
+     """Convert own immutable snapshots; never install or use hosted OCR.
+ 
+-    PPTX/POTX/PPSX/ODP/OTP expose bounded native content, separate notes and coverage.
++    PPTX/POTX/PPSX/PPTM/POTM/PPSM/ODP/OTP expose bounded native content,
++    separate notes and coverage. Macro projects remain opaque and are never run.
+     DOCX/XLSX reuse bounded native parsers. PDF keeps the existing installed
+     anydoc text route, with a bounded networkless local OCR fallback only for
+     its scanned-page signal. OCR returns a string-compatible trusted metadata
+@@ -179,7 +180,7 @@
+                                  max_total_xml_bytes=1000000, include_inventory=True)
+         except (ExtractionError, ValueError, RuntimeError, NotImplementedError, LookupError, zlib.error):
+             raise ScopedExtractionError('malformed_or_required_part_limit') from None
+-    elif format in ('pptx', 'potx', 'ppsx', 'odp', 'otp'):
++    elif format in ('pptx', 'potx', 'ppsx', 'pptm', 'potm', 'ppsm', 'odp', 'otp'):
+         from tools.scoped_presentation import extract_presentation, PresentationError
+         try:
+             text = extract_presentation(data, format)
+--- a/tools/scoped_presentation.py
++++ b/tools/scoped_presentation.py
+@@ -1,10 +1,11 @@
+-"""Bounded, offline native PPTX/POTX/PPSX/ODP/OTP view of immutable bytes.
++"""Bounded, offline native OOXML/ODF presentation view of immutable bytes.
+ 
+ No rendering, formula evaluation, link refresh, archive extraction or installation.
+ All content is labelled by slide and role; this view does not grant write authority.
+ """
+ from __future__ import annotations
+ import io
++import hashlib
+ import json
+ import posixpath
+ import re
+@@ -33,7 +34,13 @@
+     'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml',
+     'potx': 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml',
+     'ppsx': 'application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml',
++    'pptm': 'application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml',
++    'potm': 'application/vnd.ms-powerpoint.template.macroEnabled.main+xml',
++    'ppsm': 'application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml',
+ }
++MACRO_FORMATS = frozenset(('pptm', 'potm', 'ppsm'))
++VBA_CONTENT_TYPE = 'application/vnd.ms-office.vbaProject'
++VBA_RELATIONSHIP = 'http://schemas.microsoft.com/office/2006/relationships/vbaProject'
+ ODF_MIMES = {
+     'odp': MIME,
+     'otp': 'application/vnd.oasis.opendocument.presentation-template',
+@@ -405,13 +412,56 @@
+     return output
+ 
+ 
++def macro_metadata(pkg, name, content_type):
++    """Identify an opaque, bounded project; never decode or execute its code.
++
++    Header checks establish a plausible CFB container only. They do not validate
++    VBA streams, compiled p-code, signatures, or the safety of any instructions.
++    """
++    projects = []
++    for owner, rows in pkg.relationships.items():
++        for kind, target in rows.values():
++            role = kind.rsplit('/', 1)[-1].casefold()
++            if role in ('vbaproject', 'oleobject', 'control', 'package', 'attachedtemplate',
++                        'externallink', 'audio', 'video') and target is None:
++                refuse('external_active_relationship')
++            if role == 'vbaproject':
++                if owner != name or kind != VBA_RELATIONSHIP or target is None:
++                    refuse('invalid_vba_relationship')
++                projects.append(target)
++    if len(projects) != 1:
++        refuse('vba_project_relationship_required')
++    target = projects[0]
++    declared = {part for part in pkg.parts if content_type(part) == VBA_CONTENT_TYPE}
++    if declared != {target}:
++        refuse('vba_project_content_type_mismatch')
++    raw = pkg.parts[target]
++    # CFB v3/v4 headers; no streams or source/compiled instructions are read.
++    if (len(raw) < 512 or raw[:8] != bytes.fromhex('d0cf11e0a1b11ae1')
++            or raw[8:24] != bytes(16) or raw[28:30] != b'\xfe\xff'
++            or raw[32:34] != b'\x06\x00' or raw[34:40] != bytes(6)):
++        refuse('invalid_vba_project_container')
++    major = int.from_bytes(raw[26:28], 'little')
++    shift = int.from_bytes(raw[30:32], 'little')
++    if (major, shift) not in ((3, 9), (4, 12)) or len(raw) % (1 << shift):
++        refuse('invalid_vba_project_container')
++    pkg.unsupported.add('vba_project_opaque_not_read_or_executed')
++    return {'present': True, 'source': target, 'bytes': len(raw),
++            'sha256': hashlib.sha256(raw).hexdigest(),
++            'validation': 'cfb_header_only_not_vba_semantics',
++            'source_code': 'not_read', 'compiled_pcode': 'not_disassembled',
++            'execution': 'not_performed', 'safety': 'unproven'}
++
++
+ def read_pptx(pkg, format='pptx'):
+     if format not in PPT_MAIN_TYPES: refuse('unsupported_format')
+     types = pkg.root('[Content_Types].xml', q(CT, 'Types')); overrides = {}; defaults = {}
+     for part in types:
+         typ = part.get('ContentType', '')
+         if not typ: refuse('invalid_content_type')
+-        if 'macro' in typ.casefold() or 'vba' in typ.casefold(): refuse('active_package_unsupported')
++        if 'macro' in typ.casefold() or 'vba' in typ.casefold():
++            if format not in MACRO_FORMATS or typ not in (PPT_MAIN_TYPES[format], VBA_CONTENT_TYPE):
++                refuse('active_package_unsupported')
+         if part.tag == q(CT, 'Override'):
+             name = local_path('', part.get('PartName', ''))
+             if name in overrides: refuse('duplicate_content_type')
+@@ -438,6 +488,16 @@
+     if content_type(name) != PPT_MAIN_TYPES[format]:
+         refuse('not_native_'+format)
+     root = pkg.root(name, q(P, 'presentation'))
++    if format in MACRO_FORMATS:
++        pkg.macro_project = macro_metadata(pkg, name, content_type)
++        pkg.style_metadata = {
++            'theme_parts': sum(r.tag == q(A, 'theme') for r in pkg.xml.values()),
++            'slide_master_parts': sum(r.tag == q(P, 'sldMaster') for r in pkg.xml.values()),
++            'slide_layout_parts': sum(r.tag == q(P, 'sldLayout') for r in pkg.xml.values()),
++            'inheritance': 'not_evaluated', 'layout': 'not_rendered'}
++    elif any(kind.rsplit('/', 1)[-1].casefold() == 'vbaproject'
++             for rows in pkg.relationships.values() for kind, target in rows.values()):
++        refuse('active_package_unsupported')
+     slide_ids = root.findall('./'+q(P, 'sldIdLst')+'/'+q(P, 'sldId'))
+     if not 1 <= len(slide_ids) <= MAX_SLIDES: refuse('slide_count_limit')
+     visited = set(); ids = set(); note_parts = set(); slides = []
+@@ -636,6 +696,11 @@
+         metadata={'kind':'native_presentation_xml_v1','format':format,**counts,
+                   'coverage':'native_slide_text_tables_cached_chart_data_diagram_text_and_separate_notes; images_layout_rendering_and_formula_evaluation_not_covered',
+                   'unsupported_features':sorted(pkg.unsupported),'external_relationships_not_resolved':pkg.external}
++        if format in MACRO_FORMATS:
++            metadata.update({'macro_enabled': True, 'native_main_content_type': PPT_MAIN_TYPES[format],
++                             'macro_project': pkg.macro_project,
++                             'style_metadata': pkg.style_metadata,
++                             'operations': 'read_only; create_edit_merge_convert_and_execution_unsupported'})
+         # One JSON record per labelled line prevents document text forging role boundaries.
+         lines=['PRESENTATION '+encoded(metadata)]
+         for index,slide in enumerate(slides,1):

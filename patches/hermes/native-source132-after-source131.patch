@@ -1,0 +1,2221 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -12,7 +12,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1'
++DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1'
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -200,7 +200,10 @@
+     'Use the explicitly UNSIGNED derivative for later supported edits. Static signature-looking page artwork may remain and proves nothing. '
+     'Only flat signature-only forms, up to 16 signatures, 64 pages and 1 MB; mixed forms, encryption, actions, attachments and DocMDP refuse. '
+ )
+-DOCX_EDIT_GUIDANCE = PDF_SIGNATURE_GUIDANCE + PDF_REPORT_GUIDANCE + (
++from hermes_cli.friday_workspace_presentation_macro import GUIDANCE as MACRO_PRESENTATION_GUIDANCE
++WORD_CONVERSION_GUIDANCE = 'Word conversion: docx_odt creates a NEW .odt from .docx; odt_docx creates a NEW .docx from .odt. Content is exactly JSON {source,source_sha256}; read the source first and use its current lowercase SHA-256. An isolated local Office process converts genuine native input; parsed destination paragraphs, heading levels and plain rectangular tables must match the original semantic inventory. Only plain text, explicit spaces/tabs/line breaks and unmerged tables are supported; fonts, run styling and pagination may change. Lists, fields, images, notes, links, hidden/protected/signed/active content and ambiguous styles refuse. Source remains unchanged; unavailable toolchain or unsupported conversion refuses without publishing. Never rename a suffix or rebuild extracted text to claim conversion. '
++SPREADSHEET_CONVERSION_GUIDANCE = 'XLSX/ODS cross-family conversion: spreadsheet_convert with exactly {source} into a NEW opposite .ods or .xlsx output uses isolated Office. Only this XLSX<->ODS pair is added; other existing native family conversions keep their limits. The output must retain sheet order, exact text/IDs, booleans, bounded decimals, dates and supported formula references, with independent formula/cache verification. Plain scalar cells and bounded SUM/product formulas only; custom styles, names, tables, charts, merged/hidden cells or sheets, protected/macro/external content refuse. Source is unchanged. No general filter or visual/layout fidelity is promised; unsupported output or unavailable toolchain produces no file. '
++DOCX_EDIT_GUIDANCE = WORD_CONVERSION_GUIDANCE + SPREADSHEET_CONVERSION_GUIDANCE + MACRO_PRESENTATION_GUIDANCE + PDF_SIGNATURE_GUIDANCE + PDF_REPORT_GUIDANCE + (
+     'For supported PDF text forms, read_file with pdf_form_fields=true returns field names, values and source_sha256; use default pagination. '
+     'Fill a NEW PDF with pdf_form_fill and exact JSON {"source":"form.pdf","source_sha256":"<hash from that read>","fields":{"name":"value"}}. '
+     'Only flat AcroForm text widgets with standard Helvetica/Courier defaults and fitting single-line text are supported. Printable ASCII keeps its standard appearance; bounded supported Latin/Cyrillic text uses the pinned embedded DejaVu Sans font with Unicode values and native appearance streams, without flattening. '
+@@ -401,7 +404,7 @@
+             'Images, layout and rendering are not covered. Macro variants require their genuine native '
+             'content type and a matching opaque VBA project. Macro/project-present metadata does not '
+             'establish code safety: source/p-code are not inspected and macros are never executed. '
+-            'Macro variant creation/editing/merge/conversion is unsupported. '
++            'For one preserving literal correction in a macro variant use presentation_macro_edit with the current source_sha256; creation, merge and conversion remain unsupported. '
+             'ZIP and supported 7z/RAR return a checked archive member registry; '
+             'RAR reading supports bounded single-volume stored RAR4 and supported RAR5 regular files/directories only; compressed RAR4, encryption, multivolume, links/special members and unsupported inputs refuse the whole archive. '
+             'offset and limit paginate whole archive entries. If partial is true, continue at next_offset; '
+@@ -535,9 +538,9 @@
+         from tools.scoped_odg_write import GUIDANCE as DIAGRAM_GUIDANCE
+         function['description'] = DIAGRAM_GUIDANCE + function['description']
+         from hermes_cli.friday_workspace_xlsx_table import GUIDANCE
+-        function['description'] = PDF_REPORT_GUIDANCE + GUIDANCE + function['description']
++        function['description'] = WORD_CONVERSION_GUIDANCE + SPREADSHEET_CONVERSION_GUIDANCE + MACRO_PRESENTATION_GUIDANCE + PDF_REPORT_GUIDANCE + GUIDANCE + function['description']
+         content = function['parameters']['properties']['content']
+-        content['description'] = PDF_REPORT_GUIDANCE + GUIDANCE + content.get('description', '')
++        content['description'] = WORD_CONVERSION_GUIDANCE + SPREADSHEET_CONVERSION_GUIDANCE + MACRO_PRESENTATION_GUIDANCE + PDF_REPORT_GUIDANCE + GUIDANCE + content.get('description', '')
+         function['description'] = PDF_REPORT_GUIDANCE + function['description']
+     function['description'] = ODF_PASSWORD_GUIDANCE + PDF_SIGNATURE_GUIDANCE + function['description']
+     return value
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -1082,7 +1082,7 @@
+                 'hint': 'DOCM/DOTM support bounded inert reading only. Macro projects are '
+                         'opaque, never executed, and not accepted as safe. Creating or editing '
+                         'these profiles is unsupported; do not drop VBA or rename another format.'})
+-        if output_format not in ('diagram_create', 'pdf_report', 'pdf_form_fill', 'text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit'):
++        if output_format not in ('diagram_create', 'pdf_report', 'pdf_form_fill', 'text', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'docx_odt', 'odt_docx', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'presentation_macro_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit'):
+             raise ScopeDenied()
+         if output_format == 'diagram_create':
+             from hermes_cli.friday_workspace_odg import create
+@@ -1114,6 +1114,9 @@
+         if output_format in ('ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate'):
+             from hermes_cli.friday_workspace_ods import execute
+             return execute(cap, fd, parts[-1], path.as_posix(), args.get('content'), operation=output_format)
++        if output_format == 'presentation_macro_edit':
++            from hermes_cli.friday_workspace_presentation_macro import create_edit
++            return create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format == 'presentation_text_edit':
+             from hermes_cli.friday_workspace_presentation_text import create_edit
+             return create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+@@ -1254,6 +1257,9 @@
+             if path.suffix.lower() != '.pdf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_pdf_form import create_filled
+             return create_filled(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format in ('docx_odt', 'odt_docx'):
++            from hermes_cli.friday_workspace_word_conversion import create_conversion
++            return create_conversion(cap, fd, parts[-1], path.as_posix(), args.get('content'), output_format)
+         if output_format == 'docx_pdf':
+             if path.suffix.lower() != '.pdf': raise ScopeDenied()
+             from hermes_cli.friday_workspace_pdf import create_pdf
+@@ -1278,10 +1284,11 @@
+                 refusal['hint'] = ('OTG supports bounded read-only template object and connector inventories. '
+                     'Template creation, source editing, conversion and rendering are unsupported; do not write plain text or rename another format.')
+             elif path.suffix.lower() in {'.pptm', '.potm', '.ppsm'}:
+-                refusal['hint'] = ('Native macro presentation variants can be read. Creating, '
+-                    'editing, merging, converting or executing these formats is unsupported. Macro projects '
+-                    'are opaque and their safety is unproven. Do not write text/XML '
+-                    'under these suffixes or rename an ordinary presentation to claim these formats.')
++                refusal['hint'] = ('Use presentation_macro_edit for one unique literal in a selected '
++                    'slide or notes paragraph into a NEW same-profile PPTM/POTM/PPSM. It requires '
++                    'the current source_sha256 and preserves the opaque VBA project without execution. '
++                    'Macro safety remains unproven; creation, merging and conversion are unsupported. '
++                    'Do not write text/XML under these suffixes or rename another format.')
+             elif path.suffix.lower() in {'.ppt', '.pot', '.pps'}:
+                 refusal['hint'] = ('Classic PPT supports bounded text and notes reading only. '
+                     'Binary POT/PPS input and creation, editing or conversion of these legacy formats '
+--- /dev/null
++++ b/hermes_cli/friday_workspace_presentation_macro.py
+@@ -0,0 +1,52 @@
++"""Own-workspace hash-bound macro presentation text edit into a NEW file."""
++import hashlib
++import json
++import os
++import re
++from pathlib import Path
++
++
++GUIDANCE = 'Macro presentation text: presentation_macro_edit uses exactly {source,source_sha256,slide,role,old_text,new_text} into a NEW same-format .pptm/.potm/.ppsm. Obtain source_sha256 from current read_file. slide is one-based; role is slide or notes. One unique literal within a supported paragraph is changed; all other member bytes, main type and opaque VBA are retained. Equal-format split runs are supported; fields, mixed formatting, signatures, protection, external/active/OLE/controls/unknown parts refuse. VBA is never inspected or executed; its safety is unproven. This does not create, merge or convert macro files or establish visual fidelity. '
++
++
++def create_edit(cap, fd, leaf, path, content):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_docx import _check_parent
++    from hermes_cli.friday_workspace_revision import check
++    from hermes_cli.friday_workspace_presentation import _read_source, _publish
++    from tools.scoped_presentation import MACRO_FORMATS
++    from tools.scoped_presentation_write import json_object, PresentationRefused
++    from tools.scoped_presentation_macro_edit import edit_text
++    try:
++        check(cap)
++        _check_parent(cap, fd, path)
++        request = json_object(content, ('source', 'source_sha256', 'slide', 'role', 'old_text', 'new_text'))
++        if not isinstance(request['source'], str): raise ScopeDenied()
++        digest = request['source_sha256']
++        if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
++            raise PresentationRefused('source_hash_required')
++        profile = Path(request['source']).suffix.lower().lstrip('.')
++        if profile not in MACRO_FORMATS or Path(path).suffix.lower() != '.'+profile:
++            raise PresentationRefused('macro_edit_output_profile_mismatch')
++        try:
++            os.stat(leaf, dir_fd=fd, follow_symlinks=False)
++        except FileNotFoundError:
++            pass
++        else:
++            raise PresentationRefused('document_already_exists')
++        source, relative, original, identity = _read_source(request['source'], cap, '.'+profile)
++        if hashlib.sha256(original).hexdigest() != digest:
++            raise PresentationRefused('source_hash_mismatch')
++        spec = {key: request[key] for key in ('slide', 'role', 'old_text', 'new_text')}
++        rendered, details = edit_text(original, profile, spec, checkpoint=lambda: check(cap))
++        check(cap)
++        return _publish(cap, fd, leaf, path, rendered, profile, (source, original, identity),
++            {'source': relative, 'source_sha256': digest, 'source_unchanged': True,
++             'preserving_edit': True, 'edit_mode': 'unique_macro_native_text',
++             'slide': request['slide'], 'role': request['role'], 'output_profile': profile,
++             **details})
++    except ScopeDenied:
++        raise
++    except PresentationRefused as error:
++        return json.dumps({'success': False, 'error': 'presentation_macro_edit_refused',
++                           'reason': str(error), 'effect_disposition': 'none'})
+--- a/hermes_cli/friday_workspace_spreadsheet.py
++++ b/hermes_cli/friday_workspace_spreadsheet.py
+@@ -35,6 +35,9 @@
+             if not isinstance(source_name,str): raise ScopeDenied()
+             source_format = Path(source_name).suffix.lower().lstrip('.')
+             if source_format not in FORMATS: raise ODSError('unsupported_spreadsheet_profile')
++            if operation == 'spreadsheet_convert' and (source_format, target) in {('xlsx', 'ods'), ('ods', 'xlsx')}:
++                from hermes_cli.friday_workspace_spreadsheet_conversion import execute_conversion
++                return execute_conversion(cap,fd,leaf,path,source_name,source_format,target)
+             source,relative,data,identity = _read_source(source_name,cap,'.'+source_format)
+             if operation == 'spreadsheet_edit':
+                 if source_format != target: raise ODSError('edit_requires_same_native_profile')
+--- /dev/null
++++ b/hermes_cli/friday_workspace_spreadsheet_conversion.py
+@@ -0,0 +1,184 @@
++"""Bounded real XLSX↔ODS conversion behind spreadsheet_convert.
++
++Family-local adapter; the shared renderer and macro-preserving path stay separate.
++The fixed Office process runs under the existing native custody/deadline fence.
++"""
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import tempfile
++from zipfile import ZipFile
++
++PAIRS = {('xlsx','ods'): ('ods:calc8', 'application/vnd.oasis.opendocument.spreadsheet'),
++         ('ods','xlsx'): ('xlsx:Calc MS Excel 2007 XML', None)}
++_MARKER = b'SPREADSHEET_NATIVE_VALIDATED\n'
++
++
++def _office_command(source, target):
++    if (source,target) not in PAIRS:
++        raise ValueError('conversion_pair_unsupported')
++    program = '/opt/friday-document-toolchain/root/usr/lib/libreoffice/program/soffice'
++    return [program, '--headless', '--norestore', '--nodefault', '--nolockcheck',
++            '--nofirststartwizard', '-env:UserInstallation=file:///work/home/profile',
++            '--convert-to', PAIRS[source,target][0], '--outdir', '/work/out', '/work/input.'+source]
++
++
++def _argv(work, toolchain, source, target):
++    from hermes_cli.friday_workspace_pdf import _PREFIX, ExportRefused
++    if (source,target) not in PAIRS: raise ExportRefused('conversion_pair_unsupported')
++    argv = ['/usr/bin/bwrap','--unshare-all','--die-with-parent','--new-session',
++            '--as-pid-1','--cap-drop','ALL','--clearenv','--ro-bind','/usr','/usr']
++    for alias in ('bin','sbin','lib','lib64'):
++        item = Path('/')/alias
++        if item.exists():
++            resolved = item.resolve()
++            if not resolved.is_relative_to('/usr'): raise ExportRefused('renderer_unavailable')
++            argv += ['--symlink',str(resolved),str(item)]
++    argv += ['--proc','/proc','--dev','/dev','--tmpfs','/tmp','--dir','/opt',
++             '--ro-bind',str(toolchain),_PREFIX,
++             '--ro-bind','/usr/share',_PREFIX+'/.host-share',
++             '--ro-bind',str(toolchain/'share-merged'),'/usr/share','--dir','/etc']
++    for item in ('/etc/fonts','/etc/ld.so.cache','/var/cache/fontconfig'):
++        if Path(item).exists(): argv += ['--ro-bind',item,item]
++    argv += ['--bind',str(work),'/work',
++             '--ro-bind',str(work/('input.'+source)),'/work/input.'+source,
++             '--ro-bind',str(work/'renderer.py'),'/renderer.py',
++             '--chdir','/work','--remount-ro','/','--','/usr/bin/python3','-I','-B','-S',
++             '/renderer.py','--render',source,target]
++    return argv
++
++
++def _read_output(work, target):
++    from hermes_cli.friday_workspace_pdf import ExportRefused, _private_bytes
++    root = output = None
++    try:
++        root = os.open(work,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
++        output = os.open('out',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=root)
++        for fd in (root,output):
++            info = os.fstat(fd)
++            if info.st_uid != os.getuid() or info.st_mode & 0o077:
++                raise ExportRefused('invalid_spreadsheet_output')
++        if os.listdir(output) != ['input.'+target]:
++            raise ExportRefused('invalid_spreadsheet_output')
++        data = _private_bytes(output,'input.'+target,1000000)
++        if _private_bytes(root,'validated',len(_MARKER)) != _MARKER:
++            raise ExportRefused('invalid_spreadsheet_output')
++        return data
++    except OSError:
++        raise ExportRefused('invalid_spreadsheet_output') from None
++    finally:
++        if output is not None: os.close(output)
++        if root is not None: os.close(root)
++
++
++def render(cap, data, source, target):
++    from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_spreadsheet_conversion import inventory, validate_destination, FORMULA_DIALECT
++    if (source,target) not in PAIRS: raise ExportRefused('conversion_pair_unsupported')
++    check(cap)
++    before = inventory(data,source,checkpoint=lambda:check(cap))
++    toolchain = _toolchain()
++    work = Path(tempfile.mkdtemp(prefix='friday-spreadsheet-convert-'))
++    try:
++        work.chmod(0o700)
++        for name in ('out','home','tmp'): (work/name).mkdir(mode=0o700)
++        for name,value in (('input.'+source,data),('renderer.py',Path(__file__).read_bytes())):
++            (work/name).write_bytes(value); (work/name).chmod(0o600)
++        check(cap)
++        _run(cap,_argv(work,toolchain,source,target),work)
++        rendered = _read_output(work,target)
++        after = validate_destination(before,rendered,target,checkpoint=lambda:check(cap))
++        check(cap)
++        return rendered, dict(native_editable=True, formulas_preserved=True,
++                              formula_cache_validation='independent_bounded_decimal_recomputation',
++                              formula_dialect=FORMULA_DIALECT,
++                              semantic_inventory_sha256=after.digest(), **after.counts(),
++                              preservation='typed_literals_sheet_order_and_supported_formula_references',
++                              declared_limits='plain_scalar_cells_dates_SUM_rectangle_two_cell_product; no_names_tables_custom_styles',
++                              office_filter=PAIRS[source,target][0], runtime_qualified=False)
++    finally:
++        try: shutil.rmtree(work)
++        except OSError:
++            from agent.web_call_context import _current
++            call = _current.get()
++            if call is not None and hasattr(call,'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise ExportRefused('renderer_cleanup_unconfirmed') from None
++
++
++def execute_conversion(cap, fd, leaf, path, source_name, source, target):
++    """Called only for the two directed pairs; publication retains the existing CAS."""
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_docx import _check_parent
++    from hermes_cli.friday_workspace_presentation import _read_source, _publish
++    from hermes_cli.friday_workspace_pdf import ExportRefused
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_spreadsheet_conversion import ConversionRefused
++    if (source,target) not in PAIRS or Path(path).suffix.lower() != '.'+target:
++        raise ScopeDenied()
++    try:
++        check(cap); _check_parent(cap,fd,path)
++        try: os.stat(leaf,dir_fd=fd,follow_symlinks=False)
++        except FileNotFoundError: pass
++        else: return json.dumps(dict(success=False,error='document_already_exists',effect_disposition='none'))
++        item,relative,data,identity = _read_source(source_name,cap,'.'+source)
++        rendered,facts = render(cap,data,source,target)
++        check(cap)
++        facts.update(source=relative,source_sha256=hashlib.sha256(data).hexdigest(),
++                     source_unchanged=True,macros_executed=False,export_mode=source+'_'+target)
++        return _publish(cap,fd,leaf,path,rendered,target,(item,data,identity),facts)
++    except ScopeDenied:
++        raise
++    except (ConversionRefused,ExportRefused) as error:
++        unknown = str(error) == 'renderer_cleanup_unconfirmed'
++        return json.dumps(dict(success=False,error='spreadsheet_conversion_refused',reason=str(error),
++                               effect_disposition='unknown' if unknown else 'none'))
++    except (OSError,RuntimeError,TimeoutError):
++        return json.dumps(dict(success=False,error='spreadsheet_conversion_stopped',effect_disposition='none'))
++
++
++def _render_child(source,target):
++    # This entrypoint imports only stdlib, and receives fixed enumerated pairs.
++    import resource
++    if (source,target) not in PAIRS: raise ValueError('conversion_pair_unsupported')
++    os.umask(0o077)
++    cpus = sorted(os.sched_getaffinity(0))[:2]
++    os.sched_setaffinity(0,cpus)
++    for key,value in ((resource.RLIMIT_AS,1024**3),(resource.RLIMIT_CPU,35),
++                      (resource.RLIMIT_FSIZE,16*1024**2),(resource.RLIMIT_CORE,0),
++                      (resource.RLIMIT_NOFILE,128)):
++        resource.setrlimit(key,(value,value))
++    profile = Path('/work/home/profile'); profile.mkdir(mode=0o700)
++    (profile/'user').mkdir(mode=0o700)
++    # Disable macro execution and link update independently of the preflight.
++    (profile/'user/registrymodifications.xcu').write_text(
++        '<?xml version="1.0" encoding="UTF-8"?><oor:items xmlns:oor="http://openoffice.org/2001/registry">'
++        '<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item>'
++        '<item oor:path="/org.openoffice.Office.Calc/Content/Update"><prop oor:name="Link" oor:op="fuse"><value>0</value></prop></item></oor:items>',encoding='utf-8')
++    prefix = '/opt/friday-document-toolchain'
++    program = prefix+'/root/usr/lib/libreoffice/program'
++    env = {'PATH':'/usr/bin:/bin','HOME':'/work/home','TMPDIR':'/work/tmp',
++           'LANG':'C.UTF-8','LC_ALL':'C.UTF-8','SAL_USE_VCLPLUGIN':'svp',
++           'XDG_CACHE_HOME':'/work/home/cache','XDG_CONFIG_HOME':'/work/home/config',
++           'XDG_RUNTIME_DIR':'/work/tmp',
++           'LD_LIBRARY_PATH':program+':'+prefix+'/root/usr/lib/x86_64-linux-gnu'}
++    subprocess.run(_office_command(source,target),env=env,stdin=subprocess.DEVNULL,
++                   stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=35,check=True)
++    # Marker only signals child completion. Parent performs authoritative bounded validation.
++    with ZipFile('/work/out/input.'+target) as package:
++        if target == 'ods' and package.read('mimetype') != PAIRS[source,target][1].encode():
++            raise ValueError('invalid_ods')
++        if target == 'xlsx' and 'xl/workbook.xml' not in package.namelist():
++            raise ValueError('invalid_xlsx')
++    Path('/work/validated').write_bytes(_MARKER)
++
++
++if __name__ == '__main__':
++    if len(sys.argv) != 4 or sys.argv[1] != '--render': raise SystemExit(2)
++    try: _render_child(sys.argv[2],sys.argv[3])
++    except BaseException: raise SystemExit(1)
+--- /dev/null
++++ b/hermes_cli/friday_workspace_word_conversion.py
+@@ -0,0 +1,233 @@
++"""Two fixed, source-bound native Word conversions, with no overwrite grant.
++
++Uses the existing Office toolchain/custody/publisher. The family-local sandbox
++command follows friday_workspace_presentation._argv without widening that
++module's operation table. This file is also the isolated stdlib child entry.
++"""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import shutil
++import subprocess
++import sys
++import tempfile
++from zipfile import ZipFile
++
++OPERATIONS = {
++    'docx_odt': {'source': '.docx', 'output': '.odt', 'filter': 'odt:writer8'},
++    'odt_docx': {'source': '.odt', 'output': '.docx', 'filter': 'docx:Office Open XML Text'},
++}
++
++
++def _request(content):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    if not isinstance(content, str) or len(content) > 8192:
++        raise ScopeDenied()
++    def pairs(items):
++        value = {}
++        for key, item in items:
++            if key in value:
++                raise ScopeDenied()
++            value[key] = item
++        return value
++    try:
++        value = json.loads(content, object_pairs_hook=pairs)
++    except (ValueError, RecursionError):
++        raise ScopeDenied() from None
++    if (not isinstance(value, dict) or set(value) != {'source', 'source_sha256'}
++            or not isinstance(value['source'], str) or not 1 <= len(value['source']) <= 4096
++            or '\x00' in value['source'] or not isinstance(value['source_sha256'], str)
++            or re.fullmatch('[0-9a-f]{64}', value['source_sha256']) is None):
++        raise ScopeDenied()
++    return value
++
++
++def _office_command(operation):
++    if operation not in OPERATIONS:
++        raise ValueError('unsupported_conversion')
++    spec = OPERATIONS[operation]
++    return ['/opt/friday-document-toolchain/root/usr/lib/libreoffice/program/soffice',
++            '--headless', '--norestore', '--nodefault', '--nolockcheck', '--nofirststartwizard',
++            '-env:UserInstallation=file:///work/home/profile', '--convert-to', spec['filter'],
++            '--outdir', '/work/out', '/work/input' + spec['source']]
++
++
++def _argv(work, toolchain, operation):
++    from hermes_cli.friday_workspace_pdf import _PREFIX, ExportRefused
++    if operation not in OPERATIONS:
++        raise ValueError('unsupported_conversion')
++    spec = OPERATIONS[operation]
++    argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--new-session',
++            '--as-pid-1', '--cap-drop', 'ALL', '--clearenv', '--ro-bind', '/usr', '/usr']
++    for alias in ('bin', 'sbin', 'lib', 'lib64'):
++        item = Path('/') / alias
++        if item.exists():
++            target = item.resolve()
++            if not target.is_relative_to('/usr'):
++                raise ExportRefused('renderer_unavailable')
++            argv += ['--symlink', str(target), str(item)]
++    argv += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/opt',
++             '--ro-bind', str(toolchain), _PREFIX,
++             '--ro-bind', '/usr/share', _PREFIX + '/.host-share',
++             '--ro-bind', str(toolchain / 'share-merged'), '/usr/share', '--dir', '/etc']
++    for item in ('/etc/fonts', '/etc/ld.so.cache', '/var/cache/fontconfig'):
++        if Path(item).exists():
++            argv += ['--ro-bind', item, item]
++    input_name = 'input' + spec['source']
++    argv += ['--bind', str(work), '/work', '--ro-bind', str(work / input_name), '/work/' + input_name,
++             '--ro-bind', str(work / 'renderer.py'), '/renderer.py', '--chdir', '/work',
++             '--remount-ro', '/', '--', '/usr/bin/python3', '-I', '-B', '-S',
++             '/renderer.py', '--render', operation]
++    return argv
++
++
++def _read_native(work, operation):
++    from hermes_cli.friday_workspace_pdf import ExportRefused, _private_bytes
++    root = output = None
++    try:
++        root = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++        output = os.open('out', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
++        for descriptor in (root, output):
++            info = os.fstat(descriptor)
++            if info.st_uid != os.getuid() or info.st_mode & 0o077:
++                raise ExportRefused('invalid_native_output')
++        data = _private_bytes(output, 'input' + OPERATIONS[operation]['output'], 1_000_000)
++        if _private_bytes(root, 'validated', 22) != b'WORD_NATIVE_VALIDATED\n':
++            raise ExportRefused('invalid_native_output')
++        return data
++    except (OSError, ExportRefused):
++        raise ExportRefused('invalid_native_output') from None
++    finally:
++        if output is not None:
++            os.close(output)
++        if root is not None:
++            os.close(root)
++
++
++def render(cap, data, operation):
++    from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_word_conversion import inventory, validate_conversion
++    if operation not in OPERATIONS:
++        raise ValueError('unsupported_conversion')
++    spec = OPERATIONS[operation]
++    check(cap)
++    inventory(data, spec['source'][1:], checkpoint=lambda: check(cap))
++    toolchain = _toolchain()
++    work = Path(tempfile.mkdtemp(prefix='friday-word-convert-'))
++    try:
++        work.chmod(0o700)
++        for name in ('out', 'home', 'tmp'):
++            (work / name).mkdir(mode=0o700)
++        source = work / ('input' + spec['source'])
++        source.write_bytes(data)
++        source.chmod(0o600)
++        child = work / 'renderer.py'
++        child.write_bytes(Path(__file__).read_bytes())
++        child.chmod(0o600)
++        _run(cap, _argv(work, toolchain, operation), work)
++        output = _read_native(work, operation)
++        details = validate_conversion(data, spec['source'][1:], output, spec['output'][1:],
++                                      checkpoint=lambda: check(cap))
++        check(cap)
++        return output, details
++    finally:
++        try:
++            shutil.rmtree(work)
++        except OSError:
++            from agent.web_call_context import _current
++            call = _current.get()
++            if call is not None and hasattr(call, 'agent'):
++                call.agent._friday_reply_effect_unknown = True
++            raise ExportRefused('renderer_cleanup_unconfirmed') from None
++
++
++def create_conversion(cap, fd, leaf, path, content, operation):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_docx import _check_parent
++    from hermes_cli.friday_workspace_pdf import ExportRefused
++    from hermes_cli.friday_workspace_presentation import _read_source, _publish
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_word_conversion import WordConversionError
++    if (operation not in OPERATIONS or not isinstance(path, str)
++            or Path(path).suffix.lower() != OPERATIONS[operation]['output']
++            or Path(path).name != leaf):
++        raise ScopeDenied()
++    try:
++        check(cap)
++        _check_parent(cap, fd, path)
++        request = _request(content)
++        try:
++            os.stat(leaf, dir_fd=fd, follow_symlinks=False)
++            return json.dumps({'success': False, 'error': 'document_already_exists', 'path': path})
++        except FileNotFoundError:
++            pass
++        spec = OPERATIONS[operation]
++        source, relative, data, identity = _read_source(request['source'], cap, spec['source'])
++        if relative == path:
++            raise ScopeDenied()
++        actual = hashlib.sha256(data).hexdigest()
++        if actual != request['source_sha256']:
++            raise WordConversionError('source_hash_mismatch')
++        output, details = render(cap, data, operation)
++        return _publish(cap, fd, leaf, path, output, spec['output'][1:], (source, data, identity),
++                        {'source': relative, 'source_sha256': actual, 'source_unchanged': True,
++                         'conversion_mode': operation, 'office_filter': spec['filter'],
++                         'native_editable': True, 'semantics_verified': True,
++                         'visual_fidelity_verified': False, **details})
++    except ScopeDenied:
++        raise
++    except WordConversionError as error:
++        return json.dumps({'success': False, 'error': 'document_conversion_refused',
++                           'reason': error.code, 'effect_disposition': 'none'})
++    except ExportRefused as error:
++        unknown = str(error) == 'renderer_cleanup_unconfirmed'
++        return json.dumps({'success': False, 'error': 'document_conversion_refused',
++                           'reason': str(error), 'effect_disposition': 'unknown' if unknown else 'none'})
++    except (TimeoutError, RuntimeError, OSError):
++        return json.dumps({'success': False, 'error': 'document_conversion_stopped',
++                           'effect_disposition': 'none'})
++
++
++def _render_child(operation):
++    import resource
++    if operation not in OPERATIONS:
++        raise ValueError('unsupported_conversion')
++    os.umask(0o077)
++    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:2])
++    for key, value in ((resource.RLIMIT_AS, 1024**3), (resource.RLIMIT_CPU, 35),
++                       (resource.RLIMIT_FSIZE, 16 * 1024**2), (resource.RLIMIT_CORE, 0),
++                       (resource.RLIMIT_NOFILE, 128)):
++        resource.setrlimit(key, (value, value))
++    prefix = '/opt/friday-document-toolchain'
++    program = prefix + '/root/usr/lib/libreoffice/program'
++    env = {'PATH': '/usr/bin:/bin', 'HOME': '/work/home', 'TMPDIR': '/work/tmp',
++           'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'SAL_USE_VCLPLUGIN': 'svp',
++           'XDG_CACHE_HOME': '/work/home/cache', 'XDG_CONFIG_HOME': '/work/home/config',
++           'XDG_RUNTIME_DIR': '/work/tmp',
++           'LD_LIBRARY_PATH': program + ':' + prefix + '/root/usr/lib/x86_64-linux-gnu'}
++    subprocess.run(_office_command(operation), env=env, stdin=subprocess.DEVNULL,
++                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=35, check=True)
++    spec = OPERATIONS[operation]
++    # This marker attests only child completion and basic identity. The parent
++    # independently validates the complete output and semantic inventory.
++    output = Path('/work/out/input' + spec['output'])
++    if not 0 < output.stat().st_size <= 1_000_000:
++        raise ValueError('invalid_native_output')
++    with ZipFile(output) as package:
++        if spec['output'] == '.docx' and 'word/document.xml' not in package.namelist():
++            raise ValueError('invalid_native_output')
++        if spec['output'] == '.odt' and package.read('mimetype') != b'application/vnd.oasis.opendocument.text':
++            raise ValueError('invalid_native_output')
++    Path('/work/validated').write_bytes(b'WORD_NATIVE_VALIDATED\n')
++
++
++if __name__ == '__main__':
++    if len(sys.argv) != 3 or sys.argv[1] != '--render':
++        raise SystemExit(2)
++    try:
++        _render_child(sys.argv[2])
++    except BaseException:
++        raise SystemExit(1)
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1592,7 +1592,7 @@
+ READ_FILE_SCHEMA["description"] += " Supported native ODS charts return source ranges, series values and verified local cache records; rendering is not covered."
+ 
+ # Native spreadsheet profiles extend the existing scoped document contracts.
+-_SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. No cross-family/Office conversion in this path. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
++_SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value}, a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. The XLSX/ODS pair uses a separately validated isolated Office conversion; other cross-family pairs are unsupported. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: never execute macros; macro profiles are READ ONLY and all mutation refuses, never strips VBA. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
+ WRITE_FILE_SCHEMA["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["spreadsheet_create", "spreadsheet_edit", "spreadsheet_convert"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"]
+@@ -1770,3 +1770,18 @@
+ WRITE_FILE_SCHEMA['description'] += _DIAGRAM_CREATE_GUIDANCE
+ WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'] += _DIAGRAM_CREATE_GUIDANCE
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] += _DIAGRAM_CREATE_GUIDANCE
++
++# Separate same-profile macro edit; ordinary presentation formats remain macro-free.
++from hermes_cli.friday_workspace_presentation_macro import GUIDANCE as _MACRO_PRESENTATION_GUIDANCE
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("presentation_macro_edit")
++WRITE_FILE_SCHEMA["description"] += _MACRO_PRESENTATION_GUIDANCE
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _MACRO_PRESENTATION_GUIDANCE
++WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _MACRO_PRESENTATION_GUIDANCE
++
++_WORD_CONVERSION_GUIDANCE = 'Word conversion: docx_odt creates a NEW .odt from .docx; odt_docx creates a NEW .docx from .odt. Content is exactly JSON {source,source_sha256}; read the source first and use its current lowercase SHA-256. An isolated local Office process converts genuine native input; parsed destination paragraphs, heading levels and plain rectangular tables must match the original semantic inventory. Only plain text, explicit spaces/tabs/line breaks and unmerged tables are supported; fonts, run styling and pagination may change. Lists, fields, images, notes, links, hidden/protected/signed/active content and ambiguous styles refuse. Source remains unchanged; unavailable toolchain or unsupported conversion refuses without publishing. Never rename a suffix or rebuild extracted text to claim conversion. '
++_SPREADSHEET_CONVERSION_GUIDANCE = 'XLSX/ODS cross-family conversion: spreadsheet_convert with exactly {source} into a NEW opposite .ods or .xlsx output uses isolated Office. Only this XLSX<->ODS pair is added; other existing native family conversions keep their limits. The output must retain sheet order, exact text/IDs, booleans, bounded decimals, dates and supported formula references, with independent formula/cache verification. Plain scalar cells and bounded SUM/product formulas only; custom styles, names, tables, charts, merged/hidden cells or sheets, protected/macro/external content refuse. Source is unchanged. No general filter or visual/layout fidelity is promised; unsupported output or unavailable toolchain produces no file. '
++WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["docx_odt", "odt_docx"]
++for _conversion_guidance in (_WORD_CONVERSION_GUIDANCE, _SPREADSHEET_CONVERSION_GUIDANCE):
++    WRITE_FILE_SCHEMA["description"] += _conversion_guidance
++    WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _conversion_guidance
++    WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _conversion_guidance
+--- a/tools/scoped_presentation.py
++++ b/tools/scoped_presentation.py
+@@ -796,7 +796,7 @@
+             metadata.update({'macro_enabled': True, 'native_main_content_type': PPT_MAIN_TYPES[format],
+                              'macro_project': pkg.macro_project,
+                              'style_metadata': pkg.style_metadata,
+-                             'operations': 'read_only; create_edit_merge_convert_and_execution_unsupported'})
++                             'operations': 'bounded_unique_literal_edit_via_presentation_macro_edit; create_merge_convert_and_execution_unsupported'})
+         elif format == 'fodp':
+             metadata.update({'native_mimetype': MIME,
+                              'operations': 'bounded_native_create_edit_convert_available; active_content_and_external_resources_refused',
+--- /dev/null
++++ b/tools/scoped_presentation_macro_edit.py
+@@ -0,0 +1,255 @@
++"""Finite same-profile PPTM/POTM/PPSM literal edits of immutable bytes.
++
++The one declared VBA project is opaque custody, never parsed or executed. This
++does not assert that it is safe. No Office, conversion, macro stripping or file
++effects occur here. All nonselected member payloads and selected XML markup stay
++byte-identical; only the unique text span is replaced.
++"""
++from copy import copy
++from io import BytesIO
++import re
++import struct
++from xml.etree import ElementTree as ET
++from zipfile import ZipFile, BadZipFile
++import zlib
++
++from tools.scoped_presentation import (
++    Package, PresentationError, read_pptx, MACRO_FORMATS, PPT_MAIN_TYPES,
++    VBA_CONTENT_TYPE, VBA_RELATIONSHIP, P, A, R, PKG, CT, q,
++)
++from tools.scoped_presentation_write import PresentationRefused, MAX_PACKAGE, _xml, text
++from tools.scoped_presentation_text import _replace
++from tools.scoped_zip import read_zip_member
++
++_BASE = 'application/vnd.openxmlformats-officedocument.'
++_ROOT_TYPES = {
++    q(P, 'sld'): _BASE+'presentationml.slide+xml',
++    q(P, 'notes'): _BASE+'presentationml.notesSlide+xml',
++    q(P, 'sldMaster'): _BASE+'presentationml.slideMaster+xml',
++    q(P, 'notesMaster'): _BASE+'presentationml.notesMaster+xml',
++    q(P, 'sldLayout'): _BASE+'presentationml.slideLayout+xml',
++    q(P, 'presentationPr'): _BASE+'presentationml.presProps+xml',
++    q(P, 'viewPr'): _BASE+'presentationml.viewProps+xml',
++    q(A, 'tblStyleLst'): _BASE+'presentationml.tableStyles+xml',
++    q(A, 'theme'): _BASE+'theme+xml',
++    q('http://schemas.openxmlformats.org/package/2006/metadata/core-properties', 'coreProperties'):
++        'application/vnd.openxmlformats-package.core-properties+xml',
++    q('http://schemas.openxmlformats.org/officeDocument/2006/extended-properties', 'Properties'):
++        _BASE+'extended-properties+xml',
++}
++_REL_TYPES = frozenset(R+'/'+name for name in (
++    'officeDocument', 'slide', 'slideMaster', 'slideLayout', 'notesSlide',
++    'notesMaster', 'theme', 'presProps', 'viewProps', 'tableStyles',
++    'extended-properties', 'image',
++)) | {VBA_RELATIONSHIP, PKG+'/metadata/core-properties', PKG+'/metadata/thumbnail'}
++_NAMESPACES = frozenset((P, A, R, PKG, CT,
++    'http://schemas.openxmlformats.org/package/2006/metadata/core-properties',
++    'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties',
++    'http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes',
++    'http://purl.org/dc/elements/1.1/', 'http://purl.org/dc/terms/',
++    'http://purl.org/dc/dcmitype/', 'http://www.w3.org/2001/XMLSchema-instance',
++    'http://www.w3.org/XML/1998/namespace',
++))
++_ACTIVE = frozenset(('oleobj', 'control', 'controls', 'contentpart', 'audio', 'video',
++    'audiofile', 'videofile', 'snd', 'sndac', 'extlst', 'ext', 'custdata', 'custdatalst',
++    'hlinkclick', 'hlinkmouseover', 'timing', 'transition', 'webpr', 'embeddedfontlst',
++    'script', 'scripts', 'event-listener', 'event-listeners', 'object-ole', 'plugin', 'applet'))
++# DrawingML a:ext is an ordinary geometry extent, unlike extension payloads.
++
++
++def _refuse(reason):
++    raise PresentationRefused(reason)
++
++
++def _namespace(name):
++    return name[1:].split('}', 1)[0] if name.startswith('{') else ''
++
++
++def _envelope(data):
++    # A finite single-disk, non-ZIP64 OPC archive, without executable prefixes,
++    # trailing overlays or digital-signature records outside the part table.
++    if not data.startswith(b'PK\x03\x04'):
++        _refuse('unsupported_zip_envelope')
++    end = data.rfind(b'PK\x05\x06', max(0, len(data)-65557))
++    if end < 0 or end+22 > len(data): _refuse('invalid_package')
++    disk, cd_disk, count, total, size, offset, comment = struct.unpack_from('<4H2IH', data, end+4)
++    if (disk or cd_disk or count != total or not count or count == 65535
++            or offset+size != end or end+22+comment != len(data)
++            or data[offset:offset+4] != b'PK\x01\x02'):
++        _refuse('unsupported_zip_envelope')
++
++
++def _shape_structure(root):
++    commons = root.findall(q(P, 'cSld'))
++    if len(commons) != 1 or list(root.iter(q(P, 'cSld'))) != commons:
++        _refuse('ambiguous_shape_tree')
++    trees = commons[0].findall(q(P, 'spTree'))
++    if len(trees) != 1 or list(root.iter(q(P, 'spTree'))) != trees:
++        _refuse('ambiguous_shape_tree')
++    ids = set()
++    for node in trees[0].iter(q(P, 'cNvPr')):
++        value = node.get('id', '')
++        if not re.fullmatch('[0-9]{1,10}', value) or int(value) in ids:
++            _refuse('ambiguous_shape_identity')
++        ids.add(int(value))
++    for shape in trees[0].iter():
++        if shape.tag in (q(P, 'sp'), q(P, 'cxnSp')):
++            if (len(shape.findall(q(P, 'txBody'))) > 1
++                    or len(list(shape.iter(q(P, 'ph')))) > 1):
++                _refuse('ambiguous_text_body')
++        if shape.tag == q(A, 'graphicData'):
++            if (shape.get('uri') != 'http://schemas.openxmlformats.org/drawingml/2006/table'
++                    or len(shape) != 1 or shape[0].tag != q(A, 'tbl')):
++                _refuse('unsupported_graphic_payload')
++
++
++def validate_profile(data, profile):
++    """Return the finite package and bounded native slide/note inventory."""
++    if not isinstance(profile, str) or profile not in MACRO_FORMATS:
++        _refuse('unsupported_macro_presentation_profile')
++    if not isinstance(data, bytes) or not 1 <= len(data) <= MAX_PACKAGE:
++        _refuse('package_capacity')
++    try:
++        _envelope(data)
++        pkg = Package(data)
++        with ZipFile(BytesIO(data)) as archive:
++            for info in archive.infolist():
++                if info.is_dir() and (info.file_size or read_zip_member(archive, data, info, 0)):
++                    _refuse('invalid_directory_member')
++        # The writer is stricter than the inert reader: active, external,
++        # unknown and opaque extension parts other than the sole VBA refuse.
++        types = pkg.root('[Content_Types].xml', q(CT, 'Types'))
++        defaults = {}; overrides = {}
++        for item in types:
++            if item.tag == q(CT, 'Default'):
++                key = item.get('Extension', '').lower(); mapping = defaults
++                if not re.fullmatch('[a-z0-9]+', key): _refuse('invalid_content_type')
++            elif item.tag == q(CT, 'Override'):
++                key = item.get('PartName', '')
++                if not key.startswith('/'): _refuse('invalid_content_type')
++                key = key[1:]; mapping = overrides
++            else:
++                _refuse('invalid_content_type')
++            if key in mapping: _refuse('duplicate_content_type')
++            mapping[key] = item.get('ContentType', '')
++        def content_type(name):
++            return overrides.get(name, defaults.get(name.rsplit('.', 1)[-1].lower()))
++        roots = pkg.targets('', 'officeDocument')
++        if len(roots) != 1: _refuse('presentation_root_relationship')
++        main = roots[0][1]
++        if any(target is None or kind not in _REL_TYPES
++               for rows in pkg.relationships.values() for kind, target in rows.values()):
++            _refuse('external_or_unsupported_relationship')
++        allowed_types = set(_ROOT_TYPES.values()) | {PPT_MAIN_TYPES[profile], VBA_CONTENT_TYPE,
++            'application/xml', 'application/vnd.openxmlformats-package.relationships+xml',
++            'image/png', 'image/jpeg'}
++        if any(value not in allowed_types for value in list(defaults.values())+list(overrides.values())):
++            _refuse('unsupported_content_type')
++        for name, raw in pkg.parts.items():
++            lower = name.lower()
++            if any(part in lower for part in ('_xmlsignatures', 'vbaprojectsignature',
++                    '/activex/', '/embeddings/', '/customxml/', '/ctrlprops/')):
++                _refuse('signed_or_active_package')
++            if name == '[Content_Types].xml':
++                continue
++            typ = content_type(name)
++            if name.endswith('.rels'):
++                if typ != 'application/vnd.openxmlformats-package.relationships+xml':
++                    _refuse('relationship_content_type')
++            elif name in pkg.xml:
++                root = pkg.xml[name]
++                expected = PPT_MAIN_TYPES[profile] if name == main else _ROOT_TYPES.get(root.tag)
++                if not expected or typ != expected: _refuse('unsupported_part_or_content_type')
++                if root.tag in {q(P, key) for key in ('sld', 'notes', 'sldMaster', 'notesMaster', 'sldLayout')}:
++                    _shape_structure(root)
++                if name == main and any(len(root.findall(q(P, key))) > 1 for key in (
++                        'sldIdLst', 'sldMasterIdLst', 'notesMasterIdLst', 'sldSz', 'notesSz', 'defaultTextStyle')):
++                    _refuse('ambiguous_presentation_structure')
++            elif typ == VBA_CONTENT_TYPE:
++                continue  # macro_metadata below establishes singleton/header/relationship.
++            elif typ == 'image/png' and raw.startswith(b'\x89PNG\r\n\x1a\n'):
++                continue
++            elif typ == 'image/jpeg' and raw.startswith(b'\xff\xd8\xff'):
++                continue
++            else:
++                _refuse('unsupported_binary_part')
++        for name, root in pkg.xml.items():
++            _xml(pkg.parts[name])  # Also rejects processing instructions/DTD anywhere.
++            for node in root.iter():
++                ns = _namespace(node.tag); local = node.tag.rsplit('}', 1)[-1].lower()
++                if ns not in _NAMESPACES: _refuse('unsupported_xml_namespace')
++                # Password-to-modify, document security and text-edit locks are
++                # outside this writer's unprotected-package profile.
++                if (node.tag == q(P, 'modifyVerifier')
++                        or (node.tag == q(A, 'spLocks')
++                            and node.get('noTextEdit', 'false') not in ('false', '0'))
++                        or (node.tag == q('http://schemas.openxmlformats.org/officeDocument/2006/extended-properties', 'DocSecurity')
++                            and (node.text or '').strip() != '0')):
++                    _refuse('protected_presentation')
++                if local in _ACTIVE and node.tag != q(A, 'ext'):
++                    _refuse('active_or_extension_xml')
++                if node.tag == q(A, 'ext') and (len(node) or set(node.attrib) != {'cx', 'cy'}):
++                    _refuse('active_or_extension_xml')
++                for key, value in node.attrib.items():
++                    if key.startswith('{') and _namespace(key) not in _NAMESPACES:
++                        _refuse('unsupported_xml_attribute')
++                    if key == q('http://www.w3.org/XML/1998/namespace', 'base'):
++                        _refuse('xml_base_unsupported')
++                    if key.rsplit('}', 1)[-1].lower() in ('macro', 'action'):
++                        _refuse('active_xml_attribute')
++                    if _namespace(key) == R:
++                        row = pkg.relationships.get(name, {}).get(value)
++                        if row is None: _refuse('dangling_xml_relationship')
++        slides = read_pptx(pkg, profile)
++        return pkg, slides
++    except PresentationError as error:
++        raise PresentationRefused(str(error)) from None
++    except (BadZipFile, ET.ParseError, struct.error, RuntimeError, NotImplementedError, OSError, EOFError,
++            UnicodeError, zlib.error, ValueError) as error:
++        if isinstance(error, PresentationRefused): raise
++        raise PresentationRefused('invalid_package') from None
++
++
++def edit_text(data, profile, spec, *, checkpoint=lambda: None):
++    if not isinstance(spec, dict) or set(spec) != {'slide', 'role', 'old_text', 'new_text'}:
++        _refuse('text_edit_schema')
++    old = text(spec['old_text'], limit=4000)
++    new = text(spec['new_text'], empty=True, limit=4000)
++    if any(ord(char) < 32 for char in old+new): _refuse('unsupported_text_whitespace')
++    if old == new: _refuse('text_edit_noop')
++    if type(spec['slide']) is not int or spec['slide'] < 1 or spec['role'] not in ('slide', 'notes'):
++        _refuse('text_edit_target')
++    checkpoint()
++    pkg, slides = validate_profile(data, profile)
++    if spec['slide'] > len(slides): _refuse('text_edit_target')
++    selected = slides[spec['slide']-1]
++    if spec['role'] == 'notes':
++        selected = selected['notes']
++        if selected['status'] != 'present': _refuse('notes_missing_or_ambiguous')
++    name = selected['source']; raw = pkg.parts[name]; root = _xml(raw)
++    paragraphs = list(root.iter(q(A, 'p')))
++    if spec['role'] == 'notes':
++        excluded = set()
++        for shape in root.iter(q(P, 'sp')):
++            ph = shape.find('.//'+q(P, 'ph'))
++            if ph is not None and ph.get('type', 'body') in ('sldImg', 'sldNum', 'dt', 'hdr', 'ftr'):
++                excluded.update(shape.iter(q(A, 'p')))
++        paragraphs = [paragraph for paragraph in paragraphs if paragraph not in excluded]
++    changed = _replace(raw, root, paragraphs, old, new, ooxml=True)
++    checkpoint()
++    output = BytesIO()
++    with ZipFile(BytesIO(data)) as source, ZipFile(output, 'w') as target:
++        target.comment = source.comment
++        for info in source.infolist():
++            payload = changed if info.filename == name else source.read(info)
++            target.writestr(copy(info), payload)
++    rendered = output.getvalue()
++    result, _ = validate_profile(rendered, profile)
++    if set(result.parts) != set(pkg.parts) or result.macro_project != pkg.macro_project:
++        _refuse('preservation_mismatch')
++    if any(result.parts[key] != value for key, value in pkg.parts.items() if key != name):
++        _refuse('preservation_mismatch')
++    if result.parts[name] != changed: _refuse('text_edit_mismatch')
++    checkpoint()
++    return rendered, {'edited_part': name, 'macro_project': dict(pkg.macro_project),
++                      'preserved_other_members': len(pkg.parts)-1}
+--- /dev/null
++++ b/tools/scoped_spreadsheet_conversion.py
+@@ -0,0 +1,662 @@
++"""Finite XLSX/ODS semantic gate for real Office conversion, never reconstruction.
++
++Only scalar cells, ISO calendar dates, SUM(one rectangle) and two-cell products.
++No names, tables, rich text, drawings, links, macros, protection or custom styling.
++The gate reads both native packages independently; cached values never substitute
++for a formula. It performs Decimal checks, not Excel/Calc formula execution.
++"""
++from dataclasses import dataclass
++from datetime import date, timedelta
++from decimal import Decimal, localcontext
++from io import BytesIO
++import hashlib
++import json
++import re
++from xml.etree import ElementTree as ET
++
++from tools.scoped_spreadsheet_profiles import ooxml, S, R
++from tools.scoped_ods import (Spreadsheet, ODSError, O, TB, T, ST, NUM, OF,
++                              decimal, address, q, tick)
++from tools.scoped_odt import ODTError
++
++MAX_CELLS = 4096
++MAX_ROWS = 512
++MAX_COLS = 64
++FORMULA_DIALECT = 'sum_rectangle_or_two_cell_product_v1'
++XML_SPACE = '{http://www.w3.org/XML/1998/namespace}space'
++CALCEXT = 'urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0'
++FO = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
++
++
++class ConversionRefused(ODSError):
++    """Content-free refusal code; no path, cell contents or external diagnostics."""
++
++
++def refuse(code):
++    raise ConversionRefused(code)
++
++
++def _attrs(node, allowed, code='conversion_unsupported_attributes'):
++    if set(node.attrib) - set(allowed):
++        refuse(code)
++
++
++def _children(node, allowed, code='conversion_unsupported_structure'):
++    allowed = frozenset(allowed)
++    if any(child.tag not in allowed for child in node):
++        refuse(code)
++
++
++def _number(raw):
++    value = decimal(raw)
++    # Excel's numeric contract is bounded to 15 significant decimal digits.
++    digits = value.as_tuple().digits
++    while digits and digits[-1] == 0:
++        digits = digits[:-1]
++    significant = len(digits)
++    exponent = value.as_tuple().exponent + len(value.as_tuple().digits) - len(digits)
++    if significant > 15 or exponent < -12:
++        refuse('conversion_numeric_precision_unsupported')
++    return value
++
++
++def _date(raw):
++    if not isinstance(raw, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', raw):
++        refuse('conversion_date_only_required')
++    try:
++        result = date.fromisoformat(raw)
++    except ValueError:
++        refuse('conversion_invalid_date')
++    if result < date(1900, 3, 1):
++        refuse('conversion_date_epoch_unsupported')
++    return result.isoformat()
++
++
++def _sheet_name(name):
++    if (not isinstance(name, str) or not 1 <= len(name) <= 31
++            or name.startswith("'") or name.endswith("'")
++            or any(c in name for c in '[]:*?/\\') or any(ord(c) < 32 for c in name)):
++        refuse('conversion_sheet_name_unsupported')
++    return name
++
++
++@dataclass(frozen=True)
++class Ref:
++    sheet: str
++    row: int
++    column: int
++    row_absolute: bool
++    column_absolute: bool
++
++
++@dataclass(frozen=True)
++class Formula:
++    operation: str
++    refs: tuple
++
++
++@dataclass(frozen=True)
++class Cell:
++    kind: str
++    value: object
++    formula: object = None
++
++
++@dataclass(frozen=True)
++class Inventory:
++    sheets: tuple  # (name, ((row, column, Cell), ...)) in original sheet order
++
++    def digest(self):
++        # Private content never leaves this gate; only the digest is public.
++        rows = [(name, [(r, c, cell.kind, str(cell.value), repr(cell.formula))
++                        for r, c, cell in cells]) for name, cells in self.sheets]
++        return hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
++
++    def counts(self):
++        cells = [cell for _, rows in self.sheets for _, _, cell in rows]
++        return {'sheets': len(self.sheets), 'nonempty_cells': len(cells),
++                'formula_cells': sum(cell.formula is not None for cell in cells)}
++
++
++# The names are captured lexically, with doubled apostrophes inside quoted names.
++_XREF = r"(?:(?P<sheet>'(?:[^']|'')+'|[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff .]*)!)?(?P<colabs>\$?)(?P<col>[A-Z]{1,3})(?P<rowabs>\$?)(?P<row>[1-9][0-9]{0,6})"
++_OREF = r"(?P<sheet>\$?(?:'(?:[^']|'')+'|[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff ]*))?\.(?P<colabs>\$?)(?P<col>[A-Z]{1,3})(?P<rowabs>\$?)(?P<row>[1-9][0-9]{0,6})"
++
++
++def _ref(raw, format, current):
++    match = re.fullmatch(_XREF if format == 'xlsx' else _OREF, raw)
++    if not match:
++        refuse('conversion_formula_reference_unsupported')
++    name = match['sheet']
++    if name is None:
++        name = current
++    else:
++        if format == 'ods' and name.startswith('$'):
++            name = name[1:]
++        if name.startswith("'"):
++            name = name[1:-1].replace("''", "'")
++        _sheet_name(name)
++    row, column = address(match['col'] + match['row'])
++    if row > MAX_ROWS or column > MAX_COLS:
++        refuse('conversion_formula_bounds')
++    return Ref(name, row, column, bool(match['rowabs']), bool(match['colabs']))
++
++
++def parse_formula(raw, format, current):
++    if not isinstance(raw, str) or not 1 <= len(raw) <= 4096:
++        refuse('conversion_formula_unsupported')
++    if format == 'ods':
++        if not raw.startswith('of:='):
++            refuse('conversion_formula_dialect_unsupported')
++        raw = raw[4:]
++        product = re.fullmatch(r'\[([^\[\]]+)\]\*\[([^\[\]]+)\]', raw)
++        total = re.fullmatch(r'SUM\(\[([^\[\]]+)\]\)', raw, re.I)
++    elif format == 'xlsx':
++        product = re.fullmatch(r'([^*]+)\*([^*]+)', raw)
++        total = re.fullmatch(r'SUM\((.+)\)', raw, re.I)
++    else:
++        refuse('conversion_pair_unsupported')
++    if product:
++        return Formula('product', tuple(_ref(item, format, current) for item in product.groups()))
++    if total:
++        # A colon may occur inside a forbidden sheet name, never a valid one.
++        parts = total[1].split(':')
++        if len(parts) != 2:
++            refuse('conversion_formula_range_required')
++        first = _ref(parts[0], format, current)
++        last = _ref(parts[1], format, first.sheet)
++        if (first.sheet != last.sheet or first.row > last.row or first.column > last.column
++                or (last.row-first.row+1)*(last.column-first.column+1) > MAX_CELLS):
++            refuse('conversion_formula_range_unsupported')
++        return Formula('sum', (first, last))
++    refuse('conversion_formula_unsupported')
++
++
++def _dependencies(formula):
++    if formula.operation == 'product':
++        return [(ref.sheet, ref.row, ref.column) for ref in formula.refs]
++    first, last = formula.refs
++    return [(first.sheet, row, column) for row in range(first.row, last.row+1)
++            for column in range(first.column, last.column+1)]
++
++
++def evaluate(inventory, *, overrides=None, checkpoint=None, check_cache=False):
++    """Independent finite dependency check. Overrides are for disposable probes."""
++    cells = {(name, r, c): cell for name, rows in inventory.sheets for r, c, cell in rows}
++    values = {}; plans = {}; overrides = overrides or {}; dependencies = 0
++    if any(key not in cells or cells[key].formula is not None or cells[key].kind != 'number'
++           for key in overrides):
++        refuse('conversion_probe_target_unsupported')
++    for key, cell in cells.items():
++        if cell.formula:
++            deps = _dependencies(cell.formula)
++            dependencies += len(deps)
++            if dependencies > 20000:
++                refuse('conversion_formula_dependency_limit')
++            if any(dep not in cells or cells[dep].kind != 'number' for dep in deps):
++                refuse('conversion_formula_nonnumeric_or_missing_dependency')
++            plans[key] = deps
++        elif cell.kind == 'number':
++            values[key] = _number(str(overrides.get(key, cell.value)))
++    with localcontext() as context:
++        context.prec = 64
++        while plans:
++            ready = [key for key, deps in plans.items() if all(dep in values for dep in deps)]
++            if not ready:
++                refuse('conversion_formula_cycle')
++            for key in ready:
++                tick(checkpoint)
++                deps = plans.pop(key)
++                result = (values[deps[0]] * values[deps[1]] if cells[key].formula.operation == 'product'
++                          else sum((values[dep] for dep in deps), Decimal(0)))
++                result = _number(format(result, 'f'))
++                if check_cache and cells[key].value is not None and cells[key].value != result:
++                    refuse('conversion_formula_cache_mismatch')
++                if check_cache and cells[key].value is None:
++                    refuse('conversion_formula_cache_missing')
++                values[key] = result
++    return values
++
++
++def _finish(sheets, checkpoint):
++    names = [name for name, _ in sheets]
++    if len({name.casefold() for name in names}) != len(names):
++        refuse('conversion_ambiguous_sheet_name')
++    result = Inventory(tuple((name, tuple(sorted(cells))) for name, cells in sheets))
++    if sum(len(cells) for _, cells in result.sheets) > MAX_CELLS:
++        refuse('conversion_cell_limit')
++    if sum(len(cell.value.encode('utf-8')) for _, cells in result.sheets for _, _, cell in cells if cell.kind == 'string') > 100000:
++        refuse('conversion_text_limit')
++    evaluate(result, checkpoint=checkpoint)
++    return result
++
++
++def _text(node):
++    _attrs(node, (XML_SPACE,))
++    if len(node):
++        refuse('conversion_rich_text_unsupported')
++    return node.text or ''
++
++
++def _xlsx_styles(book):
++    targets = book.targets('xl/workbook.xml', 'styles')
++    if len(targets) > 1:
++        refuse('conversion_style_identity')
++    if not targets:
++        return ['general']
++    root = book.root(targets[0][1], q(S, 'styleSheet'))
++    _children(root, (q(S, x) for x in ('numFmts','fonts','fills','borders','cellStyleXfs','cellXfs','cellStyles')),
++              'conversion_styles_unsupported')
++    formats = {0: 'general', 1: 'number', 2: 'number', 49: 'text'}
++    for item in root.findall(q(S, 'numFmts')+'/'+q(S, 'numFmt')):
++        _attrs(item, ('numFmtId','formatCode'))
++        raw = item.get('numFmtId','')
++        if not raw.isdecimal() or int(raw) < 164 or int(raw) in formats:
++            refuse('conversion_number_format_unsupported')
++        code = item.get('formatCode','').lower()
++        if re.fullmatch(r'0(?:\.0{1,12})?', code):
++            kind = 'number'
++        elif code.replace('\\', '') in ('dd.mm.yyyy','yyyy-mm-dd'):
++            kind = 'date'
++        else:
++            refuse('conversion_number_format_unsupported')
++        formats[int(raw)] = kind
++    # Only plain baseline font/fill/border is admitted. Formatting is not silently dropped.
++    fonts = root.findall(q(S, 'fonts')+'/'+q(S, 'font'))
++    if len(fonts) > 1:
++        refuse('conversion_styles_unsupported')
++    if fonts:
++        for child in fonts[0]:
++            local = child.tag.removeprefix(q(S,''))
++            defaults = {'sz': ('val', {'10','11'}), 'name': ('val', {'Calibri','Arial','Liberation Sans','Aptos Narrow'}),
++                        'family': ('val', {'2'}), 'scheme': ('val', {'minor'}), 'charset': ('val', {'1'})}
++            if local == 'color' and child.attrib in ({'theme':'1'}, {'rgb':'FF000000'}, {'indexed':'64'}):
++                continue
++            if local not in defaults or len(child) or child.attrib.get(defaults[local][0]) not in defaults[local][1] or len(child.attrib) != 1:
++                refuse('conversion_styles_unsupported')
++    fills = root.findall(q(S,'fills')+'/'+q(S,'fill'))
++    if len(fills) not in (0,1,2) or (fills and fills[0][0].get('patternType') != 'none'):
++        refuse('conversion_styles_unsupported')
++    for fill in fills:
++        if fill.attrib or len(fill) != 1 or fill[0].tag != q(S,'patternFill') or len(fill[0]) or fill[0].attrib not in ({'patternType':'none'}, {'patternType':'gray125'}):
++            refuse('conversion_styles_unsupported')
++    borders = root.findall(q(S,'borders')+'/'+q(S,'border'))
++    if len(borders) > 1: refuse('conversion_styles_unsupported')
++    for border in borders:
++        if border.attrib or any(child.attrib or len(child) or child.tag not in {q(S,x) for x in ('left','right','top','bottom','diagonal')} for child in border):
++            refuse('conversion_styles_unsupported')
++    xfs = root.findall(q(S,'cellXfs')+'/'+q(S,'xf'))
++    if not 1 <= len(xfs) <= 32:
++        refuse('conversion_styles_unsupported')
++    result = []
++    for group in ('cellStyleXfs','cellXfs'):
++        for xf in root.findall(q(S,group)+'/'+q(S,'xf')):
++            _attrs(xf, ('numFmtId','fontId','fillId','borderId','xfId','applyNumberFormat','applyFont','applyFill','applyBorder','applyAlignment','applyProtection'))
++            if (any(xf.get(key, '0') != '0' for key in ('fontId','fillId','borderId','xfId'))
++                    or any(child.tag != q(S,'alignment') or child.attrib not in ({}, {'vertical':'bottom'}) or len(child) for child in xf)):
++                refuse('conversion_styles_unsupported')
++            raw = xf.get('numFmtId','0')
++            if not raw.isdecimal() or int(raw) not in formats:
++                refuse('conversion_number_format_unsupported')
++            if group == 'cellStyleXfs' and raw != '0': refuse('conversion_styles_unsupported')
++            if raw != '0' and xf.get('applyNumberFormat','1') not in ('1','true'):
++                refuse('conversion_styles_unsupported')
++            if group == 'cellXfs': result.append(formats[int(raw)])
++    names = root.findall(q(S,'cellStyles')+'/'+q(S,'cellStyle'))
++    if any(item.attrib != {'name':'Normal','xfId':'0','builtinId':'0'} or len(item) for item in names) or len(names) > 1:
++        refuse('conversion_named_styles_unsupported')
++    return result
++
++
++def _xlsx(data, checkpoint):
++    book = ooxml(data, 'xlsx', writing=True, checkpoint=checkpoint)
++    allowed = {'[Content_Types].xml','_rels/.rels','xl/workbook.xml','xl/_rels/workbook.xml.rels',
++               'docProps/core.xml','docProps/app.xml'} | set(book.sheet_parts.values())
++    for kind in ('styles','sharedStrings','theme'):
++        allowed.update(part for _, part in book.targets('xl/workbook.xml',kind))
++    if set(book.parts)-allowed:
++        refuse('conversion_package_features_unsupported')
++    relation_kinds = {'officeDocument','metadata/core-properties','extended-properties','worksheet','styles','sharedStrings','theme'}
++    for owner, relations in book.relationships.items():
++        for kind, target in relations.values():
++            if not any(kind.endswith('/'+suffix) for suffix in relation_kinds):
++                refuse('conversion_relationship_unsupported')
++    root = book.xml['xl/workbook.xml']
++    _children(root, (q(S,x) for x in ('fileVersion','workbookPr','bookViews','sheets','calcPr')),
++              'conversion_names_or_workbook_features_unsupported')
++    _attrs(root, ())
++    if any(len(root.findall(q(S,name))) > 1 for name in ('fileVersion','workbookPr','bookViews','calcPr')):
++        refuse('conversion_ambiguous_workbook')
++    for calc in root.findall(q(S,'calcPr')):
++        if calc.get('iterate','0') not in ('0','false') or calc.get('fullPrecision','1') not in ('1','true'):
++            refuse('conversion_calculation_settings_unsupported')
++    props = root.find(q(S,'workbookPr'))
++    if props is not None and props.get('date1904','0') not in ('0','false'):
++        refuse('conversion_date_epoch_unsupported')
++    styles = _xlsx_styles(book)
++    strings = []
++    if book.shared_strings_part:
++        sst = book.xml[book.shared_strings_part]
++        _children(sst, (q(S,'si'),))
++        for item in sst:
++            if item.attrib or len(item) != 1 or item[0].tag != q(S,'t'):
++                refuse('conversion_rich_text_unsupported')
++            strings.append(_text(item[0]))
++    sheets = []
++    for sheet in root.find(q(S,'sheets')):
++        tick(checkpoint)
++        _attrs(sheet, ('name','sheetId','state',q(R,'id')))
++        if sheet.get('state','visible') != 'visible':
++            refuse('conversion_hidden_sheet_unsupported')
++        name = _sheet_name(sheet.get('name')); cells = []; occupied = set()
++        tree = book.xml[book.sheet_parts[sheet.get(q(R,'id'))]]
++        _attrs(tree, ())
++        _children(tree, (q(S,x) for x in ('dimension','sheetViews','sheetFormatPr','sheetData')),
++                  'conversion_worksheet_features_unsupported')
++        if any(len(tree.findall(q(S,tag))) > 1 for tag in ('dimension','sheetViews','sheetFormatPr')):
++            refuse('conversion_ambiguous_worksheet')
++        for defaults in tree.findall(q(S,'sheetFormatPr')):
++            _attrs(defaults, ('baseColWidth','defaultColWidth','defaultRowHeight','customHeight',
++                              'zeroHeight','thickTop','thickBottom','outlineLevelRow','outlineLevelCol'))
++            _children(defaults, ())
++            if (any(defaults.get(key,'0') not in ('0','false') for key in ('zeroHeight','customHeight','thickTop','thickBottom'))
++                    or any(defaults.get(key,'0') != '0' for key in ('outlineLevelRow','outlineLevelCol'))):
++                refuse('conversion_hidden_or_custom_layout_unsupported')
++            for key in ('baseColWidth','defaultColWidth','defaultRowHeight'):
++                if key in defaults.attrib and _number(defaults.get(key)) <= 0:
++                    refuse('conversion_hidden_or_custom_layout_unsupported')
++        for dimension in tree.findall(q(S,'dimension')):
++            _attrs(dimension, ('ref',))
++            refs = dimension.get('ref','').split(':')
++            if len(refs) not in (1,2): refuse('conversion_dimension_unsupported')
++            for ref in refs:
++                dr, dc = address(ref)
++                if dr > MAX_ROWS or dc > MAX_COLS: refuse('conversion_dimension_unsupported')
++        # Views may not hide rows/columns or carry selections with unsupported semantics.
++        for view in tree.findall(q(S,'sheetViews')+'/'+q(S,'sheetView')):
++            if any(child.tag != q(S,'selection') for child in view):
++                refuse('conversion_view_features_unsupported')
++        groups = tree.findall(q(S,'sheetData'))
++        if len(groups) != 1:
++            refuse('conversion_sheet_data_identity')
++        seen_rows = set()
++        for row in groups[0]:
++            _attrs(row, ('r','spans'))
++            if row.tag != q(S,'row') or not row.get('r','').isdecimal():
++                refuse('conversion_row_identity')
++            rr = int(row.get('r'))
++            if not 1 <= rr <= MAX_ROWS or rr in seen_rows:
++                refuse('conversion_row_limit_or_duplicate')
++            seen_rows.add(rr)
++            for cell in row:
++                tick(checkpoint)
++                if cell.tag != q(S,'c'): refuse('conversion_cell_identity')
++                _attrs(cell, ('r','s','t'))
++                r, c = address(cell.get('r'))
++                if r != rr or c > MAX_COLS or (r,c) in occupied:
++                    refuse('conversion_cell_limit_or_duplicate')
++                occupied.add((r,c))
++                raw_style = cell.get('s','0')
++                if not raw_style.isdecimal() or int(raw_style) >= len(styles):
++                    refuse('conversion_style_identity')
++                style = styles[int(raw_style)]
++                _children(cell, (q(S,x) for x in ('f','v','is')))
++                if any(len(cell.findall(q(S,x))) > 1 for x in ('f','v','is')):
++                    refuse('conversion_ambiguous_cell')
++                form = cell.find(q(S,'f')); raw = cell.find(q(S,'v')); inline = cell.find(q(S,'is'))
++                typ = cell.get('t','n')
++                if form is not None:
++                    if form.attrib or len(form) or typ not in ('n',) or inline is not None or style not in ('general','number'):
++                        refuse('conversion_formula_type_unsupported')
++                    parsed = parse_formula(form.text or '', 'xlsx', name)
++                    value = _number(raw.text or '') if raw is not None else None
++                    item = Cell('number', value, parsed)
++                elif typ in ('s','inlineStr','str'):
++                    if style not in ('general','text'): refuse('conversion_text_style_unsupported')
++                    if typ == 'inlineStr':
++                        if raw is not None or inline is None or inline.attrib or len(inline) != 1 or inline[0].tag != q(S,'t'):
++                            refuse('conversion_rich_text_unsupported')
++                        value = _text(inline[0])
++                    elif typ == 's':
++                        if inline is not None or raw is None: refuse('conversion_string_identity')
++                        value = strings[int(raw.text)]
++                    else:
++                        # OOXML t=str denotes a formula string cache, not a literal string contract.
++                        refuse('conversion_cached_string_unsupported')
++                    item = Cell('string', value)
++                elif typ == 'b':
++                    if raw is None or raw.text not in ('0','1') or inline is not None or style != 'general':
++                        refuse('conversion_boolean_identity')
++                    item = Cell('boolean', raw.text == '1')
++                elif typ == 'd':
++                    if raw is None or inline is not None: refuse('conversion_date_identity')
++                    item = Cell('date', _date(raw.text))
++                elif typ == 'n':
++                    if inline is not None: refuse('conversion_numeric_identity')
++                    if raw is None:
++                        if style not in ('general','number'): refuse('conversion_styled_blank_unsupported')
++                        continue
++                    value = _number(raw.text or '')
++                    if style == 'date':
++                        if value != value.to_integral_value(): refuse('conversion_date_only_required')
++                        try: value = _date((date(1899,12,30)+timedelta(days=int(value))).isoformat())
++                        except (ValueError,OverflowError): refuse('conversion_date_identity')
++                        item = Cell('date', value)
++                    elif style in ('general','number'):
++                        item = Cell('number',value)
++                    else: refuse('conversion_numeric_style_unsupported')
++                else: refuse('conversion_cell_type_unsupported')
++                if raw is not None and (raw.attrib or len(raw)): refuse('conversion_value_identity')
++                cells.append((r,c,item))
++                if len(cells) > MAX_CELLS: refuse('conversion_cell_limit')
++        sheets.append((name,cells))
++    return _finish(sheets,checkpoint)
++
++
++def _ods_styles(book):
++    styles = {}; defaults = []; number_styles = {}
++    for part in ('content.xml','styles.xml'):
++        root = book.xml.get(part)
++        if root is None: continue
++        for section in root:
++            if section.tag not in (q(O,'styles'),q(O,'automatic-styles')): continue
++            for node in section:
++                if node.tag == q(ST,'default-style'):
++                    defaults.append(node); continue
++                if node.tag == q(ST,'style'):
++                    name = node.get(q(ST,'name'))
++                    if not name or name in styles: refuse('conversion_style_identity')
++                    styles[name] = node
++                    if len(styles) > 32: refuse('conversion_style_limit')
++                elif node.tag in {q(NUM,x) for x in ('number-style','date-style','text-style','boolean-style')}:
++                    _attrs(node, (q(ST,'name'),))
++                    name = node.get(q(ST,'name'))
++                    if not name or name in number_styles or len(number_styles) >= 32:
++                        refuse('conversion_style_identity')
++                    number_styles[name] = node
++                    _children(node, (q(NUM,x) for x in ('number','day','month','year','text','text-content','boolean')),
++                              'conversion_number_format_unsupported')
++                    for child in node:
++                        if len(child): refuse('conversion_number_format_unsupported')
++                        if child.tag == q(NUM,'number'):
++                            _attrs(child, (q(NUM,'min-integer-digits'),q(NUM,'decimal-places')))
++                            places = child.get(q(NUM,'decimal-places'),'0')
++                            if child.get(q(NUM,'min-integer-digits'),'1') != '1' or not places.isdecimal() or int(places)>12:
++                                refuse('conversion_number_format_unsupported')
++                        elif child.tag in {q(NUM,x) for x in ('day','month','year')}:
++                            _attrs(child, (q(NUM,'style'),))
++                            if child.get(q(NUM,'style'),'short') not in ('short','long'):
++                                refuse('conversion_number_format_unsupported')
++                        else:
++                            _attrs(child, ())
++                            if child.tag == q(NUM,'text') and child.text not in ('.','-'):
++                                refuse('conversion_number_format_unsupported')
++                else: refuse('conversion_styles_unsupported')
++    safe_defaults = {
++        q(ST,'cell-protect'): {'none'}, q(ST,'vertical-align'): {'automatic','bottom'},
++        q(ST,'rotation-angle'): {'0'}, q(ST,'shrink-to-fit'): {'false'},
++        q(FO,'background-color'): {'transparent'}, q(FO,'wrap-option'): {'no-wrap'},
++        q(FO,'border'): {'none'}, q(FO,'text-align'): {'start'},
++        q(FO,'break-before'): {'auto'}, q(FO,'break-after'): {'auto'},
++    }
++    def check(node, trail=()):
++        family = node.get(q(ST,'family'))
++        if family not in ('table-cell','table','table-row','table-column','paragraph','text'):
++            refuse('conversion_styles_unsupported')
++        _attrs(node, (q(ST,x) for x in ('name','family','parent-style-name','data-style-name','display-name')))
++        if node.get(q(ST,'display-name')) not in (None,'Default'):
++            refuse('conversion_named_styles_unsupported')
++        data_style = node.get(q(ST,'data-style-name'))
++        if data_style and data_style not in number_styles: refuse('conversion_style_identity')
++        parent = node.get(q(ST,'parent-style-name'))
++        if parent:
++            if parent in trail or parent not in styles: refuse('conversion_style_identity')
++            check(styles[parent], trail+(parent,))
++        for child in node:
++            if child.tag not in {q(ST,x) for x in ('table-cell-properties','paragraph-properties','table-properties','table-row-properties','table-column-properties')} or len(child):
++                refuse('conversion_styles_unsupported')
++            if any(key not in safe_defaults or val not in safe_defaults[key] for key,val in child.attrib.items()):
++                refuse('conversion_styles_unsupported')
++    if len(defaults) > 8: refuse('conversion_style_limit')
++    for node in defaults: check(node)
++    # Even an unused custom style would otherwise be silently discarded.
++    for name, node in styles.items(): check(node, (name,))
++    def used(name):
++        if name not in styles: refuse('conversion_style_identity')
++        check(styles[name], (name,))
++    return used
++
++
++def _formula_namespaces(raw):
++    # A formula prefix is a scoped QName, not just the literal characters "of".
++    # ElementTree keeps expanded attribute names but drops the prefix bindings.
++    bindings = {}; frames = []; pending = []
++    for event, item in ET.iterparse(BytesIO(raw), events=('start-ns','start','end')):
++        if event == 'start-ns':
++            pending.append(item)
++        elif event == 'start':
++            frames.append(bindings)
++            bindings = dict(bindings); bindings.update(pending); pending = []
++            formula = item.get(q(TB,'formula'))
++            if formula is not None and (not formula.startswith('of:=') or bindings.get('of') != OF):
++                refuse('conversion_formula_namespace_unsupported')
++        else:
++            bindings = frames.pop()
++
++
++def _ods(data, checkpoint):
++    book = Spreadsheet(data,'ods',checkpoint)
++    if book.unsupported: refuse('conversion_active_or_linked_content')
++    _formula_namespaces(book.parts['content.xml'])
++    if set(book.parts)-{'mimetype','content.xml','styles.xml','meta.xml','settings.xml','META-INF/manifest.xml', 'manifest.rdf','Thumbnails/thumbnail.png'}:
++        refuse('conversion_package_features_unsupported')
++    used_style = _ods_styles(book)
++    content = book.xml['content.xml']
++    _attrs(content, (q(O,'version'),))
++    _children(content, (q(O,x) for x in ('font-face-decls','automatic-styles','body')),
++              'conversion_document_features_unsupported')
++    _children(book.body, (q(TB,x) for x in ('table','calculation-settings')),
++              'conversion_names_or_workbook_features_unsupported')
++    _attrs(book.body, ())
++    for settings in book.body.findall(q(TB,'calculation-settings')):
++        _attrs(settings, ())
++        if any(child.tag != q(TB,'null-date') or child.attrib != {q(TB,'date-value'):'1899-12-30'} for child in settings):
++            refuse('conversion_calculation_settings_unsupported')
++    sheets = []
++    for sheet in book.sheets:
++        tick(checkpoint)
++        _attrs(sheet, (q(TB,x) for x in ('name','style-name','print')))
++        name = _sheet_name(sheet.get(q(TB,'name')))
++        if sheet.get(q(TB,'style-name')): used_style(sheet.get(q(TB,'style-name')))
++        _children(sheet, (q(TB,x) for x in ('table-column','table-columns','table-row','table-rows')),
++                  'conversion_sheet_features_unsupported')
++        for wrapper in sheet:
++            if wrapper.tag in (q(TB,'table-columns'),q(TB,'table-rows')):
++                _attrs(wrapper, ())
++                _children(wrapper, (q(TB,'table-column'),) if wrapper.tag == q(TB,'table-columns') else (q(TB,'table-row'),))
++        for column in sheet.iter(q(TB,'table-column')):
++            _children(column, ())
++            _attrs(column, (q(TB,x) for x in ('number-columns-repeated','style-name','default-cell-style-name')))
++            for key in ('style-name','default-cell-style-name'):
++                if column.get(q(TB,key)): used_style(column.get(q(TB,key)))
++        # Validate row metadata even for empty rows; cells() cannot yield them.
++        for row in book.rows(sheet):
++            _attrs(row, (q(TB,x) for x in ('number-rows-repeated','style-name','default-cell-style-name')))
++            _children(row, (q(TB,'table-cell'),q(TB,'covered-table-cell')))
++            for key in ('style-name','default-cell-style-name'):
++                if row.get(q(TB,key)): used_style(row.get(q(TB,key)))
++        cells = []
++        for r,c,height,width,node,row in book.cells(sheet):
++            tick(checkpoint)
++            if node.tag != q(TB,'table-cell'): refuse('conversion_merged_cells_unsupported')
++            _attrs(node, {q(TB,x) for x in ('number-columns-repeated','style-name','formula')} |
++                         {q(O,x) for x in ('value-type','value','string-value','boolean-value','date-value')} |
++                         {q(CALCEXT,'value-type')})
++            if node.get(q(TB,'style-name')): used_style(node.get(q(TB,'style-name')))
++            _children(node, (q(T,'p'),),'conversion_rich_text_unsupported')
++            for p in node:
++                _attrs(p, ())
++                if any(child.tag not in {q(T,x) for x in ('s','tab','line-break')} for child in p):
++                    refuse('conversion_rich_text_unsupported')
++                for child in p:
++                    _attrs(child, (q(T,'c'),) if child.tag == q(T,'s') else ())
++                    if len(child) or (child.text or ''): refuse('conversion_rich_text_unsupported')
++            value = book.value(node); kind = value['type']; formula = value.get('formula')
++            if node.get(q(CALCEXT,'value-type')) not in (None,kind): refuse('conversion_cell_type_unsupported')
++            if kind in ('blank','void') and formula is None:
++                if (value['value'] is not None or set(node.attrib) &
++                        {q(O,x) for x in ('value','string-value','boolean-value','date-value')}):
++                    refuse('conversion_untyped_cell_unsupported')
++                continue
++            if r+height-1 > MAX_ROWS or c+width-1 > MAX_COLS or len(cells)+height*width > MAX_CELLS:
++                refuse('conversion_cell_limit')
++            # Repeated formulas have relative-reference expansion semantics outside this dialect.
++            if formula is not None and (height != 1 or width != 1): refuse('conversion_repeated_formula_unsupported')
++            if kind == 'float': item = Cell('number',_number(value['value']),parse_formula(formula,'ods',name) if formula is not None else None)
++            elif formula is not None: refuse('conversion_formula_type_unsupported')
++            elif kind == 'string':
++                if q(O,'string-value') in node.attrib and node.get(q(O,'string-value')) != value.get('display',''):
++                    refuse('conversion_ambiguous_string_display')
++                item = Cell('string',value['value'])
++            elif kind == 'boolean': item = Cell('boolean',value['value'])
++            elif kind == 'date': item = Cell('date',_date(value['value']))
++            else: refuse('conversion_cell_type_unsupported')
++            # Prevent malformed mixed scalar attributes from acquiring a different interpretation in Office.
++            scalar = {q(O,x) for x in ('value','string-value','boolean-value','date-value')}
++            appropriate = {'float':q(O,'value'),'string':q(O,'string-value'),'boolean':q(O,'boolean-value'),'date':q(O,'date-value')}[kind]
++            if (set(node.attrib)&scalar)-{appropriate}: refuse('conversion_ambiguous_cell')
++            for rr in range(r,r+height):
++                for cc in range(c,c+width): cells.append((rr,cc,item))
++        if book.unsupported: refuse('conversion_structure_unsupported')
++        sheets.append((name,cells))
++    return _finish(sheets,checkpoint)
++
++
++def inventory(data, format, *, checkpoint=None):
++    try:
++        if format == 'xlsx': return _xlsx(data,checkpoint)
++        if format == 'ods': return _ods(data,checkpoint)
++        refuse('conversion_pair_unsupported')
++    except ConversionRefused:
++        raise
++    except (ODSError, ODTError) as error:
++        raise ConversionRefused(str(error)) from None
++    except (KeyError, IndexError, TypeError, ValueError, OverflowError, ET.ParseError):
++        raise ConversionRefused('conversion_malformed_package') from None
++
++
++def validate_destination(source, data, target, *, checkpoint=None):
++    actual = inventory(data,target,checkpoint=checkpoint)
++    if [name for name,_ in actual.sheets] != [name for name,_ in source.sheets]:
++        refuse('conversion_sheet_order_or_identity_changed')
++    for (_, before), (_, after) in zip(source.sheets,actual.sheets):
++        left = {(r,c): cell for r,c,cell in before}
++        right = {(r,c): cell for r,c,cell in after}
++        if left.keys() != right.keys(): refuse('conversion_cells_changed')
++        for key, old in left.items():
++            tick(checkpoint); new = right[key]
++            if old.kind != new.kind: refuse('conversion_cell_type_changed')
++            if old.formula != new.formula: refuse('conversion_formula_changed_or_lost')
++            if old.formula is None and old.value != new.value: refuse('conversion_literal_changed')
++    evaluate(actual,checkpoint=checkpoint,check_cache=True)
++    return actual
+--- /dev/null
++++ b/tools/scoped_word_conversion.py
+@@ -0,0 +1,673 @@
++"""Strict semantic profile for genuine DOCX <-> ODT conversion.
++
++This module only validates immutable native packages. It never converts text
++into a replacement document. The caller must feed the original package to
++Office, then compare independently parsed native output before publication.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import re
++
++from tools.scoped_word_profiles import _Package, WordProfileError, W, R
++from tools.scoped_odf_profiles import _editable_package, ODFProfileError
++from tools.scoped_odt import ODTError
++from tools.scoped_presentation import PresentationError
++
++O = 'urn:oasis:names:tc:opendocument:xmlns:office:1.0'
++T = 'urn:oasis:names:tc:opendocument:xmlns:text:1.0'
++TB = 'urn:oasis:names:tc:opendocument:xmlns:table:1.0'
++S = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0'
++XL = 'http://www.w3.org/1999/xlink'
++MAX_TEXT = 100_000
++MAX_PARAGRAPHS = 8192
++MAX_CELLS = 4096
++MAX_COLUMNS = 64
++FORMATTING_LIMITS = (
++    'Fonts, run styling, colors, spacing, borders, page geometry, pagination and '
++    'document metadata may change; their visual fidelity is not verified. '
++    'Only ordered body paragraphs, heading levels, rectangular unmerged tables, '
++    'cell paragraph boundaries, Unicode text, spaces, tabs and line breaks are verified. '
++    'Lists, fields, bookmarks, tracked changes, headers/footers, notes/comments, '
++    'drawings/media, hyperlinks, embedded fonts/objects, protection, signatures, '
++    'macros and external resources are refused. Ambiguous raw ODF whitespace is '
++    'refused; explicit native ODF spaces, tabs and line breaks are supported.'
++)
++
++
++class WordConversionError(ValueError):
++    """Finite reason codes only, without source text or parser diagnostics."""
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++def _fail(code):
++    raise WordConversionError(code)
++
++
++def q(namespace, local):
++    return '{' + namespace + '}' + local
++
++
++def _tick(checkpoint):
++    if checkpoint is not None:
++        checkpoint()
++
++
++def _white(node):
++    if (node.text or '').strip() or any((c.tail or '').strip() for c in node):
++        _fail('unexpected_structural_text')
++
++
++def _integer(value, maximum, code, *, zero=False):
++    if not isinstance(value, str) or not re.fullmatch(r'[0-9]{1,6}', value):
++        _fail(code)
++    result = int(value)
++    if not (0 if zero else 1) <= result <= maximum:
++        _fail(code)
++    return result
++
++
++class _Inventory:
++    def __init__(self, checkpoint):
++        self.checkpoint = checkpoint
++        self.paragraphs = self.cells = self.text_bytes = 0
++
++    def paragraph(self, text, level=None):
++        _tick(self.checkpoint)
++        self.paragraphs += 1
++        self.text_bytes += len(text.encode('utf-8'))
++        if self.paragraphs > MAX_PARAGRAPHS or self.text_bytes > MAX_TEXT:
++            _fail('semantic_capacity')
++        result = {'type': 'paragraph', 'text': text}
++        if level is not None:
++            result.update(type='heading', level=level)
++        return result
++
++    def table(self, rows):
++        if not rows or not 1 <= len(rows[0]) <= MAX_COLUMNS:
++            _fail('unsupported_table')
++        columns = len(rows[0])
++        if any(len(row) != columns for row in rows):
++            _fail('nonrectangular_table')
++        self.cells += sum(map(len, rows))
++        if self.cells > MAX_CELLS:
++            _fail('semantic_capacity')
++        return {'type': 'table', 'rows': rows}
++
++
++# Properties below affect only the explicitly unverified visual formatting.
++# Content-bearing or executable properties are deliberately absent.
++_RUN_PROPERTIES = set('rStyle rFonts b bCs i iCs caps smallCaps strike dstrike color '
++                      'sz szCs u vertAlign highlight lang kern spacing position rtl cs '
++                      'noProof snapToGrid shd bdr'.split())
++_PARAGRAPH_PROPERTIES = set('pStyle keepNext keepLines pageBreakBefore widowControl '
++                            'suppressLineNumbers spacing ind contextualSpacing jc '
++                            'textDirection textAlignment outlineLvl tabs snapToGrid '
++                            'bidi adjustRightInd mirrorInd suppressAutoHyphens '
++                            'suppressOverlap topLinePunct autoSpaceDE autoSpaceDN '
++                            'kinsoku wordWrap overflowPunct rPr'.split())
++_TABLE_PROPERTIES = set('tblStyle tblW tblInd tblBorders shd tblLayout tblCellMar '
++                        'tblLook jc bidiVisual'.split())
++_CELL_PROPERTIES = set('tcW tcBorders shd vAlign tcMar noWrap hideMark gridSpan textDirection'.split())
++_ROW_PROPERTIES = set('trHeight cantSplit jc'.split())
++
++
++def _word_properties(node, allowed):
++    _white(node)
++    seen = set()
++    for child in node:
++        if child.tag not in {q(W, name) for name in allowed}:
++            _fail('unsupported_word_property')
++        if child.tag in seen:
++            _fail('ambiguous_word_properties')
++        seen.add(child.tag)
++        if child.tag == q(W, 'gridSpan') and child.get(q(W, 'val')) != '1':
++            _fail('merged_table')
++        if child.tag == q(W, 'rPr'):
++            _word_properties(child, _RUN_PROPERTIES)
++        # Properties cannot smuggle content/relationships in nested children.
++        for descendant in child.iter():
++            nested = allowed | _RUN_PROPERTIES | {'top', 'left', 'right', 'bottom', 'start', 'end', 'insideH', 'insideV', 'tab'}
++            if descendant.tag not in {q(W, name) for name in nested}:
++                _fail('unsupported_word_property')
++            if any(attr.startswith(q(R, '')) for attr in descendant.attrib):
++                _fail('unsupported_word_property')
++            if (descendant.text or '').strip() or (descendant.tail or '').strip():
++                _fail('unexpected_structural_text')
++
++
++class _Word:
++    def __init__(self, data, state):
++        self.state = state
++        self.pkg = _Package(data, 'docx', state.checkpoint)
++        if self.pkg.active or self.pkg.macro:
++            _fail('active_or_signed_package')
++        allowed = {'[Content_Types].xml', '_rels/.rels', 'word/document.xml',
++                   'word/_rels/document.xml.rels', 'word/styles.xml', 'word/stylesWithEffects.xml',
++                   'word/settings.xml', 'word/webSettings.xml', 'word/fontTable.xml',
++                   'word/numbering.xml', 'word/theme/theme1.xml', 'docProps/core.xml',
++                   'docProps/app.xml', 'docProps/custom.xml', 'docProps/thumbnail.jpeg',
++                   'customXml/item1.xml', 'customXml/itemProps1.xml', 'customXml/_rels/item1.xml.rels'}
++        if set(self.pkg.parts) - allowed:
++            _fail('unsupported_word_part')
++        root_types = {R + '/officeDocument', R + '/extended-properties', R + '/custom-properties',
++                      'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties',
++                      'http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail'}
++        doc_types = {R + '/' + name for name in ('styles', 'settings', 'webSettings', 'fontTable',
++                                                'theme', 'numbering', 'customXml')}
++        doc_types.add('http://schemas.microsoft.com/office/2007/relationships/stylesWithEffects')
++        for owner, rows in self.pkg.relationships.items():
++            allowed_types = (root_types if owner == '' else doc_types if owner == 'word/document.xml'
++                             else {R + '/customXmlProps'} if owner == 'customXml/item1.xml' else set())
++            if any(kind not in allowed_types for kind, target in rows.values()):
++                _fail('unsupported_word_relationship')
++        self._empty_bibliography()
++        forbidden = {q(W, n) for n in ('documentProtection', 'writeProtection', 'mailMerge',
++                                      'attachedTemplate', 'saveThroughXslt', 'dataBinding',
++                                      'hdr', 'ftr', 'footnote', 'endnote', 'comment')}
++        for name, root in self.pkg.xml.items():
++            for node in root.iter():
++                if node.tag in forbidden or q('http://www.w3.org/XML/1998/namespace', 'base') in node.attrib:
++                    _fail('unsupported_word_content')
++                if name != 'word/document.xml' and node.tag in {q(W, 'p'), q(W, 'tbl'), q(W, 't')}:
++                    _fail('unsupported_word_content')
++        styles = self.pkg.xml.get('word/styles.xml')
++        self.styles = {}
++        self.default_style = None
++        self.default_paragraph = None
++        if styles is not None:
++            if len(styles.findall(q(W, 'docDefaults'))) > 1:
++                _fail('ambiguous_word_properties')
++            if styles.tag != q(W, 'styles'):
++                _fail('unsupported_word_styles')
++            _white(styles)
++            for node in styles:
++                if node.tag == q(W, 'docDefaults'):
++                    defaults = list(node.iter(q(W, 'pPr')))
++                    if len(defaults) > 1:
++                        _fail('ambiguous_word_properties')
++                    self.default_paragraph = defaults[0] if defaults else None
++                    for prop in defaults:
++                        _word_properties(prop, _PARAGRAPH_PROPERTIES)
++                    for prop in node.iter(q(W, 'rPr')):
++                        _word_properties(prop, _RUN_PROPERTIES)
++                if node.tag != q(W, 'style'):
++                    continue
++                identity = node.get(q(W, 'styleId'))
++                if not identity or identity in self.styles:
++                    _fail('ambiguous_word_style')
++                self.styles[identity] = node
++                if node.get(q(W, 'type')) == 'paragraph' and node.get(q(W, 'default')) in ('1', 'true', 'on'):
++                    if self.default_style is not None:
++                        _fail('ambiguous_word_style')
++                    self.default_style = identity
++        effects = self.pkg.xml.get('word/stylesWithEffects.xml')
++        if effects is not None:
++            # Alternate Office style definitions must not carry semantics
++            # different from the canonical definitions this parser resolves.
++            if styles is None or effects.tag != q(W, 'styles'):
++                _fail('ambiguous_word_style')
++            _white(effects)
++            def signature(node):
++                return (node.tag, tuple(sorted(node.attrib.items())),
++                        (node.text or '').strip(), (node.tail or '').strip(),
++                        tuple(signature(child) for child in node))
++            seen = set()
++            for node in effects:
++                key = (node.tag, node.get(q(W, 'styleId')))
++                if key in seen:
++                    _fail('ambiguous_word_style')
++                seen.add(key)
++                canonical = (self.styles.get(key[1]) if node.tag == q(W, 'style')
++                             else styles.find(node.tag))
++                if canonical is None or signature(node) != signature(canonical):
++                    _fail('ambiguous_word_style')
++
++    def _empty_bibliography(self):
++        # python-docx's default template carries an empty bibliography store.
++        # Nonempty custom data has no preservation contract and is refused.
++        names = {n for n in self.pkg.parts if n.startswith('customXml/')}
++        if not names:
++            return
++        expected = {'customXml/item1.xml', 'customXml/itemProps1.xml', 'customXml/_rels/item1.xml.rels'}
++        if names != expected:
++            _fail('unsupported_custom_xml')
++        root = self.pkg.xml['customXml/item1.xml']
++        b = 'http://schemas.openxmlformats.org/officeDocument/2006/bibliography'
++        if root.tag != q(b, 'Sources') or len(root) or (root.text or '').strip():
++            _fail('unsupported_custom_xml')
++        ds = 'http://schemas.openxmlformats.org/officeDocument/2006/customXml'
++        props = self.pkg.xml['customXml/itemProps1.xml']
++        if props.tag != q(ds, 'datastoreItem') or len(props) != 1 or props[0].tag != q(ds, 'schemaRefs'):
++            _fail('unsupported_custom_xml')
++        _white(props)
++        _white(props[0])
++        if any(n.tag != q(ds, 'schemaRef') or n.get(q(ds, 'uri')) != b or len(n) for n in props[0]):
++            _fail('unsupported_custom_xml')
++
++    def _style_properties(self, node, family):
++        # Office must not choose a different declaration from the one whose
++        # semantics we inventoried. Reject duplicate and misplaced properties.
++        metadata = set('name aliases basedOn next link autoRedefine hidden uiPriority '
++                       'semiHidden unhideWhenUsed qFormat locked personal '
++                       'personalCompose personalReply rsid'.split())
++        allowed = metadata | {'rPr'}
++        if family in ('paragraph', 'table'):
++            allowed.add('pPr')
++        if family == 'table':
++            allowed |= {'tblPr', 'trPr', 'tcPr', 'tblStylePr'}
++        _white(node)
++        seen, conditional = set(), set()
++        for child in node:
++            if child.tag not in {q(W, name) for name in allowed}:
++                _fail('unsupported_word_style')
++            if child.tag == q(W, 'tblStylePr'):
++                condition = child.get(q(W, 'type'))
++                conditions = set('wholeTable firstRow lastRow firstCol lastCol band1Vert '
++                                 'band2Vert band1Horz band2Horz neCell nwCell seCell swCell'.split())
++                if condition not in conditions or condition in conditional:
++                    _fail('ambiguous_word_style')
++                conditional.add(condition)
++                _white(child)
++                nested_seen = set()
++                for prop in child:
++                    name = prop.tag.removeprefix(q(W, ''))
++                    if name not in {'pPr', 'rPr', 'tblPr', 'trPr', 'tcPr'} or prop.tag in nested_seen:
++                        _fail('ambiguous_word_style')
++                    nested_seen.add(prop.tag)
++                    _word_properties(prop, {'pPr': _PARAGRAPH_PROPERTIES,
++                                           'rPr': _RUN_PROPERTIES,
++                                           'tblPr': _TABLE_PROPERTIES,
++                                           'trPr': _ROW_PROPERTIES,
++                                           'tcPr': _CELL_PROPERTIES}[name])
++                continue
++            if child.tag in seen:
++                _fail('ambiguous_word_style')
++            seen.add(child.tag)
++            if child.tag in {q(W, name) for name in metadata}:
++                if len(child) or (child.text or '').strip():
++                    _fail('unsupported_word_style')
++            else:
++                name = child.tag.removeprefix(q(W, ''))
++                _word_properties(child, {'pPr': _PARAGRAPH_PROPERTIES,
++                                        'rPr': _RUN_PROPERTIES,
++                                        'tblPr': _TABLE_PROPERTIES,
++                                        'trPr': _ROW_PROPERTIES,
++                                        'tcPr': _CELL_PROPERTIES}[name])
++
++    def style_chain(self, identity, family):
++        chain, seen = [], set()
++        while identity is not None:
++            if identity in seen or identity not in self.styles or len(seen) >= 64:
++                _fail('ambiguous_word_style')
++            seen.add(identity)
++            node = self.styles[identity]
++            if node.get(q(W, 'type')) != family:
++                _fail('ambiguous_word_style')
++            self._style_properties(node, family)
++            chain.append(node)
++            parent = node.find(q(W, 'basedOn'))
++            identity = None if parent is None else parent.get(q(W, 'val'))
++            if parent is not None and not identity:
++                _fail('ambiguous_word_style')
++        return list(reversed(chain))
++
++    def paragraph(self, node):
++        _white(node)
++        properties = node.findall(q(W, 'pPr'))
++        if len(properties) > 1:
++            _fail('ambiguous_word_properties')
++        prop = properties[0] if properties else None
++        style = prop.find(q(W, 'pStyle')) if prop is not None else None
++        chain = self.style_chain(style.get(q(W, 'val')) if style is not None else self.default_style, 'paragraph')
++        level = None
++        for source in [self.default_paragraph] + [n.find(q(W, 'pPr')) for n in chain] + [prop]:
++            if source is None:
++                continue
++            _word_properties(source, _PARAGRAPH_PROPERTIES)
++            outlines = source.findall(q(W, 'outlineLvl'))
++            if len(outlines) > 1:
++                _fail('ambiguous_heading')
++            if outlines:
++                value = _integer(outlines[0].get(q(W, 'val')), 9, 'invalid_heading', zero=True)
++                level = None if value == 9 else value + 1
++        text = []
++        for run in node:
++            if run.tag == q(W, 'pPr'):
++                continue
++            if (run.tag == q(W, 'proofErr') and not len(run) and not (run.text or '')
++                    and run.get(q(W, 'type')) in ('spellStart', 'spellEnd', 'gramStart', 'gramEnd')):
++                continue
++            if run.tag != q(W, 'r'):
++                _fail('unsupported_word_inline')
++            _white(run)
++            run_properties = run.findall(q(W, 'rPr'))
++            if len(run_properties) > 1:
++                _fail('ambiguous_word_properties')
++            for rpr in run_properties:
++                _word_properties(rpr, _RUN_PROPERTIES)
++                rstyle = rpr.find(q(W, 'rStyle'))
++                if rstyle is not None:
++                    self.style_chain(rstyle.get(q(W, 'val')), 'character')
++            for part in run:
++                if part.tag == q(W, 'rPr'):
++                    continue
++                if len(part):
++                    _fail('unsupported_word_inline')
++                if part.tag == q(W, 't'):
++                    text.append(part.text or '')
++                elif part.tag == q(W, 'tab'):
++                    text.append('\t')
++                elif part.tag in (q(W, 'br'), q(W, 'cr')):
++                    if part.tag == q(W, 'br') and part.get(q(W, 'type'), 'textWrapping') != 'textWrapping':
++                        _fail('unsupported_page_break')
++                    text.append('\n')
++                elif part.tag == q(W, 'lastRenderedPageBreak'):
++                    pass
++                else:
++                    _fail('unsupported_word_inline')
++        return self.state.paragraph(''.join(text), level)
++
++    def table(self, node):
++        _white(node)
++        rows, grid = [], None
++        if len(node.findall(q(W, 'tblPr'))) > 1:
++            _fail('ambiguous_word_properties')
++        for child in node:
++            if child.tag == q(W, 'tblPr'):
++                _word_properties(child, _TABLE_PROPERTIES)
++                style = child.find(q(W, 'tblStyle'))
++                if style is not None:
++                    self.style_chain(style.get(q(W, 'val')), 'table')
++                continue
++            if child.tag == q(W, 'tblGrid'):
++                if grid is not None or any(c.tag != q(W, 'gridCol') for c in child):
++                    _fail('unsupported_table')
++                grid = len(child)
++                continue
++            if child.tag != q(W, 'tr'):
++                _fail('unsupported_table')
++            _white(child)
++            if len(child.findall(q(W, 'trPr'))) > 1:
++                _fail('ambiguous_word_properties')
++            row = []
++            for cell in child:
++                if cell.tag == q(W, 'trPr'):
++                    _word_properties(cell, _ROW_PROPERTIES)
++                    continue
++                if cell.tag != q(W, 'tc'):
++                    _fail('unsupported_table')
++                _white(cell)
++                if len(cell.findall(q(W, 'tcPr'))) > 1:
++                    _fail('ambiguous_word_properties')
++                paragraphs = []
++                for part in cell:
++                    if part.tag == q(W, 'tcPr'):
++                        _word_properties(part, _CELL_PROPERTIES)
++                    elif part.tag == q(W, 'p'):
++                        paragraphs.append(self.paragraph(part))
++                    else:
++                        _fail('unsupported_table')
++                if not paragraphs:
++                    _fail('unsupported_table')
++                row.append(paragraphs)
++            rows.append(row)
++        if grid is not None and rows and grid != len(rows[0]):
++            _fail('unsupported_table')
++        return self.state.table(rows)
++
++    def blocks(self):
++        document = self.pkg.xml['word/document.xml']
++        if len(document) != 1 or document[0] is not self.pkg.body:
++            _fail('unsupported_word_content')
++        body = self.pkg.body
++        _white(body)
++        result = []
++        for index, node in enumerate(body):
++            if node.tag == q(W, 'p'):
++                result.append(self.paragraph(node))
++            elif node.tag == q(W, 'tbl'):
++                result.append(self.table(node))
++            elif node.tag == q(W, 'sectPr') and index == len(body) - 1:
++                _word_properties(node, set('pgSz pgMar cols docGrid type titlePg textDirection '
++                                           'bidi rtlGutter pgNumType paperSrc'.split()))
++                cols = node.find(q(W, 'cols'))
++                if cols is not None and (len(cols) or cols.get(q(W, 'num'), '1') != '1'):
++                    _fail('unsupported_columns')
++            else:
++                _fail('unsupported_word_content')
++        return result
++
++
++class _ODF:
++    def __init__(self, data, state):
++        self.state = state
++        self.pkg = _editable_package(data, 'odt', state.checkpoint)
++        allowed = {'mimetype', 'META-INF/manifest.xml', 'content.xml', 'styles.xml',
++                   'meta.xml', 'settings.xml', 'Thumbnails/thumbnail.png'}
++        if set(self.pkg.parts) - allowed:
++            _fail('unsupported_odt_part')
++        self.styles = {}
++        body_nodes = set(self.pkg.body.iter())
++        for name, root in self.pkg.xml.items():
++            for node in root.iter():
++                if node.tag in (q(T, 'p'), q(T, 'h'), q(TB, 'table')) and node not in body_nodes:
++                    _fail('unsupported_odt_content')
++                if any(attr in (q(XL, 'href'), q('http://www.w3.org/XML/1998/namespace', 'base')) for attr in node.attrib):
++                    _fail('linked_content')
++                if node.tag in (q(S, 'header'), q(S, 'footer'), q(S, 'header-left'), q(S, 'footer-left')):
++                    if len(node) or (node.text or '').strip():
++                        _fail('unsupported_headers_footers')
++                if node.tag == q(T, 'outline-level-style') and node.get(q(S, 'num-format'), ''):
++                    _fail('numbered_headings')
++                if node.get(q(T, 'display')) == 'none':
++                    _fail('hidden_text')
++                if node.get(q(TB, 'display')) in ('false', '0'):
++                    _fail('hidden_text')
++                if node.tag == q(S, 'style'):
++                    identity = (node.get(q(S, 'family')), node.get(q(S, 'name')))
++                    if not identity[1] or identity in self.styles:
++                        _fail('ambiguous_odt_style')
++                    self.styles[identity] = node
++        # Generic package validation precedes this explicit content profile.
++        for root in self.pkg.xml.values():
++            for node in root.iter():
++                if node.tag == q(O, 'forms') and (len(node) or (node.text or '').strip()):
++                    _fail('active_or_signed_package')
++
++    def style(self, identity, family):
++        seen = set()
++        while identity:
++            key = (family, identity)
++            if key in seen or key not in self.styles or len(seen) >= 64:
++                _fail('ambiguous_odt_style')
++            seen.add(key)
++            node = self.styles[key]
++            if node.get(q(S, 'list-style-name')):
++                _fail('unsupported_list')
++            if node.find(q(S, 'map')) is not None:
++                _fail('conditional_style')
++            for prop in node:
++                if prop.get(q(T, 'display')) == 'none':
++                    _fail('hidden_text')
++            identity = node.get(q(S, 'parent-style-name'))
++
++    def inline(self, node):
++        # Raw XML whitespace and ODF's explicit whitespace are different.
++        # Preserve the finite exact-text profile by refusing raw forms whose
++        # native whitespace collapsing would differ from literal extraction.
++        pieces = []
++        length = 0
++
++        def add(value, explicit=False):
++            nonlocal length
++            if not value:
++                return
++            length += len(value)
++            if length > MAX_TEXT:
++                _fail('semantic_capacity')
++            if not explicit:
++                if any(char in value for char in '\t\r\n'):
++                    _fail('ambiguous_odt_whitespace')
++                if pieces and not pieces[-1][1]:
++                    value = pieces.pop()[0] + value
++                if '  ' in value:
++                    _fail('ambiguous_odt_whitespace')
++            pieces.append((value, explicit))
++
++        def walk(parent):
++            add(parent.text or '')
++            for child in parent:
++                if child.tag == q(T, 'span'):
++                    if set(child.attrib) - {q(T, 'style-name'), q('http://www.w3.org/XML/1998/namespace', 'id')}:
++                        _fail('unsupported_odt_inline')
++                    self.style(child.get(q(T, 'style-name')), 'text')
++                    walk(child)
++                elif child.tag == q(T, 's') and not len(child) and not (child.text or ''):
++                    if set(child.attrib) - {q(T, 'c')}:
++                        _fail('unsupported_odt_inline')
++                    add(' ' * _integer(child.get(q(T, 'c'), '1'), MAX_TEXT, 'space_capacity'), True)
++                elif child.tag in (q(T, 'tab'), q(T, 'line-break'), q(T, 'soft-page-break')) and not len(child) and not (child.text or ''):
++                    if set(child.attrib) - ({q(T, 'tab-ref')} if child.tag == q(T, 'tab') else set()):
++                        _fail('unsupported_odt_inline')
++                    add({q(T, 'tab'): '\t', q(T, 'line-break'): '\n', q(T, 'soft-page-break'): ''}[child.tag], True)
++                else:
++                    _fail('unsupported_odt_inline')
++                add(child.tail or '')
++
++        walk(node)
++        if pieces and ((not pieces[0][1] and pieces[0][0].startswith(' ')) or
++                       (not pieces[-1][1] and pieces[-1][0].endswith(' '))):
++            _fail('ambiguous_odt_whitespace')
++        return ''.join(value for value, explicit in pieces)
++
++    def paragraph(self, node):
++        allowed = {q(T, 'style-name'), q('http://www.w3.org/XML/1998/namespace', 'id')}
++        if node.tag == q(T, 'h'):
++            allowed |= {q(T, 'outline-level'), q(T, 'is-list-header')}
++        if set(node.attrib) - allowed:
++            _fail('unsupported_odt_paragraph')
++        self.style(node.get(q(T, 'style-name')), 'paragraph')
++        if node.get(q(T, 'conditional-style-name')) is not None:
++            _fail('conditional_style')
++        level = None
++        if node.tag == q(T, 'h'):
++            level = _integer(node.get(q(T, 'outline-level')), 9, 'invalid_heading')
++            if node.get(q(T, 'is-list-header')) not in (None, 'false', '0'):
++                _fail('unsupported_list')
++        return self.state.paragraph(self.inline(node), level)
++
++    def table(self, node):
++        _white(node)
++        if set(node.attrib) - {q(TB, 'name'), q(TB, 'style-name')}:
++            _fail('unsupported_table')
++        rows, columns = [], 0
++        for child in node:
++            if child.tag == q(TB, 'table-column'):
++                if set(child.attrib) - {q(TB, 'style-name'), q(TB, 'number-columns-repeated'), q(TB, 'default-cell-style-name')}:
++                    _fail('unsupported_table')
++                if len(child):
++                    _fail('unsupported_table')
++                columns += _integer(child.get(q(TB, 'number-columns-repeated'), '1'), MAX_COLUMNS, 'table_capacity')
++                if columns > MAX_COLUMNS:
++                    _fail('table_capacity')
++                continue
++            if child.tag != q(TB, 'table-row'):
++                _fail('unsupported_table')
++            if set(child.attrib) - {q(TB, 'style-name'), q(TB, 'number-rows-repeated'), q(TB, 'default-cell-style-name')}:
++                _fail('unsupported_table')
++            repeat = _integer(child.get(q(TB, 'number-rows-repeated'), '1'), MAX_CELLS, 'table_capacity')
++            _white(child)
++            row = []
++            for cell in child:
++                if cell.tag != q(TB, 'table-cell'):
++                    _fail('unsupported_table')
++                if set(cell.attrib) - {q(TB, name) for name in ('style-name', 'number-columns-repeated', 'number-columns-spanned', 'number-rows-spanned')} - {q(O, 'value-type')}:
++                    _fail('unsupported_table')
++                for key in ('number-columns-spanned', 'number-rows-spanned'):
++                    if cell.get(q(TB, key), '1') != '1':
++                        _fail('merged_table')
++                if cell.get(q(O, 'value-type')) not in (None, 'string'):
++                    _fail('typed_table_cell')
++                if any(key in cell.attrib for key in (q(TB, 'formula'), q(O, 'value'), q(O, 'date-value'), q(O, 'string-value'), q(O, 'boolean-value'), q(TB, 'content-validation-name'))):
++                    _fail('typed_table_cell')
++                _white(cell)
++                paragraphs = []
++                for paragraph in cell:
++                    if paragraph.tag not in (q(T, 'p'), q(T, 'h')):
++                        _fail('unsupported_table')
++                    paragraphs.append(self.paragraph(paragraph))
++                if not paragraphs:
++                    _fail('unsupported_table')
++                copies = _integer(cell.get(q(TB, 'number-columns-repeated'), '1'), MAX_COLUMNS, 'table_capacity')
++                if len(row) + copies > MAX_COLUMNS:
++                    _fail('table_capacity')
++                row.extend([paragraphs] * copies)
++            if (len(rows) + repeat) * max(1, len(row)) > MAX_CELLS:
++                _fail('table_capacity')
++            rows.extend([row] * repeat)
++        if columns and rows and columns != len(rows[0]):
++            _fail('unsupported_table')
++        return self.state.table(rows)
++
++    def blocks(self):
++        _white(self.pkg.body)
++        result = []
++        for node in self.pkg.body:
++            if node.tag in (q(T, 'p'), q(T, 'h')):
++                result.append(self.paragraph(node))
++            elif node.tag == q(TB, 'table'):
++                result.append(self.table(node))
++            elif node.tag == q(T, 'sequence-decls'):
++                _white(node)
++                if any(c.tag != q(T, 'sequence-decl') or len(c) or (c.text or '').strip() for c in node):
++                    _fail('unsupported_odt_content')
++            else:
++                _fail('unsupported_odt_content')
++        return result
++
++
++def inventory(data, format, *, checkpoint=None):
++    """Return exact semantic blocks after a strict inert native preflight."""
++    state = _Inventory(checkpoint)
++    try:
++        if format == 'docx':
++            blocks = _Word(data, state).blocks()
++        elif format == 'odt':
++            blocks = _ODF(data, state).blocks()
++        else:
++            _fail('unsupported_conversion_format')
++    except (WordProfileError, ODFProfileError, ODTError, PresentationError) as error:
++        raise WordConversionError(str(error)) from None
++    if not blocks:
++        _fail('empty_document')
++    # Count expanded repeats too; physical XML counters alone are insufficient.
++    paragraphs = [p for b in blocks for p in ([b] if b['type'] != 'table' else
++                  [p for row in b['rows'] for cell in row for p in cell])]
++    total = sum(len(p['text'].encode('utf-8')) for p in paragraphs)
++    if len(paragraphs) > MAX_PARAGRAPHS or total > MAX_TEXT:
++        _fail('semantic_capacity')
++    _tick(checkpoint)
++    return blocks
++
++
++def validate_conversion(source, source_format, output, output_format, *, checkpoint=None):
++    if (source_format, output_format) not in (('docx', 'odt'), ('odt', 'docx')):
++        _fail('unsupported_conversion_pair')
++    before = inventory(source, source_format, checkpoint=checkpoint)
++    after = inventory(output, output_format, checkpoint=checkpoint)
++    if before != after:
++        _fail('semantic_mismatch')
++    paragraphs = [p for b in before for p in ([b] if b['type'] != 'table' else
++                  [p for row in b['rows'] for cell in row for p in cell])]
++    encoded = json.dumps(before, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
++    return {'semantic_profile': 'plain_word_blocks_v1', 'semantic_sha256': hashlib.sha256(encoded).hexdigest(),
++            'body_blocks': len(before), 'paragraphs': len(paragraphs),
++            'headings': sum(p['type'] == 'heading' for p in paragraphs),
++            'tables': sum(b['type'] == 'table' for b in before),
++            'cells': sum(len(row) for b in before if b['type'] == 'table' for row in b['rows']),
++            'text_utf8_bytes': sum(len(p['text'].encode('utf-8')) for p in paragraphs),
++            'formatting_limits': FORMATTING_LIMITS}

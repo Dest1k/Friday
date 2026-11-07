@@ -1,0 +1,76 @@
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1158,6 +1158,16 @@
+ 
+     from hermes_cli.friday_credential_admission import ordinary_readonly_schemas
+     agent.tools = ordinary_readonly_schemas(agent.tools)
++    # The bounded admission prices system prompt + tool schemas as non-compressible
++    # overhead. When that fixed part alone is close to the trigger, pre-API compression
++    # can never reach its target and keeps rewriting rows it must not touch. Keep the
++    # largest tools that still fit, in their original order, so the fixed part stays
++    # below the trigger and no protected row is ever rewritten.
++    try:
++        from agent.bounded_context import bounded_trim_tools_to_trigger
++        agent.tools = bounded_trim_tools_to_trigger(agent)
++    except Exception:
++        pass
+ 
+     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
+     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -1557,3 +1557,54 @@
+             return 0
+         raise BoundedSummaryHeadroomError("bounded_context: protected final request leaves no summary headroom below the soft trigger")
+     return headroom
++
++
++def bounded_trim_tools_to_trigger(agent):
++    """Drop the largest tool schemas until the fixed part fits under the soft trigger.
++
++    The bounded lane prices ``system prompt + tool schemas`` as overhead that
++    compression cannot shrink. When that overhead exceeds the trigger, pre-API
++    compression runs on every turn, cannot reach its target, and ends up
++    rewriting protected rows. Trimming the advertised tool set is the only local
++    lever that does not touch history, limits or the system prompt. Tools are
++    kept in their original order; the smallest are always retained so ordinary
++    work still has a usable surface. Returns the (possibly identical) list.
++    """
++    tools = getattr(agent, "tools", None)
++    policy = getattr(agent, "_bounded_context_policy", None)
++    if not isinstance(tools, list) or not tools or not isinstance(policy, BoundedContextPolicy):
++        return tools
++    system_prompt = getattr(agent, "_cached_system_prompt", None)
++    if not isinstance(system_prompt, str):
++        return tools
++    system_bytes = serialized_bytes([{"role": "system", "content": system_prompt}])
++    trigger = policy.trigger_tokens
++    sizes = []
++    for index, tool in enumerate(tools):
++        try:
++            sizes.append((index, serialized_bytes(tool)))
++        except BoundedContextError:
++            return tools
++    total = system_bytes + sum(size for _, size in sizes)
++    if total <= trigger:
++        return tools
++    # Keep the tools an ordinary conversation actually needs, then drop the
++    # biggest of the rest until the fixed part fits under the trigger.
++    essential = {"write_file", "read_file", "terminal", "memory", "clarify"}
++    names = {}
++    for index, tool in enumerate(tools):
++        function = tool.get("function") if isinstance(tool, dict) else None
++        if isinstance(function, dict):
++            names[index] = function.get("name")
++    candidates = sorted((row for row in sizes if names.get(row[0]) not in essential),
++                        key=lambda row: -row[1])
++    keep = dict(sizes)
++    floor = min(12, len(tools))
++    for index, size in candidates:
++        if len(keep) <= floor or total <= trigger:
++            break
++        total -= size
++        keep.pop(index, None)
++    if len(keep) == len(tools):
++        return tools
++    return [tool for index, tool in enumerate(tools) if index in keep]

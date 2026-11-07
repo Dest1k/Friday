@@ -1,0 +1,130 @@
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -1480,6 +1480,15 @@
+     return request, streaming
+ 
+ 
++def _bounded_fixed_overhead(request):
++    body = wire_body(request)
++    fixed = serialized_bytes(body.get("tools", []))
++    for message in body.get("messages", []):
++        if isinstance(message, dict) and message.get("role") == "system":
++            fixed += serialized_bytes(message)
++    return fixed
++
++
+ def guard_bounded_compaction(agent, messages, system_prompt):
+     policy = getattr(agent, "_bounded_context_policy", None)
+     if not isinstance(policy, BoundedContextPolicy):
+@@ -1488,10 +1497,13 @@
+     for request in variants:
+         guard_main_request(agent, request)
+     estimated = max(policy.check_request(request)["estimated_input"] for request in variants)
++    fixed = max(_bounded_fixed_overhead(request) for request in variants)
+     # A bounded replacement above the unchanged soft trigger immediately asks
+     # for another expensive compaction. Allocate and validate against the same
+     # complete-request target before replacing any durable rows.
+-    if estimated > policy.trigger_tokens:
++    if (estimated > policy.trigger_tokens
++            and not (fixed > policy.trigger_tokens
++                     and getattr(agent.context_compressor, "_bounded_summary_force_deterministic", False))):
+         raise BoundedContextError("bounded_context: compacted request did not clear the soft trigger")
+     return estimated
+ 
+@@ -1535,5 +1547,13 @@
+                 max(serialized_bytes(wire_body(request)) + policy.template_overhead_tokens
+                     for request in variants), policy.trigger_tokens, headroom)
+     if headroom < 6:
++        fixed = max(_bounded_fixed_overhead(request) for request in variants)
++        if fixed > policy.trigger_tokens:
++            for request in variants:
++                policy.check_request(request)
++            logger.warning("Bounded summary fallback: fixed overhead %d exceeds trigger %d; using deterministic summary",
++                           fixed, policy.trigger_tokens)
++            agent.context_compressor._bounded_summary_force_deterministic = True
++            return 0
+         raise BoundedSummaryHeadroomError("bounded_context: protected final request leaves no summary headroom below the soft trigger")
+     return headroom
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -5345,6 +5345,7 @@
+         self._last_summary_dropped_count = 0
+         self._last_summary_fallback_used = False
+         self._last_feasibility_skip = False
++        self._bounded_summary_force_deterministic = False
+         self._last_summary_error = None
+         self._last_aux_model_failure_error = None
+         self._last_aux_model_failure_model = None
+@@ -5705,8 +5706,8 @@
+             canonical_messages = copy.deepcopy(messages)
+             messages = copy.deepcopy(messages)
+             allocation_fields = ("_bounded_summary_json_headroom", "_bounded_summary_output_tokens",
+-                                 "_bounded_summary_target_tokens",
+-                                 "_bounded_summary_readonly_strategy", "_bounded_summary_visible_contract")
++                                 "_bounded_summary_target_tokens", "_bounded_summary_readonly_strategy",
++                                 "_bounded_summary_visible_contract", "_bounded_summary_force_deterministic")
+             allocation_before = {key: copy.deepcopy(getattr(self, key)) for key in allocation_fields
+                                  if key in getattr(self, "__dict__", {})}
+         else:
+@@ -5776,6 +5777,7 @@
+         if bounded:
+             fit = getattr(self, "_bounded_summary_fit_callback", None)
+             self._bounded_summary_readonly_strategy = False
++            self._bounded_summary_force_deterministic = False
+             # Reserve every deterministic addition before allocating model text.
+             mandatory = self._ground_historical_task_snapshot("", turns_to_summarize)
+             names = list(dict.fromkeys(_collect_ghosted_skill_names(turns_to_summarize)
+@@ -5803,7 +5805,8 @@
+             # Tool execution grants do not determine summary-output shape; the
+             # normal deferred-tool lane needs the native contract too.
+             from agent.bounded_summary_output import allocate
+-            allocate(self, mandatory)
++            if not self._bounded_summary_force_deterministic:
++                allocate(self, mandatory)
+             # Keep the already admitted configured auxiliary generation budget.
+             # Input accounting reserves this full cap even when text is shorter.
+             self._bounded_summary_output_tokens = self.bounded_context_policy.compression_output_tokens
+@@ -5814,7 +5817,11 @@
+         from agent.conversation_compression import _raise_if_stale_attempt
+ 
+         _raise_if_stale_attempt(self)
+-        feasibility_skip = not force and (
++        structural_skip = bool(getattr(self, "_bounded_summary_force_deterministic", False))
++        if structural_skip:
++            self._last_feasibility_skip = True
++            telemetry["failure_class"] = "bounded_fixed_overhead"
++        feasibility_skip = structural_skip or not force and (
+             self._fallback_streak_skip(telemetry)
+             or (not (bounded and self._bounded_summary_readonly_strategy)
+                 and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end))
+--- a/agent/conversation_compression.py
++++ b/agent/conversation_compression.py
+@@ -174,7 +174,7 @@
+     "_verify_compaction_cleared_threshold", "_last_compression_made_progress", "_summary_failure_cooldown_until",
+     "_cooldown_persist_failed", "_last_summary_error", "_consecutive_timeout_failures", "_consecutive_truncation_failures",
+     "_last_summary_dropped_count",
+-    "_last_summary_fallback_used", "_last_compress_aborted", "_last_summary_auth_failure",
++    "_last_summary_fallback_used", "_last_feasibility_skip", "_last_compress_aborted", "_last_summary_auth_failure",
+     "_last_summary_network_failure", "_last_summary_empty_content_failure", "_last_summary_truncated_failure",
+     "_last_summary_overload_failure", "_consecutive_overload_aborts", "_last_summary_overload_degraded",
+     "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_last_aux_resolved_model",
+@@ -182,7 +182,7 @@
+     "_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed",
+     "_proactive_prune_rearm_tokens", "_bounded_protected_rows", "_bounded_protected_summary",
+     "_bounded_summary_json_headroom", "_bounded_summary_output_tokens", "_bounded_summary_target_tokens",
+-    "_bounded_summary_readonly_strategy",
++    "_bounded_summary_readonly_strategy", "_bounded_summary_force_deterministic",
+ )
+ 
+ _COMPRESSOR_COOLDOWN_STATE_FIELDS = ("_summary_failure_cooldown_until", "_last_summary_error", "_cooldown_persist_failed")
+@@ -411,8 +411,8 @@
+         # Restore that absence under the same owner/serial lock as existing values.
+         for name in ("_bounded_protected_rows", "_bounded_protected_summary",
+                      "_bounded_summary_json_headroom", "_bounded_summary_output_tokens",
+-                     "_bounded_summary_target_tokens",
+-                     "_bounded_summary_readonly_strategy"):
++                     "_bounded_summary_target_tokens", "_bounded_summary_readonly_strategy",
++                     "_bounded_summary_force_deterministic", "_last_feasibility_skip"):
+             if name not in restored and name in getattr(compressor, "__dict__", {}):
+                 delattr(compressor, name)
+         for name, value in restored.items():

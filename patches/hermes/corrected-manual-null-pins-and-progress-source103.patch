@@ -1,0 +1,128 @@
+--- a/gateway/slash_commands_session.py
++++ b/gateway/slash_commands_session.py
+@@ -836,7 +836,14 @@
+         # only marks this agent as no real surface. Since #104414 Platform is not a restore-identity
+         # field, so it no longer forces the next live turn to rebuild; the seed's retain flag is what
+         # keeps the reduced-toolset build out of the session row (#122822).
+-        tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM
++        if gateway_snapshot is None:
++            tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM
++        else:
++            # NULL persisted prompts need the authoritative live surface builder,
++            # not hygiene's reduced-surface prompt. Keep the complete native tool
++            # construction snapshot for the legitimate no/legacy-pin branch.
++            import copy
++            tmp_agent._bounded_manual_native_tools = copy.deepcopy(tmp_agent.tools)
+         tmp_agent._print_fn = lambda *a, **kw: None
+         # close() must not end the rotated session the gateway entry now points at.
+         tmp_agent._end_session_on_close = False
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -1212,34 +1212,70 @@
+     from hermes_cli import friday_prompt_scope
+     from hermes_cli.friday_credential_admission import ordinary_readonly_schemas
+     db = getattr(agent, "_session_db", None)
++    friday_prompt_scope.check_store(agent)
+     row = db.get_session(agent.session_id) if db is not None else None
+     prompt = row.get("system_prompt") if isinstance(row, dict) else None
+-    if (not isinstance(prompt, str) or not prompt.strip()
+-            or not friday_prompt_scope.matches(agent, prompt, row)
+-            or not _stored_prompt_matches_runtime(agent, prompt)
++    if (not isinstance(row, dict) or row.get("ended_at") is not None
+             or not snapshot_is_current()):
+         raise BoundedContextError("bounded_context: manual session snapshot unavailable or stale")
+-    try:
+-        pin = json.loads(row.get("tool_names") or "null")
+-        pinned = pin["tools"]
+-        if not isinstance(pin, dict) or not isinstance(pinned, list) or not pinned:
+-            raise ValueError()
+-        if any(not isinstance(t, dict) or not t.get("function", {}).get("name") for t in pinned):
+-            raise ValueError()
+-        expected = ordinary_readonly_schemas(copy.deepcopy(pinned))
+-        # Native restoration may best-effort persist a migrated pin. This local
+-        # preparation must not publish anything before the admitted commit.
+-        agent._session_db = None
++    raw_pin = row.get("tool_names")
++    import re
++    missing = prompt is None
++    legacy = raw_pin is None or (isinstance(raw_pin, str) and re.fullmatch(r"[0-9a-fA-F]{64}", raw_pin) is not None)
++    if missing and legacy:
++        # No historical prompt/schema bytes can be restored. Build CURRENT
++        # authority with the SAME native full per-source constructor/core builder,
++        # never by treating NULL/hash as an empty or fabricated persisted pin.
++        native_tools = getattr(agent, "_bounded_manual_native_tools", None)
++        if not isinstance(native_tools, list) or not native_tools or agent.tools != native_tools:
++            raise BoundedContextError("bounded_context: current native manual tool snapshot unavailable")
++        agent.tools = ordinary_readonly_schemas(copy.deepcopy(native_tools))
++        agent.valid_tool_names = {t["function"]["name"] for t in agent.tools}
++        from hermes_cli.config import load_config_readonly
++        from tools.memory_tool import get_builtin_memory_config
++        from agent.agent_init import _init_memory, is_core_memory_provider
++        config = load_config_readonly()
++        if not is_core_memory_provider(get_builtin_memory_config(config).get("provider", "")):
++            raise BoundedContextError("bounded_context: current external memory prompt cannot be built without provider effects")
++        _init_memory(agent, config, False, agent.platform)
++        # A private native read-only handle preserves prompt-store grounding and
++        # task/title/profile metadata without permitting any precommit pin write.
++        from hermes_state import SessionDB
++        readonly_db = SessionDB(db.db_path, read_only=True)
++        agent._session_db = readonly_db
+         try:
+-            restore_agent_tool_prefix(agent, pin)
++            prompt = agent._build_system_prompt("")
+         finally:
+             agent._session_db = db
+-        agent.tools = ordinary_readonly_schemas(agent.tools)
+-        agent.valid_tool_names = {t["function"]["name"] for t in agent.tools}
+-        if agent.tools != expected:
+-            raise ValueError()
+-    except (KeyError, TypeError, ValueError) as exc:
+-        raise BoundedContextError("bounded_context: exact manual tool pin unavailable") from exc
++            readonly_db.close()
++        if not isinstance(prompt, str) or not prompt.strip() or not _stored_prompt_matches_runtime(agent, prompt):
++            raise BoundedContextError("bounded_context: current native manual prompt build failed")
++        if not snapshot_is_current() or _manual_compaction_session(db.get_session(agent.session_id)) != _manual_compaction_session(row):
++            raise BoundedContextError("bounded_context: manual session changed during native prompt build")
++    else:
++        if (not isinstance(prompt, str) or not prompt.strip()
++                or not friday_prompt_scope.matches(agent, prompt, row)
++                or not _stored_prompt_matches_runtime(agent, prompt)):
++            raise BoundedContextError("bounded_context: manual session snapshot unavailable or stale")
++        try:
++            pin = json.loads(raw_pin or "null")
++            pinned = pin["tools"]
++            if not isinstance(pin, dict) or not isinstance(pinned, list) or not pinned:
++                raise ValueError()
++            if any(not isinstance(t, dict) or not t.get("function", {}).get("name") for t in pinned):
++                raise ValueError()
++            expected = ordinary_readonly_schemas(copy.deepcopy(pinned))
++            agent._session_db = None
++            try:
++                restore_agent_tool_prefix(agent, pin)
++            finally:
++                agent._session_db = db
++            agent.tools = ordinary_readonly_schemas(agent.tools)
++            agent.valid_tool_names = {t["function"]["name"] for t in agent.tools}
++            if agent.tools != expected:
++                raise ValueError()
++        except (KeyError, TypeError, ValueError) as exc:
++            raise BoundedContextError("bounded_context: exact manual tool pin unavailable") from exc
+     agent._cached_system_prompt = prompt
+     agent._retain_seeded_system_prompt = True
+     restore_plugin_prompt_sections(agent, prompt)
+--- a/agent/turn_recovery.py
++++ b/agent/turn_recovery.py
+@@ -1023,7 +1023,12 @@
+     _nonretryable_summary = agent._summarize_api_error(api_error)
+     _plabel = provider_label_for(provider)
+     _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
+-    agent._emit_diagnostic_status(f"❌ {_label}: {_nonretryable_summary}")
++    from agent.bounded_context import BoundedContextOverflowError
++    if isinstance(api_error, BoundedContextOverflowError):
++        # Local admission details remain in the error result and log, never in progress.
++        agent._emit_diagnostic_status("❌ Запрос не помещается в доступный контекст. Обработка остановлена.")
++    else:
++        agent._emit_diagnostic_status(f"❌ {_label}: {_nonretryable_summary}")
+     # The endpoint/status trace is developer detail: verbose only (the log has it always).
+     if getattr(agent, "verbose_logging", False):
+         _vlines(

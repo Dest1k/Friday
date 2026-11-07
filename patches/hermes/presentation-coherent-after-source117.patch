@@ -1,0 +1,1192 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -11,7 +11,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = "friday.public-identity.v15"
++DIALOGUE_REVISION = "friday.public-identity.v16"
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -58,6 +58,7 @@
+ 
+ 
+ DOCUMENT_GROUNDING_GUIDANCE = (
++    'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. '
+     'Для сравнения или правки ранее присланного файла сначала установи, какое именно '
+     'пользовательское вложение является исходником. Проверь его фактическое содержимое '
+     'через read_file и прочитай все части, если partial=true; для сравнения прочитай обе версии. '
+@@ -207,7 +208,8 @@
+     'Для пересчёта XLSX используй write_file format=xlsx_recalculate, новое имя .xlsx и JSON {"source":"edited.xlsx"}; после правки пересчитывай уже возвращённый файл, не повторяй правку. '
+     'При отказе сохраняющего редактирования не подменяй его пересборкой из извлечённого текста; '
+     'сообщи ограничение или уточни нужный уникальный фрагмент. '
+-    'Для нового редактируемого PPTX по таблице Orders используй pptx_create с точными ключами source/slides/series. Полный пример: {"source":"orders.xlsx","series":"Sales","slides":[{"title":"Opening","body":"Summary","table":false,"chart":false},{"title":"Inputs","body":"Four rows","table":false,"chart":false},{"title":"Sales","body":"Native data","table":true,"chart":true},{"title":"Conclusions","body":"Total from Orders","table":false,"chart":false},{"title":"Sources","body":"Orders only","table":false,"chart":false}]}. Ровно пять слайдов; title непустой <=256, body строка, table/chart булевы; ровно одна таблица и один график. '
++    'Для фактического PPTX по XLSX/CSV используй pptx_create с точными source/data: {"source":"input.xlsx","data":{"sheet":"Orders","group":"sku","order":"order_id","amount":{"product":["qty","unit_price"]},"currency":"currency"}}. Имена полей — выбранные точные заголовки реального источника, не фиксированная схема. amount: {"column":"net"} либо {"product":["quantity","price"]}; currency — исходная текстовая колонка либо null; для UTF-8 comma CSV sheet=null. Инструмент сам строит пять редактируемых слайдов, таблицу, один график, числа строк/различных ключей, суммы и вывод; фактический текст не задаётся моделью. Формулы выбранных колонок и неподдержанные входы честно отказываются; кеши формул не используются. До 100 строк и восьми групп, плюс ограничения читаемого размещения. Проверяй source_facts и source_sha256 в результате. Авторский режим source/slides/series сохранён, но его свободный текст не проверен по таблице и не предназначен для утверждений о числах или происхождении расчёта. '
++    'pptx_edit меняет только указанную пару заголовок/значение графика и встроенную книгу; source-bound таблица, вывод и основание расчёта не пересчитываются. Для обновлённых фактов строй новую source-bound презентацию по текущей таблице. Авторский режим также отказывает при превышении читаемых размеров; прежняя приёмка oversized-контента не сохраняется. '
+     'Для сохраняющей правки PPTX используй pptx_edit и новое имя, например {"source":"deck.pptx","slide":3,"old_title":"Sales","new_title":"Sales corrected","category":"A01","old_value":"3601.50","new_value":"3602.50"}; slide однобазовый, уникальные заголовок и значение меняются вместе с кешем графика и встроенной книгой. '
+     'Для ODP используй odp_create: {"slides":[{"title":"Report","body":"Summary","notes":"Speaker only","table":[["SKU","Value"],["A01",{"type":"decimal","value":"3601.50"}]],"chart":{"categories":["A01"],"values":["3601.50"]}}]}. 1-20 слайдов; table=null либо 1-128 прямоугольных строк по 1-32 строковых/decimal ячейки, chart=null либо равные categories/values 1-128; decimal задаётся точным объектом type/value. '
+     'Для ODP edit: {"source":"deck.odp","slide":1,"table":1,"row":2,"column":2,"old_value":"3601.50","new_value":"3602.50"}; адреса однобазовые логические с учётом предшествующих повторов. Только простая неформульная числовая ячейка; повторяемая/объединённая/покрытая/formula/span/mixed цель и неоднозначность отклоняются до записи. '
+@@ -319,7 +321,7 @@
+             'XLSX content JSON: format=xlsx_recalculate {source}; format=xlsx_merge {base,update,sheet,key,revision}; '
+             'format=xlsx {source,sheet,cell,expected,value}. XLSX outputs need NEW .xlsx names; xlsx edits never recalculate. '
+             'DOCX: docx/docx_structured create; docx_edit {source,old_text,new_text}; docx_pdf {source}. '
+-            'Presentations: pptx_create {source,slides,series}; pptx_edit {source,slide,old_title,new_title,category,old_value,new_value}; odp_create {slides}; odp_edit {source,slide,table,row,column,old_value,new_value}; pptx_pdf/odp_pptx/pptx_odp {source}. All produce NEW native files with typed JSON only. '
++            'Presentations: source-bound pptx_create {source,data} computes typed real-table facts (see tool contract); authored pptx_create {source,slides,series} leaves prose unverified; pptx_edit {source,slide,old_title,new_title,category,old_value,new_value}; odp_create {slides}; odp_edit {source,slide,table,row,column,old_value,new_value}; pptx_pdf/odp_pptx/pptx_odp {source}. All produce NEW native files with typed JSON only. '
+             'Use tool_describe for full schema before tool_call; pass each JSON object as the content string. '
+             'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use only pptx_pdf, odp_pptx or pptx_odp; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. '
+             'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=xlsx; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -880,7 +880,7 @@
+                 from hermes_cli.friday_workspace_zip import read_archive
+                 return read_archive(cap, path.as_posix(), offset=args.get('offset', 1),
+                                     limit=args.get('limit', 2000), char_offset=args.get('char_offset', 0))
+-            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.pptx', '.odp'} else None
++            document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.pptx', '.potx', '.ppsx', '.odp', '.otp'} else None
+             extraction_metadata = None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+@@ -984,14 +984,17 @@
+         if name != 'write_file':
+             raise ScopeDenied()
+         output_format = args.get('format', 'text')
+-        if output_format not in ('text', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'archive_convert', 'pptx_create', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp'):
+-            raise ScopeDenied()
+-        if output_format in ('pptx_create', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp'):
+-            expected = {'pptx_create': '.pptx', 'pptx_edit': '.pptx', 'pptx_pdf': '.pdf',
++        if output_format not in ('text', 'docx', 'docx_structured', 'docx_edit', 'docx_pdf', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'archive_convert', 'pptx_create', 'pptx_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp'):
++            raise ScopeDenied()
++        if output_format in ('pptx_create', 'pptx_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp'):
++            expected = {'pptx_create': '.pptx', 'pptx_merge': '.pptx', 'pptx_edit': '.pptx', 'pptx_pdf': '.pdf',
+                         'odp_create': '.odp', 'odp_edit': '.odp', 'odp_pptx': '.pptx',
+                         'pptx_odp': '.odp'}[output_format]
+             if path.suffix.lower() != expected: raise ScopeDenied()
+             from hermes_cli import friday_workspace_presentation as presentation
++            if output_format == 'pptx_merge':
++                from hermes_cli.friday_workspace_presentation_merge import create_merge
++                return create_merge(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+             if output_format == 'pptx_create':
+                 return presentation.create_pptx(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+             if output_format == 'odp_create':
+@@ -1049,10 +1052,14 @@
+             from hermes_cli.friday_workspace_docx import create
+             return create(cap, fd, parts[-1], path.as_posix(), args.get('content'),
+                           structured=output_format == 'docx_structured')
+-        if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.xls', '.zip', '.7z', '.pptx', '.odp'}:
++        if path.suffix.lower() in {'.docx', '.pdf', '.xlsx', '.xls', '.zip', '.7z', '.pptx', '.potx', '.ppsx', '.odp', '.otp'}:
+             refusal = {'success': False, 'error': 'document_write_unsupported',
+                        'format': path.suffix.lower().lstrip('.')}
+-            if path.suffix.lower() in {'.pptx', '.odp'}:
++            if path.suffix.lower() in {'.potx', '.ppsx', '.otp'}:
++                refusal['hint'] = ('Native presentation templates and slideshows can be read. Creating '
++                    'or editing these formats is not supported by this writer. Do not write text/XML '
++                    'under these suffixes or rename an ordinary presentation to claim these formats.')
++            elif path.suffix.lower() in {'.pptx', '.odp'}:
+                 refusal['hint'] = ('Use the explicit native presentation formats pptx_create/pptx_edit/pptx_pdf '
+                     'or odp_create/odp_edit/odp_pptx/pptx_odp with their typed JSON contract and a NEW output path. '
+                     'UTF-8 text, CSV or XML under a presentation suffix is not a native presentation.')
+--- a/hermes_cli/friday_workspace_presentation.py
++++ b/hermes_cli/friday_workspace_presentation.py
+@@ -77,19 +77,34 @@
+ def create_pptx(cap, fd, leaf, path, content):
+     from hermes_cli.friday_user_scope import ScopeDenied
+     from hermes_cli.friday_workspace_revision import check
+-    from tools.scoped_presentation_write import create_pptx as render, json_object, orders_facts, PresentationRefused
+-    try:
+-        check(cap)
+-        spec = json_object(content, ('source', 'slides', 'series'))
+-        source, relative, data, identity = _read_source(spec['source'], cap, '.xlsx')
+-        facts = orders_facts(data)
+-        rendered = render(facts, spec)
+-        facts_public = {key: facts[key] for key in ('totals', 'grand_total', 'currency', 'largest_sku')}
++    from tools.scoped_presentation_write import create_pptx as render, pptx_request, create_data_pptx, orders_facts, PresentationRefused
++    bound = False
++    try:
++        check(cap)
++        spec = pptx_request(content)
++        bound = 'data' in spec
++        if bound:
++            if not isinstance(spec['source'], str):
++                raise ScopeDenied()
++            suffix = Path(spec['source']).suffix.lower()
++            if suffix not in ('.xlsx', '.csv'):
++                raise PresentationRefused('data_source_format')
++            source, relative, data, identity = _read_source(spec['source'], cap, suffix)
++            rendered, facts_public = create_data_pptx(data, suffix, spec, checkpoint=lambda: check(cap))
++        else:
++            source, relative, data, identity = _read_source(spec['source'], cap, '.xlsx')
++            facts = orders_facts(data)
++            rendered = render(facts, spec)
++            facts_public = {key: facts[key] for key in ('totals', 'grand_total', 'currency', 'largest_sku')}
+         return _publish(cap, fd, leaf, path, rendered, 'pptx', (source, data, identity),
+                         {'source': relative, 'source_sha256': hashlib.sha256(data).hexdigest(),
+                          'source_unchanged': True, 'native_editable': True,
+-                         'slides': 5, 'native_charts': 1, 'source_facts': facts_public})
+-    except PresentationRefused:
++                         'slides': 5, 'native_charts': 1, 'source_facts': facts_public,
++                         'factual_mode': 'source_bound' if bound else 'authored_prose_unverified'})
++    except PresentationRefused as error:
++        if bound:
++            return json.dumps({'success': False, 'error': 'presentation_data_refused',
++                               'reason': str(error), 'effect_disposition': 'none'})
+         raise ScopeDenied() from None
+ 
+ 
+--- /dev/null
++++ b/hermes_cli/friday_workspace_presentation_merge.py
+@@ -0,0 +1,38 @@
++"""Two-source own-user PPTX merge through existing atomic document writer."""
++import json
++
++
++def create_merge(cap, fd, leaf, path, content):
++    from hermes_cli.friday_user_scope import ScopeDenied, workspace_document
++    from hermes_cli.friday_workspace_revision import check
++    from hermes_cli.friday_workspace_docx import _create_bytes
++    from hermes_cli.friday_workspace_presentation import _read_source
++    from tools.scoped_presentation_write import json_object, PresentationRefused
++    from tools.scoped_presentation_merge import merge_pptx
++    try:
++        check(cap)
++        spec = json_object(content, ('sources', 'title', 'order'))
++        if not isinstance(spec['sources'], list) or len(spec['sources']) != 2:
++            raise ScopeDenied()
++        states, relatives = [], []
++        for raw in spec['sources']:
++            source, relative, data, identity = _read_source(raw, cap, '.pptx')
++            if source in [state[0] for state in states]:
++                raise ScopeDenied()
++            states.append((source, data, identity))
++            relatives.append(relative)
++        rendered, metadata = merge_pptx([state[1] for state in states], spec)
++        def verify():
++            check(cap)
++            for source, data, identity in states:
++                current, _, version = workspace_document(str(source), with_identity=True)
++                if current != data or version != identity:
++                    raise ScopeDenied()
++            check(cap)
++        result = json.loads(_create_bytes(cap, fd, leaf, path, rendered,
++                                         output_format='pptx', verify_source=verify))
++        if result.get('success'):
++            result.update(metadata, sources=relatives, sources_unchanged=True)
++        return json.dumps(result, ensure_ascii=False)
++    except PresentationRefused:
++        raise ScopeDenied() from None
+--- a/hermes_cli/friday_workspace_xlsx_table.py
++++ b/hermes_cli/friday_workspace_xlsx_table.py
+@@ -499,7 +499,12 @@
+                    for child in item if child.tag in {S+'t', S+'r'})
+ 
+ 
+-def source_table(book, name):
++def source_table(book, name, *, columns=None):
++    """Read literal typed cells, optionally projecting named columns before decoding.
++
++    Projection does not evaluate formulas/caches in other columns. The default
++    join consumer keeps its existing whole-table validation and return shape.
++    """
+     if name not in book.sheets: deny('xlsx_join_sheet_missing')
+     root = book.roots[book.sheets[name]]
+     if root.find(S+'mergeCells') is not None or root.find(S+'tableParts') is not None: deny('xlsx_join_structure_unsupported')
+@@ -533,7 +538,13 @@
+         if kind == 'b' and raw in ('0', '1'): return scalar(raw == '1')
+         if kind == 'd': return scalar({'type':'date', 'value':raw})
+         if kind != 'n': deny('xlsx_join_cell_unsupported')
+-        result = number(format(Decimal(raw), 'f'))
++        parsed = Decimal(raw)
++        # Bound fixed-point expansion before formatting an OOXML exponent.
++        # Values outside these limits already fail number(); avoid allocating
++        # an enormous string for e.g. 1e-100000000 in a projected source cell.
++        if not parsed.is_finite() or parsed.as_tuple().exponent < -12 or parsed.adjusted() > 15:
++            deny('xlsx_table_decimal')
++        result = number(format(parsed, 'f'))
+         style = cell.get('s', '0')
+         if not style.isascii() or not style.isdigit() or (xfs and int(style) >= len(xfs)) or (not xfs and style != '0'): deny('xlsx_join_styles_unsupported')
+         fmt = formats.get(int(xfs[int(style)].get('numFmtId', '0'))) if xfs else 'General'
+@@ -549,7 +560,10 @@
+         if fmt == '0' or (isinstance(fmt, str) and re.fullmatch(r'0\.0{1,12}', fmt)):
+             return (result[0], result[1], fmt)
+         deny('xlsx_join_styles_unsupported')
+-    rows = []; width = 0
++    if columns is not None and (not isinstance(columns, list) or not columns
++            or any(not isinstance(v, str) or not v for v in columns) or len(columns) != len(set(columns))):
++        deny('xlsx_table_projection_columns')
++    rows = []; width = 0; selected = None
+     for index, row in enumerate(native_rows, 1):
+         if row.get('r') != str(index): deny('xlsx_join_sparse_rows_unsupported')
+         cells = list(row)
+@@ -563,8 +577,15 @@
+             col = 0
+             for char in match[1]: col = col*26+ord(char)-64
+             if not 1 <= col <= width or col in seen: deny('xlsx_join_cell_unsupported')
+-            seen.add(col); decoded[col-1] = value(cell)
+-        rows.append(decoded)
++            seen.add(col)
++            if index == 1 or selected is None or col-1 in selected:
++                decoded[col-1] = value(cell)
++        if index == 1 and columns is not None:
++            if any(k != 'string' or not v for k, v, _ in decoded): deny('xlsx_join_headers')
++            headers = [v for _, v, _ in decoded]
++            if len(headers) != len(set(headers)) or any(v not in headers for v in columns): deny('xlsx_table_projection_columns')
++            selected = [headers.index(v) for v in columns]
++        rows.append(decoded if selected is None else [decoded[i] for i in selected])
+     return rows
+ 
+ 
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1178,15 +1178,20 @@
+     }
+ }
+ 
++READ_FILE_SCHEMA['description'] += (
++    ' In the own-user workspace, native POTX/OTP templates and PPSX slideshows also expose slide text, '
++    'tables, cached chart data and separate speaker notes. This reading does not render layout '
++    'or authorize template/slideshow creation/editing; macro-enabled OOXML presentation formats are unsupported.')
++
+ WRITE_FILE_SCHEMA = {
+     "name": "write_file",
+-    "description": 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archive: zip/7z use entries source/member and a NEW matching archive path; zip_extract/7z_extract use {source} and a NEW folder; archive_convert uses {source} for ZIP to genuine 7z or 7z to ZIP into a NEW matching .zip/.7z path. Explicit directory records cannot be encoded to 7z. Unsupported/encrypted/unsafe inputs refuse, unavailable dependency refuses; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use only pptx_pdf, odp_pptx or pptx_odp; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. ' 'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=xlsx; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. ' "For own user workspace, format=xlsx creates a NEW workbook copy changing one numeric cell; content JSON requires source, sheet, cell, expected, value. Preserves other parts/formulas, no formula recalculation. Never write spreadsheet text under .xlsx/.xls. Explicit format=docx creates a NEW .docx from short plain paragraphs (100000 UTF-8 bytes, 2000 paragraphs); existing names are refused. For preserving revisions use docx_edit with the original source; these creation modes rebuild documents. Omit format for normal text. Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
++    "description": 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archive: zip/7z use entries source/member and a NEW matching archive path; zip_extract/7z_extract use {source} and a NEW folder; archive_convert uses {source} for ZIP to genuine 7z or 7z to ZIP into a NEW matching .zip/.7z path. Explicit directory records cannot be encoded to 7z. Unsupported/encrypted/unsafe inputs refuse, unavailable dependency refuses; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use only pptx_pdf, odp_pptx or pptx_odp; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. ' 'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=xlsx; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. ' "For own user workspace, format=xlsx creates a NEW workbook copy changing one numeric cell; content JSON requires source, sheet, cell, expected, value. Preserves other parts/formulas, no formula recalculation. Never write spreadsheet text under .xlsx/.xls. Explicit format=docx creates a NEW .docx from short plain paragraphs (100000 UTF-8 bytes, 2000 paragraphs); existing names are refused. For preserving revisions use docx_edit with the original source; these creation modes rebuild documents. Omit format for normal text. Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+     "parameters": {
+         "type": "object",
+         "properties": {
+             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
+             "content": {"type": "string", "description": 'For docx_pdf, JSON with exactly source (existing own-workspace DOCX). For docx_edit, JSON with exactly source, old_text, new_text; unique exact text replacement into a NEW .docx copy. ' "Complete content. With docx_structured, a JSON string {\"blocks\":[...]} using title/paragraph blocks {\"type\":\"title\",\"text\":\"Report\"}, headings {\"type\":\"heading\",\"level\":1,\"text\":\"Data\"}, and tables {\"type\":\"table\",\"rows\":[[\"Item\",\"Amount\"],[\"Work\",\"800\"]]}. Exact keys only; table cells are strings, rows rectangular (1-32 columns). 100000 UTF-8 bytes total, at most 2000 paragraphs including table cells."},
+-            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "archive_convert", "pptx_create", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp"], "description": 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archive: zip/7z use entries source/member and a NEW matching archive path; zip_extract/7z_extract use {source} and a NEW folder; archive_convert uses {source} for ZIP to genuine 7z or 7z to ZIP into a NEW matching .zip/.7z path. Explicit directory records cannot be encoded to 7z. Unsupported/encrypted/unsafe inputs refuse, unavailable dependency refuses; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
++            "format": {"type": "string", "enum": ["text", "docx", "docx_structured", "docx_edit", "docx_pdf", "xlsx", "xlsx_recalculate", "xlsx_merge", "xlsx_create", "xlsx_join", "zip", "zip_extract", "7z", "7z_extract", "archive_convert", "pptx_create", "pptx_merge", "pptx_edit", "pptx_pdf", "odp_create", "odp_edit", "odp_pptx", "pptx_odp"], "description": 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archive: zip/7z use entries source/member and a NEW matching archive path; zip_extract/7z_extract use {source} and a NEW folder; archive_convert uses {source} for ZIP to genuine 7z or 7z to ZIP into a NEW matching .zip/.7z path. Explicit directory records cannot be encoded to 7z. Unsupported/encrypted/unsafe inputs refuse, unavailable dependency refuses; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'docx_pdf exports source DOCX to NEW PDF; content is JSON with exactly source. docx_edit preserves an existing DOCX in a NEW copy using content JSON source/old_text/new_text. ' "Default text. docx creates new plain paragraphs, preserving literal Markdown. For real Word titles, outline headings or tables, use docx_structured and the JSON blocks content contract. Both DOCX modes create a NEW .docx only. xlsx edits one existing numeric cell into a NEW own-workspace copy; content is JSON with source, sheet, cell, expected, value. Example: {\"source\":\"orders.xlsx\",\"sheet\":\"Orders\",\"cell\":\"C3\",\"expected\":4,\"value\":5}. Other archive parts and formulas preserved; formula caches are not recalculated."},
+             # NOTE: the handler still accepts `cross_profile` (bool) — it now
+             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
+             # rejection error teaches it. Unadvertised: the cross-PROFILE
+@@ -1199,9 +1204,15 @@
+ 
+ _PRESENTATION_WRITE_GUIDANCE = (
+     'Native presentations use exact-key JSON and NEW output paths; sources stay unchanged and existing outputs refuse. '
+-    'PPTX create complete example: {"source":"orders.xlsx","series":"Sales","slides":['
++    'For a presentation whose factual statements must come from an XLSX/CSV table, use pptx_create with EXACTLY {"source":"input.xlsx","data":{"sheet":"Orders","group":"sku","order":"order_id","amount":{"product":["qty","unit_price"]},"currency":"currency"}}. '
++    'This source-bound mode generates five editable slides (overview, grouped counts/table, one sum chart, computed conclusion, calculation basis) without authored prose. It reads real selected source cells and calculates exact row counts, distinct text order counts, per-group sums and total; it never uses formula caches. '
++    'Generic selectors are exact header text, not fixed column names: amount is exactly {"column":"net"} or {"product":["quantity","price"]}; currency is a source text column or null; sheet is required for XLSX and null for strict UTF-8 comma CSV. XLSX amounts must be literal numeric cells; selected formulas, unsupported structures/visibility, mixed currencies, missing/duplicate headers or nondecimal CSV amounts refuse without output. '
++    'Bounded to 100 data rows and eight groups; output must also fit explicit 24pt title/18pt body/14pt table and chart-label budgets. Oversized content refuses; it is not silently cropped or reduced below those floors. Real Office rendering and font availability still require visual checks. The receipt includes source SHA-256 and the factual/calculation basis. '
++    'pptx_edit is only the bounded title/chart/embedded-workbook edit described below; it does not recompute source-bound tables, generated conclusions or calculation basis. Generic edits to source-bound facts are unsupported; create a new source-bound deck from the current table for updated facts. '
++    'For existing authored-content creation, the source/slides/series mode below remains available; body/title prose is caller-authored and unverified, so do not use it to assert table-derived numbers or calculation provenance. '
++    'PPTX authored create complete example: {"source":"orders.xlsx","series":"Sales","slides":['
+     '{"title":"Opening","body":"Summary","table":false,"chart":false},'
+-    '{"title":"Inputs","body":"Four rows","table":false,"chart":false},'
++    '{"title":"Inputs","body":"Source overview","table":false,"chart":false},'
+     '{"title":"Sales","body":"Native data","table":true,"chart":true},'
+     '{"title":"Conclusions","body":"Total from Orders","table":false,"chart":false},'
+     '{"title":"Sources","body":"Orders only","table":false,"chart":false}]}. '
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -160,7 +160,7 @@
+ def extract_scoped_document_bytes(data: bytes, format: str) -> str:
+     """Convert own immutable snapshots; never install or use hosted OCR.
+ 
+-    PPTX/ODP expose bounded native slide content, separate notes and coverage.
++    PPTX/POTX/PPSX/ODP/OTP expose bounded native content, separate notes and coverage.
+     DOCX/XLSX reuse bounded native parsers. PDF keeps the existing installed
+     anydoc text route, with a bounded networkless local OCR fallback only for
+     its scanned-page signal. OCR returns a string-compatible trusted metadata
+@@ -179,7 +179,7 @@
+                                  max_total_xml_bytes=1000000, include_inventory=True)
+         except (ExtractionError, ValueError, RuntimeError, NotImplementedError, LookupError, zlib.error):
+             raise ScopedExtractionError('malformed_or_required_part_limit') from None
+-    elif format in ('pptx', 'odp'):
++    elif format in ('pptx', 'potx', 'ppsx', 'odp', 'otp'):
+         from tools.scoped_presentation import extract_presentation, PresentationError
+         try:
+             text = extract_presentation(data, format)
+--- a/tools/scoped_presentation.py
++++ b/tools/scoped_presentation.py
+@@ -1,4 +1,4 @@
+-"""Bounded, offline native PPTX/ODP text and cached-data view of immutable bytes.
++"""Bounded, offline native PPTX/POTX/PPSX/ODP/OTP view of immutable bytes.
+ 
+ No rendering, formula evaluation, link refresh, archive extraction or installation.
+ All content is labelled by slide and role; this view does not grant write authority.
+@@ -29,6 +29,15 @@
+ PR = 'urn:oasis:names:tc:opendocument:xmlns:presentation:1.0'
+ XL = 'http://www.w3.org/1999/xlink'
+ MIME = 'application/vnd.oasis.opendocument.presentation'
++PPT_MAIN_TYPES = {
++    'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml',
++    'potx': 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml',
++    'ppsx': 'application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml',
++}
++ODF_MIMES = {
++    'odp': MIME,
++    'otp': 'application/vnd.oasis.opendocument.presentation-template',
++}
+ MAX_MEMBERS = 512
+ MAX_MEMBER = 2_000_000
+ MAX_TOTAL = 8_000_000
+@@ -204,8 +213,11 @@
+     paragraphs = []; size = 0
+     for paragraph in node.iter(q(A, 'p')):
+         chunks = []
++        # Paragraph tab stops configure layout; only text/run tabs are content.
++        tab_stops = {tab for tabs in paragraph.findall('./'+q(A, 'pPr')+'/'+q(A, 'tabLst'))
++                     for tab in tabs.findall(q(A, 'tab'))}
+         for part in paragraph.iter():
+-            value = part.text or '' if part.tag == q(A, 't') else '\n' if part.tag == q(A, 'br') else '\t' if part.tag == q(A, 'tab') else ''
++            value = part.text or '' if part.tag == q(A, 't') else '\n' if part.tag == q(A, 'br') else '\t' if part.tag == q(A, 'tab') and part not in tab_stops else ''
+             size += len(value.encode('utf-8'))
+             if size > 500_000: refuse('native_text_limit')
+             chunks.append(value)
+@@ -393,7 +405,8 @@
+     return output
+ 
+ 
+-def read_pptx(pkg):
++def read_pptx(pkg, format='pptx'):
++    if format not in PPT_MAIN_TYPES: refuse('unsupported_format')
+     types = pkg.root('[Content_Types].xml', q(CT, 'Types')); overrides = {}; defaults = {}
+     for part in types:
+         typ = part.get('ContentType', '')
+@@ -422,8 +435,8 @@
+     roots = pkg.targets('', 'officeDocument')
+     if len(roots) != 1 or roots[0][1] is None: refuse('presentation_root_relationship')
+     name = roots[0][1]
+-    if content_type(name) != 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml':
+-        refuse('not_native_pptx')
++    if content_type(name) != PPT_MAIN_TYPES[format]:
++        refuse('not_native_'+format)
+     root = pkg.root(name, q(P, 'presentation'))
+     slide_ids = root.findall('./'+q(P, 'sldIdLst')+'/'+q(P, 'sldId'))
+     if not 1 <= len(slide_ids) <= MAX_SLIDES: refuse('slide_count_limit')
+@@ -544,19 +557,21 @@
+     return result
+ 
+ 
+-def read_odp(pkg):
+-    if (pkg.parts.get('mimetype') != MIME.encode()
++def read_odp(pkg, format='odp'):
++    if format not in ODF_MIMES: refuse('unsupported_format')
++    mime = ODF_MIMES[format]
++    if (pkg.parts.get('mimetype') != mime.encode()
+             or pkg.member_info.get('mimetype') != (zipfile.ZIP_STORED, 0)):
+-        refuse('not_native_odp')
++        refuse('not_native_'+format)
+     manifest=pkg.root('META-INF/manifest.xml', q('urn:oasis:names:tc:opendocument:xmlns:manifest:1.0','manifest'))
+     mns='urn:oasis:names:tc:opendocument:xmlns:manifest:1.0'
+     if any(n.tag==q(mns,'encryption-data') for n in manifest.iter()): refuse('encrypted_package')
+     roots = [n for n in manifest if n.tag == q(mns, 'file-entry') and n.get(q(mns, 'full-path')) == '/']
+-    if len(roots) != 1 or roots[0].get(q(mns, 'media-type')) != MIME:
++    if len(roots) != 1 or roots[0].get(q(mns, 'media-type')) != mime:
+         refuse('odf_manifest_type')
+     root=pkg.root('content.xml',q(O,'document-content'))
+     presentation=root.find('./'+q(O,'body')+'/'+q(O,'presentation'))
+-    if presentation is None: refuse('not_native_odp')
++    if presentation is None: refuse('not_native_'+format)
+     pages=presentation.findall(q(DR,'page'))
+     if not 1<=len(pages)<=MAX_SLIDES: refuse('slide_count_limit')
+     slides=[]; names=set()
+@@ -610,9 +625,9 @@
+ 
+ def extract_presentation(data, format):
+     try:
+-        if format not in ('pptx', 'odp'): refuse('unsupported_format')
++        if format not in (*PPT_MAIN_TYPES, *ODF_MIMES): refuse('unsupported_format')
+         pkg=Package(data)
+-        slides=read_pptx(pkg) if format=='pptx' else read_odp(pkg) if format=='odp' else refuse('unsupported_format')
++        slides=read_pptx(pkg, format) if format in PPT_MAIN_TYPES else read_odp(pkg, format)
+         counts={'slides':len(slides),'notes_present':sum(s['notes']['status']=='present' for s in slides),
+                 'notes_absent':sum(s['notes']['status']=='absent' for s in slides),
+                 'charts':sum(x['kind']=='chart' for s in slides for x in s['content']),
+--- /dev/null
++++ b/tools/scoped_presentation_merge.py
+@@ -0,0 +1,442 @@
++"""Bounded selected-slide PPTX merge; no renderer or arbitrary filesystem access.
++
++Slide1 is the declared title of each input. Keep one chosen title, followed by
++an explicit list of distinct non-title slides. Native part payloads stay byte
++identical; only package indexes and remapped relationship targets are rebuilt.
++"""
++from copy import deepcopy
++import hashlib
++import posixpath
++from xml.etree import ElementTree as ET
++
++from tools.scoped_presentation_write import (
++    P, A, C, R, PR, PresentationRefused, _parts, _xml, _tostring, _resolve,
++    _rels, _zip, MAX_MEMBERS,
++)
++
++CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
++MIME = 'application/vnd.openxmlformats-officedocument.'
++ROLES = {
++    'slide': (MIME + 'presentationml.slide+xml', '{%s}sld' % P),
++    'slideMaster': (MIME + 'presentationml.slideMaster+xml', '{%s}sldMaster' % P),
++    'slideLayout': (MIME + 'presentationml.slideLayout+xml', '{%s}sldLayout' % P),
++    'notesSlide': (MIME + 'presentationml.notesSlide+xml', '{%s}notes' % P),
++    'notesMaster': (MIME + 'presentationml.notesMaster+xml', '{%s}notesMaster' % P),
++    'chart': (MIME + 'drawingml.chart+xml',
++              '{http://schemas.openxmlformats.org/drawingml/2006/chart}chartSpace'),
++    'theme': (MIME + 'theme+xml', '{%s}theme' % A),
++    'tableStyles': (MIME + 'presentationml.tableStyles+xml', '{%s}tblStyleLst' % A),
++}
++ALLOWED_EDGES = set(ROLES) | {'image', 'package', 'chartStyle', 'chartColorStyle'}
++MS_CHART_RELS = 'http://schemas.microsoft.com/office/2011/relationships/'
++PRESENTATION = 'ppt/presentation.xml'
++PRES_RELS = 'ppt/_rels/presentation.xml.rels'
++
++
++def refuse(reason):
++    raise PresentationRefused(reason)
++
++
++def _relname(owner):
++    folder, leaf = posixpath.split(owner)
++    return posixpath.join(folder, '_rels', leaf + '.rels')
++
++
++def _owner(name):
++    folder, leaf = name.rsplit('/_rels/', 1)
++    return folder + '/' + leaf[:-5]
++
++
++def _types(parts):
++    if '[Content_Types].xml' not in parts:
++        refuse('missing_content_types')
++    root = _xml(parts['[Content_Types].xml'])
++    if root.tag != '{%s}Types' % CT:
++        refuse('invalid_content_types')
++    defaults, overrides = {}, {}
++    for node in root:
++        if node.tag == '{%s}Default' % CT and set(node.attrib) == {'Extension', 'ContentType'}:
++            key = node.get('Extension')
++            target = defaults
++            if not key or key.lower() != key or '.' in key or '/' in key:
++                refuse('invalid_content_types')
++        elif node.tag == '{%s}Override' % CT and set(node.attrib) == {'PartName', 'ContentType'}:
++            name = node.get('PartName', '')
++            if not name.startswith('/') or name[1:] not in parts:
++                refuse('invalid_content_types')
++            key, target = name[1:], overrides
++        else:
++            refuse('invalid_content_types')
++        if key in target or not node.get('ContentType'):
++            refuse('ambiguous_content_types')
++        target[key] = node.get('ContentType')
++    result = {}
++    for name in parts:
++        if name == '[Content_Types].xml' or name.endswith('/'):
++            continue
++        content_type = overrides.get(name, defaults.get(name.rsplit('.', 1)[-1].lower()))
++        if content_type is None:
++            refuse('missing_content_type')
++        result[name] = content_type
++    return result
++
++
++def _role(parts, types, name, kind):
++    if kind in ROLES:
++        expected, tag = ROLES[kind]
++        if types[name] != expected or _xml(parts[name]).tag != tag:
++            refuse('relationship_role_mismatch')
++    elif kind == 'package':
++        if not name.lower().endswith('.xlsx') or types[name] != MIME + 'spreadsheetml.sheet':
++            refuse('unsupported_embedded_package')
++    elif kind == 'image':
++        if types[name] not in ('image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/tiff'):
++            refuse('unsupported_image_type')
++    elif kind == 'chartStyle':
++        if (types[name] != 'application/vnd.ms-office.chartstyle+xml'
++                or _xml(parts[name]).tag != '{http://schemas.microsoft.com/office/drawing/2012/chartStyle}chartStyle'):
++            refuse('relationship_role_mismatch')
++    elif kind == 'chartColorStyle':
++        if (types[name] != 'application/vnd.ms-office.chartcolorstyle+xml'
++                or _xml(parts[name]).tag != '{http://schemas.microsoft.com/office/drawing/2012/chartStyle}colorStyle'):
++            refuse('relationship_role_mismatch')
++    else:
++        refuse('unsupported_slide_relationship')
++
++
++def _checked_rels(parts, owner):
++    name = _relname(owner)
++    result = _rels(parts, name)
++    if name in parts:
++        root = _xml(parts[name])
++        if root.tag != '{%s}Relationships' % PR or len(root) != len(result):
++            refuse('invalid_relationships')
++        for node in result.values():
++            kind = node.get('Type', '').rsplit('/', 1)[-1]
++            permitted_type = R + '/' + kind
++            chart_type = MS_CHART_RELS + kind if kind in ('chartStyle', 'chartColorStyle') else None
++            if (set(node.attrib) - {'Id', 'Type', 'Target', 'TargetMode'}
++                    or node.get('Type') not in (permitted_type, chart_type)
++                    or node.get('TargetMode', '').lower() not in ('', 'internal')):
++                refuse('unsupported_relationship')
++            target = node.get('Target', '')
++            if any(ch in target for ch in ('%', '?', '#', ':')) or any(ord(ch) < 32 for ch in target):
++                refuse('unsafe_relationship')
++    return result
++
++
++def _strict_parts(data, depth=0):
++    if depth > 2:
++        refuse('nested_package_capacity')
++    infos, parts = _parts(data)
++    if any(info.orig_filename != info.filename for info in infos):
++        refuse('noncanonical_part_name')
++    for name in parts:
++        if (name.endswith('/') or any(piece in ('', '.', '..') for piece in name.split('/'))
++                or any(char in name for char in ('%', '?', '#', ':'))
++                or any(ord(char) <= 32 or ord(char) == 127 for char in name)):
++            refuse('noncanonical_part_name')
++        suffix = name.rsplit('.', 1)[-1]
++        if suffix.lower() in ('xml', 'rels', 'vml', 'xlsx') and suffix != suffix.lower():
++            refuse('noncanonical_part_extension')
++        if name.endswith('.xlsx'):
++            _strict_parts(parts[name], depth + 1)
++    return parts
++
++
++def _deck(data):
++    parts = _strict_parts(data)
++    types = _types(parts)
++    if types.get(PRESENTATION) != MIME + 'presentationml.presentation.main+xml':
++        refuse('not_standard_pptx')
++    package_root = _rels(parts, '_rels/.rels')
++    office = [rel for rel in package_root.values() if rel.get('Type') == R + '/officeDocument']
++    if len(office) != 1 or _resolve('', office[0].get('Target', '')) != PRESENTATION:
++        refuse('invalid_office_document_relationship')
++    root = _xml(parts[PRESENTATION])
++    if root.tag != '{%s}presentation' % P:
++        refuse('not_standard_pptx')
++    permitted = {'sldMasterIdLst', 'notesMasterIdLst', 'sldIdLst', 'sldSz', 'notesSz', 'defaultTextStyle'}
++    if any(node.tag not in {'{%s}%s' % (P, tag) for tag in permitted} for node in root):
++        refuse('unsupported_global_presentation_structure')
++    if len({node.tag for node in root}) != len(root):
++        refuse('duplicate_presentation_index')
++    for tag in ('sldSz', 'notesSz'):
++        size = root.find('{%s}%s' % (P, tag))
++        if (size is None or any(not size.get(axis, '').isdigit()
++                              or not 1 <= int(size.get(axis)) <= 51206400
++                              for axis in ('cx', 'cy'))):
++            refuse('invalid_presentation_size')
++    # This is the only payload XML serialized. Refuse prefix-valued extension
++    # attributes rather than losing their namespace declarations with ElementTree.
++    for node in root.iter():
++        if node.tag.rsplit('}', 1)[0] not in ('{' + P, '{' + A):
++            refuse('unsupported_presentation_namespace')
++        if any(key.startswith('{') and not key.startswith(('{' + R + '}', '{http://www.w3.org/XML/1998/namespace}')) for key in node.attrib):
++            refuse('unsupported_presentation_namespace')
++    rels = _checked_rels(parts, PRESENTATION)
++    global_kinds = {'slide', 'slideMaster', 'notesMaster', 'theme', 'tableStyles',
++                    'presProps', 'viewProps', 'printerSettings'}
++    if any(rel.get('Type') not in {R + '/' + kind for kind in global_kinds} for rel in rels.values()):
++        refuse('unsupported_global_presentation_relationship')
++    paths = []
++    ids = set()
++    index = root.find('{%s}sldIdLst' % P)
++    if index is None:
++        refuse('missing_slides')
++    for node in index:
++        rid = node.get('{%s}id' % R)
++        sid = node.get('id', '')
++        if (node.tag != '{%s}sldId' % P or set(node.attrib) != {'id', '{%s}id' % R}
++                or not sid.isdigit() or int(sid) < 256 or sid in ids or rid not in rels
++                or rels[rid].get('Type') != R + '/slide'):
++            refuse('invalid_slide_index')
++        ids.add(sid)
++        path = _resolve(PRESENTATION, rels[rid].get('Target'))
++        _role(parts, types, path, 'slide')
++        if path in paths:
++            refuse('duplicate_slide')
++        paths.append(path)
++    if not 1 <= len(paths) <= 60:
++        refuse('slide_capacity')
++    for list_tag, child_tag, kind in [('sldMasterIdLst', 'sldMasterId', 'slideMaster'),
++                                       ('notesMasterIdLst', 'notesMasterId', 'notesMaster')]:
++        listing = root.find('{%s}%s' % (P, list_tag))
++        if listing is not None:
++            seen = set()
++            for node in listing:
++                rid = node.get('{%s}id' % R)
++                if (node.tag != '{%s}%s' % (P, child_tag) or rid in seen or rid not in rels
++                        or rels[rid].get('Type') != R + '/' + kind):
++                    refuse('invalid_master_index')
++                seen.add(rid)
++                _role(parts, types, _resolve(PRESENTATION, rels[rid].get('Target')), kind)
++    return {'parts': parts, 'types': types, 'root': root, 'rels': rels, 'slides': paths}
++
++
++def _closure(deck, seeds, selected):
++    parts, types = deck['parts'], deck['types']
++    found = set()
++    pending = list(seeds)
++    while pending:
++        name = pending.pop()
++        if name in found:
++            continue
++        if name not in parts or name == PRESENTATION or name.endswith('/'):
++            refuse('unsupported_graph_target')
++        if name in deck['slides'] and name not in selected:
++            refuse('unselected_slide_reference')
++        found.add(name)
++        rels = _checked_rels(parts, name)
++        relname = _relname(name)
++        if relname in parts:
++            found.add(relname)
++        if name.endswith('.xml'):
++            root = _xml(parts[name])
++            expected_roles = {
++                '{%s}chart' % C: 'chart', '{%s}externalData' % C: 'package',
++                '{%s}blip' % A: 'image', '{%s}hlinkClick' % A: 'slide',
++                '{%s}hlinkHover' % A: 'slide', '{%s}sldLayoutId' % P: 'slideLayout',
++            }
++            for node in root.iter():
++                for key, value in node.attrib.items():
++                    if key.startswith('{%s}' % R):
++                        if value not in rels:
++                            refuse('unbound_relationship_id')
++                        if (node.tag not in expected_roles
++                                or rels[value].get('Type') != R + '/' + expected_roles[node.tag]
++                                or key.rsplit('}', 1)[-1] not in
++                                (('embed', 'link') if node.tag == '{%s}blip' % A else ('id',))):
++                            refuse('relationship_reference_role_mismatch')
++        for rel in rels.values():
++            kind = rel.get('Type').rsplit('/', 1)[-1]
++            if kind not in ALLOWED_EDGES:
++                refuse('unsupported_slide_relationship')
++            target = _resolve(name, rel.get('Target'))
++            _role(parts, types, target, kind)
++            if kind == 'notesSlide':
++                note_rels = _checked_rels(parts, target)
++                backlinks = [item for item in note_rels.values() if item.get('Type') == R + '/slide']
++                if len(backlinks) != 1 or _resolve(target, backlinks[0].get('Target')) != name:
++                    refuse('notes_slide_backlink_mismatch')
++            pending.append(target)
++    return found
++
++
++def _global(deck, kind):
++    matches = [rel for rel in deck['rels'].values() if rel.get('Type') == R + '/' + kind]
++    if len(matches) > 1:
++        refuse('ambiguous_global_relationship')
++    if not matches:
++        return None
++    name = _resolve(PRESENTATION, matches[0].get('Target'))
++    _role(deck['parts'], deck['types'], name, kind)
++    return name
++
++
++def _snapshot(deck, names):
++    return {name: deck['parts'][name] for name in names}
++
++
++def merge_pptx(inputs, spec):
++    """Return native package plus bounded provenance; inputs are already read bytes."""
++    if not isinstance(inputs, list) or len(inputs) != 2 or inputs[0] == inputs[1]:
++        refuse('two_distinct_decks_required')
++    if not isinstance(spec, dict):
++        refuse('merge_schema')
++    sources = spec.get('sources')
++    if (set(spec) != {'sources', 'title', 'order'} or not isinstance(sources, list)
++            or len(sources) != 2 or not all(isinstance(value, str) and value for value in sources)
++            or sources[0] == sources[1]):
++        refuse('merge_schema')
++    decks = [_deck(data) for data in inputs]
++    title, order = spec['title'], spec['order']
++    if not isinstance(order, list) or not 1 <= len(order) <= 59:
++        refuse('merge_order_capacity')
++    chosen = []
++    for position, item in enumerate([title] + order):
++        if (not isinstance(item, dict) or set(item) != {'source', 'slide'}
++                or type(item['source']) is not int or item['source'] not in (1, 2)
++                or type(item['slide']) is not int):
++            refuse('merge_slide_schema')
++        source, slide = item['source'] - 1, item['slide']
++        if not 1 <= slide <= len(decks[source]['slides']):
++            refuse('merge_slide_range')
++        if (position == 0 and slide != 1) or (position > 0 and slide == 1):
++            refuse('one_explicit_first_slide_title_required')
++        address = (source, decks[source]['slides'][slide - 1])
++        if address in chosen:
++            refuse('duplicate_selected_slide')
++        chosen.append(address)
++    if {source for source, _ in chosen} != {0, 1}:
++        refuse('both_decks_must_contribute')
++    # Presentation-wide text inheritance and page sizes cannot be changed while
++    # claiming preservation. Source masters/themes may differ and stay native.
++    def defaults(deck):
++        root = deck['root']
++        return (root.attrib, [(_tostring(root.find('{%s}%s' % (P, tag)))
++                               if root.find('{%s}%s' % (P, tag)) is not None else None)
++                              for tag in ('sldSz', 'notesSz', 'defaultTextStyle')])
++    if defaults(decks[0]) != defaults(decks[1]):
++        refuse('incompatible_presentation_defaults')
++    selected = [{name for source, name in chosen if source == i} for i in range(2)]
++    closures = [_closure(deck, selected[i], selected[i]) for i, deck in enumerate(decks)]
++    tables = [_global(deck, 'tableStyles') for deck in decks]
++    if (tables[0] is None) != (tables[1] is None) or (tables[0] is not None and
++            decks[0]['parts'][tables[0]] != decks[1]['parts'][tables[1]]):
++        refuse('incompatible_global_table_styles')
++    if tables[0] is not None:
++        for i in range(2):
++            closures[i] |= _closure(decks[i], [tables[i]], selected[i])
++    themes = [_global(deck, 'theme') for deck in decks]
++    if (themes[0] is None) != (themes[1] is None) or (themes[0] is not None and
++            decks[0]['parts'][themes[0]] != decks[1]['parts'][themes[1]]):
++        refuse('incompatible_global_theme')
++    if themes[0] is not None:
++        for i in range(2):
++            closures[i] |= _closure(decks[i], [themes[i]], selected[i])
++    notes = []
++    for i, deck in enumerate(decks):
++        names = [name for name in closures[i] if deck['types'][name] == ROLES['notesMaster'][0]]
++        if len(names) > 1:
++            refuse('multiple_notes_masters_unsupported')
++        notes.append(names[0] if names else None)
++    aliases = {}
++    if all(notes):
++        graphs = [_closure(decks[i], [notes[i]], selected[i]) for i in range(2)]
++        if notes[0] != notes[1] or _snapshot(decks[0], graphs[0]) != _snapshot(decks[1], graphs[1]):
++            refuse('incompatible_notes_masters')
++        aliases = {name: (0, name) for name in graphs[1]}
++    def mapped(i, name):
++        if i == 1 and name in aliases:
++            i, name = aliases[name]
++        return 'ppt/merge%d/' % (i + 1) + name
++    output, output_types = {}, {}
++    changed_rels = []
++    for i, deck in enumerate(decks):
++        for name in sorted(closures[i]):
++            target = mapped(i, name)
++            if target in output:
++                continue
++            raw = deck['parts'][name]
++            if name.endswith('.rels'):
++                owner = _owner(name)
++                root = _xml(raw)
++                changed = False
++                for rel in root:
++                    old_target = _resolve(owner, rel.get('Target'))
++                    destination = mapped(i, old_target)
++                    relative = posixpath.relpath(destination, posixpath.dirname(mapped(i, owner)))
++                    # Retain relationship XML bytes too when relative targets
++                    # already resolve identically inside the source namespace.
++                    if rel.get('Target') != relative:
++                        rel.set('Target', relative)
++                        changed = True
++                if changed:
++                    raw = _tostring(root)
++                    changed_rels.append(target)
++            output[target] = raw
++            output_types[target] = deck['types'][name]
++    root = deepcopy(decks[0]['root'])
++    for node in list(root):
++        if node.tag in {'{%s}%s' % (P, tag) for tag in ('sldMasterIdLst', 'notesMasterIdLst', 'sldIdLst')}:
++            root.remove(node)
++    relationships = ET.Element('{%s}Relationships' % PR)
++    def relation(name, kind):
++        rid = 'rId%d' % (len(relationships) + 1)
++        ET.SubElement(relationships, '{%s}Relationship' % PR,
++                      Id=rid, Type=R + '/' + kind,
++                      Target=posixpath.relpath(name, 'ppt'))
++        return rid
++    masters = [name for name, mime in output_types.items() if mime == ROLES['slideMaster'][0]]
++    master_list = ET.Element('{%s}sldMasterIdLst' % P)
++    for index, name in enumerate(sorted(masters)):
++        ET.SubElement(master_list, '{%s}sldMasterId' % P,
++                      {'id': str(2147483648 + index), '{%s}id' % R: relation(name, 'slideMaster')})
++    root.insert(0, master_list)
++    note_masters = sorted({mapped(i, name) for i, name in enumerate(notes) if name})
++    if note_masters:
++        listing = ET.Element('{%s}notesMasterIdLst' % P)
++        for name in note_masters:
++            ET.SubElement(listing, '{%s}notesMasterId' % P, {'{%s}id' % R: relation(name, 'notesMaster')})
++        root.insert(1, listing)
++    listing = ET.Element('{%s}sldIdLst' % P)
++    for index, (i, name) in enumerate(chosen):
++        ET.SubElement(listing, '{%s}sldId' % P,
++                      {'id': str(256 + index), '{%s}id' % R: relation(mapped(i, name), 'slide')})
++    root.insert(2 if note_masters else 1, listing)
++    if tables[0] is not None:
++        relation(mapped(0, tables[0]), 'tableStyles')
++    if themes[0] is not None:
++        relation(mapped(0, themes[0]), 'theme')
++    output[PRESENTATION], output[PRES_RELS] = _tostring(root), _tostring(relationships)
++    output_types[PRESENTATION] = MIME + 'presentationml.presentation.main+xml'
++    output_types[PRES_RELS] = 'application/vnd.openxmlformats-package.relationships+xml'
++    package_rels = ET.Element('{%s}Relationships' % PR)
++    ET.SubElement(package_rels, '{%s}Relationship' % PR, Id='rId1',
++                  Type=R + '/officeDocument', Target=PRESENTATION)
++    output['_rels/.rels'] = _tostring(package_rels)
++    output_types['_rels/.rels'] = 'application/vnd.openxmlformats-package.relationships+xml'
++    types_root = ET.Element('{%s}Types' % CT)
++    ET.SubElement(types_root, '{%s}Default' % CT, Extension='rels',
++                  ContentType='application/vnd.openxmlformats-package.relationships+xml')
++    ET.SubElement(types_root, '{%s}Default' % CT, Extension='xml', ContentType='application/xml')
++    for name in sorted(output):
++        if not name.endswith('.rels'):
++            ET.SubElement(types_root, '{%s}Override' % CT,
++                          PartName='/' + name, ContentType=output_types[name])
++    output['[Content_Types].xml'] = _tostring(types_root)
++    if len(output) > MAX_MEMBERS:
++        refuse('merged_package_capacity')
++    rendered = _zip(output)
++    final = _deck(rendered)
++    if final['slides'] != [mapped(i, name) for i, name in chosen]:
++        refuse('merged_order_validation')
++    _closure(final, final['slides'], set(final['slides']))
++    return rendered, {
++        'slides': len(chosen), 'selected_slides': [title] + order,
++        'title_policy': 'one_chosen_first_slide', 'native_editable': True,
++        'preserved_selected_slide_graph_payloads': True,
++        'rewritten_relationship_parts': changed_rels,
++        'source_sha256': [hashlib.sha256(data).hexdigest() for data in inputs],
++    }
+--- a/tools/scoped_presentation_write.py
++++ b/tools/scoped_presentation_write.py
+@@ -1,11 +1,15 @@
+ """Bounded native PPTX/ODP creation and preserving edits; stdlib only."""
+ from collections import OrderedDict
+-from decimal import Decimal, InvalidOperation
++import csv
++from decimal import Decimal, InvalidOperation, localcontext
+ from io import BytesIO
++from io import StringIO
++import hashlib
+ import json
+ import posixpath
+ import re
+ import stat
++import textwrap
+ import zlib
+ from pathlib import PurePosixPath
+ from xml.etree import ElementTree as ET
+@@ -374,46 +378,246 @@
+     return facts
+ 
+ 
++def pptx_request(content):
++    """Two explicit modes: existing authored deck, or source-bound data deck."""
++    try:
++        return json_object(content, ('source', 'data'))
++    except PresentationRefused:
++        return json_object(content, ('source', 'slides', 'series'))
++
++
++def table_facts(data, suffix, request, checkpoint=lambda: None):
++    """Typed aggregates over a projected real table; never model-authored facts.
++
++    XLSX uses the existing Book/source_table consumer, not another XML parser.
++    Unselected formula caches are neither read nor attributed as a basis.
++    CSV uses strict UTF-8 comma CSV with literal keys and explicit decimal fields.
++    """
++    spec = request.get('data')
++    if not isinstance(spec, dict) or set(spec) != {'sheet', 'group', 'order', 'amount', 'currency'}:
++        raise PresentationRefused('data_schema')
++    group = text(spec['group'], limit=128); order = text(spec['order'], limit=128)
++    currency = spec['currency']
++    if currency is not None:
++        text(currency, limit=128)
++    amount = spec['amount']
++    if not isinstance(amount, dict):
++        raise PresentationRefused('amount_schema')
++    if set(amount) == {'column'}:
++        amount_columns = [text(amount['column'], limit=128)]
++        expression = amount_columns[0]
++    elif (set(amount) == {'product'} and isinstance(amount['product'], list)
++          and len(amount['product']) == 2):
++        amount_columns = [text(v, limit=128) for v in amount['product']]
++        expression = ' × '.join(amount_columns)
++    else:
++        raise PresentationRefused('amount_schema')
++    columns = list(dict.fromkeys([group, order] + amount_columns + ([currency] if currency else [])))
++    if suffix == '.xlsx':
++        from hermes_cli.friday_workspace_xlsx_recalculate import Book, RecalculationRefused, S as XS
++        from hermes_cli.friday_workspace_xlsx_table import source_table, TableRefused
++        sheet = text(spec['sheet'], limit=128)
++        try:
++            book = Book(data, checkpoint=checkpoint)
++            if sheet not in book.sheets:
++                raise PresentationRefused('data_sheet_missing')
++            root = book.roots[book.sheets[sheet]]
++            native_sheet = [node for node in book.roots['xl/workbook.xml'].findall(XS+'sheets/'+XS+'sheet')
++                            if node.get('name') == sheet]
++            if (len(native_sheet) != 1 or native_sheet[0].get('state', 'visible') != 'visible'
++                    or root.find(XS+'autoFilter') is not None
++                    or any(node.get('hidden', '0') not in ('0', 'false')
++                           for node in root.findall(XS+'sheetData/'+XS+'row'))):
++                raise PresentationRefused('data_visibility_unsupported')
++            rows = source_table(book, sheet, columns=columns)
++        except (RecalculationRefused, TableRefused, InvalidOperation):
++            raise PresentationRefused('data_table_unsupported') from None
++        numeric_kind = 'number'
++    elif suffix == '.csv':
++        if spec['sheet'] is not None or not isinstance(data, bytes) or not 1 <= len(data) <= 100000:
++            raise PresentationRefused('data_csv_schema')
++        try:
++            raw = data.decode('utf-8-sig')
++            if '\x00' in raw:
++                raise PresentationRefused('data_csv_invalid')
++            decoded = list(csv.reader(StringIO(raw, newline=''), strict=True))
++        except (UnicodeError, csv.Error):
++            raise PresentationRefused('data_csv_invalid') from None
++        if (not 2 <= len(decoded) <= 101 or not 1 <= len(decoded[0]) <= 64
++                or len(set(decoded[0])) != len(decoded[0]) or any(not v for v in decoded[0])
++                or any(len(row) != len(decoded[0]) for row in decoded)
++                or any(col not in decoded[0] for col in columns)):
++            raise PresentationRefused('data_csv_table')
++        indexes = [decoded[0].index(col) for col in columns]
++        rows = [[('string', row[i], 'General') for i in indexes] for row in decoded]
++        numeric_kind = 'string'
++    else:
++        raise PresentationRefused('data_source_format')
++    if not 2 <= len(rows) <= 101:
++        raise PresentationRefused('data_row_capacity')
++    lookup = {col: index for index, col in enumerate(columns)}
++    def literal(row, col, limit=128):
++        kind, value, _ = row[lookup[col]]
++        if kind != 'string':
++            raise PresentationRefused('data_text_key_required')
++        return text(value, limit=limit)
++    def numeric(row, col):
++        kind, value, _ = row[lookup[col]]
++        if kind != numeric_kind:
++            raise PresentationRefused('data_numeric_cell_required')
++        return decimal(value)
++    def exact(number):
++        value = format(number, 'f')
++        if '.' in value:
++            value = value.rstrip('0').rstrip('.')
++        value = '0' if number == 0 else value
++        # The native chart workbook has Excel's numeric precision boundary.
++        decimal(value)
++        return value
++    groups = OrderedDict(); all_orders = set(); currencies = set()
++    with localcontext() as context:
++        context.prec = 64
++        for row in rows[1:]:
++            checkpoint()
++            category = literal(row, group); order_id = literal(row, order)
++            if currency:
++                currencies.add(literal(row, currency, limit=16))
++            values = [numeric(row, col) for col in amount_columns]
++            value = values[0] if len(values) == 1 else values[0] * values[1]
++            exact(value)
++            item = groups.setdefault(category, {'row_count': 0, 'orders': set(), 'amount': Decimal(0)})
++            item['row_count'] += 1; item['orders'].add(order_id); item['amount'] += value
++            all_orders.add(order_id)
++        if not 1 <= len(groups) <= 8:
++            raise PresentationRefused('data_group_capacity')
++        if currency and len(currencies) != 1:
++            raise PresentationRefused('data_single_currency_required')
++        unit = next(iter(currencies)) if currency else ''
++        totals = OrderedDict((key, exact(item['amount'])) for key, item in groups.items())
++        grand = exact(sum((item['amount'] for item in groups.values()), Decimal(0)))
++    by_group = [{'group': key, 'row_count': item['row_count'], 'distinct_order_count': len(item['orders']),
++                 'amount': totals[key]} for key, item in groups.items()]
++    largest = min(groups, key=lambda key: (-groups[key]['amount'], key))
++    basis = {'format': suffix[1:], 'sheet': spec['sheet'], 'columns': columns,
++             'group_column': group, 'order_column': order, 'amount': amount,
++             'currency_column': currency, 'formula_caches_used': False,
++             'calculation': 'sum_literal_column' if len(amount_columns) == 1 else 'sum_literal_products',
++             'count_semantics': 'distinct exact text order values per group; rows counted separately',
++             'row_scope': 'all data rows after the first header row; no filtering'}
++    basis['source_sha256'] = hashlib.sha256(data).hexdigest()
++    public = {'row_count': len(rows)-1, 'distinct_order_count': len(all_orders),
++              'group_count': len(groups), 'by_group': by_group, 'grand_total': grand,
++              'currency': unit, 'largest_group': largest, 'basis': basis}
++    table = [[group, 'Строки', 'Различных ' + order, 'Сумма' + (' ' + unit if unit else '')]]
++    table += [[item['group'], str(item['row_count']), str(item['distinct_order_count']), item['amount']]
++              for item in by_group]
++    places = max(len(value.partition('.')[2]) for value in totals.values())
++    return {'totals': totals, 'grand_total': grand, 'currency': unit, 'rows': [],
++            'largest_sku': largest, 'table_rows': table, 'public': public, 'expression': expression,
++            'group_label': group, 'chart_format': '0' + ('.' + '0'*places if places else '')}
++
++
++def create_data_pptx(data, suffix, request, checkpoint=lambda: None):
++    facts = table_facts(data, suffix, request, checkpoint)
++    public = facts['public']; basis = public['basis']
++    unit = (' ' + facts['currency']) if facts['currency'] else ''
++    count_label = 'Различных значений «' + basis['order_column'] + '»'
++    largest = next(item for item in public['by_group'] if item['group'] == public['largest_group'])
++    # No authored prose or numeric literals enter this mode's slide content.
++    sections = [
++        ('Данные таблицы', f"Строк данных: {public['row_count']}.\n{count_label}: {public['distinct_order_count']}.\nСумма: {facts['grand_total']}{unit}.", False, False),
++        ('Группы по «' + basis['group_column'] + '»', f"Групп: {public['group_count']}. Строки и различные значения ключа посчитаны отдельно.", True, False),
++        ('Сумма по «' + basis['group_column'] + '»', 'Показатель: ' + facts['expression'] + unit + '.', False, True),
++        ('Выводы по данным', f"Наибольшая сумма: «{public['largest_group']}» — {largest['amount']}{unit}.\nСтрок в этой группе: {largest['row_count']}.\n{count_label} в этой группе: {largest['distinct_order_count']}.", False, False),
++        ('Основа расчёта', 'Сумма по строкам: ' + facts['expression'] + '.\nГруппировка: ' + basis['group_column'] + '.\nКлюч для подсчёта: ' + basis['order_column'] + '.\nИспользованы исходные значения выбранных ячеек. Кеши формул не использованы.\nSHA-256: ' + basis['source_sha256'], False, False),
++    ]
++    spec = {'series': facts['expression'] + unit,
++            'slides': [dict(zip(('title', 'body', 'table', 'chart'), row)) for row in sections]}
++    return create_pptx(facts, spec), public
++
++
++def _layout_lines(value, cx, cy, font, *, padding=0):
++    """Conservative logical budget, not an Office/render fidelity assertion."""
++    width = cx / 12700 - padding
++    height = cy / 12700 - padding
++    columns = int(width / (font * 0.65))
++    maximum = int(height / (font * 1.25))
++    if columns < 1 or maximum < 1:
++        raise PresentationRefused('presentation_layout_capacity')
++    lines = []
++    for paragraph in value.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
++        lines.extend(textwrap.wrap(paragraph, width=columns, expand_tabs=True,
++                                  replace_whitespace=False, drop_whitespace=False,
++                                  break_long_words=True, break_on_hyphens=False) or [''])
++    if len(lines) > maximum:
++        raise PresentationRefused('presentation_layout_capacity')
++    return lines
++
++
++def _paragraphs(lines, font):
++    style = (f'<a:rPr lang="ru-RU" dirty="0" sz="{font*100}">'
++             '<a:latin typeface="Liberation Sans"/><a:ea typeface="Liberation Sans"/>'
++             '<a:cs typeface="Liberation Sans"/></a:rPr>')
++    return ''.join('<a:p><a:pPr><a:lnSpc><a:spcPct val="125000"/></a:lnSpc>'
++                   '<a:spcBef><a:spcPts val="0"/></a:spcBef><a:spcAft><a:spcPts val="0"/></a:spcAft>'
++                   '</a:pPr><a:r>' + style + '<a:t xml:space="preserve">' + escape(line) +
++                   f'</a:t></a:r><a:endParaRPr sz="{font*100}"/></a:p>' for line in lines)
++
++
+ def _sp(shape_id, name, x, y, cx, cy, value, *, title=False):
+     placeholder = '<p:ph type="title"/>' if title else ''
++    font = 24 if title else 18
++    lines = _layout_lines(value, cx, cy, font)
++    if title:
++        # Keep the original single title run for the preserving-edit consumer.
++        lines = [value]
+     return (f'<p:sp><p:nvSpPr><p:cNvPr id="{shape_id}" name="{escape(name)}"/>'
+             f'<p:cNvSpPr/><p:nvPr>{placeholder}</p:nvPr></p:nvSpPr>'
+             f'<p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+             '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>'
+-            '<p:txBody><a:bodyPr wrap="square"/><a:lstStyle/><a:p><a:r>'
+-            '<a:rPr lang="ru-RU" dirty="0"/><a:t>' + escape(value) +
+-            '</a:t></a:r></a:p></p:txBody></p:sp>')
+-
+-
+-def _table(frame_id, rows, x=457200, y=1828800, cx=5486400, cy=2743200):
++            '<p:txBody><a:bodyPr wrap="square" lIns="0" rIns="0" tIns="0" bIns="0">'
++            '<a:noAutofit/></a:bodyPr><a:lstStyle/>' + _paragraphs(lines, font) + '</p:txBody></p:sp>')
++
++
++def _table(frame_id, rows, x=457200, y=2743200, cx=8229600, cy=3200400):
++    if (not 1 <= len(rows) <= 12 or not 1 <= len(rows[0]) <= 8
++            or any(len(row) != len(rows[0]) for row in rows)):
++        raise PresentationRefused('presentation_layout_capacity')
+     widths = [cx // len(rows[0])] * len(rows[0])
++    widths[-1] += cx - sum(widths)
+     grid = ''.join(f'<a:gridCol w="{width}"/>' for width in widths)
+-    native_rows = []
++    native_rows = []; used_height = 0
+     for row in rows:
+-        cells = ''.join(
+-            '<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="ru-RU" dirty="0"/>'
+-            '<a:t>' + escape(str(value)) + '</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>'
+-            for value in row)
+-        native_rows.append('<a:tr h="360000">' + cells + '</a:tr>')
++        lines = [_layout_lines(str(value), width, cy, 14, padding=8) for value, width in zip(row, widths)]
++        height = int((max(map(len, lines))*14*1.25+8)*12700)
++        used_height += height
++        if used_height > cy:
++            raise PresentationRefused('presentation_layout_capacity')
++        cells = ''.join('<a:tc><a:txBody><a:bodyPr wrap="none" lIns="0" rIns="0" tIns="0" bIns="0">'
++                        '<a:noAutofit/></a:bodyPr><a:lstStyle/>' + _paragraphs(cell, 14) +
++                        '</a:txBody><a:tcPr marL="50800" marR="50800" marT="50800" marB="50800"/></a:tc>'
++                        for cell in lines)
++        native_rows.append(f'<a:tr h="{height}">' + cells + '</a:tr>')
+     return (f'<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="{frame_id}" name="Orders table"/>'
+             '<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/>'
+-            f'</p:nvGraphicFramePr><p:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></p:xfrm>'
++            f'</p:nvGraphicFramePr><p:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{used_height}"/></p:xfrm>'
+             '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">'
+             '<a:tbl><a:tblPr firstRow="1" bandRow="1"/><a:tblGrid>' + grid + '</a:tblGrid>' +
+             ''.join(native_rows) + '</a:tbl></a:graphicData></a:graphic></p:graphicFrame>')
+ 
+ 
+-def _chart_frame(frame_id, rid):
++def _chart_frame(frame_id, rid, *, shared=False):
++    x, cx = (6400800, 2286000) if shared else (457200, 8229600)
+     return (f'<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="{frame_id}" name="Sales chart"/>'
+             '<p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>'
+-            '<p:xfrm><a:off x="6400800" y="1828800"/><a:ext cx="2743200" cy="2743200"/></p:xfrm>'
++            f'<p:xfrm><a:off x="{x}" y="2743200"/><a:ext cx="{cx}" cy="3200400"/></p:xfrm>'
+             '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+             f'<c:chart xmlns:c="{C}" xmlns:r="{R}" r:id="{rid}"/>'
+             '</a:graphicData></a:graphic></p:graphicFrame>')
+ 
+ 
+ def _workbook(facts, series):
+-    rows = [['SKU', series]] + [[sku, value] for sku, value in facts['totals'].items()]
++    rows = [[facts.get('group_label', 'SKU'), series]] + [[sku, value] for sku, value in facts['totals'].items()]
+     sheet_rows = []
+     for index, row in enumerate(rows, 1):
+         cells = []
+@@ -439,10 +643,14 @@
+     })
+ 
+ 
+-def _chart(facts, series):
++def _chart(facts, series, *, shared=False):
+     categories = list(facts['totals'])
+     values = list(facts['totals'].values())
+     count = len(categories)
++    width = 180 if shared else 648
++    maximum_label = max(1, int((width * 0.75 / max(1, count)) / (14 * 0.65)))
++    if not 1 <= count <= 8 or any(len(label) > maximum_label for label in categories):
++        raise PresentationRefused('presentation_chart_label_capacity')
+     cat_points = ''.join(f'<c:pt idx="{i}"><c:v>{escape(value)}</c:v></c:pt>' for i, value in enumerate(categories))
+     val_points = ''.join(f'<c:pt idx="{i}"><c:v>{value}</c:v></c:pt>' for i, value in enumerate(values))
+     return (f'<c:chartSpace xmlns:c="{C}" xmlns:a="{A}" xmlns:r="{R}"><c:chart><c:plotArea><c:layout/>'
+@@ -450,11 +658,13 @@
+             '<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:strRef><c:f>Sheet1!$B$1</c:f>'
+             f'<c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>{escape(series)}</c:v></c:pt></c:strCache></c:strRef></c:tx>'
+             f'<c:cat><c:strRef><c:f>Sheet1!$A$2:$A${count+1}</c:f><c:strCache><c:ptCount val="{count}"/>{cat_points}</c:strCache></c:strRef></c:cat>'
+-            f'<c:val><c:numRef><c:f>Sheet1!$B$2:$B${count+1}</c:f><c:numCache><c:formatCode>0.00</c:formatCode><c:ptCount val="{count}"/>{val_points}</c:numCache></c:numRef></c:val>'
++            f'<c:val><c:numRef><c:f>Sheet1!$B$2:$B${count+1}</c:f><c:numCache><c:formatCode>{facts.get("chart_format", "0.00")}</c:formatCode><c:ptCount val="{count}"/>{val_points}</c:numCache></c:numRef></c:val>'
+             '</c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart>'
+             '<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:tickLblPos val="nextTo"/><c:crossAx val="2"/></c:catAx>'
+             '<c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:tickLblPos val="nextTo"/><c:crossAx val="1"/></c:valAx>'
+             '</c:plotArea><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart>'
++            '<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1400">'
++            '<a:latin typeface="Liberation Sans"/></a:defRPr></a:pPr><a:endParaRPr lang="ru-RU"/></a:p></c:txPr>'
+             '<c:externalData r:id="rId1"><c:autoUpdate val="0"/></c:externalData></c:chartSpace>').encode()
+ 
+ 
+@@ -476,17 +686,21 @@
+     parts = {}
+     overrides = []
+     slide_paths = []
+-    source_rows = [['order_id', 'sku', 'qty', 'unit_price', 'currency', 'revision']]
+-    source_rows += [[row[key] for key in source_rows[0]] for row in facts['rows']]
++    source_rows = facts.get('table_rows')
++    if source_rows is None:
++        source_rows = [['order_id', 'sku', 'qty', 'unit_price', 'currency', 'revision']]
++        source_rows += [[row[key] for key in source_rows[0]] for row in facts['rows']]
++    shared_chart = any(slide['table'] and slide['chart'] for slide in slides)
+     for index, slide in enumerate(slides, 1):
+         name = f'ppt/slides/slide{index}.xml'; slide_paths.append(name)
+-        shapes = [_sp(2, 'Title', 457200, 365760, 8686800, 640080, slide['title'], title=True),
+-                  _sp(3, 'Body', 457200, 1097280, 8686800, 548640, slide['body'])]
++        shapes = [_sp(2, 'Title', 457200, 274320, 8229600, 1371600, slide['title'], title=True),
++                  _sp(3, 'Body', 457200, 1737360, 8229600,
++                      822960 if slide['table'] or slide['chart'] else 4389120, slide['body'])]
+         rels = ['<Relationship Id="rId1" Type="%s/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>' % R]
+         if slide['table']:
+-            shapes.append(_table(4, source_rows))
++            shapes.append(_table(4, source_rows, cx=5486400 if slide['chart'] else 8229600))
+         if slide['chart']:
+-            shapes.append(_chart_frame(5, 'rId2'))
++            shapes.append(_chart_frame(5, 'rId2', shared=slide['table']))
+             rels.append('<Relationship Id="rId2" Type="%s/chart" Target="../charts/chart1.xml"/>' % R)
+         parts[name] = (f'<p:sld xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}"><p:cSld><p:spTree>'
+                        '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+@@ -494,7 +708,7 @@
+                        + ''.join(shapes) + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>').encode()
+         parts[f'ppt/slides/_rels/slide{index}.xml.rels'] = ('<Relationships xmlns="%s">%s</Relationships>' % (PR, ''.join(rels))).encode()
+         overrides.append(f'<Override PartName="/{name}" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>')
+-    parts['ppt/charts/chart1.xml'] = _chart(facts, series)
++    parts['ppt/charts/chart1.xml'] = _chart(facts, series, shared=shared_chart)
+     parts['ppt/charts/_rels/chart1.xml.rels'] = ('<Relationships xmlns="%s"><Relationship Id="rId1" Type="%s/package" Target="../embeddings/chart.xlsx"/></Relationships>' % (PR, R)).encode()
+     parts['ppt/embeddings/chart.xlsx'] = _workbook(facts, series)
+     master = (f'<p:sldMaster xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst><p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>')
