@@ -1,0 +1,108 @@
+{
+  "schema": "frw.public.v3.closure-gate-v14-review-response.v1",
+  "state": "V14_MIRRORS_NORMAL_PATH_AFTER_INDEPENDENT_REVIEW",
+  "at_moscow": "2026-11-08T00:35:00+03:00",
+  "reviewer": {
+    "agent": "agent-83",
+    "provider_model": "openai / deepseek/deepseek-v4.1-flash-1017",
+    "alias": "nord-payg/deepseek-v4.1-1017-thinking",
+    "tools": "read-only; no tester execution, no live store access",
+    "verdicts": {
+      "no_invented_closure": "PASS, changed from FAIL in the first review",
+      "error_never_becomes_pass": "PASS, unchanged"
+    }
+  },
+  "what_the_review_confirmed_as_fixed": [
+    "the closure target is now re-derived from the protected send ACK instead of the mutable run field",
+    "peer chat, sender, private type, bot flag, media absence, text type, message id, window bounds, existing observation and budgets are all checked",
+    "the first-review vector, recording an unrelated or foreign text as the answer, is gone"
+  ],
+  "defects_fixed_in_v14": [
+    {
+      "id": "N2",
+      "before": "closure required a reply_to_message, while the normal path also accepts a nonce-correlated message without one; a legitimate refusal on such a message left the marker open forever and the next inventory refused every command",
+      "after": "closure accepts either the ACK reply target or continuation_document_match, exactly like the normal path",
+      "severity_if_left": "global stall"
+    },
+    {
+      "id": "N1",
+      "before": "a wire-envelope ACK was never unwrapped, so ack.message_id was null and closure was always refused",
+      "after": "an envelope with ok true and a result object is unwrapped before the message id comparison"
+    },
+    {
+      "id": "N3",
+      "before": "a message dated more than 30 s in the future was recorded, although the normal path refuses it",
+      "after": "the same bounded date check is applied"
+    },
+    {
+      "id": "N6",
+      "before": "closure used a strict less-than on the capture window, so the exact boundary differed from the normal path",
+      "after": "the window bound matches the normal path; the arrival bound stays strict as in the normal path"
+    },
+    {
+      "id": "N5",
+      "before": "a duplicate delivery of an already committed message id was refused by the gate, so the marker stayed open where the normal path closes without an observation",
+      "after": "the message id check moved from eligibility to recordability: the marker closes with no observation instead of staying open"
+    },
+    {
+      "id": "N12",
+      "before": "the continuation admission gate was not mirrored, so a reply that the normal path discards as non-contract could be recorded",
+      "after": "the admitted-kind gate is mirrored; a non-contract reply is not recorded"
+    }
+  ],
+  "defects_deliberately_not_changed": [
+    {
+      "id": "N7",
+      "reason": "the blanket handler that hides partial writes is fail-closed: the marker stays open or inventory reports an unpaired witness, never an invented closure",
+      "note": "the docstring no longer claims that every check reads durable bytes"
+    },
+    {
+      "id": "N8",
+      "reason": "committed_message_ids raising on a corrupt older receipt is correct custody behaviour; it aborts closure rather than inventing it"
+    },
+    {
+      "id": "N9",
+      "reason": "recordable is now always true when closure is reached; over-budget refusals stay open rather than closing with no observation, which is the conservative direction"
+    },
+    {
+      "id": "N4/D1-to-D6",
+      "reason": "defense-in-depth gaps that cannot produce a false closure; recorded and left for the post-B00 cleanup"
+    }
+  ],
+  "verification": {
+    "gate_cases": 17,
+    "gate_result": "17 of 17 match the normal path on an isolated copy",
+    "cases": [
+      "valid reply accepted",
+      "missing reply_to (ordinary) refused",
+      "wrong reply_to refused",
+      "document refused",
+      "media refused",
+      "wrong chat id refused",
+      "non-private chat refused",
+      "sender not a bot refused",
+      "wrong sender id refused",
+      "arrival after window refused",
+      "arrival timestamp missing refused",
+      "date before send refused",
+      "date equal to the window bound accepted (N6)",
+      "future date beyond clock+30 refused (N3)",
+      "already committed message id eligible but not recordable (N5)",
+      "existing observation refused",
+      "text over budget refused"
+    ],
+    "end_to_end": {
+      "method": "historical run replayed on an isolated copy, closure forced by a local refusal",
+      "closure_happened": true,
+      "observations_written": 1,
+      "observation_is_the_real_reply": true,
+      "duplicate_call_writes_nothing": true,
+      "processing_and_processed_offsets_equal": true,
+      "inventory_after_closure": "refused in the replay only because concurrent live runs had advanced the shared cursor beyond the replayed chain; the closure receipt itself uses the same offset as the intent receipt it closes"
+    }
+  },
+  "honest_limits": [
+    "no live refusal has yet occurred under v14, so the inventory-after-closure path is proven by construction, not by an observed live refusal",
+    "N1 and N3 remain latent: neither was reachable in this environment during the review"
+  ]
+}
