@@ -358,9 +358,11 @@ def launch(value, budget, *, pins):
         ) from exc
 
 
-def start(value, budget):
+def start(value, budget, *, raw=None):
+    # The admission reads the installed product; the launch commands revalidate
+    # the original unconfigured input the installer claimed.
     _identity, pins = prerequisites(value, budget)
-    launch(value, budget, pins=pins)
+    launch(value if raw is None else raw, budget, pins=pins)
 
 
 def ordinary_start(value, budget):

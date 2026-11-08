@@ -337,13 +337,14 @@ def main():
                 None if args.a0_plan is None else {'path':str(args.a0_plan),'sha256':args.a0_plan_sha256},budget)
             if args.phase == 'qualify':
                 print(json.dumps(result,sort_keys=True));budget.check();return
+        raw_value = value
         if 'worker_install' in value:
             from scripts.worker_install import installed_product
             value = dict(value, product=budget.call(installed_product, value, home))
         from scripts.friday_start import start
         from scripts.dsh_prepare import StopUnconfirmed
         try:
-            budget.call(start, value, budget)
+            budget.call(start, value, budget, raw=raw_value)
         except StopUnconfirmed:
             parser.exit(3, 'STOP_UNCONFIRMED: native service ownership requires reconciliation; do not retry\n')
         except (OSError, ValueError, KeyError, TypeError, RuntimeError):
