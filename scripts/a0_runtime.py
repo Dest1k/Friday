@@ -839,8 +839,11 @@ def stop_route(route, *, retain, container_id=None):
             # Only an actual private original guard can resolve a lost start ACK.
             route['daemon']=_route_guard(route,l,fields);route['pending']='sample';retain(route)
         g=route['daemon']['receipt'];inv=g['context']['invocation_id']
-        require(fields['InvocationID']==inv, 'STOP_UNCONFIRMED; daemon invocation changed')
         live=fields['ActiveState'] not in ('inactive','failed') or fields['MainPID']!='0'
+        # This systemd clears InvocationID once the unit becomes inactive; an
+        # empty ID is accepted only there, any other ID is a different run.
+        require(fields['InvocationID']==inv or (not live and fields['InvocationID']==''),
+                'STOP_UNCONFIRMED; daemon invocation changed')
         if live:
             require(_route_guard(route,l,fields)==route['daemon'], 'STOP_UNCONFIRMED; daemon identity changed')
             sample=cgroup_snapshot(l['SERVICE_GROUP']);route['samples'].append(sample);retain(route)
@@ -876,8 +879,8 @@ def stop_route(route, *, retain, container_id=None):
                     'STOP_UNCONFIRMED; daemon changed before stop')
             Runtime._command(['/usr/bin/systemctl','--user','stop',DAEMON],20)
             fields=_route_unit(l,Runtime._command,3)
-        require(fields['InvocationID']==inv and fields['ActiveState'] in ('inactive','failed')
-                and fields['MainPID']=='0', 'STOP_UNCONFIRMED; daemon stop unknown')
+        require(fields['ActiveState'] in ('inactive','failed') and fields['MainPID']=='0'
+                and fields['InvocationID'] in ('', inv), 'STOP_UNCONFIRMED; daemon stop unknown')
         # Cgroup disappearance alone cannot erase a surviving sampled process.
         identity_sample={'group':l['SERVICE_GROUP'],'populated':True,
                          'processes':[{'pid':p['pid'],'start_ticks':int(p['start']),'state':'S'}
