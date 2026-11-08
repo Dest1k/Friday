@@ -1,0 +1,89 @@
+{
+  "schema": "friday.v3.segment-record.v1",
+  "at_moscow": "2026-11-08T16:25:00+03:00",
+  "segment": "A0 reconciliation exhaustively analysed; every candidate product route checked and rejected on its own contract; blocker narrowed to a product-side gap",
+  "lead": "DSH session (sole lead/integrator)",
+  "scope_note": "no product write, no live send, no replay; this segment is a read-only contract analysis plus checkpoint publication",
+  "routes_examined_and_why_each_is_inapplicable": [
+    {
+      "route": "Onboarding.archive_workers() + worker_archive.archive()",
+      "verdict": "inapplicable by contract, not by missing document",
+      "reasons": [
+        "_provenance requires original_failure with state REFUSED_OR_UNCERTAIN and error_kind internal_error and a0_probe_cleanup OWN_INITIAL_PROBE_CUSTODY; our attempt's own product-written failure document says state STOP_UNCONFIRMED / error_kind stop_unconfirmed (user_worker_join.py decides this from the StopUnconfirmed exception)",
+        "the same validator requires closed_custody with state CONSUMED_CLOSED_FAILED_503_INTERNAL_ERROR_WORKERS_OFF_NO_RETRY and A0=NOT_STARTED_NO_BOOTSTRAP_OR_PLAN and worker_runtime=false, i.e. it describes a diagnostic where A0 never started; in our attempt A0 DID start (26 observations, container created and stopped)",
+        "it requires original_clock of exactly 420 physical seconds with POST_count 1 and a cessation with response.status 503 and bootstrap_state None",
+        "it requires original_archive (intent + committed) describing an ALREADY closed earlier attempt under preparation/ with schema friday.ordinary-closed-worker-reconciliation.v2 - a second, older closed attempt that does not exist here",
+        "_prepared_tree requires the request's tree manifest to contain workers/attachment.json and each runtime-input.json to carry an 'attachment' key, which the product only writes for an already ACTIVATED (attached) profile; our profile is a freshly prepared DISABLED one",
+        "the native guard additionally requires the gateway stopped and the host lock unclaimed, the absence of workers/qualification, workers/a0/bootstrap, workers/a0/probe-plan.json, workers/*/runtime-receipt.json, the launcher request file, rootlesskit child_pid and route-guard.json"
+      ],
+      "conclusion": "the archiver serves the event class 'A0 never started, diagnostic closed with 503'. Our event is 'A0 started, container stopped and confirmed, retirement unacknowledged'. Writing the other class's documents would misstate the facts, so no such request was produced."
+    },
+    {
+      "route": "scripts/friday_worker_preparation.py reconcile_closed() (installer phase recover-ordinary-worker-keyless)",
+      "verdict": "inapplicable",
+      "reasons": [
+        "same closed-attempt document requirements plus a ROOT-POST-PRESERVATION.json reference that has no producer in this composition",
+        "the legacy variant additionally requires history of exactly 494 pinned files and a keyless ancestry chain from a previous keyless recovery",
+        "the current variant pins CLOSED_CURRENT_UPDATE_SHA / CLOSED_CURRENT_INPUT_SHA to specific historical artifacts of the old composition"
+      ]
+    },
+    {
+      "route": "worker_declaration_writer.apply_declarations() / stopped_operator.StoppedOperator",
+      "verdict": "inapplicable",
+      "reasons": [
+        "its purpose is a source/declaration migration for A0, not the closure of an interrupted cleanup; the allowed delta is exactly four paths (root a0_deployment, profile a0_deployment, template a0_deployment, template worker_inputs)",
+        "in this composition root a0_deployment already equals the template a0_deployment, so the delta is empty",
+        "its PROFILE is hardcoded to dest_telegram and it requires the install marker to carry completion_stage TELEGRAM_ORDINARY, which the new home's marker does not have (it has no ordinary_gateway phase at all)",
+        "plan_declaration_delta reports state SOURCE_DECLARATION_DELTA_ONLY_NOT_NATIVE_AUTHORITY and native_migration NOT_INVOKED"
+      ]
+    },
+    {
+      "route": "host_runtime.A0HostSession.emergency_stop / controller.stop / controller.reconcile",
+      "verdict": "inapplicable",
+      "reasons": [
+        "these are per-JOB association paths; the onboarding initial-probe path does not create an association row (associations.v1.jobs is empty in the installed store)",
+        "emergency_stop's pure-restoration branch (retained stop custody without retirement) applies to per-job rows with a boundary/grant/runtime, not to the initial probe"
+      ]
+    },
+    {
+      "route": "a0_bootstrap.checked_inventory",
+      "verdict": "inventory only",
+      "reasons": [
+        "it accepts the STOP_UNCONFIRMED phase and returns the exact inventory (bootstrap, probe-plan.json), so the product CAN describe our attempt",
+        "but it does not move the tree and grants no retry authority"
+      ]
+    }
+  ],
+  "root_cause_of_the_stop_unconfirmed_established_from_code": {
+    "order_in_a0_bootstrap.stop": "runtime.stop() stops the container AND calls supervisor.stop() for friday-rework-docker.service; only afterwards retire_initial_probe() runs `docker rm` through the daemon socket",
+    "consequence": "the daemon is already unloaded when retirement needs the socket, so the retirement ACK is unobtainable and the product refuses to declare the cleanup settled instead of recording a false success",
+    "corroboration": "the earlier root-level composition (workers/a0, 09:11 MSK) has sol dir e67597f0.../retirement.json = INITIAL_PROBE_RETIRED; there the daemon was still reachable at retirement time; our sol dir 1aa21b1f.../retirement.json was never written",
+    "verdict": "an ordering defect in the installed A0 runtime, not an operator mistake and not a data problem"
+  },
+  "state_verified": {
+    "jarvis_profile": "workers/dsh and workers/a0 runtime-input.json both PREPARED_RUNTIME_UNOBSERVED, generation 1, principal_binding_sha256 cbf7f45a... matches the binding; profile .env digest db3c1236... still equals the digest recorded in workers/qualification/original.json, so the recorded attempt's credentials are unchanged",
+    "owner_profile": "prepared and disabled, four required secrets captured, data merged",
+    "pairing": "both principals approved in platforms/pairing/telegram-approved.json",
+    "access_rows": "both principals have disabled tombstones (enabled=false, generation 1)",
+    "associations_store": "associations.v1.jobs = {} (no stale row to close)",
+    "gateway": "active, telegram connected, serves default only; one receiver"
+  },
+  "blocker_statement": "To qualify the Jarvis area the product needs (a) the previous attempt's evidence tree to be moved out of the way and (b) a new attempt to be allowed. Both are implemented only for the 'diagnostic closed with 503, A0 never started' event class. The installed composition contains no route for our event class ('A0 started, container stopped and confirmed, retirement unacknowledged because the daemon unloaded first'), and the installed A0 source cannot be edited because it is digest-pinned (friday_dashboard_owner_unproved on any change).",
+  "external_options_for_the_owner": [
+    "A: rebuild/update the A0 runtime sources so retirement happens BEFORE the daemon stop (then the normal cleanup completes and the standard path continues) - a source change in a separate composition, since the installed source is digest-pinned",
+    "B: extend the worker archiver with the event class 'A0 started, cleanup unconfirmed' (a product change in the plugin source)",
+    "C: provide an updated installed composition in which the Jarvis profile can be prepared and qualified from scratch (the profile preparation, secrets, data and pairing are already in place and verified)"
+  ],
+  "independent_work_continued_in_parallel": [
+    "both user areas are prepared with the product's own writers; preserved user data merged (Jarvis 5 sessions / 4786 messages; owner 2 / 196)",
+    "DSH half is ready (pins current, 6375 native files present, no container required)",
+    "the next live checks (admission bound to the current gateway pid, one controlled Jarvis turn, new D-12 regression, wrong-format / ordinary-write / out-of-scope) are prepared to run as soon as activation is possible"
+  ],
+  "explicitly_not_done": [
+    "no live Telegram send in this segment",
+    "no repeat of r42 or UNKNOWN_SEND records",
+    "no fabricated or reclassified failure/closure documents",
+    "no weakened product check, no deletion of the failed attempt's evidence",
+    "no modification of installed product sources, model/weights/endpoint, the owner's personal conversation, the agreed cursor or the single-receiver arrangement"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "analysis_target": "Onboarding._worker_summary gates for the prepared-but-disabled Jarvis profile",
+  "at_moscow": "2026-11-08T15:55:00+03:00",
+  "code_read": "plugins/friday_rework/onboarding.py lines 824-940 (verified in the installed tree)",
+  "facts": {
+    "required_workers_computed_from_root_config": "required = join.required_workers(root_config, proof, home); proof.worker_requirements = ['dsh','a0'], so required is truthy and the summary takes the FIRST branch (required_workers = ['dsh','a0'], can_activate = False, worker_execution = BOTH_REQUIRED_WORKERS_PENDING). The attachment/activation branch is NOT reached for this profile because 'required' is truthy, NOT because of the marker.",
+    "attachment_only_matters_after_activation": "The attachment.json / _worker_attachment path lives inside `if not required:`. So attachment.json is irrelevant while the profile is disabled with worker_requirements ['dsh','a0']. The archiver's `names = {'attachment.json'}` requirement applies to the ATTACHED (activated) shape, i.e. the archiver is designed for consuming stale setups of ALREADY ACTIVATED profiles.",
+    "per_worker_states_now": {
+      "dsh": "PREPARED_RUNTIME_UNOBSERVED (preparation pins valid, generation 1, principal_binding_sha256 cbf7f45a... matches)",
+      "a0": "RECONCILIATION_REQUIRED (preparation() raises on read of workers/a0/bootstrap/state.json? no — bootstrap exists and preparation pins exist; the state becomes RECONCILIATION_REQUIRED because check_runtime/deployment_health or the preparation read fails on the a0 tree)",
+      "note": "a0/bootstrap/state.json phase is STOP_UNCONFIRMED; the summary's `preparation(...)` only reads runtime-input.json pins; the failure that sets RECONCILIATION_REQUIRED comes from check_runtime(rows['a0']) or join.deployment_health(rows['a0']) — rows only exist when runtime.enabled is true, which it is not for this profile, so the a0 branch likely sets RECONCILIATION_REQUIRED from the preparation() read itself."
+    },
+    "gate_results_with_current_disk_state": {
+      "present": "['dsh'] (a0 is present on disk but marked RECONCILIATION_REQUIRED, so it is NOT appended to present)",
+      "partial": "true (a0 state == RECONCILIATION_REQUIRED)",
+      "attempted": "true (workers/qualification exists)",
+      "probe_attempted": "true (workers/a0/bootstrap and workers/a0/probe-plan.json exist)",
+      "can_prepare_workers": "false (not attaching) and not present(dsh) and not partial and not attempted -> False",
+      "can_qualify_workers": "len(present)==2 -> False",
+      "can_activate": "all qualified -> False",
+      "worker_execution": "QUALIFICATION_OR_SETUP_REQUIRES_RECONCILIATION_NO_REPLAY (attempted or partial or probe_attempted all true)"
+    },
+    "what_would_clear_the_gates_without_replay": {
+      "1": "archiving the stale setup through Onboarding.archive_workers would move workers/ out of the way (worker-setup-archive/transactions/<tree_key>/workers) and write a CONSUMED_NO_RETRY claim, which clears attempted/probe_attempted/partial and lets prepare_workers run fresh",
+      "2": "BUT archive_workers requires (a) the closed-attempt closure documents (ROOT-DIAGNOSTIC-CLOCK/RESULT/POST-PRESERVATION) which have no producer in this composition for an interrupted cleanup, and (b) _admitted_worker_home/root pinning that expects the activated (attached) shape",
+      "3": "the earlier assumption that attachment.json blocks the archiver for a disabled profile is WRONG in one respect: _worker_summary only reads attachment.json when required_workers is empty. The archiver's own _prepared_tree(names={'attachment.json'}) check is the real blocker, and it applies to the request document, not the summary.",
+      "4": "the failure state STOP_UNCONFIRMED vs REFUSED_OR_UNCERTAIN mismatch also stands: worker_archive._provenance expects state REFUSED_OR_UNCERTAIN + error_kind internal_error; the product wrote STOP_UNCONFIRMED/stop_unconfirmed for this attempt"
+    },
+    "can_activate_path_when_workers_are_qualified": "can_activate requires all workers qualified; then it checks scope.check_onboarding_home(root, home, binding) and self._native_grant(root, binding) — the pairing grant for 8812646969 and 467035772 is already approved in platforms/pairing/telegram-approved.json, so activation is unblocked the moment both workers qualify."
+  },
+  "corrections_to_previous_segment": [
+    "the statement 'the archiver accepts only an already activated profile' is refined: the archiver's prepared-tree check expects workers/attachment.json in the request manifest, which only exists for activated profiles; the _worker_summary attachment branch is separate and not reached for required_workers profiles",
+    "the dsh worker preparation is valid (pins and generation match); only the a0 half is stuck"
+  ],
+  "next_steps": [
+    "verify which exact call sets a0 to RECONCILIATION_REQUIRED (check_runtime vs preparation) by reading preparation() against the a0 tree",
+    "check whether the archiver's attachment requirement can be satisfied through the product's own declaration path for a disabled profile (worker_declaration_writer.apply_declarations), without weakening any check",
+    "keep the pairing grants and both prepared profiles unchanged; no live sends"
+  ]
+}
