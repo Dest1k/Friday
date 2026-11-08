@@ -21,6 +21,7 @@ CGROUP_ROOT = Path('/sys/fs/cgroup')
 SELF_CGROUP = Path('/proc/self/cgroup')
 SERVICE_GROUP = '/user.slice/user-1000.slice/user@1000.service/app.slice/friday-rework-docker.service'
 UID = 1000
+GID = 1000
 UNIT_SHA256 = '53e6d86ff912f4ad0761362bc5e7937d2131e48892469236be09db6b49bcd0ba'
 CONFIG_SHA256 = '4a423b2c8869a9fc5281b42141940301eed066866d64a6c55e9581ab507d45fb'
 SCRIPT_SHA256 = '200203633806081a401e60aefdf68a8fa73fc7dc80aa854c52a69d47710a3488'
@@ -484,6 +485,11 @@ def child_route():
     env = {k: os.environ[k] for k in ('PATH', 'HOME', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'DOCKER_CONFIG') if k in os.environ}
     if os.environ.get('NOTIFY_SOCKET'): env['NOTIFY_SOCKET'] = os.environ['NOTIFY_SOCKET']
     env.update({'ROOTLESSKIT_STATE_DIR': '/run/user/1000/friday-rework-docker/rootlesskit'})
+    # RootlessKit hands its child the invoking identity; dockerd passes it on to
+    # containerd/runc, which refuse to start a container without it.
+    for name, expected in (('ROOTLESSKIT_PARENT_EUID', str(UID)), ('ROOTLESSKIT_PARENT_EGID', str(GID))):
+        require(os.environ.get(name) == expected, 'route_parent_identity_missing')
+        env[name] = expected
     binary = tool_paths()['dockerd']
     os.execve(str(binary), [str(binary), '--config-file=' + str(ROOT / 'config/daemon.json')], env)
 
