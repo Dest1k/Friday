@@ -332,11 +332,14 @@ def service_receipt_checked(value, home, *, original_attempt):
     return receipt
 
 
-def install_service(value, home, budget):
+def install_service(value, home, budget, *, staged=False):
     """One original install attempt, under its existing namespace and runtime lock.
 
     A failed/lost link or whole-user reload acknowledgement is retained; a
     second call cannot replay it. This publishes no request and starts nothing.
+    With staged=True the exact launcher/unit bytes were published inside the
+    native step, because the user manager's private socket refuses clients from
+    a non-host PID namespace; the link/reload/observation stay here on the host.
     """
     from scripts.friday_install import (require, directory, owned_file, digest,
                                         read_json, publish, partial_claim, MARKER)
@@ -358,17 +361,77 @@ def install_service(value, home, budget):
     return _register_service(value, home, budget, plan=plan, original_attempt=claim,
                              evidence=evidence, verify=verify,
                              intent_schema='friday.a0.service-install-intent.v1',
-                             receipt_schema='friday.a0.service-install-receipt.v1')
+                             receipt_schema='friday.a0.service-install-receipt.v1',
+                             staged=staged)
+
+
+def stage_service_sources(value, home, budget):
+    """Publish exactly the pinned A0 launcher and unit bytes; no systemctl here.
+
+    The native step owns these files because materialize reads them, but the
+    user manager rejects clients from this PID namespace. The outer installer
+    therefore performs the exclusive link/reload/observation on the host.
+    """
+    from scripts.friday_install import require, directory, owned_file, read_json, publish, partial_claim, MARKER, digest
+    from scripts import a0_runtime as runtime
+    from scripts import rootless_docker_launch as launcher
+    plan = budget.call(service_plan, value, home)
+    if not plan['required']:
+        return {'state': 'A0_NOT_CONFIGURED_SOURCE_STAGED', 'runtime_acceptance': 'NOT_ACCEPTED'}
+    budget.check(reserve=35)
+    directory(home)
+    claim = read_json(home / MARKER)
+    require(claim == partial_claim(claim['input_sha256'], budget), 'fresh_install_claim_required')
+    evidence = home / 'preparation'; evidence.mkdir(mode=0o700, exist_ok=True); directory(evidence)
+    payload = service_sources(value['project_files'])
+    stage = home / 'worker-runtime-source'
+    for name, data in payload.items():
+        require(owned_file(stage / name) == data, 'staged_a0_service_source_changed')
+    boundary = Path(os.path.commonpath((launcher.ROOT, launcher.INSTALLED_UNIT.parent)))
+    require(boundary != Path('/'), 'a0_install_directory_boundary_changed')
+    for parent in (launcher.ROOT / 'supervisor', launcher.ROOT / 'config', launcher.INSTALLED_UNIT.parent):
+        while True:
+            launcher.owned_directory(parent)
+            if parent == boundary: break
+            require(parent.is_relative_to(boundary), 'a0_install_directory_boundary_changed')
+            parent = parent.parent
+    launcher.checked_source(launcher.ROOT / 'config/daemon.json', launcher.CONFIG_SHA256)
+    launcher.checked_source(launcher.ROOT.parent / 'docker-29.8.2/docker-rootless-extras/dockerd-rootless.sh',
+                            launcher.SCRIPT_SHA256)
+    for p in (launcher.REQUEST, launcher.GUARD, launcher.STATE / 'rootlesskit'):
+        require(not p.exists() and not p.is_symlink(), 'a0_install_retained_route_or_namespace')
+    if launcher.STATE.exists() or launcher.STATE.is_symlink():
+        launcher.owned_directory(launcher.STATE)
+        require(not any(launcher.STATE.iterdir()), 'a0_install_retained_route_or_namespace')
+    target = launcher.ROOT / 'supervisor' / runtime.DAEMON
+    for p in (runtime.LAUNCHER, target, launcher.INSTALLED_UNIT):
+        require(not p.exists() and not p.is_symlink(), 'existing_a0_service_source_requires_reconciliation')
+    def exclusive(path, data, mode=0o400):
+        budget.check()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        runtime.sync_dir(path.parent); budget.check()
+    exclusive(runtime.LAUNCHER, payload['scripts/rootless_docker_launch.py'], 0o500)
+    exclusive(target, payload[SERVICE_SOURCE])
+    require(digest(owned_file(runtime.LAUNCHER)) == plan['source_files']['scripts/rootless_docker_launch.py']
+            and digest(owned_file(plan['unit_source'])) == plan['source_files'][SERVICE_SOURCE],
+            'a0_install_published_source_changed')
+    record = {'schema': 'friday.a0.service-staging.v1', 'plan': plan,
+              'original_attempt': claim, 'state': 'SOURCES_PUBLISHED_NO_LINK_NO_START',
+              'resume_allowed': False}
+    publish(evidence / 'a0-service.staged.json', record, budget=budget)
+    return record
 
 
 def _register_service(value, home, budget, *, plan, original_attempt, evidence,
-                      verify, intent_schema, receipt_schema):
+                      verify, intent_schema, receipt_schema, staged=False):
     """Shared finite effects; each public admission owns a distinct identity.
 
     The fresh-install entry retains its partial-claim contract. Installed ordinary
     registration owns separate evidence and never changes that old claim.
     """
-    from scripts.friday_install import require, directory, owned_file, digest, publish
+    from scripts.friday_install import require, directory, owned_file, digest, publish, read_json
     from scripts.dsh_prepare import run, StopUnconfirmed, safe_observation
     from scripts import a0_runtime as runtime
     from scripts import rootless_docker_launch as launcher
@@ -433,24 +496,35 @@ def _register_service(value, home, budget, *, plan, original_attempt, evidence,
         require(before['LoadState'] == 'not-found' and not before['FragmentPath'],
                 'existing_a0_service_requires_reconciliation')
         target = launcher.ROOT / 'supervisor' / runtime.DAEMON
-        for p in (runtime.LAUNCHER, target, launcher.INSTALLED_UNIT):
-            require(not p.exists() and not p.is_symlink(), 'existing_a0_service_source_requires_reconciliation')
+        if staged:
+            staged_record = read_json(evidence / 'a0-service.staged.json')
+            require(isinstance(staged_record, dict) and staged_record.get('plan') == plan
+                    and staged_record.get('original_attempt') == original_attempt
+                    and staged_record.get('state') == 'SOURCES_PUBLISHED_NO_LINK_NO_START',
+                    'a0_service_staging_receipt_required')
+            published_sources()
+            require(not launcher.INSTALLED_UNIT.exists() and not launcher.INSTALLED_UNIT.is_symlink(),
+                    'existing_a0_service_source_requires_reconciliation')
+        else:
+            for p in (runtime.LAUNCHER, target, launcher.INSTALLED_UNIT):
+                require(not p.exists() and not p.is_symlink(), 'existing_a0_service_source_requires_reconciliation')
         record = {'schema': intent_schema, 'plan': plan,
                   'original_attempt': original_attempt, 'before': before, 'before_command': before_command,
                   'resume_allowed': False, 'cessation': 'NO_START_SUBMITTED'}
         publish(intent, record, budget=budget)
         try:
-            def exclusive(path, data):
+            def exclusive(path, data, mode=0o400):
                 budget.check()
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
                 with os.fdopen(fd, 'wb') as stream:
                     stream.write(data); stream.flush(); os.fsync(stream.fileno())
                 runtime.sync_dir(path.parent); budget.check()
             quiet_paths()
             current, _ = observe('before-publication')
             require(current == before, 'a0_install_unit_changed_before_publication')
-            exclusive(runtime.LAUNCHER, payload['scripts/rootless_docker_launch.py'])
-            exclusive(target, payload[SERVICE_SOURCE])
+            if not staged:
+                exclusive(runtime.LAUNCHER, payload['scripts/rootless_docker_launch.py'], 0o500)
+                exclusive(target, payload[SERVICE_SOURCE])
             published_sources()
             quiet_paths()
             current, _ = observe('before-link')

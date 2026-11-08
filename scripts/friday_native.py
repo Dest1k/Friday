@@ -215,16 +215,22 @@ def complete(value, home, receipt, *, budget=None, cli_host=False):
         from scripts.worker_install import prepared_product, materialize
         product, evidence = budget.call(prepared_product, value, home, budget)
         effective = dict(value, product=product)
-    from scripts.a0_prepare import service_required, install_service
+    # A0 registration drives the user manager's private socket, which refuses
+    # clients from this PID namespace. The native step publishes exactly the
+    # pinned launcher/unit bytes that materialize reads; the host-scoped outer
+    # installer performs the exclusive link/reload/observation after this child.
+    from scripts.a0_prepare import service_required, stage_service_sources
     if service_required(effective):
         require(budget is not None, 'original_a0_install_budget_required')
-        budget.call(install_service, effective, home, budget)
+        budget.call(stage_service_sources, effective, home, budget)
     if 'worker_install' in value and not cli_host:
         if product['web']['profile'] == 'exa-keyless':
-            from scripts.friday_install import stage_keyless_provider
-            keyless = budget.call(stage_keyless_provider, Path(value['dsh_donor']))
+            keyless = Path(value['dsh_donor']) / 'friday-web-keyless.mjs'
+            raw = budget.call(owned_file, keyless)
+            require(digest(raw) == value['project_files']['plugins/friday_rework/adapters/dsh_keyless_web.mjs'],
+                    'keyless_helper_source_changed')
             product['runtime']['workers']['dsh']['dsh']['native_files'].append(
-                {k:keyless[k] for k in ('path', 'sha256')})
+                {'path': str(keyless), 'sha256': digest(raw)})
         effective['product'] = budget.call(materialize, value, home, product, evidence, budget)
     bundle = profile_write(home, effective['product'])
     if 'credential_sources' in value:
@@ -289,13 +295,15 @@ def main():
                 and intent.get('original_attempt') == read_json(home/MARKER)
                 and intent['request']['current_input']['sha256'] == digest(owned_file(args.input,private=True))
                 and (segment or intent['original_attempt']['deadline_mono'] == budget.deadline), 'consumed_cli_host_intent_required')
-    else:
-        from scripts.friday_install import inspect
-        budget.call(inspect, value, digest(owned_file(args.input, private=True)))
     source = home / 'hermes-agent'; receipt = read_json(home / 'hermes-agent.source.json')
     budget.call(composition_checked, value, source, receipt, donors['hermes'])
     from scripts.friday_install import native_packages
     budget.call(native_packages, source)
+    if args.phase not in ('install', 'install-cli'):
+        # Run the re-check after the source packages are bound: the outer start()
+        # already validated the same input and marker before this process.
+        from scripts.friday_install import inspect
+        budget.call(inspect, value, digest(owned_file(args.input, private=True)))
     if args.phase == 'start-telegram':
         from scripts.friday_start import ordinary_start
         from scripts.dsh_prepare import StopUnconfirmed

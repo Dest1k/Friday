@@ -47,9 +47,14 @@ def prepare_inputs(home, profile, worker, runtime, config, *, a0_network=None, d
     # Validate the actual profile, including local routes and accepted SAFE tools.
     # The protected caller supplies its already checked binding grants.
     # Legacy non-browser callers retain their original validation contract.
+    required_secrets = [config['providers']['friday-local']['key_env']]
+    if not config['web']['keyless_fallback']:
+        required_secrets.append('EXA_API_KEY')
+    compressor = config['providers'].get('friday-compression')
+    if isinstance(compressor, dict) and isinstance(compressor.get('key_env'), str):
+        required_secrets.append(compressor['key_env'])
     validate_template({'config': config, 'tools': sorted(scope.SAFE) if tools is None else tools,
-                       'required_secrets': [config['providers']['friday-local']['key_env'],
-                           *([] if config['web']['keyless_fallback'] else ['EXA_API_KEY'])]})
+                       'required_secrets': required_secrets})
     c, root = own_runtime(home, profile, worker, runtime)
     files = dict(declared_files or {}); names = []; unobserved = ['native execution', 'model', 'network', 'runtime receipt', 'independent review']
     for path, raw in files.items():

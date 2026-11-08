@@ -149,7 +149,15 @@ def prepared_product(value, home, budget, *, preparation=None):
                 r['toolchain']['node_sha256'] == tool['node_sha256'] for r in reports.values()),
             'harness_toolchain_generation_changed')
     from scripts.dsh_prepare import verify_source, build_inventory
-    current = budget.call(verify_source, harness, donors['dsh'])
+    helper = None
+    if value['product']['web']['profile'] == 'exa-keyless':
+        from scripts.friday_install import stage_keyless_provider
+        target = harness / 'friday-web-keyless.mjs'
+        if not target.exists() and not target.is_symlink():
+            budget.call(stage_keyless_provider, harness)
+        helper = {'path': str(target),
+                  'sha256': value['project_files']['plugins/friday_rework/adapters/dsh_keyless_web.mjs']}
+    current = budget.call(verify_source, harness, donors['dsh'], keyless_helper=helper)
     current['source_lock_sha256'] = value['sources_lock']['sha256']
     require(all(r['source'] == current for r in reports.values()), 'harness_source_generation_changed')
     inventory = budget.call(build_inventory, harness)

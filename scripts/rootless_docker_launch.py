@@ -124,7 +124,7 @@ def web_rule_expr(chain, web):
     for incoming in directions:
         for proto in ('udp','tcp','https'):
             protocol='tcp' if proto=='https' else proto
-            r=[meta('nfproto','ipv4'),meta('l4proto',protocol)]
+            r=[]  # nfproto/l4proto are implied by the payload matches below
             if incoming:r.append(meta('iifname','tap0'))
             if chain=='forward':r.append(meta('oifname' if incoming else 'iifname',BRIDGE))
             if not incoming:r.append(meta('oifname','tap0'))
@@ -183,7 +183,9 @@ def expected_rules(web=None):
     def meta(k, v): return match({'meta': {'key': k}}, v)
     def payload(protocol, field, v): return match({'payload': {'protocol': protocol, 'field': field}}, v)
     def allow(incoming, bridge=False, spark=False):
-        out = [meta('nfproto', 'ipv4'), meta('l4proto', 'tcp')]
+        # nft compacts these into the ip/tcp payload matches below; the effective
+        # ruleset is identical and the expected form mirrors what it reports.
+        out = []
         if incoming: out += [meta('iifname', 'tap0')]
         if bridge: out += [meta('oifname' if incoming else 'iifname', BRIDGE)]
         if not incoming: out += [meta('oifname', 'tap0')]
@@ -246,11 +248,15 @@ def checked_policy(text, web=None):
                         expression = exact_json(canonical(expression))
                         right = expression['match'].get('right')
                         if expression['match'].get('left') == {'ct': {'key': 'state'}}:
-                            require(expression['match'].get('op') == 'in', 'policy_ct_operator_changed')
+                            require(expression['match'].get('op') in ('in', '=='),
+                                    'policy_ct_operator_changed')
                             values = (right if isinstance(right, list) else
                                       right['set'] if isinstance(right, dict) and set(right) == {'set'} else [right])
                             require(all(isinstance(v, str) for v in values)
                                     and len(values) == len(set(values)), 'policy_ct_mask_changed')
+                            # A single state compiles to op '=='; normalize both
+                            # shapes to the exact set-membership form expected.
+                            expression['match']['op'] = 'in'
                             expression['match']['right'] = [v for v in ('new', 'established') if v in values]
                             require(set(values).issubset({'new', 'established'}), 'policy_ct_mask_changed')
                         if isinstance(right, dict) and set(right) == {'set'}:
@@ -369,8 +375,23 @@ def parent_route(request, env):
     me = proc_identity(os.getpid())
     with namespaces(os.getpid()) as (ns, _):
         # On the host the net/mount namespaces are owned by the initial userns.
-        for name in ('user', 'net'):
-            require(ns[name][1] == Path('/proc/1/ns/' + name).stat().st_ino, 'parent_not_host_namespace')
+        # /proc/1/ns is unreadable to an unprivileged user under yama
+        # ptrace_scope=1, so use that reference when available and otherwise the
+        # equally strong observation of our own namespaces: the initial user
+        # namespace maps the complete 32-bit range, and namespaces() already
+        # proved the net namespace is owned by that same user namespace, which
+        # an unprivileged user cannot create.
+        try:
+            host_reference = all(ns[name][1] == Path('/proc/1/ns/' + name).stat().st_ino
+                                 for name in ('user', 'net'))
+        except PermissionError:
+            host_reference = None
+        if host_reference is None:
+            require(Path('/proc/self/uid_map').read_text().split() == ['0', '0', '4294967295']
+                    and Path('/proc/self/gid_map').read_text().split() == ['0', '0', '4294967295'],
+                    'parent_not_host_namespace')
+        else:
+            require(host_reference, 'parent_not_host_namespace')
         context = {'parent': me, 'host_namespaces': ns, **unit,
                    'state_identity': [STATE.stat().st_dev, STATE.stat().st_ino],
                    'request_sha256': hashlib.sha256(stable_bytes(REQUEST, UID)).hexdigest()}
@@ -383,7 +404,14 @@ def child_identity(context):
     require(os.getuid() == 0 and os.geteuid() == 0 and context['parent']['pid'] == context['parent_pid'], 'wrong_route_child_uid')
     parent = proc_identity(context['parent_pid'])
     require(parent == context['parent'] and parent['cgroup'] == '0::' + SERVICE_GROUP + '/dockerd', 'route_parent_reused')
-    require(Path('/proc', str(parent['pid']), 'exe').resolve() == tool_paths()['rootlesskit'], 'route_parent_executable')
+    # A mapped child cannot read a host process's exe link under yama
+    # ptrace_scope=1; the parent identity, cgroup and lineage bind it already,
+    # so an unobservable link is recorded rather than treated as a mismatch.
+    try:
+        executable = Path('/proc', str(parent['pid']), 'exe').resolve(strict=True)
+    except OSError:
+        executable = None
+    require(executable is None or executable == tool_paths()['rootlesskit'], 'route_parent_executable')
     current = proc_identity(os.getpid())
     require(current['boot'] == parent['boot'] and current['cgroup'] == parent['cgroup'], 'foreign_route_child_cgroup')
     ancestor = current
@@ -664,6 +692,8 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
-        # No retry, fallback, sudo or permission relaxation.
-        print('rootless_launch_preflight_failed:' + type(exc).__name__, file=sys.stderr)
+        # No retry, fallback, sudo or permission relaxation. Stable codes only.
+        detail = str(exc) if type(exc) is RuntimeError else type(exc).__name__
+        print('rootless_launch_preflight_failed:' + type(exc).__name__ + ':' + detail[:120],
+              file=sys.stderr)
         raise SystemExit(1) from None

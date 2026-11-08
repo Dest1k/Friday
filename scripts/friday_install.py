@@ -690,9 +690,14 @@ def finish_install(value, input_hash, home, donors, source, receipt, receipt_pat
         execute('a0_inventory', argv['a0_inventory'], ROOT, 120)
     effective = value
     if 'worker_install' in value:
+        # The installed product's plugin imports resolve hermes_cli from the
+        # exact composed source; verify that source before importing it.
+        budget.call(composition_checked, value, source, receipt, donors['hermes'])
+        sys.path.append(str(source))
         from scripts.worker_install import installed_product
         effective = dict(value, product=budget.call(installed_product, value, home))
-    budget.call(composition_checked, value, source, receipt, donors['hermes'])
+    else:
+        budget.call(composition_checked, value, source, receipt, donors['hermes'])
     marker = {'schema': SCHEMA, 'state': 'INSTALLED_TEMPLATE_INCOMPLETE',
               'input_sha256': input_hash, 'source_receipt_sha256': digest(budget.call(owned_file, receipt_path)),
               'home': str(home), 'source': str(source), 'runtime_ready': False,
@@ -709,11 +714,16 @@ def finish_install(value, input_hash, home, donors, source, receipt, receipt_pat
                                for name in ('config.yaml', 'SOUL.md', 'FRIDAY-PROFILE.json')}
     marker['plugin_files'] = {name: sha for name, sha in value['project_files'].items()
                               if name.startswith('plugins/friday_rework/')}
-    from scripts.a0_prepare import service_required, service_receipt_checked
+    from scripts.a0_prepare import service_required, install_service, service_receipt_checked
     if service_required(effective):
+        # systemctl --user cannot authenticate to the user manager's private
+        # socket from the native PID namespace; registration is host-scoped.
+        service_receipt = home / 'preparation/a0-service.receipt.json'
+        if not service_receipt.exists() and not service_receipt.is_symlink():
+            budget.call(install_service, effective, home, budget, staged=True)
         budget.call(service_receipt_checked, effective, home, original_attempt=claim)
         marker['a0_service_receipt_sha256'] = digest(budget.call(
-            owned_file, home / 'preparation/a0-service.receipt.json', private=True))
+            owned_file, service_receipt, private=True))
     if 'worker_install' in value:
         marker['worker_files'] = {str(p.relative_to(home)): digest(budget.call(owned_file, p, private=True))
                                   for p in sorted((home / 'workers').rglob('*')) if p.is_file()}
@@ -1355,6 +1365,10 @@ def inspect(value, input_hash, *, marker_override=None):
     require(digest(owned_file(receipt_path)) == marker.get('source_receipt_sha256'),
             'source_receipt_changed')
     composition_checked(value, home / 'hermes-agent', read_json(receipt_path), donors['hermes'])
+    import plugins  # bind the ROOT namespace package before the source path is added
+    installed_source = str(home / 'hermes-agent')
+    if installed_source not in sys.path:
+        sys.path.append(installed_source)
     profile_files = marker.get('profile_files')
     require(isinstance(profile_files, dict)
             and set(profile_files) == {'config.yaml', 'SOUL.md', 'FRIDAY-PROFILE.json'},
@@ -4992,8 +5006,8 @@ def main():
             from scripts.friday_ordinary_install import rollback
             result = rollback(value,budget)
         elif args.phase == 'start-telegram':
-            from scripts.friday_ordinary_install import start
-            result = start(value,args.input,sha,budget)
+            from scripts.friday_ordinary_install import start as ordinary_start
+            result = ordinary_start(value,args.input,sha,budget)
         elif args.phase == 'repair-summary-visible':
             result = repair_native_bootstrap(value,args.input,clock=runtime_clock,summary_visible=True)
         elif args.phase == 'repair-summary-completion':
