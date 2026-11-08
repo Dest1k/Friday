@@ -8,6 +8,7 @@ blocked for exact-owner reconciliation; there is no automatic resume.
 """
 from contextlib import contextmanager
 import copy
+import sys
 import hashlib
 import json
 import os
@@ -160,7 +161,9 @@ class InitialProbe:
         self.current()
 
     def left(self):
-        self.current()
+        # Clock for bounded reads and polls. Custody stays at current(), which
+        # brackets every effect; wiring it here made each metadata block pay a
+        # full install inspection.
         return self.budget.check(reserve=25)
 
     def current(self):
@@ -194,8 +197,10 @@ class InitialProbe:
         workspace = Path(self.identity['workspace_reference'])
         workspace.mkdir(mode=0o700)
         self.m.private(workspace, directory=True)
+        sys.stderr.write('A0_PROBE_STEP:prepare_route\n'); sys.stderr.flush()
         self.m.prepare_route(self.identity, self.acceptance, self.c['a0'],
                              retain=self.retain_route, budget=self.left)
+        sys.stderr.write('A0_PROBE_STEP:current_network\n'); sys.stderr.flush()
         network = self.m.current_network(self.identity, self.acceptance,
             owner_slot=self.c['a0']['owner_slot'], launcher_sha256=self.c['a0']['launcher']['sha256'],
             docker_sha256=self.c['a0']['docker']['sha256'], deployment=self.c['a0']['deployment'],
@@ -209,8 +214,10 @@ class InitialProbe:
             original_budget_seconds=identity['budget_seconds'], git_metadata=a['git_metadata'],
             network=network, deployment=a['deployment'], web=a['web'], association_binding=identity,
             accepted_monotonic_ns=self.acceptance['accepted_monotonic_ns'], boot_id=self.acceptance['boot_id'])
+        sys.stderr.write('A0_PROBE_STEP:write_plan\n'); sys.stderr.flush()
         self.m.write_json(self.plan_path, self.plan)
         self.retain(phase='START_PENDING', plan=pin(self.plan_path))
+        sys.stderr.write('A0_PROBE_STEP:runtime_init\n'); sys.stderr.flush()
         self.runtime = self.m.Runtime(self.plan, budget=self.left)
         def before_ui(usr):
             from .adapters.a0_config import prepare_keys, prepare_web_keys
@@ -227,9 +234,11 @@ class InitialProbe:
             self.current()
         self.track_runtime(self.runtime)
         self.start_attempted = True
+        sys.stderr.write('A0_PROBE_STEP:runtime_start\n'); sys.stderr.flush()
         self.runtime.start(self.plan_path, self.m.sha(self.plan_path),
                            before_ui=before_ui, on_created=on_created)
         self.current()
+        sys.stderr.write('A0_PROBE_STEP:wait_ready\n'); sys.stderr.flush()
         self.wait_ready()
         self.retain(phase='OWNED_PROBE_RUNNING', created=self.runtime.receipt())
         return pin(self.plan_path)
@@ -298,6 +307,9 @@ class InitialProbe:
                     if obj['State'].get('Status', 'created') not in ('created', 'running'):
                         raise HostUnavailable('a0_bootstrap_native_start_terminal')
                     reply = {'http': None, 'status': 'NOT_READY'}
+            if _ % 50 == 0:
+                sys.stderr.write('A0_WAIT_READY:iter=' + str(_) + ':' + str(reply)[:120] + '\n')
+                sys.stderr.flush()
             self.current()
             if (set(reply) == {'http', 'gitinfo_present', 'native_error_present'}
                     and reply['http'] == 200 and reply['gitinfo_present'] is True
@@ -381,10 +393,15 @@ class InitialProbe:
 def own_probe(probe):
     try:
         yield probe.start()
-    except BaseException:
+    except BaseException as original:
+        # Keep the original cause observable; custody stop must not mask it.
+        sys.stderr.write('A0_PROBE_ORIGINAL:' + type(original).__name__ + ':' + str(original)[:200] + '\n')
+        sys.stderr.flush()
         if probe.claimed:
-            probe.stop()
-            probe.retain(phase='FAILED_STOPPED_NO_REPLAY')
+            try:
+                probe.stop()
+            finally:
+                probe.retain(phase='FAILED_STOPPED_NO_REPLAY')
         raise
     else:
         probe.stop()

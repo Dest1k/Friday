@@ -811,7 +811,9 @@ def prepare_route(association, acceptance, native, *, retain, budget):
         n['id']=cid
         xs=launcher['exact_json'](Runtime._command([str(DOCKER),'--host',SOCKET,'network','inspect',cid],min(5,budget())))
         require(isinstance(xs,list) and len(xs)==1, 'route_bridge_submission_unknown')
+        __import__('sys').stderr.write('A0_STEP:network_checked_and_guard\n'); __import__('sys').stderr.flush()
         network_checked(n,xs[0]);launcher['observe_guard'](n,budget=budget)
+        __import__('sys').stderr.write('A0_STEP:route_network_retained\n'); __import__('sys').stderr.flush()
         route['network']=n;route['pending']=None;retain(route);budget()
         return route
 
@@ -1379,12 +1381,12 @@ class Runtime:
         # Daemon start is deliberately outside this wrapper; current CONTROL
         # must first authorize and inspect the existing dedicated daemon.
         with self.locked():
-            reviewed = private(plan_path)
+            __import__('sys').stderr.write('A0_STEP:read_plan\n'); __import__('sys').stderr.flush(); reviewed = private(plan_path)
             require(sha(reviewed) == plan_file_sha
                     and json.loads(reviewed.read_text()) == self.p, 'reviewed_plan_changed')
             validate(self.p); remaining(self.p)
             require(not self.directory.exists(), 'prior_or_uncertain_attempt_blocks_restart')
-            daemon = self.runner(['/usr/bin/systemctl', '--user', 'show', DAEMON,
+            __import__('sys').stderr.write('A0_STEP:daemon_show\n'); __import__('sys').stderr.flush(); daemon = self.runner(['/usr/bin/systemctl', '--user', 'show', DAEMON,
                                   '--property=ActiveState,DelegateSubgroup,MemoryMax,TasksMax,CPUQuotaPerSecUSec,Restart,KillMode,SendSIGKILL,DropInPaths'], 5)
             fields = dict(x.split('=', 1) for x in daemon.splitlines())
             require(fields == {'ActiveState': 'active', 'DelegateSubgroup': 'dockerd',
@@ -1392,33 +1394,33 @@ class Runtime:
                                'CPUQuotaPerSecUSec': '8s', 'Restart': 'no',
                                'KillMode': 'control-group', 'SendSIGKILL': 'yes',
                                'DropInPaths': ''}, 'dedicated_daemon_not_ready')
-            info = json.loads(self.docker('info', '--format={{json .}}'))
+            __import__('sys').stderr.write('A0_STEP:docker_info\n'); __import__('sys').stderr.flush(); info = json.loads(self.docker('info', '--format={{json .}}'))
             require(info.get('CgroupVersion') == '2' and info.get('CgroupDriver') == 'systemd'
                     and 'name=rootless' in info.get('SecurityOptions', [])
                     and info.get('ServerVersion') == '29.8.2', 'native_docker_boundary_unsupported')
             require(all(info.get(k) is True for k in ['MemoryLimit', 'SwapLimit', 'CpuCfsPeriod', 'CpuCfsQuota', 'PidsLimit']),
                     'native_docker_resource_limits_unsupported')
-            require(not self.docker('ps', '-q').strip(), 'active_container_blocks_admission')
+            __import__('sys').stderr.write('A0_STEP:ps_empty\n'); __import__('sys').stderr.flush(); require(not self.docker('ps', '-q').strip(), 'active_container_blocks_admission')
             # Any prior native object with this exact name blocks replacement.
             require(not self.docker('ps', '-aq', '--filter', 'name=^/' + self.p['container_name'] + '$').strip(),
                     'existing_container_blocks_admission')
-            self.check_network()
+            __import__('sys').stderr.write('A0_STEP:check_network\n'); __import__('sys').stderr.flush(); self.check_network()
             self.directory.mkdir(mode=0o700)
             write_json(self.directory / 'attempt.json', {'plan_sha256': digest(self.p), 'phase': 'CREATE_UNKNOWN'})
             if self.p['mode'] == 'runtime':
-                materialize(self.directory / 'usr', self.p.get('deployment'), self.p.get('web'))
+                __import__('sys').stderr.write('A0_STEP:materialize\n'); __import__('sys').stderr.flush(); materialize(self.directory / 'usr', self.p.get('deployment'), self.p.get('web'))
                 if before_ui is not None:
                     before_ui(self.directory / 'usr')
                     remaining(self.p)
             try:
                 self.create_attempted = True
-                cid = self.runner(create_argv(self.p), 10).strip()
+                __import__('sys').stderr.write('A0_STEP:create\n'); __import__('sys').stderr.flush(); cid = self.runner(create_argv(self.p), 10).strip()
                 require(re.fullmatch(r'[0-9a-f]{64}', cid), 'create_outcome_unknown')
                 self.known = {'plan_sha256': digest(self.p), 'container_id': cid,
                               'invocation_id': '', 'observations': []}
                 if on_created is not None:
                     on_created(self.known)
-                self.inspect(self.known)
+                __import__('sys').stderr.write('A0_STEP:inspect_container\n'); __import__('sys').stderr.flush(); self.inspect(self.known)
                 write_json(self.receipt_path, self.known)
                 self.runner(self.unit_argv(cid, plan_path, plan_file_sha), 10)
                 obs = self.supervisor.observe(self.association(self.known))
