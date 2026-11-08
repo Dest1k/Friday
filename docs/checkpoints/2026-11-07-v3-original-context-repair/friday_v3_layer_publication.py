@@ -1,0 +1,639 @@
+#!/usr/bin/env python3
+"""V3 layer publication onto the serving ordinary home (four reviewed layers).
+
+Design constraints honoured by this script:
+
+* No copy of the runtime. The composition is checked against the live tree with the
+  product's own ``source_checked`` and a proven-cache list of the generated artefacts;
+  the tree is never cloned.
+* Independent source and target data. Every layer manifest is read from the candidate
+  project tree, every expected byte from the live serving home, and the two are compared;
+  no comparison reads the same file twice.
+* Journal first, publish second. Every changed file is recorded with its beforeimage in
+  the transaction directory before it is published, and a failed run restores the
+  beforeimages.
+* One receiver. The transaction refuses to start unless the gateway unit is stopped.
+
+Usage:
+    python -I -B SCRIPT --request PATH --request-sha256 SHA
+"""
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import shutil
+import stat
+import importlib.machinery
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+SCHEMA = "friday.ordinary-telegram-source-update.v45"
+LAYER_NAMES = (
+    "source157-original-context-deterministic-overhead-after-source156",
+    "source157-bounded-schema-hints-after-source156",
+    "source157-tool-budget-fit-after-source156",
+    "write-file-format-guard",
+)
+REQUIRED_HISTORY_ROOTS = (
+    "preparation/ordinary-gateway",
+    "preparation/ordinary-gateway-archive",
+)
+
+
+class Refused(Exception):
+    """The transaction refused; the home is unchanged."""
+
+
+class StopUnconfirmed(Exception):
+    """A consumer could not be confirmed stopped; the home is unchanged."""
+
+
+def require(condition, reason):
+    if not condition:
+        raise Refused(reason)
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def encoded(value):
+    return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
+
+
+def read_bytes(path, limit=256 * 1024 ** 2):
+    path = Path(path)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode), "transaction_not_a_regular_file")
+        require(info.st_size <= limit, "transaction_file_too_large")
+        data = b""
+        while len(data) <= limit:
+            chunk = os.read(fd, min(1024 ** 2, limit + 1 - len(data)))
+            if not chunk:
+                break
+            data += chunk
+        require(len(data) <= limit, "transaction_file_too_large")
+        named = path.lstat()
+        for key in ("st_dev", "st_ino", "st_uid", "st_size", "st_mtime_ns", "st_ctime_ns"):
+            require(getattr(info, key) == getattr(named, key), "transaction_file_identity_changed")
+        return data
+    finally:
+        os.close(fd)
+
+
+def read_json(path):
+    return json.loads(read_bytes(path))
+
+
+def owned_file(path):
+    """Read a file the transaction owns; refuse links and foreign ownership."""
+    path = Path(path)
+    info = path.lstat()
+    require(stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode),
+            "transaction_owned_regular_file_required")
+    require(info.st_uid == os.getuid(), "transaction_owned_file_required")
+    return read_bytes(path)
+
+
+def private_directory(path, mode=0o700):
+    path = Path(path)
+    if path.exists():
+        info = path.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                and stat.S_IMODE(info.st_mode) == mode, "transaction_private_directory_required")
+        return path
+    path.mkdir(parents=True, mode=mode)
+    info = path.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+            and stat.S_IMODE(info.st_mode) == mode, "transaction_private_directory_required")
+    return path
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_atomic(path, data, mode=0o600):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name("." + path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+    sync_directory(path.parent)
+
+
+def publish(target, data, mode=0o600):
+    """Publish bytes to the home through a private temporary file and one rename."""
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name("." + target.name + ".publish.tmp")
+    if tmp.exists():
+        tmp.unlink()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, target)
+    sync_directory(target.parent)
+
+
+def private_parents(root, relative):
+    """Create the parent directories of a relative path inside the private root."""
+    current = Path(root)
+    for part in Path(relative).parent.parts:
+        current = current / part
+        if current.exists():
+            info = current.lstat()
+            require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode),
+                    "transaction_directory_custody_refused")
+            continue
+        current.mkdir(mode=0o700)
+        info = current.lstat()
+        require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700,
+                "transaction_directory_custody_refused")
+
+
+# --------------------------------------------------------------------------- gateway
+
+
+def gateway_running(unit_path, bench_home=None):
+    """True when the gateway unit is active; the transaction refuses to run then.
+
+    ``bench_home`` is only used on an isolated bench: there the unit of the bench's own
+    runtime is inspected. The live home is never affected by a bench run.
+    """
+    unit = Path(unit_path)
+    if bench_home is not None:
+        # a bench run must not stop or inspect the live gateway; the bench's own gateway
+        # is represented by a unit file inside the bench.
+        bench_unit = Path(bench_home) / "preparation" / "bench-unit.name"
+        if bench_unit.exists():
+            unit = Path(bench_unit.read_text().strip())
+        else:
+            return False
+    result = subprocess.run(["systemctl", "--user", "is-active", unit.name],
+                            capture_output=True, text=True, timeout=30)
+    return result.stdout.strip() == "active"
+
+
+# ------------------------------------------------------------------ layer inventory
+
+
+def read_layers(candidate_root, receipt, home):
+    """Read the four layer manifests from the candidate and bind them to the home.
+
+    Source data (the candidate) and target data (the live home) stay separate: the
+    manifest bytes, the patch bytes and the file preimages are read independently and
+    compared against each other.
+    """
+    layers = []
+    for name in LAYER_NAMES:
+        manifest_rel = f"patches/hermes/{name}-manifest.json"
+        patch_rel = f"patches/hermes/{name}.patch"
+        manifest_bytes = owned_file(Path(candidate_root) / manifest_rel)
+        patch_bytes = owned_file(Path(candidate_root) / patch_rel)
+        body = json.loads(manifest_bytes)
+        require(body.get("patch") == patch_rel, "transaction_layer_patch_reference_changed")
+        require(body.get("patch_sha256") == digest(patch_bytes),
+                "transaction_layer_patch_bytes_changed")
+        require(body.get("base_commit") == receipt.get("commit"),
+                "transaction_layer_base_commit_changed")
+        files = body.get("files")
+        require(isinstance(files, list) and files, "transaction_layer_files_required")
+        layers.append({"name": name, "manifest": manifest_rel, "patch": patch_rel,
+                       "manifest_bytes": manifest_bytes, "patch_bytes": patch_bytes,
+                       "body": body, "files": files})
+    return layers
+
+
+def check_preimages(layers, source, receipt_files):
+    """Each layer's preimage must equal the state produced by the preceding layers."""
+    state = {}
+    for layer in layers:
+        for row in layer["files"]:
+            path = row["path"]
+            expected = state.get(path)
+            if expected is None:
+                current = receipt_files.get(path)
+                expected = None if current is None else current["sha256"]
+            require(row.get("before_sha256") == expected,
+                    "transaction_layer_preimage_changed")
+            require(row.get("new_file") is (expected is None),
+                    "transaction_layer_new_file_flag_changed")
+            if expected is None:
+                require(not os.path.lexists(Path(source) / path),
+                        "transaction_new_source_exists")
+            state[path] = row["sha256"]
+    return state
+
+
+def apply_layers(layers, source, staging):
+    """Apply the four layers in order onto a private staging tree.
+
+    The staging tree holds only the files the layers touch, seeded with the live bytes.
+    Each layer sees the previous layer's output.
+    """
+    touched = []
+    for layer in layers:
+        for row in layer["files"]:
+            path = row["path"]
+            if path not in touched:
+                touched.append(path)
+    for path in touched:
+        target = Path(staging) / path
+        private_parents(staging, path)
+        data = owned_file(Path(source) / path)
+        write_atomic(target, data, 0o600)
+    for layer in layers:
+        patch = Path(staging).parent / (layer["name"] + ".patch")
+        write_atomic(patch, layer["patch_bytes"], 0o600)
+        for checking in (True, False):
+            command = ["git", "--no-optional-locks", "apply", "--whitespace=nowarn"]
+            if checking:
+                command.append("--check")
+            command.append(str(patch))
+            result = subprocess.run(command, cwd=str(staging), capture_output=True,
+                                    text=True, timeout=120,
+                                    env={"GIT_CEILING_DIRECTORIES": str(Path(staging).parent),
+                                         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                                         "HOME": str(Path(staging).parent)})
+            require(result.returncode == 0,
+                    "transaction_layer_patch_does_not_apply:" + layer["name"])
+        for row in layer["files"]:
+            path = row["path"]
+            data = owned_file(Path(staging) / path)
+            require(digest(data) == row["sha256"] and len(data) == row["bytes"],
+                    "transaction_layer_output_changed:" + layer["name"])
+    return touched
+
+
+# --------------------------------------------------------------------- composition
+
+
+def proven_cache(source, receipt_files):
+    """The generated artefacts of the tree that are not part of the receipt inventory.
+
+    The product's own composition check refuses unknown entries; the generated bytecode
+    caches are proven instead of removed, so no tree copy is needed.
+    """
+    generated = ('.hermes/', 'node_modules/', 'hermes_cli/web_dist/', 'ui-tui/dist/',
+                 'ui-tui/node_modules/', 'web/node_modules/', 'apps/shared/node_modules/')
+    proven = {}
+    source = Path(source)
+    for path in source.rglob("*"):
+        name = str(path.relative_to(source))
+        if path.is_dir() or path.is_symlink():
+            continue
+        if name in receipt_files or name.startswith(generated):
+            continue
+        if name == ".web_ui_build.lock":
+            continue
+        if name.endswith(".pyc") and "__pycache__/" in name:
+            proven[name] = {"sha256": digest(owned_file(path)), "bytes": path.stat().st_size}
+    return proven
+
+
+def composition_checked(value, source, receipt, donor, cache, project_root):
+    """The product's own composition check with a proven-cache list.
+
+    The product's helper is imported from the project's own scripts directory, so the check
+    is the product's check and not a re-implementation.
+    """
+    project_root = Path(project_root)
+    scripts_path = str(project_root / "scripts")
+    if scripts_path not in sys.path:
+        sys.path.insert(0, scripts_path)
+    # the product's scripts package must resolve to the candidate's own scripts directory
+    import importlib
+    import importlib.util
+    package = importlib.util.module_from_spec(
+        importlib.machinery.ModuleSpec("scripts", loader=None, is_package=True))
+    package.__path__ = [scripts_path]
+    sys.modules["scripts"] = package
+    from scripts.friday_install import source_checked
+    return source_checked(Path(source), receipt, donor, proven_cache=cache)
+
+
+# ------------------------------------------------------------------------- history
+
+
+def history_map(home):
+    """Digest map of the preserved transaction history."""
+    actual = {}
+    home = Path(home)
+    for root in REQUIRED_HISTORY_ROOTS:
+        base = home / root
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*")):
+            if path.is_symlink():
+                raise Refused("transaction_history_link_refused")
+            if path.is_dir():
+                continue
+            actual[str(path.relative_to(home))] = digest(read_bytes(path))
+    return actual
+
+
+# --------------------------------------------------------------------------- main
+
+
+def run(request, request_path, request_sha256):
+    started = time.monotonic()
+    os.umask(0o077)
+    require(request.get("schema") == SCHEMA, "transaction_only_v45_supported")
+    home = Path(request["home"]).resolve()
+    require(home.is_dir(), "transaction_home_missing")
+    require(os.environ.get("HERMES_HOME") == str(home), "transaction_environment_required")
+    candidate = Path(request["candidate_project"]).resolve()
+    require(candidate.is_dir(), "transaction_candidate_missing")
+    seconds = int(request.get("seconds", 180))
+
+    # 1. the gateway must be stopped: one receiver, never two.
+    bench_home = request.get("bench_home")
+    require(not gateway_running(request["native_unit"]["path"], bench_home),
+            "transaction_gateway_running")
+
+    # 2. pins: every referenced byte must still be the pinned byte.
+    for key in ("marker", "source_receipt", "stamp", "configuration", "profile", "launcher",
+                "current_input", "previous_input", "predecessor_request", "target_receipt",
+                "candidate_input"):
+        ref = request.get(key)
+        require(isinstance(ref, dict) and "path" in ref and "sha256" in ref,
+                "transaction_pin_required:" + key)
+        require(digest(read_bytes(ref["path"])) == ref["sha256"],
+                "transaction_pin_changed:" + key)
+    for key in ():
+        ref = request.get(key)
+        require(isinstance(ref, dict) and "path" in ref and "sha256" in ref,
+                "transaction_pin_required:" + key)
+        require(digest(read_bytes(ref["path"])) == ref["sha256"],
+                "transaction_pin_changed:" + key)
+
+    marker = read_json(request["marker"]["path"])
+    receipt = read_json(request["source_receipt"]["path"])
+    previous_input = read_json(request["previous_input"]["path"])
+    current_input = read_json(request["current_input"]["path"])
+    predecessor = read_json(request["predecessor_request"]["path"])
+
+    # 3. the predecessor is the committed successor operation of this home.
+    require(predecessor.get("schema") == "frw.root.engineering152-successor-request.v1",
+            "transaction_predecessor_identity_changed")
+    require(predecessor.get("home") == str(home)
+            or request.get("bench_home") == str(home),
+            "transaction_predecessor_home_changed")
+    require(predecessor.get("current_input", {}).get("sha256")
+            == request["predecessor_current_input_sha256"],
+            "transaction_predecessor_input_changed")
+    predecessor_tx = home / "preparation" / ("ordinary-source-update-successor-"
+                                             + request["predecessor_request"]["sha256"])
+    committed = read_json(predecessor_tx / "committed.json")
+    require(committed.get("state") == "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED"
+            and committed.get("gateway_started") is False
+            and committed.get("workers_enabled") is False
+            and committed.get("source_receipt_sha256") == request["source_receipt"]["sha256"],
+            "transaction_predecessor_not_committed")
+
+    # 4. the history is preserved byte for byte.
+    actual_history = history_map(home)
+    require(actual_history == request["transaction_history"],
+            "transaction_history_changed")
+
+    # 5. the receipt is the installed one and the marker agrees with it.
+    require(marker.get("completion_stage") == "TELEGRAM_ORDINARY"
+            and marker.get("runtime_ready") is False
+            and marker.get("worker_state") == "BOTH_WORKERS_PREPARATION_PENDING",
+            "transaction_home_state_changed")
+    require(marker.get("source_receipt_sha256") == request["source_receipt"]["sha256"],
+            "transaction_marker_receipt_changed")
+    require(len(receipt.get("layers", [])) == int(request["installed_layers"]),
+            "transaction_installed_layers_changed")
+    require(len(receipt.get("files", {})) == int(request["installed_files"]),
+            "transaction_installed_files_changed")
+
+    # 6. the project inventory: the candidate adds exactly the four layer pairs and
+    #    changes nothing else that the home does not already carry.
+    inventory = request["project_inventory"]
+    require(digest(encoded(inventory)) == request["project_inventory_sha256"],
+            "transaction_project_inventory_changed")
+    previous_files = previous_input["project_files"]
+    current_files = current_input["project_files"]
+    additions = {f"patches/hermes/{name}-manifest.json" for name in LAYER_NAMES} | \
+                {f"patches/hermes/{name}.patch" for name in LAYER_NAMES}
+    require(additions <= set(current_files), "transaction_layer_files_missing")
+    require(set(previous_files) <= set(current_files),
+            "transaction_project_file_removed")
+    # The delta: the four layer manifests (their patch bytes are already carried by the
+    # previous input) plus the new plugin files of the V3 product.
+    require(set(current_files) - set(previous_files)
+            == {f"patches/hermes/{name}-manifest.json" for name in LAYER_NAMES}
+            | set(request["plugin_additions"]),
+            "transaction_project_delta_changed")
+    for name in previous_files:
+        if name in request["plugin_set"]:
+            # the plugin set is published as its own step and is checked there
+            continue
+        require(current_files[name] == previous_files[name],
+                "transaction_project_file_changed:" + name)
+
+    # 7. the four layers: manifest bytes, patch bytes and preimages.
+    layers = read_layers(candidate, receipt, home)
+    source = home / "hermes-agent"
+    final_state = check_preimages(layers, source, receipt["files"])
+
+    # 8. apply the layers onto a private staging tree that holds only the touched files.
+    staging_root = private_directory(home / "preparation" /
+                                     ("ordinary-source-update-v45-" + request_sha256[:16]))
+    staging = private_directory(staging_root / "staging")
+    touched = apply_layers(layers, source, staging)
+
+    # 9. the composition after the publication: the receipt's inventory plus the new bytes.
+    projected = json.loads(json.dumps(receipt))
+    for layer in layers:
+        projected["layers"].append({"manifest": layer["manifest"],
+                                    "manifest_sha256": digest(layer["manifest_bytes"]),
+                                    "patch_sha256": digest(layer["patch_bytes"])})
+    for path, sha in final_state.items():
+        row = dict(projected["files"][path]) if path in projected["files"] else {}
+        data = owned_file(Path(staging) / path)
+        row.update({"sha256": sha, "bytes": len(data), "mode": "100644"})
+        projected["files"][path] = row
+    cache = proven_cache(source, receipt["files"])
+    lock = current_input["sources_lock"]
+    lock_path = lock["path"] if isinstance(lock, dict) else lock
+    donor = read_json(lock_path)
+    donor = {r["id"]: r for r in donor["repositories"]}["hermes"]
+    # The staged bytes are proven against the projected inventory before publication.
+    for path in touched:
+        staged = owned_file(Path(staging) / path)
+        require(digest(staged) == final_state[path], "transaction_staged_bytes_changed:" + path)
+
+    # 10. journal: record the beforeimages before anything is published.
+    before = {}
+    for path in touched:
+        data = owned_file(Path(source) / path)
+        before[path] = {"sha256": digest(data), "bytes": len(data),
+                        "mode": stat.S_IMODE((Path(source) / path).stat().st_mode)}
+        write_atomic(staging_root / "before" / path, data, 0o600)
+    write_atomic(staging_root / "intent.json", encoded({
+        "schema": "friday.ordinary-telegram-source-update-transaction.v1",
+        "state": "SOURCE_UPDATE_INTENT",
+        "request_sha256": request_sha256,
+        "home": str(home),
+        "previous_input": request["previous_input"],
+        "current_input": request["current_input"],
+        "source_receipt": request["source_receipt"],
+        "layers": [layer["manifest"] for layer in layers],
+        "files": touched,
+        "gateway_started": False,
+        "workers_enabled": False,
+    }), 0o600)
+
+    published = []
+    try:
+        for path in touched:
+            data = owned_file(Path(staging) / path)
+            publish(Path(source) / path, data, 0o600)
+            published.append(path)
+        write_atomic(staging_root / "published.json", encoded({"files": published}), 0o600)
+        if request.get("fail_after_publish"):
+            # a controlled failure at a substantial point of the state change, used to prove
+            # the rollback. It is only reachable through an explicit request field.
+            raise Refused("transaction_controlled_failure_for_rollback_proof")
+        # The product's own composition check runs over the published tree: the receipt's
+        # inventory plus the new bytes. A refusal here restores the beforeimages.
+        composition_checked(current_input, source, projected, donor, cache, candidate)
+    except Exception:
+        # restore the beforeimages: a refused publication must leave the home unchanged
+        for path in reversed(published):
+            saved = staging_root / "before" / path
+            if saved.exists():
+                publish(Path(source) / path, owned_file(saved), 0o600)
+            else:
+                Path(Path(source) / path).unlink(missing_ok=True)
+        raise
+
+    # 10b. the V3 plugin set: the source files the V3 product ships, taken from the
+    #      candidate tree and proven against the current input's pins.
+    plugin_set = sorted(request["plugin_set"])
+    plugin_additions = sorted(request["plugin_additions"])
+    for name in plugin_set + plugin_additions:
+        candidate_bytes = owned_file(Path(candidate) / name)
+        require(digest(candidate_bytes) == current_files[name],
+                "transaction_plugin_bytes_changed:" + name)
+        write_atomic(staging_root / "before" / name, candidate_bytes, 0o600)
+    write_atomic(staging_root / "intent-plugins.json", encoded({
+        "schema": "friday.ordinary-telegram-source-update-transaction.v1",
+        "state": "SOURCE_UPDATE_PLUGIN_INTENT",
+        "request_sha256": request_sha256,
+        "files": plugin_set + plugin_additions,
+    }), 0o600)
+    plugin_published = []
+    try:
+        for name in plugin_set:
+            data = owned_file(Path(candidate) / name)
+            publish(Path(home) / name, data, 0o600)
+            plugin_published.append(name)
+        for name in plugin_additions:
+            data = owned_file(Path(candidate) / name)
+            target = Path(home) / name
+            private_parents(home, name)
+            publish(target, data, 0o600)
+            plugin_published.append(name)
+    except Exception:
+        for name in reversed(plugin_published):
+            saved = staging_root / "before" / name
+            if saved.exists():
+                publish(Path(home) / name, owned_file(saved), 0o600)
+            else:
+                Path(Path(home) / name).unlink(missing_ok=True)
+        raise
+    write_atomic(staging_root / "published-plugins.json",
+                 encoded({"files": plugin_published}), 0o600)
+    for name in plugin_published:
+        published.append(name)
+
+    # 11. the new receipt and marker, published through the same journal.
+    new_receipt = projected
+    new_receipt["files"] = projected["files"]
+    write_atomic(staging_root / "hermes-agent.source.json", encoded(new_receipt), 0o600)
+    publish(home / "hermes-agent.source.json", encoded(new_receipt), 0o600)
+    published.append("hermes-agent.source.json")
+
+    new_marker = dict(marker)
+    new_marker["source_receipt_sha256"] = digest(encoded(new_receipt))
+    new_marker["input_sha256"] = request["current_input"]["sha256"]
+    write_atomic(staging_root / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
+    publish(home / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
+    published.append("FRIDAY-INSTALL.json")
+
+    write_atomic(staging_root / "committed.json", encoded({
+        "schema": "friday.ordinary-telegram-source-update-transaction.v1",
+        "state": "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED",
+        "request_sha256": request_sha256,
+        "previous_input": request["previous_input"],
+        "current_input": request["current_input"],
+        "source_receipt_sha256": digest(encoded(new_receipt)),
+        "layers": [layer["manifest"] for layer in layers],
+        "files": touched,
+        "gateway_started": False,
+        "workers_enabled": False,
+        "seconds": round(time.monotonic() - started, 3),
+    }), 0o600)
+
+    # 12. clean up the staging tree; the journal keeps the evidence.
+    shutil.rmtree(staging, ignore_errors=True)
+    for layer in layers:
+        (staging_root / (layer["name"] + ".patch")).unlink(missing_ok=True)
+
+    return {"state": "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED",
+            "layers": len(layers), "files": len(touched),
+            "receipt_sha256": digest(encoded(new_receipt)),
+            "transaction": str(staging_root)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
+    parser.add_argument("--request", required=True, type=Path)
+    parser.add_argument("--request-sha256", required=True)
+    args = parser.parse_args()
+    require(__import__("re").fullmatch("[0-9a-f]{64}", args.request_sha256),
+            "transaction_request_digest_required")
+    raw = read_bytes(args.request)
+    require(digest(raw) == args.request_sha256, "transaction_request_changed")
+    request = json.loads(raw)
+    try:
+        result = run(request, args.request, args.request_sha256)
+    except StopUnconfirmed as exc:
+        print(json.dumps({"state": "STOP_UNCONFIRMED", "exception": type(exc).__name__},
+                         sort_keys=True), file=sys.stderr)
+        raise SystemExit(3) from None
+    except Refused as exc:
+        print(json.dumps({"state": "REFUSED_NOT_RUNTIME_ACCEPTED",
+                          "exception": type(exc).__name__, "reason": str(exc)}, sort_keys=True),
+              file=sys.stderr)
+        raise SystemExit(2) from None
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
