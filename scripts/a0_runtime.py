@@ -1058,11 +1058,13 @@ def create_argv(p):
                    '--workdir=/a0', '--entrypoint=/bin/bash', p['image'], '-ceu', startup_script(p)]
 
 
-def container_checked(p, obj, cid=None, *, stop_owned=False):
+def container_checked(p, obj, cid=None, *, stop_owned=False, pending_endpoint=False):
     """Validate exact owner/ID/exposure; resource drift cannot block owned stop.
 
     Launch/observation still require exact resource limits. Only the checked
     same container stop path may omit mutable resource admission limits.
+    A created container has no attached endpoint until start, so the caller
+    that inspects it before submission may defer only that endpoint ID.
     """
     require(isinstance(obj, dict) and re.fullmatch(r'[0-9a-f]{64}', obj.get('Id', '')),
             'invalid_container_id')
@@ -1088,8 +1090,15 @@ def container_checked(p, obj, cid=None, *, stop_owned=False):
     if p['network'] != 'none' and not stop_owned:
         networks = obj.get('NetworkSettings', {}).get('Networks')
         value = p['network']
-        require(isinstance(networks, dict) and set(networks) == {value['name']}
-                and networks[value['name']].get('NetworkID') == value['id'], 'container_network_changed')
+        require(isinstance(networks, dict) and set(networks) == {value['name']},
+                'container_network_changed')
+        endpoint_id = networks[value['name']].get('NetworkID')
+        if pending_endpoint:
+            # Docker attaches the endpoint when the container starts.
+            require(obj.get('State', {}).get('Status') == 'created'
+                    and endpoint_id in ('', value['id']), 'container_network_changed')
+        else:
+            require(endpoint_id == value['id'], 'container_network_changed')
         # No injected proxy, DNS override or implicit cloud transport.
         env = obj['Config'].get('Env')
         require(isinstance(env, list) and all(isinstance(x, str) for x in env)
@@ -1261,10 +1270,11 @@ class Runtime:
             a['native'] = {'invocation_id': r['invocation_id'], 'worker_reference': r['container_id']}
         return a
 
-    def inspect(self, r, *, stop_owned=False, timeout=10):
+    def inspect(self, r, *, stop_owned=False, timeout=10, pending_endpoint=False):
         xs = json.loads(self.docker('inspect', r['container_id'], timeout=timeout))
         require(isinstance(xs, list) and len(xs) == 1, 'container_observation_unknown')
-        obj = container_checked(self.p, xs[0], r['container_id'], stop_owned=stop_owned)
+        obj = container_checked(self.p, xs[0], r['container_id'], stop_owned=stop_owned,
+                                pending_endpoint=pending_endpoint)
         if not stop_owned:
             self.check_network(container_id=r['container_id'])
         return obj
@@ -1420,7 +1430,7 @@ class Runtime:
                               'invocation_id': '', 'observations': []}
                 if on_created is not None:
                     on_created(self.known)
-                __import__('sys').stderr.write('A0_STEP:inspect_container\n'); __import__('sys').stderr.flush(); self.inspect(self.known)
+                __import__('sys').stderr.write('A0_STEP:inspect_container\n'); __import__('sys').stderr.flush(); self.inspect(self.known, pending_endpoint=True)
                 write_json(self.receipt_path, self.known)
                 self.runner(self.unit_argv(cid, plan_path, plan_file_sha), 10)
                 obs = self.supervisor.observe(self.association(self.known))
