@@ -192,7 +192,7 @@ def expected_rules(web=None):
         if not incoming: out += [meta('oifname', 'tap0')]
         out += [payload('ip', 'saddr' if incoming else 'daddr', '192.168.1.195' if spark else '192.168.1.78'),
                 payload('tcp', 'sport' if incoming else 'dport',
-                        {'set': [30000, 8002]} if spark else 8001),
+                        {'set': [8002, 30000]} if spark else 8001),
                 {'match': {'op': 'in', 'left': {'ct': {'key': 'state'}},
                            'right': ['established'] if incoming else ['new', 'established']}},
                 {'counter': None}, {'accept': None}]
@@ -264,7 +264,10 @@ def checked_policy(text, web=None):
                         if isinstance(right, dict) and set(right) == {'set'}:
                             values = right['set']
                             require(isinstance(values, list) and len(values) == len({canonical(v) for v in values}), 'policy_duplicate_set_value')
-                            if set(map(canonical, values)) == {'8001', '8002'}: right['set'] = [8001, 8002]
+                            # nft prints ports as numbers and sorts the anonymous
+                            # set; compare the same canonical numeric order.
+                            right['set'] = sorted(int(v) if isinstance(v, str) and v.isdecimal() else v
+                                                  for v in values)
                     normalized.append(expression)
             rules[name].append(normalized)
     require(table is not None and set(chains) == set(rules)
