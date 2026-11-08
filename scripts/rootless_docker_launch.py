@@ -148,18 +148,18 @@ def policy(web=None):
                      ' { type filter hook ' + chain + ' priority -10; policy drop; }')
     rules = {
         'input': ['meta nfproto ipv6 counter drop',
-                  'meta nfproto ipv4 meta l4proto tcp iifname "tap0" ip saddr 192.168.1.195 tcp sport 30000 ct state established counter accept',
-                  'meta nfproto ipv4 meta l4proto tcp iifname "tap0" ip saddr 192.168.1.78 tcp sport { 8001, 8002 } ct state established counter accept',
+                  'meta nfproto ipv4 meta l4proto tcp iifname "tap0" ip saddr 192.168.1.195 tcp sport { 30000, 8002 } ct state established counter accept',
+                  'meta nfproto ipv4 meta l4proto tcp iifname "tap0" ip saddr 192.168.1.78 tcp sport 8001 ct state established counter accept',
                   'counter drop'],
         'forward': ['meta nfproto ipv6 counter drop',
-                    'meta nfproto ipv4 meta l4proto tcp iifname "br-frwa0local" oifname "tap0" ip daddr 192.168.1.195 tcp dport 30000 ct state { new, established } counter accept',
-                    'meta nfproto ipv4 meta l4proto tcp iifname "br-frwa0local" oifname "tap0" ip daddr 192.168.1.78 tcp dport { 8001, 8002 } ct state { new, established } counter accept',
-                    'meta nfproto ipv4 meta l4proto tcp iifname "tap0" oifname "br-frwa0local" ip saddr 192.168.1.195 tcp sport 30000 ct state established counter accept',
-                    'meta nfproto ipv4 meta l4proto tcp iifname "tap0" oifname "br-frwa0local" ip saddr 192.168.1.78 tcp sport { 8001, 8002 } ct state established counter accept',
+                    'meta nfproto ipv4 meta l4proto tcp iifname "br-frwa0local" oifname "tap0" ip daddr 192.168.1.195 tcp dport { 30000, 8002 } ct state { new, established } counter accept',
+                    'meta nfproto ipv4 meta l4proto tcp iifname "br-frwa0local" oifname "tap0" ip daddr 192.168.1.78 tcp dport 8001 ct state { new, established } counter accept',
+                    'meta nfproto ipv4 meta l4proto tcp iifname "tap0" oifname "br-frwa0local" ip saddr 192.168.1.195 tcp sport { 30000, 8002 } ct state established counter accept',
+                    'meta nfproto ipv4 meta l4proto tcp iifname "tap0" oifname "br-frwa0local" ip saddr 192.168.1.78 tcp sport 8001 ct state established counter accept',
                     'counter drop'],
         'output': ['meta nfproto ipv6 counter drop',
-                   'meta nfproto ipv4 meta l4proto tcp oifname "tap0" ip daddr 192.168.1.195 tcp dport 30000 ct state { new, established } counter accept',
-                   'meta nfproto ipv4 meta l4proto tcp oifname "tap0" ip daddr 192.168.1.78 tcp dport { 8001, 8002 } ct state { new, established } counter accept',
+                   'meta nfproto ipv4 meta l4proto tcp oifname "tap0" ip daddr 192.168.1.195 tcp dport { 30000, 8002 } ct state { new, established } counter accept',
+                   'meta nfproto ipv4 meta l4proto tcp oifname "tap0" ip daddr 192.168.1.78 tcp dport 8001 ct state { new, established } counter accept',
                    'counter drop']}
     for chain, rs in rules.items():
         lines.extend('add rule inet frw_a0_local ' + chain + ' ' + r for r in rs)
@@ -191,7 +191,8 @@ def expected_rules(web=None):
         if bridge: out += [meta('oifname' if incoming else 'iifname', BRIDGE)]
         if not incoming: out += [meta('oifname', 'tap0')]
         out += [payload('ip', 'saddr' if incoming else 'daddr', '192.168.1.195' if spark else '192.168.1.78'),
-                payload('tcp', 'sport' if incoming else 'dport', 30000 if spark else {'set': [8001, 8002]}),
+                payload('tcp', 'sport' if incoming else 'dport',
+                        {'set': [30000, 8002]} if spark else 8001),
                 {'match': {'op': 'in', 'left': {'ct': {'key': 'state'}},
                            'right': ['established'] if incoming else ['new', 'established']}},
                 {'counter': None}, {'accept': None}]
