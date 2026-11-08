@@ -1636,7 +1636,17 @@ class Runtime:
         # Native stop is attempted once; uncertainty must not replay it.
         # Directory/attempt tombstone forbids replacement while stopping.
         if not from_stop_post:
-            self.supervisor.stop(self.association(r))
+            try:
+                self.supervisor.stop(self.association(r))
+            except Exception as exc:
+                from plugins.friday_rework.supervision import SupervisorError
+                # A transient worker unit unloads as soon as its process exits, so
+                # a stop that raced the unload is quiet only if the unit is gone.
+                if type(exc) is not SupervisorError or str(exc) != 'native_stop_unconfirmed':
+                    raise
+                observed = self.supervisor.observe(self.association(r))
+                if not (observed.missing or observed.quiescent):
+                    raise
         return result
 
     def health(self, *, auth=False):
