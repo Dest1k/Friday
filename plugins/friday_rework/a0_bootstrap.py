@@ -375,6 +375,9 @@ class InitialProbe:
             try: self.keys.remove(cessation_confirmed=True)
             except BaseException as exc: errors.append(exc)
         if errors:
+            for error in errors:
+                sys.stderr.write('A0_STOP_ERROR:' + type(error).__name__ + ':' + str(error)[:200] + '\n')
+            sys.stderr.flush()
             try: self.retain(phase='STOP_UNCONFIRMED', settlement=None)
             except (OSError, RuntimeError): pass
             raise StopUnconfirmed('A0 initial probe exact owner cleanup unconfirmed') from errors[0]
