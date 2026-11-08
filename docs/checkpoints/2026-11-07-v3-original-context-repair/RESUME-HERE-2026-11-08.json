@@ -1,7 +1,7 @@
 {
   "schema": "friday.v3.resume.v2",
-  "at_moscow": "2026-11-08T06:41:56+03:00",
-  "state": "A0_PROBE_CAUSE_REPAIRED_REINSTALL_ATTEMPT27_RUNNING",
+  "at_moscow": "2026-11-08T08:59:19+03:00",
+  "state": "BOTH_DEPLOYMENTS_QUALIFIED_START_PENDING",
   "current_truth": {
     "objective": "FRIDAY-RELEASE-V3: работающая установленная Friday с подтверждённым обязательным охватом, регрессией и сохранностью данных; доставка подготовленного ремонта — приоритет",
     "delivery_candidate": {
@@ -94,7 +94,84 @@
       "repinned_file": "plugins/friday_rework/a0_bootstrap.py",
       "input_sha256_after_repin": "bb77b7b2a022e1429e7e86a0101418691ba9134c4e3f9a964b223704beb6eed2",
       "previous_input_backup": "/home/jericho/.cache/FRW-KIMI-INPUT-NEWHOME-20261108.json.before-a0clock",
-      "previous_home_preserved": ".runtime/friday-184-20261108.attempt26"
+      "previous_home_preserved": ".runtime/friday-184-20261108.attempt26",
+      "resolved_in": "attempt 30 log .cache/frw-qualify-184ad.log"
+    },
+    "a0_probe_established_cause_2": {
+      "attempt": 30,
+      "progress": "the clock repair worked: the log passed A0_PROBE_STEP:runtime_start and A0_STEP:create",
+      "error": "RuntimeErrorBoundary: container_network_changed at A0_STEP:inspect_container",
+      "measurement": "scratch create on a fresh bridge: NetworkSettings.Networks has the name key with NetworkID '' and SandboxID ''; HostConfig.NetworkMode is the network id",
+      "cause": "container_checked required NetworkID == network id before the container starts; Docker attaches the endpoint only at start",
+      "repair": "container_checked(pending_endpoint=True) accepts the created state with an empty NetworkID; every post-start observation keeps the strict identity check",
+      "commit": "a2b35df",
+      "evidence": "/home/jericho/.cache/FRW-A0-HOST-RECONCILE-20261108/scratch-created-inspect.json and container-3daf6959-attempt30.json"
+    },
+    "a0_probe_established_cause_3": {
+      "attempt": 31,
+      "progress": "wait_ready reached; create and pre-start inspect both pass",
+      "error": "container_network_changed from wait_ready's first observation",
+      "cause": "systemd-run submits docker start asynchronously, so the container can still be created when wait_ready inspects it",
+      "repair": "container_checked accepts an empty endpoint ID only while Status is created; a running or exited container must carry the exact NetworkID; wait_ready passes pending_endpoint=True",
+      "commit": "f06720d"
+    },
+    "a0_container_start_cause": {
+      "attempt": 32,
+      "error": "docker start --attach exits 1; daemon error '$ROOTLESSKIT_PARENT_EUID is not set (requires RootlessKit v0.8.0)'",
+      "proof": "manual docker start --attach reproduces the daemon error; /proc/<dockerd>/environ has zero ROOTLESSKIT_PARENT variables; rootlesskit is 3.1.0",
+      "cause": "scripts/rootless_docker_launch.py child_route() rebuilds the environment from a fixed allowlist and dropped ROOTLESSKIT_PARENT_EUID/EGID that RootlessKit sets for its child; dockerd needs them to start any container",
+      "repair": "the child requires the exact installed uid/gid and passes both variables to dockerd",
+      "evidence": ".cache/FRW-A0-HOST-RECONCILE-20261108/container-9edc2993-attempt32.json"
+    },
+    "a0_policy_drift": {
+      "attempt": 33,
+      "progress": "the probe completed wait_ready with a healthy container",
+      "error": "Refused: foreign_a0_qualification_plan in own_probe custody",
+      "cause": "scripts/rootless_docker_launch.py policy() and expected_rules() still allowed .78:8002 and denied .195:8002, so plan.network.policy_sha256 4a48202e never matched the pinned POLICY.nft dff2fa6c",
+      "proof": "after correcting the port grouping the generated text is byte-identical to .cache/FRW-ROOT-EMBEDDING4B-AFTER-SOURCE6-STATIC-PREPARATION-20261023-R119/semantic-prepared/POLICY.nft (sha256 dff2fa6c...)",
+      "repair": "spark .195 carries {30000, 8002}; utility .78 carries 8001, matching the deployment and the owner note that embeddings moved to .195",
+      "commit": "03f58f4"
+    },
+    "a0_policy_semantics_fix": {
+      "attempt": 34,
+      "error": "policy_semantics_changed during the daemon preflight",
+      "cause": "checked_policy compared nft's string port set against the integer expected form; the previous special case only covered the retired {8001,8002} pair",
+      "repair": "anonymous numeric sets are normalized to sorted integers on both sides",
+      "proof": "systemctl --user start friday-rework-docker.service with the repaired launcher is active; the same service previously failed in 0.3s",
+      "commit": "492d8e9"
+    },
+    "a0_policy_sort_fix": {
+      "attempt": 35,
+      "error": "rootless_launch_preflight_failed:TypeError:TypeError inside checked_policy",
+      "proof": "traceback captured from the published launcher: sorted() compared dict members of the address-prefix sets emitted by the web rules",
+      "repair": "only all-numeric sets are sorted as integers; structural sets keep nft's exact order",
+      "verification": "systemctl --user start friday-rework-docker.service is active with the real readback",
+      "commit": "0b7aa0d"
+    },
+    "a0_stop_identity_fix": {
+      "attempt": 36,
+      "progress": "the initial probe itself succeeded: container healthy, no A0_PROBE_ORIGINAL marker",
+      "error": "StopUnconfirmed; replayed stop_route raised 'STOP_UNCONFIRMED; daemon invocation changed'",
+      "cause": "this systemd clears InvocationID on the transition to inactive, so both the pre-stop and post-stop invocation equality could not settle",
+      "proof": "direct experiment: active with InvocationID f183b26f6e384c06836d132a88182128, after stop inactive with an empty InvocationID",
+      "repair": "a live unit must still carry the recorded invocation; an inactive or failed unit may carry it or an empty value, any other value is refused",
+      "commit": "ae7591e"
+    },
+    "a0_stop_unit_unload_fix": {
+      "attempt": 37,
+      "progress": "probe healthy and stop reached the supervisor stage",
+      "error": "SupervisorError native_stop_unconfirmed",
+      "cause": "the transient worker unit can unload between the observed start and the stop command",
+      "repair": "only native_stop_unconfirmed is re-checked, and only a missing or quiescent observation confirms cessation",
+      "commit": "6ff5da6"
+    },
+    "qualification": {
+      "result": "DEPLOYMENTS_QUALIFIED",
+      "marker_worker_state": "BOTH_DEPLOYMENTS_QUALIFIED",
+      "input_sha256": "a073b9b556520478fe088c3b8d7704b010364c0a02b6834cd0e4f8f39010817b",
+      "composed": "184 overlays; tools/file_tools.py 6a20973d38e90aae",
+      "a0_probe": "healthy container, settled stop, route settlement recorded",
+      "cleanup": "ORIGINAL_NATIVE_OWNER; live_journeys NOT_RUN; per_job_authority NOT_GRANTED"
     }
   },
   "permissions": {
@@ -270,12 +347,139 @@
         "n": 27,
         "refusal": null,
         "fix": "attempt running: left() is a clock again; input repinned for plugins/friday_rework/a0_bootstrap.py only; fresh home; expected to pass runtime_start/wait_ready"
+      },
+      {
+        "n": 27,
+        "refusal": "native_completion: a0_install_retained_route_or_namespace",
+        "fix": "stale /run/user/1000/friday-rework-docker (route-guard.json) from attempt 26; no live unit or process; evidence saved, state removed"
+      },
+      {
+        "n": 28,
+        "refusal": null,
+        "fix": "attempt running after namespace reconciliation; input sha256 bb77b7b2..., repin only plugins/friday_rework/a0_bootstrap.py"
+      },
+      {
+        "n": 28,
+        "refusal": "native_entry: complete_installer_plugin_inventory_required",
+        "fix": "a stray plugins/friday_rework/__pycache__/*.pyc from a local py_compile made the required plugin inventory incomplete; pycache removed, inventory compared against the pins (0 extras)"
+      },
+      {
+        "n": 29,
+        "refusal": null,
+        "fix": "attempt running; inventory clean, namespace state clean, input sha256 bb77b7b2..."
+      },
+      {
+        "n": 27,
+        "refusal": "a0_install_retained_route_or_namespace",
+        "fix": "stale /run/user/1000/friday-rework-docker (route-guard.json) from attempt 26; no live unit or process; evidence + removal"
+      },
+      {
+        "n": 28,
+        "refusal": "native_entry: complete_installer_plugin_inventory_required",
+        "fix": "stray plugins/friday_rework/__pycache__/*.pyc from a local py_compile; removed, inventory compared to pins (0 extras)"
+      },
+      {
+        "n": 29,
+        "refusal": "native_completion: existing_a0_service_source_requires_reconciliation",
+        "fix": "attempt 26 published launcher, supervisor unit and the linked user unit; evidence saved to .cache/FRW-A0-HOST-RECONCILE-20261108/published-attempt26, unit disabled and removed, daemon-reload"
+      },
+      {
+        "n": 30,
+        "refusal": null,
+        "fix": "attempt running: namespace state, published service sources, inventory and pins all verified absent/clean before the run"
+      },
+      {
+        "n": 30,
+        "refusal": "qualify reached runtime_start/create/inspect_container then RuntimeErrorBoundary container_network_changed",
+        "fix": "Docker 29.8.2 leaves NetworkID empty on a created container; pre-start inspect may defer exactly that ID (a2b35df)"
+      },
+      {
+        "n": 31,
+        "refusal": null,
+        "fix": "attempt running with the endpoint fix; input sha256 290ab540..."
+      },
+      {
+        "n": 31,
+        "refusal": "qualify passed inspect_container and reached A0_PROBE_STEP:wait_ready, then container_network_changed again",
+        "fix": "the start submission is asynchronous: wait_ready can observe Status created before the endpoint exists; the relaxed branch now keys on Status created only and every running/exited observation stays strict (f06720d)"
+      },
+      {
+        "n": 32,
+        "refusal": null,
+        "fix": "attempt running; input sha256 0c1b216f..."
+      },
+      {
+        "n": 32,
+        "refusal": "prepare_route: foreign_container_blocks_route (leftover container); after cleanup the probe reached wait_ready and failed a0_bootstrap_native_start_lost",
+        "fix": "the worker unit ran docker start --attach and exited 1 in 36ms; the container state carried Error '$ROOTLESSKIT_PARENT_EUID is not set (requires RootlessKit v0.8.0)'"
+      },
+      {
+        "n": 33,
+        "refusal": null,
+        "fix": "attempt running after the launcher env repair; input sha256 66d082fb..."
+      },
+      {
+        "n": 33,
+        "refusal": "qualify: probe healthy (A0_WAIT_READY), then own_probe custody refused Refused:foreign_a0_qualification_plan",
+        "fix": "the live route generator still encoded the old topology (.78:{8001,8002}) while the deployment, the pinned POLICY.nft and the owner put embeddings on .195:8002; the generated text now equals the pinned file byte for byte (03f58f4)"
+      },
+      {
+        "n": 34,
+        "refusal": null,
+        "fix": "cycle running: reconcile, install, qualify; input sha256 0c2bc950..."
+      },
+      {
+        "n": 34,
+        "refusal": "prepare_route: native_command_failed; journal showed rootless_launch_preflight_failed:RuntimeError:policy_semantics_changed",
+        "fix": "the readback normalizer only rewrote the old {8001,8002} pair, so the corrected spark set {8002,30000} stayed as strings; numeric set members are now sorted integers and the expected form uses [8002, 30000] (492d8e9)"
+      },
+      {
+        "n": 35,
+        "refusal": null,
+        "fix": "cycle running; a manual daemon start with the same launcher reached active, proving the policy check passes; input sha256 d4facfca..."
+      },
+      {
+        "n": 35,
+        "refusal": "qualify: prepare_route native_command_failed; journal rootless_launch_preflight_failed:TypeError:TypeError",
+        "fix": "a temporary traceback print showed sorted() over a structural set of address prefixes (the web rules) raised TypeError; numeric port sets are now sorted, structural sets stay as reported (0b7aa0d)"
+      },
+      {
+        "n": 36,
+        "refusal": null,
+        "fix": "cycle running; a manual daemon start with the repaired launcher and the real nft readback is active; input sha256 a5c6862b..."
+      },
+      {
+        "n": 36,
+        "refusal": "qualify: probe completed (no A0_PROBE_ORIGINAL) but stop raised StopUnconfirmed",
+        "fix": "replaying the retained stop_route showed daemon invocation changed; systemd 259 clears InvocationID when a unit becomes inactive, which was proven directly (active f183b26f... then empty after stop); an empty ID is now accepted only on an inactive unit with MainPID 0 (ae7591e)"
+      },
+      {
+        "n": 37,
+        "refusal": null,
+        "fix": "cycle running; input sha256 b97bf9da..."
+      },
+      {
+        "n": 37,
+        "refusal": "qualify: probe healthy, stop raised A0_STOP_ERROR:SupervisorError:native_stop_unconfirmed",
+        "fix": "the transient worker unit unloads as soon as its process exits, so systemctl stop can return not-loaded; that exact typed refusal is now re-checked and settles only when a fresh observation reports the unit missing or quiescent (6ff5da6)"
+      },
+      {
+        "n": 38,
+        "refusal": null,
+        "fix": "cycle running; input sha256 a073b9b5..."
+      },
+      {
+        "n": 38,
+        "refusal": null,
+        "fix": "qualify succeeded: state DEPLOYMENTS_QUALIFIED, marker worker_state BOTH_DEPLOYMENTS_QUALIFIED"
       }
     ],
     "discipline_added": [
       "never edit sources, inventory or the input while an attempt or a phase is running",
       "stopping a background install must kill the whole tree including the bwrap namespace init",
-      "diagnose from persisted captures first, then reproduce the exact function with the product PM python"
+      "diagnose from persisted captures first, then reproduce the exact function with the product PM python",
+      "never compile inside the pinned tree: a stray __pycache__ under plugins/friday_rework breaks the complete installer plugin inventory",
+      "a reinstall needs the published A0 launcher, supervisor unit and linked user unit removed first; a successful install owns them and every later install refuses to overwrite"
     ]
   },
   "accounting": {
@@ -287,6 +491,6 @@
     },
     "rule": "старые пригодные доказательства связывать с существующим реестром по правилам методики; без повторных исполнений ради счётчика"
   },
-  "next_step": "attempt 27: complete install, run qualify; the repair is validated only when the log passes A0_PROBE_STEP:runtime_start and A0_PROBE_STEP:wait_ready; then start the new home, switch the gateway and run the live regression (unsupported format, ordinary write, outside-scope refusal, D-12)",
+  "next_step": "stop the old gateway, run the start phase for the new home, verify the live gateway, then the live regression (unsupported format, ordinary write, outside-scope refusal, D-12)",
   "blockers": []
 }
