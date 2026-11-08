@@ -265,9 +265,9 @@ def checked_policy(text, web=None):
                             values = right['set']
                             require(isinstance(values, list) and len(values) == len({canonical(v) for v in values}), 'policy_duplicate_set_value')
                             # nft prints ports as numbers and sorts the anonymous
-                            # set; compare the same canonical numeric order.
-                            right['set'] = sorted(int(v) if isinstance(v, str) and v.isdecimal() else v
-                                                  for v in values)
+                            # set; structural sets (address prefixes) stay as reported.
+                            if all(type(v) is int or (isinstance(v, str) and v.isdecimal()) for v in values):
+                                right['set'] = sorted(int(v) for v in values)
                     normalized.append(expression)
             rules[name].append(normalized)
     require(table is not None and set(chains) == set(rules)
