@@ -1,0 +1,72 @@
+{
+  "schema": "friday.v3.segment-record.v1",
+  "at_moscow": "2026-11-08T17:25:00+03:00",
+  "segment": "Retained A0 container retired through the product's own pinned runtime; three A0 runtime defects reproduced factually; the ordinary (worker-free) product mode located and its cost established",
+  "lead": "DSH session (sole lead/integrator)",
+  "major_progress": {
+   "retained_container_retired_by_the_product": {
+    "how": "start the product's own rootless docker unit, then call the PINNED A0 runtime (host_runtime.a0_runtime_module -> frw_pinned_a0_runtime) with Runtime(plan, stopping=True).retire_initial_probe() for the exact recorded plan",
+    "why_this_order": "the installed A0 runtime stops the daemon BEFORE it retires the container, so the `docker rm` ACK is unobtainable in the ordinary stop path; with the daemon alive the product's own retirement succeeds",
+    "result_first_attempt": {"container_id": "3488cb15a1804d05a1072ef9b429ff33c72b54dcf378301d47a12a40ee712cd5", "status": "INITIAL_PROBE_RETIRED", "host_state_retained": true, "image_retained": true, "volumes_removed": false, "container_table_after": "empty"},
+    "result_second_attempt": {"container_id": "1b7d3edcad3972dbcfc76b8d4f570a685e81c660c2aaa6f440e135575272e2bd", "status": "INITIAL_PROBE_RETIRED", "container_table_after": "empty"},
+    "evidence": ".runtime/a0-runtime-sol/<identity>/retirement.json written by the product; the recorded native stop receipts (stop.json = STOP_CONFIRMED, native_container_stopped true) were unchanged",
+    "note": "no container state was edited by hand; the product performed every removal"
+   }
+  },
+  "a0_runtime_defects_reproduced_factly": [
+   {
+    "id": "A0-DEF-1",
+    "defect": "retirement happens after the daemon is stopped",
+    "evidence": "a0_bootstrap.stop() calls runtime.stop() (which stops the container AND the daemon unit) and only afterwards retire_initial_probe() (docker rm through the daemon socket); the socket is gone by then, so the retirement ACK is impossible",
+    "symptom_seen": "sol dir 1aa21b1f.../retirement.json absent, bootstrap phase STOP_UNCONFIRMED",
+    "workaround_available": "yes - the product's own retirement succeeds when the daemon is alive (used twice, see major_progress)"
+   },
+   {
+    "id": "A0-DEF-2",
+    "defect": "the recorded stop-route script is exec'd without the import substitution the live module receives",
+    "evidence": "a0_bootstrap.stop() execs the recorded copy of a0_runtime.py (sha 69bcda79...) as a fresh module; that copy imports `plugins.friday_rework.supervision` as a package, but only hermes-agent/plugins is a package - worker-runtime-source/plugins/friday_rework holds only adapters/a0_profile.py and a0_web.py. host_runtime.a0_runtime_module installs a scoped_import for the live module only",
+    "symptom_seen": "A0_STOP_ERROR:ModuleNotFoundError:No module named 'plugins.friday_rework'",
+    "verification": "the same recorded script execs successfully when hermes-agent is on sys.path"
+   },
+   {
+    "id": "A0-DEF-3",
+    "defect": "the native worker unit's RuntimeMaxSec (120 s) is shorter than the qualification window (300 s)",
+    "evidence": "adapters/a0_native.py _exec(): timeout = min(timeout, native_left - 1, deadline - now - 5), native_left = ActiveEnterTimestampMonotonic + RuntimeMaxUSec - now; friday-rework-docker.service has RuntimeMaxSec=120s, so the exec budget is exhausted as soon as the daemon has been up for a while",
+    "symptom_seen": "RuntimeErrorBoundary: budget_exhausted on the third owner attempt"
+   }
+  ],
+  "owner_area_progress": {
+   "workers_prepared": "Onboarding.prepare_workers for 467035772 -> dest_telegram: workers/dsh and workers/a0 PREPARED_RUNTIME_UNOBSERVED, generation 1",
+   "qualification_attempts": [
+    {"attempt": 1, "refusal": "foreign_container_blocks_route", "cause": "the retained container record of the first A0 attempt; fixed by the product's own retirement"},
+    {"attempt": 2, "refusal": "StopUnconfirmed (A0 initial probe exact owner cleanup unconfirmed)", "cause": "A0-DEF-2 in the recorded stop route; the container itself was created, observed (26 observations) and stopped with stop.json = STOP_CONFIRMED"},
+    {"attempt": 3, "refusal": "RuntimeErrorBoundary budget_exhausted", "cause": "A0-DEF-3"}
+   ],
+   "attempt_2_proved_the_native_path_works": "A0_STEP sequence read_plan -> daemon_show -> docker_info -> ps_empty -> check_network -> materialize -> create -> inspect_container -> wait_ready; the container was created (1b7d3edc...), observed 25-26 times, stopped with stop.json STOP_CONFIRMED / native_container_stopped true, all sample_attempts OBSERVED, sampling_uncertainty false",
+   "profile_state": "prepared, disabled (access tombstone enabled=false generation 1), no scope marker; preserved data merged earlier (2 sessions / 196 messages) and the old home is untouched"
+  },
+  "ordinary_worker_free_mode_located": {
+   "what_the_product_has": "scripts/friday_ordinary_install.py::inputs() creates the template `friday-ordinary-local` as a copy of `friday-local` with worker_inputs removed, so a user area needs no DSH/A0 (validate_template allows the absence of worker_requirements; required_workers() then returns False; activate() publishes the marker without workers)",
+   "precondition": "the installer phase requires the ROOT configuration to be in the bootstrap state: runtime == {'enabled': false}, no worker_requirements, no user_isolation, gateway.profile_routes == [], exactly one telegram product-access account - i.e. this is a first-install Telegram bootstrap, not a mode that can be added to an already prepared composition",
+   "second_path": "the rebind branch (friday_ordinary_install.py ~3803) requires the template set to ALREADY be {friday-local, friday-ordinary-local}, so it presupposes the bootstrap phase already ran",
+   "cost": "adopting the ordinary mode means re-running the Telegram bootstrap/activation transition on the installed composition, which is a broader transition than the current task and touches the configuration/marker layer; it is an owner decision, not a silent switch"
+  },
+  "current_live_state": {
+   "gateway": "hermes-gateway-1e9db5b2.service active, telegram connected, one receiver",
+   "dashboard": "pid 1358387 on 192.168.12.128:9119 (TLS)",
+   "areas": "both prepared and disabled; Jarvis workers prepared earlier, owner workers prepared now; both access rows are disabled tombstones; pairing approved for both principals; preserved data merged",
+   "docker": "rootless daemon stopped; container table empty",
+   "admission": "R44 issued and unspent (12117 B, sha 3a5a4053..., bound to the current gateway, 40 re-verified history rows)"
+  },
+  "owner_decision_required": [
+   "A. re-run the Telegram bootstrap/activation transition on the installed composition so the product creates friday-ordinary-local and the two user areas can be activated WITHOUT DSH/A0 (the A0-dependent obligations then remain a separate residual defect set)",
+   "B. provide an A0 runtime with the three defects above fixed (retirement before daemon stop; the recorded stop route must inherit the import substitution; RuntimeMaxSec must cover the qualification window), then complete the full worker path for both areas"
+  ],
+  "explicitly_not_done": [
+   "no live Telegram send in this segment",
+   "no repeat of r42, of UNKNOWN_SEND rows, or of the R43 smoke",
+   "no hand-written docker state, no fabricated closure/failure documents, no weakened product check",
+   "no deletion of preserved data, receipts or attempt evidence",
+   "no modification of installed product sources, model/weights/endpoint, the owner's personal conversation, the agreed cursor or the single-receiver arrangement"
+  ]
+}
