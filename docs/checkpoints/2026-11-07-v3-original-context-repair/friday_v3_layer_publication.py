@@ -196,25 +196,120 @@ def gateway_running(unit_path, bench_home=None):
     return result.stdout.strip() == "active"
 
 
+class Journal:
+    """One beforeimage store for the whole operation.
+
+    Every file the operation touches is recorded BEFORE it is written: the real previous
+    bytes of the home and the attributes needed to restore them. A file that did not
+    exist before is recorded as absent, so the rollback removes it. The receipt, the
+    marker and the stamp are recorded the same way, so a refusal restores the metadata
+    together with the content.
+    """
+
+    def __init__(self, root, home):
+        self.root = Path(root)
+        self.home = Path(home)
+        self.entries = {}
+
+    def entries_dict(self):
+        return dict(self.entries)
+
+    def _relative(self, path):
+        """The path of a file relative to the home, so the journal stays inside its root."""
+        path = Path(path)
+        try:
+            return path.relative_to(self.home)
+        except ValueError:
+            return Path(path.name)
+
+    def _target(self, path):
+        target = self.root / "before" / self._relative(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def record_existing(self, path, data):
+        """Record the real previous bytes of an existing file.
+
+        The first recording wins: a file that is written twice keeps the bytes it had
+        before the operation started, not the bytes of the intermediate write.
+        """
+        path = Path(path)
+        key = str(path)
+        if key in self.entries:
+            return self.entries[key]
+        info = path.lstat()
+        entry = {"state": "EXISTED", "sha256": digest(data), "bytes": len(data),
+                 "mode": stat.S_IMODE(info.st_mode)}
+        write_atomic(self._target(path), data, 0o600)
+        self.entries[key] = entry
+        return entry
+
+    def record_absent(self, path):
+        """Record that the file did not exist before this operation."""
+        path = Path(path)
+        key = str(path)
+        if key in self.entries:
+            return self.entries[key]
+        entry = {"state": "ABSENT"}
+        self.entries[key] = entry
+        return entry
+
+    def record(self, path, data):
+        """Record the previous state of a file that is about to be written."""
+        path = Path(path)
+        if path.exists() and not path.is_symlink():
+            return self.record_existing(path, data)
+        return self.record_absent(path)
+
+    def restore(self, paths):
+        """Restore the recorded state of the given paths, newest first."""
+        for path in reversed(list(paths)):
+            key = str(path)
+            entry = self.entries.get(key)
+            if entry is None:
+                continue
+            target = Path(path)
+            if entry["state"] == "ABSENT":
+                if target.exists() or target.is_symlink():
+                    target.unlink()
+                    sync_directory(target.parent)
+                continue
+            saved = self._target(path)
+            if not saved.exists():
+                continue
+            publish(target, owned_file(saved), entry.get("mode", 0o600))
+
+    def write_intent(self, name, payload):
+        write_atomic(self.root / name, encoded(payload), 0o600)
+
+
 # ------------------------------------------------------------------ layer inventory
 
 
-def read_layers(candidate_root, receipt, home):
+def read_layers(candidate_root, receipt, home, project_files):
     """Read the four layer manifests from the candidate and bind them to the home.
 
-    Source data (the candidate) and target data (the live home) stay separate: the
-    manifest bytes, the patch bytes and the file preimages are read independently and
-    compared against each other.
+    The bytes that are actually read are tied to the hashes the current input pins: a
+    manifest or patch whose bytes differ from the pinned hash is refused, so the layer
+    that is applied is provably the reviewed one. The manifest body, the patch bytes and
+    the file preimages are then compared with each other, never a file with itself.
     """
     layers = []
     for name in LAYER_NAMES:
         manifest_rel = f"patches/hermes/{name}-manifest.json"
         patch_rel = f"patches/hermes/{name}.patch"
+        require(manifest_rel in project_files and patch_rel in project_files,
+                "transaction_layer_not_pinned")
         manifest_bytes = owned_file(Path(candidate_root) / manifest_rel)
         patch_bytes = owned_file(Path(candidate_root) / patch_rel)
+        require(digest(manifest_bytes) == project_files[manifest_rel],
+                "transaction_layer_manifest_pin_changed:" + manifest_rel)
+        require(digest(patch_bytes) == project_files[patch_rel],
+                "transaction_layer_patch_pin_changed:" + patch_rel)
         body = json.loads(manifest_bytes)
         require(body.get("patch") == patch_rel, "transaction_layer_patch_reference_changed")
-        require(body.get("patch_sha256") == digest(patch_bytes),
+        require(body.get("patch_sha256") == digest(patch_bytes)
+                == project_files[patch_rel],
                 "transaction_layer_patch_bytes_changed")
         require(body.get("base_commit") == receipt.get("commit"),
                 "transaction_layer_base_commit_changed")
@@ -222,15 +317,20 @@ def read_layers(candidate_root, receipt, home):
         require(isinstance(files, list) and files, "transaction_layer_files_required")
         layers.append({"name": name, "manifest": manifest_rel, "patch": patch_rel,
                        "manifest_bytes": manifest_bytes, "patch_bytes": patch_bytes,
+                       "manifest_sha256": digest(manifest_bytes),
+                       "patch_sha256": digest(patch_bytes),
                        "body": body, "files": files})
     return layers
 
 
 def check_preimages(layers, source, receipt_files):
-    """Each layer's preimage must equal the state produced by the preceding layers.
+    """The strict preimage chain inside the bundle.
 
-    A layer whose result bytes are already in the tree was applied by an earlier run; its
-    preimage is then the already-published state, and the layer is recognised as applied.
+    For every file the chain is: the receipt's hash for the first layer that touches the
+    file, then the result hash of the preceding layer that touches it. The expected value
+    is never replaced by the layer's own declaration: a mismatch is a refusal. A bundle
+    that is already published is recognised by a separate check of its final bytes and
+    its receipt, not by weakening this chain.
     """
     state = {}
     for layer in layers:
@@ -240,29 +340,13 @@ def check_preimages(layers, source, receipt_files):
             if expected is None:
                 current = receipt_files.get(path)
                 expected = None if current is None else current["sha256"]
-            # The layer's own preimage is the state the patch was written against. The
-            # receipt may already hold the published bytes (a repeated run), so the layer's
-            # declared preimage is the authority for the chain inside the bundle.
-            declared = row.get("before_sha256")
-            if declared is not None and expected is not None and declared != expected:
-                expected = declared
-            if row.get("before_sha256") != expected:
-                # The published state satisfies the layer's result instead of its preimage.
-                # A layer that touches a file another layer also touches has a preimage that
-                # only exists inside the bundle; the published tree holds the final bytes.
-                live = Path(source) / path
-                if not live.exists():
-                    raise Refused("transaction_layer_preimage_changed")
-                data = owned_file(live)
-                require(digest(data) == row["sha256"] and len(data) == row["bytes"],
-                        "transaction_layer_preimage_changed")
-            require(row.get("new_file") is (expected is None)
-                    or row.get("before_sha256") != expected,
-                    "transaction_layer_new_file_flag_changed")
-            if expected is None and row.get("new_file"):
-                require(not os.path.lexists(Path(source) / path)
-                        or digest(owned_file(Path(source) / path)) == row["sha256"],
-                        "transaction_new_source_exists")
+            require(row.get("before_sha256") == expected,
+                    "transaction_layer_preimage_changed:" + path)
+            require(row.get("new_file") is (expected is None),
+                    "transaction_layer_new_file_flag_changed:" + path)
+            if expected is None:
+                require(not os.path.lexists(Path(source) / path),
+                        "transaction_new_source_exists:" + path)
             state[path] = row["sha256"]
     return state
 
@@ -283,16 +367,26 @@ def layer_already_applied(layer, source):
     return True
 
 
-def bundle_already_applied(layers, source):
-    """True when the tree already holds the final byte of every layer's file.
+def bundle_already_applied(layers, source, receipt):
+    """True when the bundle is already published as a whole.
 
-    The layers are applied in sequence, so the published state is the last layer's output
-    for each touched file. A repeated run recognises that state and replays nothing.
+    This is a separate check, not a relaxation of the preimage chain: the tree must hold
+    the final byte of every file the bundle touches, and the receipt must already list
+    every layer of the bundle with the layer's own manifest and patch hashes. A bundle
+    that is only partly published is not recognised here.
     """
+    installed = {row["manifest"]: row for row in receipt.get("layers", [])}
     final = {}
     for layer in layers:
-        for row in layer["files"]:
-            final[row["path"]] = row["sha256"]
+        row = installed.get(layer["manifest"])
+        if row is None:
+            return False
+        if row.get("manifest_sha256") != layer["manifest_sha256"]:
+            return False
+        if row.get("patch_sha256") != layer["patch_sha256"]:
+            return False
+        for file_row in layer["files"]:
+            final[file_row["path"]] = file_row["sha256"]
     for path, sha in final.items():
         live = Path(source) / path
         if not live.exists():
@@ -323,16 +417,12 @@ def apply_layers(layers, source, staging):
         write_atomic(target, data, 0o600)
     for layer in layers:
         if layer_already_applied(layer, staging):
-            # already published: keep the bytes and move on
+            # this layer's result bytes are already there: keep them and move on
             for row in layer["files"]:
                 data = owned_file(Path(staging) / row["path"])
                 require(digest(data) == row["sha256"],
                         "transaction_layer_output_changed:" + layer["name"])
             continue
-        if bundle_already_applied(layers, staging):
-            # the whole bundle was published by an earlier run: the tree already holds the
-            # final bytes of every layer, so no patch applies and none is replayed.
-            break
         patch = Path(staging).parent / (layer["name"] + ".patch")
         write_atomic(patch, layer["patch_bytes"], 0o600)
         for checking in (True, False):
@@ -390,7 +480,9 @@ def composition_checked(value, source, receipt, donor, cache, project_root):
     """The product's own composition check with a proven-cache list.
 
     The product's helper is imported from the project's own scripts directory, so the check
-    is the product's check and not a re-implementation.
+    is the product's check and not a re-implementation. The whole composition_checked is
+    used, not only its source_checked part: the source lock, the overlay set, the manifest
+    digests and the patch digests are checked together with the source inventory.
     """
     project_root = Path(project_root)
     scripts_path = str(project_root / "scripts")
@@ -403,8 +495,9 @@ def composition_checked(value, source, receipt, donor, cache, project_root):
         importlib.machinery.ModuleSpec("scripts", loader=None, is_package=True))
     package.__path__ = [scripts_path]
     sys.modules["scripts"] = package
-    from scripts.friday_install import source_checked
-    return source_checked(Path(source), receipt, donor, proven_cache=cache)
+    from scripts.friday_install import composition_checked as product_composition_checked
+    return product_composition_checked(value, Path(source), receipt, donor,
+                                       proven_cache=cache)
 
 
 # ------------------------------------------------------------------------- history
@@ -479,6 +572,9 @@ def run(request, request_path, request_sha256):
             "transaction_predecessor_input_changed")
     predecessor_tx = home / "preparation" / ("ordinary-source-update-successor-"
                                              + request["predecessor_request"]["sha256"])
+    if not (predecessor_tx / "committed.json").exists():
+        # a bench predecessor is supplied directly by the request
+        predecessor_tx = Path(request["predecessor_request"]["path"]).parent
     committed = read_json(predecessor_tx / "committed.json")
     require(committed.get("state") == "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED"
             and committed.get("gateway_started") is False
@@ -517,10 +613,21 @@ def run(request, request_path, request_sha256):
             "transaction_project_file_removed")
     # The delta: the four layer manifests (their patch bytes are already carried by the
     # previous input) plus the new plugin files of the V3 product.
-    require(set(current_files) - set(previous_files)
-            == {f"patches/hermes/{name}-manifest.json" for name in LAYER_NAMES}
-            | set(request["plugin_additions"]),
+    # The delta is exactly what the request declares: the layer manifests and patches of
+    # this bundle plus the plugin files the transition adds. Nothing else may appear or
+    # disappear, so a stray file in the candidate is refused.
+    # The layer manifests and the plugin files the transition adds are the delta; the layer
+    # patches may already be carried by the previous input, so they are checked by their
+    # presence and their pinned hash, not by their absence.
+    expected_additions = {f"patches/hermes/{name}-manifest.json" for name in LAYER_NAMES} | \
+                          set(request["plugin_additions"])
+    require(set(current_files) - set(previous_files) == expected_additions,
             "transaction_project_delta_changed")
+    for name in LAYER_NAMES:
+        patch = f"patches/hermes/{name}.patch"
+        require(patch in current_files and patch in previous_files
+                and current_files[patch] == previous_files[patch],
+                "transaction_layer_patch_pin_changed:" + patch)
     for name in previous_files:
         if name in request["plugin_set"]:
             # the plugin set is published as its own step and is checked there
@@ -532,10 +639,21 @@ def run(request, request_path, request_sha256):
         require(current_files[name] == previous_files[name],
                 "transaction_project_file_changed:" + name)
 
-    # 7. the four layers: manifest bytes, patch bytes and preimages.
-    layers = read_layers(candidate, receipt, home)
+    # 7. the four layers: manifest bytes, patch bytes and preimages. The layers are read
+    #    from the candidate and tied to the hashes the current input pins; their preimage
+    #    chain is checked against the receipt before anything is staged.
+    layers = read_layers(candidate, receipt, home, current_files)
     source = home / "hermes-agent"
-    final_state = check_preimages(layers, source, receipt["files"])
+    already_published = bundle_already_applied(layers, source, receipt)
+    if not already_published:
+        final_state = check_preimages(layers, source, receipt["files"])
+    else:
+        # the bundle is already published as a whole, with a consistent receipt; the final
+        # bytes are the authoritative ones and no layer is replayed
+        final_state = {}
+        for layer in layers:
+            for row in layer["files"]:
+                final_state[row["path"]] = row["sha256"]
 
     # 8. apply the layers onto a private staging tree that holds only the touched files.
     staging_root = private_directory(home / "preparation" /
@@ -551,8 +669,13 @@ def run(request, request_path, request_sha256):
         if layer["manifest"] in installed_manifests:
             continue
         projected["layers"].append({"manifest": layer["manifest"],
-                                    "manifest_sha256": digest(layer["manifest_bytes"]),
-                                    "patch_sha256": digest(layer["patch_bytes"])})
+                                    "manifest_sha256": layer["manifest_sha256"],
+                                    "patch_sha256": layer["patch_sha256"]})
+    # the projected receipt must pin the same source lock as the current input
+    lock = current_input["sources_lock"]
+    lock_path = lock["path"] if isinstance(lock, dict) else lock
+    projected["sources_lock_sha256"] = (lock["sha256"] if isinstance(lock, dict)
+                                        else digest(read_bytes(lock_path)))
     for path, sha in final_state.items():
         row = dict(projected["files"][path]) if path in projected["files"] else {}
         data = owned_file(Path(staging) / path)
@@ -568,14 +691,47 @@ def run(request, request_path, request_sha256):
         staged = owned_file(Path(staging) / path)
         require(digest(staged) == final_state[path], "transaction_staged_bytes_changed:" + path)
 
-    # 10. journal: record the beforeimages before anything is published.
-    before = {}
+    # 10. the journal: every file the operation touches is recorded before it is written.
+    journal = Journal(staging_root, home)
+    published = []
+
+    def publish_with_journal(target, data, mode=0o600):
+        """Publish a file and remember what it was before.
+
+        The beforeimage is taken from the journal's first recording of that path, so a file
+        that is written more than once is restored to its state before the operation.
+        """
+        target = Path(target)
+        key = str(target)
+        if key not in journal.entries:
+            if target.exists() and not target.is_symlink():
+                journal.record_existing(target, owned_file(target))
+            else:
+                journal.record_absent(target)
+        publish(target, data, mode)
+        published.append(target)
+
     for path in touched:
-        data = owned_file(Path(source) / path)
-        before[path] = {"sha256": digest(data), "bytes": len(data),
-                        "mode": stat.S_IMODE((Path(source) / path).stat().st_mode)}
-        write_atomic(staging_root / "before" / path, data, 0o600)
-    write_atomic(staging_root / "intent.json", encoded({
+        journal.record_existing(Path(source) / path, owned_file(Path(source) / path))
+    for name in sorted(request.get("plugin_set", [])) + sorted(request.get("plugin_additions", [])):
+        target = Path(home) / name
+        if target.exists() and not target.is_symlink():
+            journal.record_existing(target, owned_file(target))
+        else:
+            journal.record_absent(target)
+    for name in sorted(request.get("project_file_updates", [])):
+        target = Path(home) / name
+        if target.exists() and not target.is_symlink():
+            journal.record_existing(target, owned_file(target))
+        else:
+            journal.record_absent(target)
+    for name in ("hermes-agent.source.json", "FRIDAY-INSTALL.json", "hermes-agent/install-stamp.json"):
+        target = Path(home) / name
+        if target.exists() and not target.is_symlink():
+            journal.record_existing(target, owned_file(target))
+        else:
+            journal.record_absent(target)
+    journal.write_intent("intent.json", {
         "schema": "friday.ordinary-telegram-source-update-transaction.v1",
         "state": "SOURCE_UPDATE_INTENT",
         "request_sha256": request_sha256,
@@ -585,17 +741,21 @@ def run(request, request_path, request_sha256):
         "source_receipt": request["source_receipt"],
         "layers": [layer["manifest"] for layer in layers],
         "files": touched,
+        "plugin_set": sorted(request.get("plugin_set", [])),
+        "plugin_additions": sorted(request.get("plugin_additions", [])),
+        "project_file_updates": sorted(request.get("project_file_updates", [])),
+        "metadata": ["hermes-agent.source.json", "FRIDAY-INSTALL.json",
+                     "hermes-agent/install-stamp.json"],
         "gateway_started": False,
         "workers_enabled": False,
-    }), 0o600)
+    })
 
-    published = []
     try:
+        # 10a. the source files of the layers
         for path in touched:
             data = owned_file(Path(staging) / path)
-            publish(Path(source) / path, data, 0o600)
-            published.append(path)
-        write_atomic(staging_root / "published.json", encoded({"files": published}), 0o600)
+            publish_with_journal(Path(source) / path, data, 0o600)
+        write_atomic(staging_root / "published.json", encoded({"files": [str(p) for p in published]}), 0o600)
         if request.get("fail_after_publish"):
             # a controlled failure at a substantial point of the state change, used to prove
             # the rollback. It is only reachable through an explicit request field.
@@ -603,137 +763,113 @@ def run(request, request_path, request_sha256):
         # The product's own composition check runs over the published tree: the receipt's
         # inventory plus the new bytes. A refusal here restores the beforeimages.
         composition_checked(current_input, source, projected, donor, cache, candidate)
-    except Exception:
-        # restore the beforeimages: a refused publication must leave the home unchanged
-        for path in reversed(published):
-            saved = staging_root / "before" / path
-            if saved.exists():
-                publish(Path(source) / path, owned_file(saved), 0o600)
-            else:
-                Path(Path(source) / path).unlink(missing_ok=True)
-        raise
 
-    # 10b. the V3 plugin set: the source files the V3 product ships, taken from the
-    #      candidate tree and proven against the current input's pins.
-    plugin_set = sorted(request["plugin_set"])
-    plugin_additions = sorted(request["plugin_additions"])
-    for name in plugin_set + plugin_additions:
-        candidate_bytes = owned_file(Path(candidate) / name)
-        require(digest(candidate_bytes) == current_files[name],
-                "transaction_plugin_bytes_changed:" + name)
-        write_atomic(staging_root / "before" / name, candidate_bytes, 0o600)
-    # the project files the transition deliberately updates
-    project_updates = sorted(request.get("project_file_updates", []))
-    for name in project_updates:
-        candidate_bytes = owned_file(Path(candidate) / name)
-        require(digest(candidate_bytes) == current_files[name],
-                "transaction_project_update_bytes_changed:" + name)
-        write_atomic(staging_root / "before" / name, candidate_bytes, 0o600)
-    write_atomic(staging_root / "intent-project-updates.json", encoded({
-        "schema": "friday.ordinary-telegram-source-update-transaction.v1",
-        "state": "SOURCE_UPDATE_PROJECT_FILE_INTENT",
-        "request_sha256": request_sha256,
-        "files": project_updates,
-    }), 0o600)
-    project_published = []
-    try:
+        # 10b. the project files the transition deliberately updates, then the V3 plugin set.
+    #      Both are proven against the current input's pins before they are written.
+        project_updates = sorted(request.get("project_file_updates", []))
+        plugin_set = sorted(request["plugin_set"])
+        plugin_additions = sorted(request["plugin_additions"])
+        for name in project_updates + plugin_set + plugin_additions:
+            candidate_bytes = owned_file(Path(candidate) / name)
+            require(digest(candidate_bytes) == current_files[name],
+                    "transaction_candidate_bytes_changed:" + name)
+        journal.write_intent("intent-project-updates.json", {
+            "schema": "friday.ordinary-telegram-source-update-transaction.v1",
+            "state": "SOURCE_UPDATE_PROJECT_FILE_INTENT",
+            "request_sha256": request_sha256,
+            "files": project_updates,
+        })
         for name in project_updates:
             data = owned_file(Path(candidate) / name)
-            publish(Path(home) / name, data, 0o600)
-            project_published.append(name)
-    except Exception:
-        for name in reversed(project_published):
-            saved = staging_root / "before" / name
-            if saved.exists():
-                publish(Path(home) / name, owned_file(saved), 0o600)
-        raise
-    write_atomic(staging_root / "published-project-updates.json",
-                 encoded({"files": project_published}), 0o600)
-    for name in project_published:
-        published.append(name)
+            publish_with_journal(Path(home) / name, data, 0o600)
+        write_atomic(staging_root / "published-project-updates.json",
+                     encoded({"files": project_updates}), 0o600)
 
-    write_atomic(staging_root / "intent-plugins.json", encoded({
-        "schema": "friday.ordinary-telegram-source-update-transaction.v1",
-        "state": "SOURCE_UPDATE_PLUGIN_INTENT",
-        "request_sha256": request_sha256,
-        "files": plugin_set + plugin_additions,
-    }), 0o600)
-    plugin_published = []
-    try:
+        journal.write_intent("intent-plugins.json", {
+            "schema": "friday.ordinary-telegram-source-update-transaction.v1",
+            "state": "SOURCE_UPDATE_PLUGIN_INTENT",
+            "request_sha256": request_sha256,
+            "files": plugin_set + plugin_additions,
+        })
         for name in plugin_set:
             data = owned_file(Path(candidate) / name)
-            publish(Path(home) / name, data, 0o600)
-            plugin_published.append(name)
+            publish_with_journal(Path(home) / name, data, 0o600)
+        if request.get("fail_during_plugins"):
+            # a controlled failure in the middle of the plugin publication, used to prove that
+            # the rollback covers the plugin set as well
+            raise Refused("transaction_controlled_failure_during_plugins")
         for name in plugin_additions:
             data = owned_file(Path(candidate) / name)
             target = Path(home) / name
             private_parents(home, name)
-            publish(target, data, 0o600)
-            plugin_published.append(name)
+            publish_with_journal(target, data, 0o600)
+        write_atomic(staging_root / "published-plugins.json",
+                     encoded({"files": plugin_set + plugin_additions}), 0o600)
+        plugin_published = plugin_set + plugin_additions
+
+        # 11. the new receipt and marker, published through the same journal.
+        new_receipt = projected
+        new_receipt["files"] = projected["files"]
+        write_atomic(staging_root / "hermes-agent.source.json", encoded(new_receipt), 0o600)
+        publish_with_journal(home / "hermes-agent.source.json", encoded(new_receipt), 0o600)
+        if request.get("fail_between_metadata"):
+            # a controlled failure between two metadata writes, used to prove that the rollback
+            # covers the receipt, the marker and the stamp together
+            raise Refused("transaction_controlled_failure_between_metadata")
+
+        new_marker = dict(marker)
+        # the marker's plugin inventory must follow the published plugin set
+        plugin_pins = dict(marker.get("plugin_files", {}))
+        for name in plugin_published:
+            plugin_pins[name] = digest(owned_file(Path(home) / name))
+        new_marker["plugin_files"] = plugin_pins
+        receipt_sha = digest(encoded(new_receipt))
+        new_marker["source_receipt_sha256"] = receipt_sha
+        # the ordinary gateway phase pins the receipt: it must follow the published one,
+        # exactly as the product's own source update does.
+        phase = dict(new_marker.get("ordinary_gateway", {}))
+        phase["source_receipt_sha256"] = receipt_sha
+        phase["operator_entry"] = {
+            "input": {"path": str(request["current_input"]["path"]),
+                      "sha256": request["current_input"]["sha256"]},
+            "script": {"path": str(candidate / "scripts/friday_native.py"),
+                       "sha256": current_files["scripts/friday_native.py"]},
+        }
+        new_marker["ordinary_gateway"] = phase
+        # the install stamp pins the layer list of the receipt
+        stamp = read_json(Path(home) / "hermes-agent/install-stamp.json")
+        stamp["fridaySource"] = {"baseTree": new_receipt["base_tree"], "layers": new_receipt["layers"]}
+        stamp_data = encoded(stamp)
+        write_atomic(staging_root / "install-stamp.json", stamp_data, 0o600)
+        new_marker["input_sha256"] = request["current_input"]["sha256"]
+        write_atomic(staging_root / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
+        publish_with_journal(home / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
+        publish_with_journal(Path(home) / "hermes-agent/install-stamp.json", stamp_data, 0o600)
+
+        write_atomic(staging_root / "committed.json", encoded({
+            "schema": "friday.ordinary-telegram-source-update-transaction.v1",
+            "state": "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED",
+            "request_sha256": request_sha256,
+            "previous_input": request["previous_input"],
+            "current_input": request["current_input"],
+            "source_receipt_sha256": digest(encoded(new_receipt)),
+            "layers": [layer["manifest"] for layer in layers],
+            "files": touched,
+            "gateway_started": False,
+            "workers_enabled": False,
+            "seconds": round(time.monotonic() - started, 3),
+        }), 0o600)
     except Exception:
-        for name in reversed(plugin_published):
-            saved = staging_root / "before" / name
-            if saved.exists():
-                publish(Path(home) / name, owned_file(saved), 0o600)
-            else:
-                Path(Path(home) / name).unlink(missing_ok=True)
+        # One rollback for the whole operation: the source files, the project files, the
+        # plugin set, the receipt, the marker and the stamp. Files that this operation
+        # added are removed again.
+        journal.restore(published)
+        write_atomic(staging_root / "rolled-back.json", encoded({
+            "state": "ROLLED_BACK",
+            "published": [str(p) for p in published],
+            "entries": sorted(journal.entries),
+        }), 0o600)
         raise
-    write_atomic(staging_root / "published-plugins.json",
-                 encoded({"files": plugin_published}), 0o600)
-    for name in plugin_published:
-        published.append(name)
-
-    # 11. the new receipt and marker, published through the same journal.
-    new_receipt = projected
-    new_receipt["files"] = projected["files"]
-    write_atomic(staging_root / "hermes-agent.source.json", encoded(new_receipt), 0o600)
-    publish(home / "hermes-agent.source.json", encoded(new_receipt), 0o600)
-    published.append("hermes-agent.source.json")
-
-    new_marker = dict(marker)
-    # the marker's plugin inventory must follow the published plugin set
-    plugin_pins = dict(marker.get("plugin_files", {}))
-    for name in plugin_published:
-        plugin_pins[name] = digest(owned_file(Path(home) / name))
-    new_marker["plugin_files"] = plugin_pins
-    receipt_sha = digest(encoded(new_receipt))
-    new_marker["source_receipt_sha256"] = receipt_sha
-    # the ordinary gateway phase pins the receipt: it must follow the published one,
-    # exactly as the product's own source update does.
-    phase = dict(new_marker.get("ordinary_gateway", {}))
-    phase["source_receipt_sha256"] = receipt_sha
-    phase["operator_entry"] = {
-        "input": {"path": str(request["current_input"]["path"]),
-                  "sha256": request["current_input"]["sha256"]},
-        "script": {"path": str(candidate / "scripts/friday_native.py"),
-                   "sha256": current_files["scripts/friday_native.py"]},
-    }
-    new_marker["ordinary_gateway"] = phase
-    # the install stamp pins the layer list of the receipt
-    stamp = read_json(Path(home) / "hermes-agent/install-stamp.json")
-    stamp["fridaySource"] = {"baseTree": new_receipt["base_tree"], "layers": new_receipt["layers"]}
-    stamp_data = encoded(stamp)
-    write_atomic(staging_root / "install-stamp.json", stamp_data, 0o600)
-    new_marker["input_sha256"] = request["current_input"]["sha256"]
-    write_atomic(staging_root / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
-    publish(home / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
-    published.append("FRIDAY-INSTALL.json")
-    publish(Path(home) / "hermes-agent/install-stamp.json", stamp_data, 0o600)
-    published.append("hermes-agent/install-stamp.json")
-
-    write_atomic(staging_root / "committed.json", encoded({
-        "schema": "friday.ordinary-telegram-source-update-transaction.v1",
-        "state": "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED",
-        "request_sha256": request_sha256,
-        "previous_input": request["previous_input"],
-        "current_input": request["current_input"],
-        "source_receipt_sha256": digest(encoded(new_receipt)),
-        "layers": [layer["manifest"] for layer in layers],
-        "files": touched,
-        "gateway_started": False,
-        "workers_enabled": False,
-        "seconds": round(time.monotonic() - started, 3),
-    }), 0o600)
 
     # 12. clean up the staging tree; the journal keeps the evidence.
     shutil.rmtree(staging, ignore_errors=True)

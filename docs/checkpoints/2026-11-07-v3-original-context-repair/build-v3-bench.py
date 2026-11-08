@@ -70,23 +70,49 @@ def main():
     bench.mkdir(parents=True)
 
     receipt = json.loads((HOME / "hermes-agent.source.json").read_text())
+    # the bench's receipt pins the preimage bytes of the five files it publishes
+    bench_receipt_files = {}
     source = bench / "hermes-agent"
     # the source tree: every file the receipt pins
+    # The bench starts from the composition BEFORE the V3 layers: the five touched files
+    # come from the preserved pre-install copy, whose bytes the layers' preimage hashes
+    # pin; the rest of the composition is copied as it is.
+    preinstall = None
+    for candidate in sorted(Path("/home/jericho/.cache").glob("pre-install-5files-*")):
+        if (candidate / "agent/agent_init.py").exists():
+            preinstall = candidate
+    if preinstall is None:
+        raise SystemExit("the preserved pre-install copy of the five files is missing")
     for name, row in receipt["files"].items():
         origin = HOME / "hermes-agent" / name
         if not origin.exists():
             continue
         target = source / name
         if name in TOUCHED:
-            copy_file(origin, target)          # will be changed by the transaction
+            copy_file(preinstall / name, target)
         else:
-            link_or_copy(origin, target)
+            copy_file(origin, target)
     # the generated artefacts that are not in the receipt are not needed for the check
     # the plugin tree of the home (the V3 plugin set is published into it)
     home_plugins = HOME / "plugins/friday_rework"
     if home_plugins.exists():
         shutil.copytree(home_plugins, bench / "plugins/friday_rework", symlinks=False)
-    copy_file(HOME / "hermes-agent.source.json", bench / "hermes-agent.source.json")
+    for name in TOUCHED:
+        data = (source / name).read_bytes()
+        bench_receipt_files[name] = {"sha256": hashlib.sha256(data).hexdigest(),
+                                     "bytes": len(data), "mode": "100644"}
+    bench_receipt = json.loads(json.dumps(receipt))
+    bench_receipt["files"].update(bench_receipt_files)
+    # the bench starts BEFORE the V3 layers: their manifest entries are removed from the
+    # receipt, so the transition publishes them
+    bench_receipt["layers"] = [row for row in bench_receipt["layers"]
+                               if not any(name in row["manifest"] for name in (
+                                   "source157-original-context-deterministic-overhead",
+                                   "source157-bounded-schema-hints",
+                                   "source157-tool-budget-fit", "write-file-format-guard"))]
+    (bench / "hermes-agent.source.json").write_text(
+        json.dumps(bench_receipt, sort_keys=True, indent=2) + "\n")
+    os.chmod(bench / "hermes-agent.source.json", 0o600)
     copy_file(HOME / "FRIDAY-INSTALL.json", bench / "FRIDAY-INSTALL.json")
     copy_file(HOME / "hermes-agent/install-stamp.json", bench / "hermes-agent/install-stamp.json")
     copy_file(HOME / "config.yaml", bench / "config.yaml")
