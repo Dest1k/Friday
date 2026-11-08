@@ -84,6 +84,8 @@ def main():
         "current_input": current_input,
         "predecessor_request": pin(predecessor_tx / "request.json"),
         "predecessor_current_input_sha256": predecessor["current_input"]["sha256"],
+        "predecessor_receipt_sha256": json.loads(
+            (predecessor_tx / "committed.json").read_text())["source_receipt_sha256"],
         "target_receipt": pin(HOME / "hermes-agent.source.json"),
         "candidate_input": current_input,
         "project_inventory": current["project_files"],
@@ -94,6 +96,9 @@ def main():
         "plugin_additions": sorted(n for n in current["project_files"]
                                    if n.startswith("plugins/friday_rework/")
                                    and n not in previous["project_files"]),
+        "project_file_updates": sorted(n for n in previous["project_files"]
+                                       if not n.startswith("plugins/friday_rework/")
+                                       and current["project_files"].get(n) != previous["project_files"][n]),
         "installed_layers": len(receipt["layers"]),
         "installed_files": len(receipt["files"]),
         "transaction_history": history,

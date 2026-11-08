@@ -505,6 +505,9 @@ def source_checked(source, receipt, donor, *, proven_cache=None):
             'source_credential_file_refused')
     generated = ('.hermes/', 'node_modules/', 'hermes_cli/web_dist/', 'ui-tui/dist/',
                  'ui-tui/node_modules/', 'web/node_modules/', 'apps/shared/node_modules/')
+    # The interpreter bytecode cache is a generated product of a source file that the
+    # inventory already pins; it may coexist with the tree at any directory level.
+    generated_dirs = {'__pycache__'}
     generated_files = {'install-stamp.json', '.hermes-bytecode-fingerprint'}
     for p in source.rglob('*'):
         name = str(p.relative_to(source))
@@ -520,6 +523,7 @@ def source_checked(source, receipt, donor, *, proven_cache=None):
         if p.is_dir():
             continue
         require(name in files or name in generated_files or name.startswith(generated)
+                or any(part in generated_dirs for part in Path(name).parts[:-1])
                 or (proven_cache is not None and name in proven_cache
                     and digest(owned_file(p,private=True))==proven_cache[name]['sha256']),
                 'unexpected_composed_source_file')

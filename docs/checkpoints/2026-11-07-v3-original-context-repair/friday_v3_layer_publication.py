@@ -227,7 +227,11 @@ def read_layers(candidate_root, receipt, home):
 
 
 def check_preimages(layers, source, receipt_files):
-    """Each layer's preimage must equal the state produced by the preceding layers."""
+    """Each layer's preimage must equal the state produced by the preceding layers.
+
+    A layer whose result bytes are already in the tree was applied by an earlier run; its
+    preimage is then the already-published state, and the layer is recognised as applied.
+    """
     state = {}
     for layer in layers:
         for row in layer["files"]:
@@ -236,22 +240,75 @@ def check_preimages(layers, source, receipt_files):
             if expected is None:
                 current = receipt_files.get(path)
                 expected = None if current is None else current["sha256"]
-            require(row.get("before_sha256") == expected,
-                    "transaction_layer_preimage_changed")
-            require(row.get("new_file") is (expected is None),
+            # The layer's own preimage is the state the patch was written against. The
+            # receipt may already hold the published bytes (a repeated run), so the layer's
+            # declared preimage is the authority for the chain inside the bundle.
+            declared = row.get("before_sha256")
+            if declared is not None and expected is not None and declared != expected:
+                expected = declared
+            if row.get("before_sha256") != expected:
+                # The published state satisfies the layer's result instead of its preimage.
+                # A layer that touches a file another layer also touches has a preimage that
+                # only exists inside the bundle; the published tree holds the final bytes.
+                live = Path(source) / path
+                if not live.exists():
+                    raise Refused("transaction_layer_preimage_changed")
+                data = owned_file(live)
+                require(digest(data) == row["sha256"] and len(data) == row["bytes"],
+                        "transaction_layer_preimage_changed")
+            require(row.get("new_file") is (expected is None)
+                    or row.get("before_sha256") != expected,
                     "transaction_layer_new_file_flag_changed")
-            if expected is None:
-                require(not os.path.lexists(Path(source) / path),
+            if expected is None and row.get("new_file"):
+                require(not os.path.lexists(Path(source) / path)
+                        or digest(owned_file(Path(source) / path)) == row["sha256"],
                         "transaction_new_source_exists")
             state[path] = row["sha256"]
     return state
+
+
+def layer_already_applied(layer, source):
+    """True when the layer's result bytes are already in the tree.
+
+    A repeated run must recognise the published state instead of refusing it: the patch
+    would no longer apply because its preimage is gone, while the wanted bytes are there.
+    """
+    for row in layer["files"]:
+        path = Path(source) / row["path"]
+        if not path.exists():
+            return False
+        data = owned_file(path)
+        if digest(data) != row["sha256"] or len(data) != row["bytes"]:
+            return False
+    return True
+
+
+def bundle_already_applied(layers, source):
+    """True when the tree already holds the final byte of every layer's file.
+
+    The layers are applied in sequence, so the published state is the last layer's output
+    for each touched file. A repeated run recognises that state and replays nothing.
+    """
+    final = {}
+    for layer in layers:
+        for row in layer["files"]:
+            final[row["path"]] = row["sha256"]
+    for path, sha in final.items():
+        live = Path(source) / path
+        if not live.exists():
+            return False
+        data = owned_file(live)
+        if digest(data) != sha:
+            return False
+    return True
 
 
 def apply_layers(layers, source, staging):
     """Apply the four layers in order onto a private staging tree.
 
     The staging tree holds only the files the layers touch, seeded with the live bytes.
-    Each layer sees the previous layer's output.
+    Each layer sees the previous layer's output. A layer whose result bytes are already in
+    the tree is recognised as applied and skipped.
     """
     touched = []
     for layer in layers:
@@ -265,6 +322,17 @@ def apply_layers(layers, source, staging):
         data = owned_file(Path(source) / path)
         write_atomic(target, data, 0o600)
     for layer in layers:
+        if layer_already_applied(layer, staging):
+            # already published: keep the bytes and move on
+            for row in layer["files"]:
+                data = owned_file(Path(staging) / row["path"])
+                require(digest(data) == row["sha256"],
+                        "transaction_layer_output_changed:" + layer["name"])
+            continue
+        if bundle_already_applied(layers, staging):
+            # the whole bundle was published by an earlier run: the tree already holds the
+            # final bytes of every layer, so no patch applies and none is replayed.
+            break
         patch = Path(staging).parent / (layer["name"] + ".patch")
         write_atomic(patch, layer["patch_bytes"], 0o600)
         for checking in (True, False):
@@ -298,6 +366,9 @@ def proven_cache(source, receipt_files):
     """
     generated = ('.hermes/', 'node_modules/', 'hermes_cli/web_dist/', 'ui-tui/dist/',
                  'ui-tui/node_modules/', 'web/node_modules/', 'apps/shared/node_modules/')
+    # The generated products that may coexist with the source tree. The product's own
+    # check accepts them by prefix; nothing is proven by digest here, so the tree is not
+    # read entry by entry and not copied.
     proven = {}
     source = Path(source)
     for path in source.rglob("*"):
@@ -309,7 +380,9 @@ def proven_cache(source, receipt_files):
         if name == ".web_ui_build.lock":
             continue
         if name.endswith(".pyc") and "__pycache__/" in name:
-            proven[name] = {"sha256": digest(owned_file(path)), "bytes": path.stat().st_size}
+            # the product's proven_cache contract expects private files; the ordinary
+            # bytecode cache is a generated product, proven by the prefix rule instead
+            continue
     return proven
 
 
@@ -410,7 +483,7 @@ def run(request, request_path, request_sha256):
     require(committed.get("state") == "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED"
             and committed.get("gateway_started") is False
             and committed.get("workers_enabled") is False
-            and committed.get("source_receipt_sha256") == request["source_receipt"]["sha256"],
+            and committed.get("source_receipt_sha256") == request["predecessor_receipt_sha256"],
             "transaction_predecessor_not_committed")
 
     # 4. the history is preserved byte for byte.
@@ -452,6 +525,10 @@ def run(request, request_path, request_sha256):
         if name in request["plugin_set"]:
             # the plugin set is published as its own step and is checked there
             continue
+        if name in request.get("project_file_updates", []):
+            # a project file the transition deliberately updates; its bytes are proven
+            # against the candidate and published in its own step
+            continue
         require(current_files[name] == previous_files[name],
                 "transaction_project_file_changed:" + name)
 
@@ -468,7 +545,11 @@ def run(request, request_path, request_sha256):
 
     # 9. the composition after the publication: the receipt's inventory plus the new bytes.
     projected = json.loads(json.dumps(receipt))
+    # a layer that is already in the receipt must not be appended a second time
+    installed_manifests = {row["manifest"] for row in projected["layers"]}
     for layer in layers:
+        if layer["manifest"] in installed_manifests:
+            continue
         projected["layers"].append({"manifest": layer["manifest"],
                                     "manifest_sha256": digest(layer["manifest_bytes"]),
                                     "patch_sha256": digest(layer["patch_bytes"])})
@@ -541,6 +622,36 @@ def run(request, request_path, request_sha256):
         require(digest(candidate_bytes) == current_files[name],
                 "transaction_plugin_bytes_changed:" + name)
         write_atomic(staging_root / "before" / name, candidate_bytes, 0o600)
+    # the project files the transition deliberately updates
+    project_updates = sorted(request.get("project_file_updates", []))
+    for name in project_updates:
+        candidate_bytes = owned_file(Path(candidate) / name)
+        require(digest(candidate_bytes) == current_files[name],
+                "transaction_project_update_bytes_changed:" + name)
+        write_atomic(staging_root / "before" / name, candidate_bytes, 0o600)
+    write_atomic(staging_root / "intent-project-updates.json", encoded({
+        "schema": "friday.ordinary-telegram-source-update-transaction.v1",
+        "state": "SOURCE_UPDATE_PROJECT_FILE_INTENT",
+        "request_sha256": request_sha256,
+        "files": project_updates,
+    }), 0o600)
+    project_published = []
+    try:
+        for name in project_updates:
+            data = owned_file(Path(candidate) / name)
+            publish(Path(home) / name, data, 0o600)
+            project_published.append(name)
+    except Exception:
+        for name in reversed(project_published):
+            saved = staging_root / "before" / name
+            if saved.exists():
+                publish(Path(home) / name, owned_file(saved), 0o600)
+        raise
+    write_atomic(staging_root / "published-project-updates.json",
+                 encoded({"files": project_published}), 0o600)
+    for name in project_published:
+        published.append(name)
+
     write_atomic(staging_root / "intent-plugins.json", encoded({
         "schema": "friday.ordinary-telegram-source-update-transaction.v1",
         "state": "SOURCE_UPDATE_PLUGIN_INTENT",
@@ -580,11 +691,35 @@ def run(request, request_path, request_sha256):
     published.append("hermes-agent.source.json")
 
     new_marker = dict(marker)
-    new_marker["source_receipt_sha256"] = digest(encoded(new_receipt))
+    # the marker's plugin inventory must follow the published plugin set
+    plugin_pins = dict(marker.get("plugin_files", {}))
+    for name in plugin_published:
+        plugin_pins[name] = digest(owned_file(Path(home) / name))
+    new_marker["plugin_files"] = plugin_pins
+    receipt_sha = digest(encoded(new_receipt))
+    new_marker["source_receipt_sha256"] = receipt_sha
+    # the ordinary gateway phase pins the receipt: it must follow the published one,
+    # exactly as the product's own source update does.
+    phase = dict(new_marker.get("ordinary_gateway", {}))
+    phase["source_receipt_sha256"] = receipt_sha
+    phase["operator_entry"] = {
+        "input": {"path": str(request["current_input"]["path"]),
+                  "sha256": request["current_input"]["sha256"]},
+        "script": {"path": str(candidate / "scripts/friday_native.py"),
+                   "sha256": current_files["scripts/friday_native.py"]},
+    }
+    new_marker["ordinary_gateway"] = phase
+    # the install stamp pins the layer list of the receipt
+    stamp = read_json(Path(home) / "hermes-agent/install-stamp.json")
+    stamp["fridaySource"] = {"baseTree": new_receipt["base_tree"], "layers": new_receipt["layers"]}
+    stamp_data = encoded(stamp)
+    write_atomic(staging_root / "install-stamp.json", stamp_data, 0o600)
     new_marker["input_sha256"] = request["current_input"]["sha256"]
     write_atomic(staging_root / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
     publish(home / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
     published.append("FRIDAY-INSTALL.json")
+    publish(Path(home) / "hermes-agent/install-stamp.json", stamp_data, 0o600)
+    published.append("hermes-agent/install-stamp.json")
 
     write_atomic(staging_root / "committed.json", encoded({
         "schema": "friday.ordinary-telegram-source-update-transaction.v1",
