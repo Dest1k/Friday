@@ -1093,10 +1093,10 @@ def container_checked(p, obj, cid=None, *, stop_owned=False, pending_endpoint=Fa
         require(isinstance(networks, dict) and set(networks) == {value['name']},
                 'container_network_changed')
         endpoint_id = networks[value['name']].get('NetworkID')
-        if pending_endpoint:
-            # Docker attaches the endpoint when the container starts.
-            require(obj.get('State', {}).get('Status') == 'created'
-                    and endpoint_id in ('', value['id']), 'container_network_changed')
+        if pending_endpoint and obj.get('State', {}).get('Status') == 'created':
+            # Docker attaches the endpoint when the container starts, so only a
+            # container that has not started yet may still lack the endpoint ID.
+            require(endpoint_id in ('', value['id']), 'container_network_changed')
         else:
             require(endpoint_id == value['id'], 'container_network_changed')
         # No injected proxy, DNS override or implicit cloud transport.

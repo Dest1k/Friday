@@ -292,7 +292,7 @@ class InitialProbe:
             self.current()
             with self.runtime.locked():
                 r = self.runtime.receipt()
-                obj = self.runtime.inspect(r, timeout=min(3, self.left()))
+                obj = self.runtime.inspect(r, timeout=min(3, self.left()), pending_endpoint=True)
                 unit = self.runtime.supervisor.observe(self.runtime.association(r))
                 if (unit.missing or unit.quiescent or unit.invocation_id != r['invocation_id']):
                     raise HostUnavailable('a0_bootstrap_native_start_lost')
