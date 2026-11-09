@@ -47,6 +47,52 @@ def digest(path):
     return pub.digest(Path(path).read_bytes())
 
 
+def broken_restore_fixture():
+    """A restore that raises after the file changed must read as a negative outcome.
+
+    The same three conditions as the positive case are evaluated: the restore itself must
+    have succeeded, the previous bytes must be back and the previous modes must be back.
+    """
+    root = ROOT / "broken"
+    home = root / "home"
+    (home / "plugins").mkdir(parents=True, exist_ok=True)
+    (home / "plugins" / "a.txt").write_bytes(b"alpha-original\n")
+    (home / "b.txt").write_bytes(b"beta-original\n")
+    os.chmod(home / "b.txt", 0o640)
+    before_bytes = {n: digest(home / n) for n in ("b.txt", "plugins/a.txt")}
+    before_modes = modes(home)
+
+    pub.INJECT_AFTER_RENAME = False
+    pub.INJECT_TARGET = None
+    pub.INJECT_SNAPSHOT_DIR = None
+    pub.INJECT_SNAPSHOT_FILES = ()
+    pub.INJECT_SNAPSHOT_HOME = home
+
+    journal = pub.Journal(root / "journal", home)
+    journal.record_existing(home / "b.txt", (home / "b.txt").read_bytes())
+    journal.record_existing(home / "plugins" / "a.txt", (home / "plugins" / "a.txt").read_bytes())
+    # the file is changed, and then the restore itself fails
+    (home / "b.txt").write_bytes(b"beta-changed\n")
+    os.chmod(home / "b.txt", 0o600)
+    original_publish = pub.publish
+    def failing_publish(target, data, mode=0o600):
+        raise OSError("the restore failed after the file was changed")
+    pub.publish = failing_publish
+    try:
+        journal.restore([home / "b.txt"])
+        outcome = "RESTORED"
+    except BaseException as exc:
+        outcome = type(exc).__name__ + ": " + str(exc)[:80]
+    finally:
+        pub.publish = original_publish
+    after_bytes = {n: digest(home / n) for n in ("b.txt", "plugins/a.txt")}
+    after_modes = modes(home)
+    shutil.rmtree(root, ignore_errors=True)
+    return {"restore_outcome": outcome,
+            "bytes_restored": after_bytes == before_bytes,
+            "modes_restored": after_modes == before_modes}
+
+
 def main():
     if ROOT.exists():
         shutil.rmtree(ROOT)
@@ -128,11 +174,27 @@ def main():
          "ok": injection_flag_after_failure is False},
         {"check": "the rollback restored the previous bytes",
          "before": before_bytes, "after": restored_bytes, "restore_outcome": restore_outcome,
-         "ok": restored_bytes == before_bytes},
+         "the_restore_itself_succeeded": restore_outcome == "RESTORED",
+         "ok": restored_bytes == before_bytes and restore_outcome == "RESTORED"},
         {"check": "the rollback restored the previous modes",
          "before": before_modes, "after": after_modes,
-         "ok": after_modes == before_modes},
+         "the_restore_itself_succeeded": restore_outcome == "RESTORED",
+         "ok": after_modes == before_modes and restore_outcome == "RESTORED"},
     ]
+    # the negative case: a restore that fails AFTER the file changed must NOT pass. The
+    # verdict of the check is computed from the same three conditions, so a broken restore
+    # turns the whole check negative. It is exercised on a second tiny fixture.
+    negative = broken_restore_fixture()
+    results.append({
+        "check": "a restore that fails after the file changed gives a negative verdict",
+        "restore_outcome": negative["restore_outcome"],
+        "the_bytes_are_back": negative["bytes_restored"],
+        "the_modes_are_back": negative["modes_restored"],
+        "the_verdict_is_negative": not (negative["restore_outcome"] == "RESTORED"
+                                       and negative["bytes_restored"]
+                                       and negative["modes_restored"]),
+        "ok": not (negative["restore_outcome"] == "RESTORED"
+                   and negative["bytes_restored"] and negative["modes_restored"])})
     for result in results:
         say(**result)
     say(summary={"checks": len(results),
