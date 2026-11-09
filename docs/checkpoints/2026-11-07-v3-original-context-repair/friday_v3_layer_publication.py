@@ -57,6 +57,9 @@ INJECT_TARGET = None
 # added. The record is written OUTSIDE the rollback journal, so the rollback cannot change
 # it; it is the evidence that the late point was reached with changed files on disk.
 INJECT_SNAPSHOT_DIR = None
+# The files whose state is recorded at the injection point. They are named explicitly by
+# the request; the scope of the read is never derived from a directory's parents.
+INJECT_SNAPSHOT_FILES = ()
 
 
 class Refused(Exception):
@@ -180,7 +183,8 @@ def publish(target, data, mode=0o600):
         # at the same boundary again.
         INJECT_AFTER_RENAME = False
         if INJECT_SNAPSHOT_DIR is not None:
-            _write_injection_snapshot(INJECT_SNAPSHOT_DIR, target)
+            _write_injection_snapshot(INJECT_SNAPSHOT_DIR, target,
+                                     INJECT_SNAPSHOT_FILES, home)
         # a controlled failure at the rename/sync boundary, used to prove that the rollback
         # covers a file that was already changed when the failure happened
         raise OSError(errno.EIO, "injected failure after the rename")
@@ -226,30 +230,68 @@ def gateway_running(unit_path, bench_home=None):
     return result.stdout.strip() == "active"
 
 
-def _write_injection_snapshot(directory, current_target):
-    """Record the home's state at the exact moment of the injected failure."""
+def _digest_file(path, limit=64 * 1024 * 1024, chunk=64 * 1024):
+    """Stream a file through the digest with a bounded read and a bounded size."""
+    import hashlib as _hashlib
+    size = 0
+    hasher = _hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            block = handle.read(chunk)
+            if not block:
+                break
+            size += len(block)
+            if size > limit:
+                raise Refused("transaction_snapshot_file_too_large:" + str(path))
+            hasher.update(block)
+    return hasher.hexdigest(), size
+
+
+def _write_injection_snapshot(directory, current_target, files, home):
+    """Record the state of EXACTLY the named files at the moment of the injected failure.
+
+    The set of files is passed in explicitly. The scope of the read is never derived from
+    the parents of the result directory, so DSH sessions, neighbouring benches, caches and
+    other temporary work are outside it by construction. Every named file must exist, must
+    be a regular file inside the home and must not be a symlink; a missing file, an
+    unreadable file or a size above the bound is an explicit refusal, never a silent skip.
+    """
     import stat as _stat
     directory = Path(directory)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    home = Path(home).resolve()
+    if not files:
+        raise Refused("transaction_snapshot_file_set_empty")
     state = {}
-    for path in sorted(Path(directory).parent.parent.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
-        if directory in path.parents or directory == path:
-            continue
-        if "preparation" in path.parts:
-            continue
+    read_paths = []
+    for relative in files:
+        if not isinstance(relative, str) or not relative or relative.startswith("/"):
+            raise Refused("transaction_snapshot_path_invalid:" + str(relative))
+        target = (home / relative)
+        # a symlink is refused by its own name, before any resolution
+        if target.is_symlink():
+            raise Refused("transaction_snapshot_path_is_symlink:" + relative)
         try:
-            info = path.lstat()
-            state[str(path)] = {"sha256": digest(path.read_bytes()),
-                                "mode": _stat.S_IMODE(info.st_mode),
-                                "bytes": info.st_size}
+            resolved = target.resolve()
         except OSError:
-            continue
+            raise Refused("transaction_snapshot_path_unresolvable:" + relative) from None
+        if resolved != target or home not in resolved.parents:
+            raise Refused("transaction_snapshot_path_outside_home:" + relative)
+        if not target.is_file():
+            raise Refused("transaction_snapshot_file_missing:" + relative)
+        info = target.lstat()
+        if not _stat.S_ISREG(info.st_mode):
+            raise Refused("transaction_snapshot_file_not_regular:" + relative)
+        sha256, size = _digest_file(target)
+        state[str(target)] = {"sha256": sha256, "mode": _stat.S_IMODE(info.st_mode),
+                              "bytes": size}
+        read_paths.append(str(target))
     (directory / "STATE-AT-INJECTION.json").write_bytes(encoded(
         {"schema": "friday.v3.injection-point-state.v1",
          "at_target": str(current_target),
-         "files": state}))
+         "home": str(home),
+         "files": state,
+         "read_paths": read_paths}))
 
 
 class Journal:
@@ -598,12 +640,13 @@ def history_map(home):
 
 
 def run(request, request_path, request_sha256):
-    global INJECT_AFTER_RENAME, INJECT_TARGET, INJECT_SNAPSHOT_DIR
+    global INJECT_AFTER_RENAME, INJECT_TARGET, INJECT_SNAPSHOT_DIR, INJECT_SNAPSHOT_FILES
     started = time.monotonic()
     os.umask(0o077)
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")
+    INJECT_SNAPSHOT_FILES = tuple(request.get("inject_snapshot_files") or ())
     require(request.get("schema") == SCHEMA, "transaction_only_v45_supported")
     home = Path(request["home"]).resolve()
     if INJECT_SNAPSHOT_DIR is not None:

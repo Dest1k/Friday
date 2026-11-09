@@ -118,6 +118,9 @@ def main():
     raw["inject_after_rename"] = True
     raw["inject_target"] = str(BENCH / "hermes-agent/install-stamp.json")
     raw["inject_snapshot_dir"] = str(SNAPSHOT)
+    # the files whose state is recorded at the injection point are named EXPLICITLY; the
+    # scope of the read is not derived from the parents of the result directory
+    raw["inject_snapshot_files"] = list(WATCHED)
     for key in ("marker", "source_receipt", "stamp", "configuration", "profile", "launcher"):
         path = Path(raw[key]["path"])
         relative = path.relative_to(HOME)

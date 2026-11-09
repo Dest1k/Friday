@@ -136,8 +136,14 @@ Objective и критерий завершения **не меняются**: FR
 - `verify-v3-failure-paths.py`, `verify-v3-publication-gaps.py` — проверки отказов и откатов.
 - `evidence/recipients5.csv` — восстановленный побайтно исходник D-12.
 - `evidence/M-03-R50-ROOT-OPERATIONAL-CLOSURE.json` — документ закрытия истории M-03.
-- `evidence/tester/bot_tester.v42.py` — актуальный снимок фактически используемого тестера,
-  рядом установленная версия и воспроизводимый diff.
-- `check-reply-text-contract.py` — офлайн-фикстуры общего контракта текстовой квитанции.
+- `evidence/tester/bot_tester.v42.py` — снимок фактически используемого тестера
+  (sha256 `e6d1f64d…`), рядом `bot_tester.installed.py` (база, sha256 `cc36c093…`),
+  воспроизводимый `tester-delta-v42.diff` и `INDEPENDENT-AUTHORITY-R54.json` (действующий
+  допуск, sha256 `740f3af0…`); сводка комплекта — `TESTER-SET.json`. Дельта проверена:
+  применение `patch -p0` к копии базы даёт побайтно тот же снимок и тот же sha256.
+- `check-reply-text-contract.py` — офлайн-фикстуры общего контракта текстовой квитанции;
+  идут против собственного небольшого Store в `/home/jericho/.dsh/tmp`, рабочее хранилище
+  тестера не создаётся, не открывается и не меняется.
+- `check-snapshot-boundary.py` — граница файлового обхода снимка точки отказа.
 - `verify-v3-late-rollback.py` — доказательство позднего отката по байтам в точке отказа.
 - `DSH-RESUME-2026-11-08.md` — историческая передача, больше не является рабочей инструкцией.

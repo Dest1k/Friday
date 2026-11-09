@@ -2147,20 +2147,21 @@ def s07_runtime_plan(plan):
 
 class Runner:
     ORDINARY_INDEPENDENT_SCENARIOS = {
-        "jarvis-activate-check-01-r47": "f13d77340bb937a3d0fa1f642c2094ac90b993d662e5fe2d8214219cc970d463",
+        "d09-translation-check-01-r55": "152cb15e2b9da0bed9bd32df929490d70f0b80582df2c0f644dba58254e8d965",
         "d12-write-file-check-01-r48": "877f9307d145b9cb72309240d631c2aab2f37a97247421452cdb150814b8bb9c",
-        "fmt-wrong-format-check-01-r49": "b00ab53955e99dad6ac1db8269cd2727ddea9b4eb88aa13fd8cfa8f658ea6168",
-        "ordinary-write-check-01-r49": "635eaa09852a367961e55ad92ba65b1878a00a169e561de7dd5924513f5f8b95",
-        "out-of-scope-check-01-r49": "e58f004096892f0f5a51c385e32b9490b93858b4a2e1cbc8f1f5186e2e9fa6c5",
         "f01-csv-extract-check-01-r50": "44efb9843711b82567d14c3f3fdfff6c44bbbeb5f3b91592f1ec387b9449cbcb",
+        "fmt-wrong-format-check-01-r49": "b00ab53955e99dad6ac1db8269cd2727ddea9b4eb88aa13fd8cfa8f658ea6168",
+        "jarvis-activate-check-01-r47": "f13d77340bb937a3d0fa1f642c2094ac90b993d662e5fe2d8214219cc970d463",
         "m03-addendum-check-01-r50": "226ece242b285b95a0df39a3b4e8ce7d5b27db2df9ffc05726bcc319c86ca02d",
         "m03-addendum-check-01-r51": "a78bdfc7e0c84ce97566331bcd8cf0ab5e0727d2c2181d13ef7ab1ef74feb401",
         "m05-current111-check-01-r52": "2cf7b09d735abe08318045a9e03840ba0f9e8f40f8bc36e1663800e1ddd029b1",
         "m06-postrestart-check-01-r52": "f4754ee87c423e26b2b028a9a60db2f4151b0513c88473cd1cd68aacb80acea1",
+        "ordinary-write-check-01-r49": "635eaa09852a367961e55ad92ba65b1878a00a169e561de7dd5924513f5f8b95",
+        "out-of-scope-check-01-r49": "e58f004096892f0f5a51c385e32b9490b93858b4a2e1cbc8f1f5186e2e9fa6c5",
     }
     ORDINARY_INDEPENDENT_AUTHORITY = dict(
-        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R53.json',
-        bytes=13351, sha256='b968587d822e23ce25ad3f95c4b6633e4e3518a04accc1970e6b7eba0d076e46')
+        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R54.json',
+        bytes=13705, sha256='740f3af009e8be59270ec06559af7cfaf16c58a81327174f654085f9eff568cc')
 
     def __init__(self, store, api, clock=time.time, sleep=time.sleep):
         self.store, self.api, self.clock, self.sleep = store, api, clock, sleep
@@ -11598,7 +11599,7 @@ class Runner:
         if (len(raw) != reference['bytes'] or digest(raw) != reference['sha256']
                 or encoded(document) != raw
                 or document.get('schema') != 'frw.Root.ordinary-independent-history-admission.v1'
-                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r53'
+                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r54'
                 or document.get('operator') != 'Root' or document.get('accepted') is not True
                 or document.get('run_scenarios') != self.ORDINARY_INDEPENDENT_SCENARIOS
                 or digest(encoded(scenario)) != expected_sha
