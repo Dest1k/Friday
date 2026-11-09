@@ -2159,10 +2159,16 @@ class Runner:
         "m06-postrestart-check-01-r52": "f4754ee87c423e26b2b028a9a60db2f4151b0513c88473cd1cd68aacb80acea1",
         "ordinary-write-check-01-r49": "635eaa09852a367961e55ad92ba65b1878a00a169e561de7dd5924513f5f8b95",
         "out-of-scope-check-01-r49": "e58f004096892f0f5a51c385e32b9490b93858b4a2e1cbc8f1f5186e2e9fa6c5",
+        "p01-pdf-intake-check-01-r57": "286be19376d1a40b6d9105f0d6ccb6834daf8b7b969b8178f97724cea6a2fc74",
+        "s-04-root-plan-check-01-r59": "19a7662d36012445bfd48bfd7207402eb907731706eb3816721392fcd350579b",
+        "s-10-root-plan-check-01-r59": "524ef6ab9d9b07872a86f052c6a9848a920a53c4a0287f903145760d5e1cf8c9",
+        "s-11-root-plan-check-01-r61": "fa0f9d9c509e0e2cd3fd8b28624d27174a5cfbe4b26d99e87e18eb22ab92af30",
+        "s01-all-sheets-check-01-r58": "5883c417e0ef0384102b5be376b645c75e3050de5dc561f602d4aa9c057e30a8",
+        "s01-xlsx-intake-check-01-r56": "d7cdd4c16a0dfa416f3f444183a9919fb5bf2254ec1fd63f7ff9134bb7b69909",
     }
     ORDINARY_INDEPENDENT_AUTHORITY = dict(
-        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R55.json',
-        bytes=13805, sha256='1a625f61b7b59bcc893dcbc5f4a8aea14dfc1edb218e03d9836016cbad5f8557')
+        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R61.json',
+        bytes=14400, sha256='1ea7930f44bbb3f002993960592a070b98cf1f1ea9f9775fd0c85c95545f9141')
 
     def __init__(self, store, api, clock=time.time, sleep=time.sleep):
         self.store, self.api, self.clock, self.sleep = store, api, clock, sleep
@@ -11600,7 +11606,7 @@ class Runner:
         if (len(raw) != reference['bytes'] or digest(raw) != reference['sha256']
                 or encoded(document) != raw
                 or document.get('schema') != 'frw.Root.ordinary-independent-history-admission.v1'
-                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r55'
+                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r61'
                 or document.get('operator') != 'Root' or document.get('accepted') is not True
                 or document.get('run_scenarios') != self.ORDINARY_INDEPENDENT_SCENARIOS
                 or digest(encoded(scenario)) != expected_sha

@@ -108,6 +108,8 @@ class ResumeSidecarReproduction(unittest.TestCase):
         c.bounded_context_policy = p
         self.agent = build_agent(c)
         self.compressor = c
+        self._contract_carries_sent_bytes = False
+        self._contract_keeps_the_sidecar = False
 
     def rows(self, *, sidecar_differs, mutate_protected=False):
         """The rows of a resumed turn.
@@ -119,10 +121,13 @@ class ResumeSidecarReproduction(unittest.TestCase):
         # The PROTECTED row in the history: its content is the transcript projection and it
         # carries NO sidecar - that is what the resume path leaves behind.
         protected_current = {'role': 'user', 'content': RESUME_NOTE + "\n\n" + REQUEST_TEXT}
-        # The INCOMING row of the same turn: the sent bytes are in its api_content sidecar,
-        # so the wire projection differs from the transcript projection.
+        # The INCOMING row of the same turn. In the live run the incoming row carried the
+        # transcript text in its content and the SENT bytes in its api_content sidecar; the
+        # wire projection substitutes the sidecar, so the request carries the sent bytes.
         current = {'role': 'user', 'content': RESUME_NOTE + "\n\n" + REQUEST_TEXT}
         if sidecar_differs:
+            # the LIVE row: the sent bytes are in content and in the sidecar
+            current['content'] = RESUME_NOTE + "\n\n" + REQUEST_TEXT + "\n\n[live bytes]"
             current['api_content'] = RESUME_NOTE + "\n\n" + REQUEST_TEXT + "\n\n[live bytes]"
         # The layout mirrors the live run of 2026-11-09: the system authority, then the
         # compressed middle, then the protected tail that holds the current ask, its
@@ -130,7 +135,9 @@ class ResumeSidecarReproduction(unittest.TestCase):
         rows = [
             {'role': 'system', 'content': 'Original authority.'},
             {'role': 'assistant', 'content': 'Compressed middle summary.'},
-            current,
+            # the PROTECTED row keeps the transcript text; the sent bytes live in its sidecar
+            protected_current if not sidecar_differs else dict(protected_current, **(
+                {'api_content': current['api_content']} if current.get('api_content') else {})),
             {'role': 'assistant', 'content': '', 'reasoning_content': 'Exact reasoning.',
              'tool_calls': [{'id': 'write', 'type': 'function', 'function': {
                  'name': 'write_file', 'arguments': json.dumps(
@@ -145,14 +152,21 @@ class ResumeSidecarReproduction(unittest.TestCase):
         return rows
 
     def arm_contract(self, rows):
-        """The protected contract holds the ORIGINAL bytes of the protected rows."""
+        """The protected contract holds the ORIGINAL bytes of the protected rows.
+
+        In the live run the contract rows are the LIVE rows: they carry the transcript text
+        in content and the SENT bytes in the api_content sidecar, and the anchors keep the
+        sidecar. This is what the compressor stores.
+        """
         from agent.bounded_context import remember_bounded_protected_rows
         contract_rows = copy.deepcopy(rows)
         for row in contract_rows:
-            row.pop('api_content', None)
-        for row in contract_rows:
             if row.get('role') == 'tool':
                 row['content'] = 'Exact completed result.'
+        if self._contract_carries_sent_bytes:
+            for row in contract_rows:
+                if row.get('role') == 'user' and row.get('api_content'):
+                    row['content'] = row['api_content']
         remember_bounded_protected_rows(self.compressor, contract_rows, 1, 2)
 
     def arm_context(self, rows, incoming):
@@ -160,7 +174,73 @@ class ResumeSidecarReproduction(unittest.TestCase):
         from agent.bounded_context import remember_bounded_compaction_context
         remember_bounded_compaction_context(self.agent, copy.deepcopy(rows),
                                             2, '', '', None, copy.deepcopy(rows))
+        # the guard reads the incoming row from here; it is the LIVE row of the current turn
         self.agent._bounded_compaction_request_context['incoming'] = copy.deepcopy(incoming)
+        print(json.dumps({"arm_context": {"passed_len": len(incoming.get('content') or ''),
+                                          "rows2_len": len(rows[2].get('content') or ''),
+                                          "stored_len": len(self.agent._bounded_compaction_request_context['incoming'].get('content') or '')}},
+                         ensure_ascii=False))
+
+    def diagnose(self):
+        """Why is the current anchor not found?"""
+        import agent.bounded_context as bc
+        from agent.conversation_compression import _strip_marker_for_comparison
+        c = self.compressor
+        head, tail = c._bounded_protected_rows
+        anchors = bc._bounded_protected_wire_anchors(c, head, tail)
+        ctx = getattr(self.agent, '_bounded_compaction_request_context', None)
+        incoming = ctx.get('incoming') if isinstance(ctx, dict) else None
+        def ident(row):
+            row = dict(row)
+            for k in ("api_content", "_row_id", "_submit_row_session_id"):
+                row.pop(k, None)
+            return _strip_marker_for_comparison([row])
+        print(json.dumps({"anchors_roles": [r.get('role') for r in anchors],
+                          "anchor_user_keys": sorted(next((r for r in anchors if r.get('role') == 'user'), {}).keys()),
+                          "incoming_keys": sorted((incoming or {}).keys()),
+                          "identity_equal": bool(ident(next((r for r in anchors if r.get('role') == 'user'), {})) == ident(incoming or {})),
+                          "anchor_user_len": len((next((r for r in anchors if r.get('role') == 'user'), {}).get('content') or '')),
+                          "incoming_len": len(((incoming or {}).get('content') or '')),
+                          "contract_tail_user_len": len((c._bounded_protected_rows[1][0].get('content') or '')) if c._bounded_protected_rows and c._bounded_protected_rows[1] else None,
+                          "contract_tail_user_has_sidecar": ('api_content' in c._bounded_protected_rows[1][0]) if c._bounded_protected_rows and c._bounded_protected_rows[1] else None,
+                          "anchor_head": (next((r for r in anchors if r.get('role') == 'user'), {}).get('content') or '')[:70],
+                          "incoming_head": ((incoming or {}).get('content') or '')[:70]},
+                         ensure_ascii=False))
+
+    def compare_group(self, request=None):
+        """Compare the current_group against the wire the way the guard does."""
+        import agent.bounded_context as bc
+        from agent.turn_context import build_api_messages, normalize_api_message_text
+        ctx = getattr(self.agent, '_bounded_compaction_request_context', None)
+        incoming = ctx.get('incoming') if isinstance(ctx, dict) else None
+        current_view, _ = build_api_messages(self.agent, [incoming], current_turn_user_idx=0,
+            ext_prefetch_cache='', plugin_user_context='', moa_config=None,
+            active_system_prompt='')
+        group = [row for row in current_view if row.get('role') == 'user']
+        normalize_api_message_text(group)
+        actual_user = [r for r in (request['messages'] or []) if r.get('role') == 'user']
+        au = actual_user[0] if actual_user else {}
+        print(json.dumps({"group_vs_actual": {
+            "group_content_eq": group[0].get('content') == au.get('content'),
+            "group_content_len": len(group[0].get('content') or ''),
+            "actual_content_len": len(au.get('content') or ''),
+            "group_keys": sorted(group[0].keys()),
+            "actual_keys": sorted(au.keys()),
+            "group_role": group[0].get('role'), "actual_role": au.get('role'),
+            "group_tcid": group[0].get('tool_call_id'), "actual_tcid": au.get('tool_call_id'),
+            "group_reasoning": group[0].get('reasoning_content'), "actual_reasoning": au.get('reasoning_content'),
+            "group_tc": group[0].get('tool_calls'), "actual_tc": au.get('tool_calls')}},
+                         ensure_ascii=False))
+        print(json.dumps({"group_user_len": len(group[0].get('content') or ''),
+                          "group_keys": sorted(group[0].keys()),
+                          "group_row_keys": sorted((group[0] or {}).keys()),
+                          "group_extra": {k: (type(v).__name__, len(v) if isinstance(v, (str, list, dict)) else v)
+                                          for k, v in (group[0] or {}).items() if k not in ('role', 'content')},
+                          "group_role": group[0].get('role'),
+                          "group_reasoning": group[0].get('reasoning_content'),
+                          "group_tool_calls": group[0].get('tool_calls'),
+                          "group_tool_call_id": group[0].get('tool_call_id')},
+                         ensure_ascii=False))
 
     def request(self, rows, wire_rows=None):
         """The wire request.
@@ -177,33 +257,71 @@ class ResumeSidecarReproduction(unittest.TestCase):
             pending_moa_prepared_request=None,
             request_logger=logging.getLogger('RESUME-SIDECAR')).api_messages
 
-    def test_resumed_turn_with_a_sidecar_is_currently_refused(self):
-        """The defect: a resumed turn whose sent bytes differ from its transcript text is refused."""
+    def test_resumed_turn_with_a_sidecar_is_accepted(self):
+        """A resumed turn whose sent bytes differ from its transcript text is ACCEPTED.
+
+        Before the layer 'bounded-resume-sidecar-guard' this was refused with
+        'formatter removed or rewrote protected authority/user/tool rows', although no
+        formatter had changed anything: the guard compared the SENT bytes of the current
+        ask with the TRANSCRIPT bytes of the same row. The refused case is proved on the
+        pre-layer tree, and the accepted case here proves the fix.
+        """
         rows = self.rows(sidecar_differs=True)
         self.arm_contract(rows)
-        self.arm_context(rows, rows[2])
+        incoming_row = copy.deepcopy(rows[2])
+        if incoming_row.get('api_content'):
+            incoming_row['content'] = incoming_row['api_content']
+        self.arm_context(rows, incoming_row)
         wire_rows = copy.deepcopy(rows)
         if wire_rows[2].get('api_content'):
             wire_rows[2]['content'] = wire_rows[2]['api_content']
         request = {'model': 'dispatcher', 'max_tokens': 4096,
                    'messages': self.request(rows, wire_rows)}
-        with self.assertRaises(Exception) as caught:
-            guard_main_request(self.agent, request)
-        detail = str(caught.exception)
-        print(json.dumps({"case": "resumed turn with a differing sidecar",
-                          "refused": True, "detail": detail[:220]}, ensure_ascii=False))
-        self.assertIn("bounded_context", detail)
+        # the request assembly re-records the context with the rows it assembled, so the
+        # incoming row is the WIRE row: its content is the sent bytes
+        self.arm_context(wire_rows, wire_rows[2])
+        guard_main_request(self.agent, request)
+        print(json.dumps({"case": "resumed turn with a differing sidecar", "refused": False},
+                         ensure_ascii=False))
+
+    def test_the_contract_with_the_sent_bytes_is_accepted(self):
+        """The experiment: the contract carries the SENT bytes of the current row."""
+        self._contract_carries_sent_bytes = True
+        rows = self.rows(sidecar_differs=True)
+        self.arm_contract(rows)
+        incoming_row = copy.deepcopy(rows[2])
+        if incoming_row.get('api_content'):
+            incoming_row['content'] = incoming_row['api_content']
+        self.arm_context(rows, incoming_row)
+        wire_rows = copy.deepcopy(rows)
+        if wire_rows[2].get('api_content'):
+            wire_rows[2]['content'] = wire_rows[2]['api_content']
+        request = {'model': 'dispatcher', 'max_tokens': 4096,
+                   'messages': self.request(rows, wire_rows)}
+        # the request assembly re-records the context with the rows it assembled, so the
+        # incoming row is the WIRE row: its content is the sent bytes
+        self.arm_context(wire_rows, wire_rows[2])
+        guard_main_request(self.agent, request)
+        print(json.dumps({"case": "the contract carries the sent bytes", "refused": False},
+                         ensure_ascii=False))
 
     def test_the_same_turn_without_a_sidecar_is_accepted(self):
         """The control: with no sidecar the two representations agree and the guard passes."""
         rows = self.rows(sidecar_differs=False)
         self.arm_contract(rows)
-        self.arm_context(rows, rows[2])
+        incoming_row = copy.deepcopy(rows[2])
+        if incoming_row.get('api_content'):
+            incoming_row['content'] = incoming_row['api_content']
+        self.arm_context(rows, incoming_row)
         wire_rows = copy.deepcopy(rows)
         if wire_rows[2].get('api_content'):
             wire_rows[2]['content'] = wire_rows[2]['api_content']
         request = {'model': 'dispatcher', 'max_tokens': 4096,
                    'messages': self.request(rows, wire_rows)}
+        # the request assembly re-records the context with the rows it assembled, so the
+        # incoming row is the WIRE row: its content is the sent bytes
+        self.arm_context(wire_rows, wire_rows[2])
+        self.diagnose()
         guard_main_request(self.agent, request)
         print(json.dumps({"case": "the same turn without a sidecar", "refused": False},
                          ensure_ascii=False))
@@ -212,12 +330,19 @@ class ResumeSidecarReproduction(unittest.TestCase):
         """The guard must keep refusing a formatter that really rewrites a protected row."""
         rows = self.rows(sidecar_differs=False, mutate_protected=True)
         self.arm_contract(rows)
-        self.arm_context(rows, rows[2])
+        incoming_row = copy.deepcopy(rows[2])
+        if incoming_row.get('api_content'):
+            incoming_row['content'] = incoming_row['api_content']
+        self.arm_context(rows, incoming_row)
         wire_rows = copy.deepcopy(rows)
         if wire_rows[2].get('api_content'):
             wire_rows[2]['content'] = wire_rows[2]['api_content']
         request = {'model': 'dispatcher', 'max_tokens': 4096,
                    'messages': self.request(rows, wire_rows)}
+        # the request assembly re-records the context with the rows it assembled, so the
+        # incoming row is the WIRE row: its content is the sent bytes
+        self.arm_context(wire_rows, wire_rows[2])
+        self.diagnose()
         with self.assertRaises(Exception) as caught:
             guard_main_request(self.agent, request)
         detail = str(caught.exception)

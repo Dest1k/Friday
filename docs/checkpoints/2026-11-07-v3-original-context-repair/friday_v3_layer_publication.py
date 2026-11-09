@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V3 layer publication onto the serving ordinary home (four reviewed layers).
+"""V3 layer publication onto the serving ordinary home (the reviewed layers).
 
 Design constraints honoured by this script:
 
@@ -40,6 +40,7 @@ LAYER_NAMES = (
     "source157-bounded-schema-hints-after-source156",
     "source157-tool-budget-fit-after-source156",
     "write-file-format-guard",
+    "bounded-resume-sidecar-guard",
 )
 REQUIRED_HISTORY_ROOTS = (
     "preparation/ordinary-gateway",
@@ -388,7 +389,7 @@ class Journal:
 # ------------------------------------------------------------------ layer inventory
 
 
-def read_layers(candidate_root, receipt, home, project_files):
+def read_layers(candidate_root, receipt, home, project_files, layer_names=None):
     """Read the four layer manifests from the candidate and bind them to the home.
 
     The bytes that are actually read are tied to the hashes the current input pins: a
@@ -397,7 +398,7 @@ def read_layers(candidate_root, receipt, home, project_files):
     the file preimages are then compared with each other, never a file with itself.
     """
     layers = []
-    for name in LAYER_NAMES:
+    for name in (layer_names or LAYER_NAMES):
         manifest_rel = f"patches/hermes/{name}-manifest.json"
         patch_rel = f"patches/hermes/{name}.patch"
         require(manifest_rel in project_files and patch_rel in project_files,
@@ -740,13 +741,19 @@ def run(request, request_path, request_sha256):
 
     # 6. the project inventory: the candidate adds exactly the four layer pairs and
     #    changes nothing else that the home does not already carry.
+    # The bundle of this operation: a subset of the known layers. A layer that is already
+    # published is named so only when it is republished; a live publication of a new layer
+    # names just that one, so the already published layers are never replayed.
+    layer_names = tuple(request.get("layer_names") or LAYER_NAMES)
+    require(layer_names and set(layer_names) <= set(LAYER_NAMES),
+            "transaction_layer_names_unknown")
     inventory = request["project_inventory"]
     require(digest(encoded(inventory)) == request["project_inventory_sha256"],
             "transaction_project_inventory_changed")
     previous_files = previous_input["project_files"]
     current_files = current_input["project_files"]
-    additions = {f"patches/hermes/{name}-manifest.json" for name in LAYER_NAMES} | \
-                {f"patches/hermes/{name}.patch" for name in LAYER_NAMES}
+    additions = {f"patches/hermes/{name}-manifest.json" for name in layer_names} | \
+                {f"patches/hermes/{name}.patch" for name in layer_names}
     require(additions <= set(current_files), "transaction_layer_files_missing")
     require(set(previous_files) <= set(current_files),
             "transaction_project_file_removed")
@@ -758,11 +765,11 @@ def run(request, request_path, request_sha256):
     # The layer manifests and the plugin files the transition adds are the delta; the layer
     # patches may already be carried by the previous input, so they are checked by their
     # presence and their pinned hash, not by their absence.
-    expected_additions = {f"patches/hermes/{name}-manifest.json" for name in LAYER_NAMES} | \
+    expected_additions = {f"patches/hermes/{name}-manifest.json" for name in layer_names} | \
                           set(request["plugin_additions"])
     require(set(current_files) - set(previous_files) == expected_additions,
             "transaction_project_delta_changed")
-    for name in LAYER_NAMES:
+    for name in layer_names:
         patch = f"patches/hermes/{name}.patch"
         require(patch in current_files and patch in previous_files
                 and current_files[patch] == previous_files[patch],
@@ -781,7 +788,7 @@ def run(request, request_path, request_sha256):
     # 7. the four layers: manifest bytes, patch bytes and preimages. The layers are read
     #    from the candidate and tied to the hashes the current input pins; their preimage
     #    chain is checked against the receipt before anything is staged.
-    layers = read_layers(candidate, receipt, home, current_files)
+    layers = read_layers(candidate, receipt, home, current_files, layer_names)
     source = home / "hermes-agent"
     already_published = bundle_already_applied(layers, source, receipt, request)
     if not already_published:
