@@ -841,6 +841,22 @@ def run(request, request_path, request_sha256):
             candidate_bytes = owned_file(Path(candidate) / name)
             require(digest(candidate_bytes) == current_files[name],
                     "transaction_candidate_bytes_changed:" + name)
+        # files the request places at an explicit path inside the home (the staged native
+        # runtime source, for example): the path is relative to the home and never escapes it
+        staged_files = request.get("staged_files") or []
+        for entry in staged_files:
+            target = Path(home) / entry["path"]
+            require(not Path(entry["path"]).is_absolute()
+                    and '..' not in Path(entry["path"]).parts,
+                    "transaction_staged_path_refused")
+            candidate_bytes = owned_file(Path(candidate) / entry["source"])
+            require(digest(candidate_bytes) == current_files[entry["source"]],
+                    "transaction_candidate_bytes_changed:" + entry["source"])
+            private_parents(home, entry["path"])
+            publish_with_journal(target, candidate_bytes, 0o600)
+        if staged_files:
+            write_atomic(staging_root / "published-staged.json",
+                         encoded({"files": [e["path"] for e in staged_files]}), 0o600)
         journal.write_intent("intent-project-updates.json", {
             "schema": "friday.ordinary-telegram-source-update-transaction.v1",
             "state": "SOURCE_UPDATE_PROJECT_FILE_INTENT",

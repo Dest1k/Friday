@@ -99,6 +99,13 @@ def main():
         "project_file_updates": sorted(n for n in previous["project_files"]
                                        if not n.startswith("plugins/friday_rework/")
                                        and current["project_files"].get(n) != previous["project_files"][n]),
+        "staged_files": [
+            {"path": "worker-runtime-source/" + n, "source": n}
+            for n in ("scripts/a0_runtime.py", "scripts/rootless_docker_launch.py",
+                      "scripts/friday-rework-docker.service",
+                      "plugins/friday_rework/adapters/a0_profile.py",
+                      "plugins/friday_rework/adapters/a0_web.py")
+            if n in current["project_files"]],
         "layer_manifest_updates": sorted(n for n in current["project_files"]
                                         if n.startswith("patches/hermes/")
                                         and n.endswith("-manifest.json")
