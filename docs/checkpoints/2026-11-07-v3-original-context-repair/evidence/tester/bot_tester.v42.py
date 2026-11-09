@@ -2125,10 +2125,15 @@ class Runner:
         "fmt-wrong-format-check-01-r49": "b00ab53955e99dad6ac1db8269cd2727ddea9b4eb88aa13fd8cfa8f658ea6168",
         "ordinary-write-check-01-r49": "635eaa09852a367961e55ad92ba65b1878a00a169e561de7dd5924513f5f8b95",
         "out-of-scope-check-01-r49": "e58f004096892f0f5a51c385e32b9490b93858b4a2e1cbc8f1f5186e2e9fa6c5",
+        "f01-csv-extract-check-01-r50": "44efb9843711b82567d14c3f3fdfff6c44bbbeb5f3b91592f1ec387b9449cbcb",
+        "m03-addendum-check-01-r50": "226ece242b285b95a0df39a3b4e8ce7d5b27db2df9ffc05726bcc319c86ca02d",
+        "m03-addendum-check-01-r51": "a78bdfc7e0c84ce97566331bcd8cf0ab5e0727d2c2181d13ef7ab1ef74feb401",
+        "m05-current111-check-01-r52": "2cf7b09d735abe08318045a9e03840ba0f9e8f40f8bc36e1663800e1ddd029b1",
+        "m06-postrestart-check-01-r52": "f4754ee87c423e26b2b028a9a60db2f4151b0513c88473cd1cd68aacb80acea1",
     }
     ORDINARY_INDEPENDENT_AUTHORITY = dict(
-        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R49.json',
-        bytes=12858, sha256='76036ee4ebf0ef4e866d1e4df0a76166065f23d9319ef6251e9b8c087c8885be')
+        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R53.json',
+        bytes=13351, sha256='b968587d822e23ce25ad3f95c4b6633e4e3518a04accc1970e6b7eba0d076e46')
 
     def __init__(self, store, api, clock=time.time, sleep=time.sleep):
         self.store, self.api, self.clock, self.sleep = store, api, clock, sleep
@@ -11400,6 +11405,15 @@ class Runner:
             self.verify_window(run)
             self.receive_inventory(run, cursor)
             return  # Exact raw partial custody only, never completed/graded evidence.
+        if run.get('id') == 'm03-addendum-check-01-r50':
+            # The reply's processing receipt stays open: the answer's document was refused
+            # by the scenario's own attachment budget, so the pending uid is recorded and
+            # never replayed. The custody below is exact and ungraded.
+            self.b00_closed_partial_history(run)
+            self.verify_capture_context(run)
+            self.verify_window(run)
+            self.receive_inventory(run, cursor)
+            return  # Exact partial custody, never completed/graded evidence.
         # Unconditional recovery/terminal custody derived from the committed scenario:
         # outbound task+ACK, window commitment, raw updates/cursor, every text receipt,
         # and complete or incomplete document bytes with their receipts and raw joins.
@@ -11534,7 +11548,7 @@ class Runner:
         if (len(raw) != reference['bytes'] or digest(raw) != reference['sha256']
                 or encoded(document) != raw
                 or document.get('schema') != 'frw.Root.ordinary-independent-history-admission.v1'
-                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r49'
+                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r53'
                 or document.get('operator') != 'Root' or document.get('accepted') is not True
                 or document.get('run_scenarios') != self.ORDINARY_INDEPENDENT_SCENARIOS
                 or digest(encoded(scenario)) != expected_sha
@@ -12648,6 +12662,11 @@ class Runner:
             status='STOPPED', stop_phase='process_update', stop_reason_code='REPLY_WINDOW_CLOSED',
             pending_update=261479507, terminal_complete=False,
             closure_deleted_by_disk_cleanup=True),
+        'm03-addendum-check-01-r50': dict(
+            run_sha256='be0f649093e8a000eb5723171f51282c9db642febfa346e3f8e9cfd3fac3f786',
+            closure=dict(path='/home/jericho/.local/share/friday-telegram-bot-test/closures/m03-addendum-check-01-r50.json', bytes=2056, sha256='fce81daf5a2cae324b828071ed0c62b1860605fa2615fd86f8e32e984559aa90'),
+            status='STOPPED', stop_phase='process_update', stop_reason_code='REFUSED',
+            pending_update=261479793, terminal_complete=False),
         'root-b00-s151-r15-safe-failure-20261103-r1': dict(
             run_sha256='b1ed151fc48fbde9679d2be7956224b4bdb419c9c456a1afee14837bfddff954',
             closure=dict(path='/home/jericho/.jericho/runtime/astra-new-20261030-R1/postboot-20261102T1645MSK/B00-source151-R15-safe-failure-1/ROOT-OPERATIONAL-CLOSURE.json', bytes=1552, sha256='dd327d5e6ee026a163739462bb51fdebba3ea9df8029058bc596022af5c44aa2'),
@@ -13115,7 +13134,9 @@ class Runner:
         # Protected actual-text receipt: inert received evidence, never a semantic grade.
         uid = update['update_id']
         raw = encoded(update)
-        text = message['text']
+        # the same wording rule as close_refused_processing: a document reply carries a
+        # caption, not a text field
+        text = message.get('text') or message.get('caption') or ''
         receipt = dict(self.capture_binding(run), kind='reply_text', text=text,
                        text_sha256=digest(text.encode('utf-8')), text_chars=len(text),
                        message_id=message['message_id'], update_id=uid, date=message['date'],
@@ -13418,9 +13439,11 @@ class Runner:
         chat, sender = message.get('chat'), message.get('from')
         reply_to = message.get('reply_to_message')
         mid = message.get('message_id')
-        text = message.get('text')
+        # a document reply carries a caption, not a text field; both are the model's own
+        # wording and neither is invented here
+        text = message.get('text') if isinstance(message.get('text'), str) else message.get('caption')
         expected = run['scenario']['steps'][run['step']]['observe']
-        if ('document' in message or not isinstance(text, str)
+        if (not isinstance(text, str)
                 or type(mid) is not int or mid <= 0
                 or not isinstance(chat, dict) or chat.get('id') != PEER
                 or chat.get('type') != 'private'
@@ -13506,7 +13529,9 @@ class Runner:
         committed_ids = self.committed_message_ids(run, uid)
         if not self.close_eligible(run, message, arrival, uid, committed_ids):
             return False
-        text = message['text']
+        # A document reply carries a caption, not a text field; both are the model's own
+        # wording, and neither is invented here.
+        text = message.get('text') or message.get('caption') or ''
         mid = message['message_id']
         expected = run['scenario']['steps'][run['step']]['observe']
         observations = list(run.get('observations') or [])
