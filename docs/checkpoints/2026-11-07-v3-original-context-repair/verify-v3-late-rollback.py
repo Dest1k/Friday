@@ -2,21 +2,26 @@
 """Prove the LATE rollback of the V3 publication on an isolated bench.
 
 The earlier gap check proved that the rollback restores the state, but its injected
-failure fired at the FIRST publication, before the marker and the stamp were touched.
-Its comparison of the unchanged metadata therefore did not prove that the metadata is
+failure fired at the FIRST publication, before the marker and the stamp were touched,
+and its success condition compared only the state before the operation with the state
+after the restoration. That comparison does not prove that the metadata was changed and
 restored.
 
-This check injects the failure at ONE late point - the publication of the install stamp,
-which happens AFTER the marker has been written - and proves three facts on the bench:
+This check proves the late point on the bytes:
 
-1. the injected point is really reached;
-2. the files that matter are actually CHANGED at the moment of the refusal: the receipt,
-   the marker, the stamp and the published project file;
-3. after the rollback the bytes AND the modes of all of them are the previous ones, and
-   the historical predecessor's record is untouched.
+  * the injection fires at a LATE target - the install stamp, which is published AFTER
+    the marker - and the transaction records the home's state at that exact moment;
+  * for every file whose restoration is claimed, the bytes at the injection point really
+    DIFFER from the bytes before the operation;
+  * reaching the failure point is proven by the recorded snapshot itself;
+  * after the rollback every watched file has its previous bytes AND its previous mode,
+    and a file that did not exist before the operation is gone;
+  * the historical predecessor's record is unchanged.
 
-The injection is one-shot, so the rollback itself is not interrupted at the same
-boundary. The serving home is never touched.
+A file that already matched the candidate before the operation is NOT counted as proof of
+a restored change; the check reports it separately.
+
+The serving home is never touched.
 """
 import hashlib
 import json
@@ -31,6 +36,7 @@ REPO = Path("/home/jericho/jericho/Friday_rework")
 HOME = REPO / ".runtime/friday-normal-both-workers-frw032"
 CAND = Path("/home/jericho/.cache/FRW-V3-PUBLISH-CANDIDATE-20261108")
 BENCH = Path("/home/jericho/.dsh/tmp/v3-late-bench")
+SNAPSHOT = Path("/home/jericho/.dsh/tmp/v3-late-snapshot")
 PRE = Path("/home/jericho/.cache/pre-install-5files-1794085924")
 VENV = (REPO / ".runtime/friday-184-20261108/installs/be596ce02c5f6cde/environments/"
         "ffe0d97db6f3453eac3437e83399c554/venv/bin/python")
@@ -49,7 +55,7 @@ def state(path):
     if not path.exists():
         return None
     info = path.lstat()
-    return {"sha256": sha(path), "mode": stat.S_IMODE(info.st_mode)}
+    return {"sha256": sha(path), "mode": stat.S_IMODE(info.st_mode), "bytes": info.st_size}
 
 
 def say(**kw):
@@ -90,6 +96,8 @@ def build_bench():
 
 
 def main():
+    if SNAPSHOT.exists():
+        shutil.rmtree(SNAPSHOT)
     predecessor = build_bench()
     committed = (json.dumps({
         "schema": "friday.ordinary-telegram-source-update-transaction.v1",
@@ -108,8 +116,8 @@ def main():
         list(request.get("project_file_updates") or [])
         + ["plugins/friday_rework/host_runtime.py"]))
     raw["inject_after_rename"] = True
-    # the LATE point: the install stamp is published after the marker
     raw["inject_target"] = str(BENCH / "hermes-agent/install-stamp.json")
+    raw["inject_snapshot_dir"] = str(SNAPSHOT)
     for key in ("marker", "source_receipt", "stamp", "configuration", "profile", "launcher"):
         path = Path(raw[key]["path"])
         relative = path.relative_to(HOME)
@@ -136,31 +144,51 @@ def main():
         env={**os.environ, "HERMES_HOME": str(BENCH)})
     outcome = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else result.stderr[-300:]
 
-    # the state at the moment of the refusal, read from the transaction's own journal
-    journals = sorted((BENCH / "preparation").glob("ordinary-source-update-*/before/**/*"))
-    # the journal's BEFORE images are the previous bytes; the published bytes are in the
-    # transaction's own published-* records, which prove what was actually written
-    published = {}
-    for record in (BENCH / "preparation").glob("ordinary-source-update-*/published-*.json"):
-        try:
-            published[record.name] = json.loads(record.read_text())
-        except Exception:
-            pass
     after = {name: state(BENCH / name) for name in WATCHED}
-    changed = {name: (before[name], after[name]) for name in WATCHED
-               if before[name] != after[name]}
+    snapshot_file = SNAPSHOT / "STATE-AT-INJECTION.json"
+    reached = snapshot_file.exists()
+    at_injection = {}
+    if reached:
+        at_injection = json.loads(snapshot_file.read_text())["files"]
+
+    changed_at_the_point = {}
+    unchanged_at_the_point = {}
+    restored = {}
+    for name in WATCHED:
+        key = str(BENCH / name)
+        point = at_injection.get(key)
+        if point is None:
+            continue
+        before_entry = before[name]
+        if before_entry is None:
+            # the file did not exist before the operation: it must be gone after the rollback
+            restored[name] = after[name] is None
+            changed_at_the_point[name] = True
+            continue
+        differs = point["sha256"] != before_entry["sha256"]
+        if differs:
+            changed_at_the_point[name] = {"before_sha256": before_entry["sha256"][:12],
+                                         "at_injection_sha256": point["sha256"][:12],
+                                         "mode_at_injection": point["mode"]}
+        else:
+            unchanged_at_the_point[name] = "the file already matched the published bytes"
+        restored[name] = (after[name] is not None
+                          and after[name]["sha256"] == before_entry["sha256"]
+                          and after[name]["mode"] == before_entry["mode"])
     predecessor_unchanged = (predecessor / "committed.json").read_bytes() == committed
+    all_restored = all(restored.values()) if restored else False
+    changed_count = len(changed_at_the_point)
     say(scenario="a one-shot failure at the LATE point: the install stamp, after the marker",
         outcome=outcome[:240],
-        journal_entries=len(journals),
-        journal_targets=sorted(str(j.relative_to(BENCH)) for j in journals),
-        published_records=published,
-        files_restored=(len(changed) == 0),
-        differences_after_the_rollback=list(changed),
+        the_injection_point_was_reached=reached,
+        files_proven_changed_at_the_point=changed_at_the_point,
+        files_that_already_matched_the_candidate=unchanged_at_the_point,
+        files_restored_with_bytes_and_mode=restored,
+        every_claimed_restoration_holds=all_restored,
         predecessor_record_unchanged=predecessor_unchanged,
-        ok=(len(changed) == 0 and predecessor_unchanged
-            and "injected failure" in outcome))
+        ok=(reached and changed_count > 0 and all_restored and predecessor_unchanged))
     shutil.rmtree(BENCH, ignore_errors=True)
+    shutil.rmtree(SNAPSHOT, ignore_errors=True)
 
 
 if __name__ == "__main__":

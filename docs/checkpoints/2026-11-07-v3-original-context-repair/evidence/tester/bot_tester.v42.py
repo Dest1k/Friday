@@ -781,6 +781,33 @@ def safe_read(path, limit=MAX_JSON, private=True):
     return data
 
 
+def reply_text_of(message):
+    """The model's own wording of one reply, with the field it came from.
+
+    A reply that carries a document has a caption instead of a text field. Both are the
+    model's own wording; neither is invented here. The choice is deterministic and the
+    source is returned with the text, so the protected receipt records which field was
+    used and the reader checks exactly that field again.
+
+    The rules, in order:
+      * a non-empty string 'text' is the wording, source 'text';
+      * otherwise a non-empty string 'caption' is the wording, source 'caption';
+      * otherwise the reply has no wording at all, source None and the text is absent.
+
+    An empty string is not wording: it is treated as absent, so a receipt never claims an
+    empty text it cannot re-derive.
+    """
+    if not isinstance(message, dict):
+        return None, None
+    value = message.get('text')
+    if isinstance(value, str) and value:
+        return value, 'text'
+    value = message.get('caption')
+    if isinstance(value, str) and value:
+        return value, 'caption'
+    return None, None
+
+
 def bounded_capture(value):
     return isinstance(value, dict) and value.get('mode') == 'bounded_capture'
 
@@ -11373,6 +11400,38 @@ class Runner:
                 or run.get('capture_until') != commitment['capture_until']):
             raise Refused('Bounded reply window commitment does not bind the exact run/clock/ack')
 
+    def check_reply_text_receipt(self, message, observation, raw):
+        """The common custody check of ONE reply_text receipt.
+
+        The receipt names the field the model's wording came from. A receipt WITHOUT that
+        marker is an OLD receipt: it keeps confirming message.text exactly, so the
+        historical receipts and their hashes stay valid and unchanged. A receipt WITH the
+        marker is checked against exactly the field it names, and a substituted caption or
+        a substituted source is refused.
+
+        The raw update's bytes and hash, the message id, the date and the protected text
+        digest are checked here, so the wording can never be re-derived from anything but
+        the retained raw bytes.
+        """
+        raw_reference = observation.get('raw_update', {})
+        source = observation.get('text_source')
+        if source is None:
+            # OLD receipt: message.text only, as before
+            wording = message.get('text')
+        else:
+            if source not in ('text', 'caption'):
+                raise Refused('Reply text source is not a known field')
+            wording = message.get(source)
+        if (not isinstance(raw_reference, dict)
+                or raw_reference.get('basename') != str(observation['update_id']) + '.json'
+                or len(raw) != raw_reference.get('bytes')
+                or digest(raw) != raw_reference.get('sha256')
+                or not isinstance(wording, str)
+                or wording != observation.get('text')
+                or digest(wording.encode('utf-8')) != observation.get('text_sha256')
+                or message.get('date') != observation.get('date')):
+            raise Refused('Reply text raw/receipt custody changed')
+
     def verify_reply_custody(self, run, cursor=None):
         if run.get('id') == 'root-b00-s151-s12-20261102-r1':
             self.b223_s12_stopped_partial_history(run)
@@ -11502,16 +11561,7 @@ class Runner:
                     or (ordinary_result and not self.continuation_document_match(run, message))):
                 raise Refused('Reply raw update custody/binding mismatch')
             if observation.get('kind') == 'reply_text':
-                raw_reference = observation.get('raw_update', {})
-                if (not isinstance(raw_reference, dict)
-                        or raw_reference.get('basename') != str(observation['update_id']) + '.json'
-                        or len(raw) != raw_reference.get('bytes')
-                        or digest(raw) != raw_reference.get('sha256')
-                        or message.get('text') != observation.get('text')
-                        or not isinstance(message.get('text'), str)
-                        or digest(message['text'].encode('utf-8')) != observation.get('text_sha256')
-                        or message.get('date') != observation.get('date')):
-                    raise Refused('Reply text raw/receipt custody changed')
+                self.check_reply_text_receipt(message, observation, raw)
             elif observation.get('kind') == 'document':
                 target = self.store.downloads / (run['id'] + '-' + str(observation['message_id']) + '-' + str(observation.get('sha256')) + '.bin')
                 if receipt_path is None or observation.get('path') != str(target):
@@ -13134,10 +13184,13 @@ class Runner:
         # Protected actual-text receipt: inert received evidence, never a semantic grade.
         uid = update['update_id']
         raw = encoded(update)
-        # the same wording rule as close_refused_processing: a document reply carries a
-        # caption, not a text field
-        text = message.get('text') or message.get('caption') or ''
+        # ONE deterministic contract for the model's wording, shared with the reader and
+        # with the local-refusal closure. The source field is part of the protected bytes.
+        text, source = reply_text_of(message)
+        if text is None:
+            raise Refused('Reply has no wording to record')
         receipt = dict(self.capture_binding(run), kind='reply_text', text=text,
+                       text_source=source,
                        text_sha256=digest(text.encode('utf-8')), text_chars=len(text),
                        message_id=message['message_id'], update_id=uid, date=message['date'],
                        raw_update={'basename': str(uid) + '.json', 'bytes': len(raw), 'sha256': digest(raw)},
@@ -13439,9 +13492,8 @@ class Runner:
         chat, sender = message.get('chat'), message.get('from')
         reply_to = message.get('reply_to_message')
         mid = message.get('message_id')
-        # a document reply carries a caption, not a text field; both are the model's own
-        # wording and neither is invented here
-        text = message.get('text') if isinstance(message.get('text'), str) else message.get('caption')
+        # the SAME selection as the writer functions and the reader
+        text, _source = reply_text_of(message)
         expected = run['scenario']['steps'][run['step']]['observe']
         if (not isinstance(text, str)
                 or type(mid) is not int or mid <= 0
@@ -13529,9 +13581,11 @@ class Runner:
         committed_ids = self.committed_message_ids(run, uid)
         if not self.close_eligible(run, message, arrival, uid, committed_ids):
             return False
-        # A document reply carries a caption, not a text field; both are the model's own
-        # wording, and neither is invented here.
-        text = message.get('text') or message.get('caption') or ''
+        # ONE deterministic contract for the model's wording, shared with the writer and
+        # with the reader.
+        text, source = reply_text_of(message)
+        if text is None:
+            return False
         mid = message['message_id']
         expected = run['scenario']['steps'][run['step']]['observe']
         observations = list(run.get('observations') or [])

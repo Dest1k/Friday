@@ -52,6 +52,11 @@ REQUIRED_HISTORY_ROOTS = (
 # a rollback really restores the state instead of failing at the same place again.
 INJECT_AFTER_RENAME = False
 INJECT_TARGET = None
+# When the injection fires, the transaction records what the home looks like AT THAT
+# MOMENT: the bytes and modes of every file it has already published, and of every file it
+# added. The record is written OUTSIDE the rollback journal, so the rollback cannot change
+# it; it is the evidence that the late point was reached with changed files on disk.
+INJECT_SNAPSHOT_DIR = None
 
 
 class Refused(Exception):
@@ -174,6 +179,8 @@ def publish(target, data, mode=0o600):
         # never again, so the ROLLBACK of that same target restores it instead of failing
         # at the same boundary again.
         INJECT_AFTER_RENAME = False
+        if INJECT_SNAPSHOT_DIR is not None:
+            _write_injection_snapshot(INJECT_SNAPSHOT_DIR, target)
         # a controlled failure at the rename/sync boundary, used to prove that the rollback
         # covers a file that was already changed when the failure happened
         raise OSError(errno.EIO, "injected failure after the rename")
@@ -217,6 +224,32 @@ def gateway_running(unit_path, bench_home=None):
     result = subprocess.run(["systemctl", "--user", "is-active", unit.name],
                             capture_output=True, text=True, timeout=30)
     return result.stdout.strip() == "active"
+
+
+def _write_injection_snapshot(directory, current_target):
+    """Record the home's state at the exact moment of the injected failure."""
+    import stat as _stat
+    directory = Path(directory)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    state = {}
+    for path in sorted(Path(directory).parent.parent.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if directory in path.parents or directory == path:
+            continue
+        if "preparation" in path.parts:
+            continue
+        try:
+            info = path.lstat()
+            state[str(path)] = {"sha256": digest(path.read_bytes()),
+                                "mode": _stat.S_IMODE(info.st_mode),
+                                "bytes": info.st_size}
+        except OSError:
+            continue
+    (directory / "STATE-AT-INJECTION.json").write_bytes(encoded(
+        {"schema": "friday.v3.injection-point-state.v1",
+         "at_target": str(current_target),
+         "files": state}))
 
 
 class Journal:
@@ -565,13 +598,18 @@ def history_map(home):
 
 
 def run(request, request_path, request_sha256):
-    global INJECT_AFTER_RENAME, INJECT_TARGET
+    global INJECT_AFTER_RENAME, INJECT_TARGET, INJECT_SNAPSHOT_DIR
     started = time.monotonic()
     os.umask(0o077)
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     INJECT_TARGET = request.get("inject_target")
+    INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")
     require(request.get("schema") == SCHEMA, "transaction_only_v45_supported")
     home = Path(request["home"]).resolve()
+    if INJECT_SNAPSHOT_DIR is not None:
+        snapshot = Path(INJECT_SNAPSHOT_DIR)
+        require(snapshot.is_absolute() and not str(snapshot).startswith(str(home) + "/"),
+                "transaction_injection_snapshot_outside_home")
     require(home.is_dir(), "transaction_home_missing")
     require(os.environ.get("HERMES_HOME") == str(home), "transaction_environment_required")
     candidate = Path(request["candidate_project"]).resolve()
