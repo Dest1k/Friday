@@ -99,6 +99,10 @@ def main():
         "project_file_updates": sorted(n for n in previous["project_files"]
                                        if not n.startswith("plugins/friday_rework/")
                                        and current["project_files"].get(n) != previous["project_files"][n]),
+        "layer_manifest_updates": sorted(n for n in current["project_files"]
+                                        if n.startswith("patches/hermes/")
+                                        and n.endswith("-manifest.json")
+                                        and n not in previous["project_files"]),
         "installed_layers": len(receipt["layers"]),
         "installed_files": len(receipt["files"]),
         "transaction_history": history,

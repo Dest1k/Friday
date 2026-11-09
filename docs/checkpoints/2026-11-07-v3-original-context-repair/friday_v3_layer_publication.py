@@ -381,7 +381,7 @@ def layer_already_applied(layer, source):
     return True
 
 
-def bundle_already_applied(layers, source, receipt):
+def bundle_already_applied(layers, source, receipt, request=None):
     """True when the bundle is already published as a whole.
 
     This is a separate check, not a relaxation of the preimage chain: the tree must hold
@@ -390,13 +390,17 @@ def bundle_already_applied(layers, source, receipt):
     that is only partly published is not recognised here.
     """
     installed = {row["manifest"]: row for row in receipt.get("layers", [])}
+    # a layer whose manifest this operation publishes anew may still carry the previous
+    # bytes in the receipt; that difference is closed by the publication itself
+    republished = set(request.get("layer_manifest_updates", []))
     final = {}
     for layer in layers:
         row = installed.get(layer["manifest"])
         if row is None:
             return False
         if row.get("manifest_sha256") != layer["manifest_sha256"]:
-            return False
+            if layer["manifest"] not in republished:
+                return False
         if row.get("patch_sha256") != layer["patch_sha256"]:
             return False
         for file_row in layer["files"]:
@@ -679,7 +683,7 @@ def run(request, request_path, request_sha256):
     #    chain is checked against the receipt before anything is staged.
     layers = read_layers(candidate, receipt, home, current_files)
     source = home / "hermes-agent"
-    already_published = bundle_already_applied(layers, source, receipt)
+    already_published = bundle_already_applied(layers, source, receipt, request)
     if not already_published:
         final_state = check_preimages(layers, source, receipt["files"])
     else:
@@ -715,10 +719,18 @@ def run(request, request_path, request_sha256):
 
     # 9. the composition after the publication: the receipt's inventory plus the new bytes.
     projected = json.loads(json.dumps(receipt))
-    # a layer that is already in the receipt must not be appended a second time
+    # A layer that is already in the receipt must not be appended a second time. When the
+    # operation publishes the layer's manifest anew, the projected receipt must carry the
+    # published manifest bytes, so the composition check compares the tree with itself.
     installed_manifests = {row["manifest"] for row in projected["layers"]}
+    published_manifests = set(request.get("project_file_updates", [])) | set(
+        request.get("layer_manifest_updates", []))
     for layer in layers:
         if layer["manifest"] in installed_manifests:
+            if layer["manifest"] in published_manifests:
+                for row in projected["layers"]:
+                    if row["manifest"] == layer["manifest"]:
+                        row["manifest_sha256"] = layer["manifest_sha256"]
             continue
         projected["layers"].append({"manifest": layer["manifest"],
                                     "manifest_sha256": layer["manifest_sha256"],
@@ -822,6 +834,7 @@ def run(request, request_path, request_sha256):
         # 10b. the project files the transition deliberately updates, then the V3 plugin set.
     #      Both are proven against the current input's pins before they are written.
         project_updates = sorted(request.get("project_file_updates", []))
+        project_updates += sorted(request.get("layer_manifest_updates", []))
         plugin_set = sorted(request["plugin_set"])
         plugin_additions = sorted(request["plugin_additions"])
         for name in project_updates + plugin_set + plugin_additions:

@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import re
 import stat
@@ -874,10 +875,44 @@ class A0HostSession:
 
     def _route_module(self):
         if self.route_module is None:
+            import builtins
             import types
             pin = _pin(self.route['stop_source'])
-            m = types.ModuleType('frw_recorded_a0_route_stop');m.__file__=str(pin.path)
-            exec(compile(pin.read(),str(pin.path),'exec'),m.__dict__)
+            # The recorded route is executed as a module of the product's own plugin
+            # package, so that the relative imports of the scoped replacement resolve
+            # exactly as they do in the live module.
+            m = types.ModuleType('friday_rework.a0_recorded_route_stop')
+            m.__file__ = str(pin.path)
+            m.__package__ = 'friday_rework'
+            m.__path__ = []
+            # The recorded route is a byte copy of the native runtime that lives in a job
+            # directory. It must import the SAME plugins the live module imports, so the
+            # scoped import replacement is applied to it as well: without it the recorded
+            # code looks for a 'plugins.friday_rework' package that the installed tree does
+            # not contain, and the exact-owner cleanup stays unconfirmed.
+            native_import = builtins.__import__
+
+            def scoped_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if (type(name) is str and type(level) is int and level == 0
+                        and globals is m.__dict__ and type(fromlist) is tuple
+                        and len(fromlist) == 1 and type(fromlist[0]) is str):
+                    if (name == 'plugins.friday_rework.supervision'
+                            and fromlist == ('NativeSupervisor',)):
+                        from friday_rework import supervision
+                        return supervision
+                    if (name == 'plugins.friday_rework.adapters.a0_native'
+                            and fromlist == ('_duration',)):
+                        from friday_rework.adapters import a0_native
+                        return a0_native
+                return native_import(name, globals, locals, fromlist, level)
+
+            # The composition root is on the path so that the product's own plugin package
+            # resolves for the relative imports of the scoped replacement.
+            composition = str(Path(self.config['runtime_home']) / 'plugins')
+            if composition not in sys.path:
+                sys.path.insert(0, composition)
+            m.__dict__['__builtins__'] = {**vars(builtins), '__import__': scoped_import}
+            exec(compile(pin.read(), str(pin.path), 'exec'), m.__dict__)
             self.route_module=m
         return self.route_module
 

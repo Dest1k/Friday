@@ -356,9 +356,44 @@ class InitialProbe:
         if self.route is not None:
             try:
                 # Recorded immutable code owns cleanup when launch sources drift.
+                import builtins
                 import types
                 ref = self.route['stop_source']; data = _pin(ref).read()
-                m = types.ModuleType('frw_initial_probe_stop'); m.__file__ = ref['path']
+                # The recorded route is executed as a module of the product's own plugin
+                # package, so that the relative imports of the scoped replacement resolve
+                # exactly as they do in the live module.
+                m = types.ModuleType('friday_rework.a0_recorded_route_stop')
+                m.__file__ = ref['path']
+                m.__package__ = 'friday_rework'
+                m.__path__ = []
+                # The recorded route is a byte copy of the native runtime that lives in a
+                # job directory. It must import the SAME plugins the live module imports,
+                # so the scoped import replacement is applied to it as well: without it the
+                # recorded code looks for a 'plugins.friday_rework' package that the
+                # installed tree does not contain, and the exact-owner cleanup stays
+                # unconfirmed.
+                native_import = builtins.__import__
+
+                def scoped_import(name, globals=None, locals=None, fromlist=(), level=0):
+                    if (type(name) is str and type(level) is int and level == 0
+                            and globals is m.__dict__ and type(fromlist) is tuple
+                            and len(fromlist) == 1 and type(fromlist[0]) is str):
+                        if (name == 'plugins.friday_rework.supervision'
+                                and fromlist == ('NativeSupervisor',)):
+                            from friday_rework import supervision
+                            return supervision
+                        if (name == 'plugins.friday_rework.adapters.a0_native'
+                                and fromlist == ('_duration',)):
+                            from friday_rework.adapters import a0_native
+                            return a0_native
+                    return native_import(name, globals, locals, fromlist, level)
+
+                # The composition root is on the path so that the product's own plugin
+                # package resolves for the relative imports of the scoped replacement.
+                composition = str(Path(self.home) / 'plugins')
+                if composition not in sys.path:
+                    sys.path.insert(0, composition)
+                m.__dict__['__builtins__'] = {**vars(builtins), '__import__': scoped_import}
                 exec(compile(data, ref['path'], 'exec'), m.__dict__)
                 self.route_module = m
                 def retain(value):
