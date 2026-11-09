@@ -27,7 +27,11 @@ D12_RUN_ID = "d12-write-file-check-01-r48"
 FMT_RUN_ID = "fmt-wrong-format-check-01-r49"
 WRITE_RUN_ID = "ordinary-write-check-01-r49"
 SCOPE_RUN_ID = "out-of-scope-check-01-r49"
-AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r49"
+F01_RUN_ID = "f01-csv-extract-check-01-r50"
+M03_RUN_ID = "m03-addendum-check-01-r51"
+M05_RUN_ID = "m05-current111-check-01-r52"
+M06_RUN_ID = "m06-postrestart-check-01-r52"
+AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r52"
 # additional run ids covered by the same admission; each one is issued with its own
 # scenario and its own fresh authority check
 EXTRA_SCENARIOS = (
@@ -35,6 +39,10 @@ EXTRA_SCENARIOS = (
     (FMT_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/FMT-WRONG-FORMAT.json"),
     (WRITE_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/ORDINARY-WRITE.json"),
     (SCOPE_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/OUT-OF-SCOPE-REFUSAL.json"),
+    (F01_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/f01-csv-extract-check-01-r50.json"),
+    (M03_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m03-addendum-check-01-r51.json"),
+    (M05_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m05-current111-check-01-r52.json"),
+    (M06_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m06-postrestart-check-01-r52.json"),
 )
 FINAL_STATUSES = {"EVIDENCE_READY", "STOPPED", "FAILED"}
 
@@ -129,7 +137,7 @@ def main():
         "unknown_effects_resolved": False,
     }
     raw = encoded(document)
-    target = OUT_DIR / "INDEPENDENT-AUTHORITY-R49.json"
+    target = OUT_DIR / "INDEPENDENT-AUTHORITY-R52.json"
     target.write_bytes(raw)
     os.chmod(target, 0o600)
     print(json.dumps({
