@@ -41,6 +41,7 @@ LAYER_NAMES = (
     "source157-tool-budget-fit-after-source156",
     "write-file-format-guard",
     "bounded-resume-sidecar-guard",
+    "bounded-7z-codec-activation",
 )
 REQUIRED_HISTORY_ROOTS = (
     "preparation/ordinary-gateway",

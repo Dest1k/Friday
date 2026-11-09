@@ -2147,6 +2147,8 @@ def s07_runtime_plan(plan):
 
 class Runner:
     ORDINARY_INDEPENDENT_SCENARIOS = {
+        "a03-7z-roundtrip-check-01-r68": "9d1781a9a5de4ee5fc638e7790ce0c682c8daa98e102c325e79efc14eaaf33e6",
+        "d07-compare-v1-v2-check-01-r67": "084a3e5cf3f825073a079df2fa952007d02a7eeb47cd7cb9c054c2fbcad469f8",
         "d08-template-fill-check-01-r54": "5ece4c2aa2ec09221eb06c68da4a0ee2e7060b87204751fd02161770f42688f6",
         "d09-translation-check-01-r55": "152cb15e2b9da0bed9bd32df929490d70f0b80582df2c0f644dba58254e8d965",
         "d12-write-file-check-01-r48": "877f9307d145b9cb72309240d631c2aab2f37a97247421452cdb150814b8bb9c",
@@ -2157,9 +2159,12 @@ class Runner:
         "m03-addendum-check-01-r51": "a78bdfc7e0c84ce97566331bcd8cf0ab5e0727d2c2181d13ef7ab1ef74feb401",
         "m05-current111-check-01-r52": "2cf7b09d735abe08318045a9e03840ba0f9e8f40f8bc36e1663800e1ddd029b1",
         "m06-postrestart-check-01-r52": "f4754ee87c423e26b2b028a9a60db2f4151b0513c88473cd1cd68aacb80acea1",
+        "m11-memory-note-check-01-r62": "82ace8d7500d6c634d9f1525c7d91ccae5e9f54cd595743e8a894c54fb14167c",
         "ordinary-write-check-01-r49": "635eaa09852a367961e55ad92ba65b1878a00a169e561de7dd5924513f5f8b95",
         "out-of-scope-check-01-r49": "e58f004096892f0f5a51c385e32b9490b93858b4a2e1cbc8f1f5186e2e9fa6c5",
         "p01-pdf-intake-check-01-r57": "286be19376d1a40b6d9105f0d6ccb6834daf8b7b969b8178f97724cea6a2fc74",
+        "p02-hybrid-pdf-check-01-r62": "b875a20be02265fc9fc47def040a5f8d22856bb8e27ccd1ce921798bfc314c76",
+        "p04-ambiguous-amount-check-01-r62": "817faabf02a3bf7dda45e15fdc587514a00e958bff3d09579fcfdd7b068fedeb",
         "s-04-root-plan-check-01-r59": "19a7662d36012445bfd48bfd7207402eb907731706eb3816721392fcd350579b",
         "s-10-root-plan-check-01-r59": "524ef6ab9d9b07872a86f052c6a9848a920a53c4a0287f903145760d5e1cf8c9",
         "s-11-root-plan-check-01-r61": "fa0f9d9c509e0e2cd3fd8b28624d27174a5cfbe4b26d99e87e18eb22ab92af30",
@@ -2167,8 +2172,8 @@ class Runner:
         "s01-xlsx-intake-check-01-r56": "d7cdd4c16a0dfa416f3f444183a9919fb5bf2254ec1fd63f7ff9134bb7b69909",
     }
     ORDINARY_INDEPENDENT_AUTHORITY = dict(
-        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R61.json',
-        bytes=14400, sha256='1ea7930f44bbb3f002993960592a070b98cf1f1ea9f9775fd0c85c95545f9141')
+        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R68.json',
+        bytes=15419, sha256='fb15b2ab6d6e2708cf5f8e717c7812b822e3f75961640aee77fc4ca0785f90e8')
 
     def __init__(self, store, api, clock=time.time, sleep=time.sleep):
         self.store, self.api, self.clock, self.sleep = store, api, clock, sleep
@@ -11606,7 +11611,7 @@ class Runner:
         if (len(raw) != reference['bytes'] or digest(raw) != reference['sha256']
                 or encoded(document) != raw
                 or document.get('schema') != 'frw.Root.ordinary-independent-history-admission.v1'
-                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r61'
+                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r68'
                 or document.get('operator') != 'Root' or document.get('accepted') is not True
                 or document.get('run_scenarios') != self.ORDINARY_INDEPENDENT_SCENARIOS
                 or digest(encoded(scenario)) != expected_sha

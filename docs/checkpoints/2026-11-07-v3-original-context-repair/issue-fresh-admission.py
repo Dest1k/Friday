@@ -35,8 +35,8 @@ M06_RUN_ID = "m06-postrestart-check-01-r52"
 # its path, byte count and digest, and the file is stored in the repository. This issuer
 # therefore never rewrites R54 - every release writes a NEW document with a NEW identity
 # and a NEW path, and the tester snapshot is re-pinned to it in the same step.
-AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r61"
-AUTHORITY_FILE = "INDEPENDENT-AUTHORITY-R61.json"
+AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r68"
+AUTHORITY_FILE = "INDEPENDENT-AUTHORITY-R68.json"
 # additional run ids covered by the same admission; each one is issued with its own
 # scenario and its own fresh authority check
 EXTRA_SCENARIOS = (
@@ -54,6 +54,11 @@ EXTRA_SCENARIOS = (
     ("s-04-root-plan-check-01-r59", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/s-04-root-plan-check-01-r59.json"),
     ("s-10-root-plan-check-01-r59", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/s-10-root-plan-check-01-r59.json"),
     ("s-11-root-plan-check-01-r61", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/s-11-root-plan-check-01-r61.json"),
+    ("p02-hybrid-pdf-check-01-r62", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/p02-hybrid-pdf-check-01-r62.json"),
+    ("p04-ambiguous-amount-check-01-r62", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/p04-ambiguous-amount-check-01-r62.json"),
+    ("m11-memory-note-check-01-r62", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m11-memory-note-check-01-r62.json"),
+    ("d07-compare-v1-v2-check-01-r67", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/d07-compare-v1-v2-check-01-r67.json"),
+    ("a03-7z-roundtrip-check-01-r68", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/a03-7z-roundtrip-check-01-r68.json"),
     (M03_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m03-addendum-check-01-r51.json"),
     (M05_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m05-current111-check-01-r52.json"),
     (M06_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m06-postrestart-check-01-r52.json"),
