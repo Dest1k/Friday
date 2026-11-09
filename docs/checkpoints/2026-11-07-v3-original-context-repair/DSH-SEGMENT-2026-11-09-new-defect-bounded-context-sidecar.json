@@ -1,0 +1,94 @@
+{
+  "schema": "friday.v3.segment-record.v1",
+  "at_moscow": "2026-11-09T16:50:00+03:00",
+  "segment": "A new product defect is found and localized exactly: the bounded-context guard compares the API-side bytes of the current user turn against the transcript-side bytes, and the two differ whenever a persist override replaced the transcript text",
+  "lead": "DSH session (sole lead/integrator)",
+  "the_finding": {
+    "the_symptom": "during the S-11 run the product refused to call the model with 'bounded_context: formatter removed or rewrote protected authority/user/tool rows', although no formatter changed anything",
+    "the_evidence": "the bounded protected-row diagnostic of the run: the unmatched group is 3, the expected count is 1 and the candidate count is 5, and the mismatch offset is null, which means the protected row was not found at all rather than found and altered",
+    "the_expected_row": {
+      "role": "user",
+      "content_bytes": 2755,
+      "content_sha256": "cf455a3c35440d76e433c35318fad238c42fb8e61bc75e870a74bdbf227880c7"
+    },
+    "the_candidate_rows": [
+      "system (75269 bytes)",
+      "assistant (8734 bytes)",
+      "user (2755 bytes, sha cf455a3c...)",
+      "assistant (0 bytes)",
+      "tool (13438 bytes)"
+    ],
+    "the_protected_tail": [
+      "user (1184 bytes, sha 88520189...)",
+      "assistant (0 bytes)",
+      "tool (13438 bytes)"
+    ],
+    "the_incoming_row": {
+      "content_bytes": 1184,
+      "content_sha256": "88520189f088753beaa1cfa77580cc7f8a7ec364bb9d7638186fe925c6bd3d74",
+      "api_content_bytes": 2755,
+      "api_content_sha256": "cf455a3c35440d76e433c35318fad238c42fb8e61bc75e870a74bdbf227880c7"
+    }
+  },
+  "the_root_cause": {
+    "the_chain": [
+      "after the power loss the gateway prepared a resume turn: hermes-agent/gateway/run.py:_prepare_resume_pending_message builds the recovery note and, because the original message is not empty, persists the ORIGINAL message while the note is what the model receives",
+      "the resume note is therefore a persist OVERRIDE for the current turn: hermes-agent/agent/session_persistence.py:_override_replaces_content accepts it, and durable_user_row_content then writes the transcript row with the override while keeping the live bytes as the api_content sidecar",
+      "the resulting row carries content 1184 bytes (the note plus the request) and api_content 2755 bytes (the note plus the request as the wire bytes)",
+      "the bounded guard builds the current group with build_api_messages, which REPLACES the content of the current user turn with its api_content sidecar, so current_group holds 2755 bytes",
+      "the protected rows are taken from the history, where the same row still holds its content of 1184 bytes",
+      "the comparison in assert_bounded_protected_rows matches on content after a whitespace projection only, so it compares 2755 bytes against 1184 bytes and can never succeed for a row whose sidecar differs from its transcript text"
+    ],
+    "why_it_did_not_surface_before": "the sidecar is only created when the persist override and the live bytes differ. A normal turn persists the same text it sends, the sidecar stays empty and the two representations are identical. The resume path is what creates the difference, and the outage of 2026-11-09 is what produced a resume path with a document in the turn.",
+    "the_product_intent_that_is_honoured": "the guard is right to refuse a formatter that rewrites a protected row. The defect is that the guard compares two representations of the same row, which the resume path always separates; the guard must compare the row as it is SENT, not the transcript projection of it.",
+    "the_evidence_that_the_guard_itself_is_sound": "hermes-agent/tests/agent/test_bounded_protected_formatter.py already covers the resumed failed turn with its api_content sidecar, and the guard passes there. The uncovered case is exactly this one: a resumed turn whose persist override is a RECOVERY NOTE, so the row in the history carries the override as its content and the sent bytes as its sidecar."
+  },
+  "the_fix_boundary": {
+    "where": "hermes-agent/agent/bounded_context.py, the construction of current_group, and the comparison helper matches()",
+    "what": "the protected current turn must be compared in its SENT representation: when the current row carries an api_content sidecar, the protected projection of that row has to use the sidecar bytes, exactly as build_api_messages sends them, so that the transcript projection and the sent projection are compared against the same bytes",
+    "what_must_not_change": [
+      "the strict refusal when a formatter really removes or rewrites a protected row, and its tests",
+      "the authority comparison, which already uses the wire projection",
+      "the persistence layout and the sidecar semantics",
+      "the resume note itself and its guidance text"
+    ],
+    "the_regression_that_must_pass": "a bounded-context guard test with a resumed turn whose persist override is a recovery note and whose sent bytes differ from the transcript text; the guard must accept it, and a test that removes or reorders a protected row in the same setup must still be refused"
+  },
+  "the_state_now": {
+    "the_defect_is_not_fixed_in_the_installed_composition": "the installed runtime still carries this behaviour; the fix belongs to the next published layer",
+    "the_s11_outcome": "the run s-11-root-plan-check-01-r60 ended EVIDENCE_READY with one observation, and that observation is the model's cautious refusal 'I do not disclose internal settings and service paths. Some actions may have been performed. Check the result before repeating.' The semantic obligation of S-11 is NOT met",
+    "no_repeat_of_a_settled_effect": "S-11 has no settled effect: the model answered with a refusal and the turn never produced the required summary. The case stays open and may be executed again after the fix is published and installed"
+  },
+  "not_repeated": "no request was sent again to work around the defect; the S-11 attempt stands as it is",
+  "the_offline_reproduction": {
+    "check": "docs/checkpoints/2026-11-07-v3-original-context-repair/check-bounded-resume-sidecar.py",
+    "how_it_runs": "it imports the product's own modules from the installed composition and calls them in-process: no model, no network, nothing written into the home. It runs with the interpreter of the installed environment and presents the admitted operator role 'gateway status', because the product's admission inspects the process arguments. The privacy projection of the user scope is replaced with the identity it would apply, since it needs an authenticated routed principal and is not part of the bounded guard.",
+    "the_three_results": [
+      {
+        "case": "a resumed turn whose sent bytes differ from its transcript text",
+        "refused": true,
+        "detail": "bounded_context: formatter removed or rewrote protected authority/user/tool rows",
+        "meaning": "the defect is reproduced exactly as it was observed in the live run of 2026-11-09"
+      },
+      {
+        "case": "the same turn without a sidecar",
+        "refused": false,
+        "meaning": "the control: the two representations agree and the guard passes"
+      },
+      {
+        "case": "a genuinely rewritten protected row",
+        "refused": true,
+        "detail": "bounded_context: formatter removed or rewrote protected authority/user/tool rows",
+        "meaning": "the guard still refuses a formatter that really rewrites a protected row; the fix may not weaken it"
+      }
+    ],
+    "result": "3 of 3 checks passed",
+    "the_layout_that_reproduces_it": "the protected contract holds the TRANSCRIPT projection of the protected rows, while the wire carries the SENT bytes of the current row. In the live run the protected user row was 1184 bytes and the wire carried 2755 bytes, which is why the guard found no match at all."
+  },
+  "the_hygiene_finding": {
+    "what_happened": "the first attempt of the check imported the product's modules with byte-code writing enabled and created __pycache__ directories inside the installed plugin tree",
+    "the_effect": "the composition's plugin inventory is checked against the install marker, and the extra files broke that check: 51 files in the marker against 69 on disk",
+    "the_fix": "the __pycache__ directories were removed, the inventory matches the marker again (51 of 51), and the check now sets sys.dont_write_bytecode and a byte-code prefix outside the composition",
+    "the_impact_on_the_running_gateway": "none: the gateway process was already running and kept serving; the check was never admitted against it"
+  }
+}
