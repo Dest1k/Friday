@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -427,6 +428,60 @@ def run(request):
                           capture_output=True, text=True, timeout=600, env=env)
 
 
+def scenario_repeat(name, mutator=None, expect_reason=None):
+    """A second pass over a bench that the first pass already published.
+
+    The layers of this bundle touch the same file twice, so a repeated run must recognise
+    the published bundle and must not apply the old patches to the final bytes.
+    """
+    state = build_full_bench()
+    request = bench_request(state)
+    extra = {}
+    if mutator:
+        extra = mutator(state) or {}
+    request = bench_request(state, **extra)
+    first = run(request)
+    if first.returncode != 0:
+        print(json.dumps({"scenario": name, "first_pass_failed": True,
+                          "stderr_tail": first.stderr.strip().splitlines()[-1:]}, sort_keys=True))
+        return False
+    published = snapshot(FULL_BENCH)
+    # the second request is built from the bench's current state: the published receipt
+    current_receipt = json.loads((FULL_BENCH / "hermes-agent.source.json").read_text())
+    state["receipt"] = current_receipt
+    state["project_files"] = json.loads(
+        (FULL_BENCH / "current-input.json").read_text())["project_files"]
+    second = run(bench_request(state, **extra))
+    after = snapshot(FULL_BENCH)
+    ignored = {k for k in set(published) | set(after) if "ordinary-source-update-v45-" in k}
+    changed = sorted(k for k in set(published) | set(after)
+                      if k not in ignored and published.get(k) != after.get(k))
+    reason = ""
+    for line in reversed(second.stderr.strip().splitlines()):
+        try:
+            reason = json.loads(line).get("reason", "")
+            break
+        except Exception:
+            continue
+    ok = second.returncode == 0 and not changed
+    if expect_reason and expect_reason not in reason:
+        ok = False
+    print(json.dumps({"scenario": name, "second_pass_refused": second.returncode != 0,
+                      "reason": reason, "changed_by_the_second_pass": changed,
+                      "passed": ok}, sort_keys=True))
+    return ok
+
+
+def modes(root):
+    """The access mode of every file, so a rollback that loses the mode is visible."""
+    out = {}
+    for path in sorted(Path(root).rglob("*")):
+        if path.is_dir() or path.is_symlink():
+            continue
+        out[str(path.relative_to(root))] = stat.S_IMODE(path.stat().st_mode)
+    return out
+
+
 def scenario(name, mutator=None, expect_reason=None, full=False):
     if full:
         state = build_full_bench()
@@ -436,11 +491,34 @@ def scenario(name, mutator=None, expect_reason=None, full=False):
     extra = {}
     if mutator:
         extra = mutator(state) or {}
+        # the mutator may have changed the bench's bytes: the request is rebuilt so its pins
+        # match the bench the transaction actually receives
+        inventory = extra.pop("_inventory", {})
+        state["project_files"].update(inventory)
+        # the current input document must carry the same pins
+        current_path = FULL_BENCH / "current-input.json"
+        current = json.loads(current_path.read_text())
+        current["project_files"].update(inventory)
+        current_path.write_text(json.dumps(current, sort_keys=True, indent=2) + "\n")
+        for name in inventory:
+            if name.startswith("plugins/friday_rework/"):
+                previous_path = FULL_BENCH / "previous-input.json"
+                previous = json.loads(previous_path.read_text())
+                previous["project_files"][name] = inventory[name]
+                previous_path.write_text(json.dumps(previous, sort_keys=True, indent=2) + "\n")
+        # the predecessor's record follows the changed input
+        predecessor_dir = FULL_BENCH / "preparation" / ("ordinary-source-update-successor-" + "b" * 64)
+        predecessor_request = predecessor_dir / "request.json"
+        body = json.loads(predecessor_request.read_text())
+        body["current_input"] = {"path": str(FULL_BENCH / "previous-input.json"),
+                                 "sha256": sha(FULL_BENCH / "previous-input.json")}
+        predecessor_request.write_text(json.dumps(body, sort_keys=True, indent=2) + "\n")
     # the request is built after the mutator, so its pins match the bench the transaction
     # actually receives and it carries the mutator's fields
     request = bench_request(state, **extra)
     bench = FULL_BENCH if state.get("full") else BENCH
     before = snapshot(bench)
+    before_modes = modes(bench)
     result = run(request)
     # the refusal must be the expected one, and the bench must be unchanged
     reason = ""
@@ -451,11 +529,14 @@ def scenario(name, mutator=None, expect_reason=None, full=False):
         except Exception:
             continue
     after = snapshot(bench)
+    after_modes = modes(bench)
     ignored = {k for k in set(before) | set(after) if "ordinary-source-update-v45-" in k}
     changed = sorted(k for k in set(before) | set(after)
                       if k not in ignored and before.get(k) != after.get(k))
     added = sorted(k for k in set(after) - set(before) if k not in ignored)
-    ok = result.returncode != 0 and not changed and not added
+    mode_changed = sorted(k for k in set(before_modes) | set(after_modes)
+                          if k not in ignored and before_modes.get(k) != after_modes.get(k))
+    ok = result.returncode != 0 and not changed and not added and not mode_changed
     if expect_reason and expect_reason not in reason:
         ok = False
     if not ok:
@@ -463,6 +544,7 @@ def scenario(name, mutator=None, expect_reason=None, full=False):
                           result.stderr.strip().splitlines()[-1:]}, sort_keys=True))
     print(json.dumps({"scenario": name, "refused": result.returncode != 0, "reason": reason,
                       "changed_after_refusal": changed, "added_after_refusal": added,
+                      "mode_changed_after_refusal": mode_changed,
                       "restored": ok}, sort_keys=True))
     return ok
 
@@ -497,6 +579,31 @@ def main():
         manifest.write_text(manifest.read_text() + "\n")
         state["project_files"][f"patches/hermes/{LAYERS[0]}-manifest.json"] = sha(manifest)
 
+    def inject_after_rename(state):
+        return {"inject_after_rename": True}
+
+    def publish_distinct_bytes(state):
+        """The plugin and the project file carry DIFFERENT new bytes.
+
+        The bench's plugin and the project file must receive bytes that differ from their
+        previous ones and from each other, so a rollback that restores the wrong copy is
+        visible.
+        """
+        plugin = FULL_BENCH / BENCH_PLUGINS[0]
+        plugin.write_bytes(b"# bench plugin, published bytes\n")
+        os.chmod(plugin, 0o640)
+        project_file = FULL_BENCH / "project" / BENCH_PLUGINS[0]
+        project_file.write_bytes(b"# bench plugin, published project bytes\n")
+        os.chmod(project_file, 0o640)
+        return {"fail_during_plugins": True,
+                "_inventory": {BENCH_PLUGINS[0]: sha(project_file)}}
+
+    results.append(scenario("failure between the rename and the directory sync", inject_after_rename,
+                             "injected failure after the rename", full=True))
+    results.append(scenario_repeat("repeated pass over the published bundle"))
+    results.append(scenario("rollback of a plugin and a project file with distinct bytes",
+                             publish_distinct_bytes, "controlled_failure_during_plugins",
+                             full=True))
     results.append(scenario("failure during the plugin publication", fail_during_plugins,
                              "controlled_failure_during_plugins", full=True))
     results.append(scenario("failure between the metadata writes", fail_between_metadata,

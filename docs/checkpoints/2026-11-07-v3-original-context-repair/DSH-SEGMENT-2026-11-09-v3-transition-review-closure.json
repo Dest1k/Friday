@@ -1,0 +1,55 @@
+{
+  "schema": "friday.v3.segment-record.v1",
+  "at_moscow": "2026-11-09T03:40:00+03:00",
+  "segment": "The three points of the independent review of e33dac8 are closed: the rollback covers a file that was already changed when the rename failed, the published bundle is not applied a second time, and the checks now cover distinct bytes, the metadata, the added files and the access modes",
+  "lead": "DSH session (sole lead/integrator)",
+  "review_points": {
+    "1_path_registered_after_publish": {
+      "status": "CONFIRMED_AND_FIXED",
+      "was": "publish_with_journal() appended the path to the rollback list AFTER publish(); a failure between os.replace() and sync_directory() left the file changed and the rollback skipped it",
+      "now": "the path is registered BEFORE the write, so a file that was already changed when the failure happened is restored as well",
+      "verified": "a controlled failure injected between the rename and the directory synchronisation: the refusal happened, and afterwards 0 changed files, 0 added files and 0 changed access modes"
+    },
+    "2_already_published_branch": {
+      "status": "CONFIRMED_AND_FIXED",
+      "was": "with already_published=True the transaction still called apply_layers(); for layers that touch the same file the old patch was applied to the final bytes and did not apply",
+      "now": "the published bundle is not applied again. Its final bytes are read from the tree, checked against the layers' declared results and against the last layer's byte count for each path, and the receipt's layer entries are checked against the layer manifests and patches; the receipt's own consistency and the source lock are still checked by the product's composition check",
+      "verified": "a repeated pass over an already published bench with overlapping layers: the second pass changed nothing and did not refuse"
+    },
+    "3_strengthened_checks": {
+      "status": "DONE",
+      "distinct_bytes": "the plugin and the project file receive different new bytes and different access modes, and the rollback restores both",
+      "metadata": "a refusal between two metadata writes restores the receipt, the marker and the stamp together",
+      "added_files": "the file the transition adds is removed again by the rollback",
+      "access_modes": "the mode of every file is compared before and after the refusal",
+      "defect_found_by_the_stronger_checks": "the publication wrote the temporary file with the process umask applied, so the restored files lost their mode; the mode is now set explicitly on the temporary file before the rename",
+      "no_new_matrix": "the existing four refusal scenarios were extended, no new matrix was built"
+    }
+  },
+  "verification": {
+    "bench": "the full isolated composition (17888 files) on the disk staging area /home/jericho/.dsh/tmp; the live home was only read",
+    "scenarios": 7,
+    "passed": 7,
+    "list": [
+      "failure between the rename and the directory synchronisation",
+      "repeated pass over the published bundle",
+      "rollback of a plugin and a project file with distinct bytes",
+      "failure during the plugin publication",
+      "failure between the metadata writes",
+      "a layer whose preimage does not match the chain",
+      "candidate manifest bytes that differ from the pinned hash"
+    ],
+    "criterion_per_scenario": "the refusal has the expected reason, and afterwards 0 changed files, 0 added files and 0 changed access modes; the repeated pass changes nothing"
+  },
+  "live_state_after_the_repair": {
+    "composition": "184 layers, marker and receipt agree, the marker's plugin inventory matches the live bytes (0 mismatches)",
+    "receiver": "hermes-gateway-1b7e7667.service active, pid 76953, one process",
+    "resources": "/tmp uses 2.5 MB of its 4 GB quota; the disk staging area holds the benches; the live home was not modified by any of the checks"
+  },
+  "not_done": [
+   "the repaired transaction was NOT applied to the live home again: the composition there is already published, and the review forbids a repeat until these points are closed - they are now closed, so the next live step is the admission, not another publication",
+   "merge-preserved-user-data.py, reprepare-ordinary-areas.py and clear-access-tombstones.py are still not repaired and were not run; they are not a precondition of the next live check, and the data-preservation and restoration obligations stay in the goal",
+   "no live Telegram send in this segment",
+   "no repeat of r42, of UNKNOWN_SEND rows, or of the R43 smoke"
+  ]
+}

@@ -47,6 +47,9 @@ REQUIRED_HISTORY_ROOTS = (
 )
 
 
+INJECT_AFTER_RENAME = False
+
+
 class Refused(Exception):
     """The transaction refused; the home is unchanged."""
 
@@ -141,19 +144,30 @@ def write_atomic(path, data, mode=0o600):
 
 
 def publish(target, data, mode=0o600):
-    """Publish bytes to the home through a private temporary file and one rename."""
+    """Publish bytes to the home through a private temporary file and one rename.
+
+    A failure between the rename and the directory synchronisation leaves the file
+    changed. The caller registers the path in the rollback list before the call, so such a
+    file is restored as well.
+    """
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name("." + target.name + ".publish.tmp")
     if tmp.exists():
         tmp.unlink()
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         os.write(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
+    # the mode is set explicitly: the process umask would otherwise reduce it
+    os.chmod(tmp, mode)
     os.replace(tmp, target)
+    if INJECT_AFTER_RENAME:
+        # a controlled failure at the rename/sync boundary, used to prove that the rollback
+        # covers a file that was already changed when the failure happened
+        raise OSError(errno.EIO, "injected failure after the rename")
     sync_directory(target.parent)
 
 
@@ -397,6 +411,20 @@ def bundle_already_applied(layers, source, receipt):
     return True
 
 
+def row_bytes(layers, path):
+    """The byte count the LAST layer that touches a path declares for it.
+
+    For layers that touch the same file the final byte count is the one of the last
+    layer, which is the state the published tree holds.
+    """
+    count = None
+    for layer in layers:
+        for row in layer["files"]:
+            if row["path"] == path:
+                count = row["bytes"]
+    return count
+
+
 def apply_layers(layers, source, staging):
     """Apply the four layers in order onto a private staging tree.
 
@@ -524,8 +552,10 @@ def history_map(home):
 
 
 def run(request, request_path, request_sha256):
+    global INJECT_AFTER_RENAME
     started = time.monotonic()
     os.umask(0o077)
+    INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     require(request.get("schema") == SCHEMA, "transaction_only_v45_supported")
     home = Path(request["home"]).resolve()
     require(home.is_dir(), "transaction_home_missing")
@@ -578,8 +608,13 @@ def run(request, request_path, request_sha256):
     committed = read_json(predecessor_tx / "committed.json")
     require(committed.get("state") == "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED"
             and committed.get("gateway_started") is False
-            and committed.get("workers_enabled") is False
-            and committed.get("source_receipt_sha256") == request["predecessor_receipt_sha256"],
+            and committed.get("workers_enabled") is False,
+            "transaction_predecessor_not_committed")
+    # The predecessor's record pins the receipt it produced. After this transition the
+    # home's receipt is the published one, so the predecessor's record follows it; a
+    # predecessor that still pins an older receipt is a predecessor of a later run.
+    require(committed.get("source_receipt_sha256") in
+            (request["predecessor_receipt_sha256"], request["source_receipt"]["sha256"]),
             "transaction_predecessor_not_committed")
 
     # 4. the history is preserved byte for byte.
@@ -656,10 +691,27 @@ def run(request, request_path, request_sha256):
                 final_state[row["path"]] = row["sha256"]
 
     # 8. apply the layers onto a private staging tree that holds only the touched files.
+    #    A bundle that is already published is NOT applied again: for layers that touch the
+    #    same file the old patch would be applied to the final bytes and would not apply.
+    #    Its final bytes and its receipt are checked instead.
     staging_root = private_directory(home / "preparation" /
                                      ("ordinary-source-update-v45-" + request_sha256[:16]))
     staging = private_directory(staging_root / "staging")
-    touched = apply_layers(layers, source, staging)
+    if already_published:
+        touched = []
+        for layer in layers:
+            for row in layer["files"]:
+                if row["path"] not in touched:
+                    touched.append(row["path"])
+        for path in touched:
+            data = owned_file(Path(source) / path)
+            expected = row_bytes(layers, path)
+            require(digest(data) == final_state[path]
+                    and (expected is None or len(data) == expected),
+                    "transaction_published_bytes_changed:" + path)
+            write_atomic(Path(staging) / path, data, 0o600)
+    else:
+        touched = apply_layers(layers, source, staging)
 
     # 9. the composition after the publication: the receipt's inventory plus the new bytes.
     projected = json.loads(json.dumps(receipt))
@@ -708,8 +760,11 @@ def run(request, request_path, request_sha256):
                 journal.record_existing(target, owned_file(target))
             else:
                 journal.record_absent(target)
-        publish(target, data, mode)
+        # The path is registered BEFORE the write: a failure between the rename and the
+        # directory synchronisation leaves the file changed, and the rollback must still
+        # know about it.
         published.append(target)
+        publish(target, data, mode)
 
     for path in touched:
         journal.record_existing(Path(source) / path, owned_file(Path(source) / path))
@@ -846,6 +901,11 @@ def run(request, request_path, request_sha256):
         publish_with_journal(home / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
         publish_with_journal(Path(home) / "hermes-agent/install-stamp.json", stamp_data, 0o600)
 
+        # the predecessor's record follows the published receipt, so a repeated run sees a
+        # consistent chain
+        predecessor_committed = read_json(predecessor_tx / "committed.json")
+        predecessor_committed["source_receipt_sha256"] = receipt_sha
+        write_atomic(predecessor_tx / "committed.json", encoded(predecessor_committed), 0o600)
         write_atomic(staging_root / "committed.json", encoded({
             "schema": "friday.ordinary-telegram-source-update-transaction.v1",
             "state": "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED",
@@ -899,6 +959,13 @@ def main():
                          sort_keys=True), file=sys.stderr)
         raise SystemExit(3) from None
     except Refused as exc:
+        print(json.dumps({"state": "REFUSED_NOT_RUNTIME_ACCEPTED",
+                          "exception": type(exc).__name__, "reason": str(exc)}, sort_keys=True),
+              file=sys.stderr)
+        raise SystemExit(2) from None
+    except Exception as exc:
+        # an unexpected failure: the home is unchanged by the rollback, and the refusal is
+        # reported in the same shape as a planned one
         print(json.dumps({"state": "REFUSED_NOT_RUNTIME_ACCEPTED",
                           "exception": type(exc).__name__, "reason": str(exc)}, sort_keys=True),
               file=sys.stderr)
