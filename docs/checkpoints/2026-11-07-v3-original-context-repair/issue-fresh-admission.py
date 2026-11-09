@@ -19,11 +19,23 @@ from pathlib import Path
 
 STATE = Path("/home/jericho/.local/share/friday-telegram-bot-test")
 RUNS = STATE / "runs"
-GATEWAY_STATE = Path("/home/jericho/jericho/Friday_rework/.runtime/friday-184-20261108/gateway_state.json")
+GATEWAY_STATE = Path("/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/gateway_state.json")
 OUT_DIR = Path("/home/jericho/.cache/FRW-KIMI-FMT-20261108")
-SCENARIO = OUT_DIR / "scenarios" / "R44-JARVIS-ACTIVATE-CHECK.json"
-RUN_ID = "jarvis-activate-check-01-r44"
-AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261108-r44"
+SCENARIO = OUT_DIR / "scenarios" / "R47-JARVIS-ACTIVATE-CHECK.json"
+RUN_ID = "jarvis-activate-check-01-r47"
+D12_RUN_ID = "d12-write-file-check-01-r48"
+FMT_RUN_ID = "fmt-wrong-format-check-01-r49"
+WRITE_RUN_ID = "ordinary-write-check-01-r49"
+SCOPE_RUN_ID = "out-of-scope-check-01-r49"
+AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r49"
+# additional run ids covered by the same admission; each one is issued with its own
+# scenario and its own fresh authority check
+EXTRA_SCENARIOS = (
+    (D12_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/D12-WRITE-FILE-CHECK.json"),
+    (FMT_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/FMT-WRONG-FORMAT.json"),
+    (WRITE_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/ORDINARY-WRITE.json"),
+    (SCOPE_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/OUT-OF-SCOPE-REFUSAL.json"),
+)
 FINAL_STATUSES = {"EVIDENCE_READY", "STOPPED", "FAILED"}
 
 
@@ -36,9 +48,14 @@ def encoded(value):
 
 
 def main():
+    SCENARIOS = {}
     scenario = json.loads(SCENARIO.read_text())
     scenario_bytes = encoded(scenario)
     scenario_sha = digest(scenario_bytes)
+    SCENARIOS[RUN_ID] = scenario_sha
+    for extra_id, extra_path in EXTRA_SCENARIOS:
+        extra = json.loads(Path(extra_path).read_text())
+        SCENARIOS[extra_id] = digest(encoded(extra))
 
     now = time.time()
     history = {}
@@ -97,20 +114,22 @@ def main():
         "old_rows_modified": False,
         "operator": "Root",
         "product_or_B00_acceptance": False,
-        "run_scenarios": {RUN_ID: scenario_sha},
+        "run_scenarios": dict(SCENARIOS),
         "same_canonical_local_run": False,
         "schema": "frw.Root.ordinary-independent-history-admission.v1",
         "scope": ("One controlled Jarvis-area activation check from tester 8812646969 after the user "
                   "areas were restored through the product's onboarding path. Not a B00, FMT or "
                   "product acceptance."),
         "supersedes": {
-            "authority_id": "ordinary-independent-jarvis-restore-20261108-r43",
-            "reason": "the R43 binding names a gateway process that no longer exists; a fresh binding to the current gateway is required",
+            "authority_id": "ordinary-independent-jarvis-activate-20261109-r48",
+            "reason": ("R47 is retained as history: the model provider was restored and the "
+                       "controlled check succeeded there. This document covers the new D-12 "
+                       "regression and does not rewrite the R46 or R47 results."),
         },
         "unknown_effects_resolved": False,
     }
     raw = encoded(document)
-    target = OUT_DIR / "INDEPENDENT-AUTHORITY-R44.json"
+    target = OUT_DIR / "INDEPENDENT-AUTHORITY-R49.json"
     target.write_bytes(raw)
     os.chmod(target, 0o600)
     print(json.dumps({

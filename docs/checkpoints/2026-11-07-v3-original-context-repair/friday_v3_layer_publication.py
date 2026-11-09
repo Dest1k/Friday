@@ -609,16 +609,18 @@ def run(request, request_path, request_sha256):
     if not (predecessor_tx / "committed.json").exists():
         # a bench predecessor is supplied directly by the request
         predecessor_tx = Path(request["predecessor_request"]["path"]).parent
+    predecessor_committed_path = predecessor_tx / "committed.json"
+    predecessor_committed_bytes = (predecessor_committed_path.read_bytes()
+                                    if predecessor_committed_path.exists() else b"")
     committed = read_json(predecessor_tx / "committed.json")
     require(committed.get("state") == "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED"
             and committed.get("gateway_started") is False
             and committed.get("workers_enabled") is False,
             "transaction_predecessor_not_committed")
-    # The predecessor's record pins the receipt it produced. After this transition the
-    # home's receipt is the published one, so the predecessor's record follows it; a
-    # predecessor that still pins an older receipt is a predecessor of a later run.
-    require(committed.get("source_receipt_sha256") in
-            (request["predecessor_receipt_sha256"], request["source_receipt"]["sha256"]),
+    # The predecessor's record pins the receipt IT produced and stays immutable. This
+    # operation writes its own record and only links to that predecessor, so the
+    # predecessor's historical result is never rewritten.
+    require(committed.get("source_receipt_sha256") == request["predecessor_receipt_sha256"],
             "transaction_predecessor_not_committed")
 
     # 4. the history is preserved byte for byte.
@@ -930,17 +932,18 @@ def run(request, request_path, request_sha256):
         publish_with_journal(home / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
         publish_with_journal(Path(home) / "hermes-agent/install-stamp.json", stamp_data, 0o600)
 
-        # the predecessor's record follows the published receipt, so a repeated run sees a
-        # consistent chain
-        predecessor_committed = read_json(predecessor_tx / "committed.json")
-        predecessor_committed["source_receipt_sha256"] = receipt_sha
-        write_atomic(predecessor_tx / "committed.json", encoded(predecessor_committed), 0o600)
+        # This operation's own record; the predecessor's record is left untouched and
+        # that is proved on the bytes, not on a claim.
+        require(predecessor_committed_path.read_bytes() == predecessor_committed_bytes,
+                "transaction_predecessor_record_changed")
         write_atomic(staging_root / "committed.json", encoded({
             "schema": "friday.ordinary-telegram-source-update-transaction.v1",
             "state": "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED",
             "request_sha256": request_sha256,
             "previous_input": request["previous_input"],
             "current_input": request["current_input"],
+            "predecessor_request_sha256": request["predecessor_request"]["sha256"],
+            "predecessor_receipt_sha256": request["predecessor_receipt_sha256"],
             "source_receipt_sha256": digest(encoded(new_receipt)),
             "layers": [layer["manifest"] for layer in layers],
             "files": touched,

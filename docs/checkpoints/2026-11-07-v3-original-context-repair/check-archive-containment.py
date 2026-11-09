@@ -12,16 +12,28 @@ isolated fixtures under the disk staging area. It does not write into the produc
 runtime tree, it does not send anything and it does not read the live home's data. Every
 fixture is created, checked and removed inside the bench.
 
-What is checked:
+What is checked, and what is NOT:
 
-* an archive whose entry names a path outside the extraction root is refused, and the
-  extraction root stays empty;
-* an archive entry that is a link (ARJ-style link or a hardlink) is refused;
-* an archive whose expansion would exceed the quota is refused, and nothing is left
+The extraction below is this script's own _safe_extract. It is NOT the product's archive
+handler, so this check does not prove the product's archive behaviour. What it does check
+is the PRODUCT's own primitives - canonical, owned_file (O_NOFOLLOW, st_nlink == 1,
+private mode) and require - against the archive situations the registry names:
+
+* an archive entry whose name leaves the extraction root is refused and the root stays
+  empty;
+* an archive entry that is a link is refused;
+* an archive whose expansion would exceed the quota is refused and nothing is left
   behind;
-* the primitives refuse a symlinked path, a hardlinked file and a path that leaves its
-  root;
-* the asynchronous cancel of a running operation leaves no partial state.
+* the product's primitives refuse a symlinked file, a hardlinked file and a path that
+  leaves its root, and accept an ordinary owned file.
+
+The cancel scenario starts a sleeping script and terminates it with SIGTERM. It shows
+that a terminated process leaves no partial state in that bench; it does NOT show that a
+started PRODUCT operation can be cancelled and cleaned up.
+
+The fixtures are tar-based: the RAR, LHA, ARJ and 7z formats cannot be exercised on this
+machine, so the per-format extraction is not covered. A-13 and A-14 therefore stay
+NOT_RUN in the registry.
 """
 import json
 import os
@@ -194,7 +206,7 @@ def check_async_cancel(bench):
         "time.sleep(0.2); os.kill(os.getpid(), signal.SIGTERM)\n")
     result = subprocess.run([sys.executable, str(script)], capture_output=True, timeout=30)
     leftovers = [p.name for p in root.iterdir()] if root.exists() else []
-    return {"operation": "asynchronous cancel leaves no partial state",
+    return {"operation": "a terminated sleeping process leaves no partial state",
             "terminated_by_signal": result.returncode < 0 or result.returncode != 0,
             "returncode": result.returncode, "nothing_left_behind": not leftovers}
 
