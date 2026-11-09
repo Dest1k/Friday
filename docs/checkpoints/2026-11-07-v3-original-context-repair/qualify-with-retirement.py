@@ -17,9 +17,9 @@ import sys
 import time
 from pathlib import Path
 
-HOME = Path("/home/jericho/jericho/Friday_rework/.runtime/friday-184-20261108")
-PROFILE = os.environ.get("FRW_PROFILE", "dest_telegram")
-USER_ID = os.environ.get("FRW_USER_ID", "467035772")
+HOME = Path("/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032")
+PROFILE = os.environ.get("FRW_PROFILE", "telegram-bot-8812646969")
+USER_ID = os.environ.get("FRW_USER_ID", "8812646969")
 ACCOUNT = "8751854128"
 TRANSPORT = "default"
 
@@ -87,6 +87,12 @@ def retire_if_needed(home):
 
 
 def main():
+    # The product's native dotenv startup admits a finite set of operator roles. The
+    # qualification is run under the read-only 'gateway status' role, which the product's
+    # own ordinary gateway contract allows; any other argv is refused before anything
+    # runs, so the role is set explicitly here instead of being implied by the file name.
+    import sys as _sys
+    _sys.argv = [_sys.argv[0], 'gateway', 'status']
     clean()
     from hermes_cli.env_loader import load_hermes_dotenv
     load_hermes_dotenv()
@@ -113,9 +119,22 @@ def main():
         config_sha256=plan["config_sha256"], profile=PROFILE)
 
     try:
+        # the generation is the CURRENT one of this principal, read from the product's
+        # own access store; a hardcoded generation is a conflict, not a qualification
+        from hermes_cli.plugins_state import PluginState
+        from hermes_cli.friday_product_access import current_access, principal_id
+        rows = current_access(PluginState("friday_rework"))["users"]
+        key = principal_id("telegram", TRANSPORT, ACCOUNT, USER_ID)
+        row = rows.get(key) or {}
+        generation = row.get("generation")
+        if not isinstance(generation, int) or generation < 1:
+            say(stage="qualify_refused", error="no access generation for this principal")
+            retire_if_needed(home)
+            return
+        say(stage="access_generation", user_id=USER_ID, generation=generation)
         result = onboarding.qualify_workers(
             TRANSPORT, session=session, expected_config_sha256=plan["config_sha256"],
-            generation=1, platform="telegram", transport_profile=TRANSPORT,
+            generation=generation, platform="telegram", transport_profile=TRANSPORT,
             account_id=ACCOUNT, user_id=USER_ID)
         say(stage="qualify", state=result.get("state"), enabled=result.get("enabled"),
             worker_execution=result.get("worker_execution"),

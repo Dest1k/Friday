@@ -47,7 +47,11 @@ REQUIRED_HISTORY_ROOTS = (
 )
 
 
+# A controlled failure at the rename/sync boundary of ONE named target. The injection is
+# ONE-SHOT: it fires on the publication of that target and never during the rollback, so
+# a rollback really restores the state instead of failing at the same place again.
 INJECT_AFTER_RENAME = False
+INJECT_TARGET = None
 
 
 class Refused(Exception):
@@ -150,6 +154,7 @@ def publish(target, data, mode=0o600):
     changed. The caller registers the path in the rollback list before the call, so such a
     file is restored as well.
     """
+    global INJECT_AFTER_RENAME
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name("." + target.name + ".publish.tmp")
@@ -164,7 +169,11 @@ def publish(target, data, mode=0o600):
     # the mode is set explicitly: the process umask would otherwise reduce it
     os.chmod(tmp, mode)
     os.replace(tmp, target)
-    if INJECT_AFTER_RENAME:
+    if INJECT_AFTER_RENAME and (INJECT_TARGET is None or str(target) == INJECT_TARGET):
+        # The injection is one-shot: it fires on the publication of the named target and
+        # never again, so the ROLLBACK of that same target restores it instead of failing
+        # at the same boundary again.
+        INJECT_AFTER_RENAME = False
         # a controlled failure at the rename/sync boundary, used to prove that the rollback
         # covers a file that was already changed when the failure happened
         raise OSError(errno.EIO, "injected failure after the rename")
@@ -556,10 +565,11 @@ def history_map(home):
 
 
 def run(request, request_path, request_sha256):
-    global INJECT_AFTER_RENAME
+    global INJECT_AFTER_RENAME, INJECT_TARGET
     started = time.monotonic()
     os.umask(0o077)
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
+    INJECT_TARGET = request.get("inject_target")
     require(request.get("schema") == SCHEMA, "transaction_only_v45_supported")
     home = Path(request["home"]).resolve()
     require(home.is_dir(), "transaction_home_missing")

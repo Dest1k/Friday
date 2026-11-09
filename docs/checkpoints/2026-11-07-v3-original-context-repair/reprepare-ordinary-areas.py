@@ -95,16 +95,34 @@ def preconditions(user_id, profile, state):
     checks["archive_target_free"] = not target.exists()
     checks["archive_root"] = str(archive_root)
     checks["archive_target"] = str(target)
+    # The product's prepare() refuses a principal that already has an access row and a
+    # home that already exists. A repeated preparation is therefore NOT available through
+    # prepare(): the product has no such path, and this script must not delete the access
+    # row, the binding or the history to get past the refusal.
+    checks["prepare_would_refuse_existing_principal"] = row is not None
+    checks["prepare_would_refuse_existing_home"] = home.exists()
+    checks["repeated_preparation_available_in_the_product"] = False
     return checks
 
 
 def restore_profile(home, target):
-    """Move the profile back to its previous place after a refusal."""
-    if target.exists() and not home.exists():
-        home.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        shutil.move(str(target), str(home))
-        return True
-    return False
+    """Move the profile back to its previous place after a refusal.
+
+    The refusal may have happened AFTER the product created a new home for the profile, so
+    the new home is moved aside and the previous profile is put back. The new home is kept
+    in the archive of this transfer, never destroyed, so nothing is lost.
+    """
+    if not target.exists():
+        return False
+    home.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if home.exists() or home.is_symlink():
+        aside = target.with_name(target.name + ".replaced-by-preparation")
+        if aside.exists():
+            return False
+        shutil.move(str(home), str(aside))
+        say(stage="new_home_moved_aside", home=str(home), aside=str(aside))
+    shutil.move(str(target), str(home))
+    return True
 
 
 def main():
@@ -149,6 +167,15 @@ def main():
             blocked.append((user_id, profile, "the archive target of this transfer already exists"))
         if not checks["principal_has_an_access_row"]:
             blocked.append((user_id, profile, "the principal has no access row"))
+        # The product's prepare() refuses an existing principal and an existing home, and
+        # the product has no repeated-preparation path. Predicting that refusal HERE means
+        # the profile is not moved at all, instead of being moved and then refused.
+        if checks["prepare_would_refuse_existing_principal"] and checks["profile_home_exists"]:
+            blocked.append((user_id, profile,
+                            "the product's prepare() refuses an existing principal "
+                            "(existing_principal_not_adopted) and an existing home "
+                            "(existing_home_not_adopted); there is no repeated-preparation "
+                            "path in the installed product, so the profile must not be moved"))
     if blocked:
         for user_id, profile, reason in blocked:
             say(stage="refused_before_any_change", user_id=user_id, profile=profile, reason=reason)
