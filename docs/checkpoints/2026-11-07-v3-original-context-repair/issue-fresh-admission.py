@@ -31,7 +31,12 @@ F01_RUN_ID = "f01-csv-extract-check-01-r50"
 M03_RUN_ID = "m03-addendum-check-01-r51"
 M05_RUN_ID = "m05-current111-check-01-r52"
 M06_RUN_ID = "m06-postrestart-check-01-r52"
-AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r54"
+# The next admission after R54. R54 itself is PINNED: the tester snapshot in use names
+# its path, byte count and digest, and the file is stored in the repository. This issuer
+# therefore never rewrites R54 - every release writes a NEW document with a NEW identity
+# and a NEW path, and the tester snapshot is re-pinned to it in the same step.
+AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r55"
+AUTHORITY_FILE = "INDEPENDENT-AUTHORITY-R55.json"
 # additional run ids covered by the same admission; each one is issued with its own
 # scenario and its own fresh authority check
 EXTRA_SCENARIOS = (
@@ -41,7 +46,7 @@ EXTRA_SCENARIOS = (
     (SCOPE_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/OUT-OF-SCOPE-REFUSAL.json"),
     ("m03-addendum-check-01-r50", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m03-addendum-check-01-r50.json"),
     ("d08-template-fill-check-01-r54", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/d08-template-fill-check-01-r54.json"),
-    ("d09-translation-check-01-r54", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/d09-translation-check-01-r54.json"),
+    ("d09-translation-check-01-r55", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/d09-translation-check-01-r55.json"),
     (F01_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/f01-csv-extract-check-01-r50.json"),
     (M03_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m03-addendum-check-01-r51.json"),
     (M05_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m05-current111-check-01-r52.json"),
@@ -140,7 +145,12 @@ def main():
         "unknown_effects_resolved": False,
     }
     raw = encoded(document)
-    target = OUT_DIR / "INDEPENDENT-AUTHORITY-R54.json"
+    target = OUT_DIR / AUTHORITY_FILE
+    if target.exists():
+        # a released admission is never rewritten: it would break the pin of the tester
+        # snapshot that names it
+        raise SystemExit("the admission " + str(target) + " already exists and is pinned; "
+                         "release the next one instead")
     target.write_bytes(raw)
     os.chmod(target, 0o600)
     print(json.dumps({

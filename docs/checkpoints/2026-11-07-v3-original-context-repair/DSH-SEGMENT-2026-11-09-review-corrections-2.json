@@ -8,18 +8,25 @@
     "the_repair": "the set of files is named explicitly by the request (inject_snapshot_files) and the scope of the read is never derived from a directory's parents. Every named file must exist, be a regular file, not be a symlink and stay inside the home; the digest is computed by streaming with a 64 KiB buffer and a 64 MiB bound. A missing file, an unreadable file, a symlink, a path outside the home and an empty file set are explicit refusals, never silent skips.",
     "the_boundary_fixture": "check-snapshot-boundary.py builds a tiny fixture: two named bench files, a foreign DSH session file and a foreign neighbouring-bench file. The two foreign files are made UNREADABLE (mode 000), so any read of them would fail loudly. The check proves that only the named files are read, that the foreign files are absent from the read set, and that a missing file, a symlink, a path outside the home and an empty set each give their own explicit Refused.",
     "result": "6 of 6 checks passed",
-    "the_working_home": "not published, not rolled back; the change is in the diagnostic branch"
+    "the_working_home": "not published, not rolled back; the change is in the diagnostic branch",
+    "the_publish_chain_is_proved": {
+      "check": "check-publish-chain.py exercises publish() -> snapshot -> injected failure -> Journal.restore on a small fixture",
+      "why_it_exists": "the earlier boundary fixture called the snapshot helper directly, so it could not see a failure inside publish() itself: the call passed a home that was not in publish()'s scope, which would raise NameError after the rename and leave no snapshot",
+      "the_fix": "the home is passed through a dedicated INJECT_SNAPSHOT_HOME, set from the VERIFIED home of the running transaction. There is no implicit global home.",
+      "result": "6 of 6 checks passed: publish() raised the injected OSError itself, the snapshot names the right target and the expected file set, the published file really differed at the failure point while the untouched files kept their bytes, the injection was one-shot, and the rollback restored the previous bytes AND the previous modes",
+      "the_late_rollback_in_the_real_transaction": "still passes: the receipt and the marker really differed at the failure point and every watched file returned its previous bytes and mode"
+    }
   },
   "2_reply_text_contract_isolation": {
     "the_defect": "the check built bt.Runner(bt.Store(bt.CANONICAL_STATE), None), so the product's own keep_text() wrote four synthetic receipts into the working downloads directory.",
     "the_repair": "the check now uses its own small Store inside /home/jericho/.dsh/tmp/reply-text-contract-check. The writer and the reader under test are the product's own methods; only the storage is replaced. The working CANONICAL_STATE is never created, opened or changed.",
     "the_synthetic_receipts": {
-      "found":"four files contract-fixture-4242-*.text-receipt.json in /home/jericho/.local/share/friday-telegram-bot-test/downloads",
-      "identified":"unambiguously this check's own output: every one of them carries run_id contract-fixture, message_id 4242 and the exact wording of this check's fixtures",
-      "quarantine":"/home/jericho/.local/share/friday-telegram-bot-test/quarantine/contract-fixture-text-receipts/ with QUARANTINE.json recording every path, size and digest",
-      "not_touched":"no real run, capture, cursor or historical receipt was changed; the downloads directory still holds its other 376 files"
+      "found": "four files contract-fixture-4242-*.text-receipt.json in /home/jericho/.local/share/friday-telegram-bot-test/downloads",
+      "identified": "unambiguously this check's own output: every one of them carries run_id contract-fixture, message_id 4242 and the exact wording of this check's fixtures",
+      "quarantine": "/home/jericho/.local/share/friday-telegram-bot-test/quarantine/contract-fixture-text-receipts/ with QUARANTINE.json recording every path, size and digest",
+      "not_touched": "no real run, capture, cursor or historical receipt was changed; the downloads directory still holds its other 376 files"
     },
-    "the_fixtures":[
+    "the_fixtures": [
       "an ordinary text reply: written with the product's keep_text(), the SAVED bytes on disk are read back and accepted by the common reader",
       "a document reply that really carries a 'document' field and a caption and no text field: the saved caption is recorded as the wording with text_source 'caption', the receipt kind stays reply_text, the document does NOT become an accepted artifact and max_documents stays 0",
       "an old receipt without the source marker: taken from the SAVED bytes of such a receipt on disk, not by deleting a field from a new dictionary; it still confirms message.text, and the same old receipt against a reply without the text field is refused",
@@ -29,24 +36,51 @@
     "the_historical_M03_branch": "not used as evidence for the common repair"
   },
   "3_the_agreed_tester_set": {
-    "the_finding":"the working tester had moved past the published materials: the published snapshot still carried R53 with ten run ids, while the tester actually in use carried R54 with eleven run ids.",
-    "the_agreed_set":{
-      "tester":"evidence/tester/bot_tester.v42.py, sha256 e6d1f64d3f4f22d90d9bdd9e7400773b6056890b465d430f87896c883c471584, 1135688 bytes - the bytes actually in use",
-      "authority":"evidence/tester/INDEPENDENT-AUTHORITY-R54.json, sha256 740f3af009e8be59270ec06559af7cfaf16c58a81327174f654085f9eff568cc, 13705 bytes, authority_id ordinary-independent-jarvis-activate-20261109-r54, 11 run ids, 42 history rows",
-      "pins":"the snapshot's path, byte count and sha256 of the authority match the stored copy exactly, and the snapshot's run-id map equals the authority's run_scenarios"},
-    "the_delta":{
-      "base":"evidence/tester/bot_tester.installed.py, sha256 cc36c0933bd01cfa5c33a3fb1123fefd0345a2185fbcf7f70f5a3bc2f7c0905b - the tester that was installed before this work",
-      "patch":"evidence/tester/tester-delta-v42.diff, sha256 5399a605dad26650e959ffc045f57cf62f215c07083625f0aed7ea152345187a, 425 lines",
-      "reproducible": true,
-      "verification":"patch -p0 of the diff onto a copy of the base produced the target snapshot byte for byte, with the same sha256 e6d1f64d3f4f22d90d9bdd9e7400773b6056890b465d430f87896c883c471584"
+    "the_finding": "the working tester had moved past the published materials: the published snapshot still carried R53 with ten run ids, while the tester actually in use carried R54 with eleven run ids.",
+    "the_agreed_set": {
+      "tester": {
+        "path": "evidence/tester/bot_tester.v42.py",
+        "sha256": "77cf85e218d98f3c37a53ed5f621d9708f40eb3f1c0fa3176e4a7e1b75e0d6e0",
+        "note": "the sha256 is refreshed in the repository copy and in SHA256SUMS"
+      },
+      "authority": {
+        "path": "evidence/tester/INDEPENDENT-AUTHORITY-R55.json",
+        "sha256": "1a625f61b7b59bcc893dcbc5f4a8aea14dfc1edb218e03d9836016cbad5f8557",
+        "bytes": 13805,
+        "authority_id": "ordinary-independent-jarvis-activate-20261109-r55",
+        "run_scenarios": 12,
+        "history_rows": 42,
+        "note": "R55 is the admission in force now. R54 stays in the repository as the admission under which the D-08 and D-09 runs were executed; it is PINNED and is never rewritten. The issuer issue-fresh-admission.py now writes a NEW document with a NEW identity and a NEW path, and it refuses to overwrite an existing one. The tester snapshot is re-pinned to the new document in the same step, and the map of the snapshot equals the run_scenarios of the admission exactly."
+      },
+      "pins": "the snapshot's path, byte count and sha256 of the authority match the stored copy exactly, and the snapshot's run-id map equals the authority's run_scenarios"
     },
-    "the_history":[
-      "R47, R48, R49, F-01, M-05, M-06 and D-08 were executed with the snapshot that carries the reply-text contract fix and the R54 pins",
-      "the published snapshot of 4f36a4c was the R53 version with ten run ids; it is replaced here by the bytes actually in use, and the earlier versions stay in the repository history",
-      "the historical M-03 run was executed with the snapshot BEFORE the reply-text contract fix; its own evidence is retained and was not rewritten"],
-    "before_the_next_live_run":"the tester actually in use, the authority in force and the current gateway identity must agree; a new admission is not a permission to repeat an old effect"
+    "the_delta": {
+      "base": "evidence/tester/bot_tester.installed.py, sha256 cc36c0933bd01cfa5c33a3fb1123fefd0345a2185fbcf7f70f5a3bc2f7c0905b - the tester that was installed before this work",
+      "patch": "evidence/tester/tester-delta-v42.diff, sha256 5399a605dad26650e959ffc045f57cf62f215c07083625f0aed7ea152345187a, 425 lines",
+      "reproducible": true,
+      "verification": "patch -p0 of the diff onto a copy of the base produced the target snapshot byte for byte, with the same sha256 e6d1f64d3f4f22d90d9bdd9e7400773b6056890b465d430f87896c883c471584"
+    },
+    "the_history": [
+      "the FIRST EXECUTION of each run and the admission it actually used, taken from the timestamps of the retained runs and of the admission files:",
+      "  R47 -> INDEPENDENT-AUTHORITY-R47.json (created 06:04:22Z), run created 06:06:42Z; the report of that check names the admission R47",
+      "  R48 -> INDEPENDENT-AUTHORITY-R48.json (06:12:43Z), run created 06:14:16Z; the segment report is dated 09:45 MSK and names R48 and R49",
+      "  the three R49 runs -> INDEPENDENT-AUTHORITY-R49.json (06:27:34Z), runs created 06:28:23Z .. 06:35:38Z",
+      "  F-01 -> INDEPENDENT-AUTHORITY-R50.json (07:21:29Z), run created 07:22:24Z",
+      "  M-05 and M-06 -> INDEPENDENT-AUTHORITY-R52.json (07:30:19Z), runs created 09:30:53Z .. 09:35:45Z",
+      "  D-08 -> INDEPENDENT-AUTHORITY-R54.json (09:49:51Z), run created 10:01:48Z",
+      "  D-09 -> INDEPENDENT-AUTHORITY-R54.json, run created 11:02:16Z; this is the run that used the snapshot stored in the repository",
+      "the EXACT tester snapshot of each of those first executions is NOT ESTABLISHED: it is pinned nowhere for those moments. The runs above predate the reply-text contract fix, except D-08 and D-09.",
+      "the LATER CHECK of the stored results with the current tester (sha256 e6d1f64d...) confirms that the retained receipts, the cursor and the run records are still consistent and readable; it does NOT establish which snapshot executed each run and is not used as evidence for that.",
+      "the earlier statement in this file that attributed all of them to the current tester with the R54 pins was wrong and is corrected here; the historical receipts, results and sends are unchanged and nothing was repeated."
+    ],
+    "before_the_next_live_run": "the tester actually in use, the authority in force and the current gateway identity must agree; a new admission is not a permission to repeat an old effect",
+    "the_previous_admission_is_kept": {
+      "path": "evidence/tester/INDEPENDENT-AUTHORITY-R54.json",
+      "sha256": "740f3af009e8be59270ec06559af7cfaf16c58a81327174f654085f9eff568cc",
+      "why": "R54 was the admission in force for the D-08 and D-09 runs. It is pinned and is NOT rewritten: the next release writes a new document with a new identity and a new path, and the tester snapshot is re-pinned to it in the same step."
+    }
   },
-  "not_repeated":"R42, R43, UNKNOWN_SEND, G-06 and M-10; the M-03 request was sent once (message 2559)",
+  "not_repeated": "R42, R43, UNKNOWN_SEND, G-06 and M-10; the M-03 request was sent once (message 2559)",
   "live_state": {
     "receiver": "hermes-gateway-1b7e7667.service active, pid 311005, one process, Telegram connected",
     "data": "dest_telegram 196 messages, telegram-bot-8812646969 4928 messages, integrity_check ok on both",

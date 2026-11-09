@@ -60,6 +60,10 @@ INJECT_SNAPSHOT_DIR = None
 # The files whose state is recorded at the injection point. They are named explicitly by
 # the request; the scope of the read is never derived from a directory's parents.
 INJECT_SNAPSHOT_FILES = ()
+# The home the snapshot reads from. It is set from the VERIFIED home of the running
+# transaction, never from the parents of the result directory, and it is passed to the
+# snapshot explicitly.
+INJECT_SNAPSHOT_HOME = None
 
 
 class Refused(Exception):
@@ -184,7 +188,7 @@ def publish(target, data, mode=0o600):
         INJECT_AFTER_RENAME = False
         if INJECT_SNAPSHOT_DIR is not None:
             _write_injection_snapshot(INJECT_SNAPSHOT_DIR, target,
-                                     INJECT_SNAPSHOT_FILES, home)
+                                     INJECT_SNAPSHOT_FILES, INJECT_SNAPSHOT_HOME)
         # a controlled failure at the rename/sync boundary, used to prove that the rollback
         # covers a file that was already changed when the failure happened
         raise OSError(errno.EIO, "injected failure after the rename")
@@ -641,6 +645,7 @@ def history_map(home):
 
 def run(request, request_path, request_sha256):
     global INJECT_AFTER_RENAME, INJECT_TARGET, INJECT_SNAPSHOT_DIR, INJECT_SNAPSHOT_FILES
+    global INJECT_SNAPSHOT_HOME
     started = time.monotonic()
     os.umask(0o077)
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
@@ -655,6 +660,8 @@ def run(request, request_path, request_sha256):
                 "transaction_injection_snapshot_outside_home")
     require(home.is_dir(), "transaction_home_missing")
     require(os.environ.get("HERMES_HOME") == str(home), "transaction_environment_required")
+    # the snapshot reads from the VERIFIED home of this transaction
+    INJECT_SNAPSHOT_HOME = home
     candidate = Path(request["candidate_project"]).resolve()
     require(candidate.is_dir(), "transaction_candidate_missing")
     seconds = int(request.get("seconds", 180))

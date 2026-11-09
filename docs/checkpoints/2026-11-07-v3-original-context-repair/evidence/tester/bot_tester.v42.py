@@ -2147,6 +2147,7 @@ def s07_runtime_plan(plan):
 
 class Runner:
     ORDINARY_INDEPENDENT_SCENARIOS = {
+        "d08-template-fill-check-01-r54": "5ece4c2aa2ec09221eb06c68da4a0ee2e7060b87204751fd02161770f42688f6",
         "d09-translation-check-01-r55": "152cb15e2b9da0bed9bd32df929490d70f0b80582df2c0f644dba58254e8d965",
         "d12-write-file-check-01-r48": "877f9307d145b9cb72309240d631c2aab2f37a97247421452cdb150814b8bb9c",
         "f01-csv-extract-check-01-r50": "44efb9843711b82567d14c3f3fdfff6c44bbbeb5f3b91592f1ec387b9449cbcb",
@@ -2160,8 +2161,8 @@ class Runner:
         "out-of-scope-check-01-r49": "e58f004096892f0f5a51c385e32b9490b93858b4a2e1cbc8f1f5186e2e9fa6c5",
     }
     ORDINARY_INDEPENDENT_AUTHORITY = dict(
-        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R54.json',
-        bytes=13705, sha256='740f3af009e8be59270ec06559af7cfaf16c58a81327174f654085f9eff568cc')
+        path='/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R55.json',
+        bytes=13805, sha256='1a625f61b7b59bcc893dcbc5f4a8aea14dfc1edb218e03d9836016cbad5f8557')
 
     def __init__(self, store, api, clock=time.time, sleep=time.sleep):
         self.store, self.api, self.clock, self.sleep = store, api, clock, sleep
@@ -11599,7 +11600,7 @@ class Runner:
         if (len(raw) != reference['bytes'] or digest(raw) != reference['sha256']
                 or encoded(document) != raw
                 or document.get('schema') != 'frw.Root.ordinary-independent-history-admission.v1'
-                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r54'
+                or document.get('authority_id') != 'ordinary-independent-jarvis-activate-20261109-r55'
                 or document.get('operator') != 'Root' or document.get('accepted') is not True
                 or document.get('run_scenarios') != self.ORDINARY_INDEPENDENT_SCENARIOS
                 or digest(encoded(scenario)) != expected_sha
