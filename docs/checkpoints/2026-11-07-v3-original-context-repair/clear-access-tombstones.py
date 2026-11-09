@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Clear the disabled access tombstones so fresh ordinary preparations can proceed.
+"""Inspect the access store's tombstones and generations. It no longer removes anything.
 
-The product's prepare() refuses a principal that already has an access row
-(existing_principal_not_adopted). The tombstones belong to the withdrawn first
-preparation round; the product's own archive consumed that round's attempts
-(CONSUMED_NO_RETRY claims recorded), so clearing the tombstones restores the
-pre-existing state of the access store.
+The previous version of this script popped the principal's row out of the access
+document and wrote the document back, which destroyed the access history: the
+generations the product's advance_access contract keeps, and the tombstones that record
+which preparation was withdrawn. That removal is what let a fresh preparation be
+accepted, and it cost the product its own history.
 
-The rows are removed through the product's own ProductAccess writer with the
-verified operator session, using Administration's own removal path.
+This version only reports:
+
+* the principal's row, its generation and its enabled state,
+* the tombstones and generations the store holds for it,
+* the contract of the product's own advance_access, so the real way of preparing a
+  principal again can be chosen from the facts.
+
+Nothing is written. Removing a row is a product decision that belongs to the product's
+own access transaction, not to an operator script.
 """
 import json
 import os
@@ -54,25 +61,31 @@ def main():
     password = re.search(r'"password"\s*:\s*"([^"]*)"', raw).group(1)
     provider = get_provider("basic")
     session = provider.complete_password_login(username=username, password=password)
+    if session.user_id != username:
+        raise SystemExit("session identity mismatch")
 
     access_mod = importlib.import_module("friday_rework.access")
     state_mod = importlib.import_module("hermes_cli.plugins_state")
     state = state_mod.PluginState("friday_rework")
     access = access_mod.ProductAccess(state)
+    document = access._document()
+    users = document.get("users", {})
     for user_id, profile in USERS:
         key = principal_id("telegram", TRANSPORT, ACCOUNT, user_id)
-        document = access._document()
-        if key not in document["users"]:
-            say(stage="no_tombstone", user_id=user_id)
+        row = users.get(key)
+        if row is None:
+            say(stage="no_row", user_id=user_id, principal=key[:8], profile=profile)
             continue
-        # pop the row and re-validate through the product's own validator
-        document["users"].pop(key)
-        access_mod.validate_access(document)
-        with access.store._locked():
-            access.store.state_set("product_access.v1", document)
-        say(stage="removed_tombstone", user_id=user_id, principal=key[:8])
+        say(stage="row", user_id=user_id, profile=profile, principal=key[:8],
+            enabled=row.get("enabled"), generation=row.get("generation"),
+            updated=row.get("updated"), fields=sorted(row))
+    say(stage="store", schema=access_mod.KEY, users=len(users),
+        tombstones=sorted(k[:8] for k, v in users.items() if v.get("enabled") is False),
+        generations={k[:8]: v.get("generation") for k, v in sorted(users.items())})
     rows = current_access()["users"]
-    say(stage="rows_after", count=len(rows), keys=[k[:8] for k in rows])
+    say(stage="current_access", count=len(rows), keys=[k[:8] for k in rows])
+    say(stage="note", text="nothing was written; the access history and the generations "
+                           "are preserved")
     clean()
 
 
