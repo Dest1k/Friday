@@ -1,0 +1,25 @@
+--- a/tools/scoped_rtf.py
++++ b/tools/scoped_rtf.py
+@@ -570,6 +570,13 @@
+         spec = _object(content)
+         if not isinstance(spec, dict) or set(spec) != {'blocks'} or not isinstance(spec['blocks'], list) or len(spec['blocks']) > 512:
+             fail('structured_schema')
++        # Explicit paragraph styles preserve semantic headings in Office RTF
++        # round trips; keep direct outline levels for simple readers too.
++        parts.append(b'{\\stylesheet{\\s0\\f0\\fs22 Normal;}' + b''.join(
++            b'{\\s' + str(level).encode() + b'\\sbasedon0\\snext0\\outlinelevel'
++            + str(level-1).encode() + b'\\f0\\b\\fs'
++            + str(max(22, 38-level*2)).encode() + b' Heading ' + str(level).encode() + b';}'
++            for level in range(1, 10)) + b'}\n')
+         for block in spec['blocks']:
+             if not isinstance(block, dict):
+                 fail('structured_schema')
+@@ -580,7 +587,7 @@
+                 level = block['level']
+                 if type(level) is not int or not 1 <= level <= 9:
+                     fail('heading_level')
+-                paragraph(block['text'], b'\\b\\outlinelevel' + str(level-1).encode() + b'\\fs' + str(max(22, 38-level*2)).encode() + b' ')
++                paragraph(block['text'], b'\\s' + str(level).encode() + b'\\b\\outlinelevel' + str(level-1).encode() + b'\\fs' + str(max(22, 38-level*2)).encode() + b' ')
+             elif kind == 'list' and set(block) == {'type', 'items', 'ordered'}:
+                 if type(block['ordered']) is not bool or not isinstance(block['items'], list) or not 1 <= len(block['items']) <= 512:
+                     fail('list_schema')

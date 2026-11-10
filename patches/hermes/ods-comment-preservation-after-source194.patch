@@ -1,0 +1,111 @@
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -438,6 +438,79 @@
+     return result
+ 
+ 
++def _tag_end(raw, start):
++    # A literal '>' inside a quoted attribute is not the end of its tag.
++    quote = None
++    for offset in range(start, len(raw)):
++        char = raw[offset]
++        if quote is not None:
++            if char == quote: quote = None
++        elif char in (34, 39): quote = char
++        elif char == 62: return offset + 1
++    fail('cell_span_invalid')
++
++
++def _edited_cell_content(raw, display):
++    """Keep comments at unambiguous cell/paragraph boundaries, byte for byte.
++
++    The caller has already checked expanded names and plain paragraph content.
++    Namespace processing is deliberately off for this inherited-prefix fragment.
++    Comments between old text runs or among multiple paragraphs have no unique
++    position in a replacement scalar; refuse those rather than relocate them.
++    """
++    parser = expat.ParserCreate()
++    depth = 0; paragraphs = []; events = []; comments = 0
++    body_begin = body_end = None; outside_text = False
++    def begin(name, attrs):
++        nonlocal depth, body_begin
++        depth += 1
++        offset = parser.CurrentByteIndex
++        if depth == 1: body_begin = _tag_end(raw, offset)
++        elif depth == 2: paragraphs.append([offset, _tag_end(raw, offset), None])
++        else: fail('unsupported_target_content')
++    def end(name):
++        nonlocal depth, body_end
++        offset = parser.CurrentByteIndex
++        if depth == 2:
++            start, opening, _ = paragraphs[-1]
++            paragraphs[-1][2] = opening if raw[start:opening].rstrip().endswith(b'/>') else _tag_end(raw, offset)
++        elif depth == 1: body_end = offset
++        depth -= 1
++    def text(value):
++        nonlocal outside_text
++        if depth == 2 and value: events.append(('text', value))
++        elif depth == 1 and value.strip(): outside_text = True
++    def comment(value):
++        nonlocal comments
++        comments += 1
++        offset = parser.CurrentByteIndex
++        finish = raw.find(b'-->', offset) + 3
++        if finish < offset + 7: fail('cell_span_invalid')
++        if depth == 2: events.append(('comment', raw[offset:finish]))
++        elif depth != 1: fail('unsupported_target_content')
++    def refuse(*args): fail('active_xml')
++    parser.StartElementHandler = begin; parser.EndElementHandler = end
++    parser.CharacterDataHandler = text; parser.CommentHandler = comment
++    parser.StartDoctypeDeclHandler = refuse; parser.EntityDeclHandler = refuse
++    parser.ProcessingInstructionHandler = refuse
++    try: parser.Parse(raw, True)
++    except expat.ExpatError: fail('invalid_xml')
++    literal = _literal(display).encode()
++    if not comments: return b'<text:p>' + literal + b'</text:p>'
++    if len(paragraphs) != 1 or outside_text: fail('unsupported_target_content')
++    texts = [i for i, (kind, _) in enumerate(events) if kind == 'text']
++    if events and not texts: fail('unsupported_target_content')
++    first = texts[0] if texts else len(events)
++    last = texts[-1] if texts else len(events)
++    if any(kind == 'comment' and first < i < last for i, (kind, _) in enumerate(events)):
++        fail('unsupported_target_content')
++    before = b''.join(value for kind, value in events[:first] if kind == 'comment')
++    after = b''.join(value for kind, value in events[last + 1:] if kind == 'comment')
++    start, opening, finish = paragraphs[0]
++    return (raw[body_begin:start] + b'<text:p>' + before + literal + after + b'</text:p>'
++            + raw[finish:body_end])
++
++
+ def _cell_span(raw, wanted, *, reject_hidden=False):
+     parser = expat.ParserCreate(namespace_separator='}')
+     found = []; depth = 0; start = None; index = 0; target_depth = None
+@@ -453,12 +526,8 @@
+         if target_depth == depth:
+             offset = parser.CurrentByteIndex
+             # Expat reports after a self-closing tag, before a normal end tag.
+-            if raw[start:offset].rstrip().endswith(b'/>'):
+-                finish = offset
+-            else:
+-                finish = raw.find(b'>', offset) + 1
+-            if finish <= offset and not raw[start:offset].rstrip().endswith(b'/>'):
+-                fail('cell_span_invalid')
++            empty = raw[start:_tag_end(raw, start)].rstrip().endswith(b'/>')
++            finish = offset if empty else _tag_end(raw, offset)
+             found.append((start, finish))
+             target_depth = None
+         depth -= 1
+@@ -519,10 +588,11 @@
+         fail('unsupported_target_content')
+     if q(TB, 'style-name') in target.attrib: attrs[q(TB, 'style-name')] = target.get(q(TB, 'style-name'))
+     root = book.xml['content.xml']; cells = [n for n in root.iter() if n.tag in (q(TB, 'table-cell'), q(TB, 'covered-table-cell'))]
+-    raw = book.parts['content.xml']; begin, end = _cell_span(raw, cells.index(target), reject_hidden=True)
++    raw = book.parts['content.xml']; begin, end = _cell_span(raw, cells.index(target))
++    content = _edited_cell_content(raw[begin:end], display)
+     # Local namespace declarations make this independent of the source prefixes.
+     attributes = ''.join(' ' + ('office:' if key.startswith('{'+O+'}') else 'table:') + key.split('}', 1)[1] + '="' + escape(text, {'"': '&quot;'}) + '"' for key, text in attrs.items())
+-    replacement = ('<table:table-cell xmlns:table="'+TB+'" xmlns:office="'+O+'" xmlns:text="'+T+'"'+attributes+'><text:p>'+_literal(display)+'</text:p></table:table-cell>').encode()
++    replacement = ('<table:table-cell xmlns:table="'+TB+'" xmlns:office="'+O+'" xmlns:text="'+T+'"'+attributes+'>').encode() + content + b'</table:table-cell>'
+     changed = raw[:begin] + replacement + raw[end:]
+     if format == 'fods':
+         result = changed
