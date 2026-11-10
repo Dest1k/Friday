@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 11.11.2026, 00:01 МСК
+## Действующее продолжение Астры — 11.11.2026, 00:30 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -37,7 +37,8 @@ maintenance до final source/bundle/consumer review и свежих предп�
 `48b57e346dbe0aeb3a964a671a47cb47895370ae`; forward R97/R98 и их app-проверки опубликованы
 в `22a3b3bb1a9e39a6ecf6d63827a32f51dc2c6c3c`;197 установлен/опубликован
 в `b99c02b1a809cba935d64fc298b1d99bb97c2827`;198 опубликован в
-`ed2788bab090fdf841e1e242814bf03506caa741` — проверенный baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+`ed2788bab090fdf841e1e242814bf03506caa741`; R99 с Writer evidence опубликован в
+`bcb8241865a40b0d892444fd440c65f93815c151` — проверенный baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
@@ -52,12 +53,15 @@ Full17888 actual files —233329301B; receipt `ace1b232…989f`, input `dfc6fd4a
 Постоянный gateway **1198290 / start4735674 / bootd518758e-bce0-4bd5-89a1-fc4e113f0623**,
 active/running/Telegram connected/NRestarts0, один gateway этого home; прежний1153704 отсутствует.
 В install-checkpoint198 три quick_check OK/default30/2,dest196/2,tester5457/5/leases0.
-После фактически завершённого R99 currenttester5467/5/leases0, оба других30/2 и196/2 сохранены;
-[actual R99 runtime/native/application](evidence/astra-20261110/docx-odt-first-original-root-review.json).
+После R99 исторический tester5467/5; после завершённого **R100 currenttester5487/5/leases0**,
+оба других30/2 и196/2 сохранены. **507canonical/gen2/45oldunresolved/3UNKNOWN**.
+[actual R99](evidence/astra-20261110/docx-odt-first-original-root-review.json) и
+[actual R100 native/custody/Calc](evidence/astra-20261111/xlsx-ods-first-original-root-review.json).
 Fresh actual198 imports/no overlay:9 saved-byte checks — Wordcaptured+Writerrestored18/3empty,
 strict-source refusals, newtemplate PI negative, exactR36six-cell ODS и receivedR97/R98 forward
 регрессия. Office/nativeproducer/model/Telegram не повторялись. Это установленная узкая
-функция; FIRSTuser/формальная/общаяF04 приёмка отдельно ещё не выполнены.
+функция. Actual FIRSTuser R99/R100 подтверждены ниже; install-квалификация сама их не заменяет.
+Формальная и общая F04/fullV3 приёмка не установлены.
 Здоровый постоянный gateway без искусственного lifetime timer; fresh admissibility надо
 проверять заново. Переезда/переноса данных не было.
 [Source/review/композиция198](evidence/astra-20261110/reverse198-publication-source-review.json):
@@ -249,17 +253,55 @@ No touch/heartbeat/restart дляtimestamp. Frozen preadmissiongate0 нельз�
 CLI послеgen1: Root использовал точный assess_bytes API+physical198pins и отдельныйpostnativeproof.
 Исторические505/5457/669 и старый197failclosed/source-onlyFAIL сохранены.
 
-**Следующее:** FIRST original XLSX→ODS. Его source/history/25+18 checks packet complete
-`FRW-ASTRA-V3-FIRST-XLSX-ODS-PLAN-20261110/RESULT.json` SHA7cbdfc76…21d8; настоящий R36
-workspace/mayak_book.xlsx2088B/bd35…a58a, typed6/5strings/B3numeric1, не uploadedreceivedsource.
-Старый общий198adapter корректно отказывает после нового R99. Готовится **XLSX-only** successor
-`FRW-ASTRA-V3-XLSX198-AFTER-R99-CUT-20261110/`: exact506/5467/generation1, только завершённая
-R99 delta, без blanketrebaseline/старыхзаписей/новогоDocxdispatch. Independent delta proof160a4f4a…f2a1
-подтвердил505oldhashes/811checked signatures и45/3 unchanged; code/consumerreview ещё нужен.
-Никакого второгоCASE ISSUE/binding/send пока нет,120s окна не открыты. После готовности Root
-проверяет новую текущую границу и выполняет один FIRST; не повторять R99/R97/R98/CREATE/F03.
-Параллельно read-only разбирается следующий обязательный PPTX↔ODP контракт/история/источники,
-без native/delivery и дубликата Solnewdependency canaries.
+**R100 FIRST original XLSX→ODS завершён и принят Root в узком объёме**:
+[реальное исполнение / native join / same-received Calc](evidence/astra-20261111/xlsx-ods-first-original-root-review.json).
+Oneordinary2736→received2738/10151B/74cad5b1…cfa5, full180/exit0, canonicalrunSHA6b6121ff…f325.
+Исходный Friday R36 XLSX2088B/bd35…a58a из workspace, не R98originalODS и не reupload.
+Actualnative5468..5487: одинаковые user5468/5472 с одним platform4842 и readcallc05b4d8b
+5469/5473/results5470/5474 — представления одного request; uniquephysicalwrite5482/
+calldc92e772…: spreadsheet_convert/xlsx_ods/ods:calc8, outputread5484/final5485.
+Новая отправка ровно1, новыйwrite ровно1; контекстные копии не дают повторного эффекта.
+Sourcebd35→nativeoutput74cad→actualreceivedjoin, actualboundRunner custody PASS.
+Все6typed cells/5strings/B3numeric1/oneДанные/A1:B3/noformulas сохранены. Rawtool
+runtime_qualified=false оставлен; formaltester EVIDENCE_READY/RECEIVED_UNGRADED/NOT_ESTABLISHED.
+На копии именно received2738 **один Calc cycle** 1→200/save-close-reopen→1/save-close-reopen,
+0.567479s wholeplan в исходном300budget. Независимые44negativecontrols отклонены; profile/inputs/
+canonicalreceived/source/receipt/fullpins сохранены, ownstage/processes0. Root отдельно проверил:
+restored content.xml побайтово равен received; marker меняет только B3value+display1→200.
+**Граница:** strict product198 generated-destination validator принимает received, но отказывает
+Calc-saved styles/meta/settings (минимально loext:tab-stop-distance=0in). Это не отказ реального
+Calc editability, но postedit product read/reconvert/sequence не приняты; source/output guard не
+ослаблялся, Office/model/send ради checker не повторялись. Visual/Excel/generalF04 не заявлены.
+Rootclosedreview b7d7f916…faba; `FRW-ASTRA-V3-XLSX198-AFTER-R99-CUT-20261110/ROOT-xlsx-LIVE-RUN.json`
+CLOSED_NARROW_FIRST_ORIGINAL_XLSXODS_NATIVE_DELIVERY_APPLICATION_ROOT_PASS. R100 consumed.
+XLSX-only adapter6db131d7…296 принял только точную завершённую R99 delta506/5467/gen1:
+44author+38Root changed-source controls; runner69+29independent, privacy17roots/190810entries
+без sensitiveexposure, currentprimary/compression authenticatedGETmodels200. Original120s ISSUE/
+FINAL/300absolute/180capture/max1/4wrappers/atomic/main/collect сохранены; profilea373 дважды.
+Старые506hashbytes/821checkednative signatures и45/3 сохранены. Frozen gen1 admission после
+R100gen2 корректно отказывает; отдельный Root postreadback2 не выдаёт новую dispatch authority.
+JSON Inventory serialization/socket-import-guard ошибки checker сохранены отдельно; same savedbytes
+проверены, никакой фактический эффект не повторён.
+
+**Следующая presentation-ветка**: [source/history и private-oracle подготовка](evidence/astra-20261111/presentation-first-direction-preparation.json).
+PPTX→ODP — действительно недостающее направление в bounded506/5467/669 contour. Оригинал48100B/
+64556440…80a:5slides/table/nativechart+embeddedbook/5notes. Privategolden/93source+40controls+
+6reviewdelta PASS; nativeODP/mapping/qualifiedtoolchain/styles/orientation/app/render ещё NOT_READY.
+Private package содержит notes и в Git не публикуется. Не дублировать canary Сола; работать с его
+уже captured native output. **ODP→PPTX не FIRST**: V04sent2030/platform4095 уже был; wrongread/
+file_not_found/partialresponse сохранены, новыйversion не разрешает resend/replacement.
+
+**Текущая DSH availability — UNAVAILABLE**, независимо от исправногоOffice/gateway:
+[конкретные причины и подготовка восстановления](evidence/astra-20261111/dsh-current-readiness-repair-scope.json).
+Enabled testerworker ссылается на отсутствующие exactNode root (nodealias dangling), resolver иCA;
+webpolicy expired/otherboot, readiness receipt/runtimeinput/worker_web-source associations drift.
+Историческая принятая coding-задача/артефакт/followup не переигрываются. Source/staging Node exactSHA
+из официального signedarchive иCA exactSHA из retainedjob готовы; **ещё не восстановлены**. Exact
+resolver в boundedauthoritative search не найден; currentinputs proposal — отдельная будущая
+операция, не repinдляPASS. Root ведёт finite actualconsumer/postboot/readiness reconciliation и
+цельный минимальный repair до нового runtime допуска; Node-only install не равен availability.
+Причина/время удаления не установлены, старые policy/receipts/часы сохраняются. Source198,
+config/profile/gateway/данные ради диагноза не менялись, переезда/переустановки слоёв нет.
 
 Сол завершил `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1`, RESULT1c9a85c3…7076 и41refs проверены;
 точный final peer item consumed. Full coherent LibreOfficeDev26.2.5.2 runtime779549647B/5114files,
@@ -284,6 +326,13 @@ SHAc2c0c1c7de01adc5f10780baa6ca41f092766d65a4540409359eafc04f904fae.
 более тесныхinnercaps. Старый23:31compile deadline не продлевается: он закрыт в прежнейзадаче.
 Перед будущимtoolchainmaintenance нужны реальные bundle/filter/consumer source compatibility,
 independent exactdelta review и свежие Root предпосылки. Root не ждёт Сола в коротком окне.
+[Последние принятые M1/M2](evidence/astra-20261111/office-bundle-preparation-milestones.json):
+M1 восемь knownnone/nooutput rendererfails; M2 nativeentry repaired без rebuild, отдельный новый
+600batch6.152s. DOCX→ODT/ODT→DOCX/ODS→XLSX/ODP→PPTX localactualconsumer PASS; XLSX→ODS,
+ODT→PDF,PPTX→ODP,PPTX→PDF source/checker дельты ещё оцениваются на тех же capturedbytes.
+Earlier absent-oosplash prose исправлена: frozenruntime уже содержал nativeentry;172Bshim+5dirs
+изменили launcherdependency. M1/M2 exactrefs проверены и точные peeritems consumed. Никакой
+sharedinstall ещё нет; Standard, исходные часы и полнота оставшихся проверок сохранены.
 
 R83 UNKNOWN_SEND/один readonly EMPTY quarantine, R85 PARTIAL/Question NOT_RUN,
 исчерпанные три C10 R89–R91, R42/R43/2257/S11/P01/Q02/G06/M10 и прочие consumed/UNKNOWN
