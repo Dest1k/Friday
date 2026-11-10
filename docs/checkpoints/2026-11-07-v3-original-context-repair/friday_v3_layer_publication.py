@@ -48,6 +48,7 @@ LAYER_NAMES = (
     "bounded-7z-codec-activation",
     "bounded-current-ask-identity",
     "necessary-document-clarification-p04",
+    "archive-conversion-failure-provenance-after188",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to

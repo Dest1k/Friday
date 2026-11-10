@@ -64,6 +64,10 @@ def consumer_bench(check, args):
     if layer == "necessary-document-clarification-p04":
         check("bench_p04_exact_three_targets", set(source_files) == {
             "hermes_cli/friday_prompt_scope.py", "agent/prompt_builder.py", "tools/scoped_pdf_ocr.py"})
+    if layer == "archive-conversion-failure-provenance-after188":
+        check("bench_archive_provenance_exact_five_targets", set(source_files) == {
+            "agent/turn_explainers.py", "agent/turn_finalizer.py", "agent/turn_context.py",
+            "agent/tool_executor.py", "gateway/run_turn_runner.py"})
     # Read every prerequisite through the same input consumed by publication. The
     # count need not equal the installed layer count; it is a dependency set.
     previous_input = json.loads(args.previous_input.read_text())
@@ -317,6 +321,9 @@ def main(argv=None):
     selected = generator.parse_args(["--layer", "necessary-document-clarification-p04"])
     check("generator_p04_cli_selects_only_increment",
           selected.layer_names == ("necessary-document-clarification-p04",))
+    selected = generator.parse_args(["--layer", "archive-conversion-failure-provenance-after188"])
+    check("generator_archive_provenance_cli_selects_only_increment",
+          selected.layer_names == ("archive-conversion-failure-provenance-after188",))
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (
@@ -338,7 +345,8 @@ def main(argv=None):
 
     # --- 3. one-layer variants resolve to exactly that one layer --------------------
     for single in ("bounded-resume-sidecar-guard", "bounded-7z-codec-activation",
-                   "bounded-current-ask-identity", "necessary-document-clarification-p04"):
+                   "bounded-current-ask-identity", "necessary-document-clarification-p04",
+                   "archive-conversion-failure-provenance-after188"):
         request = {"schema": validator.SCHEMA_EXPLICIT, "layer_names": [single]}
         check("single_layer_resolves:" + single,
               validator.resolve_layer_names(request) == (single,))

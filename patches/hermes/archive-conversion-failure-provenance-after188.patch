@@ -1,0 +1,272 @@
+diff --git a/agent/turn_explainers.py b/agent/turn_explainers.py
+--- a/agent/turn_explainers.py
++++ b/agent/turn_explainers.py
+@@ -3,10 +3,13 @@
+ The footer tells the model (and user) when a claimed file mutation did not land; the explainer
+ summarises why a turn ended without a final answer. Every method resolves through ``AIAgent``'s MRO.
+ """
++import hashlib
++import json
+ import os
+ import re
+ import unicodedata
+ from contextlib import suppress
++from pathlib import Path
+ from typing import Any, Dict, Optional
+ 
+ from agent.i18n import t
+@@ -62,6 +65,20 @@
+     """One key per on-disk target: the file tools' task-resolved absolute path, case-folded
+     on case-insensitive hosts. A failure recorded as ``notes.md`` and the write that later
+     lands as ``/repo/notes.md`` (or ``Notes.md`` on Windows) must meet on the same key."""
++    try:
++        from hermes_cli.friday_user_scope import current
++
++        cap = current()
++        if cap is not None:
++            root = cap.home / "workspace"
++            relative = Path(path)
++            if relative.is_absolute():
++                relative = relative.relative_to(root)
++            if not relative.parts or any(p == ".." or p.startswith(".") for p in relative.parts):
++                raise ValueError("invalid workspace target")
++            return os.path.normcase(os.path.normpath(str(root / relative)))
++    except Exception:
++        pass
+     try:
+         from tools.file_tools_paths import _resolve_path_for_task
+ 
+@@ -160,12 +177,39 @@
+         targets = _extract_file_mutation_targets(tool_name, args)
+         if not targets:
+             return
++        try:
++            data = json.loads(result) if isinstance(result, str) else None
++        except (TypeError, ValueError):
++            data = None
++        from hermes_cli.friday_user_scope import current
++        cap = current()
+         landed = file_mutation_result_landed(tool_name, result)
++        verified_written = set()
+         if landed:
+             landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
+             changed = getattr(self, "_turn_file_mutation_paths", None)
+             if changed is not None:
+                 changed.update(landed_paths)
++            # A landed managed receipt and a descriptor snapshot bind partial
++            # success to these exact bytes, rather than to file existence.
++            artifacts = getattr(self, "_turn_file_mutation_artifacts", None)
++            if (cap is not None and artifacts is not None and isinstance(data, dict)
++                    and data.get("scope") == "own_user_workspace"
++                    and data.get("success") is True and data.get("verified") is True
++                    and isinstance(data.get("path"), str)):
++                from hermes_cli.friday_user_scope import workspace_document
++                with suppress(Exception):
++                    blob, relative, identity = workspace_document(
++                        str(cap.home / "workspace" / data["path"]), with_identity=True)
++                    if (type(data.get("bytes_written")) is int and data["bytes_written"] == len(blob)
++                            and data.get("sha256") == hashlib.sha256(blob).hexdigest()
++                            and _file_mutation_identity(relative, task_id) in {
++                                _file_mutation_identity(p, task_id) for p in landed_paths}):
++                        artifacts[_file_mutation_identity(relative, task_id)] = {
++                            "scope": cap, "relative": relative, "identity": identity,
++                            "sha256": data["sha256"],
++                        }
++                        verified_written.add(_file_mutation_identity(relative, task_id))
+             # Feed the checkpoint agent-write ledger so /rollback's safe mode can tell
+             # Hermes-authored content from later user hand-edits.
+             mgr = getattr(self, "_checkpoint_mgr", None)
+@@ -180,18 +224,84 @@
+             preview = _extract_error_preview(result)
+             for path in targets:
+                 identity = _file_mutation_identity(path, task_id)
+-                state.setdefault(path, {
++                info = state.setdefault(path, {
+                     "tool": tool_name, "error_preview": preview,
+                     "identity": identity, "stat": _file_stat_signature(identity),
+                 })
++                # Only the executed native operation/result can supply this
++                # provenance. Keep it even if an earlier failure owns the label.
++                if (cap is not None and tool_name == "write_file"
++                        and args.get("format") == "archive_convert"
++                        and isinstance(data, dict) and data.get("success") is False
++                        and data.get("error") == "document_already_exists"):
++                    info.update(operation="archive_convert", error_code="document_already_exists",
++                                archive_failure_scope=cap)
+         else:
+             cleared = {
+                 _file_mutation_identity(p, task_id)
+                 for p in (landed_paths if landed else targets)
+             }
+             for path, info in list(state.items()):
++                if (info.get("operation") == "archive_convert"
++                        and info.get("identity") not in verified_written):
++                    continue  # Only a verified native write can supersede conversion failure.
+                 if info.get("identity", _file_mutation_identity(path, task_id)) in cleared:
+                     state.pop(path, None)
++
++    def _archive_conversion_failure_response(self, response):
++        """Truthful managed completion for a refused, unsuperseded conversion.
++
++        No model prose is interpreted. Old-file retrieval and successful turns
++        keep their normal text; this typed failure retains only native, current
++        turn MEDIA references whose descriptor identity and content still match.
++        """
++        from hermes_cli.friday_user_scope import (
++            current, check_agent, managed_reply_stream, workspace_document, _same_scope,
++        )
++        self._turn_archive_conversion_failure_projected = False
++        if (not isinstance(response, str) or not response or not managed_reply_stream(self)
++                or getattr(self, "_interrupt_requested", False)):
++            return response, False
++        failed = getattr(self, "_turn_failed_file_mutations", None) or {}
++        if not any(info.get("operation") == "archive_convert"
++                   and info.get("error_code") == "document_already_exists"
++                   for info in failed.values()):
++            return response, False
++        cap = current(required=True)
++        check_agent(self)
++        if not any(_same_scope(info.get("archive_failure_scope"), cap)
++                   and info.get("operation") == "archive_convert"
++                   and info.get("error_code") == "document_already_exists"
++                   for info in failed.values()):
++            return response, False
++        text = "Не удалось выполнить преобразование архива: файл с выбранным именем уже существовал."
++        refused = {info.get("identity") for info in failed.values()
++                   if info.get("operation") == "archive_convert"
++                   and _same_scope(info.get("archive_failure_scope"), cap)}
++        from gateway.platforms.base import BasePlatformAdapter
++        selected = {_file_mutation_identity(path, getattr(self, "_current_task_id", None))
++                    for path, _ in BasePlatformAdapter.extract_media(response)[0]}
++        media = []
++        for target, artifact in (getattr(self, "_turn_file_mutation_artifacts", None) or {}).items():
++            if (target not in selected or target in refused
++                    or not _same_scope(artifact.get("scope"), cap)):
++                continue
++            relative = artifact["relative"]
++            if any(c in '\\"' or unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in relative):
++                continue
++            try:
++                blob, observed, identity = workspace_document(
++                    str(cap.home / "workspace" / relative), with_identity=True)
++            except (OSError, RuntimeError, ValueError):
++                continue
++            if (observed == relative and identity == artifact["identity"]
++                    and hashlib.sha256(blob).hexdigest() == artifact["sha256"]):
++                media.append('MEDIA:"./' + relative + '"')
++        cap.check()
++        if media:
++            text += "\nПодтверждённые результаты этой задачи приложены.\n" + "\n".join(dict.fromkeys(media))
++        self._turn_archive_conversion_failure_projected = True
++        return text, text != response
+ 
+     @staticmethod
+     def _file_mutations_still_failed(failed: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+diff --git a/agent/turn_finalizer.py b/agent/turn_finalizer.py
+--- a/agent/turn_finalizer.py
++++ b/agent/turn_finalizer.py
+@@ -503,15 +503,19 @@
+     _privacy_projected = final_response != _before_privacy_view
+     if _private_blocked:
+         return final_response, True, None
++    _archive_projector = getattr(agent, "_archive_conversion_failure_response", None)
++    final_response, _archive_projected = (
++        _archive_projector(final_response) if callable(_archive_projector) else (final_response, False)
++    )
+     recorded = getattr(agent, "_llm_output_transform", None)
+     if isinstance(recorded, tuple) and len(recorded) == 3 and recorded[0] == turn_id:
+         _, transformed, pre_transform = recorded
+-        return final_response, transformed, pre_transform
++        return final_response, transformed or _archive_projected, pre_transform
+     if not final_response:
+         return final_response, False, None
+     if platform is None:
+         platform = getattr(agent, "platform", None) or ""
+-    transformed, pre_transform = _privacy_projected, None
++    transformed, pre_transform = _privacy_projected or _archive_projected, None
+     # First hook to return a string wins; None/empty leaves the text unchanged.
+     for _hook_result in _invoke_hook_safely(
+         "transform_llm_output", logger,
+@@ -527,6 +531,11 @@
+     final_response, _private_blocked = guard_generated_reply(agent, final_response)
+     if _private_blocked:
+         transformed, pre_transform = True, None
++    else:
++        final_response, _archive_projected = (
++            _archive_projector(final_response) if callable(_archive_projector) else (final_response, False)
++        )
++        transformed = transformed or _archive_projected
+     agent._llm_output_transform = (turn_id, transformed, pre_transform)
+     return final_response, transformed, pre_transform
+ 
+@@ -790,6 +799,10 @@
+         "partial": False,  # True only when stopped due to invalid tool calls
+         "interrupted": interrupted,
+         "response_transformed": _response_transformed,
++        "archive_conversion_failure_projected": bool(
++            getattr(agent, "_turn_archive_conversion_failure_projected", False)
++            and not interrupted and not _private_blocked
++        ),
+         "pre_transform_response": None if managed_reply_stream(agent) else _pre_transform_response,
+         "response_previewed": getattr(agent, "_response_was_previewed", False),
+         # The final is byte-for-byte a response this turn already delivered (no footer or
+diff --git a/agent/turn_context.py b/agent/turn_context.py
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -636,6 +636,8 @@
+         setattr(agent, name, value)
+     agent._turn_failed_file_mutations = {}
+     agent._turn_file_mutation_paths = set()
++    agent._turn_file_mutation_artifacts = {}
++    agent._turn_archive_conversion_failure_projected = False
+     agent._tool_guardrails.reset_for_turn()
+     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
+     if callable(_reset_consol):
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -1226,6 +1226,7 @@
+ 
+     observe_tool_outcome(agent, function_name, is_error)
+     if observed:
++        mutation_result = function_result
+         if not blocked:
+             function_result = agent._append_guardrail_observation(
+                 function_name, function_args, function_result, failed=is_error, tool_call_id=tool_call_id,
+@@ -1237,7 +1238,7 @@
+         if not blocked:
+             try:
+                 agent._record_file_mutation_result(
+-                    function_name, function_args, function_result, is_error, task_id=effective_task_id,
++                    function_name, function_args, mutation_result, is_error, task_id=effective_task_id,
+                 )
+             except Exception as _ver_err:
+                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
+diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -1861,7 +1861,8 @@
+         a stale MEDIA: path from an earlier turn never rides a later reply; the history-path dedup is
+         the secondary guard — and the sole one when mid-run compression shrank the list."""
+         from gateway.run import _collect_auto_append_media_tags
+-        if "MEDIA:" in final_response:
++        projected_failure = result.get("archive_conversion_failure_projected", False)
++        if "MEDIA:" in final_response and not projected_failure:
+             return final_response
+         # Scan tool results for MEDIA:<path> tags that need to be delivered as native audio/file
+         # attachments. The TTS tool embeds MEDIA: tags in its JSON response, but the model's final text
+@@ -1879,6 +1880,14 @@
+         media_tags, has_voice_directive = _collect_auto_append_media_tags(
+             result.get("messages", []), history_offset=len(agent_history), history_media_paths=history_media_paths,
+         )
++        if projected_failure and media_tags:
++            # The archive projection retains verified write_file attachments.
++            # Keep independent current-turn TTS/image outputs via the existing
++            # producer allowlist; write_file cannot reintroduce a refused archive.
++            from gateway.platforms.base import BasePlatformAdapter
++            present = {path for path, _ in BasePlatformAdapter.extract_media(final_response)[0]}
++            media_tags = [tag for tag in media_tags if any(
++                path not in present for path, _ in BasePlatformAdapter.extract_media(tag)[0])]
+         if not media_tags:
+             return final_response
+         unique_tags = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(dict.fromkeys(media_tags))

@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Сола — 10.11.2026, 12:25 МСК
+## Действующее продолжение Сола — 10.11.2026, 13:40 МСК
 
 Сол — временный lead/координатор/интегратор; разработка, необходимые проверки,
 штатная установка и публикация в существующий main разрешены владельцем.
@@ -27,8 +27,9 @@
 остаются обязательными. Записи реестров не подменяют исполнения.
 
 **Git и принадлежность.** Последний опубликованный и удалённо сверенный
-`main = bdc00b55f814fcdcc3494bcf9cd924a5c17b6986`; исходный снимок продолжения
-`585f9cb9790a6182908db9ccdde263176ae39969` не откатывался. Checkpoint188/P04/архивы/TSV/M11 опубликован и удалённо сверён; все259 checksum entries
+`main = 7e0dc72cfedaba14d8d6e1983eaf6184e69eea11`; исходный снимок продолжения
+`585f9cb9790a6182908db9ccdde263176ae39969` не откатывался. Checkpoint188/P04/архивы/TSV/M11 и source reconstruction/saved A03/M04 опубликованы
+и удалённо сверены; все265 checksum entries
 проверены из точных Git-байтов. Следующая дельта остаётся отдельно от опубликованного SHA.
 Три чужих изменения §1 сохраняются и исключаются. Хеш текущего коммита внутрь самого
 себя не записывается; точный финальный SHA сообщается по факту после commit/push.
@@ -102,33 +103,61 @@
  проект/версия/identity верны, narrow raw/ACK/task/receipt custody PASS. Полный
  legacy continuation verifier остановлен отсутствующим старым UNBOUND.json;
  оригинал не реконструировался, formal UNBOUND/NOT_ESTABLISHED сохранён.
-- [ ] Исправить текущую ложную archive completion/delivery после отказа; только новый
- слой после готового candidate/review, без R68 repeat. Исходные170/120, format/link
- gaps, regression/recovery и неизвестные эффекты остаются в scope.
+- [x] Typed archive-convert failure provenance установлен как **единственный новый189-й слой**:
+ [точные5файлов/review](evidence/sol-20261110/archive-provenance-source-root-review.json),
+ [18actual offline controls](evidence/sol-20261110/archive-provenance-offline-controls.json),
+ [73publication/rollback controls](evidence/sol-20261110/archive-provenance-publication-offline.json),
+ [реальная установка/bootstrap](evidence/sol-20261110/archive-provenance-installed.json).
+ Существующий ZIP после document_already_exists не может выдаваться за новый результат;
+ остаются только выбранные подтверждённые текущие артефакты, после hooks/cache/streaming.
+ Отрицание bind-probe до syscall сохранено: zero attempts не заявляется. Все188старых
+ слоёв/456пинов сохранены, плюс новаяпара;3БД неизменны и quick_checkOK до/после.
+ Один stop/install/freshstart; текущий136726/start1051826. Специфическая live архивная
+ квалификация ещё NOT_RUN, старыйR68 не повторялся.
+- [x] ARJ genuine Unix symlink/hardlink: [4actual scoped consumer observations](evidence/sol-20261110/arj-genuine-links-root-review.json).
+ DOSpositive и3refusals;214Bhardlink сначала masked ошибкой Unixregular,144Bновый
+ genuine-onlylink добрался до ID55gate. Outside-hardlink target этим не доказан.
+- [x] Source-only ARJ Unix attribute repair готов и независимо принят:
+ [сводка](evidence/sol-20261110/arj-unix-mode-source-root-review.json).
+ Baseline2genuine regular/dir RED, candidate33consumer controlsPASS; независимые
+ 1536type/permissions+6profile controls. Один codec; собственные ARJ0x1000/0x2000
+ вместоPOSIX stat.S_IFMT; specials/permissions/CRC/quotas/path gates сохранены.
+ Runtime189 ещё не менялся; wholeA13/A14 иlive этим не приняты.
+- [ ] Довести текущие genuinely missing RTFrecall/edit до известной границы; затем
+ новую collision-regression189 с действительно новым4memberZIP; далее только-новый
+ ARJ190increment после проверок. Исходные170/120, прочие format/link gaps,
+ regression/recovery и неизвестные эффекты остаются в scope.
 
-**Живые операции и дети на срезе:** общие сервисы работают, P04 observer завершён,
-новых текущих Telegram-отправок нет. NJS deployment закрыт; backup для отката сохранён.
-Root/Sol владеет общим runtime, всеми admissions/live effects и интеграцией.
-`archive_failure_provenance` — конечный source-only ремонт typed archive-convert
-false success; его native seam reviewer. Первый spawn отказал при полном дереве,
-после фактического завершения трёх пакетов штатный spawn состоялся; дубля не было.
-`next_v3_format_slice` — только подготовка следующего нового P0 RTF read/recall/edit
-на сохранённом R30 artifact2501; допуска/отправки за ним нет. Все остальные пакеты
-завершены/приняты в точном scope. Закрытое назначение не изображается продолжающимся.
+**Живые операции и дети на срезе:** Root/Sol — единственный владелец общих
+runtime/admissions/live effects и интеграции. R73 firstREAD завершён12:43:49,
+exit0, sent2639→reply2641, [Rootsemantic/custodyPASS](evidence/sol-20261110/rtf-read-root-review.json),
+все3абзаца/tail«готово»/№3 верны. В review добавлен тот же настоящий top-level scenarioSHA
+для unchanged consumer; исходные байты preserved, ни run/grade/send не менялись.
+Новый R74 `f01-rtf-ordinary-recall-01-20261110` однократно запущен13:37:47,
+consumer153627/supervisor153567: ONLY active live slot. Authority53f6b961…575ab,
+boundactualv42327487d6…e6e9e; exact3pinAST и fresh source189/native5167 gatePASS.
+Current state private `/home/jericho/.cache/FRW-SOL-V3-RTF-CONTINUATION-20261110/recall/ROOT-LIVE-RUN.json`.
+Исход до terminal прочитать из того же run; **не запускать вторично**.
+После Root content/fullcustodyPASS отдельный edit с реальным predecessorreview;
+не менять source/service посреди запроса. FormalNOT_ESTABLISHED отдельно.
+`rtf_continuation_preparation` завершён/принят127controls+43review, эффектов нет.
+`arj_unix_mode_repair` и его independentreview завершены/приняты source-only;
+`archive_collision_packet` — активная конечная подготовка unbound нового4member
+архива, без admissions/send/runtimewrites. Остальные дети завершены, закрытые пакеты
+не изображаются продолжающимися. NJSdeployment закрыт, rollbackbackup сохранён.
 
 R42/R43, UNKNOWN_SEND, неизвестные P01/Q02 и исторический S11 сохраняются.
 Новый run-id/допуск/модель/исправление/перезапуск сами по себе повтора не разрешают.
 Для каждой позиции отдельно: отправка/эффект, содержательный критерий, formal tester,
 основание следующего действия. Сначала сохранённые материалы и штатная сверка.
 
-Ближайшая исполнимая граница: принять source-only исправление archive false-success,
-его реальные offline/negative controls и независимое review; затем штатный только-новый
-increment поверх exact frozen188 project (456 old pins/188 old layer pins неизменны),
-previous input6e292cc2…16695. Canonical15 metadata-only manifests не подменять в старом
-receipt: actual consumer отвергает такую подстановку. Новый genuinely missing RTF срез
-проводить после Root ingress/dedup/current principal/CAS/sole receiver/resource проверки;
-source-only пакет не считается новым допуском. Никогда не менять source/service посреди
-живого запроса. Полные критерии goal сохранены, вечерняя передача не начата.
+Ближайшая исполнимая граница: закончить уже запущенныйR74 по тому же сохранённому
+эффекту, оценить native/custody/семантику, затем отдельный первый edit при действительном
+predecessorPASS. Новый collisionpacket source-only не является допуском; Root отдельно
+сверяет обычный ingress/history/current principal/CAS/receiver/ресурсы/частные oracle.
+ARJ190 ожидает своей интеграции: exact frozen189 project458pins/189layers,
+input4194bd6b…c8b9, сохранить15metadata-only различий. Старые слои/публикации не повторять.
+Полные критерии goal сохранены, goalactive подтверждён13:35; вечерняя передача не начата.
 
 ## 0. Состояние разработки
 
@@ -136,7 +165,7 @@ source-only пакет не считается новым допуском. Ни
 |---|---|
 | Репозиторий | `/home/jericho/jericho/Friday_rework`, ветка `main` |
 | Исходный HEAD продолжения | `585f9cb9790a6182908db9ccdde263176ae39969` (сверка 10.11, 09:04 МСК); прежний `476496a` — исторический |
-| Последний опубликованный HEAD/origin/main | `bdc00b55f814fcdcc3494bcf9cd924a5c17b6986`; следующая рабочая дельта указана выше |
+| Последний опубликованный HEAD/origin/main | `7e0dc72cfedaba14d8d6e1983eaf6184e69eea11`; следующая рабочая дельта указана выше |
 | Последний независимо проверенный генератор | `585f9cb9790a6182908db9ccdde263176ae39969`: short write, write/fsync refusal, единственный победитель публикации; его прежние checker-остатки затем исправлены в32bfb815; новый ordered-predecessor pin в текущем срезе |
 
 ### Исторический проход DSH (476496a)
@@ -185,19 +214,19 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 | `docs/checkpoints/2026-11-07-v2-bounded-diagnostics/PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md` | ?? (untracked) | Техническая заметка о переключении провайдера. Существовала до этого прохода. |
 | `docs/checkpoints/2026-11-07-v3-original-context-repair/FORMAT-COVERAGE-MAP.json` | ?? (untracked) | Карта покрытия форматов. Не входит в Git-дерево; исключена из SHA256SUMS. |
 
-## 2. Обслуживаемый runtime (сверка188 перед P04, 10.11.2026 11:39 МСК)
+## 2. Обслуживаемый runtime (сверка189, 10.11.2026 13:07 МСК)
 
 | Предмет | Факт |
 |---|---|
 | Home | `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032` |
-| Состав | **188 слоёв**; к187 добавлен только `necessary-document-clarification-p04`. Receipt `f79751d3…a91d4`; stamp/marker согласованы; upstream/base прежние |
-| Gateway | `hermes-gateway-1b7e7667.service` active/running, **MainPID61925**, ExecMainStartTimestamp 2026-11-10 11:33:36 МСК, NRestarts 0 |
-| Состояние gateway | `gateway_state.json`: pid61925, start_time **493738**, `gateway_state: running`, Telegram `connected`, `served_profiles = [default, dest_telegram, telegram-bot-8812646969]`, active_agents 0 |
+| Состав | **189 слоёв**; к188 добавлен только `archive-conversion-failure-provenance-after188`. Receipt `36318cc5…426ae`; input `4194bd6b…c8b9`; stamp/marker согласованы, upstream/base прежние |
+| Gateway | `hermes-gateway-1b7e7667.service` active/running, **MainPID136726**, ExecMainStartTimestamp 2026-11-10 13:06:37 МСК, NRestarts 0 |
+| Состояние gateway | `gateway_state.json`: pid136726, start_time **1051826**, `gateway_state: running`, Telegram `connected`, `served_profiles = [default, dest_telegram, telegram-bot-8812646969]`, active_agents 0 |
 | Boot | `d518758e-bce0-4bd5-89a1-fc4e113f0623`, загрузка 2026-11-10 10:11:19 МСК; реальный power outage |
-| Приёмников | **один** (процесс61925, проверено по фактическим cmdline) |
+| Приёмников | **один** (процесс136726, проверено по фактическим cmdline) |
 | Docker | В этом проходе контейнеры не запускались; прежний inactive-срез не выдаётся за новую проверку A0 |
 | База `dest_telegram` | 196 сообщений / 2 сессии, `quick_check ok`, счётчики до/после установки сохранены |
-| База `telegram-bot-8812646969` | 5159 сообщений / 5 сессий до R72 (5163 после ответа), `quick_check ok`, счётчики сохранены |
+| База `telegram-bot-8812646969` | 5167 сообщений / 5 сессий до/после установки189; `quick_check ok`, неизменны; текущая R74 создаёт отдельную разрешённую дельту |
 | Модельный путь | Фактический `http://192.168.1.195:30000/v1`: authenticated models и synthetic chat → 200, настроенная модель найдена |
 | Диспетчер сжатия | `.78:8001/v1`: postpower503 до backend на status-fetch; отдельный synthetic200 сохранён. Новый NJS source/worker deployed, старый UNKNOWN не очищен; см. актуальные evidence выше |
 | Эмбеддинги | Фактический `http://192.168.1.195:8002/v1`: authenticated models и embeddings → 200, qwen3-embedding-4b, один конечный 2560-мерный вектор |
@@ -217,7 +246,7 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
   downloads, closures). **Не чистить.** История доступа, исходные результаты и
   неопределённые эффекты сохраняются.
 - **Выпущенные допуски**: `evidence/tester/INDEPENDENT-AUTHORITY-R54.json` … `R68.json`
-  (в checkpoint) и `/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R29…R69.json`.
+  (в checkpoint) и `/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R29…R74.json`.
   Выпущенные допуски **не переписываются**.
 - **Незавершённые операции**: P-01 (неизвестный исход r57), Q-02 (неизвестный эффект r7),
   A-03 (round-trip-этап — имя `core_inputs_roundtrip.zip` занято), A0 (квалификация не
@@ -363,3 +392,12 @@ immutable ledgers и оригинальный reference ZIP. Отсутству�
   `check-bounded-resume-sidecar.py` — проверочные скрипты.
 - `DSH-RESUME-2026-11-09.md`, `DSH-RESUME-2026-11-08.md` — история, не рабочая инструкция.
 
+
+<!-- Working continuation delta, not yet a new published commit: ARJ Unix-link genuine
+producer source216files/2075319bytes fetched at pinned6af97465; every Git blob verified.
+Private package FRW-SOL-V3-ARJ-LINKS-20261110. Two preparation-only failures preserved
+(sandbox awk alternative, then make built-in cc); corrected explicit CC=gcc build-only
+script after R73 ran prepare successfully, build missing generated msg_arj.h.
+Explicit message generation succeeded; compile now stops on legacy implicit system_cmd
+declaration. Logs/attempts1–4 preserved, all sandbox namespaces terminal. No ARJ fixture/
+product call/system install yet. Stage/source in BUILD-STATE.json retained for next finite fix. -->
