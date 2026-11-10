@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 10.11.2026, 22:45 МСК
+## Действующее продолжение Астры — 10.11.2026, 22:55 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -34,24 +34,29 @@ RTF save/close/reopen цикла с регрессией. Exact source/config mi
 `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
 После него опубликованы `bedbd946f663c76965c0baebaea81a85539c5e94` и
 `1632b288e4459f7ad8e28462d2f45f7bddecca80`; затем Source196/evidence опубликованы в
-`48b57e346dbe0aeb3a964a671a47cb47895370ae` — последний проверенный опубликованный baseline
-перед этой дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+`48b57e346dbe0aeb3a964a671a47cb47895370ae`; forward R97/R98 и их app-проверки опубликованы
+в `22a3b3bb1a9e39a6ecf6d63827a32f51dc2c6c3c` — последний проверенный baseline перед этой дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
 
-**Текущая установленная версия — Source196.**
-[реальная установка / readback / квалификация](evidence/astra-20261110/odf196-installed.json),
-SHA `63a5835026bfd5e7dc363f44182a80793e7b33e3c655bb4fae79724aa645fcbe`.
-Добавлен только `odf-native-conversion-output-after-source195`: пять файлов конверсий.
-195 prefix, все17883 прочих source rows, все51plugin bytes, config/profile/launcher/unit
-сохранены. Full17888 actual inventory —233304595B; receipt `7473b7d2…97b9`,
-input `3eb472ed…2b5e`. Один stop → publisher → fresh start, **76,525s**;
-постоянный gateway **824223 / start4139883 / bootd518758e-bce0-4bd5-89a1-fc4e113f0623**,
-active/running/Telegram connected/NRestarts0, один gateway этого home; прежний444825 отсутствует.
-Три quick_check OK, default30/2, dest196/2, tester5431/5; leases0, данные сохранены.
+**Текущая установленная версия — Source197.**
+[Реальная установка / readback / квалификация](evidence/astra-20261110/word197-installed.json),
+SHA `5d46eaab12bbe12a79d2a125265e018dc0cc7e778df95339919162419123e8c0`.
+Добавлен только `docx-odt-output-after-source196`, один Word output validator2b5da5…bf15.
+Exact196 prefix,17887 nontarget source rows,51plugin bytes,config/profile/launcher/unit сохранены.
+Full17888 actual files —233313984B; receipt `8234c492…401c`, input `07479910…b602`.
+Один stop → publisher → fresh start, **75,118s**, новых пользовательских эффектов нет.
+Постоянный gateway **1153704 / start4568431 / bootd518758e-bce0-4bd5-89a1-fc4e113f0623**,
+active/running/Telegram connected/NRestarts0, один gateway этого home; прежний824223 отсутствует.
+Три quick_check OK, default30/2, dest196/2, tester5457/5; leases0, данные сохранены.
 Это проверенный снимок, а не допуск будущего live. Здоровый gateway остаётся под постоянным
 управлением без искусственного таймера жизни. Переезда/переноса данных не было.
+
+Историческая установка196 сохранена отдельно:
+[readback / квалификация196](evidence/astra-20261110/odf196-installed.json),
+SHA `63a5835026bfd5e7dc363f44182a80793e7b33e3c655bb4fae79724aa645fcbe`.
+Её пять Word/spreadsheet файлов сохранены в197 кроме явно указанного нового Word delta.
 
 [Source / review / композиция196](evidence/astra-20261110/odf196-publication-source-review.json):
 Word2 и spreadsheet3 файла прошли независимое ревью, включая494 контроля окончательной
@@ -64,7 +69,7 @@ ODT→DOCX и ODS→XLSX PASS, исходные16 блоков/3 заголов�
 8 saved-byte/strict-source/request/phase checks PASS. Две ошибки вызова собственного checker
 сохранены; исправлен только checker, оценены те же файлы, без повторной Office/модели/установки.
 Word допускает только строго разрешённое пустое outline-numbering и false formProt;
-reverse DOCX→ODT остаётся refused/open. ODS native thread pool ограничен фактическими2CPU;
+исторически на196 reverse DOCX→ODT оставался refused/open; дельта197 описана ниже. ODS native thread pool ограничен фактическими2CPU;
 AS1GiB/CPU35/subprocess35/native custody40 неизменны. Дельта конечных пассивных output
 metadata/relationships/MIME не расширяет строгий source profile и не закрывает сложные форматы.
 Журналируемый откат не является доказательством атомарности при внезапном отключении питания.
@@ -135,25 +140,35 @@ Formal tester у обоих остаётся **EVIDENCE_READY/RECEIVED_UNGRADED/
 это отдельный факт от Root semantic/application приёмки. GUI/визуальная fidelity,
 Microsoft Office cross-app и полный F04/форматы не объявлены принятыми.
 
-[Свежий runtime/3DB/границы](evidence/astra-20261110/p1-forward-conversions-runtime-checkpoint.json):
+[Исторический runtime после forward R97/R98](evidence/astra-20261110/p1-forward-conversions-runtime-checkpoint.json):
 196/постоянный824223/start4139883/bootd518, Telegramconnected, NRestarts0, leases0,
 данные default30/2,dest196/2,tester5457/5, quick_checkOK. **505canonical/native5457 /
 45старых unresolved / 3UNKNOWN**. Все операции этого forward плана закрыты;
 здоровый gateway оставлен работать. Источники/received/receipts/runs не менялись.
 
-**Ближайший следующий результат:** Root готовит обязательный обратный DOCX→ODT.
-На exact196 получен one-file candidate2b5da5…bf15: только native-output passive RDF и
-строго пустые label heading wrappers, public/source profile остаётся строгим.
-68 forward/7 consumer/12 semantic/136 независимых контролей; существующий реальный
-reverse-output и один рабочий ODT app-cycle приняты source/offline, не user/live.
-Состав197 ещё **не установлен**. Source-only author descriptor явно нормализован
-для publication (196 exact prerequisites), исходный descriptor сохранён; actual
-composition/rollback/negative106PASS, project474 сохраняет472 pins/17887 nontarget.
-Ближайший настоящий read_file consumer уже прочитал оба точных savedODT:16абзацев/3h1/Unicode, partial=false; финальный proof сохранности проверяется до maintenance;
-нельзя подменить его успехом XML-проверяющего. Новый reverse запрос пока не допущен:
-нужна точная исходная история/effect basis, source/fix сами повтор не разрешают.
+**DOCX→ODT: обязательная reverse-функция установлена в197; live user-путь ещё открыт.**
+[Source/review/composition](evidence/astra-20261110/word197-publication-source-review.json):
+one-file2b5da5…bf15 допускает только native-output passive RDF и строго пустые label heading
+wrappers; public/source profile остаётся строгим. 68 forward/7 consumer/12 semantic/136
+независимых контролей; существующий реальный reverse-output и один рабочий ODT app-cycle
+приняты source/offline. Primary exactLO source подтверждает отсутствие видимой нумерации;
+GUI/ListLabelString не наблюдались. Source-only author descriptor явно нормализован для
+publication с196 exact prerequisites, оригинал сохранён; actual composition/rollback/negative
+106PASS, project474 сохраняет472 pins. Builder использован с exact explicit --layer, default4 неизменён.
+Настоящий неизменённый read_file consumer прочитал оба точных savedODT по одному разу:
+16абзацев/3h1/Unicode/partial=false; локальная избыточная проверка всей ownhome исправлена
+на тех же сохранённых результатах, чтения не повторялись. После установки fresh process
+импортировал actual197 без overlay:8 saved-byte checks, оба producer/app ODT +forward R97
+семантически точны, source exceptions не расширены. Office/model/send/install не повторялись.
 Один случайный unreceipted bytecode cache автора удалён Root по exact inode/hash;
-первичный факт сохранён, Python source/receipt196/данные не менялись, reinstall/restart нет.
+первичный факт сохранён, Python source/receipt196/данные не менялись; cleanup не требовал restart.
+Initial prep wrong-path к закрытому ODS journal отказал до maintenanceclock/stop/publisher,
+исправлен только путь; дальнейшая actual197 maintenance выполнена один раз.
+
+**Следующий результат:** точный original DOCX→ODT first-operation пакет: source/scenario/
+history/effect basis, ближайшие guards/consumer и независимое review до будущего admission.
+Новый reverse запрос пока не допущен; installed/sourcefix/newversion сами повтор не разрешают.
+Независимо разбирается обязательный XLSX→ODS: forward R98 не доказывает обратное направление.
 
 Сол независимо продолжает full compatible RTF toolchain build/QA на Standard;
 M1/M2 source/config/negative-baseline progress проверены, готовый binary ещё не принят.

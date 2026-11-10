@@ -110,6 +110,13 @@ def consumer_bench(check, args):
         check("bench_odf196_actual_five_preimages", all(hashlib.sha256(
             (live / "hermes-agent" / row["path"]).read_bytes()).hexdigest()
             == row["before_sha256"] for row in manifests[0]["files"]))
+    if layer_names == ("docx-odt-output-after-source196",):
+        check("bench_word197_exact_one_target", source_files == ("tools/scoped_word_conversion.py",))
+        check("bench_word197_exact_196_prerequisites", len(manifests[0]["prerequisites"]) == 196)
+        check("bench_word197_no_plugin_delta", plugin_names == ())
+        check("bench_word197_current_installed196", len(before_receipt["layers"]) == 196)
+        check("bench_word197_actual_preimage", hashlib.sha256((live / "hermes-agent" / source_files[0])
+              .read_bytes()).hexdigest() == manifests[0]["files"][0]["before_sha256"])
     check("bench_prerequisites_pinned", all(previous_input["project_files"].get(name) == pin
           for body in manifests for name, pin in body.get("prerequisites", {}).items()))
     if layer_names == ("read-file-reject-write-arguments-after-source189",
@@ -584,6 +591,11 @@ def main(argv=None):
     check("generator_odf196_cli_exact_only_increment", selected.layer_names == odf196)
     check("consumer_odf196_explicit_exact_only_increment", validator.resolve_layer_names({
         "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(odf196)}) == odf196)
+    word197 = ("docx-odt-output-after-source196",)
+    selected = generator.parse_args(["--layer", word197[0]])
+    check("generator_word197_cli_exact_only_increment", selected.layer_names == word197)
+    check("consumer_word197_explicit_exact_only_increment", validator.resolve_layer_names({
+        "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(word197)}) == word197)
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (

@@ -1,0 +1,280 @@
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -30,7 +30,8 @@
+     'Only ordered body paragraphs, heading levels, rectangular unmerged tables, '
+     'cell paragraph boundaries, Unicode text, spaces, tabs and line breaks are verified. '
+     'Unnumbered outline headings are supported; their visual layout is not verified. '
+-    'Lists, fields, bookmarks, tracked changes, headers/footers, notes/comments, '
++    'Only native output may carry strictly empty-label heading wrappers and fixed passive metadata. '
++    'Visible lists, fields, bookmarks, tracked changes, headers/footers, notes/comments, '
+     'drawings/media, hyperlinks, embedded fonts/objects, protection, signatures, '
+     'macros and external resources are refused. Ambiguous raw ODF whitespace is '
+     'refused; explicit native ODF spaces, tabs and line breaks are supported.'
+@@ -576,14 +577,21 @@
+ 
+ 
+ class _ODF:
+-    def __init__(self, data, state):
++    def __init__(self, data, state, *, native_output=False):
+         self.state = state
++        self.native_output = native_output
+         self.pkg = _editable_package(data, 'odt', state.checkpoint)
+         allowed = {'mimetype', 'META-INF/manifest.xml', 'content.xml', 'styles.xml',
+                    'meta.xml', 'settings.xml', 'Thumbnails/thumbnail.png'}
++        if native_output:
++            allowed.add('manifest.rdf')
+         if set(self.pkg.parts) - allowed:
+             _fail('unsupported_odt_part')
++        if native_output:
++            self.passive_metadata()
++            self.unprotected_output()
+         self.styles = {}
++        self.list_styles = {}
+         body_nodes = set(self.pkg.body.iter())
+         for name, root in self.pkg.xml.items():
+             for node in root.iter():
+@@ -600,6 +608,11 @@
+                     _fail('hidden_text')
+                 if node.get(q(TB, 'display')) in ('false', '0'):
+                     _fail('hidden_text')
++                if node.tag == q(T, 'list-style') and native_output:
++                    identity = node.get(q(S, 'name'))
++                    if not identity or identity in self.list_styles:
++                        _fail('ambiguous_odt_style')
++                    self.list_styles[identity] = node
+                 if node.tag == q(S, 'style'):
+                     identity = (node.get(q(S, 'family')), node.get(q(S, 'name')))
+                     if not identity[1] or identity in self.styles:
+@@ -611,7 +624,156 @@
+                 if node.tag == q(O, 'forms') and (len(node) or (node.text or '').strip()):
+                     _fail('active_or_signed_package')
+ 
+-    def style(self, identity, family):
++    def passive_metadata(self):
++        # Only the exact native document-type RDF assertion is passive here.
++        # The URI is a fixed vocabulary identifier, never a resolved resource.
++        M = 'urn:oasis:names:tc:opendocument:xmlns:manifest:1.0'
++        RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
++        entries = [n for n in self.pkg.xml['META-INF/manifest.xml']
++                   if n.get(q(M, 'full-path')) == 'manifest.rdf']
++        present = 'manifest.rdf' in self.pkg.parts
++        if present != bool(entries):
++            _fail('unsupported_odt_metadata')
++        if not present:
++            return
++        if (len(entries) != 1 or entries[0].attrib != {
++                q(M, 'full-path'): 'manifest.rdf', q(M, 'media-type'): 'application/rdf+xml'}
++                or len(entries[0])):
++            _fail('unsupported_odt_metadata')
++        _white(entries[0])
++        # ElementTree discards processing instructions. Reject them in the raw
++        # newly admitted part, retaining only its optional XML declaration.
++        raw = self.pkg.parts['manifest.rdf'].removeprefix(b'\xef\xbb\xbf')
++        raw = re.sub(rb'\A<\?xml[ \t\r\n][^?]*\?>', b'', raw, count=1)
++        if b'<?' in raw:
++            _fail('unsupported_odt_metadata')
++        root = self.pkg.xml.get('manifest.rdf')
++        if root is None or root.tag != q(RDF, 'RDF') or root.attrib:
++            _fail('unsupported_odt_metadata')
++        _white(root)
++        PKG = 'http://docs.oasis-open.org/ns/office/1.2/meta/pkg#'
++        ODF = 'http://docs.oasis-open.org/ns/office/1.2/meta/odf#'
++        document = ('', q(RDF, 'type'), PKG + 'Document')
++        full = {document, ('styles.xml', q(RDF, 'type'), ODF + 'StylesFile'),
++                ('content.xml', q(RDF, 'type'), ODF + 'ContentFile'),
++                ('', q(PKG, 'hasPart'), 'styles.xml'), ('', q(PKG, 'hasPart'), 'content.xml')}
++        statements = set()
++        for description in root:
++            if (description.tag != q(RDF, 'Description')
++                    or set(description.attrib) != {q(RDF, 'about')} or len(description) != 1):
++                _fail('unsupported_odt_metadata')
++            _white(description)
++            kind = description[0]
++            if set(kind.attrib) != {q(RDF, 'resource')} or len(kind):
++                _fail('unsupported_odt_metadata')
++            _white(kind)
++            statement = (description.get(q(RDF, 'about')), kind.tag, kind.get(q(RDF, 'resource')))
++            if statement in statements:
++                _fail('unsupported_odt_metadata')
++            statements.add(statement)
++        if statements not in ({document}, full):
++            _fail('unsupported_odt_metadata')
++        if statements == full:
++            # The app-save variant names only these two existing local XML parts.
++            for name in ('content.xml', 'styles.xml'):
++                bindings = [n for n in self.pkg.xml['META-INF/manifest.xml']
++                            if n.get(q(M, 'full-path')) == name]
++                if (name not in self.pkg.parts or len(bindings) != 1
++                        or bindings[0].attrib != {q(M, 'full-path'): name, q(M, 'media-type'): 'text/xml'}
++                        or len(bindings[0])):
++                    _fail('unsupported_odt_metadata')
++                _white(bindings[0])
++
++    def unprotected_output(self):
++        # Writer emits explicit disabled settings; enabled or ambiguous values
++        # are not passive metadata. Source validation is deliberately unchanged.
++        C = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
++        protection = {'ProtectForm': 'boolean', 'ProtectFields': 'boolean',
++                      'ProtectBookmarks': 'boolean', 'RedlineProtectionKey': 'base64Binary'}
++        seen = set()
++        for root in self.pkg.xml.values():
++            for node in root.iter():
++                name = node.get(q(C, 'name'))
++                if node.tag != q(C, 'config-item') or name not in protection:
++                    continue
++                if (name in seen or node.attrib != {q(C, 'name'): name, q(C, 'type'): protection[name]}
++                        or len(node) or (node.text or '') != ('' if name == 'RedlineProtectionKey' else 'false')):
++                    _fail('unsupported_odt_protection')
++                seen.add(name)
++
++    def empty_heading_list(self, node):
++        # Writer may wrap a heading in an empty-label list when importing an
++        # unnumbered DOCX outline. Resolve the exact used level, not all unused
++        # list levels. No general list/nesting/restart semantics are admitted.
++        _white(node)
++        if (not self.native_output or set(node.attrib) - {
++                q(T, 'style-name'), q(T, 'continue-numbering')}
++                or node.get(q(T, 'continue-numbering')) not in (None, 'true')
++                or len(node) != 1):
++            _fail('unsupported_list')
++        identity = node.get(q(T, 'style-name'))
++        style = self.list_styles.get(identity)
++        if style is None or style.attrib != {q(S, 'name'): identity}:
++            _fail('unsupported_list')
++        _white(style)
++        levels = {}
++        for level in style:
++            if level.tag != q(T, 'list-level-style-number'):
++                _fail('unsupported_list')
++            key = level.get(q(T, 'level'))
++            if key not in tuple(str(i) for i in range(1, 11)) or key in levels:
++                _fail('ambiguous_odt_style')
++            # Even unused levels cannot smuggle unknown structure. The known
++            # visible level10 is not selected by this nonnested wrapper.
++            LO = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
++            FO = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
++            if (set(level.attrib) - {q(T, 'level'), q(T, 'style-name'), q(S, 'num-format'),
++                                    q(S, 'num-prefix'), q(S, 'num-suffix'), q(LO, 'num-list-format')}
++                    or len(level) != 1):
++                _fail('unsupported_list')
++            _white(level)
++            prop = level[0]
++            if (prop.tag != q(S, 'list-level-properties') or prop.attrib != {
++                    q(T, 'list-level-position-and-space-mode'): 'label-alignment'} or len(prop) != 1):
++                _fail('unsupported_list')
++            _white(prop)
++            align = prop[0]
++            if (align.tag != q(S, 'list-level-label-alignment') or len(align)
++                    or set(align.attrib) - {q(T, 'label-followed-by'), q(T, 'list-tab-stop-position'),
++                                           q(FO, 'text-indent'), q(FO, 'margin-left')}
++                    or align.get(q(T, 'label-followed-by')) not in ('nothing', 'space', 'listtab')):
++                _fail('unsupported_list')
++            _white(align)
++            levels[key] = level
++        level = levels.get('1')
++        if (level is None or set(level.attrib) - {
++                q(T, 'level'), q(T, 'style-name'), q(S, 'num-format'), q(LO, 'num-list-format')}
++                or level.get(q(LO, 'num-list-format')) not in (None, '%1%')
++                or level.get(q(S, 'num-format')) != '' or len(level) != 1):
++            _fail('unsupported_list')
++        _white(level)
++        self.style(level.get(q(T, 'style-name')), 'text')
++        properties = level[0]
++        if (properties.tag != q(S, 'list-level-properties') or properties.attrib != {
++                q(T, 'list-level-position-and-space-mode'): 'label-alignment'}
++                or len(properties) != 1):
++            _fail('unsupported_list')
++        _white(properties)
++        alignment = properties[0]
++        if (alignment.tag != q(S, 'list-level-label-alignment') or alignment.attrib != {
++                q(T, 'label-followed-by'): 'nothing'} or len(alignment)):
++            _fail('unsupported_list')
++        _white(alignment)
++        item = node[0]
++        if item.tag != q(T, 'list-item') or item.attrib or len(item) != 1:
++            _fail('unsupported_list')
++        _white(item)
++        heading = item[0]
++        if heading.tag != q(T, 'h'):
++            _fail('unsupported_list')
++        return self.paragraph(heading, empty_list=identity)
++
++    def style(self, identity, family, *, empty_list=None):
+         seen = set()
+         while identity:
+             key = (family, identity)
+@@ -619,7 +781,10 @@
+                 _fail('ambiguous_odt_style')
+             seen.add(key)
+             node = self.styles[key]
+-            if node.get(q(S, 'list-style-name')):
++            list_name = node.get(q(S, 'list-style-name'))
++            if list_name and (empty_list is None or list_name != empty_list):
++                _fail('unsupported_list')
++            if empty_list is not None and node.get(q(S, 'list-level')) not in (None, '1'):
+                 _fail('unsupported_list')
+             if node.find(q(S, 'map')) is not None:
+                 _fail('conditional_style')
+@@ -677,13 +842,13 @@
+             _fail('ambiguous_odt_whitespace')
+         return ''.join(value for value, explicit in pieces)
+ 
+-    def paragraph(self, node):
++    def paragraph(self, node, *, empty_list=None):
+         allowed = {q(T, 'style-name'), q('http://www.w3.org/XML/1998/namespace', 'id')}
+         if node.tag == q(T, 'h'):
+             allowed |= {q(T, 'outline-level'), q(T, 'is-list-header')}
+         if set(node.attrib) - allowed:
+             _fail('unsupported_odt_paragraph')
+-        self.style(node.get(q(T, 'style-name')), 'paragraph')
++        self.style(node.get(q(T, 'style-name')), 'paragraph', empty_list=empty_list)
+         if node.get(q(T, 'conditional-style-name')) is not None:
+             _fail('conditional_style')
+         level = None
+@@ -754,6 +919,8 @@
+                 result.append(self.paragraph(node))
+             elif node.tag == q(TB, 'table'):
+                 result.append(self.table(node))
++            elif node.tag == q(T, 'list') and self.native_output:
++                result.append(self.empty_heading_list(node))
+             elif node.tag == q(T, 'sequence-decls'):
+                 _white(node)
+                 if any(c.tag != q(T, 'sequence-decl') or len(c) or (c.text or '').strip() for c in node):
+@@ -763,14 +930,13 @@
+         return result
+ 
+ 
+-def inventory(data, format, *, checkpoint=None):
+-    """Return exact semantic blocks after a strict inert native preflight."""
++def _inventory(data, format, *, checkpoint=None, native_output=False):
+     state = _Inventory(checkpoint)
+     try:
+         if format == 'docx':
+             blocks = _Word(data, state).blocks()
+         elif format == 'odt':
+-            blocks = _ODF(data, state).blocks()
++            blocks = _ODF(data, state, native_output=native_output).blocks()
+         else:
+             _fail('unsupported_conversion_format')
+     except (WordProfileError, ODFProfileError, ODTError, PresentationError) as error:
+@@ -787,6 +953,11 @@
+     return blocks
+ 
+ 
++def inventory(data, format, *, checkpoint=None):
++    """Return strict source blocks; native-output exceptions are not inherited."""
++    return _inventory(data, format, checkpoint=checkpoint)
++
++
+ def validate_conversion(source, source_format, output, output_format, *, checkpoint=None):
+     if (source_format, output_format) not in (('docx', 'odt'), ('odt', 'docx')):
+         _fail('unsupported_conversion_pair')
+@@ -795,7 +966,7 @@
+     except WordConversionError as error:
+         raise WordConversionError(error.code, 'source_inventory') from None
+     try:
+-        after = inventory(output, output_format, checkpoint=checkpoint)
++        after = _inventory(output, output_format, checkpoint=checkpoint, native_output=True)
+     except WordConversionError as error:
+         raise WordConversionError(error.code, 'output_inventory') from None
+     if before != after:
