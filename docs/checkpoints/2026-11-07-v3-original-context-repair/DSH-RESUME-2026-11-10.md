@@ -7,65 +7,102 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Сола — 10.11.2026, 09:03 МСК
+## Действующее продолжение Сола — 10.11.2026, 12:02 МСК
 
-Владелец передал Солу временное лидерство и права координатора/интегратора,
-разработки, необходимых проверок, штатной установки и публикации в существующий
-`main`. Вечерняя передача Астре — только по отдельной команде владельца.
+Сол — временный lead/координатор/интегратор; разработка, необходимые проверки,
+штатная установка и публикация в существующий main разрешены владельцем.
+Выбор решений и нового изолированного варианта P04 отдельно делегирован владельцем:
+[решение](evidence/sol-20261110/owner-autonomy-and-p04-variant.json).
+Вечерняя передача Астре — только по отдельной команде; лидерство не завершает проект.
 
-Новый **native goal** `FRIDAY-RELEASE-V3-CONTINUATION-2026-11-10` создан в 09:04:04 МСК;
-`create_goal` и повторный `get_goal` вернули **status: active**. Его идентификатор,
-доступный в API как `threadId`: **`01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`**.
-Отдельного UUID goal API не возвращает. Точный objective, readback и критерии:
-[`SOL-GOAL-CONTINUATION-2026-11-10.json`](SOL-GOAL-CONTINUATION-2026-11-10.json).
-Предшественник `goal-62933237-0a12-4223-a0ab-ebcaa126db76` и его snapshot сохранены
-как история; старый DSH goal не возобновлялся. Собственный лимит ходов/токенов не задан.
+Новый **native goal** `FRIDAY-RELEASE-V3-CONTINUATION-2026-11-10` создан
+09:04:04 МСК. Идентификатор API `threadId`:
+**`01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`**; отдельного UUID API не возвращает.
+Свежий `get_goal` после восстановления вернул **active**, без собственного лимита.
+Точный неизменённый objective/критерии:
+[SOL-GOAL-CONTINUATION-2026-11-10.json](SOL-GOAL-CONTINUATION-2026-11-10.json).
+Исторический DSH predecessor `goal-62933237-0a12-4223-a0ab-ebcaa126db76`
+и snapshot сохранены, не возобновлялись. Полные **170 кейсов/120 расширений**, B00,
+операции/варианты/последовательности/допустимые повторы/регрессия/восстановление
+остаются обязательными. Записи реестров не подменяют исполнения.
 
-**Todo и ближайшая граница:**
+**Git и принадлежность.** Последний опубликованный и удалённо сверенный
+`main = 32bfb815dc709f0e3374395e5957a764220b65fd`; исходный снимок продолжения
+`585f9cb9790a6182908db9ccdde263176ae39969` не откатывался. Следующая дельта ниже
+готовится отдельным содержательным checkpoint; её результаты не приписаны старому SHA.
+Три чужих изменения §1 сохраняются и исключаются. Хеш текущего коммита внутрь самого
+себя не записывается; точный финальный SHA сообщается по факту после commit/push.
 
-- [x] Прочитать вход и действующие инструкции, принять лидерство, создать и перечитать goal.
-- [x] Сверить Git: `main`, HEAD = origin/main = `585f9cb9790a6182908db9ccdde263176ae39969`;
-  три чужих изменения из §1 сохранены отдельно и исключены из своих коммитов.
-- [x] Свежая сверка площадки 09:05 МСК: 186 слоёв, sidecar preimage `1acfe925…b948`,
-  gateway PID 49959 / start_time 535848, тот же boot ID, Telegram connected, три профиля.
-- [x] Проверить зависимости с аутентификацией по фактической конфигурации;
-  актуальный embedding endpoint — `http://192.168.1.195:8002/v1`, а не старый `.78`.
-- [x] Исправить независимое чтение SHA/size stdout и детерминированный legacy race-control:
-  **63 PASS**, отрицательный контроль старого publisher сохранён внутри регрессии.
-- [x] Зарегистрировать sidecar и явное однослойное приращение запроса: **57 PASS**,
-  реальный consumer/composition, проверка unit pin и бюджета, поздний rollback; review Сола.
-- [x] Штатно установить только новый слой: **187 слоёв**, receipt/marker/stamp согласованы;
-  свежий gateway PID **383035**, start_time **4659486**, один receiver, Telegram connected.
-  На установленных байтах и выбранных зависимостях home — **11/11 OK**, без модели/сети.
-- [ ] Квалифицировать разрешённый новый пользовательский путь; затем продолжать полный V3.
-- [x] Оценить сохранённый 7z R34 настоящим installed decoder: `inside7.txt`, UTF-8 `готово`,
-  12 байт без CR/LF; 8 codec controls. Эффект не повторялся, A-03 ZIP-половина ещё открыта.
-- [x] Проверить сохранённый D-07 по полному oracle: все 8 seeded изменений/добавление/
-  удаление и неизменённый boilerplate подтверждены; формальная шкала тестера сохранена.
-- [x] Выделить пропущенный обязательный clause P-04: **FAIL_NECESSARY_CLARIFICATION_MISSING**.
-  Неоднозначность и строка указаны, но необходимое уточнение не запрошено. Повтор не разрешён.
-- [ ] Продолжить M-11 по сохранённой поздней сводке и postcompact sent1909; не отправлять снова.
-- [ ] A-13/A-14: заменить checker-owned extractor/sleeping-process controls реальным consumer;
-  codec-only проверки не закрывают workspace/gateway/недостающие форматы.
+**Todo / фактические результаты:**
 
-**Завершены и приняты:** `admission_regression`, `publication_integration`, `v3_obligations`,
-`compression_diagnosis`, `archive_saved_acceptance`; их конечные результаты сохранены,
-живых операций за ними нет. **Текущие native дети:** `archive_consumer_gates` (и его
-read-only `route_review`) — реальный offline workspace/cancellation checker;
-`tsv_live_preparation` — только подготовка нового F-01 TSV read без допуска/отправки.
-Общий runtime, выдача текущего допуска и все живые отправки принадлежат только Солу.
-После конечного RESULT ребёнок прекращает работу; результат принимает интегратор.
-Рабочая дельта `check-archive-containment.py` принадлежит текущему
-`archive_consumer_gates`; в первый завершённый checkpoint она не включается до review.
+- [x] Приёмка площадки и native goal; никакого повторного переезда home.
+- [x] Admission: независимый SHA/size stdout, deterministic legacy exists/write race,
+ 63 контроля; далее точный ordered predecessor с реальным Root review/run custody,
+ расширенная регрессия143. Исторические0664 reviews не chmod ради PASS.
+- [x] Sidecar штатно добавлен как187-й слой без переигрывания186 прежних;57 offline
+ composition/rollback controls и11 installed checks. Узкая live квалификация R71 —
+ [PASS](evidence/sol-20261110/sidecar-live-root-review.json): реальный reboot/resume,
+ compaction, два защищённых user-anchor с различными собственными sidecars,
+ admitted main streaming guard, верный ответ. Interrupted retry не выполнен; на
+ реальных metadata старый matcher тоже уникален, live red→green не заявляется.
+- [x] После отключения питания сохранённые результаты приняты без повторов.
+ Boot `d518758e-bce0-4bd5-89a1-fc4e113f0623`; primary и embeddings реально вычислены
+ на настроенных endpoints. Postpower компрессор503 локализован до Guard status-fetch,
+ причина транспорта UNKNOWN; отдельный ранее выполненный synthetic200 сохранён.
+- [x] P04 guidance/OCR-warning source fix независимо reviewed; штатно добавлен только
+ новый188-й слой,3 postimage.70 publication controls; receipt/marker/stamp согласованы,
+ [установка](evidence/sol-20261110/p04-installed.json), свежий gateway61925/start493738.
+ Установку не повторять. Восемь прежних full-source rebuild graph conflicts остаются
+ [открытыми](evidence/sol-20261110/p04-publication-root-review.json), increment PASS их не закрывает.
+- [x] R70: первая отдельная F01 TSV read/tail, sent2630→reply2632;
+ [Root content/custody PASS](evidence/sol-20261110/tsv-read-root-review.json).
+ R71: ordinary recall того же файла в той же беседе, sent2633→reply2635,
+ [Root content/custody PASS](evidence/sol-20261110/tsv-recall-root-review.json).
+ Formal в обоих случаях NOT_ESTABLISHED/RECEIVED_UNGRADED; не пересылать ради grade.
+- [x] P04 новый одобренный синтетический PDF `85947e75…e6d1`: **одна** отправка R72,
+ sent2636→reply2638; [исходный narrow P04 oracle/custody PASS](evidence/sol-20261110/p04-live-root-review.json).
+ Есть страница/строка, неопределённость и необходимый адресный вопрос, скрытая цифра
+ не объявлена достоверной. Formal NOT_ESTABLISHED. Ошибки OCR V/Q обозначений и
+ неполная строка суммы сохранены как отдельный fidelity gap; не заявлять весь FXSCAN
+ или все варианты принятыми. Старые C1/P04 FAIL не переписаны, sent2636 не повторять.
+- [x] NJS status validation компрессора установлен отдельной ограниченной операцией:
+ HTTP200 + строгие непустые string epochs, безопасная фазовая диагностика,
+ UNKNOWN-once/deny сохранены.20 offline controls + independent source review;
+ [source/worker deployment](evidence/sol-20261110/compression-status-deployed.json).
+ Один graceful reload, новые workers2366/2367, старые822/823 вышли; master763,
+ контейнеры/backend/Guard/config/ACL/identity сохранены. Старый timeout UNKNOWN
+ не объяснён и не очищен; inference ради PASS не повторялся.
+- [x] Архивы:18 actual workspace consumer controls,17 checker-only controls отдельно,
+ 3 новых genuine LHA6/LHA7/RAR4 expanded-limit refusals.195 модулей и6 core hashes
+ неизменны на188; [reuse независимо подтверждён](evidence/sol-20261110/archive-final188-root-review.json),
+ без повторов. Saved R34 7z оценён без пересоздания;8 codec controls отдельно.
+ A13/A14 неполны: format/link/boundary, gateway-stop и in-codec cancel gaps сохранены.
+- [x] Saved D07: все8 seeded изменений/добавление/удаление и boilerplate подтверждены;
+ формальная шкала не заменена.
+- [x] M11 saved sent1909→reply1911: [custody/семантика4/4](evidence/sol-20261110/m11-saved-root-review.json)
+ подтверждены по62pins и историческому compaction/security evidence. PARTIAL/full180=false/
+ NOT_ESTABLISHED сохранены; это не весь M11 и не188 regression. Повтора не было.
+- [ ] Независимые оставшиеся archive boundary controls, восстановление rebuild graph,
+ остальные обязательства170/120; текущий локальный gap не останавливает весь V3.
 
-Запреты R42/R43/UNKNOWN_SEND, исторические S-11 и неизвестные P-01/Q-02 сохраняются.
-Старые формулировки «нужен прогон, чей исход примет тестер» не разрешают пересылку.
-Для каждого действия фиксируются эффект, содержательная оценка, формальная приёмка
-и отдельное основание следующего действия. B00 входит в 170 кейсов/120 расширений.
+**Живые операции и дети на срезе:** P04 consumer завершён11:54:05, exit0,
+ все receipts приняты; отправок/ожидающих observer за ним нет. NJS deployment закрыт,
+ backup сохранён для отката. Root владеет общим runtime и всеми живыми эффектами.
+ Native `m11_saved_acceptance` и `p04_companion_review` завершены/приняты;
+ final188 offline companion PASS, независимые complete-source/mixed-source controls PASS;
+ `archive_remaining_boundaries` — только новые offline genuine boundary fixtures.
+ Все прежние пакеты, включая P04 preparation/final188 archive binding, закончены
+ и приняты в точном scope. Не возобновлять закрытое назначение как продолжающееся.
 
-Ниже в исторических сведениях результаты привязаны к фактически проверенным байтам,
-а не автоматически к новому HEAD. При последующих коммитах SHA этого же коммита внутрь
-себя не записывается: фиксируются точный исходный SHA, хеши файлов и внешний commit.
+R42/R43, UNKNOWN_SEND, неизвестные P01/Q02 и исторический S11 сохраняются.
+Новый run-id/допуск/модель/исправление/перезапуск сами по себе повтора не разрешают.
+Для каждой позиции отдельно: отправка/эффект, содержательный критерий, formal tester,
+основание следующего действия. Сначала сохранённые материалы и штатная сверка.
+
+Ближайшая исполнимая граница: принять новые archive boundaries и продолжать оставшиеся обязательства;
+ текущий содержательный checkpoint готовится к публикации,
+затем продолжать доступные обязательства V3. Перед любым новым эффектом читать текущие
+mutable CAS/receiver/principal/history, не переустанавливать уже принятое ради проверки.
 
 ## 0. Состояние разработки
 
@@ -73,10 +110,10 @@ read-only `route_review`) — реальный offline workspace/cancellation ch
 |---|---|
 | Репозиторий | `/home/jericho/jericho/Friday_rework`, ветка `main` |
 | Исходный HEAD продолжения | `585f9cb9790a6182908db9ccdde263176ae39969` (сверка 10.11, 09:04 МСК); прежний `476496a` — исторический |
-| origin/main | совпадает с HEAD |
-| Последний независимо проверенный генератор | `585f9cb9790a6182908db9ccdde263176ae39969`: short write, write/fsync refusal, единственный победитель публикации; остатки checker перечислены в todo |
+| Последний опубликованный HEAD/origin/main | `32bfb815dc709f0e3374395e5957a764220b65fd`; новая локальная дельта указана выше |
+| Последний независимо проверенный генератор | `585f9cb9790a6182908db9ccdde263176ae39969`: short write, write/fsync refusal, единственный победитель публикации; его прежние checker-остатки затем исправлены в32bfb815; новый ordered-predecessor pin в текущем срезе |
 
-### Что закончено в этом проходе (476496a)
+### Исторический проход DSH (476496a)
 
 - **SHA256SUMS воспроизводима**: 224/224 записи совпадают с точными Git-байтами
   (`git show HEAD:…`), `FORMAT-COVERAGE-MAP.json` исключён (untracked).
@@ -122,21 +159,21 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 | `docs/checkpoints/2026-11-07-v2-bounded-diagnostics/PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md` | ?? (untracked) | Техническая заметка о переключении провайдера. Существовала до этого прохода. |
 | `docs/checkpoints/2026-11-07-v3-original-context-repair/FORMAT-COVERAGE-MAP.json` | ?? (untracked) | Карта покрытия форматов. Не входит в Git-дерево; исключена из SHA256SUMS. |
 
-## 2. Обслуживаемый runtime (сверка Сола 2026-11-10T09:22:09+03:00)
+## 2. Обслуживаемый runtime (сверка188 перед P04, 10.11.2026 11:39 МСК)
 
 | Предмет | Факт |
 |---|---|
 | Home | `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032` |
-| Состав | **187 слоёв**; только добавлен `bounded-current-ask-identity`. Receipt `b93a34cf…fbf79`; stamp и marker согласованы. Commit upstream `781334eea4b9`, baseTree `7d90fdf1…` |
-| Gateway | `hermes-gateway-1b7e7667.service` active/running, **MainPID 383035**, ExecMainStartTimestamp 2026-11-10 09:20:22 МСК, NRestarts 0 |
-| Состояние gateway | `gateway_state.json`: pid 383035, start_time **4659486**, `gateway_state: running`, Telegram `connected`, `served_profiles = [default, dest_telegram, telegram-bot-8812646969]`, active_agents 0 |
-| Boot | `0b7389da-6f5b-4ead-aca0-d94f357c9ce6`, загрузка 2026-11-09 20:23:47 МСК |
-| Приёмников | **один** (процесс 383035, проверено по фактическим cmdline) |
+| Состав | **188 слоёв**; к187 добавлен только `necessary-document-clarification-p04`. Receipt `f79751d3…a91d4`; stamp/marker согласованы; upstream/base прежние |
+| Gateway | `hermes-gateway-1b7e7667.service` active/running, **MainPID61925**, ExecMainStartTimestamp 2026-11-10 11:33:36 МСК, NRestarts 0 |
+| Состояние gateway | `gateway_state.json`: pid61925, start_time **493738**, `gateway_state: running`, Telegram `connected`, `served_profiles = [default, dest_telegram, telegram-bot-8812646969]`, active_agents 0 |
+| Boot | `d518758e-bce0-4bd5-89a1-fc4e113f0623`, загрузка 2026-11-10 10:11:19 МСК; реальный power outage |
+| Приёмников | **один** (процесс61925, проверено по фактическим cmdline) |
 | Docker | В этом проходе контейнеры не запускались; прежний inactive-срез не выдаётся за новую проверку A0 |
 | База `dest_telegram` | 196 сообщений / 2 сессии, `quick_check ok`, счётчики до/после установки сохранены |
-| База `telegram-bot-8812646969` | 5144 сообщения / 5 сессий, `quick_check ok`, счётчики сохранены |
+| База `telegram-bot-8812646969` | 5159 сообщений / 5 сессий до R72 (5163 после ответа), `quick_check ok`, счётчики сохранены |
 | Модельный путь | Фактический `http://192.168.1.195:30000/v1`: authenticated models и synthetic chat → 200, настроенная модель найдена |
-| Диспетчер сжатия | Фактический `.78:8001/v1`: models 200; первый synthetic chat 503, отдельный с настроенным output8192 — 200. Причина первого 503 не установлена |
+| Диспетчер сжатия | `.78:8001/v1`: postpower503 до backend на status-fetch; отдельный synthetic200 сохранён. Новый NJS source/worker deployed, старый UNKNOWN не очищен; см. актуальные evidence выше |
 | Эмбеддинги | Фактический `http://192.168.1.195:8002/v1`: authenticated models и embeddings → 200, qwen3-embedding-4b, один конечный 2560-мерный вектор |
 
 ### Известные проблемы доступности зависимостей
@@ -201,9 +238,9 @@ patch/manifest. Новый patch действительно опубликова
   запуск живого gateway: реальный телеграф-проход и персистентность не воспроизводились.
 - Фикс (собственный `api_content` каждой строки) проверен на стенде и после установки
   на точном модуле `1ae5254d…e50e` с фактическими зависимостями home: 11/11 OK.
-- После установки: квалифицировать новый разрешённый пользовательский путь resume с
-  отличающимся sidecar. Выбор пути требует отдельной проверки истории и основания;
-  эта запись не разрешает повтор S-11 или другой исторической отправки.
+- Узкий новый R71 resume/compaction квалифицирован, см. актуальный sidecar-live-root-review.
+  Interrupted retry остаётся NOT_RUN, реальные native IDs не воспроизводят old matcher FAIL;
+  эта запись не разрешает повтор S11 либо закрытого R71 ради расширения утверждения.
 
 ### Дальнейшие необходимые проверки
 
@@ -274,16 +311,14 @@ receipt `b93a34cf…fbf79`, source `1ae5254d…e50e`. Таймаут клиен�
 45 секунд разрешён свежим readback active/running в том же запуске, без повторного start.
 Реальный consumer завершился 0; deadline охватывает forward publication,
 rollback не прерывается истечением бюджета. Счётчики двух профильных БД и quick_check
-до/после совпали. Пользовательская квалификация отдельно **ещё не выполнена**.
+до/после совпали. Позднее узкая пользовательская квалификация
+R71 завершена (см. актуальный срез и sidecar-live-root-review); старые187 install
+факты относятся к09:22 и не выдаются за текущий188 receipt.
 
-Ближайший исполнимый шаг: принять source-only пакет нового **F-01 TSV read**,
-проверить отсутствие эквивалентной прошлой отправки, минимальную дельту тестера и
-фактические текущие gateway/history bindings; только затем выпустить один адресный
-допуск и выполнить новую разрешённую операцию. Источник — отдельная обязательная
-операция read исходного F-01, а не повтор исторического create R32. Новый run-id/
-допуск/187-й слой не являются самостоятельным основанием отправки. Sidecar засчитывать
-лишь при фактическом различии `content/api_content` и нескольких protected user rows;
-обычный ответ TSV без такого наблюдения — лишь результат F-01.
+Текущие результаты добавлены в том же evidence overlay: TSV read/recall, P04 source/
+publication/install/live, archive consumer/review/final188 reuse, post-power dependencies
+и compression status deployment. Ближайший шаг указан в актуальном todo выше;
+закрытые TSV/P04 запросы не повторять ради более удобной формальной оценки.
 
 Полный объём и ближайшие безопасные работы разобраны в приватном
 `/home/jericho/.dsh/tmp/sol-v3-obligations-20261110.md`: исходные 170/120, surviving

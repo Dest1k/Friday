@@ -20,6 +20,8 @@ Output is the authority document in the tester's encoded() form:
 import hashlib
 import json
 import os
+import re
+import stat
 import sys
 import time
 from pathlib import Path
@@ -170,6 +172,10 @@ FORMAT_SCENARIOS = (
 )
 EXTRA_SCENARIOS = EXTRA_SCENARIOS + FORMAT_SCENARIOS
 FINAL_STATUSES = {"EVIDENCE_READY", "STOPPED", "FAILED"}
+# Optional exact successor run id -> completed predecessor/review binding. Empty
+# preserves the existing admission bytes/meaning: no ordered_predecessors is emitted.
+# Root supplies real, already reviewed pins; this issuer never invents a review.
+ORDERED_PREDECESSORS = {}
 
 
 def digest(data):
@@ -265,6 +271,113 @@ def validate_scope(scope, scenarios):
         raise SystemExit("the scope does not mention the format-creation scenarios it covers")
 
 
+def predecessor_evidence(path, *, private):
+    """Read pinned predecessor evidence without changing its bytes or permissions."""
+    path = Path(path)
+    if not path.is_absolute() or any(p.is_symlink() for p in (path, *path.parents)):
+        raise SystemExit("ordered predecessor evidence requires an absolute unsymlinked path")
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_uid,
+                info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise SystemExit("ordered predecessor evidence has duplicate JSON keys")
+            value[key] = item
+        return value
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or before.st_uid != os.getuid() or before.st_size > 1024 * 1024
+                    or stat.S_IMODE(before.st_mode) & 0o002
+                    or (private and stat.S_IMODE(before.st_mode) != 0o600)):
+                raise SystemExit("unsafe ordered predecessor evidence ownership/type/mode/size")
+            raw = stream.read(1024 * 1024 + 1)
+            if (len(raw) > 1024 * 1024
+                    or identity(before) != identity(os.fstat(stream.fileno()))
+                    or identity(before) != identity(path.stat())):
+                raise SystemExit("ordered predecessor evidence changed during read")
+        # Existing protected Root reviews may be 0664. Preserve their permissions;
+        # an owned 0700 ancestor and exact byte pin retain their trust boundary.
+        if not private and not any(
+                p.stat().st_uid == os.getuid() and stat.S_IMODE(p.stat().st_mode) == 0o700
+                for p in path.parents):
+            raise SystemExit("ordered predecessor review requires a protected owned ancestor")
+        value = json.loads(raw, object_pairs_hook=unique)
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise SystemExit("ordered predecessor evidence unavailable or malformed: " + str(path)) from exc
+    if type(value) is not dict or (private and encoded(value) != raw):
+        raise SystemExit("ordered predecessor run must be canonical JSON object evidence")
+    return raw, value
+
+
+def validate_ordered_predecessors(bindings, scenarios, runs):
+    """Validate exact, fully pinned existing-consumer bindings before publication.
+
+    The receiver still performs its full raw-update/receipt custody verification.
+    This issuer verifies the retained canonical run and the genuine pinned external
+    Root PASS review; it does not import the receiver or grant a semantic PASS itself.
+    """
+    if type(bindings) is not dict:
+        raise SystemExit("ordered predecessors must be a map of current scenario ids")
+    result = {}
+    fields = {"run_id", "scenario_sha256", "run_record_sha256", "review",
+              "review_schema", "initially_absent"}
+
+    def sha(value):
+        return type(value) is str and re.fullmatch("[a-f0-9]{64}", value) is not None
+
+    for successor, binding in bindings.items():
+        if type(successor) is not str or successor not in scenarios:
+            raise SystemExit("ordered predecessor names a run outside current scenarios")
+        if (type(binding) is not dict or set(binding) != fields
+                or type(binding["run_id"]) is not str
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", binding["run_id"]) is None
+                or not sha(binding["scenario_sha256"])
+                or not sha(binding["run_record_sha256"])
+                or type(binding["review"]) is not dict
+                or set(binding["review"]) != {"path", "sha256"}
+                or type(binding["review"]["path"]) is not str
+                or not sha(binding["review"]["sha256"])
+                or type(binding["review_schema"]) is not str or not binding["review_schema"]
+                or type(binding["initially_absent"]) is not bool):
+            raise SystemExit("exact fully pinned ordered predecessor binding required")
+        previous_id = binding["run_id"]
+        if previous_id == successor:
+            raise SystemExit("an ordered predecessor cannot be its own successor")
+        raw, previous = predecessor_evidence(Path(runs) / (previous_id + ".json"), private=True)
+        if (digest(raw) != binding["run_record_sha256"]
+                or previous.get("id") != previous_id
+                or previous.get("scenario_sha256") != binding["scenario_sha256"]
+                or type(previous.get("scenario")) is not dict
+                or digest(encoded(previous["scenario"])) != binding["scenario_sha256"]
+                or previous.get("status") != "EVIDENCE_READY"
+                or previous.get("send_state") != "sent"
+                or type(previous.get("send_attempts")) is not int
+                or previous["send_attempts"] != 1):
+            raise SystemExit("ordered predecessor retained canonical run binding changed or incomplete")
+        review_raw, review = predecessor_evidence(binding["review"]["path"], private=False)
+        custody = review.get("custody_evidence")
+        if (digest(review_raw) != binding["review"]["sha256"]
+                or review.get("schema") != binding["review_schema"]
+                or review.get("run_id") != previous_id
+                or review.get("scenario_sha256") != binding["scenario_sha256"]
+                or review.get("semantic") != "PASS" or review.get("custody") != "PASS"
+                or type(custody) is not dict
+                or custody.get("run_record_sha256") != digest(raw)):
+            raise SystemExit("ordered predecessor pinned Root PASS review binding changed or incomplete")
+        # Return an independent snapshot so a caller cannot mutate a validated map
+        # before main encodes it. Values retain the consumer's exact six-key shape.
+        result[successor] = json.loads(encoded(binding))
+    return result
+
+
 def main():
     # The identity of THIS admission is derived from the actually released documents:
     # the predecessor is the highest released R number, and the new identity is the next
@@ -282,6 +395,7 @@ def main():
 
     # The scope must describe THIS operation.
     validate_scope(SCOPE, scenarios)
+    ordered_predecessors = validate_ordered_predecessors(ORDERED_PREDECESSORS, scenarios, RUNS)
 
     now = time.time()
     history = {}
@@ -350,6 +464,8 @@ def main():
         },
         "unknown_effects_resolved": False,
     }
+    if ordered_predecessors:
+        document["ordered_predecessors"] = ordered_predecessors
     raw = encoded(document)
     target = OUT_DIR / auth_file
     # Publish the COMPLETE document atomically. The bytes are first written in full to

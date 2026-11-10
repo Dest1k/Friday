@@ -17,7 +17,10 @@ Covered:
   * validate_scope: a scope that does not describe the operation is refused;
   * validate_identity: self-supersedes and a missing predecessor are refused;
   * main(): on any refusal the admission document is NOT written, and a released
-    admission is never rewritten.
+    admission is never rewritten;
+  * optional ordered predecessors: exact pinned canonical retained runs and protected
+    Root PASS reviews are required before publication; empty input leaves the field
+    absent, while malformed/changed/non-PASS input never publishes a final grant.
 
 Run it with any python3:
     python3 check-fresh-admission-scope.py
@@ -612,6 +615,152 @@ def main():
               and legacy_target.read_bytes() == legacy_writes[1][2])
         check("legacy_race_detector_rejects_unsafe_publisher",
               not legacy["exactly_one_succeeds"])
+
+        # ---- optional ordered predecessors: real issuer, isolated evidence ------
+        ordered = tmp / "main-ordered"
+        ordered.mkdir()
+        (ordered / "runs").mkdir()
+        write_json(ordered / "gateway_state.json", {"pid": os.getpid(), "start_time": int(_rs)})
+        write_json(ordered / "INDEPENDENT-AUTHORITY-R1.json", {"authority_id": "prov-r1"})
+        for name, value in [("OUT_DIR", ordered), ("RUNS", ordered / "runs"),
+                            ("GATEWAY_STATE", ordered / "gateway_state.json"),
+                            ("SCENARIO", scen / "s1.json"), ("RUN_ID", "s1"),
+                            ("PACKAGE_FILE", None), ("EXTRA_SCENARIOS", ()),
+                            ("SCOPE", gen.SCOPE)]:
+            setattr(gen, name, value)
+        previous_path = ordered / "runs" / "prior.json"
+        review_path = ordered / "root-review.json"
+        previous_scenario = {"retained": "actual synthetic prerequisite"}
+        previous_sha = gen.digest(encoded(previous_scenario))
+        previous = {"id": "prior", "scenario": previous_scenario,
+                    "scenario_sha256": previous_sha, "status": "EVIDENCE_READY",
+                    "send_state": "sent", "send_attempts": 1}
+
+        def reset_ordered():
+            for path in (previous_path, review_path):
+                path.unlink(missing_ok=True)
+            write_json(previous_path, previous)
+            previous_path.chmod(0o600)
+            review = {"schema": "friday.v3.root-synthetic-review.v1", "run_id": "prior",
+                      "scenario_sha256": previous_sha, "semantic": "PASS", "custody": "PASS",
+                      "custody_evidence": {"run_record_sha256": gen.digest(previous_path.read_bytes())}}
+            # Review formatting is not a canonical-run requirement. Preserve an
+            # existing 0664 review under the owned 0700 sandbox, without chmod PASS.
+            review_path.write_text(json.dumps(review, indent=2) + "\n")
+            review_path.chmod(0o664)
+            binding = {"run_id": "prior", "scenario_sha256": previous_sha,
+                       "run_record_sha256": gen.digest(previous_path.read_bytes()),
+                       "review": {"path": str(review_path), "sha256": gen.digest(review_path.read_bytes())},
+                       "review_schema": review["schema"], "initially_absent": False}
+            gen.ORDERED_PREDECESSORS = {"s1": binding}
+            return binding, review
+
+        target_o = ordered / "INDEPENDENT-AUTHORITY-R2.json"
+
+        def change_row(field, value):
+            row = json.loads(previous_path.read_bytes())
+            row[field] = value
+            write_json(previous_path, row)
+            # Repin the changed bytes and matching review so the specific retained
+            # state/embedded-scenario check, rather than only the outer pin, is tested.
+            binding = gen.ORDERED_PREDECESSORS["s1"]
+            binding["run_record_sha256"] = gen.digest(previous_path.read_bytes())
+            change_review("custody_evidence", {"run_record_sha256": binding["run_record_sha256"]})
+
+        def change_review(field, value):
+            review = json.loads(review_path.read_bytes())
+            review[field] = value
+            write_json(review_path, review)
+            gen.ORDERED_PREDECESSORS["s1"]["review"]["sha256"] = gen.digest(review_path.read_bytes())
+
+        def bad_input(name, mutate):
+            binding, review = reset_ordered()
+            mutate(binding, review)
+            before = {p.name: p.read_bytes() for p in ordered.glob("INDEPENDENT-AUTHORITY-R*.json")}
+            refuses("ordered_refuses_" + name, gen.main)
+            after = {p.name: p.read_bytes() for p in ordered.glob("INDEPENDENT-AUTHORITY-R*.json")}
+            check("ordered_no_publication_" + name,
+                  after == before and not target_o.exists()
+                  and not list(ordered.glob("*.tmp-*")))
+
+        bad_input("non_map", lambda b, r: setattr(gen, "ORDERED_PREDECESSORS", None))
+        bad_input("uncovered_successor", lambda b, r: setattr(gen, "ORDERED_PREDECESSORS", {"outside": b}))
+        bad_input("self_predecessor", lambda b, r: b.update(run_id="s1"))
+        bad_input("extra_binding_key", lambda b, r: b.update(extra=True))
+        bad_input("missing_binding_key", lambda b, r: b.pop("initially_absent"))
+        bad_input("unsafe_run_id", lambda b, r: b.update(run_id="../prior"))
+        bad_input("unpinned_run", lambda b, r: b.update(run_record_sha256=None))
+        bad_input("wrong_run_pin", lambda b, r: b.update(run_record_sha256="0" * 64))
+        bad_input("malformed_scenario_pin", lambda b, r: b.update(scenario_sha256="not-a-sha"))
+        bad_input("wrong_scenario_pin", lambda b, r: b.update(scenario_sha256="0" * 64))
+        bad_input("extra_review_key", lambda b, r: b["review"].update(extra=True))
+        bad_input("unpinned_review", lambda b, r: b["review"].update(sha256=None))
+        bad_input("wrong_review_pin", lambda b, r: b["review"].update(sha256="0" * 64))
+        bad_input("relative_review", lambda b, r: b["review"].update(path="root-review.json"))
+        bad_input("nonboolean_initially_absent", lambda b, r: b.update(initially_absent=0))
+        bad_input("missing_run", lambda b, r: previous_path.unlink())
+        bad_input("changed_run_bytes", lambda b, r: previous_path.write_bytes(previous_path.read_bytes() + b" "))
+        bad_input("noncanonical_run", lambda b, r: (
+            previous_path.write_text(json.dumps(previous, indent=2) + "\n"),
+            b.update(run_record_sha256=gen.digest(previous_path.read_bytes()))))
+        bad_input("wrong_run_identity", lambda b, r: change_row("id", "other"))
+        bad_input("embedded_scenario_changed", lambda b, r: change_row("scenario", {"retained": "different"}))
+        bad_input("unfinished_run", lambda b, r: change_row("status", "PREPARED"))
+        bad_input("unknown_send", lambda b, r: change_row("send_state", "unknown"))
+        bad_input("repeat_send", lambda b, r: change_row("send_attempts", 2))
+        bad_input("boolean_send_attempts", lambda b, r: change_row("send_attempts", True))
+        bad_input("missing_review", lambda b, r: review_path.unlink())
+        bad_input("changed_review_bytes", lambda b, r: review_path.write_bytes(review_path.read_bytes() + b" "))
+        bad_input("malformed_review", lambda b, r: (
+            review_path.write_text("{not-json}\n"),
+            b["review"].update(sha256=gen.digest(review_path.read_bytes()))))
+        bad_input("duplicate_review_json_keys", lambda b, r: (
+            review_path.write_text('{"schema":"wrong",' + json.dumps(r)[1:] + "\n"),
+            b["review"].update(sha256=gen.digest(review_path.read_bytes()))))
+        bad_input("wrong_review_schema", lambda b, r: change_review("schema", "different"))
+        bad_input("wrong_review_run", lambda b, r: change_review("run_id", "other"))
+        bad_input("wrong_review_scenario", lambda b, r: change_review("scenario_sha256", "0" * 64))
+        bad_input("semantic_fail", lambda b, r: change_review("semantic", "FAIL"))
+        bad_input("custody_fail", lambda b, r: change_review("custody", "FAIL"))
+        bad_input("wrong_review_custody_pin", lambda b, r:
+                  change_review("custody_evidence", {"run_record_sha256": "0" * 64}))
+        bad_input("unsafe_run_mode", lambda b, r: previous_path.chmod(0o664))
+        bad_input("world_writable_review", lambda b, r: review_path.chmod(0o666))
+
+        def symlink_review(binding, review):
+            linked = ordered / "review-symlink.json"
+            linked.symlink_to(review_path)
+            binding["review"]["path"] = str(linked)
+
+        bad_input("symlink_review", symlink_review)
+
+        binding, _review = reset_ordered()
+        expected = json.loads(encoded(gen.ORDERED_PREDECESSORS))
+        # Keep unresolved and UNKNOWN rows exactly under the established history
+        # mechanism. An ordered PASS predecessor cannot resolve or replace them.
+        for run_id, state in [("unresolved", "sent"), ("unknown", "unknown")]:
+            write_json(ordered / "runs" / (run_id + ".json"),
+                       {"id": run_id, "deadline": 0, "status": "PREPARED", "send_state": state})
+        review_before = (review_path.read_bytes(), review_path.stat().st_mode)
+        with contextlib.redirect_stdout(io.StringIO()):
+            gen.main()
+        doc_o = json.loads(target_o.read_bytes())
+        check("ordered_valid_exact_map_emitted", doc_o.get("ordered_predecessors") == expected)
+        check("ordered_review_bytes_and_mode_preserved",
+              review_before == (review_path.read_bytes(), review_path.stat().st_mode))
+        check("ordered_history_and_unknowns_preserved",
+              set(doc_o["history"]) == {"unresolved", "unknown"}
+              and doc_o["history"]["unknown"]["unknown_retained"] is True
+              and doc_o["history"]["unresolved"]["unknown_retained"] is False
+              and all(row["new_effect_replay_authorized"] is False for row in doc_o["history"].values())
+              and doc_o["unknown_effects_resolved"] is False)
+        check("ordered_success_no_temp_leftovers", not list(ordered.glob("*.tmp-*")))
+        gen.ORDERED_PREDECESSORS = {}
+        with contextlib.redirect_stdout(io.StringIO()):
+            gen.main()
+        default_doc = json.loads((ordered / "INDEPENDENT-AUTHORITY-R3.json").read_bytes())
+        check("ordered_default_empty_field_absent", "ordered_predecessors" not in default_doc)
+        check("ordered_default_history_unchanged", default_doc["history"] == doc_o["history"])
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

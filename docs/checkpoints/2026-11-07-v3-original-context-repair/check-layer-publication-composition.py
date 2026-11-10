@@ -56,9 +56,19 @@ def consumer_bench(check, args):
     candidate = args.candidate_project.resolve()
     before_receipt = json.loads((live / "hermes-agent.source.json").read_text())
     before_marker = json.loads((live / "FRIDAY-INSTALL.json").read_text())
-    layer = "bounded-current-ask-identity"
+    layer = args.layer
     pair = (f"patches/hermes/{layer}-manifest.json", f"patches/hermes/{layer}.patch")
-    source_file = "agent/bounded_context.py"
+    manifest = json.loads((candidate / pair[0]).read_text())
+    source_files = tuple(row["path"] for row in manifest["files"])
+    check("bench_distinct_source_targets", len(source_files) == len(set(source_files)))
+    if layer == "necessary-document-clarification-p04":
+        check("bench_p04_exact_three_targets", set(source_files) == {
+            "hermes_cli/friday_prompt_scope.py", "agent/prompt_builder.py", "tools/scoped_pdf_ocr.py"})
+    # Read every prerequisite through the same input consumed by publication. The
+    # count need not equal the installed layer count; it is a dependency set.
+    previous_input = json.loads(args.previous_input.read_text())
+    check("bench_prerequisites_pinned", all(previous_input["project_files"].get(name) == pin
+          for name, pin in manifest.get("prerequisites", {}).items()))
     tmp_root = Path(os.environ.get("TMPDIR", "/home/jericho/.dsh/tmp"))
     with tempfile.TemporaryDirectory(prefix="v3-layer-increment-", dir=tmp_root) as temp:
         root = Path(temp)
@@ -128,8 +138,8 @@ def consumer_bench(check, args):
                 outcome = {"reason": output[-250:]}
             return result.returncode, outcome
 
-        watched = ("hermes-agent/" + source_file, "hermes-agent.source.json",
-                   "FRIDAY-INSTALL.json", "hermes-agent/install-stamp.json")
+        watched = tuple("hermes-agent/" + name for name in source_files) + (
+            "hermes-agent.source.json", "FRIDAY-INSTALL.json", "hermes-agent/install-stamp.json")
         original = {name: ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode))
                     for name in watched}
         wrong = dict(request)
@@ -183,9 +193,9 @@ def consumer_bench(check, args):
         check("bench_expired_before_staging_refused", reason == "transaction_deadline_expired", reason)
         check("bench_preflight_refusals_no_staging", not tuple(
             (home / "preparation").glob("ordinary-source-update-v45-*")))
-        before_source = (source / source_file).read_bytes()
-        reason = deadline_refusal(lambda: 0.0 if (source / source_file).read_bytes()
-                                  == before_source else 181.0)
+        before_source = {name: (source / name).read_bytes() for name in source_files}
+        reason = deadline_refusal(lambda: 0.0 if all((source / name).read_bytes() == data
+                                  for name, data in before_source.items()) else 181.0)
         check("bench_deadline_after_source_publish_refused", reason == "transaction_deadline_expired",
               reason)
         restored = {name: ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode))
@@ -203,18 +213,42 @@ def consumer_bench(check, args):
         check("bench_rollback_removes_new_pair", all(not (home / name).exists() for name in pair))
         check("bench_rollback_preserves_predecessor", (predecessor / "committed.json").read_bytes()
               == predecessor_bytes)
+        # A rename failure on the last source file proves that all selected source
+        # bytes were on disk, and that rollback restores the entire multi-file layer.
+        snapshot_dir = root / "rename-snapshot"
+        injected = dict(request, inject_after_rename=True,
+                        inject_target=str(source / source_files[-1]),
+                        inject_snapshot_dir=str(snapshot_dir),
+                        inject_snapshot_files=list(watched))
+        status, outcome = run(injected)
+        check("bench_last_source_rename_failure", status == 2 and outcome.get("exception")
+              == "OSError", str(outcome))
+        snapshots = list(snapshot_dir.glob("*.json"))
+        check("bench_source_rename_snapshot_recorded", len(snapshots) == 1)
+        if len(snapshots) == 1:
+            snapshot = json.loads(snapshots[0].read_text())
+            check("bench_all_source_postimages_reached", all(
+                snapshot["files"][str(source / row["path"])]["sha256"] == row["sha256"]
+                for row in manifest["files"]), str(snapshot))
+        restored = {name: ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode))
+                    for name in watched}
+        check("bench_last_source_rename_restores_all", restored == original
+              and all(not (home / name).exists() for name in pair))
         status, outcome = run(request)
         check("bench_real_consumer_commit", status == 0 and outcome.get("state")
               == "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED" and outcome.get("layers") == 1
-              and outcome.get("files") == 1, str(outcome))
+              and outcome.get("files") == len(source_files), str(outcome))
         if status:
             return
         after_receipt = json.loads((home / "hermes-agent.source.json").read_text())
         check("bench_previous_layers_preserved", after_receipt["layers"][:-1]
               == before_receipt["layers"] and after_receipt["layers"][-1]["manifest"] == pair[0])
         check("bench_only_target_inventory_changed",
-              {k: v for k, v in after_receipt["files"].items() if k != source_file}
-              == {k: v for k, v in before_receipt["files"].items() if k != source_file})
+              {k: v for k, v in after_receipt["files"].items() if k not in source_files}
+              == {k: v for k, v in before_receipt["files"].items() if k not in source_files})
+        check("bench_all_target_postimages_committed", all(after_receipt["files"][row["path"]]
+              ["sha256"] == row["sha256"] and hashlib.sha256((source / row["path"])
+              .read_bytes()).hexdigest() == row["sha256"] for row in manifest["files"]))
         check("bench_new_pair_published", all((home / name).read_bytes()
               == (candidate / name).read_bytes() for name in pair))
         stamp = json.loads((source / "install-stamp.json").read_text())
@@ -227,8 +261,11 @@ def consumer_bench(check, args):
               == predecessor_bytes)
         summary = {"before_layers": len(before_receipt["layers"]),
                    "after_layers": len(after_receipt["layers"]),
-                   "before_source": before_receipt["files"][source_file]["sha256"],
-                   "after_source": after_receipt["files"][source_file]["sha256"],
+                   "layer": layer,
+                   "before_source": {name: before_receipt["files"][name]["sha256"]
+                                     for name in source_files},
+                   "after_source": {name: after_receipt["files"][name]["sha256"]
+                                    for name in source_files},
                    "receipt_sha256": outcome["receipt_sha256"],
                    "previous_input_sha256": request["previous_input"]["sha256"],
                    "current_input_sha256": request["current_input"]["sha256"],
@@ -240,8 +277,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     for name in ("installed-home", "previous-input", "current-input", "candidate-project"):
         parser.add_argument("--" + name, type=Path)
+    parser.add_argument("--layer", default="bounded-current-ask-identity")
     args = parser.parse_args(argv)
-    provided = [value is not None for value in vars(args).values()]
+    provided = [getattr(args, name) is not None for name in (
+        "installed_home", "previous_input", "current_input", "candidate_project")]
     if any(provided) and not all(provided):
         parser.error("the four bench inputs must be supplied together")
     validator = load(VALIDATOR, "friday_v3_layer_publication")
@@ -275,6 +314,9 @@ def main(argv=None):
     selected = generator.parse_args(["--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_selects_increment",
           selected.layer_names == ("bounded-current-ask-identity",))
+    selected = generator.parse_args(["--layer", "necessary-document-clarification-p04"])
+    check("generator_p04_cli_selects_only_increment",
+          selected.layer_names == ("necessary-document-clarification-p04",))
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (
@@ -296,7 +338,7 @@ def main(argv=None):
 
     # --- 3. one-layer variants resolve to exactly that one layer --------------------
     for single in ("bounded-resume-sidecar-guard", "bounded-7z-codec-activation",
-                   "bounded-current-ask-identity"):
+                   "bounded-current-ask-identity", "necessary-document-clarification-p04"):
         request = {"schema": validator.SCHEMA_EXPLICIT, "layer_names": [single]}
         check("single_layer_resolves:" + single,
               validator.resolve_layer_names(request) == (single,))
@@ -352,8 +394,8 @@ def main(argv=None):
     patch = f"patches/hermes/{layer}.patch"
     manifest = f"patches/hermes/{layer}-manifest.json"
 
-    def delta(previous, current, **extra):
-        request = {"schema": validator.SCHEMA_EXPLICIT, "layer_names": [layer],
+    def delta(previous, current, *, layer_name=layer, **extra):
+        request = {"schema": validator.SCHEMA_EXPLICIT, "layer_names": [layer_name],
                    "project_inventory": current,
                    "project_inventory_sha256": validator.digest(validator.encoded(current)),
                    "plugin_set": [], "plugin_additions": [], "project_file_updates": []}
@@ -364,6 +406,11 @@ def main(argv=None):
         *delta({}, {patch: "a" * 64, manifest: "b" * 64})) == (layer,))
     check("historical_pre_pinned_patch_delta_accepted", validator.check_project_inventory(
         *delta({patch: "a" * 64}, {patch: "a" * 64, manifest: "b" * 64})) == (layer,))
+    p04 = "necessary-document-clarification-p04"
+    p04_pair = {f"patches/hermes/{p04}.patch": "a" * 64,
+                f"patches/hermes/{p04}-manifest.json": "b" * 64}
+    check("p04_exact_pair_delta_accepted", validator.check_project_inventory(
+        *delta({}, p04_pair, layer_name=p04)) == (p04,))
     check("declared_project_update_kept", validator.check_project_inventory(*delta(
         {patch: "a" * 64, "scripts/helper.py": "c" * 64},
         {patch: "a" * 64, manifest: "b" * 64, "scripts/helper.py": "d" * 64},
@@ -377,6 +424,9 @@ def main(argv=None):
             "transaction_layer_files_missing"),
         ("mismatched_request_inventory_refused", delta({}, {patch: "a" * 64, manifest: "b" * 64},
             project_inventory={}), "transaction_project_inventory_changed"),
+        ("p04_checker_addition_refused", delta({}, dict(p04_pair,
+            **{"patches/hermes/check-necessary-document-clarification-p04.py": "c" * 64}),
+            layer_name=p04), "transaction_project_delta_changed"),
     )
     for name, inputs, reason in negative:
         try:
