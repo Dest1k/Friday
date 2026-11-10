@@ -1,0 +1,648 @@
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -29,6 +29,7 @@
+     'document metadata may change; their visual fidelity is not verified. '
+     'Only ordered body paragraphs, heading levels, rectangular unmerged tables, '
+     'cell paragraph boundaries, Unicode text, spaces, tabs and line breaks are verified. '
++    'Unnumbered outline headings are supported; their visual layout is not verified. '
+     'Lists, fields, bookmarks, tracked changes, headers/footers, notes/comments, '
+     'drawings/media, hyperlinks, embedded fonts/objects, protection, signatures, '
+     'macros and external resources are refused. Ambiguous raw ODF whitespace is '
+@@ -38,8 +39,9 @@
+ 
+ class WordConversionError(ValueError):
+     """Finite reason codes only, without source text or parser diagnostics."""
+-    def __init__(self, code):
++    def __init__(self, code, phase=None):
+         self.code = code
++        self.phase = phase
+         super().__init__(code)
+ 
+ 
+@@ -113,17 +115,33 @@
+                         'tblLook jc bidiVisual'.split())
+ _CELL_PROPERTIES = set('tcW tcBorders shd vAlign tcMar noWrap hideMark gridSpan textDirection'.split())
+ _ROW_PROPERTIES = set('trHeight cantSplit jc'.split())
+-
+-
+-def _word_properties(node, allowed):
++_SECTION_PROPERTIES = set('pgSz pgMar cols docGrid type titlePg textDirection '
++                          'bidi rtlGutter pgNumType paperSrc'.split())
++
++
++def _word_properties(node, allowed, *, empty_numbering=None):
+     _white(node)
+     seen = set()
+     for child in node:
+-        if child.tag not in {q(W, name) for name in allowed}:
++        numbering = (child.tag == q(W, 'numPr') and allowed is _PARAGRAPH_PROPERTIES
++                     and empty_numbering is not None)
++        unprotected = (child.tag == q(W, 'formProt') and node.tag == q(W, 'sectPr')
++                       and allowed is _SECTION_PROPERTIES)
++        if child.tag not in {q(W, name) for name in allowed} and not numbering and not unprotected:
+             _fail('unsupported_word_property')
+         if child.tag in seen:
+             _fail('ambiguous_word_properties')
+         seen.add(child.tag)
++        if numbering:
++            empty_numbering(child)
++            continue
++        if unprotected:
++            # Explicitly disabled section form protection is passive. Other
++            # spellings, attributes, nested data and enabled protection refuse.
++            if child.attrib != {q(W, 'val'): 'false'} or len(child):
++                _fail('unsupported_word_property')
++            _white(child)
++            continue
+         if child.tag == q(W, 'gridSpan') and child.get(q(W, 'val')) != '1':
+             _fail('merged_table')
+         if child.tag == q(W, 'rPr'):
+@@ -164,6 +182,7 @@
+                              else {R + '/customXmlProps'} if owner == 'customXml/item1.xml' else set())
+             if any(kind not in allowed_types for kind, target in rows.values()):
+                 _fail('unsupported_word_relationship')
++        self.empty_numbering = None
+         self._empty_bibliography()
+         forbidden = {q(W, n) for n in ('documentProtection', 'writeProtection', 'mailMerge',
+                                       'attachedTemplate', 'saveThroughXslt', 'dataBinding',
+@@ -191,9 +210,9 @@
+                         _fail('ambiguous_word_properties')
+                     self.default_paragraph = defaults[0] if defaults else None
+                     for prop in defaults:
+-                        _word_properties(prop, _PARAGRAPH_PROPERTIES)
++                        self.properties(prop, _PARAGRAPH_PROPERTIES)
+                     for prop in node.iter(q(W, 'rPr')):
+-                        _word_properties(prop, _RUN_PROPERTIES)
++                        self.properties(prop, _RUN_PROPERTIES)
+                 if node.tag != q(W, 'style'):
+                     continue
+                 identity = node.get(q(W, 'styleId'))
+@@ -248,6 +267,121 @@
+         if any(n.tag != q(ds, 'schemaRef') or n.get(q(ds, 'uri')) != b or len(n) for n in props[0]):
+             _fail('unsupported_custom_xml')
+ 
++    def properties(self, node, allowed):
++        _word_properties(node, allowed, empty_numbering=self._empty_numbering_property)
++
++    def _empty_numbering_property(self, node):
++        # LibreOffice emits a numbering reference for unnumbered ODF headings.
++        # Permit only a fully resolved graph with no label, suffix or overrides.
++        # Ordinary lists, partial/ambiguous graphs and unknown properties remain
++        # refused. Nothing is removed or rewritten in the native package.
++        def fail():
++            _fail('unsupported_word_numbering')
++
++        def value(element, name, expected=None):
++            if (element.tag != q(W, name) or len(element)
++                    or set(element.attrib) != {q(W, 'val')}):
++                fail()
++            _white(element)
++            result = element.get(q(W, 'val'))
++            if expected is not None and result != expected:
++                fail()
++            return result
++
++        def number(raw, maximum, zero=False):
++            result = _integer(raw, maximum, 'unsupported_word_numbering', zero=zero)
++            if raw != str(result):
++                fail()
++            return result
++
++        if self.empty_numbering is None:
++            links = [target for kind, target in self.pkg.relationships.get('word/document.xml', {}).values()
++                     if kind == R + '/numbering']
++            if (links != ['word/numbering.xml'] or self.pkg.types.get('word/numbering.xml') !=
++                    'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml'):
++                fail()
++            root = self.pkg.xml.get('word/numbering.xml')
++            if (root is None or root.tag != q(W, 'numbering') or root.attrib not in
++                    ({}, {q('http://schemas.openxmlformats.org/markup-compatibility/2006', 'Ignorable'): 'w14'})):
++                fail()
++            _white(root)
++            abstracts, references = {}, {}
++            for item in root:
++                _tick(self.state.checkpoint)
++                _white(item)
++                if item.tag == q(W, 'abstractNum'):
++                    if set(item.attrib) != {q(W, 'abstractNumId')}:
++                        fail()
++                    identity = number(item.get(q(W, 'abstractNumId')), 999999)
++                    if identity in abstracts or not 1 <= len(item) <= 9:
++                        fail()
++                    levels = set()
++                    for level in item:
++                        _tick(self.state.checkpoint)
++                        if level.tag != q(W, 'lvl') or set(level.attrib) != {q(W, 'ilvl')}:
++                            fail()
++                        index = number(level.get(q(W, 'ilvl')), 8, True)
++                        if index in levels:
++                            fail()
++                        levels.add(index)
++                        _white(level)
++                        names = [part.tag for part in level]
++                        expected = [q(W, n) for n in ('start', 'numFmt', 'suff', 'lvlText', 'lvlJc', 'pPr')]
++                        if q(W, 'pStyle') in names:
++                            expected.insert(2, q(W, 'pStyle'))
++                        if q(W, 'rPr') in names:
++                            expected.append(q(W, 'rPr'))
++                        if names != expected:
++                            fail()
++                        for part in level:
++                            local = part.tag.removeprefix(q(W, ''))
++                            if local == 'pPr':
++                                if part.attrib:
++                                    fail()
++                                _white(part)
++                                if [item.tag for item in part] != [q(W, 'tabs'), q(W, 'ind')]:
++                                    fail()
++                                tabs, indent = part
++                                _white(tabs)
++                                if (tabs.attrib or len(tabs) != 1 or tabs[0].tag != q(W, 'tab')
++                                        or tabs[0].attrib != {q(W, 'val'): 'num', q(W, 'pos'): '0'}
++                                        or len(tabs[0]) or len(indent)
++                                        or indent.attrib != {q(W, 'start'): '0', q(W, 'hanging'): '0'}):
++                                    fail()
++                                _white(tabs[0])
++                                _white(indent)
++                            elif local == 'rPr':
++                                if part.attrib or len(part):
++                                    fail()
++                                _white(part)
++                            elif local == 'pStyle':
++                                if not value(part, local):
++                                    fail()
++                            else:
++                                value(part, local, {'start': '1', 'numFmt': 'none',
++                                                    'suff': 'nothing', 'lvlText': '',
++                                                    'lvlJc': 'start'}[local])
++                    abstracts[identity] = levels
++                elif item.tag == q(W, 'num'):
++                    if set(item.attrib) != {q(W, 'numId')} or len(item) != 1:
++                        fail()
++                    identity = number(item.get(q(W, 'numId')), 999999)
++                    if identity in references:
++                        fail()
++                    references[identity] = number(value(item[0], 'abstractNumId'), 999999)
++                else:
++                    fail()
++            if not abstracts or not references or any(ref not in abstracts for ref in references.values()):
++                fail()
++            self.empty_numbering = {identity: abstracts[ref] for identity, ref in references.items()}
++        _white(node)
++        if node.attrib or [part.tag for part in node] != [q(W, 'ilvl'), q(W, 'numId')]:
++            fail()
++        level = number(value(node[0], 'ilvl'), 8, True)
++        identity = number(value(node[1], 'numId'), 999999)
++        if level not in self.empty_numbering.get(identity, ()):
++            fail()
++
+     def _style_properties(self, node, family):
+         # Office must not choose a different declaration from the one whose
+         # semantics we inventoried. Reject duplicate and misplaced properties.
+@@ -278,7 +412,7 @@
+                     if name not in {'pPr', 'rPr', 'tblPr', 'trPr', 'tcPr'} or prop.tag in nested_seen:
+                         _fail('ambiguous_word_style')
+                     nested_seen.add(prop.tag)
+-                    _word_properties(prop, {'pPr': _PARAGRAPH_PROPERTIES,
++                    self.properties(prop, {'pPr': _PARAGRAPH_PROPERTIES,
+                                            'rPr': _RUN_PROPERTIES,
+                                            'tblPr': _TABLE_PROPERTIES,
+                                            'trPr': _ROW_PROPERTIES,
+@@ -292,7 +426,7 @@
+                     _fail('unsupported_word_style')
+             else:
+                 name = child.tag.removeprefix(q(W, ''))
+-                _word_properties(child, {'pPr': _PARAGRAPH_PROPERTIES,
++                self.properties(child, {'pPr': _PARAGRAPH_PROPERTIES,
+                                         'rPr': _RUN_PROPERTIES,
+                                         'tblPr': _TABLE_PROPERTIES,
+                                         'trPr': _ROW_PROPERTIES,
+@@ -327,7 +461,7 @@
+         for source in [self.default_paragraph] + [n.find(q(W, 'pPr')) for n in chain] + [prop]:
+             if source is None:
+                 continue
+-            _word_properties(source, _PARAGRAPH_PROPERTIES)
++            self.properties(source, _PARAGRAPH_PROPERTIES)
+             outlines = source.findall(q(W, 'outlineLvl'))
+             if len(outlines) > 1:
+                 _fail('ambiguous_heading')
+@@ -348,7 +482,7 @@
+             if len(run_properties) > 1:
+                 _fail('ambiguous_word_properties')
+             for rpr in run_properties:
+-                _word_properties(rpr, _RUN_PROPERTIES)
++                self.properties(rpr, _RUN_PROPERTIES)
+                 rstyle = rpr.find(q(W, 'rStyle'))
+                 if rstyle is not None:
+                     self.style_chain(rstyle.get(q(W, 'val')), 'character')
+@@ -378,7 +512,7 @@
+             _fail('ambiguous_word_properties')
+         for child in node:
+             if child.tag == q(W, 'tblPr'):
+-                _word_properties(child, _TABLE_PROPERTIES)
++                self.properties(child, _TABLE_PROPERTIES)
+                 style = child.find(q(W, 'tblStyle'))
+                 if style is not None:
+                     self.style_chain(style.get(q(W, 'val')), 'table')
+@@ -396,7 +530,7 @@
+             row = []
+             for cell in child:
+                 if cell.tag == q(W, 'trPr'):
+-                    _word_properties(cell, _ROW_PROPERTIES)
++                    self.properties(cell, _ROW_PROPERTIES)
+                     continue
+                 if cell.tag != q(W, 'tc'):
+                     _fail('unsupported_table')
+@@ -406,7 +540,7 @@
+                 paragraphs = []
+                 for part in cell:
+                     if part.tag == q(W, 'tcPr'):
+-                        _word_properties(part, _CELL_PROPERTIES)
++                        self.properties(part, _CELL_PROPERTIES)
+                     elif part.tag == q(W, 'p'):
+                         paragraphs.append(self.paragraph(part))
+                     else:
+@@ -432,8 +566,7 @@
+             elif node.tag == q(W, 'tbl'):
+                 result.append(self.table(node))
+             elif node.tag == q(W, 'sectPr') and index == len(body) - 1:
+-                _word_properties(node, set('pgSz pgMar cols docGrid type titlePg textDirection '
+-                                           'bidi rtlGutter pgNumType paperSrc'.split()))
++                self.properties(node, _SECTION_PROPERTIES)
+                 cols = node.find(q(W, 'cols'))
+                 if cols is not None and (len(cols) or cols.get(q(W, 'num'), '1') != '1'):
+                     _fail('unsupported_columns')
+@@ -657,10 +790,16 @@
+ def validate_conversion(source, source_format, output, output_format, *, checkpoint=None):
+     if (source_format, output_format) not in (('docx', 'odt'), ('odt', 'docx')):
+         _fail('unsupported_conversion_pair')
+-    before = inventory(source, source_format, checkpoint=checkpoint)
+-    after = inventory(output, output_format, checkpoint=checkpoint)
++    try:
++        before = inventory(source, source_format, checkpoint=checkpoint)
++    except WordConversionError as error:
++        raise WordConversionError(error.code, 'source_inventory') from None
++    try:
++        after = inventory(output, output_format, checkpoint=checkpoint)
++    except WordConversionError as error:
++        raise WordConversionError(error.code, 'output_inventory') from None
+     if before != after:
+-        _fail('semantic_mismatch')
++        raise WordConversionError('semantic_mismatch', 'semantic_comparison')
+     paragraphs = [p for b in before for p in ([b] if b['type'] != 'table' else
+                   [p for row in b['rows'] for cell in row for p in cell])]
+     encoded = json.dumps(before, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+--- a/hermes_cli/friday_workspace_word_conversion.py
++++ b/hermes_cli/friday_workspace_word_conversion.py
+@@ -109,12 +109,15 @@
+ def render(cap, data, operation):
+     from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
+     from hermes_cli.friday_workspace_revision import check
+-    from tools.scoped_word_conversion import inventory, validate_conversion
++    from tools.scoped_word_conversion import inventory, validate_conversion, WordConversionError
+     if operation not in OPERATIONS:
+         raise ValueError('unsupported_conversion')
+     spec = OPERATIONS[operation]
+     check(cap)
+-    inventory(data, spec['source'][1:], checkpoint=lambda: check(cap))
++    try:
++        inventory(data, spec['source'][1:], checkpoint=lambda: check(cap))
++    except WordConversionError as error:
++        raise WordConversionError(error.code, 'source_inventory') from None
+     toolchain = _toolchain()
+     work = Path(tempfile.mkdtemp(prefix='friday-word-convert-'))
+     try:
+@@ -170,7 +173,7 @@
+             raise ScopeDenied()
+         actual = hashlib.sha256(data).hexdigest()
+         if actual != request['source_sha256']:
+-            raise WordConversionError('source_hash_mismatch')
++            raise WordConversionError('source_hash_mismatch', 'source_binding')
+         output, details = render(cap, data, operation)
+         return _publish(cap, fd, leaf, path, output, spec['output'][1:], (source, data, identity),
+                         {'source': relative, 'source_sha256': actual, 'source_unchanged': True,
+@@ -181,7 +184,8 @@
+         raise
+     except WordConversionError as error:
+         return json.dumps({'success': False, 'error': 'document_conversion_refused',
+-                           'reason': error.code, 'effect_disposition': 'none'})
++                           'reason': error.code, 'effect_disposition': 'none',
++                           **({'phase': error.phase} if error.phase else {})})
+     except ExportRefused as error:
+         unknown = str(error) == 'renderer_cleanup_unconfirmed'
+         return json.dumps({'success': False, 'error': 'document_conversion_refused',
+--- a/hermes_cli/friday_workspace_spreadsheet_conversion.py
++++ b/hermes_cli/friday_workspace_spreadsheet_conversion.py
+@@ -164,6 +164,7 @@
+     program = prefix+'/root/usr/lib/libreoffice/program'
+     env = {'PATH':'/usr/bin:/bin','HOME':'/work/home','TMPDIR':'/work/tmp',
+            'LANG':'C.UTF-8','LC_ALL':'C.UTF-8','SAL_USE_VCLPLUGIN':'svp',
++           'MAX_CONCURRENCY':str(len(cpus)),
+            'XDG_CACHE_HOME':'/work/home/cache','XDG_CONFIG_HOME':'/work/home/config',
+            'XDG_RUNTIME_DIR':'/work/tmp',
+            'LD_LIBRARY_PATH':program+':'+prefix+'/root/usr/lib/x86_64-linux-gnu'}
+--- a/tools/scoped_spreadsheet_conversion.py
++++ b/tools/scoped_spreadsheet_conversion.py
+@@ -308,8 +308,215 @@
+     return result
+ 
+ 
+-def _xlsx(data, checkpoint):
+-    book = ooxml(data, 'xlsx', writing=True, checkpoint=checkpoint)
++
++def _passive(node, attrs, children=()):
++    """Exact known Office defaults; no arbitrary extension/property is ignored."""
++    if (node.attrib != attrs or (node.text or '').strip() or len(node) != len(children)
++            or any((child.tail or '').strip() for child in node)):
++        refuse('conversion_office_default_unsupported')
++    for item, (name, values, nested) in zip(node, children):
++        if item.tag != q(S, name): refuse('conversion_office_default_unsupported')
++        _passive(item, values, nested)
++
++
++def _office_default_styles(book):
++    """Calc's passive baseline style bank, only for validating its destination.
++
++    The unused builtin rows are checked too. Cell XFs cannot select their named
++    formats or alternate fonts. This does not grant formatted source support.
++    """
++    targets = book.targets('xl/workbook.xml', 'styles')
++    if len(targets) != 1: refuse('conversion_style_identity')
++    root = book.root(targets[0][1], q(S, 'styleSheet'))
++    def node(name, attrs=None, children=()): return name, attrs or {}, children
++    fonts = [node('font', children=(node('sz', {'val':'10'}),
++             node('name', {'val':'Arial'}), node('family', {'val':family})))
++             for family in ('2','0','0','0')]
++    align = node('alignment', {'horizontal':'general','vertical':'bottom','textRotation':'0',
++                              'wrapText':'false','indent':'0','shrinkToFit':'false'})
++    protect = node('protection', {'locked':'true','hidden':'false'})
++    normal = {'numFmtId':'164','fontId':'0','fillId':'0','borderId':'0',
++              'applyFont':'true','applyBorder':'true','applyAlignment':'true','applyProtection':'true'}
++    fontids = ('1','1','2','2') + ('0',)*10 + ('1',)*5
++    fmts = ('0',)*14 + ('43','41','44','42','9')
++    stylexfs = [node('xf', normal, (align,protect))]
++    stylexfs += [node('xf', {'numFmtId':fmt,'fontId':font,'fillId':'0','borderId':'0',
++                 'applyFont':'true','applyBorder':'false','applyAlignment':'false','applyProtection':'false'})
++                 for font,fmt in zip(fontids,fmts)]
++    cellxf = {'numFmtId':'164','fontId':'0','fillId':'0','borderId':'0','xfId':'0',
++              'applyFont':'false','applyBorder':'false','applyAlignment':'false','applyProtection':'false'}
++    names = [('Normal','0','0'),('Comma','15','3'),('Comma [0]','16','6'),
++             ('Currency','17','4'),('Currency [0]','18','7'),('Percent','19','5')]
++    expected = (node('numFmts', {'count':'1'}, (node('numFmt',{'numFmtId':'164','formatCode':'General'}),)),
++                node('fonts', {'count':'4'}, fonts),
++                node('fills', {'count':'2'}, [node('fill', children=(node('patternFill',{'patternType':pattern}),))
++                                            for pattern in ('none','gray125')]),
++                node('borders', {'count':'1'}, (node('border', {'diagonalUp':'false','diagonalDown':'false'},
++                                                   [node(side) for side in ('left','right','top','bottom','diagonal')]),)),
++                node('cellStyleXfs', {'count':'20'}, stylexfs),
++                node('cellXfs', {'count':'1'}, (node('xf',cellxf,(align,protect)),)),
++                node('cellStyles', {'count':'6'}, [node('cellStyle',{'name':name,'xfId':xf,'builtinId':bid})
++                                                  for name,xf,bid in names]))
++    _passive(root, {}, expected)
++    return ['general']
++
++
++def _office_default_relationships(book):
++    """Close the generated package graph by exact owner, type and target.
++
++    Relationship IDs may vary, but duplicate edges and unrecognised properties
++    cannot borrow the meaning of a known URI suffix or another owner's edge.
++    """
++    core = 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties'
++    expected = {
++        '': {(R+'/officeDocument', 'xl/workbook.xml'),
++             (core, 'docProps/core.xml'), (R+'/extended-properties', 'docProps/app.xml')},
++        'xl/workbook.xml': {(R+'/theme', 'xl/theme/theme1.xml'),
++                            (R+'/styles', 'xl/styles.xml')}
++    }
++    expected['xl/workbook.xml'].update((R+'/worksheet', part) for part in book.sheet_parts.values())
++    if book.shared_strings_part is not None:
++        if book.shared_strings_part != 'xl/sharedStrings.xml':
++            refuse('conversion_relationship_unsupported')
++        expected['xl/workbook.xml'].add((R+'/sharedStrings', book.shared_strings_part))
++    if set(book.relationships) != set(expected):
++        refuse('conversion_relationship_unsupported')
++    for owner, rows in book.relationships.items():
++        if len(rows) != len(expected[owner]) or set(rows.values()) != expected[owner]:
++            refuse('conversion_relationship_unsupported')
++    pkg = 'http://schemas.openxmlformats.org/package/2006/relationships'
++    for part in ('_rels/.rels', 'xl/_rels/workbook.xml.rels'):
++        root = book.xml[part]
++        if root.attrib or (root.text or '').strip():
++            refuse('conversion_relationship_unsupported')
++        for node in root:
++            if (node.tag != q(pkg, 'Relationship') or set(node.attrib) != {'Id','Type','Target'}
++                    or len(node) or (node.text or '').strip() or (node.tail or '').strip()):
++                refuse('conversion_relationship_unsupported')
++    # These are the producer's declarations, including unused passive defaults.
++    ct = 'http://schemas.openxmlformats.org/package/2006/content-types'
++    defaults = {'fntdata':'application/x-fontdata', 'jpeg':'image/jpeg', 'png':'image/png',
++                'rels':'application/vnd.openxmlformats-package.relationships+xml', 'xml':'application/xml'}
++    overrides = {'/xl/workbook.xml':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml',
++        '/xl/theme/theme1.xml':'application/vnd.openxmlformats-officedocument.theme+xml',
++        '/xl/styles.xml':'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml',
++        '/docProps/core.xml':'application/vnd.openxmlformats-package.core-properties+xml',
++        '/docProps/app.xml':'application/vnd.openxmlformats-officedocument.extended-properties+xml'}
++    overrides.update(('/'+part, 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml')
++                     for part in book.sheet_parts.values())
++    if book.shared_strings_part is not None:
++        overrides['/'+book.shared_strings_part] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml'
++    types = book.xml['[Content_Types].xml']
++    expected_types = {(q(ct,'Default'), key, value) for key,value in defaults.items()}
++    expected_types.update((q(ct,'Override'), key, value) for key,value in overrides.items())
++    actual_types = set()
++    if types.attrib or (types.text or '').strip(): refuse('conversion_office_default_unsupported')
++    for node in types:
++        key = 'Extension' if node.tag == q(ct,'Default') else 'PartName'
++        if (set(node.attrib) != {key,'ContentType'} or len(node) or (node.text or '').strip()
++                or (node.tail or '').strip()):
++            refuse('conversion_office_default_unsupported')
++        actual_types.add((node.tag, node.get(key), node.get('ContentType')))
++    if len(types) != len(expected_types) or actual_types != expected_types:
++        refuse('conversion_office_default_unsupported')
++
++
++def _office_metadata_shape(node, children):
++    """Exact metadata containers; the scalar reader handles only cell values."""
++    if (node.attrib or (node.text or '').strip()
++            or [child.tag for child in node] != [q(S,name) for name in children]
++            or any((child.tail or '').strip() for child in node)):
++        refuse('conversion_office_default_unsupported')
++
++
++def _office_default_metadata(book):
++    """Check all generated workbook/sheet metadata before scalar projection.
++
++    The enclosing scalar profile intentionally keeps its original source policy.
++    Only the observed passive Calc defaults qualify for this destination branch.
++    """
++    _office_default_relationships(book)
++    root = book.xml['xl/workbook.xml']
++    _office_metadata_shape(root, ('fileVersion','workbookPr','workbookProtection',
++                                  'bookViews','sheets','calcPr','extLst'))
++    _passive(root.find(q(S,'fileVersion')), {'appName':'Calc','lowestEdited':'4'})
++    _passive(root.find(q(S,'workbookPr')), {'backupFile':'false','showObjects':'all','date1904':'false'})
++    _passive(root.find(q(S,'workbookProtection')), {})
++    _passive(root.find(q(S,'bookViews')), {}, (('workbookView', {
++        'showHorizontalScroll':'true','showVerticalScroll':'true','showSheetTabs':'true',
++        'xWindow':'0','yWindow':'0','windowWidth':'16384','windowHeight':'8192',
++        'tabRatio':'500','firstSheet':'0','activeTab':'0'}, ()),))
++    sheets = root.find(q(S,'sheets'))
++    _passive(sheets, {}, [('sheet', {'name':sheet.get('name'),'sheetId':str(index+1),
++        'state':'visible',q(R,'id'):sheet.get(q(R,'id'))}, ()) for index,sheet in enumerate(sheets)])
++    _passive(root.find(q(S,'calcPr')), {'iterateCount':'100','refMode':'A1',
++                                      'iterate':'false','iterateDelta':'0.001'})
++    ext = root.find(q(S,'extLst'))
++    if (ext.attrib or (ext.text or '').strip() or len(ext) != 1
++            or ext[0].tag != q(S,'ext') or ext[0].attrib != {'uri':'{7626C862-2A13-11E5-B345-FEFF819CDC9F}'}
++            or (ext[0].text or '').strip() or (ext[0].tail or '').strip() or len(ext[0]) != 1):
++        refuse('conversion_office_default_unsupported')
++    calc = ext[0][0]
++    if calc.tag != '{http://schemas.libreoffice.org/}extCalcPr' or (calc.tail or '').strip():
++        refuse('conversion_office_default_unsupported')
++    _passive(calc, {'stringRefSyntax':'CalcA1ExcelA1'})
++    for index,part in enumerate(book.sheet_parts.values()):
++        tree = book.xml[part]
++        _office_metadata_shape(tree, ('sheetPr','dimension','sheetViews','sheetFormatPr','sheetData',
++                                     'printOptions','pageMargins','pageSetup','headerFooter'))
++        defaults = {
++          'sheetPr': ({'filterMode':'false'}, (('pageSetUpPr',{'fitToPage':'false'},()),)),
++          'sheetViews': ({}, (('sheetView', {
++            'showFormulas':'false','showGridLines':'true','showRowColHeaders':'true','showZeros':'true',
++            'rightToLeft':'false','tabSelected':'true' if index == 0 else 'false',
++            'showOutlineSymbols':'true','defaultGridColor':'true','view':'normal','topLeftCell':'A1',
++            'colorId':'64','zoomScale':'100','zoomScaleNormal':'100','zoomScalePageLayoutView':'100',
++            'workbookViewId':'0'}, (('selection', {'pane':'topLeft','activeCell':'A1',
++                                                   'activeCellId':'0','sqref':'A1'}, ()),)),)),
++          'sheetFormatPr': ({'defaultColWidth':'11.53515625','defaultRowHeight':'12.8',
++            'customHeight':'false','zeroHeight':'false','outlineLevelRow':'0','outlineLevelCol':'0'},()),
++          'printOptions': ({'headings':'false','gridLines':'false','gridLinesSet':'true','horizontalCentered':'false','verticalCentered':'false'},()),
++          'pageMargins': ({'left':'0.7875','right':'0.7875','top':'1.05277777777778','bottom':'1.05277777777778','header':'0.7875','footer':'0.7875'},()),
++          'pageSetup': ({'paperSize':'9','scale':'100','fitToWidth':'1','fitToHeight':'1','pageOrder':'downThenOver','orientation':'portrait','blackAndWhite':'false','draft':'false','cellComments':'none','firstPageNumber':'1','useFirstPageNumber':'true','horizontalDpi':'300','verticalDpi':'300','copies':'1'},()),
++        }
++        for name,(attrs,children) in defaults.items():
++            _passive(tree.find(q(S,name)), attrs, children)
++        # A dimension is a declaration of the actual stored cell extent, not a
++        # second unconstrained source of geometry or a place for hidden children.
++        data = tree.find(q(S,'sheetData'))
++        _office_metadata_shape(data, ('row',)*len(data))
++        refs = []
++        for row in data:
++            if (row.attrib != {'r':row.get('r'),'customFormat':'false','ht':'12.8','hidden':'false',
++                              'customHeight':'false','outlineLevel':'0','collapsed':'false'}
++                    or (row.text or '').strip() or any((child.tail or '').strip() for child in row)):
++                refuse('conversion_office_default_unsupported')
++            for cell in row:
++                refs.append(address(cell.get('r')))
++                if (cell.text or '').strip(): refuse('conversion_office_default_unsupported')
++                for child in cell:
++                    if (child.tail or '').strip(): refuse('conversion_office_default_unsupported')
++                    if child.tag in (q(S,'v'), q(S,'f')) and (child.attrib or len(child)):
++                        refuse('conversion_office_default_unsupported')
++        from tools.scoped_ods import colname
++        first = (min(r for r,c in refs), min(c for r,c in refs)) if refs else (1,1)
++        last = (max(r for r,c in refs), max(c for r,c in refs)) if refs else (1,1)
++        dimension = colname(first[1])+str(first[0])
++        if last != first: dimension += ':'+colname(last[1])+str(last[0])
++        _passive(tree.find(q(S,'dimension')), {'ref':dimension})
++        header = tree.find(q(S,'headerFooter'))
++        if (header.attrib != {'differentFirst':'false','differentOddEven':'false'} or len(header) != 2
++                or (header.text or '').strip() or any((child.tail or '').strip() for child in header)):
++            refuse('conversion_office_default_unsupported')
++        for child,name,text in zip(header,('oddHeader','oddFooter'),
++                ('&C&"Times New Roman,Regular"&12&A','&C&"Times New Roman,Regular"&12Page &P')):
++            if child.tag != q(S,name) or child.attrib or len(child) or child.text != text:
++                refuse('conversion_office_default_unsupported')
++
++
++def _xlsx(data, checkpoint, *, office_generated=False):
++    book = ooxml(data, 'xlsx', writing=True, checkpoint=checkpoint,
++                 allow_empty_workbook_protection=office_generated)
+     allowed = {'[Content_Types].xml','_rels/.rels','xl/workbook.xml','xl/_rels/workbook.xml.rels',
+                'docProps/core.xml','docProps/app.xml'} | set(book.sheet_parts.values())
+     for kind in ('styles','sharedStrings','theme'):
+@@ -322,7 +529,8 @@
+             if not any(kind.endswith('/'+suffix) for suffix in relation_kinds):
+                 refuse('conversion_relationship_unsupported')
+     root = book.xml['xl/workbook.xml']
+-    _children(root, (q(S,x) for x in ('fileVersion','workbookPr','bookViews','sheets','calcPr')),
++    _children(root, (q(S,x) for x in ('fileVersion','workbookPr','bookViews','sheets','calcPr')
++                     + (('workbookProtection','extLst') if office_generated else ())),
+               'conversion_names_or_workbook_features_unsupported')
+     _attrs(root, ())
+     if any(len(root.findall(q(S,name))) > 1 for name in ('fileVersion','workbookPr','bookViews','calcPr')):
+@@ -333,7 +541,8 @@
+     props = root.find(q(S,'workbookPr'))
+     if props is not None and props.get('date1904','0') not in ('0','false'):
+         refuse('conversion_date_epoch_unsupported')
+-    styles = _xlsx_styles(book)
++    if office_generated: _office_default_metadata(book)
++    styles = _office_default_styles(book) if office_generated else _xlsx_styles(book)
+     strings = []
+     if book.shared_strings_part:
+         sst = book.xml[book.shared_strings_part]
+@@ -351,7 +560,8 @@
+         name = _sheet_name(sheet.get('name')); cells = []; occupied = set()
+         tree = book.xml[book.sheet_parts[sheet.get(q(R,'id'))]]
+         _attrs(tree, ())
+-        _children(tree, (q(S,x) for x in ('dimension','sheetViews','sheetFormatPr','sheetData')),
++        _children(tree, (q(S,x) for x in ('dimension','sheetViews','sheetFormatPr','sheetData')
++                         + (('sheetPr','printOptions','pageMargins','pageSetup','headerFooter') if office_generated else ())),
+                   'conversion_worksheet_features_unsupported')
+         if any(len(tree.findall(q(S,tag))) > 1 for tag in ('dimension','sheetViews','sheetFormatPr')):
+             refuse('conversion_ambiguous_worksheet')
+@@ -381,7 +591,10 @@
+             refuse('conversion_sheet_data_identity')
+         seen_rows = set()
+         for row in groups[0]:
+-            _attrs(row, ('r','spans'))
++            _attrs(row, ('r','spans') + (('customFormat','ht','hidden','customHeight','outlineLevel','collapsed') if office_generated else ()))
++            if office_generated and (any(row.get(key,'false') != 'false' for key in ('customFormat','hidden','customHeight','collapsed'))
++                    or row.get('outlineLevel','0') != '0' or row.get('ht','12.8') != '12.8'):
++                refuse('conversion_hidden_or_custom_layout_unsupported')
+             if row.tag != q(S,'row') or not row.get('r','').isdecimal():
+                 refuse('conversion_row_identity')
+             rr = int(row.get('r'))
+@@ -646,7 +859,18 @@
+ 
+ 
+ def validate_destination(source, data, target, *, checkpoint=None):
+-    actual = inventory(data,target,checkpoint=checkpoint)
++    try:
++        actual = inventory(data,target,checkpoint=checkpoint)
++    except ConversionRefused:
++        if target != 'xlsx': raise
++        try:
++            actual = _xlsx(data,checkpoint,office_generated=True)
++        except ConversionRefused:
++            raise
++        except (ODSError, ODTError) as error:
++            raise ConversionRefused(str(error)) from None
++        except (KeyError, IndexError, TypeError, ValueError, OverflowError, ET.ParseError):
++            raise ConversionRefused('conversion_malformed_package') from None
+     if [name for name,_ in actual.sheets] != [name for name,_ in source.sheets]:
+         refuse('conversion_sheet_order_or_identity_changed')
+     for (_, before), (_, after) in zip(source.sheets,actual.sheets):
+--- a/tools/scoped_spreadsheet_profiles.py
++++ b/tools/scoped_spreadsheet_profiles.py
+@@ -58,7 +58,7 @@
+     return result
+ 
+ 
+-def ooxml(data, format, *, writing=False, preserve_vba=False, checkpoint=None):
++def ooxml(data, format, *, writing=False, preserve_vba=False, checkpoint=None, allow_empty_workbook_protection=False):
+     if format not in OOXML: fail('unsupported_spreadsheet_profile')
+     if preserve_vba and (not writing or format not in ('xlsm', 'xltm')):
+         fail('macro_preservation_profile_mismatch')
+@@ -106,7 +106,10 @@
+             if preserve_vba and any(node.get('zeroHeight', 'false') not in ('0', 'false')
+                                     for node in sheet.iter(q(S, 'sheetFormatPr'))):
+                 fail('hidden_sheet_structure_mutation_unsupported')
+-        if writing and root.find(q(S,'workbookProtection')) is not None:
++        protections = root.findall(q(S,'workbookProtection'))
++        if writing and protections and not (allow_empty_workbook_protection
++                and len(protections) == 1 and not protections[0].attrib
++                and not len(protections[0]) and not (protections[0].text or '').strip()):
+             fail('protected_workbook')
+         if preserve_vba and root.find(q(S, 'fileSharing')) is not None:
+             fail('protected_or_shared_workbook_mutation_unsupported')

@@ -99,6 +99,17 @@ def consumer_bench(check, args):
         check("bench_ods195_current_installed194", len(before_receipt["layers"]) == 194)
         check("bench_ods195_actual_preimage", hashlib.sha256((live / "hermes-agent" / source_files[0])
               .read_bytes()).hexdigest() == manifests[0]["files"][0]["before_sha256"])
+    if layer_names == ("odf-native-conversion-output-after-source195",):
+        check("bench_odf196_exact_five_targets", set(source_files) == {
+            "tools/scoped_word_conversion.py", "hermes_cli/friday_workspace_word_conversion.py",
+            "hermes_cli/friday_workspace_spreadsheet_conversion.py",
+            "tools/scoped_spreadsheet_conversion.py", "tools/scoped_spreadsheet_profiles.py"})
+        check("bench_odf196_exact_195_prerequisites", len(manifests[0]["prerequisites"]) == 195)
+        check("bench_odf196_no_plugin_delta", plugin_names == ())
+        check("bench_odf196_current_installed195", len(before_receipt["layers"]) == 195)
+        check("bench_odf196_actual_five_preimages", all(hashlib.sha256(
+            (live / "hermes-agent" / row["path"]).read_bytes()).hexdigest()
+            == row["before_sha256"] for row in manifests[0]["files"]))
     check("bench_prerequisites_pinned", all(previous_input["project_files"].get(name) == pin
           for body in manifests for name, pin in body.get("prerequisites", {}).items()))
     if layer_names == ("read-file-reject-write-arguments-after-source189",
@@ -568,6 +579,11 @@ def main(argv=None):
     check("generator_ods195_cli_exact_only_increment", selected.layer_names == ods195)
     check("consumer_ods195_explicit_exact_only_increment", validator.resolve_layer_names({
         "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(ods195)}) == ods195)
+    odf196 = ("odf-native-conversion-output-after-source195",)
+    selected = generator.parse_args(["--layer", odf196[0]])
+    check("generator_odf196_cli_exact_only_increment", selected.layer_names == odf196)
+    check("consumer_odf196_explicit_exact_only_increment", validator.resolve_layer_names({
+        "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(odf196)}) == odf196)
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (

@@ -7,78 +7,114 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 10.11.2026, 20:57 МСК
+## Действующее продолжение Астры — 10.11.2026, 21:49 МСК
 
-Владелец явно передал управление и возобновил работу. **Астра — единственный
-действующий ведущий, координатор и интегратор**; owner pause Сола завершил его смену.
-Новый native goal **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** фактически создан,
-`get_goal` подтвердил **active**, API threadId `01a1c688-e36d-7021-8df4-9c5644a4d75b`:
-[readback и преемственность](ASTRA-GOAL-CONTINUATION-2026-11-10.json).
-Сол — **постоянный co-architect на Standard** по следующему явному уточнению владельца;
-Астра сохраняет Fast. Его прежнийpausedgoal относится к прошлой сменеlead и не запрещает
-отдельные TASK под координацией Астры. Реальная прежняя сессияСола на штатномendpoint
-проверена, один завершённыйnativepre-taskcompact подтверждён; RTF/Officeпакет доставлен
-и принят в работу. [Роли/режимы/назначение](evidence/astra-20261110/sol-permanent-coarchitect-rtf-assignment.json).
-ВременнаяRTFветка завершена/frozen и передана без повторовR92; draftпокаappFAIL, не устанавливать.
-Следующаяточкаинтеграции — проверенныйRTFкандидат/обоснованноерешение, независимо отRECALL/ODS.
+Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
+**FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
+**active**, API threadId `01a1c688-e36d-7021-8df4-9c5644a4d75b`:
+[объект и преемственность](ASTRA-GOAL-CONTINUATION-2026-11-10.json).
+Старые native goal Сола и DSH goal сохранены paused; UUID/накопленный учёт не переносились.
+Полные **170 кейсов / 120 расширений / B00**, варианты, регрессия и восстановление открыты.
 
-Старый native goal Сола и DSH goal сохранены paused, не завершались и не активировались;
-UUID и накопленный счётчик между объектами не переносились. Полный170/120/B00,
-первичные критерии, решения и все ограничения эффектов сохраняются.
+**Сол — постоянный co-architect на Standard** в своей реальной прежней TUI/сессии,
+Астра — Fast: [проверенные роли и первая задача](evidence/astra-20261110/sol-permanent-coarchitect-rtf-assignment.json).
+Его paused goal относится к прежнему самостоятельному руководству и не запрещает TASK.
+Первая RTF/Office задача завершена; producer Heading draft не исправляет Office roundtrip.
+Локализован отсутствующий RTF outline export LibreOffice; предложенный C++ patch и QA skeleton
+сохранены **UNBUILT / UNVALIDATED / NOT_INSTALLED**:
+[решение, наблюдения и границы](evidence/astra-20261110/rtf-office-source-decision.json).
+Сол выполняет второй самостоятельный пакет `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1`:
+изолированная совместимая сборка полного headless Writer/Calc/Impress/Draw и два реальных
+RTF save/close/reopen цикла с регрессией. Exact source/config milestone принят только как
+подготовка; готового built artifact ещё нет. Один native pre-task compact на каждое новое
+назначение подтверждён; повторов задач/моделей/настроек нет. Установка toolchain — только
+после результата/QA/review, вне короткого maintenance-окна. Текущий toolchain не менялся.
 
-Стартовый **HEAD = origin/main = удалённый main = `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`**.
-После опорного коммита новых коммитов нет; три чужих изменения §1 сохранены с SHA/identity,
-в собственные коммиты не включаются. [Свежий runtime/readback/3DB](evidence/astra-20261110/lead-start-runtime.json):
-194слоя, receipt/marker/stamp/config согласованы, gateway324328/start2790561/bootd518,
-Telegram connected, active_agents0, profile routing прежний. Три quick_checkOK,
-30/2,196/2,5419/5, session_turn_leases0. Переезда/переноса/переустановки не было.
-[GET зависимостей](evidence/astra-20261110/lead-start-dependencies.json) отделены от
-исторических реальных вычислений и от допуска к новой операции. На исходных349
-уникальных записях SHA256SUMS проверены точные байты; новые записи добавляются по дельте.
+**Git.** При принятии HEAD = origin/main = remote main был
+`01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
+После него опубликованы `bedbd946f663c76965c0baebaea81a85539c5e94` и
+`1632b288e4459f7ad8e28462d2f45f7bddecca80` — последний проверенный опубликованный baseline
+перед этой дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
+собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
+текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
 
-**Завершено:** R93 actual2061B2717 `74e80fdf…a132` прошёл настоящий LibreOffice26.2.5.2
-open → reversible edit → native save → close → reopen/verify → restore → save/close/reopen.
-Все16абзацев,3OutlineLevel1 заголовка, точный `Привет, 世界, Ω`, перечисленные paragraph/run
-attributes сохранены;5значимых отрицательных контролей. Canonicalreceived/source/receipt/run
-не изменены. [Приложение и пределы](evidence/astra-20261110/r93-odt-real-application.json).
-20:40:14–20:41:07 МСК,53секунды включая оценку; само приложение завершило14.55s.
-Без модели/повторного создания/отправки. Formaltester остаётся NOT_ESTABLISHED.
+**Текущая установленная версия — Source196.**
+[реальная установка / readback / квалификация](evidence/astra-20261110/odf196-installed.json),
+SHA `63a5835026bfd5e7dc363f44182a80793e7b33e3c655bb4fae79724aa645fcbe`.
+Добавлен только `odf-native-conversion-output-after-source195`: пять файлов конверсий.
+195 prefix, все17883 прочих source rows, все51plugin bytes, config/profile/launcher/unit
+сохранены. Full17888 actual inventory —233304595B; receipt `7473b7d2…97b9`,
+input `3eb472ed…2b5e`. Один stop → publisher → fresh start, **76,525s**;
+постоянный gateway **824223 / start4139883 / bootd518758e-bce0-4bd5-89a1-fc4e113f0623**,
+active/running/Telegram connected/NRestarts0, один gateway этого home; прежний444825 отсутствует.
+Три quick_check OK, default30/2, dest196/2, tester5431/5; leases0, данные сохранены.
+Это проверенный снимок, а не допуск будущего live. Здоровый gateway остаётся под постоянным
+управлением без искусственного таймера жизни. Переезда/переноса данных не было.
 
-Квалификация195: установленный слой/свежийgateway/17888пинов сохраняются. Первый
-isolated runner отказал до main/fixtures на `/usr/bin/python3` из-за отсутствующего
-`ruamel`; повторяется только квалификация в существующем installed interpreter с
-нужными зависимостями, без переустановки/модели/отправки/повтора совершённых эффектов.
+[Source / review / композиция196](evidence/astra-20261110/odf196-publication-source-review.json):
+Word2 и spreadsheet3 файла прошли независимое ревью, включая494 контроля окончательной
+дельты ODS; actual publisher/rollback/negative composition104PASS. Root совместно загрузил
+точные пять файлов и провёл **две реальные локальные конверсии** через product provision/
+admit/scope/WebCall/оригинальные часы/custody/bwrap LibreOffice/create-only publisher:
+ODT→DOCX и ODS→XLSX PASS, исходные16 блоков/3 заголовка/Unicode и6 typed cells/B3numeric1
+сохранены; collision refusal до renderer. Это prospective LOCAL, не Telegram/F04 приёмка.
+После установки свежий процесс импортировал фактические installed modules без overlay:
+8 saved-byte/strict-source/request/phase checks PASS. Две ошибки вызова собственного checker
+сохранены; исправлен только checker, оценены те же файлы, без повторной Office/модели/установки.
+Word допускает только строго разрешённое пустое outline-numbering и false formProt;
+reverse DOCX→ODT остаётся refused/open. ODS native thread pool ограничен фактическими2CPU;
+AS1GiB/CPU35/subprocess35/native custody40 неизменны. Дельта конечных пассивных output
+metadata/relationships/MIME не расширяет строгий source profile и не закрывает сложные форматы.
+Журналируемый откат не является доказательством атомарности при внезапном отключении питания.
 
-**R94/R95 завершены по одной отправке и originalfull180:**
-RTF2718→2720, ODT2721→2723, оба exit0/semantic+custodyPASS; точные original22October,
-заключительные фразы/локализация, RTF0004/C03/2/2500.00/RUB/1 и ODTUnicode сохранены.
-[RTF](evidence/astra-20261110/rtf-ordinary-recall-root-review.json),
-[ODT](evidence/astra-20261110/odt-ordinary-recall-root-review.json).
-Оба actualturn не вызвали новых tools/search/read: это recall из сохранённого
-авторизованного контекста/истории, без кредита новому извлечению и без доказательства
-purememory. Formaltester NOT_ESTABLISHED/RECEIVED_UNGRADED отдельно; CREATE/READ/F03
-не повторялись. Текущий срез **502canonical/native5423/45unresolved/3UNKNOWN**.
+**Завершённые первоначальные задачи Астры:**
 
-**ODS195 установлен и квалифицирован:** [actual proof](evidence/astra-20261110/ods195-installed.json),
-SHA `c090b2a088be53b53e8fdc0b8b115fe52414ec967d4d7cfdcd53a7ffd07d0c33`.
-Только `ods-comment-preservation-after-source194`, source `25569a96…6df7`,
-194prefix/17887nontarget/all51pluginbytes/config/data сохранены. Full17888 actualinventory
-233281541B совпал с receipt `4d5f063b…9b7ff`, input `6c994d7b…15cf0`.
-Один stop → publisher → freshstart;69.40s, gateway **444825/start3853611/bootd518**,
-active/running/Telegramconnected/NRestarts0, один matchinggateway, старый324328 отсутствует.
-Три quick_checkOK,30/2,196/2,5423/5,leases0. Installed native175+boundary9PASS в отдельном
-процессе с собственными LOCALfixtures/actualinstalledhandlers, без overlay/сети/модели/Telegram.
-Это ограниченное сохранение однозначных XMLcomment anchors, не всеODS/F03варианты.
-Builder был вызван с **явным --layer**, historicalfourdefault не менялся. Crash/powerloss
-atomicity не заявлена; healthypermanentgateway остаётся под постоянным управлением.
+- R93 — именно received2717,2061B, SHA `74e80fdf…a132`: настоящий Writer open → controlled
+  reversible edit → native save → close → reopen → restore/save/reopen,16 абзацев,
+  3 OutlineLevel1 и точный Unicode сохранены;5 negatives. Canonical/source/receipt неизменны.
+  [Real application](evidence/astra-20261110/r93-odt-real-application.json), без новой модели/отправки.
+- R94/R95 ordinary RECALL — по одной отправке/full180: RTF2718→2720, ODT2721→2723,
+  semantic/custody PASS. Новых tools/search/read в actual turns нет: recall из сохранённого
+  авторизованного контекста/истории, без кредита новому retrieval и без pure-memory proof.
+  [RTF](evidence/astra-20261110/rtf-ordinary-recall-root-review.json),
+  [ODT](evidence/astra-20261110/odt-ordinary-recall-root-review.json). CREATE/READ/F03 не повторялись.
+- ODS comment preservation195 установлен и прошёл175+9 installed controls; его точные bytes
+  и все прежние194 слои сохранены в196. [Исторический actual195 proof](evidence/astra-20261110/ods195-installed.json).
+  Только однозначные XML comment anchors; сложные ODS/F03 варианты остаются открытыми.
+- На том же received R86 ODS2684,949B, SHA `5503cc95…fe6d` проведён настоящий Calc
+  B3numeric2→200/save/close/reopen→2/save/close/reopen;6 cells/types/formulas/styles сохранены,
+  5 negatives. [Application](evidence/astra-20261110/r86-ods-real-application.json).
+  Без новой отправки/модели; это оценка исторического файла Source193.
+- Неизменённый archive handler: реальные локальные CPU-CRC stop и gateway async executor/
+  interrupt cuts приняты по сохранённым данным, без повторов. [Границы](evidence/astra-20261110/archive-local-async-cancel-root-review.json).
+  Gateway/AIAgent fixture через __new__, release_running_state=False; не installed bootstrap/
+  Telegram/slot release. Не доказаны C/libarchive hang/RLIMIT_CPU exhaustion; wholeA13/A14 INCOMPLETE.
 
-**Дальше:** Сол самостоятельно доводит RTF/Office; stylesheetdraft appFAIL не устанавливать.
-Астра готовит следующий действительно недостающий P1 F04 блок **ODT→DOCX и ODS→XLSX**
-с exact source195/current singleton admission перед каждым live шагом. Подготовка делегирована
-в отдельную ограниченную source/offlineветку, без liveправ. R83UNKNOWN/одинEMPTYquarantine,
-R85PARTIAL/QuestionNOT_RUN, исчерпанные3C10R89–R91 и все consumed/UNKNOWN защищены.
-Ни новаясессия, ни новыйrun, ни195/fix не разрешают их повтор. Полный170/120/B00,
-обязательные варианты/регрессия/восстановление остаются объёмом activegoal.
+**P1 F04 — текущая незавершённая очередь.**
+Первый ODT→DOCX R96 выполнен на195 один раз: запрос2724, два native отказа effect=none,
+text2726, full180; документа/публикации target нет. **FAIL_REQUIRED_DOCX_NOT_PRODUCED** сохранён.
+[Точный эффект и ошибочная атрибуция модели](evidence/astra-20261110/odt-docx-first-known-refusal.json).
+Реальный дефект был в проверке выходного DOCX, не исходного ODT. Он исправлен/установлен в196.
+Отдельный future max1 diagnostic того же шага допускается исходным контрактом §5line62/§6line75
+после исправления/регрессии/review/install; не является новым независимым входом и не стирает FAIL.
+Подготовленный issuer остановился **до release/bind/run/send** на формулировке SCOPE:
+[known-none prerelease refusal](evidence/astra-20261110/f04-diagnostic-prerelease-refusal.json).
+Frozen7CODE/старые proof/истёкшая ISSUE-фаза сохранены. Проверяется минимальный явный adapter
+с корректным отрицанием product/B00 acceptance, без ослабления validator/guards/max1.
+Следующая ISSUE — отдельная будущая операция только после review и свежих фактов; R номер не назначен.
+
+Первая original **ODS→XLSX ещё НЕ отправлена/не допущена**. После настоящей изолированной
+readiness и установленного исправления196 подготавливается явный successor её ordinary
+Source195-pinned gate/oracle. Original938B/numeric1 сохраняется; R86 с numeric2 не подменяет вход.
+Эта независимая операция использует обычный v42/issuer и не зависит от PASS предыдущего ODT.
+Старые v42/issuer/private oracle не переписываются; semantic OOXML ожидания не ослабляются.
+
+Текущий сохранённый срез **503 canonical / native5431 / 45 unresolved / 3 UNKNOWN**.
+R83 UNKNOWN_SEND/один readonly EMPTY quarantine, R85 PARTIAL/Question NOT_RUN,
+исчерпанные три C10 R89–R91, R42/R43/2257/S11/P01/Q02/G06/M10 и другие consumed/UNKNOWN
+сохранены без повторов. Отсутствие formal PASS не разрешает повторный эффект.
+Formal tester acceptance и полный V3 ни одним узким результатом здесь не установлены.
 
 ## Исторический чекпоинт Сола — OWNER_PAUSE, 10.11.2026, 20:09 МСК
 
