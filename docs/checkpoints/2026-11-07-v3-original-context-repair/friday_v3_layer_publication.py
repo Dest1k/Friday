@@ -52,6 +52,7 @@ LAYER_NAMES = (
     "arj-unix-attribute-types-after-source189",
     "read-file-reject-write-arguments-after-source189",
     "archive-conversion-named-target-status-after-source190",
+    "ordinary-direct-plain-cancel-after-source192",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to

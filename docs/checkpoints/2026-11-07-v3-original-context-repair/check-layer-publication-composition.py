@@ -75,6 +75,11 @@ def consumer_bench(check, args):
     if layer == "arj-unix-attribute-types-after-source189":
         check("bench_arj190_exact_one_codec_target", source_files == (
             "hermes_cli/friday_workspace_arj_codec.py",))
+    if layer_names == ("ordinary-direct-plain-cancel-after-source192",):
+        check("bench_c10_exact_one_base_target", source_files == ("gateway/platforms/base.py",))
+        check("bench_c10_exact_192_prerequisites", len(manifests[0]["prerequisites"]) == 192)
+        check("bench_c10_actual_preimage", hashlib.sha256((live / "hermes-agent" / source_files[0])
+              .read_bytes()).hexdigest() == manifests[0]["files"][0]["before_sha256"])
     # Read every prerequisite through the same input consumed by publication. The
     # count need not equal the installed layer count; it is a dependency set.
     previous_input = json.loads(args.previous_input.read_text())
@@ -419,6 +424,11 @@ def main(argv=None):
     check("generator_two_fix_cli_exact_order", selected.layer_names == two_fix)
     check("consumer_two_fix_explicit_exact_order", validator.resolve_layer_names({
         "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(two_fix)}) == two_fix)
+    c10 = ("ordinary-direct-plain-cancel-after-source192",)
+    selected = generator.parse_args(["--layer", c10[0]])
+    check("generator_c10_cli_exact_only_increment", selected.layer_names == c10)
+    check("consumer_c10_explicit_exact_only_increment", validator.resolve_layer_names({
+        "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(c10)}) == c10)
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (

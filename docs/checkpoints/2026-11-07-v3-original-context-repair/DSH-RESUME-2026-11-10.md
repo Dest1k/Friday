@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Сола — 10.11.2026, 15:59 МСК
+## Действующее продолжение Сола — 10.11.2026, 17:28 МСК
 
 Сол — временный lead/координатор/интегратор. Владелец разрешил разработку,
 проверки, штатную установку и публикацию в существующий main, затем делегировал
@@ -27,24 +27,28 @@ API `threadId` **`01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`**, отдельный UU
 семантическую оценку, formal tester acceptance и основание следующего действия.
 
 **Git / принадлежность.** Последний опубликованный и удалённо сверенный
-`main = acae97d458cd0073d67a856d979f3341ed489f87`; 296 checksum entries проверены
+`main = b856e9692ddfdd7e4d1faa14c3518c12babeb940`; 305 checksum entries проверены
 по точным Git-байтам. Исходный `585f9cb9790a6182908db9ccdde263176ae39969`
 не откатывался. Текущая следующая дельта описана здесь отдельно; точный SHA её
 коммита сообщается после commit/push, без записи хеша коммита внутрь самого себя.
 Три чужих изменения §1 сохранены и в собственные коммиты не включаются.
 
-**Runtime сейчас: 192 слоя**, home из §2; gateway **211873/start1687969**, один
-receiver, boot `d518758e-bce0-4bd5-89a1-fc4e113f0623`. Единой штатной операцией
-добавлены только191/192, старые190 и nontarget inventory сохранены:
-[фактическая установка/receipt/marker/stamp/3DB/freshprocess](evidence/sol-20261110/two-fix-installed.json),
-SHA `a7106fd78da9d90e729c107f4f26daccca4fb80f87a5d0c81a3525bafbc51052`.
-Receipt `ced39e2ab4692ea93dcb03795f2261455e86f835750b291ba53ce793778d7ab3`,
-input `b508cc9fde63187aedceee222c1f778004d62416323ff63ec7b28968cd79479d`.
-Один stop190 → publisher(twofiles/twolayers) → freshstart192 в14:52:38.
-Три БД quick_checkOK, до/после неизменны: default30/2, dest196/2, tester5263/5.
-Сохранён первоначальный genuine proof с pluralctime-key; Root добавил singularalias
-того же наблюдения для существующего consumer, без новой установки/эффекта.
-Исторические PID61925/136726/176791 остановлены; не запускать их и не переигрывать слои.
+**Runtime сейчас: 193 слоя**, home из §2; единственный gateway
+**280113/start2351085**, boot `d518758e-bce0-4bd5-89a1-fc4e113f0623`.
+К сохранённым192 добавлен только `ordinary-direct-plain-cancel-after-source192`:
+[установка193/receipt/marker/stamp/3DB/freshprocess](evidence/sol-20261110/c10-source193-installed.json),
+SHA `b1b56ece9f3b1221f9ea168cce39a5eb5d20ab319c2cc9fd5d38b58da450bd84`.
+Receipt `5b3df307158a944ba171e8e10cd26af48ecbbb1debf7be2d90e5919a00191978`,
+input `3e5997f45c7286352a1f34f36e5330e28421126e30fa82a30a4593336847473a`.
+Один stop192 → один publisher → freshstart193 в16:43:09 МСК; старые192 и все
+17888 nontarget inventory entries сохранены, project466/15historical metadata differences.
+До/после установки quick_checkOK и одинаковые счётчики: default30/2, dest196/2,
+tester5350/5. Последующие R85/R86 — отдельные эффекты, не часть install proof.
+Исторический marker.post_install_source_input остаётся прежним по его контракту;
+текущие marker.input/receipt/stamp193 согласованы. Первоначальные ошибки Root-readback
+(layername/историческийpointer/processcensus) сохранены, corrected reviewer того же
+установленного результата принят без переустановки. История192:
+[two-fix-installed](evidence/sol-20261110/two-fix-installed.json).
 
 **Todo / завершённые содержательные обязательства:**
 
@@ -141,63 +145,92 @@ input `b508cc9fde63187aedceee222c1f778004d62416323ff63ec7b28968cd79479d`.
   или пересоздания. Originalexacttarget честно REFUSED, wholeA03 не принят.
   Compaction5283/ODS5277–5279 copies5284–5286 и currentcopies5287–5289 коррелированы;
   это не повторныеисполнения.
-- [ ] Следующие genuinelymissing ODT/CSVfirstF03 и C10cancel+usefulcontinuation. Остальной полный
-  originalscope/formatvariants/B00/regression/recovery продолжается независимо.
+- [x] ODT R82 firstF03 once2670→native1255B2672, closed16:09:48:
+  [nativeone-date/sourcepreservation/fullcustodyPASS](evidence/sol-20261110/odt-edit-root-review.json).
+  Срок22→23October, original1208Be1e22d35…2cd5 fullidentity неизменён;18paragraphs,
+  17unselectedparagraphstructures/styles, всеXMLbytesвне selectedp и othermemberpayloads
+  точны. 5single ODFtext:s заменяют эквивалентныепространства только selectedp; strict
+  XMLliteralFAIL сохранён отдельно, originalF03nativefidelity принят Root ДО admission
+  с independentchecker87d2f2f0…8fbc1. НикакойGUIrender/complexfidelity приёмки.
+  Genuinecompaction5306/5301–5305 copies5307–5311, wrongcontenttype до invocation
+  сохранены; модель сама сериализовалаJSON, actualwrite один5319.
+- [ ] R83 firstCSVF03 завершён16:13:44 exit2 **UNKNOWN_SEND**, однаdispatch,
+  TRANSPORT_URL_FAILURE/HTTP_REQUEST_OR_HEADERS, безACK/sentid:
+  [исходныйUNKNOWN/сверка](evidence/sol-20261110/csv-first-edit-unknown-root-review.json).
+  [Один readonly TEXT quarantine](evidence/sol-20261110/csv-text-unknown-quarantine-root-review.json)
+  затем реально выполнен на193: обаcanonical locks, fresh120s READclock, ровноодин
+  currentcursor getUpdates(timeout0,limit20), EMPTY0/unsaturated. Cursor/R83raw
+  неизменны; send/ACK/download/grade отсутствуют. EMPTY не доказывает unsent;
+  R83UNKNOWN сохранён, эту quarantine и отправку не повторять. Динамические45
+  unresolved/3UNKNOWN сохранены, исходные44/2 не очищались.
+- [x] R84 ODS ordinaryRECALL once2673→text2675, closed16:34:31, actual192:
+  [имя/sheet/все6фактов/tail/fullcustodyPASS](evidence/sol-20261110/ods-ordinary-recall-root-review.json).
+  5 настоящих session_search, свой historicalnative5285 копирует5278/R80; это
+  retrieval-backed recall, не pure-memory. Compaction5326/5340 и прежние ODT/search
+  копии коррелированы без новых writeeffects; все4original938B sourcepins неизменны.
+- [x] Plain ordinary user «Стоп, отменяю.» подключён и установлен193:
+  [37baseline/44candidate actualwholemodule controls, publisher96+5,
+  receiver28/real11refs/independentreview](evidence/sol-20261110/c10-native-publication-root-review.json).
+  ACL/principal/control origin/quoted/forwarded/internal/media/group fences сохранены.
+  Offline native cancel не заменяет live; фактический R85 ниже остаётся PARTIAL.
+- [ ] R85 originalC10 один START2676/native5351 и обычный STOP2678→reply2679:
+  [состоявшаяся остановка, ошибка ответа, несостоявшийся Question](evidence/sol-20261110/c10-original-partial-root-review.json).
+  STOP-INTENT достоверно видел занятое поколение1/token/lease этого START; после
+  ответа nativegeneration2 inactive, без lease/token/queue/pending/delegated/web/terminal.
+  Реальный текст: Englishnative Stopped плюс JSON control_unavailable. Receiver
+  отказал на strictRussian-only ACK; суффикс — отдельный настоящий productFAIL.
+  Последующий Question не имеет intent/ACK, NOT_RUN. CanonicalSTOPPED/его старый
+  product_cancelled marker сохранены; Root отдельно доказал native effect.
+  Полный C10/B00 не принят, physicalbackend cessation и full latefence window
+  не доказаны. PID291584 завершён exit1, original600deadline17:16:27 истёк безreset.
+  START/STOP/старый2455 не повторять; будущий missingQuestiontail требует собственного
+  конкретного основания и конечной операции. Source/offline repair — отдельный пакет.
+- [x] R86 genuinelyfirst ODS F03 once2680→native949B2684, closed17:26:52 exit0:
+  [подготовка/Root source review](evidence/sol-20261110/ods-edit-preparation-root-review.json),
+  [фактическая правка/независимая fidelity/fullraw custodyPASS](evidence/sol-20261110/ods-edit-root-review.json).
+  Actual193 native5354/5355 fulloriginalread →5358/5359 spreadsheet_edit/CAS/create-only
+  →5360/5361 fullnewread →5362 durablefinal/actualcaption. Новый949B5503cc95…fe6d:
+  Данные!B3 numeric1→2, все5другихcells/полныйостальнойXML/memberpayloads и strict
+  serialization/membermetadata PASS; все4original938B sourcepins fullidentity неизменны.
+  Один wrongobjectcontent tool_call schema-refusal до writeinvocation сохранён,
+  модель сериализовалаJSON и выполнила один настоящий write. Ни повторной отправки,
+  ни пересоздания готовогофайла. Formal NOT_ESTABLISHED/RECEIVED_UNGRADED отдельно.
+  Genuine simplecase не доказывает formulas/styles/multisheet/locale/stringIDs/updatejoin
+  или wholeF03. Silent selectedXMLcommentloss193FAIL сохранён; source-only typedrefusal
+  candidate139ba0f7…ca63 NOT_INSTALLED и не является comment-preserving featurePASS.
+- [ ] Остальной полный originalscope/formatvariants/B00/regression/recovery открыт.
+  Локальные C10/CSV ограничения не блокируют независимые допустимые обязательства.
 
-**Операции / исполнители.** Root/Sol единолично владеет runtime/admission/live-интеграцией.
-R79 `f03-tsv-edit-preserve-01-20261110` CLOSED15:40:10exit0, semantic/custodyPASS,
-formalNOTEST; singleton8d683588…0e7e/boundc2f9efd1…38a1/scenario451e3810…26b.
-Native5264–5275 полностью привязаны к этому эффекту, run86382ee4…5998;
-оба original63B fullidentity сохранены. Исходные ошибки RootASTliteral и reviewer
-outertoolname сохранены; исправлялись только проверки того же артефакта/наблюдения,
-не actualv42/run/grade/отправка. Private closed slotjournal
-`/home/jericho/.cache/FRW-SOL-V3-P0-COHORT-ADMISSION-PREP-20261110/ROOT-tsv-LIVE-RUN.json`.
-R80 `f01-ods-read-tail-01-20261110` CLOSED15:47:21exit0, semantic/custodyPASS,
-formalNOTEST; authority41ec9f91…1d7c/bound7f5d8355…b8dc/scenario87f7914e…74eb.
-Native5276–5279/run c9a90faf…3e14 сверены, Rootreview70c0fb0d…fa3ec.
-R81 `a03-tar-first-conversion-collision-01-20261110` CLOSED15:55:44exit0,
-narrowtyped/named/currentartifact/custodyPASS, formalNOTEST; authorityca0bd70b…1559,
-bounde7abe926…0e13/scenario830b081d…a80c. Run5dd6b187…8020, Rootreview6f10a67a…765c.
-Новый2memberTAR input и FIRSTfailure отличаются от settledR76SECONDZIPfailure;
-оба старыхtarget сохранены, старыеPARTIAL/UNKNOWN не очищены. Все3Rootslotjournals
-ROOT-tsv/ods/tar-LIVE-RUN.json закрыты, actors237193/240950/247110 завершены.
-Свежая после3cases сверка: тотже gateway211873/start1687969, active_agents0,
-3profiles, source/config неизменны, quick_checkOK: default30/2, dest196/2, tester5300/5.
-Private ROOT-post-three-user-state.json SHAfa98bddf…78046. Первоначальная Rootошибка
-пути profiles/default/state.db отказала вread-onlyрежиме; actualdefault HOME/state.db,
-данные не создавались/не менялись, затем проверены реальные3БД.
-`p0_cohort_admission_preparation` и independentreview завершены/Rootприняты:
-[Rootsourceacceptance](evidence/sol-20261110/p0-cohort-preparation-root-review.json),
-RESULT8e8d0301…54e9f,50focused+12phasechecks, dynamiccurrenthistory, validagedbinding
-plusfreshfinalcut, no blanketautogrant. Immutablecards RESULT28d5d41e…557bd;
-case-specific TSV/ODS и отдельно выбираемый TAR, не перезаписывать.
-`seven_regularized_source_links_smoke` завершён/Rootпринят,196actualimportpins,
-обе output25B, native128entrylimit unchanged, benches/childrencleaned.
-`next_p0_obligations_readonly` и finiteB00reader завершены/Rootприняты:
-[две следующие originalP0F03 cards и адресная B00сверка](evidence/sol-20261110/next-p0-obligations-root-review.json),
-RESULTecc2f0df…76c. ODT1208B22→23October и CSV63B1→2 — отдельные missingedit;
-D01ODT и B00M03 уже Rootreviewed, толькоreuse/no newcredit. `odt_csv_edit_preparation`
-готовит finiteprivate source/offlineпакет этихдвухопераций, безlive/authority.
-`c10_cancel_continuation_preparation` готовит недостающий C10cancel+usefulcontinuation
-по реальной будущейownedactiveboundary: старый2455 completedlate неcancel/replay,
-observerstop неproductcancel. Actualv42boundedcapture не умеет активныйcancel, literal
-/stopadmission требуетactive_agents0; существующий nativeownedcancelactor допускает
-толькоs05/s07/v01..04, C10подменаID недопустима. Готовится минимальный source-only
-linkedreceiver/cancelcandidate и real-source controls, без установки/live; actual
-independentreview отказалagent thread limit reached, повтор толькопослереального
-освобожденияслота. ПрямойRootnativecancel не заменяет ordinaryuserStop path.
-Остальные закрытые назначения не изображаются продолжающимися. Постоянный gateway
-работает; исторические190/189bench/evidence/WAL/SHM сохраняются, полныхhomeкопий нет.
+**Операции / исполнители.** Root/Sol единолично владеет runtime/admission/live/Git.
+R79/R80/R81/R82/R84 закрыты с узкими semantic/custodyPASS; formal tester во всех
+новых узких прогонах NOT_ESTABLISHED/RECEIVED_UNGRADED. R83 UNKNOWN и его один
+READquarantine закрыты без разрешения resend. R85 закрыт PARTIAL/nativeStopknown,
+reportFAIL/QuestionNOTRUN; исходные clock/каноническийrun не переписаны.
+R86 `f03-ods-edit-preserve-01-20261110` закрыт17:26:52 exit0, актор завершён;
+private `/home/jericho/.cache/FRW-SOL-V3-ODS-FIRST-NATIVE-EDIT-20261110/ROOT-ods-LIVE-RUN.json`.
+Root сохраняет исходные R31/R80/R84 факты, не повторяет creator/read/recall.
+`ods_first_native_edit` завершён/Root принят: RESULTb729728d…33e5, source193simple
+маршрут уже работоспособен; source-only commentguard139ba0f7…ca63 отдельно.
+`c10_live_stop_reporting_repair` — finite SOURCE/OFFLINE, private
+`/home/jericho/.cache/FRW-SOL-V3-C10-LIVE-STOP-REPORT-REPAIR-20261110/RESULT.json`.
+Диагностика сообщает retained A0 runtime480 против obsolete consumer cap120;
+окончательный пакет/review ещё не принят Root. Подчинённые reviewers принадлежат
+этому назначению; живых эффектов им не разрешено. Попытка дополнительного finite
+readonly next-format child17:23 отклонена native `agent thread limit reached`;
+контролирующий обвес не создаётся, Root продолжает независимую работу.
+Остальные finite дети завершены и не изображаются действующими.
 
-R42/R43, UNKNOWN_SEND, неизвестные P01/Q02 и исторический S11 защищены от повторов.
-Новый run-id/допуск/модель/перезапуск/исправленныеслои сами повтора не разрешают.
-Ближайшая граница: принять finiteODT/CSVeditпакет и независимоеreview; сверить exact
-nativeODT preservation, включая реальную семантику ODFtext:s без ослабления unselected
-structure/styles/members. Strict literalXMLdiagnosticFAIL сохранён отдельно. Затем
-Rootfreshadmission одной genuinelymissing firstF03. C10source/harnessrepair независимо;
-192runtime не менять ради sourceonlyподготовки, закрытыеR79/R80/R81 не повторять.
-Nativegoal active подтверждён повторным get_goal на checkpoint; критерии неизменны.
-Formal во всех новых узкихпрогонах NOT_ESTABLISHED/RECEIVED_UNGRADED, это не wholecases.
+Ближайшая граница: опубликовать установленный193 и фактические ODT/ODS/CSVUNKNOWN/C10PARTIAL
+свидетельства одним содержательным срезом. Затем принять connected C10 repair/review,
+интегрировать исправление через существующий pluginconsumer и отдельно выбрать
+конечную будущую missingQuestiontail/следующее genuinelymissing original obligation.
+Ошибка проверяющего оценивает тот же файл, не вызывает новую генерацию/отправку. R42/R43, UNKNOWN_SEND, неизвестные P01/Q02 и исторический S11
+защищены от повторов. Новый run-id/допуск/модель/перезапуск/исправленный состав сами
+повтора не разрешают. Nativegoal active подтверждён повторным get_goal; критерии
+неизменны, вечерней передачи не было. После опубликованного b856e969…b940 здесь
+ведётся следующий содержательный срез; точный SHA сообщается после commit/push,
+без selfhash. SHA256SUMS305 относится к предыдущим точным Git-байтам, перед новым
+commit обновляется по index bytes. Постоянные сервисы сохраняются исправными.
 
 ## 0. Состояние разработки
 
@@ -205,7 +238,7 @@ Formal во всех новых узкихпрогонах NOT_ESTABLISHED/RECEI
 |---|---|
 | Репозиторий | `/home/jericho/jericho/Friday_rework`, ветка `main` |
 | Исходный HEAD продолжения | `585f9cb9790a6182908db9ccdde263176ae39969` (сверка 10.11, 09:04 МСК); прежний `476496a` — исторический |
-| Последний опубликованный HEAD/origin/main | `acae97d458cd0073d67a856d979f3341ed489f87`; следующая рабочая дельта указана выше |
+| Последний опубликованный HEAD/origin/main | `b856e9692ddfdd7e4d1faa14c3518c12babeb940`; следующая рабочая дельта указана выше |
 | Последний независимо проверенный генератор | `585f9cb9790a6182908db9ccdde263176ae39969`: short write, write/fsync refusal, единственный победитель публикации; его прежние checker-остатки затем исправлены в32bfb815; новый ordered-predecessor pin в текущем срезе |
 
 ### Исторический проход DSH (476496a)
@@ -254,19 +287,19 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 | `docs/checkpoints/2026-11-07-v2-bounded-diagnostics/PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md` | ?? (untracked) | Техническая заметка о переключении провайдера. Существовала до этого прохода. |
 | `docs/checkpoints/2026-11-07-v3-original-context-repair/FORMAT-COVERAGE-MAP.json` | ?? (untracked) | Карта покрытия форматов. Не входит в Git-дерево; исключена из SHA256SUMS. |
 
-## 2. Обслуживаемый runtime (сверка192, 10.11.2026 14:53 МСК; новая userоперация отдельно выше)
+## 2. Обслуживаемый runtime (установка193, 10.11.2026 16:44 МСК; новые userоперации отдельно выше)
 
 | Предмет | Факт |
 |---|---|
 | Home | `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032` |
-| Состав | **192 слоя**; к190 добавлены только `read-file-reject-write-arguments-after-source189` и `archive-conversion-named-target-status-after-source190`. Receipt `ced39e2a…ab3`; input `b508cc9f…9479d`; stamp/marker согласованы, upstream/base прежние |
-| Gateway | `hermes-gateway-1b7e7667.service` active/running, **MainPID211873**, ExecMainStartTimestamp 2026-11-10 14:52:38 МСК, NRestarts 0 |
-| Состояние gateway | `gateway_state.json`: pid211873, start_time **1687969**, `gateway_state: running`, Telegram `connected`, `served_profiles = [default, dest_telegram, telegram-bot-8812646969]`, active_agents 0 |
+| Состав | **193 слоя**; к192 добавлен только `ordinary-direct-plain-cancel-after-source192`. Receipt `5b3df307…1978`; input `3e5997f4…473a`; stamp/marker согласованы, upstream/base прежние |
+| Gateway | `hermes-gateway-1b7e7667.service` active/running, **MainPID280113**, ExecMainStartTimestamp 2026-11-10 16:43:09 МСК, NRestarts 0 |
+| Состояние gateway | `gateway_state.json`: pid280113, start_time **2351085**, `gateway_state: running`, Telegram `connected`, `served_profiles = [default, dest_telegram, telegram-bot-8812646969]`; текущая активность определяется по единственному Root user-run выше |
 | Boot | `d518758e-bce0-4bd5-89a1-fc4e113f0623`, загрузка 2026-11-10 10:11:19 МСК; реальный power outage |
-| Приёмников | **один** (процесс211873, проверено по фактическим cmdline) |
+| Приёмников | **один** (процесс280113, проверено по фактической executable/bootstrap identity) |
 | Docker | В этом проходе контейнеры не запускались; прежний inactive-срез не выдаётся за новую проверку A0 |
 | База `dest_telegram` | 196 сообщений / 2 сессии, `quick_check ok`, счётчики до/после установки сохранены |
-| База `telegram-bot-8812646969` | 5263 сообщений / 5 сессий до/после установки192; `quick_check ok`, неизменны. Последующая R79 — отдельный новый эффект |
+| База `telegram-bot-8812646969` | 5350 сообщений / 5 сессий до/после установки193; `quick_check ok`, неизменны. Последующие R85/R86 — отдельные новые эффекты; 17:24 readonly quick_check всех3БД OK, tester5364/5 после единственного R86 (consumer closed17:26:52) |
 | Модельный путь | Фактический `http://192.168.1.195:30000/v1`: authenticated models и synthetic chat → 200, настроенная модель найдена |
 | Диспетчер сжатия | `.78:8001/v1`: postpower503 до backend на status-fetch; отдельный synthetic200 сохранён. Новый NJS source/worker deployed, старый UNKNOWN не очищен; см. актуальные evidence выше |
 | Эмбеддинги | Фактический `http://192.168.1.195:8002/v1`: authenticated models и embeddings → 200, qwen3-embedding-4b, один конечный 2560-мерный вектор |
@@ -287,7 +320,7 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
   downloads, closures). **Не чистить.** История доступа, исходные результаты и
   неопределённые эффекты сохраняются.
 - **Выпущенные допуски**: `evidence/tester/INDEPENDENT-AUTHORITY-R54.json` … `R68.json`
-  (в checkpoint) и `/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R29…R81.json`.
+  (в checkpoint) и `/home/jericho/.cache/FRW-KIMI-FMT-20261108/INDEPENDENT-AUTHORITY-R29…R84.json`.
   Выпущенные допуски **не переписываются**.
 - **Незавершённые операции**: P-01 (неизвестный исход r57), Q-02 (неизвестный эффект r7),
   A-03 (round-trip-этап — имя `core_inputs_roundtrip.zip` занято), A0 (квалификация не
