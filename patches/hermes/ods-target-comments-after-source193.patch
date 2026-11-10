@@ -1,0 +1,32 @@
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -438,7 +438,7 @@
+     return result
+ 
+ 
+-def _cell_span(raw, wanted):
++def _cell_span(raw, wanted, *, reject_hidden=False):
+     parser = expat.ParserCreate(namespace_separator='}')
+     found = []; depth = 0; start = None; index = 0; target_depth = None
+     def begin(name, attrs):
+@@ -466,6 +466,11 @@
+     parser.StartElementHandler = begin; parser.EndElementHandler = end
+     parser.StartDoctypeDeclHandler = refuse; parser.EntityDeclHandler = refuse
+     parser.ProcessingInstructionHandler = refuse
++    def comment(value):
++        # ElementTree omits comments; a replaced cell must not silently lose them.
++        if reject_hidden and target_depth is not None:
++            fail('unsupported_target_content')
++    parser.CommentHandler = comment
+     try: parser.Parse(raw, True)
+     except expat.ExpatError: fail('invalid_xml')
+     if len(found) != 1: fail('cell_span_missing')
+@@ -514,7 +519,7 @@
+         fail('unsupported_target_content')
+     if q(TB, 'style-name') in target.attrib: attrs[q(TB, 'style-name')] = target.get(q(TB, 'style-name'))
+     root = book.xml['content.xml']; cells = [n for n in root.iter() if n.tag in (q(TB, 'table-cell'), q(TB, 'covered-table-cell'))]
+-    raw = book.parts['content.xml']; begin, end = _cell_span(raw, cells.index(target))
++    raw = book.parts['content.xml']; begin, end = _cell_span(raw, cells.index(target), reject_hidden=True)
+     # Local namespace declarations make this independent of the source prefixes.
+     attributes = ''.join(' ' + ('office:' if key.startswith('{'+O+'}') else 'table:') + key.split('}', 1)[1] + '="' + escape(text, {'"': '&quot;'}) + '"' for key, text in attrs.items())
+     replacement = ('<table:table-cell xmlns:table="'+TB+'" xmlns:office="'+O+'" xmlns:text="'+T+'"'+attributes+'><text:p>'+_literal(display)+'</text:p></table:table-cell>').encode()

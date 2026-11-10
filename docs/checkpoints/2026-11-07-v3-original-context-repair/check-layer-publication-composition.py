@@ -29,6 +29,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tarfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -83,6 +84,14 @@ def consumer_bench(check, args):
     # Read every prerequisite through the same input consumed by publication. The
     # count need not equal the installed layer count; it is a dependency set.
     previous_input = json.loads(args.previous_input.read_text())
+    current_input = json.loads(args.current_input.read_text())
+    plugin_names = tuple(sorted(name for name, pin in previous_input["project_files"].items()
+        if name.startswith("plugins/friday_rework/") and current_input["project_files"].get(name) != pin))
+    if layer_names == ("ods-target-comments-after-source193",):
+        check("bench_ods194_exact_one_target", source_files == ("tools/scoped_ods.py",))
+        check("bench_ods194_exact_193_prerequisites", len(manifests[0]["prerequisites"]) == 193)
+        check("bench_ods194_exact_one_plugin", plugin_names == ("plugins/friday_rework/host_record.py",))
+        check("bench_ods194_current_installed193", len(before_receipt["layers"]) == 193)
     check("bench_prerequisites_pinned", all(previous_input["project_files"].get(name) == pin
           for body in manifests for name, pin in body.get("prerequisites", {}).items()))
     if layer_names == ("read-file-reject-write-arguments-after-source189",
@@ -104,6 +113,13 @@ def consumer_bench(check, args):
         for name in ("FRIDAY-INSTALL.json", "hermes-agent.source.json",
                      "hermes-agent/install-stamp.json"):
             shutil.copy2(live / name, home / name)
+        for name in plugin_names:
+            target = home / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(live / name, target)
+            check("bench_plugin_preimage_pinned:" + name,
+                  hashlib.sha256(target.read_bytes()).hexdigest() == previous_input["project_files"][name]
+                  == before_marker["plugin_files"][name])
         # Only the pins are exercised for these inputs; keep private user configuration
         # out of the bench and use its own harmless bytes.
         for name in ("config.yaml", "FRIDAY-PROFILE.json", "hermes-agent/.hermes/bin/hermes"):
@@ -141,10 +157,37 @@ def consumer_bench(check, args):
         check("bench_increment_only", request["layer_names"] == list(layer_names)
               and request["installed_layers"] == len(before_receipt["layers"])
               and not request["staged_files"] and not request["project_file_updates"]
-              and not request["plugin_set"] and not request["plugin_additions"])
+              and request["plugin_set"] == list(plugin_names) and not request["plugin_additions"])
         # This is the consumer's existing isolated-bench switch. It suppresses service
         # inspection; all source, composition, journal and rollback code stays real.
         request["bench_home"] = str(home)
+
+        event_number = 0
+
+        def archive(value, outcome):
+            nonlocal event_number
+            if args.evidence_dir is None:
+                return
+            event_number += 1
+            destination = args.evidence_dir.resolve()
+            destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+            raw = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
+            request_hash = hashlib.sha256(raw).hexdigest()
+            stage = home / "preparation" / ("ordinary-source-update-v45-" + request_hash[:16])
+            prefix = destination / (f"{event_number:02d}-" + request_hash[:16])
+            prefix.with_suffix(".json").write_text(json.dumps({"request": value,
+                "request_sha256": request_hash, "outcome": outcome,
+                "stage_present": stage.exists()}, sort_keys=True, indent=2) + "\n")
+            if stage.exists():
+                with tarfile.open(str(prefix) + ".wal.tar.gz", "w:gz") as saved:
+                    for path in sorted(stage.rglob("*")):
+                        relative = path.relative_to(stage)
+                        if path.is_file() and "staging" not in relative.parts:
+                            saved.add(path, arcname=str(relative), recursive=False)
+            snapshot = value.get("inject_snapshot_dir")
+            if snapshot:
+                for index, path in enumerate(sorted(Path(snapshot).glob("*.json"))):
+                    shutil.copy2(path, str(prefix) + f".snapshot-{index}.json")
 
         def run(value):
             raw = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
@@ -159,9 +202,10 @@ def consumer_bench(check, args):
                 outcome = json.loads(output.strip().splitlines()[-1])
             except (ValueError, IndexError):
                 outcome = {"reason": output[-250:]}
+            archive(value, {"returncode": result.returncode, **outcome})
             return result.returncode, outcome
 
-        watched = tuple("hermes-agent/" + name for name in source_files) + (
+        watched = tuple("hermes-agent/" + name for name in source_files) + plugin_names + (
             "hermes-agent.source.json", "FRIDAY-INSTALL.json", "hermes-agent/install-stamp.json")
         original = {name: ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode))
                     for name in watched}
@@ -188,6 +232,44 @@ def consumer_bench(check, args):
             check("bench_invalid_seconds_refused:" + repr(seconds), status == 2
                   and outcome.get("reason") == "transaction_seconds_positive_integer_required",
                   str(outcome))
+
+        if plugin_names:
+            plugin_name = plugin_names[0]
+            plugin_path = home / plugin_name
+            stale_bytes = b"untracked stale actual plugin source\n"
+            plugin_path.write_bytes(stale_bytes)
+            stale_request = dict(request, fail_during_plugins=True)
+            status, outcome = run(stale_request)
+            check("bench_stale_actual_plugin_refused_before_intent", status == 2 and outcome.get("reason")
+                  == "transaction_plugin_preimage_changed:" + plugin_name, str(outcome))
+            stale_hash = hashlib.sha256((json.dumps(stale_request, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
+            stale_stage = home / "preparation" / ("ordinary-source-update-v45-" + stale_hash[:16])
+            check("bench_stale_actual_plugin_no_intent", not (stale_stage / "intent.json").exists())
+            check("bench_stale_actual_plugin_preserved", plugin_path.read_bytes() == stale_bytes)
+            plugin_path.write_bytes(original[plugin_name][0])
+            plugin_path.chmod(original[plugin_name][1])
+            if stale_stage.exists():
+                shutil.rmtree(stale_stage)
+            omitted = dict(request, plugin_set=[])
+            status, outcome = run(omitted)
+            check("bench_undeclared_plugin_delta_refused", status == 2 and outcome.get("reason")
+                  == "transaction_project_file_changed:" + plugin_names[0], str(outcome))
+            bad_candidate = root / "wrong-plugin-bytes"
+            # This negative reaches the actual product composition consumer before
+            # plugin-byte validation, so retain its exact pinned project dependencies.
+            # This is a project-only copy, with no runtime or user state.
+            for name in current_input["project_files"]:
+                dest = bad_candidate / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(candidate / name, dest)
+            (bad_candidate / plugin_names[0]).write_bytes(b"wrong plugin source\n")
+            status, outcome = run(dict(request, candidate_project=str(bad_candidate)))
+            check("bench_wrong_plugin_bytes_refused", status == 2 and outcome.get("reason")
+                  == "transaction_candidate_bytes_changed:" + plugin_names[0], str(outcome))
+            check("bench_wrong_plugin_bytes_rollback", all(
+                ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode)) == item
+                for name, item in original.items()) and all(not (home / name).exists() for name in pair))
+            shutil.rmtree(bad_candidate)
 
         # Repin a deliberately wrong selected manifest in a separate tiny candidate.
         # The real entry point must reject each false postimage before publication.
@@ -256,12 +338,15 @@ def consumer_bench(check, args):
 
         ticks = iter((0.0, 181.0))
         reason = deadline_refusal(lambda: next(ticks, 181.0))
+        archive(request, {"control": "deadline-before-staging", "reason": reason})
         check("bench_expired_before_staging_refused", reason == "transaction_deadline_expired", reason)
-        check("bench_preflight_refusals_no_staging", not tuple(
-            (home / "preparation").glob("ordinary-source-update-v45-*")))
+        request_hash = hashlib.sha256((json.dumps(request, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
+        check("bench_preflight_refusals_no_staging", not (
+            home / "preparation" / ("ordinary-source-update-v45-" + request_hash[:16])).exists())
         before_source = {name: (source / name).read_bytes() for name in source_files}
         reason = deadline_refusal(lambda: 0.0 if all((source / name).read_bytes() == data
                                   for name, data in before_source.items()) else 181.0)
+        archive(request, {"control": "deadline-after-source", "reason": reason})
         check("bench_deadline_after_source_publish_refused", reason == "transaction_deadline_expired",
               reason)
         restored = {name: ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode))
@@ -279,6 +364,28 @@ def consumer_bench(check, args):
         check("bench_rollback_removes_new_pair", all(not (home / name).exists() for name in pair))
         check("bench_rollback_preserves_predecessor", (predecessor / "committed.json").read_bytes()
               == predecessor_bytes)
+        if plugin_names:
+            status, outcome = run(dict(request, fail_during_plugins=True))
+            check("bench_plugin_phase_failure", status == 2 and outcome.get("reason")
+                  == "transaction_controlled_failure_during_plugins", str(outcome))
+            check("bench_plugin_phase_restores_source_plugin_metadata_modes", all(
+                ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode)) == item
+                for name, item in original.items()) and all(not (home / name).exists() for name in pair))
+            plugin_snapshot_dir = root / "plugin-rename-snapshot"
+            status, outcome = run(dict(request, inject_after_rename=True,
+                inject_target=str(home / plugin_names[-1]),
+                inject_snapshot_dir=str(plugin_snapshot_dir),
+                inject_snapshot_files=list(watched) + list(pair)))
+            check("bench_plugin_rename_failure", status == 2 and outcome.get("exception") == "OSError", str(outcome))
+            snapshots = list(plugin_snapshot_dir.glob("*.json"))
+            check("bench_plugin_rename_snapshot_recorded", len(snapshots) == 1)
+            if len(snapshots) == 1:
+                snapshot = json.loads(snapshots[0].read_text())
+                check("bench_plugin_postimage_reached", all(snapshot["files"][str(home / name)]
+                    ["sha256"] == current_input["project_files"][name] for name in plugin_names))
+            check("bench_plugin_rename_restores_all", all(
+                ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode)) == item
+                for name, item in original.items()) and all(not (home / name).exists() for name in pair))
         # A rename failure on the last source file proves that all selected source
         # bytes were on disk, and that rollback restores the entire multi-file layer.
         snapshot_dir = root / "rename-snapshot"
@@ -323,6 +430,10 @@ def consumer_bench(check, args):
             check("bench_metadata_boundary_all_metadata_changed", all(
                 snapshot["files"][str(home / name)]["sha256"]
                 != hashlib.sha256(original[name][0]).hexdigest() for name in watched[-3:]))
+            if plugin_names:
+                check("bench_metadata_boundary_plugin_postimages", all(
+                    snapshot["files"][str(home / name)]["sha256"] == current_input["project_files"][name]
+                    for name in plugin_names))
         restored = {name: ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode))
                     for name in watched}
         check("bench_final_metadata_rename_restores_all", restored == original
@@ -352,11 +463,21 @@ def consumer_bench(check, args):
               == after_receipt["layers"] and marker["input_sha256"]
               == request["current_input"]["sha256"]
               and marker["source_receipt_sha256"] == outcome["receipt_sha256"])
+        if plugin_names:
+            check("bench_plugin_postimages_committed", all((home / name).read_bytes()
+                == (candidate / name).read_bytes() for name in plugin_names))
+            check("bench_marker_plugin_pins_committed", all(marker["plugin_files"][name]
+                == current_input["project_files"][name] for name in plugin_names))
+            check("bench_marker_nontarget_plugin_pins_preserved", {k:v for k,v in marker["plugin_files"].items()
+                if k not in plugin_names} == {k:v for k,v in before_marker["plugin_files"].items()
+                if k not in plugin_names})
         check("bench_commit_preserves_predecessor", (predecessor / "committed.json").read_bytes()
               == predecessor_bytes)
         summary = {"before_layers": len(before_receipt["layers"]),
                    "after_layers": len(after_receipt["layers"]),
                    "layer_names": list(layer_names),
+                   "plugin_set": list(plugin_names),
+                   "nontarget_source_inventory_preserved": len(before_receipt["files"]) - len(source_files),
                    "before_source": {name: before_receipt["files"][name]["sha256"]
                                      for name in source_files},
                    "after_source": {name: after_receipt["files"][name]["sha256"]
@@ -373,6 +494,7 @@ def main(argv=None):
     for name in ("installed-home", "previous-input", "current-input", "candidate-project"):
         parser.add_argument("--" + name, type=Path)
     parser.add_argument("--layer", action="append")
+    parser.add_argument("--evidence-dir", type=Path, help="retain own isolated requests, WAL and failure snapshots")
     args = parser.parse_args(argv)
     provided = [getattr(args, name) is not None for name in (
         "installed_home", "previous_input", "current_input", "candidate_project")]
@@ -429,6 +551,11 @@ def main(argv=None):
     check("generator_c10_cli_exact_only_increment", selected.layer_names == c10)
     check("consumer_c10_explicit_exact_only_increment", validator.resolve_layer_names({
         "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(c10)}) == c10)
+    ods194 = ("ods-target-comments-after-source193",)
+    selected = generator.parse_args(["--layer", ods194[0]])
+    check("generator_ods194_cli_exact_only_increment", selected.layer_names == ods194)
+    check("consumer_ods194_explicit_exact_only_increment", validator.resolve_layer_names({
+        "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(ods194)}) == ods194)
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (

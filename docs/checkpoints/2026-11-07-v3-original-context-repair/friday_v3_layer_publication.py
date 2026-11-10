@@ -53,6 +53,7 @@ LAYER_NAMES = (
     "read-file-reject-write-arguments-after-source189",
     "archive-conversion-named-target-status-after-source190",
     "ordinary-direct-plain-cancel-after-source192",
+    "ods-target-comments-after-source193",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -488,6 +489,32 @@ def check_project_inventory(request, previous_input, current_input):
     return layer_names
 
 
+def check_plugin_preimages(request, previous_input, current_input, marker, home,
+                           already_published=False):
+    """Bind the changed plugin set to its installed byte and marker before staging.
+
+    An already-applied source bundle may still have pending old plugin bytes. It may
+    also carry an already-published plugin, but only if its marker and bytes both pin
+    the current image. An unexplained third image is never adopted as a beforeimage.
+    """
+    previous = previous_input["project_files"]
+    current = current_input["project_files"]
+    changed = {name for name, pin in previous.items()
+               if name.startswith("plugins/friday_rework/") and current.get(name) != pin}
+    names = request["plugin_set"]
+    require(isinstance(names, list) and all(isinstance(name, str) for name in names)
+            and len(names) == len(changed) and set(names) == changed,
+            "transaction_plugin_set_changed")
+    pins = marker.get("plugin_files", {})
+    for name in sorted(changed):
+        expected = previous[name]
+        if already_published and pins.get(name) == current[name]:
+            expected = current[name]
+        require(pins.get(name) == expected, "transaction_plugin_marker_changed:" + name)
+        require(digest(owned_file(Path(home) / name)) == expected,
+                "transaction_plugin_preimage_changed:" + name)
+
+
 def read_layers(candidate_root, receipt, home, project_files, layer_names):
     """Read the layer manifests of THIS operation from the candidate and bind them.
 
@@ -876,6 +903,11 @@ def run(request, request_path, request_sha256):
         for layer in layers:
             for row in layer["files"]:
                 final_state[row["path"]] = row["sha256"]
+
+    # Existing plugin replacements share the source transaction, so their beforeimages
+    # must be known before staging or intent, as well as before the journal records them.
+    check_plugin_preimages(request, previous_input, current_input, marker, home,
+                           already_published=already_published)
 
     # 8. apply the layers onto a private staging tree that holds only the touched files.
     #    A bundle that is already published is NOT applied again: for layers that touch the

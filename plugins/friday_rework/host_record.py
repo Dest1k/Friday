@@ -228,7 +228,10 @@ def validate_a0_route(row, route):
     if (not isinstance(limits,dict) or set(limits) != {'runtime_seconds', 'start_seconds', 'stop_seconds', 'admitted_remaining_seconds'}
             or any(type(v) not in (int,float) or not math.isfinite(v) or v <= 0 for v in limits.values())
             or limits['admitted_remaining_seconds'] > row['budget_seconds']-25
-            or limits['runtime_seconds'] > 120 or limits['start_seconds'] > 45 or limits['stop_seconds'] > 20
+            # Retained custody is bounded by its original admitted budget.
+            # Older pinned producers admitted a 480-second daemon lifetime;
+            # current launch limits cannot invalidate those closed records.
+            or limits['start_seconds'] > 45 or limits['stop_seconds'] > 20
             or sum(limits[k] for k in ('runtime_seconds','start_seconds','stop_seconds')) + 5 > limits['admitted_remaining_seconds']):
         raise ValueError('invalid_a0_route_deadline')
     daemon = route['daemon']
