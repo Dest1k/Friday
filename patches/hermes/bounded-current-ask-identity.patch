@@ -1,0 +1,24 @@
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -1110,13 +1110,18 @@
+         # The current ask is stored twice: the protected contract holds its TRANSCRIPT text
+         # and the request carries the bytes that were SENT. The identity of the turn is
+         # found by comparing the anchor in the representation the request sends it in.
+-        sent = incoming.get("api_content") if isinstance(incoming, dict) else None
++        # The identity of the current ask is found by comparing each anchor in the
++        # representation the request sends it in. Every row carries ITS OWN sent bytes in
++        # its api_content sidecar; the sidecar of the current ask is never substituted into
++        # the historical rows, because that would make two different protected user rows
++        # look like the same ask and turn the current anchor ambiguous.
+         def _sent_projection(row):
+             row = dict(row)
++            own_sent = row.get("api_content")
+             for key in ("api_content", "_row_id", "_submit_row_session_id"):
+                 row.pop(key, None)
+-            if isinstance(sent, str) and sent and isinstance(row.get("content"), str):
+-                row["content"] = sent
++            if isinstance(own_sent, str) and own_sent and isinstance(row.get("content"), str):
++                row["content"] = own_sent
+             return _strip_marker_for_comparison([row])
+         indices = [i for i, row in enumerate(anchors)
+                    if user_identity(row) == user_identity(incoming)

@@ -38,23 +38,78 @@ F01_RUN_ID = "f01-csv-extract-check-01-r50"
 M03_RUN_ID = "m03-addendum-check-01-r51"
 M05_RUN_ID = "m05-current111-check-01-r52"
 M06_RUN_ID = "m06-postrestart-check-01-r52"
-# The next admission after R54. R54 itself is PINNED: the tester snapshot in use names
-# its path, byte count and digest, and the file is stored in the repository. This issuer
-# therefore never rewrites R54 - every release writes a NEW document with a NEW identity
-# and a NEW path, and the tester snapshot is re-pinned to it in the same step.
-AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r69"
-AUTHORITY_FILE = "INDEPENDENT-AUTHORITY-R69.json"
-# The document this one continues from. It names the document that is actually in force
-# before it, not an old activation smoke: a released admission is never rewritten, so the
-# chain is expressed by reference.
-SUPERSEDES_AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r69"
+# The next admission is derived from the ACTUAL released documents: the highest
+# INDEPENDENT-AUTHORITY-R*.json in OUT_DIR is the predecessor, and the new identity is
+# the next free number. A released admission is never rewritten, so the chain is
+# expressed by reference and every release writes a NEW document with a NEW identity
+# and a NEW path.
+AUTHORITY_ID = None    # filled by derive_identity()
+AUTHORITY_FILE = None  # filled by derive_identity()
+SUPERSEDES_AUTHORITY_ID = None  # filled by derive_identity()
 SUPERSEDES_REASON = (
-    "R69 is retained as history and is not rewritten: it was released against the live "
-    "gateway of its own boot with its own history rows, and the tester snapshot that "
-    "pins it keeps naming it. This document carries the same operation forward on the "
-    "current gateway with freshly verified history rows; it does not rewrite the R54 to "
-    "R69 results."
+    "The previous admission is retained as history and is not rewritten: it was "
+    "released against the live gateway of its own boot with its own history rows, and "
+    "the tester snapshot that pins it keeps naming it. This document carries the same "
+    "operation forward on the current gateway with freshly verified history rows; it "
+    "does not rewrite any earlier result."
 )
+
+
+def derive_identity(out_dir):
+    """Derive the identity of the next admission from the actually released documents.
+
+    Returns (authority_id, authority_file, supersedes_authority_id). The predecessor is
+    the released document with the highest R number; the new identity is the next free
+    number. Refuses to derive a self-superseding identity and refuses when no
+    predecessor exists.
+    """
+    out = Path(out_dir)
+    released = {}
+    for path in out.glob("INDEPENDENT-AUTHORITY-R*.json"):
+        stem = path.stem  # INDEPENDENT-AUTHORITY-R69
+        if not stem.startswith("INDEPENDENT-AUTHORITY-R"):
+            continue
+        tail = stem[len("INDEPENDENT-AUTHORITY-R"):]
+        if not tail.isdigit():
+            continue
+        released[int(tail)] = path
+    if not released:
+        raise SystemExit("no released admission found in " + str(out) + "; cannot derive the chain")
+    prev_n = max(released)
+    prev_doc = json.loads(released[prev_n].read_text())
+    prev_id = prev_doc.get("authority_id")
+    if not isinstance(prev_id, str) or not prev_id:
+        raise SystemExit("the predecessor document has no authority_id: " + str(released[prev_n]))
+    new_n = prev_n + 1
+    # the new identity carries the CURRENT date and the next free number
+    date = time.strftime("%Y%m%d", time.localtime())
+    prefix = prev_id.rsplit("-r", 1)[0]  # e.g. ordinary-independent-jarvis-activate-20261109
+    # replace the date part of the prefix with today's date
+    parts = prefix.split("-")
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].isdigit() and len(parts[i]) == 8:
+            parts[i] = date
+            break
+    new_id = "-".join(parts) + "-r" + str(new_n)
+    new_file = "INDEPENDENT-AUTHORITY-R" + str(new_n) + ".json"
+    if new_id == prev_id:
+        raise SystemExit("derived identity equals the predecessor (self-supersedes): " + new_id)
+    return new_id, new_file, prev_id
+
+
+def validate_identity(authority_id, supersedes_id, out_dir):
+    """Refuse a self-superseding identity and a missing predecessor."""
+    if not isinstance(authority_id, str) or not authority_id:
+        raise SystemExit("authority_id is required")
+    if not isinstance(supersedes_id, str) or not supersedes_id:
+        raise SystemExit("supersedes authority_id is required")
+    if authority_id == supersedes_id:
+        raise SystemExit("the admission supersedes itself: " + authority_id)
+    out = Path(out_dir)
+    pred = [p for p in out.glob("INDEPENDENT-AUTHORITY-R*.json")
+            if json.loads(p.read_text()).get("authority_id") == supersedes_id]
+    if not pred:
+        raise SystemExit("the predecessor document is not in " + str(out) + ": " + supersedes_id)
 # The scope of THIS admission. It must describe the operation the scenarios below
 # actually cover. The generator refuses to write a document whose scope names a single
 # activation smoke while the scenario list covers several operations, and it refuses a
@@ -96,11 +151,11 @@ EXTRA_SCENARIOS = (
     (M05_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m05-current111-check-01-r52.json"),
     (M06_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m06-postrestart-check-01-r52.json"),
 )
-# The format-creation scenarios of the current operation. They are named separately so
-# the scope above can be checked against the operation, and so a repetition of a name in
-# the scenario list is impossible by construction.
+# The format-creation scenarios of the current operation, EXCLUDING the primary (the
+# primary run id is added separately as the primary entry and must not be repeated here;
+# a repeated run id is refused). The twelve formats are covered by the primary plus
+# these eleven.
 FORMAT_SCENARIOS = (
-    ("fmt-docx-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-docx-create-r69.json"),
     ("fmt-xlsx-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-xlsx-create-r69.json"),
     ("fmt-ods-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-ods-create-r69.json"),
     ("fmt-odt-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-odt-create-r69.json"),
@@ -125,47 +180,89 @@ def encoded(value):
     return (json.dumps(value, ensure_ascii=True, sort_keys=True) + "\n").encode()
 
 
-def main():
-    SCENARIOS = {}
-    scenario = json.loads(SCENARIO.read_text())
-    scenario_bytes = encoded(scenario)
-    scenario_sha = digest(scenario_bytes)
-    SCENARIOS[RUN_ID] = scenario_sha
-    for extra_id, extra_path in EXTRA_SCENARIOS:
-        extra = json.loads(Path(extra_path).read_text())
-        SCENARIOS[extra_id] = digest(encoded(extra))
-    if PACKAGE_FILE.is_file():
-        for extra_id, extra_sha in json.loads(PACKAGE_FILE.read_text()).items():
-            extra = json.loads((OUT_DIR / "scenarios" / (extra_id + ".json")).read_text())
-            if digest(encoded(extra)) != extra_sha:
-                raise SystemExit("package scenario digest changed: " + extra_id)
-            SCENARIOS[extra_id] = extra_sha
+def collect_scenarios(primary_id, primary_path, extra_scenarios, package_file):
+    """Collect the scenario digests of one admission, refusing a repeated run id.
 
-    # The scope must describe THIS operation. A scope that names a single activation
-    # smoke while the scenario list covers several operations is refused, and a scope
-    # that claims a product or a B00 acceptance is refused: the admission is neither.
-    scope = " ".join(SCOPE.lower().split())
-    if "activation check" in scope and len(SCENARIOS) > 1:
+    Every entry keeps its ORIGIN (primary / extra / package). A run id that appears
+    twice - in any combination of the three sources - is refused before the dict is
+    built, so a collision can never silently replace one digest with another. A package
+    entry whose declared digest does not match the file bytes is refused.
+
+    Returns {run_id: sha256}. Raises SystemExit on any refusal.
+    """
+    entries = []          # (run_id, origin, sha256)
+    seen = {}             # run_id -> origin
+
+    def add(run_id, origin, sha):
+        if not isinstance(run_id, str) or not run_id:
+            raise SystemExit("scenario run id is empty or not a string")
+        if run_id in seen:
+            raise SystemExit(
+                "the run id " + run_id + " is repeated: first as " + seen[run_id]
+                + ", again as " + origin + "; a repeated run id is refused")
+        seen[run_id] = origin
+        entries.append((run_id, origin, sha))
+
+    if not primary_id or not primary_path:
+        raise SystemExit("the primary scenario id and path are required")
+    primary = json.loads(Path(primary_path).read_text())
+    add(primary_id, "primary", digest(encoded(primary)))
+
+    for extra_id, extra_path in extra_scenarios:
+        extra = json.loads(Path(extra_path).read_text())
+        add(extra_id, "extra", digest(encoded(extra)))
+
+    if package_file and Path(package_file).is_file():
+        for pkg_id, pkg_sha in json.loads(Path(package_file).read_text()).items():
+            pkg_path = Path(primary_path).parent / (pkg_id + ".json")
+            if not pkg_path.is_file():
+                raise SystemExit("package scenario file is absent: " + str(pkg_path))
+            pkg = json.loads(pkg_path.read_text())
+            actual = digest(encoded(pkg))
+            if actual != pkg_sha:
+                raise SystemExit("package scenario digest changed: " + pkg_id)
+            add(pkg_id, "package", actual)
+
+    return {run_id: sha for run_id, _origin, sha in entries}
+
+
+def validate_scope(scope, scenarios):
+    """Refuse a scope that does not describe the operation the scenarios cover."""
+    text = " ".join(str(scope).lower().split())
+    if "activation check" in text and len(scenarios) > 1:
         raise SystemExit("the scope names a single activation smoke but the admission "
                          "covers %d scenarios; the scope must describe the operation"
-                         % len(SCENARIOS))
-    # The document is not a product acceptance and not a B00 acceptance. A scope that
-    # CLAIMS either one is refused; a scope that DENIES it is the correct wording.
-    claims_product = "product acceptance" in scope and not (
-        "not a product acceptance" in scope or "not a b00, fmt or product acceptance" in scope)
-    claims_b00 = "b00 acceptance" in scope and not (
-        "not a b00 acceptance" in scope or "not a b00, fmt or product acceptance" in scope)
+                         % len(scenarios))
+    claims_product = "product acceptance" in text and not (
+        "not a product acceptance" in text or "not a b00, fmt or product acceptance" in text)
+    claims_b00 = "b00 acceptance" in text and not (
+        "not a b00 acceptance" in text or "not a b00, fmt or product acceptance" in text)
     if claims_product:
         raise SystemExit("the scope claims a product acceptance")
     if claims_b00:
         raise SystemExit("the scope claims a B00 acceptance")
-    covered_formats = [name for name in SCENARIOS if name.startswith("fmt-")]
-    if covered_formats and "format-creation" not in scope and "format creation" not in scope:
+    covered_formats = [name for name in scenarios if name.startswith("fmt-")]
+    if covered_formats and "format-creation" not in text and "format creation" not in text:
         raise SystemExit("the scope does not mention the format-creation scenarios it covers")
 
-    # A repeated run id would make the scenario map ambiguous, so it is refused.
-    if len(set(SCENARIOS)) != len(SCENARIOS):
-        raise SystemExit("the scenario list contains a repeated run id")
+
+def main():
+    # The identity of THIS admission is derived from the actually released documents:
+    # the predecessor is the highest released R number, and the new identity is the next
+    # free one. A self-superseding identity is refused.
+    auth_id, auth_file, supersedes_id = derive_identity(OUT_DIR)
+    validate_identity(auth_id, supersedes_id, OUT_DIR)
+
+    # Collect the scenarios with duplicate detection BEFORE the dict is built. The
+    # primary is one of the entries; the collect step refuses a repeated run id, so a
+    # collision between primary, extra and package can never silently replace one
+    # digest with another. The primary run id is therefore NOT listed again among the
+    # extra scenarios.
+    scenarios = collect_scenarios(RUN_ID, SCENARIO, EXTRA_SCENARIOS, PACKAGE_FILE)
+    scenario_sha = scenarios[RUN_ID]
+
+    # The scope must describe THIS operation.
+    validate_scope(SCOPE, scenarios)
 
     now = time.time()
     history = {}
@@ -202,7 +299,7 @@ def main():
 
     document = {
         "accepted": True,
-        "authority_id": AUTHORITY_ID,
+        "authority_id": auth_id,
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
         "canonical_encoding": {
             "canonical_sha256": "json.dumps(scenario, ensure_ascii=False, sort_keys=True, separators=(',', ':')) with no trailing newline",
@@ -224,18 +321,18 @@ def main():
         "old_rows_modified": False,
         "operator": "Root",
         "product_or_B00_acceptance": False,
-        "run_scenarios": dict(SCENARIOS),
+        "run_scenarios": dict(scenarios),
         "same_canonical_local_run": False,
         "schema": "frw.Root.ordinary-independent-history-admission.v1",
         "scope": SCOPE,
         "supersedes": {
-            "authority_id": SUPERSEDES_AUTHORITY_ID,
+            "authority_id": supersedes_id,
             "reason": SUPERSEDES_REASON,
         },
         "unknown_effects_resolved": False,
     }
     raw = encoded(document)
-    target = OUT_DIR / AUTHORITY_FILE
+    target = OUT_DIR / auth_file
     if target.exists():
         # a released admission is never rewritten: it would break the pin of the tester
         # snapshot that names it
@@ -245,7 +342,9 @@ def main():
     os.chmod(target, 0o600)
     print(json.dumps({
         "path": str(target), "bytes": len(raw), "sha256": digest(raw),
+        "authority_id": auth_id, "supersedes_authority_id": supersedes_id,
         "run_id": RUN_ID, "scenario_sha256": scenario_sha,
+        "scenario_count": len(scenarios),
         "history_rows": len(history), "gateway_pid": pid, "gateway_start_time": start_time,
         "history_row_ids": sorted(history),
     }, sort_keys=True))

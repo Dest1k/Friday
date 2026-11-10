@@ -42,6 +42,22 @@ sys.path.insert(0, str(HOME / "hermes-agent"))
 # presents itself as that role for the duration of the import. No service is contacted.
 _REAL_ARGV = list(sys.argv)
 sys.argv = [str(HOME / "hermes-agent" / ".hermes" / "bin" / "hermes"), "gateway", "status"]
+
+# When a compact bench carries a MODIFIED agent/bounded_context.py and the bench itself is
+# too partial to import the full product (its run_agent needs the owned state that only a
+# complete home has), BOUNDED_CONTEXT_OVERRIDE names that file. The agent package and every
+# other module still come from HERMES_HOME, and only agent.bounded_context is replaced by
+# the bench's copy. This exercises the real module bytes that the bench would publish.
+import importlib.util as _importlib_util
+_OVERRIDE = os.environ.get("BOUNDED_CONTEXT_OVERRIDE")
+if _OVERRIDE:
+    import agent as _agent_pkg  # noqa: F401  (the real package, from HERMES_HOME)
+    _spec = _importlib_util.spec_from_file_location("agent.bounded_context", _OVERRIDE)
+    _mod = _importlib_util.module_from_spec(_spec)
+    sys.modules["agent.bounded_context"] = _mod
+    _spec.loader.exec_module(_mod)
+    _agent_pkg.bounded_context = _mod
+
 try:
     from agent.bounded_context import (  # noqa: E402
         BoundedContextPolicy, guard_main_request, remember_bounded_protected_rows,
@@ -60,6 +76,22 @@ finally:
     # again when the real agent class is imported
     pass
 
+# --- module provenance: every verdict must name the module it was produced against ----
+# The guard under test is agent.bounded_context. The file it was actually imported from
+# and its SHA256 are recorded so a verdict cannot be read as applying to a different
+# tree. The import path is the one that is first on sys.path, which is HERMES_HOME's
+# hermes-agent directory; the venv interpreter is separate and only supplies the
+# dependencies.
+import hashlib as _hashlib
+_MODULE_PATH = Path(sys.modules['agent.bounded_context'].__file__).resolve()
+_MODULE_SHA256 = _hashlib.sha256(_MODULE_PATH.read_bytes()).hexdigest()
+sys.stderr.write("MODULE_PROVENANCE " + json.dumps({
+    "module": "agent.bounded_context",
+    "loaded_from": str(_MODULE_PATH),
+    "sha256": _MODULE_SHA256,
+    "hermes_home": str(HOME),
+}, ensure_ascii=False) + "\n")
+
 RESUME_NOTE = (
     "[System note: The previous turn was interrupted by a gateway interruption; the gateway "
     "is now back online. Any restart/shutdown command in the history has already run - do "
@@ -74,6 +106,17 @@ REQUEST_TEXT = (
     "PDF or DOCX). To read it, extract the document's text yourself - for example with the "
     "terminal tool or the ocr-and-documents skill - before answering, instead of asking the "
     "user to paste the contents.]\n\nСделай сводку по всем исходным строкам Orders."
+)
+# A DIFFERENT protected user message: an earlier completed exchange that is also inside
+# the protected tail. Two different protected user rows are what the current-ask
+# identification has to tell apart.
+PREVIOUS_ASK = (
+    "[The user sent a document: 'report_v1.docx'. It is saved at: "
+    "received/telegram_1111111111111111111111111111111111111111111111111111111111111111_"
+    "report_v1.docx. Its text is not inlined here (it's a binary format such as "
+    "PDF or DOCX). To read it, extract the document's text yourself - for example with the "
+    "terminal tool or the ocr-and-documents skill - before answering, instead of asking the "
+    "user to paste the contents.]\n\nСделай сводку по версии 1."
 )
 
 
@@ -151,33 +194,41 @@ class ResumeSidecarReproduction(unittest.TestCase):
             self._mutated_tool = True
         return rows
 
-    def arm_contract(self, rows):
+    def arm_contract(self, rows, original_tool=None):
         """The protected contract holds the ORIGINAL bytes of the protected rows.
 
         In the live run the contract rows are the LIVE rows: they carry the transcript text
         in content and the SENT bytes in the api_content sidecar, and the anchors keep the
         sidecar. This is what the compressor stores.
+
+        ``original_tool`` maps tool_call_id -> original content. It is used when the setup
+        carries more than one tool row and only the one that a negative control mutates
+        must be restored; the other rows keep their own bytes.
         """
         from agent.bounded_context import remember_bounded_protected_rows
         contract_rows = copy.deepcopy(rows)
         for row in contract_rows:
             if row.get('role') == 'tool':
-                row['content'] = 'Exact completed result.'
+                if original_tool is not None:
+                    row['content'] = original_tool.get(row.get('tool_call_id'),
+                                                      row.get('content'))
+                else:
+                    row['content'] = 'Exact completed result.'
         if self._contract_carries_sent_bytes:
             for row in contract_rows:
                 if row.get('role') == 'user' and row.get('api_content'):
                     row['content'] = row['api_content']
         remember_bounded_protected_rows(self.compressor, contract_rows, 1, 2)
 
-    def arm_context(self, rows, incoming):
+    def arm_context(self, rows, incoming, current_idx=2):
         """Record the request context the guard reads, exactly as the compressor does."""
         from agent.bounded_context import remember_bounded_compaction_context
         remember_bounded_compaction_context(self.agent, copy.deepcopy(rows),
-                                            2, '', '', None, copy.deepcopy(rows))
+                                            current_idx, '', '', None, copy.deepcopy(rows))
         # the guard reads the incoming row from here; it is the LIVE row of the current turn
         self.agent._bounded_compaction_request_context['incoming'] = copy.deepcopy(incoming)
         print(json.dumps({"arm_context": {"passed_len": len(incoming.get('content') or ''),
-                                          "rows2_len": len(rows[2].get('content') or ''),
+                                          "rows2_len": len(rows[current_idx].get('content') or ''),
                                           "stored_len": len(self.agent._bounded_compaction_request_context['incoming'].get('content') or '')}},
                          ensure_ascii=False))
 
@@ -242,7 +293,7 @@ class ResumeSidecarReproduction(unittest.TestCase):
                           "group_tool_call_id": group[0].get('tool_call_id')},
                          ensure_ascii=False))
 
-    def request(self, rows, wire_rows=None):
+    def request(self, rows, wire_rows=None, current_idx=2):
         """The wire request.
 
         In the live run the wire carries the current row WITH its sidecar, because the turn
@@ -251,9 +302,9 @@ class ResumeSidecarReproduction(unittest.TestCase):
         """
         rows = copy.deepcopy(wire_rows if wire_rows is not None else rows)
         return assemble_api_request(self.agent, messages=rows,
-            current_turn_user_idx=2, _ext_prefetch_cache='',
+            current_turn_user_idx=current_idx, _ext_prefetch_cache='',
             _plugin_user_context='', moa_config=None, active_system_prompt='',
-            original_user_message=rows[2].get('api_content') or rows[2]['content'],
+            original_user_message=rows[current_idx].get('api_content') or rows[current_idx]['content'],
             pending_moa_prepared_request=None,
             request_logger=logging.getLogger('RESUME-SIDECAR')).api_messages
 
@@ -433,6 +484,186 @@ class ResumeSidecarReproduction(unittest.TestCase):
         guard_main_request(self.agent, request)
         print(json.dumps({"case": "the correct resume with a differing sidecar",
                           "refused": False}, ensure_ascii=False))
+
+    # -------------------------- two different protected user messages in the tail ------
+    #
+    # The protected tail is the part of the conversation after the compressed middle
+    # (remember_bounded_protected_rows stores original[compress_end:]). When more than one
+    # turn was completed after the compaction, the tail holds MORE THAN ONE user row, so
+    # the guard sees two (or more) user anchors. The current-turn identification must then
+    # pick the RIGHT anchor: it must not make two different protected user rows look like
+    # the same ask, and it must not become ambiguous.
+    #
+    # This is a real layout: the compaction is called once per session and the tail keeps
+    # every exchange after compress_end, including completed earlier turns.
+
+    def rows_two_users(self, *, sidecar_differs=True):
+        """A protected tail with TWO different protected user messages.
+
+        Index 2 is a COMPLETED earlier exchange (its own ask, its own assistant turn, its
+        own tool result). Index 5 is the CURRENT ask. Both are in the protected tail, so
+        the guard sees two user anchors and must identify the current one.
+        """
+        prev_user = {'role': 'user', 'content': PREVIOUS_ASK}
+        prev_assistant = {'role': 'assistant', 'content': '',
+                          'reasoning_content': 'Previous reasoning.',
+                          'tool_calls': [{'id': 'prev', 'type': 'function', 'function': {
+                              'name': 'read_file', 'arguments': json.dumps(
+                                  {'path': '/report_v1.docx'}, ensure_ascii=False)}}]}
+        prev_tool = {'role': 'tool', 'tool_call_id': 'prev',
+                     'content': 'Previous completed result.'}
+        protected_current = {'role': 'user', 'content': RESUME_NOTE + "\n\n" + REQUEST_TEXT}
+        current = {'role': 'user', 'content': RESUME_NOTE + "\n\n" + REQUEST_TEXT}
+        if sidecar_differs:
+            current['content'] = RESUME_NOTE + "\n\n" + REQUEST_TEXT + "\n\n[live bytes]"
+            current['api_content'] = RESUME_NOTE + "\n\n" + REQUEST_TEXT + "\n\n[live bytes]"
+        current_anchor = (protected_current if not sidecar_differs else dict(
+            protected_current, **({'api_content': current['api_content']}
+                                  if current.get('api_content') else {})))
+        rows = [
+            # 0 head
+            {'role': 'system', 'content': 'Original authority.'},
+            # 1 compressed middle (not in the protected contract)
+            {'role': 'assistant', 'content': 'Compressed middle summary.'},
+            # 2 tail: previous completed ask
+            prev_user,
+            # 3 tail: previous assistant turn
+            prev_assistant,
+            # 4 tail: previous tool result
+            prev_tool,
+            # 5 tail: CURRENT ask
+            current_anchor,
+            # 6 tail: current assistant turn
+            {'role': 'assistant', 'content': '', 'reasoning_content': 'Exact reasoning.',
+             'tool_calls': [{'id': 'write', 'type': 'function', 'function': {
+                 'name': 'write_file', 'arguments': json.dumps(
+                     {'path': '/existing', 'content': 'Резюме'}, ensure_ascii=False)}}]},
+            # 7 tail: current tool result
+            {'role': 'tool', 'tool_call_id': 'write', 'content': 'Exact completed result.'},
+        ]
+        return rows
+
+    def test_two_protected_users_resume_with_sidecar_is_accepted(self):
+        """A correct resume with a differing sidecar and TWO protected user messages.
+
+        The protected tail holds a completed earlier exchange AND the current ask, so the
+        guard sees two user anchors. The correct resume must identify the CURRENT ask as
+        the current anchor and must NOT be refused as ambiguous. This is the product test
+        of the current-ask identification: the module under test is agent.bounded_context,
+        loaded from the path recorded below.
+
+        The tail is original[compress_end:] (see remember_bounded_protected_rows), so a
+        conversation with more than one completed exchange after the compaction really does
+        carry more than one protected user row in the guard's anchors.
+        """
+        rows = self.rows_two_users(sidecar_differs=True)
+        self.arm_contract(rows, original_tool={'prev': 'Previous completed result.',
+                                              'write': 'Exact completed result.'})
+        incoming_row = copy.deepcopy(rows[5])
+        if incoming_row.get('api_content'):
+            incoming_row['content'] = incoming_row['api_content']
+        self.arm_context(rows, incoming_row, current_idx=5)
+        wire_rows = copy.deepcopy(rows)
+        if wire_rows[5].get('api_content'):
+            wire_rows[5]['content'] = wire_rows[5]['api_content']
+        request = {'model': 'dispatcher', 'max_tokens': 4096,
+                   'messages': self.request(rows, wire_rows, current_idx=5)}
+        self.arm_context(wire_rows, wire_rows[5], current_idx=5)
+        guard_main_request(self.agent, request)
+        print(json.dumps({
+            "case": "correct resume with differing sidecar and two protected user messages",
+            "refused": False,
+            "module": {"loaded_from": str(_MODULE_PATH), "sha256": _MODULE_SHA256},
+        }, ensure_ascii=False))
+
+    def test_two_protected_users_changed_previous_ask_is_refused(self):
+        """A changed PREVIOUS protected user message must still be refused.
+
+        With two protected user rows the current-ask identification must not weaken the
+        protection of the OTHER protected user row: rewriting the previous ask in the wire
+        must be refused even though the current ask is identified correctly.
+        """
+        rows = self.rows_two_users(sidecar_differs=True)
+        self.arm_contract(rows, original_tool={'prev': 'Previous completed result.',
+                                              'write': 'Exact completed result.'})
+        incoming_row = copy.deepcopy(rows[5])
+        if incoming_row.get('api_content'):
+            incoming_row['content'] = incoming_row['api_content']
+        self.arm_context(rows, incoming_row, current_idx=5)
+        wire_rows = copy.deepcopy(rows)
+        if wire_rows[5].get('api_content'):
+            wire_rows[5]['content'] = wire_rows[5]['api_content']
+        # the PREVIOUS protected user message is rewritten in the wire
+        wire_rows[2]['content'] = PREVIOUS_ASK + "\n\n[rewritten by the formatter]"
+        request = {'model': 'dispatcher', 'max_tokens': 4096,
+                   'messages': self.request(rows, wire_rows, current_idx=5)}
+        self.arm_context(wire_rows, wire_rows[5], current_idx=5)
+        with self.assertRaises(Exception) as caught:
+            guard_main_request(self.agent, request)
+        detail = str(caught.exception)
+        print(json.dumps({"case": "two users: a changed previous protected user message",
+                          "refused": True, "detail": detail[:220],
+                          "module": {"loaded_from": str(_MODULE_PATH), "sha256": _MODULE_SHA256}},
+                         ensure_ascii=False))
+        self.assertIn("bounded_context", detail)
+
+    def test_two_protected_users_changed_sent_request_is_refused(self):
+        """A changed SENT current request must still be refused with two protected users.
+
+        The identification must not accept a current ask whose sent bytes were altered,
+        even when another protected user row is present.
+        """
+        rows = self.rows_two_users(sidecar_differs=True)
+        self.arm_contract(rows, original_tool={'prev': 'Previous completed result.',
+                                              'write': 'Exact completed result.'})
+        incoming_row = copy.deepcopy(rows[5])
+        if incoming_row.get('api_content'):
+            incoming_row['content'] = incoming_row['api_content']
+        self.arm_context(rows, incoming_row, current_idx=5)
+        wire_rows = copy.deepcopy(rows)
+        if wire_rows[5].get('api_content'):
+            wire_rows[5]['content'] = wire_rows[5]['api_content']
+        # the SENT bytes of the current ask are changed (in the sidecar: that is the
+        # representation the request actually sends)
+        wire_rows[5]['api_content'] = (wire_rows[5].get('api_content') or '') \
+            + "\n\n[rewritten by the formatter]"
+        request = {'model': 'dispatcher', 'max_tokens': 4096,
+                   'messages': self.request(rows, wire_rows, current_idx=5)}
+        self.arm_context(wire_rows, wire_rows[5], current_idx=5)
+        with self.assertRaises(Exception) as caught:
+            guard_main_request(self.agent, request)
+        detail = str(caught.exception)
+        print(json.dumps({"case": "two users: a changed sent current request",
+                          "refused": True, "detail": detail[:220],
+                          "module": {"loaded_from": str(_MODULE_PATH), "sha256": _MODULE_SHA256}},
+                         ensure_ascii=False))
+        self.assertIn("bounded_context", detail)
+
+    def test_two_protected_users_changed_tool_result_is_refused(self):
+        """A changed PROTECTED tool result must still be refused with two protected users."""
+        rows = self.rows_two_users(sidecar_differs=True)
+        self.arm_contract(rows, original_tool={'prev': 'Previous completed result.',
+                                              'write': 'Exact completed result.'})
+        incoming_row = copy.deepcopy(rows[5])
+        if incoming_row.get('api_content'):
+            incoming_row['content'] = incoming_row['api_content']
+        self.arm_context(rows, incoming_row, current_idx=5)
+        wire_rows = copy.deepcopy(rows)
+        if wire_rows[5].get('api_content'):
+            wire_rows[5]['content'] = wire_rows[5]['api_content']
+        # the protected result of the CURRENT tool is rewritten in the wire
+        wire_rows[7]['content'] = 'Exact completed result, rewritten by the formatter.'
+        request = {'model': 'dispatcher', 'max_tokens': 4096,
+                   'messages': self.request(rows, wire_rows, current_idx=5)}
+        self.arm_context(wire_rows, wire_rows[5], current_idx=5)
+        with self.assertRaises(Exception) as caught:
+            guard_main_request(self.agent, request)
+        detail = str(caught.exception)
+        print(json.dumps({"case": "two users: a changed protected tool result",
+                          "refused": True, "detail": detail[:220],
+                          "module": {"loaded_from": str(_MODULE_PATH), "sha256": _MODULE_SHA256}},
+                         ensure_ascii=False))
+        self.assertIn("bounded_context", detail)
 
 
 if __name__ == "__main__":

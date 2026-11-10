@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
-"""Check the scope semantics of the fresh-admission generator.
+"""Check the admission generator against the REAL code it ships.
 
-The generator used to write a fixed sentence about "one controlled Jarvis-area
-activation check" into EVERY document it released, and it named an old admission
-(R48) with a D-12 reason, while the scenario list of the same document covered 34
-scenarios of several operations, including twelve format-creation ones. The document
-therefore described an operation other than the one it authorised.
+Every assertion in this file calls the generator's own functions (issue-fresh-admission.py
+imported as a module) or its own main() with isolated inputs. No condition is copied into
+a parallel test implementation, and no refusal is checked by grepping the source: a
+refusal is an actual SystemExit raised by the real code, and the "not published on
+refusal" property is checked by looking for the output file after the call.
 
-This check verifies the corrected generator on small isolated data. It does NOT
-release an admission, does not touch the tester store, does not contact the gateway
-and does not write anything into the serving home: the generator's scope checks are
-exercised with a patched scenario map and a patched history source.
+Covered:
+  * derive_identity: the next identity and the predecessor are taken from the actually
+    released documents, and a self-superseding identity is refused;
+  * collect_scenarios: a repeated run id is refused before the dict is built - in every
+    combination of primary / extra / package, with equal and with different bytes, so one
+    digest can never silently replace another;
+  * validate_scope: a scope that does not describe the operation is refused;
+  * validate_identity: self-supersedes and a missing predecessor are refused;
+  * main(): on any refusal the admission document is NOT written, and a released
+    admission is never rewritten.
 
 Run it with any python3:
     python3 check-fresh-admission-scope.py
 """
 import importlib.util
 import json
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -31,31 +40,12 @@ def load():
     return module
 
 
-def scope_is_consistent(gen, scenarios, scope):
-    """The scope check of the generator, applied to isolated data.
+def write_json(path, value):
+    Path(path).write_text(json.dumps(value, ensure_ascii=True, sort_keys=True) + "\n")
 
-    The generator performs the check inside main(); the same predicates are applied
-    here so the check can run without releasing an admission.
-    """
-    text = " ".join(scope.lower().split())
-    problems = []
-    if "activation check" in text and len(scenarios) > 1:
-        problems.append("scope names a single activation smoke but covers "
-                        + str(len(scenarios)) + " scenarios")
-    claims_product = "product acceptance" in text and not (
-        "not a product acceptance" in text or "not a b00, fmt or product acceptance" in text)
-    claims_b00 = "b00 acceptance" in text and not (
-        "not a b00 acceptance" in text or "not a b00, fmt or product acceptance" in text)
-    if claims_product:
-        problems.append("scope claims a product acceptance")
-    if claims_b00:
-        problems.append("scope claims a B00 acceptance")
-    covered_formats = [name for name in scenarios if name.startswith("fmt-")]
-    if covered_formats and "format-creation" not in text and "format creation" not in text:
-        problems.append("scope does not mention the format-creation scenarios it covers")
-    if len(set(scenarios)) != len(scenarios):
-        problems.append("the scenario list contains a repeated run id")
-    return problems
+
+def encoded(value):
+    return (json.dumps(value, ensure_ascii=True, sort_keys=True) + "\n").encode()
 
 
 def main():
@@ -69,69 +59,176 @@ def main():
             failures.append(name + (": " + detail if detail else ""))
             print("FAIL " + name + (": " + detail if detail else ""))
 
-    # --- the historical wrong scope is refused for a multi-scenario operation ------
-    historical = ("One controlled Jarvis-area activation check from tester 8812646969 "
-                  "after the user areas were restored through the product's onboarding "
-                  "path. Not a B00, FMT or product acceptance.")
-    many = {"a03-7z-roundtrip-check-01-r68": "x", "fmt-docx-create-r69": "y"}
-    problems = scope_is_consistent(gen, many, historical)
-    check("historical_scope_refused_for_many_scenarios",
-          any("activation smoke" in p for p in problems), str(problems))
+    def refuses(name, fn, *args, fragment=None, **kwargs):
+        """The real generator code must raise SystemExit; no source grepping."""
+        try:
+            fn(*args, **kwargs)
+        except SystemExit as exc:
+            msg = str(exc)
+            ok = fragment is None or fragment in msg
+            check(name, ok, "reason=" + msg if not ok else "")
+            return
+        except Exception as exc:  # noqa: BLE001
+            check(name, False, "wrong exception " + type(exc).__name__ + ": " + str(exc))
+            return
+        check(name, False, "NOT REFUSED (returned normally)")
 
-    # ... and it stays acceptable for a genuine single-scenario operation that is not
-    # a format-creation scenario. For a format scenario the historical scope is still
-    # refused, because it does not describe that operation.
-    problems = scope_is_consistent(gen, {"d12-write-file-check-01-r48": "x"}, historical)
-    check("historical_scope_allowed_for_one_scenario", not problems, str(problems))
-    problems = scope_is_consistent(gen, {"fmt-docx-create-r69": "x"}, historical)
-    check("historical_scope_refused_for_a_format_scenario",
-          any("format-creation" in p for p in problems), str(problems))
+    tmp = Path(tempfile.mkdtemp(prefix="fresh-admission-check-"))
+    try:
+        # ---- a small isolated scenario set --------------------------------------
+        scen = tmp / "scenarios"
+        scen.mkdir()
+        write_json(scen / "s1.json", {"a": 1})
+        write_json(scen / "s2.json", {"b": 2})
+        write_json(scen / "s3.json", {"c": 3})
+        write_json(scen / "s1-dup.json", {"a": 1})        # SAME bytes as s1
+        write_json(scen / "s1-diff.json", {"a": 999})      # DIFFERENT bytes
 
-    # --- the corrected scope is accepted for the operation it describes -----------
-    corrected = gen.SCOPE
-    scenarios = {"fmt-docx-create-r69": "x", "fmt-xlsx-create-r69": "y",
-                 "d07-compare-v1-v2-check-01-r67": "z"}
-    problems = scope_is_consistent(gen, scenarios, corrected)
-    check("corrected_scope_accepted", not problems, str(problems))
-    check("corrected_scope_mentions_formats",
-          "format-creation" in corrected.lower())
-    check("corrected_scope_denies_product_acceptance",
-          "not a product acceptance" in corrected.lower())
-    check("corrected_scope_denies_b00_acceptance",
-          "not a b00 acceptance" in corrected.lower())
+        # ---- derive_identity: the chain comes from the real releases -------------
+        rel = tmp / "releases"
+        rel.mkdir()
+        write_json(rel / "INDEPENDENT-AUTHORITY-R5.json", {"authority_id": "prov-r5"})
+        write_json(rel / "INDEPENDENT-AUTHORITY-R6.json", {"authority_id": "prov-r6"})
+        new_id, new_file, prev_id = gen.derive_identity(rel)
+        check("derive_next_identity_is_r7", new_id.endswith("-r7"), new_id)
+        check("derive_next_file", new_file == "INDEPENDENT-AUTHORITY-R7.json", new_file)
+        check("derive_predecessor_is_r6", prev_id == "prov-r6", prev_id)
+        check("derive_not_self_supersedes", new_id != prev_id, new_id + " vs " + prev_id)
 
-    # --- a scope that claims a product acceptance is refused ---------------------
-    for claim in ("This admission is a product acceptance of the format coverage.",
-                  "This admission is a B00 acceptance of the volume."):
-        problems = scope_is_consistent(gen, {"fmt-docx-create-r69": "x"}, claim)
-        check("claim_refused:" + claim[:24], bool(problems), str(problems))
+        # derive from an empty directory must refuse
+        empty = tmp / "empty"
+        empty.mkdir()
+        refuses("derive_refuses_without_predecessor", gen.derive_identity, empty)
 
-    # --- the supersedes field no longer names the old R48 with the D-12 reason ---
-    source = GENERATOR.read_text()
-    check("no_old_r48_reference", "ordinary-independent-jarvis-activate-20261109-r48"
-          not in source)
-    check("no_old_d12_reason", "the new D-12 regression" not in source)
-    check("supersedes_names_the_current_document",
-          gen.SUPERSEDES_AUTHORITY_ID == "ordinary-independent-jarvis-activate-20261109-r69")
+        # ---- validate_identity --------------------------------------------------
+        gen.validate_identity("prov-r7", "prov-r6", rel)   # must NOT raise
+        check("identity_valid_accepted", True)
+        refuses("identity_refuses_self_supersedes", gen.validate_identity,
+                "prov-r6", "prov-r6", rel, fragment="supersedes itself")
+        refuses("identity_refuses_missing_predecessor", gen.validate_identity,
+                "prov-r7", "prov-99", rel, fragment="predecessor document is not")
 
-    # --- the scenario list has no repeated run id -------------------------------
-    ids = [name for name, _ in gen.EXTRA_SCENARIOS]
-    check("no_repeated_extra_scenario", len(set(ids)) == len(ids),
-          str(sorted({n for n in ids if ids.count(n) > 1})))
-    check("format_scenarios_present", len(gen.FORMAT_SCENARIOS) == 12,
-          str(len(gen.FORMAT_SCENARIOS)))
-    expected_formats = {"docx", "xlsx", "ods", "odt", "pdf", "rtf", "csv", "tsv",
-                        "zip", "7z", "txt", "json"}
-    named_formats = set()
-    for name, _ in gen.FORMAT_SCENARIOS:
-        parts = name.split("-")
-        named_formats.add(parts[1] if len(parts) > 2 and parts[1] != "create" else parts[-2])
-    check("all_twelve_formats_named", named_formats == expected_formats,
-          "named=" + str(sorted(named_formats)) + " expected=" + str(sorted(expected_formats)))
+        # ---- collect_scenarios: positive ---------------------------------------
+        got = gen.collect_scenarios("s1", scen / "s1.json",
+                                    [("s2", scen / "s2.json"), ("s3", scen / "s3.json")],
+                                    None)
+        check("collect_positive_three", set(got) == {"s1", "s2", "s3"}, str(sorted(got)))
+        check("collect_digest_matches_file",
+              got["s1"] == gen.digest(gen.encoded({"a": 1})), got["s1"])
 
-    # --- the generator still refuses to rewrite a released admission --------------
-    check("refuses_to_rewrite_a_released_admission",
-          "already exists and is pinned" in source)
+        # ---- collect_scenarios: repeated run id in every combination ------------
+        refuses("collect_refuses_primary_extra_same_bytes",
+                gen.collect_scenarios, "s1", scen / "s1.json",
+                [("s1", scen / "s1-dup.json")], None, fragment="repeated")
+        refuses("collect_refuses_primary_extra_different_bytes",
+                gen.collect_scenarios, "s1", scen / "s1.json",
+                [("s1", scen / "s1-diff.json")], None, fragment="repeated")
+        refuses("collect_refuses_extra_extra_repeat",
+                gen.collect_scenarios, "s1", scen / "s1.json",
+                [("s2", scen / "s2.json"), ("s2", scen / "s2.json")], None,
+                fragment="repeated")
+
+        # package collision: the same run id as the primary, with the CORRECT digest
+        # (so the digest check passes) - the duplicate check must still refuse it
+        pkg = tmp / "package.json"
+        s1_sha = gen.digest(gen.encoded({"a": 1}))
+        write_json(pkg, {"s1": s1_sha})
+        refuses("collect_refuses_primary_package_collision",
+                gen.collect_scenarios, "s1", scen / "s1.json", [], pkg,
+                fragment="repeated")
+
+        # wrong declared hash in the package: the file bytes do not match
+        write_json(pkg, {"s9": "0" * 64})
+        write_json(scen / "s9.json", {"z": 1})
+        refuses("collect_refuses_wrong_package_digest",
+                gen.collect_scenarios, "s1", scen / "s1.json", [], pkg,
+                fragment="digest changed")
+
+        # a package entry whose scenario file is absent
+        write_json(pkg, {"s-absent": "0" * 64})
+        refuses("collect_refuses_missing_package_scenario",
+                gen.collect_scenarios, "s1", scen / "s1.json", [], pkg,
+                fragment="absent")
+
+        # the package is ignored when it does not exist (optional input)
+        got2 = gen.collect_scenarios("s1", scen / "s1.json", [], tmp / "no-such-package.json")
+        check("collect_without_package_ok", set(got2) == {"s1"})
+
+        # ---- validate_scope ----------------------------------------------------
+        many = {"fmt-docx-create-x": "h", "d12-write-file-check-01-r48": "h"}
+        gen.validate_scope(gen.SCOPE, many)   # must NOT raise
+        check("scope_corrected_accepted", True)
+        refuses("scope_refuses_single_smoke_for_many",
+                gen.validate_scope,
+                "One controlled Jarvis-area activation check from tester 8812646969.",
+                many, fragment="activation smoke")
+        refuses("scope_refuses_claimed_product_acceptance",
+                gen.validate_scope,
+                "This admission is a product acceptance of the format coverage.",
+                {"fmt-docx-create-x": "h"}, fragment="product acceptance")
+        refuses("scope_refuses_claimed_b00_acceptance",
+                gen.validate_scope,
+                "This admission is a B00 acceptance of the volume.",
+                {"fmt-docx-create-x": "h"}, fragment="B00 acceptance")
+        refuses("scope_refuses_formats_not_mentioned",
+                gen.validate_scope,
+                "Independent execution of the regression scenarios.",
+                {"fmt-docx-create-x": "h"}, fragment="format-creation")
+
+        # ---- main(): no document is published on any refusal -------------------
+        # The real main() is run with isolated paths. The duplicate run id makes
+        # collect_scenarios raise BEFORE any file is written.
+        sandbox = tmp / "main-sandbox"
+        sandbox.mkdir()
+        (sandbox / "runs").mkdir()
+        # the gateway check reads /proc/<pid>/stat field 22 (index 21 after split);
+        # use this very process so the identity matches
+        _my_stat = Path("/proc") / str(os.getpid()) / "stat"
+        _my_start = _my_stat.read_text().split()[21]
+        write_json(sandbox / "gateway_state.json",
+                   {"pid": os.getpid(), "start_time": int(_my_start)})
+        # seed released predecessors so derive_identity can build the chain
+        write_json(sandbox / "INDEPENDENT-AUTHORITY-R3.json", {"authority_id": "prov-r3"})
+        write_json(sandbox / "INDEPENDENT-AUTHORITY-R4.json", {"authority_id": "prov-r4"})
+        for name, value in [("OUT_DIR", sandbox), ("RUNS", sandbox / "runs"),
+                            ("GATEWAY_STATE", sandbox / "gateway_state.json"),
+                            ("SCENARIO", scen / "s1.json"), ("RUN_ID", "s1"),
+                            ("PACKAGE_FILE", tmp / "no-such-package.json"),
+                            ("SCOPE", gen.SCOPE)]:
+            setattr(gen, name, value)
+        gen.EXTRA_SCENARIOS = (("s1", str(scen / "s1-dup.json")),)  # repeated run id
+
+        before = set(sandbox.glob("INDEPENDENT-AUTHORITY-R*.json"))
+        refuses("main_refuses_duplicate_and_publishes_nothing", gen.main,
+                fragment="repeated")
+        after = set(sandbox.glob("INDEPENDENT-AUTHORITY-R*.json"))
+        check("main_published_nothing_on_refusal", after == before,
+              "wrote: " + str(sorted(p.name for p in after - before)))
+
+        # ---- main(): a released admission is never rewritten --------------------
+        # The no-overwrite rule in main() is exercised by making the derived identity
+        # collide with a file that is already in place. derive_identity() derives the
+        # NEXT free number, so a direct collision cannot arise from the scan alone;
+        # the rule is a second layer of protection, and it is tested here by fixing the
+        # derived identity to the number that is already present.
+        gen.EXTRA_SCENARIOS = (("s2", str(scen / "s2.json")),)
+        auth_id, auth_file, prev_id = gen.derive_identity(sandbox)
+        check("main_derived_predecessor_is_r4", prev_id == "prov-r4", prev_id)
+        # seed the target file so the no-overwrite rule fires
+        write_json(sandbox / auth_file, {"already": "released"})
+        real_derive = gen.derive_identity
+        gen.derive_identity = lambda _out: (auth_id, auth_file, prev_id)
+        try:
+            refuses("main_refuses_to_rewrite_released_admission", gen.main,
+                    fragment="already exists and is pinned")
+        finally:
+            gen.derive_identity = real_derive
+        # the seeded file must be untouched
+        check("main_released_file_untouched",
+              json.loads((sandbox / auth_file).read_text()) == {"already": "released"})
+
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
     print(json.dumps({"checks_failed": failures, "result": "PASS" if not failures else "FAIL"},
                      sort_keys=True))
