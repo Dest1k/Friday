@@ -1,4 +1,4 @@
-# FRIDAY-RELEASE-V3 — единая точка входа для Сола (2026-11-10)
+# FRIDAY-RELEASE-V3 — единая точка входа для Астры (2026-11-10)
 
 **Настоящий файл — единственная актуальная точка входа.** Он заменяет
 `DSH-RESUME-2026-11-09.md` и `DSH-RESUME-2026-11-08.md` как рабочую инструкцию.
@@ -7,23 +7,64 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Текущий чекпоинт Сола — OWNER_PAUSE, 10.11.2026, 20:09 МСК
+## Действующее продолжение Астры — 10.11.2026, 20:42 МСК
+
+Владелец явно передал управление и возобновил работу. **Астра — единственный
+действующий ведущий, координатор и интегратор**; owner pause Сола завершил его смену.
+Новый native goal **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** фактически создан,
+`get_goal` подтвердил **active**, API threadId `01a1c688-e36d-7021-8df4-9c5644a4d75b`:
+[readback и преемственность](ASTRA-GOAL-CONTINUATION-2026-11-10.json).
+Старый native goal Сола и DSH goal сохранены paused, не завершались и не активировались;
+UUID и накопленный счётчик между объектами не переносились. Полный170/120/B00,
+первичные критерии, решения и все ограничения эффектов сохраняются.
+
+Стартовый **HEAD = origin/main = удалённый main = `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`**.
+После опорного коммита новых коммитов нет; три чужих изменения §1 сохранены с SHA/identity,
+в собственные коммиты не включаются. [Свежий runtime/readback/3DB](evidence/astra-20261110/lead-start-runtime.json):
+194слоя, receipt/marker/stamp/config согласованы, gateway324328/start2790561/bootd518,
+Telegram connected, active_agents0, profile routing прежний. Три quick_checkOK,
+30/2,196/2,5419/5, session_turn_leases0. Переезда/переноса/переустановки не было.
+[GET зависимостей](evidence/astra-20261110/lead-start-dependencies.json) отделены от
+исторических реальных вычислений и от допуска к новой операции. На исходных349
+уникальных записях SHA256SUMS проверены точные байты; новые записи добавляются по дельте.
+
+**Завершено:** R93 actual2061B2717 `74e80fdf…a132` прошёл настоящий LibreOffice26.2.5.2
+open → reversible edit → native save → close → reopen/verify → restore → save/close/reopen.
+Все16абзацев,3OutlineLevel1 заголовка, точный `Привет, 世界, Ω`, перечисленные paragraph/run
+attributes сохранены;5значимых отрицательных контролей. Canonicalreceived/source/receipt/run
+не изменены. [Приложение и пределы](evidence/astra-20261110/r93-odt-real-application.json).
+20:40:14–20:41:07 МСК,53секунды включая оценку; само приложение завершило14.55s.
+Без модели/повторного создания/отправки. Formaltester остаётся NOT_ESTABLISHED.
+
+**Ближайшее исполнение:** два подготовленных ordinaryRECALL получают финальный Rootreview,
+свежие singleton admission и отдельные операции по одной; retrieval-backed не выдаётся
+за purememory. Параллельно готовится194→195 ODS comment-preservation exactincrement
+с consumer/rollback; RTFHeading draft проверяется на новых prospective копиях реальным
+приложением до решения об интеграции. ODT→DOCX/ODS→XLSX остаютсяP1. Старые R83UNKNOWN
+и однократныйEMPTYquarantine, R85PARTIAL/QuestionNOT_RUN, исчерпанные3C10R89–R91 и
+все остальные consumed/UNKNOWN effects не повторяются. Current500canonical/5419native,
+45unresolved/3UNKNOWN — актуальный старт, а497/5389 — исторический preparationbaseline.
+
+## Исторический чекпоинт Сола — OWNER_PAUSE, 10.11.2026, 20:09 МСК
+
+Следующий раздел описывает сохранённое состояние прежней смены, а не запрет новой
+директивы владельца. Действующее управление и очередь указаны выше.
+
 
 Сол — временный lead/координатор/интегратор. Владелец разрешил разработку,
 проверки, штатную установку и публикацию в существующий main, затем делегировал
 выбор решений: [действующее решение](evidence/sol-20261110/owner-autonomy-and-p04-variant.json).
-Вечерняя передача Астре — только по отдельной команде; её пока не было.
+На момент20:09 команды передачи ещё не было; новая явная директива исполнена Астрой выше.
 
-**Владелец поставил native goal на PAUSED.** `get_goal` подтвердил paused;
-[точный readback](evidence/sol-20261110/native-goal-owner-paused.json). Не возобновлять
-автоматически, не создавать новую цель, не считать проект завершённым. По поручению
+**Исторически владелец поставил native goal Сола на PAUSED.** `get_goal` подтвердил paused;
+[точный readback](evidence/sol-20261110/native-goal-owner-paused.json). Этот объект сохраняется paused; новый объект Астры создан по новой явной директиве. Проект не завершён. По поручению
 паузы завершены только уже отправленный R93/его исходное180окно и сохранение Gitсреза.
 Все Root user/app/maintenance actors закрыты, все nativechildren/деревья завершены.
 Рабочие продуктовые сервисы сохранены: [runtime/пять закрытых операций/3DB](evidence/sol-20261110/owner-pause-runtime-checkpoint.json),
 SHAe654610a…b17b. Source194, gateway324328/start2790561/bootd518 прежние, NRestarts0;
 Telegramconnected, profilesdefault/dest/tester, quick_checkOK, counts30/2,196/2,5419/5,
 leases0. SourceODS139ba0f7…ca63 иRTFca176347…d6dc не менялись. Canonical500runs;
-старые45unresolved/3UNKNOWN не очищены. Никакой передачи управления Астре не было.
+старые45unresolved/3UNKNOWN не очищены. На исторической границе20:09 передачи Астре ещё не было.
 
 
 **Native goal** `FRIDAY-RELEASE-V3-CONTINUATION-2026-11-10` создан 09:04:04 МСК;
@@ -298,8 +339,8 @@ SHA b1b56ece…bd84; её первоначальные readback/processcensus о
   показывают in-memorynative edit/reparse/ZIPreopen и явно не доказывают realOffice
   open/edit/save/reopen/rendering. Историческая prose appPASS этим не подтверждается;
   реальные будущие app-проверки нового actualreceivedartifact остаются отдельным шагом.
-  ActualfirstF03/nativecurrentread/newcopy/delivery/fullcustody/fidelity/app acceptance
-  ещё NOT_RUN. Strictbyteoracle supplementary: faithfulserialization оценивается на
+  На этапе подготовки live ещё не выполнялся; затем actualfirstF03/nativecurrentread/
+  newcopy/delivery/fullcustody/fidelity завершены R92/R93 ниже. AppR92PARTIAL; appR93 принят Астрой выше. Strictbyteoracle supplementary: faithfulserialization оценивается на
   том же файле по originalF03, без blanketnormalization/waiver/ignoredhiddenloss.
 - [x] R92 firststructuredRTF F03 once2712→actual4966B2714, closed19:46:30 exit0/full180:
   [Root nativeartifact/fidelity/custody](evidence/sol-20261110/rtf-structured-edit-root-review.json),
@@ -326,8 +367,8 @@ SHA b1b56ece…bd84; её первоначальные readback/processcensus о
   Толькоselectedparagraph date и5text:s namespace/explicitc=1 serialization эквивалентны;
   все байты внеparagraph/4другихmemberpayloads/ZIPmetadata точны. Frozenbyteoraclefail
   сохранён, exactexpandednamespace/count/originalF03fallback — тот же файл, без normalizer.
-  RealOfficeapp NOT_RUN_OWNER_PAUSE; послеresume оценивать готовый2717, не запускать модель
-  или заново создавать/отправлять файл. Old2257CREATE/full180UNKNOWN остаётся прежним.
+  На ownerpause RealOfficeapp был NOT_RUN; после новой директивы выполнен на том же2717,
+  см. действующий срез Астры. Модель/создание/отправка не повторялись. Old2257CREATE/full180UNKNOWN остаётся прежним.
 - [ ] ODS comments sourcecandidate сохранён с независимым Source/offline ACCEPT,
   [checkpoint](evidence/sol-20261110/ods-comment-preservation-source-checkpoint.json),
   SHA957e0752…7d124; authorb4ca4336…e2fd/reviewer19c51b67…5671/91owncontrols.
@@ -348,7 +389,7 @@ SHA b1b56ece…bd84; её первоначальные readback/processcensus о
 - [ ] Остальной полный originalscope/formatvariants/B00/regression/recovery открыт.
   Локальные C10/CSV ограничения не блокируют независимые допустимые обязательства.
 
-**Операции / исполнители.** Root/Sol единолично владеет runtime/admission/live/Git.
+**История операций / исполнителей прежней смены.** До20:09 Root/Sol единолично владел runtime/admission/live/Git; теперь эти полномочия у Астры.
 R79/R80/R81/R82/R84 закрыты с узкими semantic/custodyPASS; formal tester во всех
 новых узких прогонах NOT_ESTABLISHED/RECEIVED_UNGRADED. R83 UNKNOWN и его один
 READquarantine закрыты без разрешения resend. R85 закрыт PARTIAL/nativeStopknown,
@@ -434,17 +475,17 @@ RootpostR86 readonly SHAc86b169b…95c2 и закрытый193maintenancejournal
 Сервис работает, незавершённые исторические кейсы не переигрываются.
 Остальные finite дети завершены и не изображаются действующими.
 
-**Следующая работа только после явного ownerresume.** Сначала использовать готовый
+**Историческая очередь на20:09; новая директива ownerresume получена и исполняется выше.** Сначала использовать готовый
 ODT2717 для недостающей appоценки без повторов модели/создания/отправки; либо выполнить
 Rootreview готовойordinaryRECALLподготовки и отдельный действительноmissing singleton.
 RTFinterop draft требует полноценной проверки/realappграницы; ODSsourcecandidate —
 штатного publisherincrement по194, offline consumer/rollback и собственной livequalification.
-Ни один из этих следующих эффектов не начат на паузе. Цель не complete и не передана Астре.
+Ни один из этих следующих эффектов не начат на паузе. Старая цель не complete; впоследствии управление передано Астре по новой директиве.
 Текущие_HEAD_beforecheckpoint main/origin=f3f34fee…374a/328Gitbytechecksums; новыйSHA
 сообщается после реального commit/push безselfhash. Три чужих изменения §1 исключены.
 R42/R43/UNKNOWN_SEND/историческиеS11/P01/Q02/oldR85/old2257 и consumed effects защищены;
 новыйrun/model/restart/fix/epoch не разрешает пересылку. Полный170/120/B00/variants/
-regression/recovery остаётся неизменённым контрактом PAUSEDgoal.
+regression/recovery остаётся неизменённым контрактом исторического PAUSEDgoal и нового activegoal Астры.
 
 ## 0. Состояние разработки
 
@@ -513,7 +554,7 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 | Приёмников | **один** (процесс324328, проверено по фактической executable/bootstrap identity и HERMES_HOME) |
 | Docker | В этом проходе контейнеры не запускались; прежний inactive-срез не выдаётся за новую проверку A0 |
 | База `dest_telegram` | 196 сообщений / 2 сессии, `quick_check ok`, счётчики до/после установки сохранены |
-| База `telegram-bot-8812646969` | 5364 сообщений / 5 сессий до/после установки194; `quick_check ok`, leases0, неизменны. R85/R86 — уже состоявшиеся отдельные эффекты на193; новых194usercalls пока нет |
+| База `telegram-bot-8812646969` | 5364 сообщений / 5 сессий до/после установки194; `quick_check ok`, leases0, неизменны. R85/R86 — уже состоявшиеся отдельные эффекты на193; далее выполнены R87–R93, свежий стартовый testerсчётчик5419; см. текущий раздел |
 | Модельный путь | Фактический `http://192.168.1.195:30000/v1`: authenticated models и synthetic chat → 200, настроенная модель найдена |
 | Диспетчер сжатия | `.78:8001/v1`: postpower503 до backend на status-fetch; отдельный synthetic200 сохранён. Новый NJS source/worker deployed, старый UNKNOWN не очищен; см. актуальные evidence выше |
 | Эмбеддинги | Фактический `http://192.168.1.195:8002/v1`: authenticated models и embeddings → 200, qwen3-embedding-4b, один конечный 2560-мерный вектор |
@@ -539,8 +580,8 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 - **Незавершённые операции**: P-01 (неизвестный исход r57), Q-02 (неизвестный эффект r7),
   A-03 (round-trip-этап — имя `core_inputs_roundtrip.zip` занято), A0 (квалификация не
   выполнена), A-13/A-14 (только через настоящий архивный путь).
-- **Неопределённые эффекты сохранены**: UNKNOWN_SEND (2 записи), TRANSPORT_OUTCOME_UNKNOWN
-  (r57). Не переигрывать.
+- **Неопределённые эффекты сохранены**: UNKNOWN_SEND (3 записи с R83), плюс исторический TRANSPORT_OUTCOME_UNKNOWN
+  (r57). Текущий динамический снимок:45unresolved/3UNKNOWN; не переигрывать.
 
 ## 4. Ограничения повторов
 
@@ -556,7 +597,7 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 новый run-id, свежий допуск, перезапуск, новая модель, исправленная композиция.
 
 **Действующие запреты**: R42 (неизвестный эффект, не переотправлять), R43 (не повторять),
-UNKNOWN_SEND (2 записи, не переотправлять), G-06, M-10 (неизвестные эффекты). Исторические
+UNKNOWN_SEND (3 записи с R83, не переотправлять), G-06, M-10 (неизвестные эффекты). Исторические
 прогоны с доставленными артефактами (A-03, M-04) не повторять — эффект существует.
 
 **S-11**: три побайтно идентичные отправки (r59/r60/r61) — факт; `AUTHORIZATION_BASIS_NOT_ESTABLISHED`
@@ -635,9 +676,8 @@ FAIL/BLOCKED/UNKNOWN/NOT_RUN. Исторические результаты со
 
 Полномочия и решения владельца сохранены полностью. Новый бюджет ходов не назначался.
 Исторический DSH goal **paused / disarmed**, rounds 0; сохранён без возобновления.
-Новый native goal Сола создан active по директиве 10.11; сейчас **paused владельцем**,
-не возобновлять автоматически; текущий и исторический readback и связь
-с предшественником приведены в начале этого файла.
+Новый native goal Сола создан active по директиве 10.11; сохранён **paused владельцем**. Новый nativegoal Астры **active** по явной директиве передачи;
+оба readback и явная связь объектов приведены в начале файла.
 
 ### Доказательства текущего продолжения
 
@@ -657,7 +697,7 @@ receipt `b93a34cf…fbf79`, source `1ae5254d…e50e`. Таймаут клиен�
 rollback не прерывается истечением бюджета. Счётчики двух профильных БД и quick_check
 до/после совпали. Позднее узкая пользовательская квалификация
 R71 завершена (см. актуальный срез и sidecar-live-root-review); старые187 install
-факты относятся к09:22 и не выдаются за текущий188 receipt.
+факты относятся к09:22 и не выдаются за текущий194 receipt.
 
 Текущие результаты добавлены в том же evidence overlay: TSV read/recall, P04 source/
 publication/install/live, archive consumer/review/final188 reuse, post-power dependencies
@@ -673,20 +713,15 @@ immutable ledgers и оригинальный reference ZIP. Отсутству�
 
 - `DSH-CORRECTION-REPORT-2026-11-10.md` — отчёт о коррекциях (a8bba32 → 7e219de → 476496a).
 - `DSH-GOAL-SNAPSHOT-2026-11-10.json` — снимок goal с историей прежней цели.
-- `SHA256SUMS` — контрольные суммы (224 записи, воспроизводимы из Git-коммита).
-- `patches/hermes/bounded-current-ask-identity.patch` / `-manifest.json` — **новый слой**
-  (preimage `1acfe925…b948` → after `1ae5254d…e50e`), готов к установке после регистрации
-  в `LAYER_NAMES`.
+- `SHA256SUMS` — проверяемые контрольные суммы; в опорном01a59f9 —349 уникальных записей, текущая дельта пересчитывается перед commit.
+- `patches/hermes/bounded-current-ask-identity.patch` / `-manifest.json` — **установленный с187 слой**
+  (preimage `1acfe925…b948` → after `1ae5254d…e50e`); зарегистрирован в `LAYER_NAMES`,
+  повторная установка не требуется.
 - `check-fresh-admission-scope.py`, `check-layer-publication-composition.py`,
   `check-bounded-resume-sidecar.py` — проверочные скрипты.
 - `DSH-RESUME-2026-11-09.md`, `DSH-RESUME-2026-11-08.md` — история, не рабочая инструкция.
 
 
-<!-- Working continuation delta, not yet a new published commit: ARJ Unix-link genuine
-producer source216files/2075319bytes fetched at pinned6af97465; every Git blob verified.
-Private package FRW-SOL-V3-ARJ-LINKS-20261110. Two preparation-only failures preserved
-(sandbox awk alternative, then make built-in cc); corrected explicit CC=gcc build-only
-script after R73 ran prepare successfully, build missing generated msg_arj.h.
-Explicit message generation succeeded; compile now stops on legacy implicit system_cmd
-declaration. Logs/attempts1–4 preserved, all sandbox namespaces terminal. No ARJ fixture/
-product call/system install yet. Stage/source in BUILD-STATE.json retained for next finite fix. -->
+<!-- Historical ARJ preparation note superseded by actual genuine producer controls,
+source190 installation and R77/R78 delivery/recall above. No unfinished ARJ build task
+is inferred from old compiler-attempt logs; old attempts remain in original evidence. -->
