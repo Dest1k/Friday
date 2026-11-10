@@ -92,6 +92,13 @@ def consumer_bench(check, args):
         check("bench_ods194_exact_193_prerequisites", len(manifests[0]["prerequisites"]) == 193)
         check("bench_ods194_exact_one_plugin", plugin_names == ("plugins/friday_rework/host_record.py",))
         check("bench_ods194_current_installed193", len(before_receipt["layers"]) == 193)
+    if layer_names == ("ods-comment-preservation-after-source194",):
+        check("bench_ods195_exact_one_target", source_files == ("tools/scoped_ods.py",))
+        check("bench_ods195_exact_194_prerequisites", len(manifests[0]["prerequisites"]) == 194)
+        check("bench_ods195_no_plugin_delta", plugin_names == ())
+        check("bench_ods195_current_installed194", len(before_receipt["layers"]) == 194)
+        check("bench_ods195_actual_preimage", hashlib.sha256((live / "hermes-agent" / source_files[0])
+              .read_bytes()).hexdigest() == manifests[0]["files"][0]["before_sha256"])
     check("bench_prerequisites_pinned", all(previous_input["project_files"].get(name) == pin
           for body in manifests for name, pin in body.get("prerequisites", {}).items()))
     if layer_names == ("read-file-reject-write-arguments-after-source189",
@@ -556,6 +563,11 @@ def main(argv=None):
     check("generator_ods194_cli_exact_only_increment", selected.layer_names == ods194)
     check("consumer_ods194_explicit_exact_only_increment", validator.resolve_layer_names({
         "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(ods194)}) == ods194)
+    ods195 = ("ods-comment-preservation-after-source194",)
+    selected = generator.parse_args(["--layer", ods195[0]])
+    check("generator_ods195_cli_exact_only_increment", selected.layer_names == ods195)
+    check("consumer_ods195_explicit_exact_only_increment", validator.resolve_layer_names({
+        "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(ods195)}) == ods195)
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (

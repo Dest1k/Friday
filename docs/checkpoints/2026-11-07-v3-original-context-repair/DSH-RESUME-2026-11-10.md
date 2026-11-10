@@ -7,13 +7,21 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 10.11.2026, 20:42 МСК
+## Действующее продолжение Астры — 10.11.2026, 20:57 МСК
 
 Владелец явно передал управление и возобновил работу. **Астра — единственный
 действующий ведущий, координатор и интегратор**; owner pause Сола завершил его смену.
 Новый native goal **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** фактически создан,
 `get_goal` подтвердил **active**, API threadId `01a1c688-e36d-7021-8df4-9c5644a4d75b`:
 [readback и преемственность](ASTRA-GOAL-CONTINUATION-2026-11-10.json).
+Сол — **постоянный co-architect на Standard** по следующему явному уточнению владельца;
+Астра сохраняет Fast. Его прежнийpausedgoal относится к прошлой сменеlead и не запрещает
+отдельные TASK под координацией Астры. Реальная прежняя сессияСола на штатномendpoint
+проверена, один завершённыйnativepre-taskcompact подтверждён; RTF/Officeпакет доставлен
+и принят в работу. [Роли/режимы/назначение](evidence/astra-20261110/sol-permanent-coarchitect-rtf-assignment.json).
+ВременнаяRTFветка завершена/frozen и передана без повторовR92; draftпокаappFAIL, не устанавливать.
+Следующаяточкаинтеграции — проверенныйRTFкандидат/обоснованноерешение, независимо отRECALL/ODS.
+
 Старый native goal Сола и DSH goal сохранены paused, не завершались и не активировались;
 UUID и накопленный счётчик между объектами не переносились. Полный170/120/B00,
 первичные критерии, решения и все ограничения эффектов сохраняются.
@@ -36,14 +44,41 @@ attributes сохранены;5значимых отрицательных ко�
 20:40:14–20:41:07 МСК,53секунды включая оценку; само приложение завершило14.55s.
 Без модели/повторного создания/отправки. Formaltester остаётся NOT_ESTABLISHED.
 
-**Ближайшее исполнение:** два подготовленных ordinaryRECALL получают финальный Rootreview,
-свежие singleton admission и отдельные операции по одной; retrieval-backed не выдаётся
-за purememory. Параллельно готовится194→195 ODS comment-preservation exactincrement
-с consumer/rollback; RTFHeading draft проверяется на новых prospective копиях реальным
-приложением до решения об интеграции. ODT→DOCX/ODS→XLSX остаютсяP1. Старые R83UNKNOWN
-и однократныйEMPTYquarantine, R85PARTIAL/QuestionNOT_RUN, исчерпанные3C10R89–R91 и
-все остальные consumed/UNKNOWN effects не повторяются. Current500canonical/5419native,
-45unresolved/3UNKNOWN — актуальный старт, а497/5389 — исторический preparationbaseline.
+Квалификация195: установленный слой/свежийgateway/17888пинов сохраняются. Первый
+isolated runner отказал до main/fixtures на `/usr/bin/python3` из-за отсутствующего
+`ruamel`; повторяется только квалификация в существующем installed interpreter с
+нужными зависимостями, без переустановки/модели/отправки/повтора совершённых эффектов.
+
+**R94/R95 завершены по одной отправке и originalfull180:**
+RTF2718→2720, ODT2721→2723, оба exit0/semantic+custodyPASS; точные original22October,
+заключительные фразы/локализация, RTF0004/C03/2/2500.00/RUB/1 и ODTUnicode сохранены.
+[RTF](evidence/astra-20261110/rtf-ordinary-recall-root-review.json),
+[ODT](evidence/astra-20261110/odt-ordinary-recall-root-review.json).
+Оба actualturn не вызвали новых tools/search/read: это recall из сохранённого
+авторизованного контекста/истории, без кредита новому извлечению и без доказательства
+purememory. Formaltester NOT_ESTABLISHED/RECEIVED_UNGRADED отдельно; CREATE/READ/F03
+не повторялись. Текущий срез **502canonical/native5423/45unresolved/3UNKNOWN**.
+
+**ODS195 установлен и квалифицирован:** [actual proof](evidence/astra-20261110/ods195-installed.json),
+SHA `c090b2a088be53b53e8fdc0b8b115fe52414ec967d4d7cfdcd53a7ffd07d0c33`.
+Только `ods-comment-preservation-after-source194`, source `25569a96…6df7`,
+194prefix/17887nontarget/all51pluginbytes/config/data сохранены. Full17888 actualinventory
+233281541B совпал с receipt `4d5f063b…9b7ff`, input `6c994d7b…15cf0`.
+Один stop → publisher → freshstart;69.40s, gateway **444825/start3853611/bootd518**,
+active/running/Telegramconnected/NRestarts0, один matchinggateway, старый324328 отсутствует.
+Три quick_checkOK,30/2,196/2,5423/5,leases0. Installed native175+boundary9PASS в отдельном
+процессе с собственными LOCALfixtures/actualinstalledhandlers, без overlay/сети/модели/Telegram.
+Это ограниченное сохранение однозначных XMLcomment anchors, не всеODS/F03варианты.
+Builder был вызван с **явным --layer**, historicalfourdefault не менялся. Crash/powerloss
+atomicity не заявлена; healthypermanentgateway остаётся под постоянным управлением.
+
+**Дальше:** Сол самостоятельно доводит RTF/Office; stylesheetdraft appFAIL не устанавливать.
+Астра готовит следующий действительно недостающий P1 F04 блок **ODT→DOCX и ODS→XLSX**
+с exact source195/current singleton admission перед каждым live шагом. Подготовка делегирована
+в отдельную ограниченную source/offlineветку, без liveправ. R83UNKNOWN/одинEMPTYquarantine,
+R85PARTIAL/QuestionNOT_RUN, исчерпанные3C10R89–R91 и все consumed/UNKNOWN защищены.
+Ни новаясессия, ни новыйrun, ни195/fix не разрешают их повтор. Полный170/120/B00,
+обязательные варианты/регрессия/восстановление остаются объёмом activegoal.
 
 ## Исторический чекпоинт Сола — OWNER_PAUSE, 10.11.2026, 20:09 МСК
 
@@ -542,19 +577,19 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 | `docs/checkpoints/2026-11-07-v2-bounded-diagnostics/PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md` | ?? (untracked) | Техническая заметка о переключении провайдера. Существовала до этого прохода. |
 | `docs/checkpoints/2026-11-07-v3-original-context-repair/FORMAT-COVERAGE-MAP.json` | ?? (untracked) | Карта покрытия форматов. Не входит в Git-дерево; исключена из SHA256SUMS. |
 
-## 2. Обслуживаемый runtime (установка194, 10.11.2026; пользовательские операции отдельно выше)
+## 2. Обслуживаемый runtime (установка195, 10.11.2026; история194 отдельно выше)
 
 | Предмет | Факт |
 |---|---|
 | Home | `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032` |
-| Состав | **194 слоя**; к193 добавлен только `ods-target-comments-after-source193`, отдельно один pluginhost_record0b05e834…0ddc. Receipt `4cd1a812…9027`; input `452104de…6e0c`; stamp/marker согласованы, upstream/base прежние |
-| Gateway | `hermes-gateway-1b7e7667.service` active/running, **MainPID324328**, ExecMainStartTimestamp Tue 2026-11-10 17:56:24 MSK, NRestarts 0 |
-| Состояние gateway | `gateway_state.json`: pid324328, start_time **2790561**, `gateway_state: running`, Telegram `connected`, `served_profiles = [default, dest_telegram, telegram-bot-8812646969]`; на ownerpausecheckpoint все Root user/app actors закрыты; сервис продолжает работать |
+| Состав | **195 слоёв**; к194 добавлен только `ods-comment-preservation-after-source194`, без plugin delta. Receipt `4d5f063b…9b7ff`; input `6c994d7b…15cf0`; stamp/marker согласованы, upstream/base прежние |
+| Gateway | `hermes-gateway-1b7e7667.service` active/running, **MainPID444825**, start_time3853611, свежий start10.11.2026 20:53 МСК, NRestarts 0 |
+| Состояние gateway | `gateway_state.json`: pid444825, start_time **3853611**, `gateway_state: running`, Telegram `connected`, `served_profiles = [default, dest_telegram, telegram-bot-8812646969]`; после195maintenance и R94/R95 акторы закрыты; сервис продолжает работать |
 | Boot | `d518758e-bce0-4bd5-89a1-fc4e113f0623`, загрузка 2026-11-10 10:11:19 МСК; реальный power outage |
-| Приёмников | **один** (процесс324328, проверено по фактической executable/bootstrap identity и HERMES_HOME) |
+| Приёмников | **один** (процесс444825, проверено по фактической executable/bootstrap identity и HERMES_HOME) |
 | Docker | В этом проходе контейнеры не запускались; прежний inactive-срез не выдаётся за новую проверку A0 |
 | База `dest_telegram` | 196 сообщений / 2 сессии, `quick_check ok`, счётчики до/после установки сохранены |
-| База `telegram-bot-8812646969` | 5364 сообщений / 5 сессий до/после установки194; `quick_check ok`, leases0, неизменны. R85/R86 — уже состоявшиеся отдельные эффекты на193; далее выполнены R87–R93, свежий стартовый testerсчётчик5419; см. текущий раздел |
+| База `telegram-bot-8812646969` | 5423 сообщений / 5 сессий до/после установки195; `quick_check ok`, leases0, данные сохранены. R94/R95 завершены, native5420–5423; см. текущие обзоры |
 | Модельный путь | Фактический `http://192.168.1.195:30000/v1`: authenticated models и synthetic chat → 200, настроенная модель найдена |
 | Диспетчер сжатия | `.78:8001/v1`: postpower503 до backend на status-fetch; отдельный synthetic200 сохранён. Новый NJS source/worker deployed, старый UNKNOWN не очищен; см. актуальные evidence выше |
 | Эмбеддинги | Фактический `http://192.168.1.195:8002/v1`: authenticated models и embeddings → 200, qwen3-embedding-4b, один конечный 2560-мерный вектор |
