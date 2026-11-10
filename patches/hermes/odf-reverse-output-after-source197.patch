@@ -1,0 +1,306 @@
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -593,11 +593,35 @@
+         self.styles = {}
+         self.list_styles = {}
+         body_nodes = set(self.pkg.body.iter())
++        # Writer preserves the DOCX Normal.dotm template label as passive
++        # metadata with an explicitly empty target. Admit only that exact
++        # direct-child form in native output; source links remain refused.
++        empty_template = None
++        if native_output:
++            meta_root = self.pkg.xml.get('meta.xml')
++            META = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
++            if meta_root is not None and meta_root.tag == q(O, 'document-meta'):
++                templates = meta_root.findall(q(O, 'meta') + '/' + q(META, 'template'))
++                if len(templates) == 1:
++                    node = templates[0]
++                    if (node.attrib == {q(XL, 'type'): 'simple', q(XL, 'actuate'): 'onRequest',
++                                        q(XL, 'title'): 'Normal.dotm', q(XL, 'href'): ''}
++                            and not len(node) and not (node.text or '').strip()
++                            and not (node.tail or '').strip()):
++                        # ElementTree discards processing instructions; the
++                        # newly admitted passive form must not conceal one.
++                        raw = self.pkg.parts['meta.xml'].removeprefix(b'\xef\xbb\xbf')
++                        raw = re.sub(rb'\A<\?xml[ \t\r\n][^?]*\?>', b'', raw, count=1)
++                        if b'<?' in raw:
++                            _fail('unsupported_odt_metadata')
++                        empty_template = node
+         for name, root in self.pkg.xml.items():
+             for node in root.iter():
+                 if node.tag in (q(T, 'p'), q(T, 'h'), q(TB, 'table')) and node not in body_nodes:
+                     _fail('unsupported_odt_content')
+-                if any(attr in (q(XL, 'href'), q('http://www.w3.org/XML/1998/namespace', 'base')) for attr in node.attrib):
++                if (any(attr in (q(XL, 'href'), q('http://www.w3.org/XML/1998/namespace', 'base'))
++                        for attr in node.attrib)
++                        and not (name == 'meta.xml' and node is empty_template)):
+                     _fail('linked_content')
+                 if node.tag in (q(S, 'header'), q(S, 'footer'), q(S, 'header-left'), q(S, 'footer-left')):
+                     if len(node) or (node.text or '').strip():
+--- a/tools/scoped_spreadsheet_conversion.py
++++ b/tools/scoped_spreadsheet_conversion.py
+@@ -757,13 +757,237 @@
+             bindings = frames.pop()
+ 
+ 
+-def _ods(data, checkpoint):
++# Destination-only Calc 26.2.5.2 profile observed on the genuine R36 XLSX.
++# Each digest covers every expanded XML QName, attribute value, text, tail and
++# child in the complete passive tree, including unused defaults. Unknown output
++# stays refused. These are finite observed trees, not namespace-wide permission.
++# The untouched output bytes are published; only the private parser's already
++# validated empty scaffolding is omitted from the common typed-cell projection.
++_ODS_CALC_PASSIVE = {'styles.xml': '433f438922fd79226f4e8d513934263fa07b773bebd83e0383b1bbb74157b4e6', 'meta.xml': '129179abe07d0608e88ff455fa366bf87421882d6539b26d38ea907340816f87', 'settings.xml': '5c2d1010ea54370cd00af8efc93ec3257d80d0eb3d538adc614a9f533665b1d1', 'manifest.rdf': 'aeb297984b26a30bd9a26f304b39bc7d91a2645749b35e7bf3f44c4b9511dc75', 'META-INF/manifest.xml': '589d6e270f367c4e2bc75a6a9015f9cb1e32f077480088f9f96f2bd543ecd18c', 'content:font-face-decls': '3af3a7556b8ddd70a2263544630b57eec02db8d3bff17be9324316d6e5ab94db', 'content:automatic-styles': '893a931015570d3b372479747dc5eaa085762a42cf690d1e36441ff059baf941'}
++
++
++def _ods_tree_digest(node):
++    def tree(item):
++        return (item.tag, sorted(item.attrib.items()), item.text or '',
++                item.tail or '', [tree(child) for child in item])
++    return hashlib.sha256(json.dumps(tree(node), ensure_ascii=False,
++                                    separators=(',', ':')).encode()).hexdigest()
++
++
++def _ods_png_preview(data):
++    # Observed static 8-bit indexed PNG. Pixels are not document semantics;
++    # validate the closed passive container, never pin content-derived bytes.
++    import struct
++    import zlib
++    if not isinstance(data,bytes) or not 1 <= len(data) <= 1000000 or data[:8] != b'\x89PNG\r\n\x1a\n':
++        refuse('conversion_generated_ods_thumbnail_unsupported')
++    chunks = []; offset = 8
++    while offset < len(data):
++        if offset + 12 > len(data):
++            refuse('conversion_generated_ods_thumbnail_unsupported')
++        size = int.from_bytes(data[offset:offset+4],'big')
++        kind = data[offset+4:offset+8]
++        if size > 1000000 or offset + size + 12 > len(data):
++            refuse('conversion_generated_ods_thumbnail_unsupported')
++        payload = data[offset+8:offset+8+size]
++        crc = int.from_bytes(data[offset+8+size:offset+12+size],'big')
++        if zlib.crc32(kind+payload) & 0xffffffff != crc:
++            refuse('conversion_generated_ods_thumbnail_unsupported')
++        chunks.append((kind,payload)); offset += size+12
++        if len(chunks) > 5:
++            refuse('conversion_generated_ods_thumbnail_unsupported')
++    if [kind for kind,_ in chunks] != [b'IHDR',b'PLTE',b'pHYs',b'IDAT',b'IEND']:
++        refuse('conversion_generated_ods_thumbnail_unsupported')
++    header,palette,physical,pixels,end = [payload for _,payload in chunks]
++    if len(header) != 13:
++        refuse('conversion_generated_ods_thumbnail_unsupported')
++    width,height,depth,colour,compression,filtering,interlace = struct.unpack('>IIBBBBB',header)
++    if (not 1 <= width <= 512 or not 1 <= height <= 512
++            or (depth,colour,compression,filtering,interlace) != (8,3,0,0,0)
++            or not 3 <= len(palette) <= 768 or len(palette)%3
++            or physical != bytes.fromhex('00000b1300000b1301') or not pixels or end):
++        refuse('conversion_generated_ods_thumbnail_unsupported')
++    expected = (width+1)*height
++    try:
++        decoder = zlib.decompressobj()
++        raw = decoder.decompress(pixels,expected+1)
++        if (len(raw) != expected or not decoder.eof
++                or decoder.unused_data or decoder.unconsumed_tail):
++            refuse('conversion_generated_ods_thumbnail_unsupported')
++    except zlib.error:
++        refuse('conversion_generated_ods_thumbnail_unsupported')
++    previous = bytes(width); colours = len(palette)//3
++    for row in range(height):
++        offset = row*(width+1); method = raw[offset]
++        if method > 4:
++            refuse('conversion_generated_ods_thumbnail_unsupported')
++        restored = bytearray(raw[offset+1:offset+1+width])
++        for column in range(width):
++            left = restored[column-1] if column else 0
++            above = previous[column]
++            upper_left = previous[column-1] if column else 0
++            if method == 1: predictor = left
++            elif method == 2: predictor = above
++            elif method == 3: predictor = (left+above)//2
++            elif method == 4:
++                estimate = left+above-upper_left
++                distances = (abs(estimate-left),abs(estimate-above),abs(estimate-upper_left))
++                predictor = (left if distances[0] <= distances[1] and distances[0] <= distances[2]
++                             else above if distances[1] <= distances[2] else upper_left)
++            else: predictor = 0
++            restored[column] = (restored[column]+predictor)&255
++            if restored[column] >= colours:
++                refuse('conversion_generated_ods_thumbnail_unsupported')
++        previous = restored
++
++
++def _ods_generated_xml_guard(parts):
++    # The semantic ElementTree parser drops PIs and comments. Refuse them from
++    # the original UTF-8 bytes before comparing the closed generated profile.
++    # No external entity resolver or other document execution is installed.
++    from xml.parsers import expat
++    def unsupported(*args):
++        refuse('conversion_generated_ods_xml_unsupported')
++    for name in ('content.xml','styles.xml','meta.xml','settings.xml',
++                 'META-INF/manifest.xml','manifest.rdf'):
++        parser = expat.ParserCreate(encoding='UTF-8')
++        parser.ProcessingInstructionHandler = unsupported
++        parser.CommentHandler = unsupported
++        parser.StartDoctypeDeclHandler = unsupported
++        parser.EntityDeclHandler = unsupported
++        parser.ExternalEntityRefHandler = unsupported
++        try:
++            parser.Parse(parts[name], True)
++        except expat.ExpatError:
++            refuse('conversion_generated_ods_xml_unsupported')
++
++
++def _ods_generated_profile(book):
++    from copy import deepcopy
++    config = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
++    meta = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
++    parts = {'mimetype','content.xml','styles.xml','meta.xml','settings.xml',
++             'META-INF/manifest.xml','manifest.rdf','Thumbnails/thumbnail.png'}
++    if set(book.parts) != parts or len(book.sheets) != 1:
++        refuse('conversion_generated_ods_package_unsupported')
++    _ods_generated_xml_guard(book.parts)
++    sheet_name = _sheet_name(book.sheets[0].get(q(TB,'name')))
++    styles = deepcopy(book.xml['styles.xml'])
++    master = styles.find(q(O,'master-styles'))
++    if master is None or len(master) != 3:
++        refuse('conversion_generated_ods_styles_unsupported')
++    page = master[-1]; page_name = page.get(q(ST,'name'))
++    if (not isinstance(page_name,str) or not 1 <= len(page_name) <= 256
++            or not re.fullmatch(r'PageStyle_5f_[A-Za-z0-9_-￿]+',page_name)
++            or page.get(q(ST,'display-name')) != 'PageStyle_'+sheet_name):
++        refuse('conversion_generated_ods_styles_unsupported')
++    # Page aliases carry the sheet identity, not formatting. Bind both ends to
++    # the same observed structure, then compare every other style property.
++    page.set(q(ST,'name'),'@sheet-page-style@')
++    page.set(q(ST,'display-name'),'@sheet-page-display@')
++    dates = list(styles.iter(q(T,'date')))
++    if len(dates) != 1:
++        refuse('conversion_generated_ods_styles_unsupported')
++    _date(dates[0].get(q(T,'date-value')))
++    dates[0].set(q(T,'date-value'),'@calendar-date@')
++    content = book.xml['content.xml']
++    if (content.attrib != {q(O,'version'):'1.4'}
++            or [node.tag for node in content] != [q(O,x) for x in ('scripts','font-face-decls','automatic-styles','body')]):
++        refuse('conversion_generated_ods_scaffolding_unsupported')
++    body = content.find(q(O,'body'))
++    if body is None or body.attrib:
++        refuse('conversion_generated_ods_scaffolding_unsupported')
++    # Text belongs only to the already validated text:p scalar projection.
++    # Structural text, paragraph tails and unknown office:body attributes must
++    # not disappear while the destination package itself remains untouched.
++    def structural_text(node, parent_is_paragraph=False):
++        paragraph = node.tag == q(T,'p')
++        if ((not paragraph and node.text not in (None,''))
++                or (not parent_is_paragraph and node.tail not in (None,''))):
++            refuse('conversion_generated_ods_scaffolding_unsupported')
++        for child in node:
++            structural_text(child, paragraph)
++    structural_text(content)
++    for name in ('font-face-decls','automatic-styles'):
++        nodes = content.findall(q(O,name))
++        if len(nodes) != 1:
++            refuse('conversion_generated_ods_styles_unsupported')
++        root = deepcopy(nodes[0])
++        if name == 'automatic-styles':
++            tables = [node for node in root if node.get(q(ST,'family')) == 'table']
++            if len(tables) != 1 or tables[0].get(q(ST,'master-page-name')) != page_name:
++                refuse('conversion_generated_ods_styles_unsupported')
++            tables[0].set(q(ST,'master-page-name'),'@sheet-page-style@')
++        if _ods_tree_digest(root) != _ODS_CALC_PASSIVE['content:'+name]:
++            refuse('conversion_generated_ods_styles_unsupported')
++    statistics = deepcopy(book.xml['meta.xml'])
++    counts = list(statistics.iter(q(meta,'document-statistic')))
++    if len(counts) != 1:
++        refuse('conversion_generated_ods_metadata_unsupported')
++    declared = []
++    for name,maximum in (('table-count',1),('cell-count',MAX_CELLS)):
++        value = counts[0].get(q(meta,name))
++        if not isinstance(value,str) or not re.fullmatch(r'[1-9][0-9]{0,3}',value) or int(value)>maximum:
++            refuse('conversion_generated_ods_metadata_unsupported')
++        declared.append(int(value)); counts[0].set(q(meta,name),'@inventory-count@')
++    settings_root = deepcopy(book.xml['settings.xml']); extents = []
++    for node in settings_root.iter(q(config,'config-item')):
++        if node.get(q(config,'name')) in ('VisibleAreaWidth','VisibleAreaHeight'):
++            if not re.fullmatch(r'[1-9][0-9]{0,6}',node.text or '') or int(node.text)>1000000:
++                refuse('conversion_generated_ods_settings_unsupported')
++            extents.append(node.get(q(config,'name'))); node.text='@view-extent@'
++    if sorted(extents) != ['VisibleAreaHeight','VisibleAreaWidth']:
++        refuse('conversion_generated_ods_settings_unsupported')
++    normalized = {'styles.xml':styles,'meta.xml':statistics,'settings.xml':settings_root}
++    for part in ('styles.xml','meta.xml','settings.xml','manifest.rdf','META-INF/manifest.xml'):
++        if part == 'manifest.rdf':
++            if hashlib.sha256(book.parts[part]).hexdigest() != _ODS_CALC_PASSIVE[part]:
++                refuse('conversion_generated_ods_passive_part_unsupported')
++            continue
++        if _ods_tree_digest(normalized.get(part,book.xml[part])) != _ODS_CALC_PASSIVE[part]:
++            refuse('conversion_generated_ods_passive_part_unsupported')
++    _ods_png_preview(book.parts['Thumbnails/thumbnail.png'])
++    for parent, tag in ((content,q(O,'scripts')),(book.body,q(TB,'named-expressions'))):
++        nodes = parent.findall(tag)
++        if (len(nodes) != 1 or nodes[0].attrib or len(nodes[0])
++                or nodes[0].text not in (None,'') or nodes[0].tail not in (None,'')):
++            refuse('conversion_generated_ods_scaffolding_unsupported')
++        parent.remove(nodes[0])
++    settings = book.body.findall(q(TB,'calculation-settings'))
++    expected = {q(TB,'case-sensitive'):'false',q(TB,'automatic-find-labels'):'false',
++                q(TB,'use-regular-expressions'):'false',q(TB,'use-wildcards'):'true',
++                q(TB,'null-year'):'1950'}
++    if len(settings) != 1 or settings[0].attrib != expected or len(settings[0]) or (settings[0].text or '').strip():
++        refuse('conversion_generated_ods_calculation_unsupported')
++    settings[0].attrib.clear()
++    for sheet in book.sheets:
++        forms = sheet.findall(q(O,'forms'))
++        if (len(forms) != 1 or forms[0].attrib != {'{urn:oasis:names:tc:opendocument:xmlns:form:1.0}automatic-focus':'false',
++                                                '{urn:oasis:names:tc:opendocument:xmlns:form:1.0}apply-design-mode':'false'}
++                or len(forms[0]) or forms[0].text not in (None,'') or forms[0].tail not in (None,'')):
++            refuse('conversion_generated_ods_scaffolding_unsupported')
++        sheet.remove(forms[0])
++        if sheet.get(q(TB,'style-name')) not in (None,'ta1'):
++            refuse('conversion_generated_ods_style_reference_unsupported')
++        for tag, allowed in (('table-column',('co1',)),('table-row',('ro1','ro2')),('table-cell',('Default',))):
++            for node in sheet.iter(q(TB,tag)):
++                if (node.get(q(TB,'style-name')) not in (None,*allowed)
++                        or node.get(q(TB,'default-cell-style-name')) not in (None,'Default')):
++                    refuse('conversion_generated_ods_style_reference_unsupported')
++    def used(name):
++        if name not in ('Default','co1','ro1','ro2','ta1'):
++            refuse('conversion_generated_ods_style_reference_unsupported')
++    used.declared_counts = tuple(declared)
++    return used
++
++
++def _ods(data, checkpoint, *, office_generated=False):
+     book = Spreadsheet(data,'ods',checkpoint)
+     if book.unsupported: refuse('conversion_active_or_linked_content')
+     _formula_namespaces(book.parts['content.xml'])
+     if set(book.parts)-{'mimetype','content.xml','styles.xml','meta.xml','settings.xml','META-INF/manifest.xml', 'manifest.rdf','Thumbnails/thumbnail.png'}:
+         refuse('conversion_package_features_unsupported')
+-    used_style = _ods_styles(book)
++    used_style = _ods_generated_profile(book) if office_generated else _ods_styles(book)
+     content = book.xml['content.xml']
+     _attrs(content, (q(O,'version'),))
+     _children(content, (q(O,x) for x in ('font-face-decls','automatic-styles','body')),
+@@ -842,7 +1066,10 @@
+                 for cc in range(c,c+width): cells.append((rr,cc,item))
+         if book.unsupported: refuse('conversion_structure_unsupported')
+         sheets.append((name,cells))
+-    return _finish(sheets,checkpoint)
++    result = _finish(sheets,checkpoint)
++    if office_generated and used_style.declared_counts != (result.counts()['sheets'],result.counts()['nonempty_cells']):
++        refuse('conversion_generated_ods_statistics_changed')
++    return result
+ 
+ 
+ def inventory(data, format, *, checkpoint=None):
+@@ -862,9 +1089,10 @@
+     try:
+         actual = inventory(data,target,checkpoint=checkpoint)
+     except ConversionRefused:
+-        if target != 'xlsx': raise
++        if target not in ('xlsx','ods'): raise
+         try:
+-            actual = _xlsx(data,checkpoint,office_generated=True)
++            actual = (_xlsx(data,checkpoint,office_generated=True) if target == 'xlsx'
++                      else _ods(data,checkpoint,office_generated=True))
+         except ConversionRefused:
+             raise
+         except (ODSError, ODTError) as error:

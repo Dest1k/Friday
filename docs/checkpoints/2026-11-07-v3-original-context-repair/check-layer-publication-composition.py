@@ -117,6 +117,38 @@ def consumer_bench(check, args):
         check("bench_word197_current_installed196", len(before_receipt["layers"]) == 196)
         check("bench_word197_actual_preimage", hashlib.sha256((live / "hermes-agent" / source_files[0])
               .read_bytes()).hexdigest() == manifests[0]["files"][0]["before_sha256"])
+    if layer_names == ("odf-reverse-output-after-source197",):
+        check("bench_reverse198_exact_two_targets", source_files == (
+            "tools/scoped_word_conversion.py", "tools/scoped_spreadsheet_conversion.py"))
+        check("bench_reverse198_exact_197_prerequisites", len(manifests[0]["prerequisites"]) == 197)
+        prior_patches = {}
+        for row in before_receipt["layers"]:
+            prior = json.loads((candidate / row["manifest"]).read_text())
+            patch = prior.get("patch", prior.get("patch_file"))
+            patch = patch if "/" in patch else "patches/hermes/" + patch
+            prior_patches[patch] = row["patch_sha256"]
+        check("bench_reverse198_exact_receipt_prefix_dependencies",
+              manifests[0]["prerequisites"] == prior_patches)
+        check("bench_reverse198_base_commit_is_receipt_commit",
+              manifests[0]["base_commit"] == before_receipt["commit"]
+              == "781334eea4b9225a3e194faf0c241d9afe218634")
+        check("bench_reverse198_no_plugin_delta", plugin_names == ())
+        check("bench_reverse198_current_installed197", len(before_receipt["layers"]) == 197)
+        check("bench_reverse198_exact_two_preimages", {
+            row["path"]: row["before_sha256"] for row in manifests[0]["files"]} == {
+            "tools/scoped_word_conversion.py": "2b5da5f3d0437ddad25e8729db556d4d2ee1eebdebc53b3214bdee385498bf15",
+            "tools/scoped_spreadsheet_conversion.py": "e1a65a91bef106217a42bd58a102c751a5f66044e72df8f49b450bbfd43feebc"})
+        check("bench_reverse198_actual_two_preimages", all(hashlib.sha256(
+            (live / "hermes-agent" / row["path"]).read_bytes()).hexdigest()
+            == row["before_sha256"] for row in manifests[0]["files"]))
+        check("bench_reverse198_exact_two_postimages", {
+            row["path"]: row["sha256"] for row in manifests[0]["files"]} == {
+            "tools/scoped_word_conversion.py": "62c61f166b10a4ef2ff6b903ad7e00c95a0814adf84d68050221e4882b2ccf8b",
+            "tools/scoped_spreadsheet_conversion.py": "2afbe63a166449e6b8acc0b907def046f01735b6c7690c9facbeba92958b9d03"})
+        check("bench_reverse198_project474_prefix_preserved",
+              len(previous_input["project_files"]) == 474 and len(current_input["project_files"]) == 476
+              and all(current_input["project_files"].get(n) == pin
+                      for n, pin in previous_input["project_files"].items()))
     check("bench_prerequisites_pinned", all(previous_input["project_files"].get(name) == pin
           for body in manifests for name, pin in body.get("prerequisites", {}).items()))
     if layer_names == ("read-file-reject-write-arguments-after-source189",
@@ -299,7 +331,16 @@ def consumer_bench(check, args):
         # Repin a deliberately wrong selected manifest in a separate tiny candidate.
         # The real entry point must reject each false postimage before publication.
         # In the second case, both patches have actually run in private staging.
-        for index, selected in enumerate(layer_names):
+        postimage_controls = [(index, selected, "sha256", 0)
+                              for index, selected in enumerate(layer_names)]
+        if layer_names == ("odf-reverse-output-after-source197",):
+            postimage_controls += [(0, layer_names[0], "sha256", 1),
+                                   (0, layer_names[0], "before_sha256", 0),
+                                   (0, layer_names[0], "before_sha256", 1),
+                                   (0, layer_names[0], "base_commit", 0)]
+        for index, selected, field, file_index in postimage_controls:
+            control_name = selected if (field, file_index) == ("sha256", 0) else (
+                selected + ":" + field + ":" + str(file_index))
             bad_candidate = root / ("wrong-postimage-" + str(index))
             for name in pair:
                 dest = bad_candidate / name
@@ -308,7 +349,10 @@ def consumer_bench(check, args):
             bad_manifest_name = f"patches/hermes/{selected}-manifest.json"
             bad_manifest_path = bad_candidate / bad_manifest_name
             bad_manifest = json.loads(bad_manifest_path.read_text())
-            bad_manifest["files"][0]["sha256"] = "0" * 64
+            if field == "base_commit":
+                bad_manifest[field] = before_receipt["base_tree"]
+            else:
+                bad_manifest["files"][file_index][field] = "0" * 64
             bad_manifest_path.write_text(json.dumps(bad_manifest, sort_keys=True, indent=2) + "\n")
             bad_current = json.loads(args.current_input.read_text())
             bad_current["project_files"][bad_manifest_name] = hashlib.sha256(
@@ -323,19 +367,26 @@ def consumer_bench(check, args):
             bad_request["project_inventory_sha256"] = hashlib.sha256(
                 (json.dumps(bad_current["project_files"], sort_keys=True, indent=2) + "\n").encode()).hexdigest()
             status, outcome = run(bad_request)
-            check("bench_wrong_postimage_refused:" + selected, status == 2 and outcome.get("reason")
-                  == "transaction_layer_output_changed:" + selected, str(outcome))
+            expected_reason = ("transaction_layer_base_commit_changed" if field == "base_commit"
+                else "transaction_layer_preimage_changed:" + bad_manifest["files"][file_index]["path"]
+                if field == "before_sha256" else "transaction_layer_output_changed:" + selected)
+            check("bench_wrong_postimage_refused:" + control_name, status == 2
+                  and outcome.get("reason") == expected_reason, str(outcome))
             restored = {name: ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode))
                         for name in watched}
-            check("bench_wrong_postimage_no_publication:" + selected, restored == original
+            check("bench_wrong_postimage_no_publication:" + control_name, restored == original
                   and all(not (home / name).exists() for name in pair))
             request_hash = hashlib.sha256((json.dumps(bad_request, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
             bad_stage = home / "preparation" / ("ordinary-source-update-v45-" + request_hash[:16])
-            check("bench_wrong_postimage_no_intent:" + selected, not (bad_stage / "intent.json").exists())
-            check("bench_wrong_postimage_real_staged_prefix:" + selected, all(
-                hashlib.sha256((bad_stage / "staging" / row["path"]).read_bytes()).hexdigest()
-                == row["sha256"] for body in manifests[:index + 1] for row in body["files"]))
-            shutil.rmtree(bad_stage)
+            check("bench_wrong_postimage_no_intent:" + control_name, not (bad_stage / "intent.json").exists())
+            if field == "sha256":
+                check("bench_wrong_postimage_real_staged_prefix:" + control_name, all(
+                    hashlib.sha256((bad_stage / "staging" / row["path"]).read_bytes()).hexdigest()
+                    == row["sha256"] for body in manifests[:index + 1] for row in body["files"]))
+                shutil.rmtree(bad_stage)
+            else:
+                check("bench_wrong_preimage_or_commit_no_staging:" + control_name,
+                      not bad_stage.exists())
             shutil.rmtree(bad_candidate)
             bad_input.unlink()
 
@@ -496,6 +547,13 @@ def consumer_bench(check, args):
             check("bench_marker_nontarget_plugin_pins_preserved", {k:v for k,v in marker["plugin_files"].items()
                 if k not in plugin_names} == {k:v for k,v in before_marker["plugin_files"].items()
                 if k not in plugin_names})
+        if layer_names == ("odf-reverse-output-after-source197",):
+            check("bench_reverse198_all51_plugin_pins_preserved",
+                  len(marker["plugin_files"]) == 51
+                  and marker["plugin_files"] == before_marker["plugin_files"])
+            check("bench_reverse198_exact_target_rows", all(after_receipt["files"][row["path"]]
+                  == {key: row[key] for key in ("bytes", "mode", "sha256")}
+                  for row in manifests[0]["files"]))
         check("bench_commit_preserves_predecessor", (predecessor / "committed.json").read_bytes()
               == predecessor_bytes)
         summary = {"before_layers": len(before_receipt["layers"]),
@@ -596,6 +654,11 @@ def main(argv=None):
     check("generator_word197_cli_exact_only_increment", selected.layer_names == word197)
     check("consumer_word197_explicit_exact_only_increment", validator.resolve_layer_names({
         "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(word197)}) == word197)
+    reverse198 = ("odf-reverse-output-after-source197",)
+    selected = generator.parse_args(["--layer", reverse198[0]])
+    check("generator_reverse198_cli_exact_only_increment", selected.layer_names == reverse198)
+    check("consumer_reverse198_explicit_exact_only_increment", validator.resolve_layer_names({
+        "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(reverse198)}) == reverse198)
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (

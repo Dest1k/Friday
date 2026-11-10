@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 10.11.2026, 22:55 МСК
+## Действующее продолжение Астры — 10.11.2026, 23:26 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -35,23 +35,36 @@ RTF save/close/reopen цикла с регрессией. Exact source/config mi
 После него опубликованы `bedbd946f663c76965c0baebaea81a85539c5e94` и
 `1632b288e4459f7ad8e28462d2f45f7bddecca80`; затем Source196/evidence опубликованы в
 `48b57e346dbe0aeb3a964a671a47cb47895370ae`; forward R97/R98 и их app-проверки опубликованы
-в `22a3b3bb1a9e39a6ecf6d63827a32f51dc2c6c3c` — последний проверенный baseline перед этой дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+в `22a3b3bb1a9e39a6ecf6d63827a32f51dc2c6c3c`;197 установлен/опубликован
+в `b99c02b1a809cba935d64fc298b1d99bb97c2827` — проверенный baseline перед этой дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
 
-**Текущая установленная версия — Source197.**
-[Реальная установка / readback / квалификация](evidence/astra-20261110/word197-installed.json),
-SHA `5d46eaab12bbe12a79d2a125265e018dc0cc7e778df95339919162419123e8c0`.
-Добавлен только `docx-odt-output-after-source196`, один Word output validator2b5da5…bf15.
-Exact196 prefix,17887 nontarget source rows,51plugin bytes,config/profile/launcher/unit сохранены.
-Full17888 actual files —233313984B; receipt `8234c492…401c`, input `07479910…b602`.
-Один stop → publisher → fresh start, **75,118s**, новых пользовательских эффектов нет.
-Постоянный gateway **1153704 / start4568431 / bootd518758e-bce0-4bd5-89a1-fc4e113f0623**,
-active/running/Telegram connected/NRestarts0, один gateway этого home; прежний824223 отсутствует.
+**Текущая установленная версия — Source198.**
+[Установка / полный readback / квалификация](evidence/astra-20261110/reverse198-installed.json),
+SHA `7fcbe8e105d7dd1bc6f69482784ec566559b5c2c295f025112c6a206ffe0b3f1`.
+Добавлен ONE `odf-reverse-output-after-source197`: Word62c61f…cf8b и Sheet2afbe6…9d03.
+Exact197 prefix,17886 nontarget source rows,51plugin bytes,config/profile/launcher/unit сохранены.
+Full17888 actual files —233329301B; receipt `ace1b232…989f`, input `dfc6fd4a…91df`.
+Один stop → publisher → fresh start, **67,559s**, пользовательских эффектов0.
+Постоянный gateway **1198290 / start4735674 / bootd518758e-bce0-4bd5-89a1-fc4e113f0623**,
+active/running/Telegram connected/NRestarts0, один gateway этого home; прежний1153704 отсутствует.
 Три quick_check OK, default30/2, dest196/2, tester5457/5; leases0, данные сохранены.
-Это проверенный снимок, а не допуск будущего live. Здоровый gateway остаётся под постоянным
-управлением без искусственного таймера жизни. Переезда/переноса данных не было.
+Fresh actual198 imports/no overlay:9 saved-byte checks — Wordcaptured+Writerrestored18/3empty,
+strict-source refusals, newtemplate PI negative, exactR36six-cell ODS и receivedR97/R98 forward
+регрессия. Office/nativeproducer/model/Telegram не повторялись. Это установленная узкая
+функция; FIRSTuser/формальная/общаяF04 приёмка отдельно ещё не выполнены.
+Здоровый постоянный gateway без искусственного lifetime timer; fresh admissibility надо
+проверять заново. Переезда/переноса данных не было.
+[Source/review/композиция198](evidence/astra-20261110/reverse198-publication-source-review.json):
+131/131 actualpublisher/rollback/preimage/postimage/wrongbase-tree gates, project474→476,
+base_commit781334 (не base_tree7d90), все197prerequisites. Exact explicit --layer; default4 неизменён.
+Журналируемый откат не доказывает атомарность при внезапном отключении питания.
+
+Исторический197 proof сохранён:
+[word197-installed](evidence/astra-20261110/word197-installed.json), SHA5d46eaab…e8c0,
+первый narrow reverse-heading profile/процесс1153704; уже не текущий runtime.
 
 Историческая установка196 сохранена отдельно:
 [readback / квалификация196](evidence/astra-20261110/odf196-installed.json),
@@ -146,7 +159,7 @@ Microsoft Office cross-app и полный F04/форматы не объявл�
 45старых unresolved / 3UNKNOWN**. Все операции этого forward плана закрыты;
 здоровый gateway оставлен работать. Источники/received/receipts/runs не менялись.
 
-**DOCX→ODT: обязательная reverse-функция установлена в197; live user-путь ещё открыт.**
+**DOCX→ODT:197 narrow reverse-heading profile,198 empty-template fix; user-путь ещё открыт.**
 [Source/review/composition](evidence/astra-20261110/word197-publication-source-review.json):
 one-file2b5da5…bf15 допускает только native-output passive RDF и строго пустые label heading
 wrappers; public/source profile остаётся строгим. 68 forward/7 consumer/12 semantic/136
@@ -168,10 +181,53 @@ Initial prep wrong-path к закрытому ODS journal отказал до ma
 **Следующий результат:** точный original DOCX→ODT first-operation пакет: source/scenario/
 history/effect basis, ближайшие guards/consumer и независимое review до будущего admission.
 Новый reverse запрос пока не допущен; installed/sourcefix/newversion сами повтор не разрешают.
-Независимо разбирается обязательный XLSX→ODS: forward R98 не доказывает обратное направление.
+На том же genuine original37118B DOCXc72c Root LOCAL readiness197 выявил linked_content/output_inventory/effectnone.
+Первая попытка и её часы сохранены; пользовательский FIRST не начат. Productfinally удалил
+невыданный rawODT. Один отдельно спланированный max1 LOCAL capture diagnostic с readonly tap
+до неизменённого validator сохранил тот же отказ и raw19809BODT371587b7…eafd: единственная
+ссылка — пустой href у Normal.dotm metadata template; не внешний ресурс. Обе LOCAL операции
+закрыты/QUIESCENT, original/receipt/source не менялись, модели/Telegram/user effects0.
+Source-only Word draft7a7436 прошёл40 checks, но независимый reviewer выявил PI через ET;
+история дефекта сохранена. Reviewer-fix62c61f…cf8b закрывает rawmeta PI лишь при новом native
+exception; strictSOURCE/actual UTF8 preflight/_Word неизменны. Author40+independent38+50 и
+Root12 delta checks PASS на тех же сохранённых bytes. Один реальный Writer cycle на копии
+того же localODT PASS:18абзацев/3пустых[5,10,14]/Unicode/0h/0tables,0,794s; исходный300budget,
+не новый converter/usertrial. Final source установлен/квалифицирован в198 выше; FIRSTuser пока не начат.
+Private exact evidence: `FRW-ASTRA-V3-FIRST-DOCX-ODT-LOCAL-20261110/`,
+`FRW-ASTRA-V3-ODT-EMPTY-TEMPLATE-{REPAIR,REVIEW}-20261110/` под /home/jericho/.cache.
+FIRST source/history packet complete/failclosed NOT_READY_PRODUCT_LOCAL_REFUSAL:
+`FRW-ASTRA-V3-FIRST-DOCX-ODT-PLAN-20261110/RESULT.json` SHA7b90fa56…4735, Root source/history
+acceptance a9ca7b07…cd08, не admission. 505runs/5457native/669sidecars,45unresolved/3UNKNOWN,
+old497/743 signatures сохранены. Старый R04READ UNKNOWN — отдельный эффект; F01 не повторять.
+
+Обязательный XLSX→ODS: forward R98 не доказывает обратное направление. Один LOCAL originalR36
+XLSXbd35…a58a→nativeODSb153…3e76 отказал conversion_styles_unsupported/effectnone; тот же rawoutput
+сохранён, converter не повторялся. Source-only узкий output profile проходит1220+60 checks;
+один Calc app-cycle1→200→1 PASS,9 samebytes checks. Первый479draft привязывал thumbnail к
+одному содержимому: сохранён, заменён закрытым boundedPNG/counts/pagealias refinement7b9573.
+Его independent review выявил PI и structural text/attrs gaps; reviewer-fix2afbe6…9d03 прошёл106,
+автор независимо проверил точную дельту:1448finalchecksPASS,106independent. Установлено198 выше; никакого LIVE/F04/general sheet PASS пока нет.
+Root интегрировал ONE composite `odf-reverse-output-after-source197` в198: exact Word62c61f
+и Sheet2afbe6, два output-only файла; строгие source/consumer/profiles сохранены. Нормальная
+установка и9installed checks завершены; toolchain не менялся, maintenance закрыто.
+
+Следующий Root результат — по одной настоящей FIRST ordinary DOCX→ODT и XLSX→ODS.
+Оба source/history packets завершены: WordRESULT7b90fa56…4735, SheetRESULT7cbdfc76…21d8
+в `FRW-ASTRA-V3-FIRST-{DOCX-ODT,XLSX-ODS}-PLAN-20261110/`; Root повторно использует immutable
+505/5457/669 и исходные run/scenario/source, новый второйcase после первого требует точного
+join новой независимой дельты. Source198 adapter/gate/oracle/review готовятся отдельно в
+`FRW-ASTRA-V3-REVERSE198-ORDINARY-ADAPTERS-20261110/`. Release/binding/admission/send0.
+Обнаружен конкретный checker seam: старый v42 ordinaryconsumer сам требует state.updated_at
+не старше600s; новый exactgate с fresh readonlysocket не устраняет этот downstream отказ.
+Root разрешил минимальный новый pinned consumer freshness successor с independentreview;
+старые v42/issuer/CODE сохраняются, main/atomic/max1/phase/privacy/stop не ослаблять.
+Не touch/heartbeat/restart ради timestamp: новый read-only ответ реальногоPID/boot/start/
+observed_monotonic и стабильные metadata/platformwriter должны подтверждать current boundary.
+Здоровый gateway продолжает работать; будущие короткие окна пока не открыты.
 
 Сол независимо продолжает full compatible RTF toolchain build/QA на Standard;
-M1/M2 source/config/negative-baseline progress проверены, готовый binary ещё не принят.
+M1/M2 source/config/negative-baseline progress проверены. На22:55 own совместимый runtime staged,
+native QA активен; финальный binary/closure/appQA/independent built-artifact review ещё не приняты.
 Его original compile deadline23:31 МСК не сбрасывался; организационная оценка не kill timer.
 Текущий установленный toolchain не менялся; Heading draft и proposed C++ остаются
 uninstalled до полноценного native roundtrip и независимого built-artifact review.
