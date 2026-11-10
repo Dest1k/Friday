@@ -350,6 +350,90 @@ class ResumeSidecarReproduction(unittest.TestCase):
                           "detail": detail[:220]}, ensure_ascii=False))
         self.assertIn("bounded_context", detail)
 
+    # ------------------------------------------------- the differing-sidecar negatives
+    #
+    # The negative control above runs with sidecar_differs=False, so it does NOT prove that
+    # the protection survives in the CHANGED branch of the guard. The fix changed the way
+    # the current ask is identified: the identity is now also accepted when the SENT
+    # projection of a row matches. A changed branch that accepts too much would be a real
+    # regression, so the negatives below run with sidecar_differs=True: the same branch
+    # that accepts a correct resume must still refuse a changed request.
+    #
+    # Two independent substitutions are made, one per negative:
+    #   * the SENT current request is changed  -> the sent bytes no longer match;
+    #   * the PROTECTED result of the tool is changed -> the protected contract no longer
+    #     matches the wire.
+    # The correct resume with a differing sidecar must keep passing.
+
+    def _resume_with_sidecar(self):
+        """Arm the accepted resume with a differing sidecar and return (rows, request)."""
+        rows = self.rows(sidecar_differs=True)
+        self.arm_contract(rows)
+        incoming_row = copy.deepcopy(rows[2])
+        if incoming_row.get('api_content'):
+            incoming_row['content'] = incoming_row['api_content']
+        self.arm_context(rows, incoming_row)
+        wire_rows = copy.deepcopy(rows)
+        if wire_rows[2].get('api_content'):
+            wire_rows[2]['content'] = wire_rows[2]['api_content']
+        request = {'model': 'dispatcher', 'max_tokens': 4096,
+                   'messages': self.request(rows, wire_rows)}
+        # the request assembly re-records the context with the rows it assembled, so the
+        # incoming row is the WIRE row: its content is the sent bytes
+        self.arm_context(wire_rows, wire_rows[2])
+        return rows, wire_rows, request
+
+    def test_a_changed_sent_request_with_a_sidecar_is_refused(self):
+        """The SENT current request is changed while the sidecar differs -> REFUSED.
+
+        This is the negative control for the CHANGED branch: the fix lets the current ask
+        be identified through the representation the request sends it in. If the sent
+        bytes are altered, that identification must fail and the guard must refuse.
+
+        The substitution is made in the SIDE-CAR of the current user row, because that is
+        the representation the request actually sends: the wire projection substitutes
+        the sidecar into ``content``, so a change of ``content`` alone would be erased
+        by the assembly and would not be a change of the sent request at all.
+        """
+        rows, wire_rows, request = self._resume_with_sidecar()
+        # the SENT bytes of the current ask are changed: the sidecar now carries
+        # different bytes, and they differ from the transcript text of the contract
+        wire_rows[2]['api_content'] = (wire_rows[2].get('api_content') or '') \
+            + "\n\n[rewritten by the formatter]"
+        request['messages'] = self.request(rows, wire_rows)
+        self.arm_context(wire_rows, wire_rows[2])
+        with self.assertRaises(Exception) as caught:
+            guard_main_request(self.agent, request)
+        detail = str(caught.exception)
+        print(json.dumps({"case": "a changed sent request with a differing sidecar",
+                          "refused": True, "detail": detail[:220]}, ensure_ascii=False))
+        self.assertIn("bounded_context", detail)
+
+    def test_a_changed_protected_result_with_a_sidecar_is_refused(self):
+        """The PROTECTED tool result is changed while the sidecar differs -> REFUSED.
+
+        The protected result of the tool is part of the contract. Changing it in the wire
+        must be refused even though the current ask itself is still identified correctly
+        through the sent projection.
+        """
+        rows, wire_rows, request = self._resume_with_sidecar()
+        wire_rows[4]['content'] = 'Exact completed result, rewritten by the formatter.'
+        request['messages'] = self.request(rows, wire_rows)
+        self.arm_context(wire_rows, wire_rows[2])
+        with self.assertRaises(Exception) as caught:
+            guard_main_request(self.agent, request)
+        detail = str(caught.exception)
+        print(json.dumps({"case": "a changed protected result with a differing sidecar",
+                          "refused": True, "detail": detail[:220]}, ensure_ascii=False))
+        self.assertIn("bounded_context", detail)
+
+    def test_the_correct_resume_with_a_sidecar_still_passes(self):
+        """The control of the two negatives above: the correct resume keeps passing."""
+        rows, wire_rows, request = self._resume_with_sidecar()
+        guard_main_request(self.agent, request)
+        print(json.dumps({"case": "the correct resume with a differing sidecar",
+                          "refused": False}, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     # unittest parses sys.argv; the operator role is restored after the run

@@ -1,0 +1,24 @@
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -1107,8 +1107,20 @@
+             for key in ("api_content", "_row_id", "_submit_row_session_id"):
+                 row.pop(key, None)
+             return _strip_marker_for_comparison([row])
++        # The current ask is stored twice: the protected contract holds its TRANSCRIPT text
++        # and the request carries the bytes that were SENT. The identity of the turn is
++        # found by comparing the anchor in the representation the request sends it in.
++        sent = incoming.get("api_content") if isinstance(incoming, dict) else None
++        def _sent_projection(row):
++            row = dict(row)
++            for key in ("api_content", "_row_id", "_submit_row_session_id"):
++                row.pop(key, None)
++            if isinstance(sent, str) and sent and isinstance(row.get("content"), str):
++                row["content"] = sent
++            return _strip_marker_for_comparison([row])
+         indices = [i for i, row in enumerate(anchors)
+-                   if user_identity(row) == user_identity(incoming)]
++                   if user_identity(row) == user_identity(incoming)
++                   or _sent_projection(row) == _sent_projection(incoming)]
+         if len(indices) > 1:
+             raise BoundedContextError("bounded_context: current user anchor is ambiguous")
+         current = indices[0] if indices else None

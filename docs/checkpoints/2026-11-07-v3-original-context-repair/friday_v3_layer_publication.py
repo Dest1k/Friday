@@ -35,6 +35,10 @@ import time
 from pathlib import Path
 
 SCHEMA = "friday.ordinary-telegram-source-update.v45"
+# The explicit-composition schema: the request MUST name the layers of THIS operation in
+# the field `layer_names`, and the validator refuses an absent, empty, malformed or
+# repeated set instead of widening the operation to every known layer.
+SCHEMA_EXPLICIT = "friday.ordinary-telegram-source-update.v46"
 LAYER_NAMES = (
     "source157-original-context-deterministic-overhead-after-source156",
     "source157-bounded-schema-hints-after-source156",
@@ -42,6 +46,15 @@ LAYER_NAMES = (
     "write-file-format-guard",
     "bounded-resume-sidecar-guard",
     "bounded-7z-codec-activation",
+)
+# The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
+# request that carries no `layer_names` keeps exactly this meaning; it never widens to
+# every layer this file happens to know today.
+HISTORICAL_LAYER_NAMES = (
+    "source157-original-context-deterministic-overhead-after-source156",
+    "source157-bounded-schema-hints-after-source156",
+    "source157-tool-budget-fit-after-source156",
+    "write-file-format-guard",
 )
 REQUIRED_HISTORY_ROOTS = (
     "preparation/ordinary-gateway",
@@ -390,8 +403,41 @@ class Journal:
 # ------------------------------------------------------------------ layer inventory
 
 
-def read_layers(candidate_root, receipt, home, project_files, layer_names=None):
-    """Read the four layer manifests from the candidate and bind them to the home.
+def resolve_layer_names(request):
+    """Resolve the EXACT composition of this publication from the request.
+
+    Two schemas are understood and both name the composition explicitly:
+
+    * v46 (SCHEMA_EXPLICIT) REQUIRES the field `layer_names`. An absent field, a non-list,
+      an empty list, a non-string element, a duplicate and an unknown name are each
+      refused. A request never widens itself to every known layer.
+    * v45 (SCHEMA) is the legacy schema of the historical four-layer request. When such a
+      request carries no `layer_names` field, its composition is exactly
+      HISTORICAL_LAYER_NAMES, named here as an explicit constant; it never widens to every
+      layer known today. When it does carry the field, the field is validated exactly like
+      in v46 and it wins over the legacy default.
+
+    Returns the names in the order the request declares them.
+    """
+    if "layer_names" in request:
+        names = request["layer_names"]
+        if not isinstance(names, list):
+            raise Refused("transaction_layer_names_malformed")
+        if not names:
+            raise Refused("transaction_layer_names_empty")
+        for name in names:
+            if not isinstance(name, str) or not name:
+                raise Refused("transaction_layer_names_malformed")
+        if len(set(names)) != len(names):
+            raise Refused("transaction_layer_names_repeated")
+        return tuple(names)
+    if request.get("schema") == SCHEMA:
+        return HISTORICAL_LAYER_NAMES
+    raise Refused("transaction_layer_names_required")
+
+
+def read_layers(candidate_root, receipt, home, project_files, layer_names):
+    """Read the layer manifests of THIS operation from the candidate and bind them.
 
     The bytes that are actually read are tied to the hashes the current input pins: a
     manifest or patch whose bytes differ from the pinned hash is refused, so the layer
@@ -399,7 +445,7 @@ def read_layers(candidate_root, receipt, home, project_files, layer_names=None):
     the file preimages are then compared with each other, never a file with itself.
     """
     layers = []
-    for name in (layer_names or LAYER_NAMES):
+    for name in layer_names:
         manifest_rel = f"patches/hermes/{name}-manifest.json"
         patch_rel = f"patches/hermes/{name}.patch"
         require(manifest_rel in project_files and patch_rel in project_files,
@@ -654,7 +700,8 @@ def run(request, request_path, request_sha256):
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")
     INJECT_SNAPSHOT_FILES = tuple(request.get("inject_snapshot_files") or ())
-    require(request.get("schema") == SCHEMA, "transaction_only_v45_supported")
+    require(request.get("schema") in (SCHEMA, SCHEMA_EXPLICIT),
+            "transaction_only_v45_supported")
     home = Path(request["home"]).resolve()
     if INJECT_SNAPSHOT_DIR is not None:
         snapshot = Path(INJECT_SNAPSHOT_DIR)
@@ -740,14 +787,17 @@ def run(request, request_path, request_sha256):
     require(len(receipt.get("files", {})) == int(request["installed_files"]),
             "transaction_installed_files_changed")
 
-    # 6. the project inventory: the candidate adds exactly the four layer pairs and
-    #    changes nothing else that the home does not already carry.
-    # The bundle of this operation: a subset of the known layers. A layer that is already
+    # 6. the project inventory: the candidate adds exactly the layer pairs of THIS
+    #    operation and changes nothing else that the home does not already carry.
+    # The bundle of this operation is a subset of the known layers. A layer that is already
     # published is named so only when it is republished; a live publication of a new layer
     # names just that one, so the already published layers are never replayed.
-    layer_names = tuple(request.get("layer_names") or LAYER_NAMES)
-    require(layer_names and set(layer_names) <= set(LAYER_NAMES),
-            "transaction_layer_names_unknown")
+    # The composition of THIS operation is explicit: the field is REQUIRED. An absent,
+    # empty, malformed or repeated set is refused instead of silently widening the
+    # operation to every known layer. The historical four-layer request keeps its exact
+    # meaning because the generator names exactly those four layers.
+    layer_names = resolve_layer_names(request)
+    require(set(layer_names) <= set(LAYER_NAMES), "transaction_layer_names_unknown")
     inventory = request["project_inventory"]
     require(digest(encoded(inventory)) == request["project_inventory_sha256"],
             "transaction_project_inventory_changed")

@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Issue a fresh targeted independent admission for one new run id.
+"""Issue a fresh targeted independent admission for the scenarios of ONE operation.
 
 The authority binds the CURRENT gateway pid/start_time/state path and the CURRENT
 verified history rows: every row that is not EVIDENCE_READY/STOPPED/FAILED, plus
 every row whose send_state is intent/unknown, is re-read from the tester store and
 re-verified here (digest, exact bytes, deadline, unknown flag). Nothing is copied
 from an older authority document without re-checking the live bytes.
+
+The document describes ITSELF accurately. The scope states the operation the
+admission actually covers, and the supersedes field names the document it continues
+from. The scope is NOT a fixed sentence about a single activation smoke, and it does
+not carry a stale reference to an earlier admission: a future admission that covers
+several scenarios says so, and the generator refuses to write a document whose scope
+does not match the scenarios it covers.
 
 Output is the authority document in the tester's encoded() form:
     json.dumps(value, ensure_ascii=True, sort_keys=True) + "\\n"
@@ -21,8 +28,8 @@ STATE = Path("/home/jericho/.local/share/friday-telegram-bot-test")
 RUNS = STATE / "runs"
 GATEWAY_STATE = Path("/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/gateway_state.json")
 OUT_DIR = Path("/home/jericho/.cache/FRW-KIMI-FMT-20261108")
-SCENARIO = OUT_DIR / "scenarios" / "R47-JARVIS-ACTIVATE-CHECK.json"
-RUN_ID = "jarvis-activate-check-01-r47"
+SCENARIO = OUT_DIR / "scenarios" / "fmt-docx-create-r69.json"
+RUN_ID = "fmt-docx-create-r69"
 D12_RUN_ID = "d12-write-file-check-01-r48"
 FMT_RUN_ID = "fmt-wrong-format-check-01-r49"
 WRITE_RUN_ID = "ordinary-write-check-01-r49"
@@ -35,10 +42,36 @@ M06_RUN_ID = "m06-postrestart-check-01-r52"
 # its path, byte count and digest, and the file is stored in the repository. This issuer
 # therefore never rewrites R54 - every release writes a NEW document with a NEW identity
 # and a NEW path, and the tester snapshot is re-pinned to it in the same step.
-AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r68"
-AUTHORITY_FILE = "INDEPENDENT-AUTHORITY-R68.json"
+AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r69"
+AUTHORITY_FILE = "INDEPENDENT-AUTHORITY-R69.json"
+# The document this one continues from. It names the document that is actually in force
+# before it, not an old activation smoke: a released admission is never rewritten, so the
+# chain is expressed by reference.
+SUPERSEDES_AUTHORITY_ID = "ordinary-independent-jarvis-activate-20261109-r69"
+SUPERSEDES_REASON = (
+    "R69 is retained as history and is not rewritten: it was released against the live "
+    "gateway of its own boot with its own history rows, and the tester snapshot that "
+    "pins it keeps naming it. This document carries the same operation forward on the "
+    "current gateway with freshly verified history rows; it does not rewrite the R54 to "
+    "R69 results."
+)
+# The scope of THIS admission. It must describe the operation the scenarios below
+# actually cover. The generator refuses to write a document whose scope names a single
+# activation smoke while the scenario list covers several operations, and it refuses a
+# scope that claims a product or B00 acceptance.
+SCOPE = (
+    "Targeted independent executions for tester 8812646969 on the current serving "
+    "composition: the scenario list below names every run id this admission covers. It "
+    "covers the twelve format-creation scenarios (docx, xlsx, ods, odt, pdf, rtf, csv, "
+    "tsv, zip, 7z, txt, json) and the named regression scenarios of the current volume. "
+    "It is an independent execution permission for those scenarios only. It is NOT a B00 "
+    "acceptance, NOT a product acceptance and NOT a format-completeness acceptance: the "
+    "semantic acceptance of every case is made separately against its own criterion and "
+    "its own fixture."
+)
 # additional run ids covered by the same admission; each one is issued with its own
 # scenario and its own fresh authority check
+PACKAGE_FILE = Path("/home/jericho/.cache/FRW-KIMI-FMT-20261108/package-r69.json")
 EXTRA_SCENARIOS = (
     (D12_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/D12-WRITE-FILE-CHECK.json"),
     (FMT_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/FMT-WRONG-FORMAT.json"),
@@ -63,6 +96,24 @@ EXTRA_SCENARIOS = (
     (M05_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m05-current111-check-01-r52.json"),
     (M06_RUN_ID, "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/m06-postrestart-check-01-r52.json"),
 )
+# The format-creation scenarios of the current operation. They are named separately so
+# the scope above can be checked against the operation, and so a repetition of a name in
+# the scenario list is impossible by construction.
+FORMAT_SCENARIOS = (
+    ("fmt-docx-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-docx-create-r69.json"),
+    ("fmt-xlsx-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-xlsx-create-r69.json"),
+    ("fmt-ods-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-ods-create-r69.json"),
+    ("fmt-odt-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-odt-create-r69.json"),
+    ("fmt-pdf-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-pdf-create-r69.json"),
+    ("fmt-rtf-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-rtf-create-r69.json"),
+    ("fmt-csv-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-csv-create-r69.json"),
+    ("fmt-tsv-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-tsv-create-r69.json"),
+    ("fmt-zip-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-zip-create-r69.json"),
+    ("fmt-7z-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-7z-create-r69.json"),
+    ("fmt-txt-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-txt-create-r69.json"),
+    ("fmt-json-create-r69", "/home/jericho/.cache/FRW-KIMI-FMT-20261108/scenarios/fmt-json-create-r69.json"),
+)
+EXTRA_SCENARIOS = EXTRA_SCENARIOS + FORMAT_SCENARIOS
 FINAL_STATUSES = {"EVIDENCE_READY", "STOPPED", "FAILED"}
 
 
@@ -83,6 +134,38 @@ def main():
     for extra_id, extra_path in EXTRA_SCENARIOS:
         extra = json.loads(Path(extra_path).read_text())
         SCENARIOS[extra_id] = digest(encoded(extra))
+    if PACKAGE_FILE.is_file():
+        for extra_id, extra_sha in json.loads(PACKAGE_FILE.read_text()).items():
+            extra = json.loads((OUT_DIR / "scenarios" / (extra_id + ".json")).read_text())
+            if digest(encoded(extra)) != extra_sha:
+                raise SystemExit("package scenario digest changed: " + extra_id)
+            SCENARIOS[extra_id] = extra_sha
+
+    # The scope must describe THIS operation. A scope that names a single activation
+    # smoke while the scenario list covers several operations is refused, and a scope
+    # that claims a product or a B00 acceptance is refused: the admission is neither.
+    scope = " ".join(SCOPE.lower().split())
+    if "activation check" in scope and len(SCENARIOS) > 1:
+        raise SystemExit("the scope names a single activation smoke but the admission "
+                         "covers %d scenarios; the scope must describe the operation"
+                         % len(SCENARIOS))
+    # The document is not a product acceptance and not a B00 acceptance. A scope that
+    # CLAIMS either one is refused; a scope that DENIES it is the correct wording.
+    claims_product = "product acceptance" in scope and not (
+        "not a product acceptance" in scope or "not a b00, fmt or product acceptance" in scope)
+    claims_b00 = "b00 acceptance" in scope and not (
+        "not a b00 acceptance" in scope or "not a b00, fmt or product acceptance" in scope)
+    if claims_product:
+        raise SystemExit("the scope claims a product acceptance")
+    if claims_b00:
+        raise SystemExit("the scope claims a B00 acceptance")
+    covered_formats = [name for name in SCENARIOS if name.startswith("fmt-")]
+    if covered_formats and "format-creation" not in scope and "format creation" not in scope:
+        raise SystemExit("the scope does not mention the format-creation scenarios it covers")
+
+    # A repeated run id would make the scenario map ambiguous, so it is refused.
+    if len(set(SCENARIOS)) != len(SCENARIOS):
+        raise SystemExit("the scenario list contains a repeated run id")
 
     now = time.time()
     history = {}
@@ -144,14 +227,10 @@ def main():
         "run_scenarios": dict(SCENARIOS),
         "same_canonical_local_run": False,
         "schema": "frw.Root.ordinary-independent-history-admission.v1",
-        "scope": ("One controlled Jarvis-area activation check from tester 8812646969 after the user "
-                  "areas were restored through the product's onboarding path. Not a B00, FMT or "
-                  "product acceptance."),
+        "scope": SCOPE,
         "supersedes": {
-            "authority_id": "ordinary-independent-jarvis-activate-20261109-r48",
-            "reason": ("R47 is retained as history: the model provider was restored and the "
-                       "controlled check succeeded there. This document covers the new D-12 "
-                       "regression and does not rewrite the R46 or R47 results."),
+            "authority_id": SUPERSEDES_AUTHORITY_ID,
+            "reason": SUPERSEDES_REASON,
         },
         "unknown_effects_resolved": False,
     }

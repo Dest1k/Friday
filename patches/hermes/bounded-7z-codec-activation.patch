@@ -1,0 +1,24 @@
+--- a/hermes_cli/friday_workspace_7z_codec.py
++++ b/hermes_cli/friday_workspace_7z_codec.py
+@@ -216,11 +216,18 @@
+         environment = committed_venv(project_root)
+         if environment is None:
+             return sys.executable
+-        selected = site_packages(environment).resolve()
+-        if not any(Path(entry).resolve() == selected for entry in sys.path if entry):
+-            raise CodecUnavailable('codec_unavailable')
+         python = venv_python(environment)
+         if not (environment / 'pyvenv.cfg').is_file() or not python.is_file():
++            raise CodecUnavailable('codec_unavailable')
++        # The child is started with -I and imports the codec dependency itself, so the
++        # requirement is that the COMMITTED generation carries it. Requiring the parent's
++        # own sys.path to hold that site-packages is a stronger condition that a normal
++        # installation never satisfies: the launcher deliberately starts without an
++        # ambient PYTHONPATH, and the dependency is only activated when a generation
++        # changes. The child is isolated anyway, so the committed generation is the
++        # only thing it can load.
++        selected = site_packages(environment).resolve()
++        if not (selected / "py7zr").is_dir():
+             raise CodecUnavailable('codec_unavailable')
+         return str(python)
+     except (ImportError, OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):

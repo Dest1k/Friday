@@ -3,6 +3,14 @@
 
 The generator and the validator agree on the field set: this file produces exactly the
 keys that friday_v3_layer_publication.py requires, and every pin is taken from live bytes.
+
+The composition of THIS operation is carried EXPLICITLY in the request field
+`layer_names`, and the request uses the explicit-composition schema v46. The validator
+requires that field and refuses an absent, empty, malformed or repeated set instead of
+widening the operation to every known layer. LAYER_NAMES below is the composition of the
+historical four-layer request; it keeps its exact meaning because the request names
+exactly those four layers. A one-layer operation declares one name here and nothing else
+changes in the request.
 """
 import hashlib
 import json
@@ -15,6 +23,8 @@ CANDIDATE = Path("/home/jericho/.cache/FRW-V3-PUBLISH-CANDIDATE-20261108/project
 REPO = Path("/home/jericho/jericho/Friday_rework")
 UNIT = Path("/home/jericho/.config/systemd/user/hermes-gateway-1b7e7667.service")
 OUT = Path("/home/jericho/.cache/FRW-V3-PUBLISH-CANDIDATE-20261108/REQUEST-LAYERS.json")
+# The composition of THIS operation. It is declared, never inferred: the validator reads
+# exactly these names and refuses any other set.
 LAYER_NAMES = (
     "source157-original-context-deterministic-overhead-after-source156",
     "source157-bounded-schema-hints-after-source156",
@@ -69,10 +79,15 @@ def main():
             history[str(path.relative_to(HOME))] = sha(path)
 
     request = {
-        "schema": "friday.ordinary-telegram-source-update.v45",
+        # The explicit-composition schema: the composition of this operation is declared
+        # in `layer_names` and never inferred.
+        "schema": "friday.ordinary-telegram-source-update.v46",
         "seconds": 180,
         "home": str(HOME),
         "candidate_project": str(CANDIDATE),
+        # The composition of THIS operation, declared explicitly. The validator requires
+        # this field and refuses an absent, empty, malformed or repeated set.
+        "layer_names": list(LAYER_NAMES),
         "marker": pin(HOME / "FRIDAY-INSTALL.json"),
         "source_receipt": pin(HOME / "hermes-agent.source.json"),
         "stamp": pin(HOME / "hermes-agent/install-stamp.json"),
