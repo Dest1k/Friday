@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Сола — 10.11.2026, 14:11 МСК
+## Действующее продолжение Сола — 10.11.2026, 14:26 МСК
 
 Сол — временный lead/координатор/интегратор; разработка, необходимые проверки,
 штатная установка и публикация в существующий main разрешены владельцем.
@@ -27,9 +27,9 @@
 остаются обязательными. Записи реестров не подменяют исполнения.
 
 **Git и принадлежность.** Последний опубликованный и удалённо сверенный
-`main = b1725596d7e310a86128cde3478144f921d48650`; исходный снимок продолжения
-`585f9cb9790a6182908db9ccdde263176ae39969` не откатывался. Checkpoint189/archiveprovenance/RTFfirstREAD/ARJgenuine/sourcecandidate опубликован
-и удалённо сверён; все274 checksum entries
+`main = ac8bbcb960f7edfe2fcbbc2f0858d7028c5b8685`; исходный снимок продолжения
+`585f9cb9790a6182908db9ccdde263176ae39969` не откатывался. Checkpoint190/RTFrecall+edit/archivecollision/sourcecandidates опубликован
+и удалённо сверён; все289 checksum entries
 проверены из точных Git-байтов. Следующая дельта остаётся отдельно от опубликованного SHA.
 Три чужих изменения §1 сохраняются и исключаются. Хеш текущего коммита внутрь самого
 себя не записывается; точный финальный SHA сообщается по факту после commit/push.
@@ -166,15 +166,34 @@ gatewayactive_agents0. `rtf_continuation_preparation` завершён/прин�
 wholeuserreportPARTIAL, новыеартефакты/oldtargetсохранены. `read_mutation_argument_repair`
 завершён/принят, Rootпроверил финальнуюhintдельту и223unchangeddeps на190; не установлен.
 `arj_first_user_preparation` завершён: unboundпакет первого genuinelymissingARJextract/read,
-89scopedcontrols иactual190readonlygate; Rootsource/currentboundary ещё нужны, отправки нет.
+89scopedcontrols иactual190readonlygate; R77 CLOSED14:19:53, exit0: `a02-arj-native-content-read-extract-01-20261110`,
+sent2655→regular.txt2657,17bytes/e90c743d…3aead;
+[Rootpayload/nativeextract/read/delivery/fullcustodyPASS](evidence/sol-20261110/arj-first-user-root-review.json).
+Source152Bfa39…69e0 сохранён; новаяпапка0700/file0600/nlink1. Native5242–5261
+включают genuinecompaction5243/usercopy5251 и старыеR76toolcopies5248–5250;
+они точно совпадают с5235–5237/callids/content, не являются новымwriteeffect.
+Authority63571479…b536a, boundactualv425f730c52…3072e, scenario9bbefbd7…a8824.
+FormalNOTESTсохранён; ни ARJCREATE/edit, ни fullmixedA02/F01recall этим не приняты.
 `archive_named_status_repair`/reviewer завершены и Rootприняты source-only:
 [one-methodreview](evidence/sol-20261110/archive-named-status-source-root-review.json),
 5focused190controls и20indepdisplayprobes. Отказавшиеworkspace-relativetargets и
 проверенныеуспехи названы изnativeledger; unsafeимена даютgenericfallback, неhostpath.
 Кандидат отдельно вsource-candidates, не установлен. `two_fix_publication_preparation`
-активен, приватно готовит одну futureпубликацию двух независимыхисправлений поверх
-actual190/460pins; общиеruntime/repo не меняет. Root только владеет admissions/live/runtime; на этомсрезе
-активныхliveobserver нет. NJSdeployment закрыт/rollbackbackup сохранён; старые
+завершён/Rootпринят: [97actualcombinedpublisher controls+independentreview](evidence/sol-20261110/two-fix-publication-offline.json).
+Rootподключил ровнооба sourceслоя и exact97-testedchecker bytes врабочемдереве,
+новыйproject464/inputb508cc9f…9479d; actualruntime190 остаётсянеизменён.
+Это ещё не192установка/сервис/пользовательскаяквалификация.
+`arj_ordinary_recall_preparation`/егоindependentreviewer — активныйunboundпакет
+отдельного обязательногоF01recall послеR77PASS, безreupload/extract/новыхфайлов.
+`saved_r75_compression_route` завершён/Rootпринят:
+[действительный summary наconfigureddispatcher](evidence/sol-20261110/compression-saved-user-path-root-review.json).
+R75actual13:44:11aux custom:friday-compression/dispatcher/.78:8001→native5185→
+commit13:44:17/fallback_used=false; Rootrehash6sources/2configs/9loglines/7nativerowsPASS.
+Физическийbackend/worker/HTTPstatus не установлены, причинастарого503/UNKNOWN
+не выводится. Новыхmodel/network/productзапусков не было.
+Попытка отдельногоreadonlyconditionalLHA/7zhardlinkcontractreview отклоненаnative
+`agent thread limit reached`; ребёнок не создан, independentwork продолжается. Root только владеет admissions/live/runtime; на этомсрезе
+активныхliveobserver сейчас нет, R77закрыт, runtime190 неизменён. NJSdeployment закрыт/rollbackbackup сохранён; старые
 закрытые назначения не изображаютсяпродолжающимися.
 
 R42/R43, UNKNOWN_SEND, неизвестные P01/Q02 и исторический S11 сохраняются.
@@ -182,12 +201,19 @@ R42/R43, UNKNOWN_SEND, неизвестные P01/Q02 и исторически�
 Для каждой позиции отдельно: отправка/эффект, содержательный критерий, formal tester,
 основание следующего действия. Сначала сохранённые материалы и штатная сверка.
 
-Ближайшая исполнимая граница: Rootпринять точный unboundARJpacket наactual190proof,
-свежие ingress/current principal/SID/dedup/target/privateoracle/slot/CAS/ресурсы, затем
-одна отдельная новая extraction/read операция. Source-onlypacket не является допуском.
-После известной границы — новые boundedincrements argumentguard/namedarchive status;
-old190/460pins и15metadata-only различий сохранять. Полные критерии goal неизменны; get_goal active подтверждён14:08,
-вечерняяпередача не начата; productservices оставлены под штатным постояннымуправлением.
+Ближайшая исполнимая граница: принять unboundordinaryARJrecall, точный реальный
+orderedR77Rootreview и freshcurrentcuts, затем отдельная первая shortrecall без
+reupload/reextract в тойжеSID. ИсходR77 сохранён, не повторять2655радиgrade.
+После knownrecallboundary — единая только-новая190→192публикация двух исправлений:
+приватный пакет `/home/jericho/.cache/FRW-SOL-V3-TWO-FIX-PUBLISH-PREP-20261110`,
+RESULTdf31480e…b65c9, currentinputb508cc9fde63187aedceee222c1f778004d62416323ff63ec7b28968cd79479d,
+project464; все460oldpins/190oldlayers/15metadata-onlydifferences сохранены.
+Rootгенерирует собственныйrequestнаактуальнойгранице и обязательно передаёт
+HERMES_HOME вpublisher; childrequestcandidate не исполнять.97gate/reviewreuse
+толькоприexactbytes. Freshprocess/data/source/installed/userfacts раздельны.
+НикакихобещанийconcurrentCAS/powerlosscrashatomicity: доказаныstalerequestpreflight
+и in-processrollback под solewriter/quiescenthome. Полные критерии goal неизменны;
+get_goalactive14:08. Вечерняяпередача не начата; постоянныеproductservicesработают.
 
 ## 0. Состояние разработки
 
@@ -195,7 +221,7 @@ old190/460pins и15metadata-only различий сохранять. Полны
 |---|---|
 | Репозиторий | `/home/jericho/jericho/Friday_rework`, ветка `main` |
 | Исходный HEAD продолжения | `585f9cb9790a6182908db9ccdde263176ae39969` (сверка 10.11, 09:04 МСК); прежний `476496a` — исторический |
-| Последний опубликованный HEAD/origin/main | `b1725596d7e310a86128cde3478144f921d48650`; следующая рабочая дельта указана выше |
+| Последний опубликованный HEAD/origin/main | `ac8bbcb960f7edfe2fcbbc2f0858d7028c5b8685`; следующая рабочая дельта указана выше |
 | Последний независимо проверенный генератор | `585f9cb9790a6182908db9ccdde263176ae39969`: short write, write/fsync refusal, единственный победитель публикации; его прежние checker-остатки затем исправлены в32bfb815; новый ordered-predecessor pin в текущем срезе |
 
 ### Исторический проход DSH (476496a)
@@ -265,8 +291,9 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 
 - Старый адрес эмбеддингов `.78:8002` не был фактической конфигурацией обслуживаемого
   home. Новый результат `.195:8002` подтверждает реальное вычисление, не только корень.
-- Длинное сжатие через штатный consumer ещё не квалифицировано. Исходный 503 сохранён;
-  успешный отдельный минимальный запрос не устанавливает причину первого отказа.
+- R75обычныйпользовательскийconsumer реально прошёл configuredsummaryбезfallback:
+  см. compression-saved-user-path-root-review.json. Исходный503/UNKNOWN сохранён;
+  успешное последующееисполнение не устанавливает причину первогоотказа.
 - Модельные synthetic health probes не являются пользовательскими Telegram-задачами;
   перед любой новой разрешённой живой отправкой всё равно нужен текущий адресный допуск.
 

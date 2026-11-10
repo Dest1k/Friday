@@ -50,6 +50,8 @@ LAYER_NAMES = (
     "necessary-document-clarification-p04",
     "archive-conversion-failure-provenance-after188",
     "arj-unix-attribute-types-after-source189",
+    "read-file-reject-write-arguments-after-source189",
+    "archive-conversion-named-target-status-after-source190",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to

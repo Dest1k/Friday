@@ -56,9 +56,13 @@ def consumer_bench(check, args):
     candidate = args.candidate_project.resolve()
     before_receipt = json.loads((live / "hermes-agent.source.json").read_text())
     before_marker = json.loads((live / "FRIDAY-INSTALL.json").read_text())
-    layer = args.layer
-    pair = (f"patches/hermes/{layer}-manifest.json", f"patches/hermes/{layer}.patch")
-    manifest = json.loads((candidate / pair[0]).read_text())
+    layer_names = tuple(args.layer or ("bounded-current-ask-identity",))
+    layer = layer_names[0]
+    pair = tuple(name for selected in layer_names for name in (
+        f"patches/hermes/{selected}-manifest.json", f"patches/hermes/{selected}.patch"))
+    manifests = [json.loads((candidate / f"patches/hermes/{selected}-manifest.json").read_text())
+                 for selected in layer_names]
+    manifest = {"files": [row for body in manifests for row in body["files"]]}
     source_files = tuple(row["path"] for row in manifest["files"])
     check("bench_distinct_source_targets", len(source_files) == len(set(source_files)))
     if layer == "necessary-document-clarification-p04":
@@ -75,7 +79,13 @@ def consumer_bench(check, args):
     # count need not equal the installed layer count; it is a dependency set.
     previous_input = json.loads(args.previous_input.read_text())
     check("bench_prerequisites_pinned", all(previous_input["project_files"].get(name) == pin
-          for name, pin in manifest.get("prerequisites", {}).items()))
+          for body in manifests for name, pin in body.get("prerequisites", {}).items()))
+    if layer_names == ("read-file-reject-write-arguments-after-source189",
+                       "archive-conversion-named-target-status-after-source190"):
+        check("bench_two_fix_exact_two_source_targets", source_files == (
+            "tools/file_tools.py", "agent/turn_explainers.py"))
+        check("bench_independent_dependency_sets_preserved",
+              [len(body["prerequisites"]) for body in manifests] == [189, 190])
     tmp_root = Path(os.environ.get("TMPDIR", "/home/jericho/.dsh/tmp"))
     with tempfile.TemporaryDirectory(prefix="v3-layer-increment-", dir=tmp_root) as temp:
         root = Path(temp)
@@ -106,7 +116,8 @@ def consumer_bench(check, args):
         unit = root / "bench.service"
         unit.write_bytes(b"# isolated bench unit; never started\n")
         request_path = root / "request.json"
-        command = [sys.executable, "-I", "-B", str(GENERATOR), "--layer", layer,
+        command = [sys.executable, "-I", "-B", str(GENERATOR)] + [
+                   flag for selected in layer_names for flag in ("--layer", selected)] + [
                    "--home", str(home), "--candidate-project", str(candidate),
                    "--previous-input", str(args.previous_input.resolve()),
                    "--current-input", str(args.current_input.resolve()),
@@ -122,7 +133,7 @@ def consumer_bench(check, args):
         check("bench_generator_installed_layer_refused", refused.returncode != 0
               and refused.stderr.strip() == "transaction_increment_layer_already_installed"
               and json.loads(request_path.read_text()) == request, refused.stderr[-250:])
-        check("bench_increment_only", request["layer_names"] == [layer]
+        check("bench_increment_only", request["layer_names"] == list(layer_names)
               and request["installed_layers"] == len(before_receipt["layers"])
               and not request["staged_files"] and not request["project_file_updates"]
               and not request["plugin_set"] and not request["plugin_additions"])
@@ -172,6 +183,49 @@ def consumer_bench(check, args):
             check("bench_invalid_seconds_refused:" + repr(seconds), status == 2
                   and outcome.get("reason") == "transaction_seconds_positive_integer_required",
                   str(outcome))
+
+        # Repin a deliberately wrong selected manifest in a separate tiny candidate.
+        # The real entry point must reject each false postimage before publication.
+        # In the second case, both patches have actually run in private staging.
+        for index, selected in enumerate(layer_names):
+            bad_candidate = root / ("wrong-postimage-" + str(index))
+            for name in pair:
+                dest = bad_candidate / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(candidate / name, dest)
+            bad_manifest_name = f"patches/hermes/{selected}-manifest.json"
+            bad_manifest_path = bad_candidate / bad_manifest_name
+            bad_manifest = json.loads(bad_manifest_path.read_text())
+            bad_manifest["files"][0]["sha256"] = "0" * 64
+            bad_manifest_path.write_text(json.dumps(bad_manifest, sort_keys=True, indent=2) + "\n")
+            bad_current = json.loads(args.current_input.read_text())
+            bad_current["project_files"][bad_manifest_name] = hashlib.sha256(
+                bad_manifest_path.read_bytes()).hexdigest()
+            bad_input = root / ("wrong-postimage-input-" + str(index) + ".json")
+            bad_input.write_text(json.dumps(bad_current, sort_keys=True, indent=2) + "\n")
+            bad_request = json.loads(json.dumps(request))
+            bad_request["candidate_project"] = str(bad_candidate)
+            bad_request["current_input"] = bad_request["candidate_input"] = {
+                "path": str(bad_input), "sha256": hashlib.sha256(bad_input.read_bytes()).hexdigest()}
+            bad_request["project_inventory"] = bad_current["project_files"]
+            bad_request["project_inventory_sha256"] = hashlib.sha256(
+                (json.dumps(bad_current["project_files"], sort_keys=True, indent=2) + "\n").encode()).hexdigest()
+            status, outcome = run(bad_request)
+            check("bench_wrong_postimage_refused:" + selected, status == 2 and outcome.get("reason")
+                  == "transaction_layer_output_changed:" + selected, str(outcome))
+            restored = {name: ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode))
+                        for name in watched}
+            check("bench_wrong_postimage_no_publication:" + selected, restored == original
+                  and all(not (home / name).exists() for name in pair))
+            request_hash = hashlib.sha256((json.dumps(bad_request, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
+            bad_stage = home / "preparation" / ("ordinary-source-update-v45-" + request_hash[:16])
+            check("bench_wrong_postimage_no_intent:" + selected, not (bad_stage / "intent.json").exists())
+            check("bench_wrong_postimage_real_staged_prefix:" + selected, all(
+                hashlib.sha256((bad_stage / "staging" / row["path"]).read_bytes()).hexdigest()
+                == row["sha256"] for body in manifests[:index + 1] for row in body["files"]))
+            shutil.rmtree(bad_stage)
+            shutil.rmtree(bad_candidate)
+            bad_input.unlink()
 
         def deadline_refusal(clock):
             # Control only the clock, not the publisher, source check, journal or restore.
@@ -241,15 +295,44 @@ def consumer_bench(check, args):
                     for name in watched}
         check("bench_last_source_rename_restores_all", restored == original
               and all(not (home / name).exists() for name in pair))
+        # Fail after the final metadata rename: both source postimages, every new
+        # pair and all three metadata files were published through the real journal.
+        metadata_snapshot_dir = root / "metadata-rename-snapshot"
+        injected = dict(request, inject_after_rename=True,
+                        inject_target=str(home / "hermes-agent/install-stamp.json"),
+                        inject_snapshot_dir=str(metadata_snapshot_dir),
+                        inject_snapshot_files=list(watched) + list(pair))
+        status, outcome = run(injected)
+        check("bench_final_metadata_rename_failure", status == 2
+              and outcome.get("exception") == "OSError", str(outcome))
+        snapshots = list(metadata_snapshot_dir.glob("*.json"))
+        check("bench_final_metadata_snapshot_recorded", len(snapshots) == 1)
+        if len(snapshots) == 1:
+            snapshot = json.loads(snapshots[0].read_text())
+            check("bench_metadata_boundary_all_source_postimages", all(
+                snapshot["files"][str(source / row["path"])]["sha256"] == row["sha256"]
+                for row in manifest["files"]))
+            check("bench_metadata_boundary_all_pair_postimages", all(
+                snapshot["files"][str(home / name)]["sha256"]
+                == hashlib.sha256((candidate / name).read_bytes()).hexdigest() for name in pair))
+            check("bench_metadata_boundary_all_metadata_changed", all(
+                snapshot["files"][str(home / name)]["sha256"]
+                != hashlib.sha256(original[name][0]).hexdigest() for name in watched[-3:]))
+        restored = {name: ((home / name).read_bytes(), stat.S_IMODE((home / name).stat().st_mode))
+                    for name in watched}
+        check("bench_final_metadata_rename_restores_all", restored == original
+              and all(not (home / name).exists() for name in pair)
+              and (predecessor / "committed.json").read_bytes() == predecessor_bytes)
         status, outcome = run(request)
         check("bench_real_consumer_commit", status == 0 and outcome.get("state")
-              == "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED" and outcome.get("layers") == 1
+              == "SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED" and outcome.get("layers") == len(layer_names)
               and outcome.get("files") == len(source_files), str(outcome))
         if status:
             return
         after_receipt = json.loads((home / "hermes-agent.source.json").read_text())
-        check("bench_previous_layers_preserved", after_receipt["layers"][:-1]
-              == before_receipt["layers"] and after_receipt["layers"][-1]["manifest"] == pair[0])
+        check("bench_previous_layers_preserved", after_receipt["layers"][:-len(layer_names)]
+              == before_receipt["layers"] and [row["manifest"] for row in
+              after_receipt["layers"][-len(layer_names):]] == list(pair[::2]))
         check("bench_only_target_inventory_changed",
               {k: v for k, v in after_receipt["files"].items() if k not in source_files}
               == {k: v for k, v in before_receipt["files"].items() if k not in source_files})
@@ -268,7 +351,7 @@ def consumer_bench(check, args):
               == predecessor_bytes)
         summary = {"before_layers": len(before_receipt["layers"]),
                    "after_layers": len(after_receipt["layers"]),
-                   "layer": layer,
+                   "layer_names": list(layer_names),
                    "before_source": {name: before_receipt["files"][name]["sha256"]
                                      for name in source_files},
                    "after_source": {name: after_receipt["files"][name]["sha256"]
@@ -284,7 +367,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     for name in ("installed-home", "previous-input", "current-input", "candidate-project"):
         parser.add_argument("--" + name, type=Path)
-    parser.add_argument("--layer", default="bounded-current-ask-identity")
+    parser.add_argument("--layer", action="append")
     args = parser.parse_args(argv)
     provided = [getattr(args, name) is not None for name in (
         "installed_home", "previous_input", "current_input", "candidate_project")]
@@ -330,6 +413,12 @@ def main(argv=None):
     selected = generator.parse_args(["--layer", "arj-unix-attribute-types-after-source189"])
     check("generator_arj190_cli_selects_only_increment",
           selected.layer_names == ("arj-unix-attribute-types-after-source189",))
+    two_fix = ("read-file-reject-write-arguments-after-source189",
+               "archive-conversion-named-target-status-after-source190")
+    selected = generator.parse_args([flag for name in two_fix for flag in ("--layer", name)])
+    check("generator_two_fix_cli_exact_order", selected.layer_names == two_fix)
+    check("consumer_two_fix_explicit_exact_order", validator.resolve_layer_names({
+        "schema": validator.SCHEMA_EXPLICIT, "layer_names": list(two_fix)}) == two_fix)
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (
@@ -353,7 +442,9 @@ def main(argv=None):
     for single in ("bounded-resume-sidecar-guard", "bounded-7z-codec-activation",
                    "bounded-current-ask-identity", "necessary-document-clarification-p04",
                    "archive-conversion-failure-provenance-after188",
-                   "arj-unix-attribute-types-after-source189"):
+                   "arj-unix-attribute-types-after-source189",
+                   "read-file-reject-write-arguments-after-source189",
+                   "archive-conversion-named-target-status-after-source190"):
         request = {"schema": validator.SCHEMA_EXPLICIT, "layer_names": [single]}
         check("single_layer_resolves:" + single,
               validator.resolve_layer_names(request) == (single,))
