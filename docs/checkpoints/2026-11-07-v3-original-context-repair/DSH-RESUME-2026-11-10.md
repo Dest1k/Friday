@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 11.11.2026, 00:30 МСК
+## Действующее продолжение Астры — 11.11.2026, 01:28 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -25,10 +25,13 @@
 Следующая полная совместимая сборка `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1` уже завершена:
 566 native tests и actual appbatch PASS в узком объёме, но108 chapter/style state deltas и
 material customchapter-assignment loss оставляют полную RTF fidelity открытой. Built runtime
-пока **не установлен**. Сейчас Сол выполняет `ASTRA-SOL-V3-LO-CONSUMER-BUNDLE-20261110#1`:
-совместимый wholebundle и actualLOCAL product consumers, без shared/runtime/user effects;
-Task/compact/active-turn ниже. Standard и прежняя отдельная TUI сохранены. Root не открывает
-maintenance до final source/bundle/consumer review и свежих предпосылок; текущийOffice не менялся.
+пока **не установлен**. Пакет `ASTRA-SOL-V3-LO-CONSUMER-BUNDLE-20261110#1` завершён: четыре
+actualLOCAL consumer PASS, остальные направления ограничены; общийOffice switch не допущен.
+[Итог wholebundle](evidence/astra-20261111/office-native-consumer-bundle-final.json). Сейчас Сол
+выполняет `ASTRA-SOL-V3-DSH-CURRENT-ARCHITECTURE-REVIEW-20261111#1`: M1 принят, точный
+зафиксированный код передан для конечного ревью. Root параллельно исправляет native prerequisites
+и оценивает сохранённые Office outputs. Standard/прежняя TUI/oldgoalpaused сохранены.
+Никакое maintenance-окно не открыто на ожидание ревью.
 
 **Git.** При принятии HEAD = origin/main = remote main был
 `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
@@ -38,7 +41,8 @@ maintenance до final source/bundle/consumer review и свежих предп�
 в `22a3b3bb1a9e39a6ecf6d63827a32f51dc2c6c3c`;197 установлен/опубликован
 в `b99c02b1a809cba935d64fc298b1d99bb97c2827`;198 опубликован в
 `ed2788bab090fdf841e1e242814bf03506caa741`; R99 с Writer evidence опубликован в
-`bcb8241865a40b0d892444fd440c65f93815c151` — проверенный baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+`bcb8241865a40b0d892444fd440c65f93815c151`; R100 с Calc evidence —
+`f441ab9c2751d1df6c4c4232bc1d6d0331e9a7ce` — проверенный baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
@@ -166,7 +170,8 @@ Microsoft Office cross-app и полный F04/форматы не объявл�
 45старых unresolved / 3UNKNOWN**. Все операции этого forward плана закрыты;
 здоровый gateway оставлен работать. Источники/received/receipts/runs не менялись.
 
-**DOCX→ODT:197 narrow reverse-heading profile,198 empty-template fix; user-путь ещё открыт.**
+**История подготовки DOCX→ODT до R99:**197 narrow reverse-heading profile,198 empty-template fix.
+Сам пользовательский R99 уже завершён, оценка ниже; этот абзац не даёт новой отправки.
 [Source/review/composition](evidence/astra-20261110/word197-publication-source-review.json):
 one-file2b5da5…bf15 допускает только native-output passive RDF и строго пустые label heading
 wrappers; public/source profile остаётся строгим. 68 forward/7 consumer/12 semantic/136
@@ -185,9 +190,9 @@ publication с196 exact prerequisites, оригинал сохранён; actual
 Initial prep wrong-path к закрытому ODS journal отказал до maintenanceclock/stop/publisher,
 исправлен только путь; дальнейшая actual197 maintenance выполнена один раз.
 
-**Следующий результат:** точный original DOCX→ODT first-operation пакет: source/scenario/
-history/effect basis, ближайшие guards/consumer и независимое review до будущего admission.
-Новый reverse запрос пока не допущен; installed/sourcefix/newversion сами повтор не разрешают.
+**Исторический недостающий результат до R99:** exact original DOCX→ODT packet/source/scenario/
+history/effect basis, guards/consumer и независимое review. Он затем доведён до actual R99 ниже.
+Installed/sourcefix/newversion сами повтор не разрешают; R99 уже consumed.
 На том же genuine original37118B DOCXc72c Root LOCAL readiness197 выявил linked_content/output_inventory/effectnone.
 Первая попытка и её часы сохранены; пользовательский FIRST не начат. Productfinally удалил
 невыданный rawODT. Один отдельно спланированный max1 LOCAL capture diagnostic с readonly tap
@@ -286,9 +291,15 @@ JSON Inventory serialization/socket-import-guard ошибки checker сохра
 **Следующая presentation-ветка**: [source/history и private-oracle подготовка](evidence/astra-20261111/presentation-first-direction-preparation.json).
 PPTX→ODP — действительно недостающее направление в bounded506/5467/669 contour. Оригинал48100B/
 64556440…80a:5slides/table/nativechart+embeddedbook/5notes. Privategolden/93source+40controls+
-6reviewdelta PASS; nativeODP/mapping/qualifiedtoolchain/styles/orientation/app/render ещё NOT_READY.
-Private package содержит notes и в Git не публикуется. Не дублировать canary Сола; работать с его
-уже captured native output. **ODP→PPTX не FIRST**: V04sent2030/platform4095 уже был; wrongread/
+6reviewdelta PASS в первоначальной подготовке. На том же уже полученном LOCAL nativeODP
+29345B/f321f55e… проверены5slides/10bodyparagraphs/table5x2/5notes/nativechart/all7representedcells:
+[независимая saved-byte оценка](evidence/astra-20261111/pptx-odp-saved-native-evaluation.json),
+49controls+14independentprobes и separate sourcejoinPASS. **Общий FAIL/NOT_READY:** отсутствует
+ObjectReplacements/Object 1; unknowns/resourceguard не пропускаются из-за совпадения данных.
+Orientation/grouping — только LOprimary-source mapping, date/category display/style/render/app
+не квалифицированы;5notesT3opacity0% требуют native interpretation. Source-only producer diagnosis
+идёт отдельно. Private source/golden/notes вGit не публикуются. Новый producer/canary/send не был
+нужен для этой оценки; не дублировать closedэффекты Сола. **ODP→PPTX не FIRST**: V04sent2030/platform4095 уже был; wrongread/
 file_not_found/partialresponse сохранены, новыйversion не разрешает resend/replacement.
 
 **Текущая DSH availability — UNAVAILABLE**, независимо от исправногоOffice/gateway:
@@ -314,25 +325,35 @@ Root accepted narrowobservations/limits only: `FRW-ASTRA-SOL-LO-BUILD-20261110/R
 SHAbf0bed0e…1ed2. Old build/nativeQA/app/staging clocks закрыты; бывшие failedunits неактивны,
 их не будить и не повторять.
 
-Сол уже фактически выполняет следующий независимый пакет на **Standard/default** в той же TUI:
-`ASTRA-SOL-V3-LO-CONSUMER-BUNDLE-20261110#1`, native turn01a1c72b-1e8b-7950-9742-48a7581e8fe4.
-Один nativecompact01a1c727-6d0d-7c40-85cb-621f90be9c27 завершён/contextCompaction подтверждён,
-только затем Task доставлен и actual useritem/inProgress readback проверены; oldSolgoalpaused.
-TASK `/home/jericho/.cache/FRW-ASTRA-SOL-LO-CONSUMER-BUNDLE-20261110/TASK.txt`,
-SHAc2c0c1c7de01adc5f10780baa6ca41f092766d65a4540409359eafc04f904fae.
-Сол делает owncache wholecompatiblebundle +realLOCAL consumer-shaped canaries на CHANGEDdependency,
-без sharedinstall/RootFIRST/user/model/Tg effects; Root независимо выполняет FIRST на текущемOffice.
-Организационная первая веха≈45min, неkilltimer; finite future staging300/batch600 с сохранением
-более тесныхinnercaps. Старый23:31compile deadline не продлевается: он закрыт в прежнейзадаче.
-Перед будущимtoolchainmaintenance нужны реальные bundle/filter/consumer source compatibility,
-independent exactdelta review и свежие Root предпосылки. Root не ждёт Сола в коротком окне.
-[Последние принятые M1/M2](evidence/astra-20261111/office-bundle-preparation-milestones.json):
-M1 восемь knownnone/nooutput rendererfails; M2 nativeentry repaired без rebuild, отдельный новый
-600batch6.152s. DOCX→ODT/ODT→DOCX/ODS→XLSX/ODP→PPTX localactualconsumer PASS; XLSX→ODS,
-ODT→PDF,PPTX→ODP,PPTX→PDF source/checker дельты ещё оцениваются на тех же capturedbytes.
-Earlier absent-oosplash prose исправлена: frozenruntime уже содержал nativeentry;172Bshim+5dirs
-изменили launcherdependency. M1/M2 exactrefs проверены и точные peeritems consumed. Никакой
-sharedinstall ещё нет; Standard, исходные часы и полнота оставшихся проверок сохранены.
+**Office пакет Сола закрыт, установленныйOffice не менялся.**
+[Final bundle / actual consumers / ограничения](evidence/astra-20261111/office-native-consumer-bundle-final.json):
+RESULT6d115303…1abc,40refs/точный finalpeer проверены/consumed. FourLOCAL consumer PASS;
+Sheet newbank принят только source/samebytes, PDF/font/catalog и PPTX resource/oracle открыты.
+Private root0700 не доказывает canonical0500 selector. Общий switch не допущен, oldM1/M2 сохранены.
+
+**R92 на той же received2714 под новой частной Office сборкой — PARTIAL.**
+[Один реальный open/edit/save/close/reopen/restore цикл](evidence/astra-20261111/rtf-r92-new-office-application-partial.json):
+все3OutlineLevel1 сохранены во всех4snapshots; exact15prose/30tablecellstrings/Unicode/date/chapterrules
+и effective props совпали. Но16ParaAdjust.State default1→direct0 — unselected форматное состояние
+изменилось, будущие style edits не проверены. Нельзя закрывать полнуюRTF fidelity. NativePDF из
+того же finalreopen визуально читается, это не pixel/font/generalPDF proof. HistoricalR92/source/
+receipt/oldapplicationPARTIAL неизменны; model/producer/send/globalinstall0, ownprocesses0.
+
+**DSH: проверка кода native-пути выявила блокер до установки.**
+[Точный новый срез](evidence/astra-20261111/dsh-recovery-native-preflight-blocker.json).
+ПолныйNode support distribution5866members/4750files/196775086B/3relativealiases иCA проверены
+Root по всемhashes/types/modes/owners/links, канонически ещё не восстановлены. Оригинальный
+prepfe1e… найден в retained native5599beforeimage с исходнымSHA; oldreceipts/clocks не переписаны.
+DSH source400snapshot3bb6610d… прошёл115+22subtests и independent119sourcechecks, но
+Root нашёл реальный blocker: native _workers_stopped всё ещё требует удаления/отсутствия
+всего workers. Данные сохраняем, установка запрещена этим несоответствием; отдельная DSH-only
+quiescence correction готовится в owncopy, frozen candidate не меняется. Project-only publication
+тоже требует конкретного существующего consumer пути, фиктивный nativepatch ради счётчика не нужен.
+Сол realStandard после одного завершённого pretaskcompact01a1c775… получил M1 задачу и сдал
+architecture2ee2238d…; exact frozen continuation передан без повторногоcompact, фактический
+turn01a1c78d-9e47-7cf3-8234-ac67c8d5acea/inProgress проверен. Его finalreview нужен до live.
+Root source198/gateway1198290 остаются исправны; current3DBquick_checkOK/leases0/
+30:2,196:2,5487:5. DSH availability пока UNAVAILABLE; новых user/model/Tg effects0.
 
 R83 UNKNOWN_SEND/один readonly EMPTY quarantine, R85 PARTIAL/Question NOT_RUN,
 исчерпанные три C10 R89–R91, R42/R43/2257/S11/P01/Q02/G06/M10 и прочие consumed/UNKNOWN
