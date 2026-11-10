@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 11.11.2026, 01:28 МСК
+## Действующее продолжение Астры — 11.11.2026, 01:54 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -28,9 +28,10 @@ material customchapter-assignment loss оставляют полную RTF fidel
 пока **не установлен**. Пакет `ASTRA-SOL-V3-LO-CONSUMER-BUNDLE-20261110#1` завершён: четыре
 actualLOCAL consumer PASS, остальные направления ограничены; общийOffice switch не допущен.
 [Итог wholebundle](evidence/astra-20261111/office-native-consumer-bundle-final.json). Сейчас Сол
-выполняет `ASTRA-SOL-V3-DSH-CURRENT-ARCHITECTURE-REVIEW-20261111#1`: M1 принят, точный
-зафиксированный код передан для конечного ревью. Root параллельно исправляет native prerequisites
-и оценивает сохранённые Office outputs. Standard/прежняя TUI/oldgoalpaused сохранены.
+выполняет `ASTRA-SOL-V3-DSH-COHERENT-REPAIR-20261111#1`: предыдущее конечное ревью
+завершено CHANGES_REQUIRED; принят цельный наборF1–F8, кандидат не установлен.
+[Ревью / actual static / новая задача](evidence/astra-20261111/dsh-coarchitect-coherent-repair-checkpoint.json).
+Root параллельно готовит точное восстановление зависимостей и безопасную Office диагностику. Standard/прежняя TUI/oldgoalpaused сохранены.
 Никакое maintenance-окно не открыто на ожидание ревью.
 
 **Git.** При принятии HEAD = origin/main = remote main был
@@ -42,7 +43,8 @@ actualLOCAL consumer PASS, остальные направления огран�
 в `b99c02b1a809cba935d64fc298b1d99bb97c2827`;198 опубликован в
 `ed2788bab090fdf841e1e242814bf03506caa741`; R99 с Writer evidence опубликован в
 `bcb8241865a40b0d892444fd440c65f93815c151`; R100 с Calc evidence —
-`f441ab9c2751d1df6c4c4232bc1d6d0331e9a7ce` — проверенный baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+`f441ab9c2751d1df6c4c4232bc1d6d0331e9a7ce`; Office partial/DSH blockers опубликованы в
+`ff83addc4aaaade0e8fcaa06a8f19419e97a98cb` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
@@ -349,9 +351,22 @@ Root нашёл реальный blocker: native _workers_stopped всё ещё 
 всего workers. Данные сохраняем, установка запрещена этим несоответствием; отдельная DSH-only
 quiescence correction готовится в owncopy, frozen candidate не меняется. Project-only publication
 тоже требует конкретного существующего consumer пути, фиктивный nativepatch ради счётчика не нужен.
-Сол realStandard после одного завершённого pretaskcompact01a1c775… получил M1 задачу и сдал
-architecture2ee2238d…; exact frozen continuation передан без повторногоcompact, фактический
-turn01a1c78d-9e47-7cf3-8234-ac67c8d5acea/inProgress проверен. Его finalreview нужен до live.
+Сол realStandard завершил конечное ревью5be55e83…: F1retainedworkers, F2initialD-key aliases,
+F3authenticT1commit, F4freshAAenforce/selector, F5retainedjobgeneration, F6readonlyPairingStore,
+F7nativeproject-only updater, F8explicit incompletehistoricalgraph/currentqualification.
+Root принял19refs и оба exactpeeritems; предыдущий400freeze и отрицательные наблюдения сохранены.
+Новая цельная implementation-задача `ASTRA-SOL-V3-DSH-COHERENT-REPAIR-20261111#1` стартовала
+после одного нового nativecompact01a1c79f…/contextCompaction проверен. Actualturn01a1c7a5-40a7-7930-a550-56907b7df54b/inProgress, exactuseritem01a1c7a5-40b8-7a12-9f1d-b11e45b40a4a
+и Standard/default/oldgoalpaused проверены. Root выбрал existingnativeproject_update subtype;
+CPv47prototype остаётся неподключённым из-за perfileCAS/custody gap, fake nativepatch не создаётся.
+Actualpayload11687+CLI+patch =11689MATCH reference rows/155620079B, soleexternalNode missing;
+это реальная проверкаbytes, не текущая native availability. Missinghistorical15graph:11originalpaths
+отсутствуют, одна точнаяc82dstagecopy найдена;10auxграням нужен явный новый typedcurrent contract,
+их старые verdict/effects/clocks не переписываются. Actualoperator f.ROOT — pinnedprivateproject476,
+не рабочийrepo76daf; originalhermes_prepare8ccf найден вrepo для будущего exactcreate-only restore.
+Фактический CAcanonicaltarget ca-certificates.crt, web-ca.pem — имяretainedjobinput (ошибкаRootTASK
+исправлена доэффектов). Новые source/install/admission/сafety/P/T1/T2 ещё не выполнялись.
+[Точные результаты и активный пакет](evidence/astra-20261111/dsh-coarchitect-coherent-repair-checkpoint.json).
 Root source198/gateway1198290 остаются исправны; current3DBquick_checkOK/leases0/
 30:2,196:2,5487:5. DSH availability пока UNAVAILABLE; новых user/model/Tg effects0.
 
