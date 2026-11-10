@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Сола — 10.11.2026, 12:02 МСК
+## Действующее продолжение Сола — 10.11.2026, 12:25 МСК
 
 Сол — временный lead/координатор/интегратор; разработка, необходимые проверки,
 штатная установка и публикация в существующий main разрешены владельцем.
@@ -27,9 +27,9 @@
 остаются обязательными. Записи реестров не подменяют исполнения.
 
 **Git и принадлежность.** Последний опубликованный и удалённо сверенный
-`main = 32bfb815dc709f0e3374395e5957a764220b65fd`; исходный снимок продолжения
-`585f9cb9790a6182908db9ccdde263176ae39969` не откатывался. Следующая дельта ниже
-готовится отдельным содержательным checkpoint; её результаты не приписаны старому SHA.
+`main = bdc00b55f814fcdcc3494bcf9cd924a5c17b6986`; исходный снимок продолжения
+`585f9cb9790a6182908db9ccdde263176ae39969` не откатывался. Checkpoint188/P04/архивы/TSV/M11 опубликован и удалённо сверён; все259 checksum entries
+проверены из точных Git-байтов. Следующая дельта остаётся отдельно от опубликованного SHA.
 Три чужих изменения §1 сохраняются и исключаются. Хеш текущего коммита внутрь самого
 себя не записывается; точный финальный SHA сообщается по факту после commit/push.
 
@@ -52,8 +52,10 @@
 - [x] P04 guidance/OCR-warning source fix независимо reviewed; штатно добавлен только
  новый188-й слой,3 postimage.70 publication controls; receipt/marker/stamp согласованы,
  [установка](evidence/sol-20261110/p04-installed.json), свежий gateway61925/start493738.
- Установку не повторять. Восемь прежних full-source rebuild graph conflicts остаются
- [открытыми](evidence/sol-20261110/p04-publication-root-review.json), increment PASS их не закрывает.
+ Установку не повторять. Восемь conflicts воспроизводятся именно на старом frozen installed-input;
+ [текущий canonical граф восстановлен](evidence/sol-20261110/rebuild-graph-root-review.json)
+ всеми188 реальными git-check/apply и совпадением17 888 SHA/size/mode. Receipt/input
+ не переписаны; полная fresh-export CLI/новая установка этим не приняты.
 - [x] R70: первая отдельная F01 TSV read/tail, sent2630→reply2632;
  [Root content/custody PASS](evidence/sol-20261110/tsv-read-root-review.json).
  R71: ordinary recall того же файла в той же беседе, sent2633→reply2635,
@@ -76,33 +78,57 @@
  3 новых genuine LHA6/LHA7/RAR4 expanded-limit refusals.195 модулей и6 core hashes
  неизменны на188; [reuse независимо подтверждён](evidence/sol-20261110/archive-final188-root-review.json),
  без повторов. Saved R34 7z оценён без пересоздания;8 codec controls отдельно.
- A13/A14 неполны: format/link/boundary, gateway-stop и in-codec cancel gaps сохранены.
+ Затем5 новых RAR5/LHA byte-limit controls,8 ZIP/TAR entry/depth controls и
+ LHA7 actual-child output-phase cancellation + pre-stopped refusal приняты отдельно:
+ [5](evidence/sol-20261110/archive-new-boundaries-root-review.json),
+ [8](evidence/sol-20261110/archive-entry-depth-root-review.json),
+ [native cut](evidence/sol-20261110/archive-native-cancel-root-review.json).
+ Cancelled child дал QUIESCENT, обаPID исчезли, публикации нет. RARcancel ungraded,
+ CPU-loop interruption не доказан; оставшиеся format/link gaps не скрыты.
+ A13/A14 исходно OFFLINE; gateway/live stop остаётся отдельной межсценарной областью,
+ не выдавать его за проверенный и не добавлять без основания как новый oracle A14.
 - [x] Saved D07: все8 seeded изменений/добавление/удаление и boilerplate подтверждены;
  формальная шкала не заменена.
 - [x] M11 saved sent1909→reply1911: [custody/семантика4/4](evidence/sol-20261110/m11-saved-root-review.json)
  подтверждены по62pins и историческому compaction/security evidence. PARTIAL/full180=false/
  NOT_ESTABLISHED сохранены; это не весь M11 и не188 regression. Повтора не было.
-- [ ] Независимые оставшиеся archive boundary controls, восстановление rebuild graph,
- остальные обязательства170/120; текущий локальный gap не останавливает весь V3.
+- [x] [A03 saved](evidence/sol-20261110/a03-saved-roundtrip-root-review.json): подлинный
+ source107 ZIP→7z→ZIP1846→1849/1850,16 точных payload/path,67 custody refs. R68
+ отдельно PARTIAL:7z2622 новый, ZIP2623 прежний после document_already_exists.
+ Неверная датировка5November и false success prose сохранены/исправлены в текущем
+ narrative; весь A03/current188 не принят. Не перепаковывать/пересылать ради grade.
+- [x] [M04 saved](evidence/sol-20261110/m04-saved-root-review.json): исходный Mayak
+ 39644bytes/a9b0… совпадает с доставленным1768, отличается от Mayak2/a72e…;
+ проект/версия/identity верны, narrow raw/ACK/task/receipt custody PASS. Полный
+ legacy continuation verifier остановлен отсутствующим старым UNBOUND.json;
+ оригинал не реконструировался, formal UNBOUND/NOT_ESTABLISHED сохранён.
+- [ ] Исправить текущую ложную archive completion/delivery после отказа; только новый
+ слой после готового candidate/review, без R68 repeat. Исходные170/120, format/link
+ gaps, regression/recovery и неизвестные эффекты остаются в scope.
 
-**Живые операции и дети на срезе:** P04 consumer завершён11:54:05, exit0,
- все receipts приняты; отправок/ожидающих observer за ним нет. NJS deployment закрыт,
- backup сохранён для отката. Root владеет общим runtime и всеми живыми эффектами.
- Native `m11_saved_acceptance` и `p04_companion_review` завершены/приняты;
- final188 offline companion PASS, независимые complete-source/mixed-source controls PASS;
- `archive_remaining_boundaries` — только новые offline genuine boundary fixtures.
- Все прежние пакеты, включая P04 preparation/final188 archive binding, закончены
- и приняты в точном scope. Не возобновлять закрытое назначение как продолжающееся.
+**Живые операции и дети на срезе:** общие сервисы работают, P04 observer завершён,
+новых текущих Telegram-отправок нет. NJS deployment закрыт; backup для отката сохранён.
+Root/Sol владеет общим runtime, всеми admissions/live effects и интеграцией.
+`archive_failure_provenance` — конечный source-only ремонт typed archive-convert
+false success; его native seam reviewer. Первый spawn отказал при полном дереве,
+после фактического завершения трёх пакетов штатный spawn состоялся; дубля не было.
+`next_v3_format_slice` — только подготовка следующего нового P0 RTF read/recall/edit
+на сохранённом R30 artifact2501; допуска/отправки за ним нет. Все остальные пакеты
+завершены/приняты в точном scope. Закрытое назначение не изображается продолжающимся.
 
 R42/R43, UNKNOWN_SEND, неизвестные P01/Q02 и исторический S11 сохраняются.
 Новый run-id/допуск/модель/исправление/перезапуск сами по себе повтора не разрешают.
 Для каждой позиции отдельно: отправка/эффект, содержательный критерий, formal tester,
 основание следующего действия. Сначала сохранённые материалы и штатная сверка.
 
-Ближайшая исполнимая граница: принять новые archive boundaries и продолжать оставшиеся обязательства;
- текущий содержательный checkpoint готовится к публикации,
-затем продолжать доступные обязательства V3. Перед любым новым эффектом читать текущие
-mutable CAS/receiver/principal/history, не переустанавливать уже принятое ради проверки.
+Ближайшая исполнимая граница: принять source-only исправление archive false-success,
+его реальные offline/negative controls и независимое review; затем штатный только-новый
+increment поверх exact frozen188 project (456 old pins/188 old layer pins неизменны),
+previous input6e292cc2…16695. Canonical15 metadata-only manifests не подменять в старом
+receipt: actual consumer отвергает такую подстановку. Новый genuinely missing RTF срез
+проводить после Root ingress/dedup/current principal/CAS/sole receiver/resource проверки;
+source-only пакет не считается новым допуском. Никогда не менять source/service посреди
+живого запроса. Полные критерии goal сохранены, вечерняя передача не начата.
 
 ## 0. Состояние разработки
 
@@ -110,7 +136,7 @@ mutable CAS/receiver/principal/history, не переустанавливать 
 |---|---|
 | Репозиторий | `/home/jericho/jericho/Friday_rework`, ветка `main` |
 | Исходный HEAD продолжения | `585f9cb9790a6182908db9ccdde263176ae39969` (сверка 10.11, 09:04 МСК); прежний `476496a` — исторический |
-| Последний опубликованный HEAD/origin/main | `32bfb815dc709f0e3374395e5957a764220b65fd`; новая локальная дельта указана выше |
+| Последний опубликованный HEAD/origin/main | `bdc00b55f814fcdcc3494bcf9cd924a5c17b6986`; следующая рабочая дельта указана выше |
 | Последний независимо проверенный генератор | `585f9cb9790a6182908db9ccdde263176ae39969`: short write, write/fsync refusal, единственный победитель публикации; его прежние checker-остатки затем исправлены в32bfb815; новый ordered-predecessor pin в текущем срезе |
 
 ### Исторический проход DSH (476496a)
