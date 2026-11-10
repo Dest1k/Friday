@@ -68,6 +68,9 @@ def consumer_bench(check, args):
         check("bench_archive_provenance_exact_five_targets", set(source_files) == {
             "agent/turn_explainers.py", "agent/turn_finalizer.py", "agent/turn_context.py",
             "agent/tool_executor.py", "gateway/run_turn_runner.py"})
+    if layer == "arj-unix-attribute-types-after-source189":
+        check("bench_arj190_exact_one_codec_target", source_files == (
+            "hermes_cli/friday_workspace_arj_codec.py",))
     # Read every prerequisite through the same input consumed by publication. The
     # count need not equal the installed layer count; it is a dependency set.
     previous_input = json.loads(args.previous_input.read_text())
@@ -324,6 +327,9 @@ def main(argv=None):
     selected = generator.parse_args(["--layer", "archive-conversion-failure-provenance-after188"])
     check("generator_archive_provenance_cli_selects_only_increment",
           selected.layer_names == ("archive-conversion-failure-provenance-after188",))
+    selected = generator.parse_args(["--layer", "arj-unix-attribute-types-after-source189"])
+    check("generator_arj190_cli_selects_only_increment",
+          selected.layer_names == ("arj-unix-attribute-types-after-source189",))
     selected = generator.parse_args(["--layer", "bounded-resume-sidecar-guard",
                                      "--layer", "bounded-current-ask-identity"])
     check("generator_explicit_cli_keeps_order", selected.layer_names == (
@@ -346,7 +352,8 @@ def main(argv=None):
     # --- 3. one-layer variants resolve to exactly that one layer --------------------
     for single in ("bounded-resume-sidecar-guard", "bounded-7z-codec-activation",
                    "bounded-current-ask-identity", "necessary-document-clarification-p04",
-                   "archive-conversion-failure-provenance-after188"):
+                   "archive-conversion-failure-provenance-after188",
+                   "arj-unix-attribute-types-after-source189"):
         request = {"schema": validator.SCHEMA_EXPLICIT, "layer_names": [single]}
         check("single_layer_resolves:" + single,
               validator.resolve_layer_names(request) == (single,))

@@ -1,0 +1,32 @@
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1652,6 +1652,21 @@
+ 
+ 
+ def _handle_read_file(args, **kw):
++    # Validate the original call before narrowing it to read_file_tool's
++    # signature. Silently dropping write arguments can misreport a new output
++    # path as a missing source and send the model into repeated reads.
++    if not isinstance(args, dict):
++        return tool_error("read_file arguments must be an object.", success=False,
++                          error_type="invalid_arguments", effect_disposition="none")
++    if "content" in args or "format" in args:
++        return tool_error(
++            "read_file is read-only; content and format belong to write_file.",
++            success=False, error_type="invalid_arguments", effect_disposition="none",
++            hint='For a read, omit content and format. For supported creation or editing, '
++                 'use write_file with path, content and its documented format. If deferred, '
++                 'use tool_call with one calls entry named write_file and an arguments '
++                 'object matching its schema. '
++                 'No file was read or written by this call.')
+     tid = kw.get("task_id") or "default"
+     return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0), pdf_form_fields=args.get("pdf_form_fields", False), password=args.get("password"), pdf_signatures=args.get("pdf_signatures", False), archive_parts=args.get("archive_parts"))
+ 
+@@ -2161,4 +2176,6 @@
+     'File content. For document formats this is the profile-specific JSON described by the tool result.')
+ READ_FILE_SCHEMA['description'] = (
+     'Read a text file with line numbers and pagination. Supports plain text and the '
+-    'document/archive profiles accepted by this tool.')
++    'document/archive profiles accepted by this tool. Read-only: content and format '
++    'are write_file arguments and are rejected here. Use write_file for supported '
++    'creation or editing; if deferred, invoke it through tool_call.')

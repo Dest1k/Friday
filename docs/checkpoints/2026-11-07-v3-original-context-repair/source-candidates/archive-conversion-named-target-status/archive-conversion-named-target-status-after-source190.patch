@@ -1,0 +1,57 @@
+--- a/agent/turn_explainers.py
++++ b/agent/turn_explainers.py
+@@ -274,14 +274,37 @@
+                    and info.get("error_code") == "document_already_exists"
+                    for info in failed.values()):
+             return response, False
++        def display_target(target):
++            # Name only a canonical own-workspace target. Reuse the footer's
++            # label checks, but reject lossy labels instead of guessing a name.
++            try:
++                relative = Path(target).relative_to(cap.home / "workspace")
++            except (TypeError, ValueError):
++                return None
++            parts = relative.parts
++            name = str(relative)
++            if (not parts or len(name) > 240 or any(c in name for c in "`\\[]")
++                    or any(p.startswith(".") or _safe_display_label(p) != p for p in parts)):
++                return None
++            return "`./" + name + "`"
++
++        failures = [info for info in failed.values()
++                    if info.get("operation") == "archive_convert"
++                    and info.get("error_code") == "document_already_exists"
++                    and _same_scope(info.get("archive_failure_scope"), cap)]
++        labels = list(dict.fromkeys(display_target(info.get("identity")) for info in failures))
+         text = "Не удалось выполнить преобразование архива: файл с выбранным именем уже существовал."
++        if any(labels):
++            text = "Не удалось выполнить преобразование архива:\n" + "\n".join(
++                "• " + (label or "Файл с выбранным именем") + ": файл с этим именем уже существовал."
++                for label in labels)
+         refused = {info.get("identity") for info in failed.values()
+                    if info.get("operation") == "archive_convert"
+                    and _same_scope(info.get("archive_failure_scope"), cap)}
+         from gateway.platforms.base import BasePlatformAdapter
+         selected = {_file_mutation_identity(path, getattr(self, "_current_task_id", None))
+                     for path, _ in BasePlatformAdapter.extract_media(response)[0]}
+-        media = []
++        media, successful_labels = [], []
+         for target, artifact in (getattr(self, "_turn_file_mutation_artifacts", None) or {}).items():
+             if (target not in selected or target in refused
+                     or not _same_scope(artifact.get("scope"), cap)):
+@@ -297,9 +320,14 @@
+             if (observed == relative and identity == artifact["identity"]
+                     and hashlib.sha256(blob).hexdigest() == artifact["sha256"]):
+                 media.append('MEDIA:"./' + relative + '"')
++                label = display_target(target)
++                if label:
++                    successful_labels.append(label)
+         cap.check()
+         if media:
+-            text += "\nПодтверждённые результаты этой задачи приложены.\n" + "\n".join(dict.fromkeys(media))
++            text += "\nПодтверждённые результаты этой задачи приложены"
++            text += (": " + ", ".join(dict.fromkeys(successful_labels))) if successful_labels else "."
++            text += "\n" + "\n".join(dict.fromkeys(media))
+         self._turn_archive_conversion_failure_projected = True
+         return text, text != response
+ 
