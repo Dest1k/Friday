@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 10.11.2026, 23:26 МСК
+## Действующее продолжение Астры — 11.11.2026, 00:01 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -19,16 +19,16 @@
 **Сол — постоянный co-architect на Standard** в своей реальной прежней TUI/сессии,
 Астра — Fast: [проверенные роли и первая задача](evidence/astra-20261110/sol-permanent-coarchitect-rtf-assignment.json).
 Его paused goal относится к прежнему самостоятельному руководству и не запрещает TASK.
-Первая RTF/Office задача завершена; producer Heading draft не исправляет Office roundtrip.
-Локализован отсутствующий RTF outline export LibreOffice; предложенный C++ patch и QA skeleton
-сохранены **UNBUILT / UNVALIDATED / NOT_INSTALLED**:
-[решение, наблюдения и границы](evidence/astra-20261110/rtf-office-source-decision.json).
-Сол выполняет второй самостоятельный пакет `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1`:
-изолированная совместимая сборка полного headless Writer/Calc/Impress/Draw и два реальных
-RTF save/close/reopen цикла с регрессией. Exact source/config milestone принят только как
-подготовка; готовый built artifact ещё не принят. Один native pre-task compact на каждое новое
-назначение подтверждён; повторов задач/моделей/настроек нет. Установка toolchain — только
-после результата/QA/review, вне короткого maintenance-окна. Текущий toolchain не менялся.
+Первый source-only RTF/Office пакет отверг producerHeading draft и локализовал
+отсутствующий outline export LibreOffice. Его исторические UNBUILT/UNVALIDATED материалы
+сохранены: [первоначальное решение](evidence/astra-20261110/rtf-office-source-decision.json).
+Следующая полная совместимая сборка `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1` уже завершена:
+566 native tests и actual appbatch PASS в узком объёме, но108 chapter/style state deltas и
+material customchapter-assignment loss оставляют полную RTF fidelity открытой. Built runtime
+пока **не установлен**. Сейчас Сол выполняет `ASTRA-SOL-V3-LO-CONSUMER-BUNDLE-20261110#1`:
+совместимый wholebundle и actualLOCAL product consumers, без shared/runtime/user effects;
+Task/compact/active-turn ниже. Standard и прежняя отдельная TUI сохранены. Root не открывает
+maintenance до final source/bundle/consumer review и свежих предпосылок; текущийOffice не менялся.
 
 **Git.** При принятии HEAD = origin/main = remote main был
 `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
@@ -36,7 +36,8 @@ RTF save/close/reopen цикла с регрессией. Exact source/config mi
 `1632b288e4459f7ad8e28462d2f45f7bddecca80`; затем Source196/evidence опубликованы в
 `48b57e346dbe0aeb3a964a671a47cb47895370ae`; forward R97/R98 и их app-проверки опубликованы
 в `22a3b3bb1a9e39a6ecf6d63827a32f51dc2c6c3c`;197 установлен/опубликован
-в `b99c02b1a809cba935d64fc298b1d99bb97c2827` — проверенный baseline перед этой дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+в `b99c02b1a809cba935d64fc298b1d99bb97c2827`;198 опубликован в
+`ed2788bab090fdf841e1e242814bf03506caa741` — проверенный baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
@@ -50,7 +51,9 @@ Full17888 actual files —233329301B; receipt `ace1b232…989f`, input `dfc6fd4a
 Один stop → publisher → fresh start, **67,559s**, пользовательских эффектов0.
 Постоянный gateway **1198290 / start4735674 / bootd518758e-bce0-4bd5-89a1-fc4e113f0623**,
 active/running/Telegram connected/NRestarts0, один gateway этого home; прежний1153704 отсутствует.
-Три quick_check OK, default30/2, dest196/2, tester5457/5; leases0, данные сохранены.
+В install-checkpoint198 три quick_check OK/default30/2,dest196/2,tester5457/5/leases0.
+После фактически завершённого R99 currenttester5467/5/leases0, оба других30/2 и196/2 сохранены;
+[actual R99 runtime/native/application](evidence/astra-20261110/docx-odt-first-original-root-review.json).
 Fresh actual198 imports/no overlay:9 saved-byte checks — Wordcaptured+Writerrestored18/3empty,
 strict-source refusals, newtemplate PI negative, exactR36six-cell ODS и receivedR97/R98 forward
 регрессия. Office/nativeproducer/model/Telegram не повторялись. Это установленная узкая
@@ -211,26 +214,76 @@ Root интегрировал ONE composite `odf-reverse-output-after-source197`
 и Sheet2afbe6, два output-only файла; строгие source/consumer/profiles сохранены. Нормальная
 установка и9installed checks завершены; toolchain не менялся, maintenance закрыто.
 
-Следующий Root результат — по одной настоящей FIRST ordinary DOCX→ODT и XLSX→ODS.
-Оба source/history packets завершены: WordRESULT7b90fa56…4735, SheetRESULT7cbdfc76…21d8
-в `FRW-ASTRA-V3-FIRST-{DOCX-ODT,XLSX-ODS}-PLAN-20261110/`; Root повторно использует immutable
-505/5457/669 и исходные run/scenario/source, новый второйcase после первого требует точного
-join новой независимой дельты. Source198 adapter/gate/oracle/review готовятся отдельно в
-`FRW-ASTRA-V3-REVERSE198-ORDINARY-ADAPTERS-20261110/`. Release/binding/admission/send0.
-Обнаружен конкретный checker seam: старый v42 ordinaryconsumer сам требует state.updated_at
-не старше600s; новый exactgate с fresh readonlysocket не устраняет этот downstream отказ.
-Root разрешил минимальный новый pinned consumer freshness successor с independentreview;
-старые v42/issuer/CODE сохраняются, main/atomic/max1/phase/privacy/stop не ослаблять.
-Не touch/heartbeat/restart ради timestamp: новый read-only ответ реальногоPID/boot/start/
-observed_monotonic и стабильные metadata/platformwriter должны подтверждать current boundary.
-Здоровый gateway продолжает работать; будущие короткие окна пока не открыты.
+**R99 FIRST original DOCX→ODT завершён narrow native/delivery/application RootPASS.**
+[Итог и границы](evidence/astra-20261110/docx-odt-first-original-root-review.json),
+SHA `69bd0e55551ca03236d8162194dc21e01bcb9641f59e2bf580d669ea9a2bb830`.
+Одна ordinary отправка2733 → received2735/19807B,
+SHA `fba013c2867dfd552b668d7fe16bf8e6c2a4f81398f83c28bf24bb6cdea95f92`, full180/exit0.
+Actual boundRunner rawreplycustody проверен; actualnative5458..5467: originalread5460,
+one wrapper→onewrite_file call8b0b4c26…5462, formatdocx_odt/odt:writer8,
+sourcec72c→outputfba013→received hashjoin; targetread5464/final5465. Никаких worker/private
+retrieval/других tool эффектов. Original37118B DOCXc72c и оба source descriptors сохранены;
+18orderedparagraphs/3empty[5,10,14]/0h/0tables/916UTF8B точны. Фактические visual/style limits
+сообщены моделью; их fidelity не объявлялась проверенной. Старый R04READ UNKNOWN не повторён.
+На копии именно2735 один настоящий Writer controlledUnicode marker →save/close/reopen→
+restore/save/close/reopen PASS1.344s в исходном300budget;24negatives,49externalfullpinsunchanged,
+Root отдельно подтвердил rawmarker singleparagraphdelta и actual198validator на восстановленных
+19948B/536a645b…288b. Canonicalreceived/source/receipt/run не переписывались.
+Formaltester остаётся EVIDENCE_READY/RECEIVED_UNGRADED/NOT_ESTABLISHED; общийF04/fullV3 не закрыт.
+Операция закрыта: `FRW-ASTRA-V3-REVERSE198-ORDINARY-ADAPTERS-20261110/ROOT-docx-LIVE-RUN.json`
+CLOSED_NARROW_FIRST_ORIGINAL_DOCXODT_NATIVE_DELIVERY_APPLICATION_ROOT_PASS.
+Rootclosedreview SHAb6c5b27c…0914; canonicalrunSHA6186d51b…5e46. Новый факт — один consumedFIRST,
+не основание повторятьR99. Source198/toolchain/healthy1198290 не менялись; postnativegen1/quiet,
+3DBquickcheckOK/leases0; **506canonical/native5467/45oldunresolved/3UNKNOWN**.
 
-Сол независимо продолжает full compatible RTF toolchain build/QA на Standard;
-M1/M2 source/config/negative-baseline progress проверены. На22:55 own совместимый runtime staged,
-native QA активен; финальный binary/closure/appQA/independent built-artifact review ещё не приняты.
-Его original compile deadline23:31 МСК не сбрасывался; организационная оценка не kill timer.
-Текущий установленный toolchain не менялся; Heading draft и proposed C++ остаются
-uninstalled до полноценного native roundtrip и независимого built-artifact review.
+Новые exact198 ordinary adapters доR99: `FRW-ASTRA-V3-REVERSE198-ORDINARY-ADAPTERS-20261110/RESULT.json`
+SHA5ea86e2e…a0d9,34author/177independentPASS. Gate85d892/consumer5187 заменяют только
+v42new/preintent_send stale600walltimestamp условие на свежий authenticatednative PID/UID/boot/
+start/monotonic+stablemetadata; collect/main/atomic/issuer/4wrappers/phase/max1/stop сохранены.
+Rootrunner wrongsuccessor-API draft был исправлен независимым review доactualISSUE/bind;
+32pureAS256controls+Rootdelta accepted; selectedprofilea37343 проверен передISSUE/FINAL,
+совпадает с историческим accepted compression evidence. Дополнительное privacyreview показало
+actual11cachetree exclusion через ownworkspace/memory/skills/DB+fixedworker mounts, не просто0600.
+Currentprimary/compression authenticatedmodels200; config/endpoints/credentials не менялись.
+No touch/heartbeat/restart дляtimestamp. Frozen preadmissiongate0 нельзя вызывать как postartifact
+CLI послеgen1: Root использовал точный assess_bytes API+physical198pins и отдельныйpostnativeproof.
+Исторические505/5457/669 и старый197failclosed/source-onlyFAIL сохранены.
+
+**Следующее:** FIRST original XLSX→ODS. Его source/history/25+18 checks packet complete
+`FRW-ASTRA-V3-FIRST-XLSX-ODS-PLAN-20261110/RESULT.json` SHA7cbdfc76…21d8; настоящий R36
+workspace/mayak_book.xlsx2088B/bd35…a58a, typed6/5strings/B3numeric1, не uploadedreceivedsource.
+Старый общий198adapter корректно отказывает после нового R99. Готовится **XLSX-only** successor
+`FRW-ASTRA-V3-XLSX198-AFTER-R99-CUT-20261110/`: exact506/5467/generation1, только завершённая
+R99 delta, без blanketrebaseline/старыхзаписей/новогоDocxdispatch. Independent delta proof160a4f4a…f2a1
+подтвердил505oldhashes/811checked signatures и45/3 unchanged; code/consumerreview ещё нужен.
+Никакого второгоCASE ISSUE/binding/send пока нет,120s окна не открыты. После готовности Root
+проверяет новую текущую границу и выполняет один FIRST; не повторять R99/R97/R98/CREATE/F03.
+Параллельно read-only разбирается следующий обязательный PPTX↔ODP контракт/история/источники,
+без native/delivery и дубликата Solnewdependency canaries.
+
+Сол завершил `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1`, RESULT1c9a85c3…7076 и41refs проверены;
+точный final peer item consumed. Full coherent LibreOfficeDev26.2.5.2 runtime779549647B/5114files,
+327ELF/28hostDSO closure,10nativeRTFsuites/566tests и один3.342s appbatchPASS:2prospectiveRTF
+fixtures/2edit-save-close-reopen cycles,Core4apps,R97DOCX/R98XLSX sameartifact privatecopies.
+**Полная RTF fidelity НЕ принята:**108 state/chapter deltas, материален loss customchapter
+assignment→Heading3; текущиеeffectiveoutlines/Unicode/table30lexemes точны. Candidate **не установлен**,
+mappedproductbundle/_argv consumers ещё не квалифицированы; старыеR92/11/baselineFAIL не переписаны.
+Root accepted narrowobservations/limits only: `FRW-ASTRA-SOL-LO-BUILD-20261110/RECEIVED-FINAL.json`
+SHAbf0bed0e…1ed2. Old build/nativeQA/app/staging clocks закрыты; бывшие failedunits неактивны,
+их не будить и не повторять.
+
+Сол уже фактически выполняет следующий независимый пакет на **Standard/default** в той же TUI:
+`ASTRA-SOL-V3-LO-CONSUMER-BUNDLE-20261110#1`, native turn01a1c72b-1e8b-7950-9742-48a7581e8fe4.
+Один nativecompact01a1c727-6d0d-7c40-85cb-621f90be9c27 завершён/contextCompaction подтверждён,
+только затем Task доставлен и actual useritem/inProgress readback проверены; oldSolgoalpaused.
+TASK `/home/jericho/.cache/FRW-ASTRA-SOL-LO-CONSUMER-BUNDLE-20261110/TASK.txt`,
+SHAc2c0c1c7de01adc5f10780baa6ca41f092766d65a4540409359eafc04f904fae.
+Сол делает owncache wholecompatiblebundle +realLOCAL consumer-shaped canaries на CHANGEDdependency,
+без sharedinstall/RootFIRST/user/model/Tg effects; Root независимо выполняет FIRST на текущемOffice.
+Организационная первая веха≈45min, неkilltimer; finite future staging300/batch600 с сохранением
+более тесныхinnercaps. Старый23:31compile deadline не продлевается: он закрыт в прежнейзадаче.
+Перед будущимtoolchainmaintenance нужны реальные bundle/filter/consumer source compatibility,
+independent exactdelta review и свежие Root предпосылки. Root не ждёт Сола в коротком окне.
 
 R83 UNKNOWN_SEND/один readonly EMPTY quarantine, R85 PARTIAL/Question NOT_RUN,
 исчерпанные три C10 R89–R91, R42/R43/2257/S11/P01/Q02/G06/M10 и прочие consumed/UNKNOWN
