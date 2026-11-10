@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Check the admission generator against the REAL code it ships.
 
-Every assertion in this file calls the generator's own functions (issue-fresh-admission.py
-imported as a module) or its own main() with isolated inputs. No condition is copied into
-a parallel test implementation, and no refusal is checked by grepping the source: a
+Production assertions call the generator's own functions (issue-fresh-admission.py
+imported as a module) or its own main() with isolated inputs. An explicit legacy
+publisher is retained as a negative control for the race detector. No production
+condition is copied into a parallel implementation, and no refusal uses source grepping: a
 refusal is an actual SystemExit raised by the real code, and the "not published on
 refusal" property is checked by looking for the output file after the call.
 
@@ -21,7 +22,10 @@ Covered:
 Run it with any python3:
     python3 check-fresh-admission-scope.py
 """
+import contextlib
+import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -46,6 +50,89 @@ def write_json(path, value):
 
 def encoded(value):
     return (json.dumps(value, ensure_ascii=True, sort_keys=True) + "\n").encode()
+
+
+def competing_releases(publish, target):
+    """Control both atomic linking and the legacy absent-check/write interleaving."""
+    import threading
+
+    link_barrier = threading.Barrier(2)
+    absence_barrier = threading.Barrier(2)
+    first_absence_done = threading.Event()
+    arrival_lock = threading.Lock()
+    real_link = os.link
+    real_exists = Path.exists
+    real_write_bytes = Path.write_bytes
+    link_actors = []
+    absent_actors = []
+    writes = []
+    results = [None, None]
+
+    def sync_exists(path):
+        exists = real_exists(path)
+        if path == target and not exists:
+            actor = threading.get_ident()
+            with arrival_lock:
+                absent_actors.append(actor)
+                first = absent_actors[0] == actor
+            absence_barrier.wait(timeout=10)
+            if not first and not first_absence_done.wait(timeout=10):
+                raise TimeoutError("first legacy actor did not finish")
+        return exists
+
+    def sync_link(src, dst):
+        with arrival_lock:
+            link_actors.append(threading.get_ident())
+        link_barrier.wait(timeout=10)
+        return real_link(src, dst)
+
+    def observe_write(path, data):
+        if path != target:
+            return real_write_bytes(path, data)
+        with arrival_lock:
+            observed_absences = len(set(absent_actors))
+        written = real_write_bytes(path, data)
+        writes.append((threading.get_ident(), observed_absences, path.read_bytes()))
+        return written
+
+    def attempt(idx):
+        try:
+            publish(idx)
+            results[idx] = ("ok", None)
+        except SystemExit as exc:
+            results[idx] = ("exit", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            results[idx] = ("err", type(exc).__name__ + ": " + str(exc))
+        finally:
+            if absent_actors and absent_actors[0] == threading.get_ident():
+                first_absence_done.set()
+
+    os.link = sync_link
+    Path.exists = sync_exists
+    Path.write_bytes = observe_write
+    try:
+        threads = [threading.Thread(target=attempt, args=(i,)) for i in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+    finally:
+        os.link = real_link
+        Path.exists = real_exists
+        Path.write_bytes = real_write_bytes
+
+    ok_count = sum(1 for result in results if result and result[0] == "ok")
+    return {
+        "results": results,
+        "ok_count": ok_count,
+        "exit_count": sum(1 for result in results if result and result[0] == "exit"),
+        "err_count": sum(1 for result in results if result and result[0] == "err"),
+        "exactly_one_succeeds": ok_count == 1,
+        "absent_actors": absent_actors,
+        "link_actors": link_actors,
+        "writes": writes,
+        "threads_finished": not any(thread.is_alive() for thread in threads),
+    }
 
 
 def main():
@@ -374,17 +461,25 @@ def main():
         gen.derive_identity = lambda _out: (auth_id_p, auth_file_p, prev_id_p)
         os.write = short_write
         try:
-            gen.main()
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                gen.main()
+            report = json.loads(stdout.getvalue())
             target_p = part / auth_file_p
             published = target_p.read_bytes()
             doc_p = json.loads(published)
             check("partial_write_publishes_complete_json",
                   doc_p.get("authority_id") == auth_id_p, str(doc_p.get("authority_id")))
-            check("partial_write_reported_size_matches_published",
+            check("partial_write_retried_after_short_write",
                   len(published) > 7 and write_calls[0] >= 2,
                   "calls=%d published=%d" % (write_calls[0], len(published)))
+            check("partial_write_reported_size_matches_published",
+                  report.get("bytes") == len(published),
+                  "reported=%r published=%d" % (report.get("bytes"), len(published)))
             check("partial_write_hash_matches_published",
-                  gen.digest(published) == gen.digest(published))
+                  report.get("sha256") == hashlib.sha256(published).hexdigest(),
+                  "reported=%r published=%s"
+                  % (report.get("sha256"), hashlib.sha256(published).hexdigest()))
             leftovers_p = [p.name for p in part.iterdir() if ".tmp-" in p.name]
             check("partial_write_no_temp_leftovers", not leftovers_p, str(leftovers_p))
         finally:
@@ -439,11 +534,13 @@ def main():
               kept.exists() and json.loads(kept.read_text()).get("marker") == "keep-me")
 
         # ---- race: two OVERLAPPING releases of the same number -----------------
-        # Both threads reach the publication point before either publishes; a
-        # controlled barrier forces the overlap. On the old exists()+write_bytes()
-        # code BOTH would succeed (the second overwriting the first), so this test
-        # detects that defect; on the os.link implementation exactly one succeeds.
-        import threading
+        # Synchronize the real publication operation, and also the legacy target
+        # exists() checks AFTER both have actually observed absence. The latter
+        # control is essential: legacy exists()+write_bytes() never calls os.link.
+        # Once both absence checks complete, finish the first actor before allowing
+        # the second to use its stale False result. Both legacy actors then succeed
+        # deterministically, without a concurrent truncate/read masking the defect.
+        # On the os.link implementation exactly one publication succeeds.
         race2 = tmp / "main-race2"
         race2.mkdir()
         (race2 / "runs").mkdir()
@@ -461,45 +558,26 @@ def main():
         real_derive = gen.derive_identity
         gen.derive_identity = lambda _out: (auth_id_x, auth_file_x, prev_id_x)
 
-        barrier = threading.Barrier(2)
-        real_link = os.link
-        link_calls = []
-
-        def sync_link(src, dst):
-            link_calls.append((src, dst))
-            barrier.wait(timeout=10)   # both threads arrive here before either links
-            return real_link(src, dst)
-
-        results = [None, None]
-
-        def attempt(idx):
-            try:
-                gen.main()
-                results[idx] = ("ok", None)
-            except SystemExit as exc:
-                results[idx] = ("exit", str(exc))
-            except Exception as exc:  # noqa: BLE001
-                results[idx] = ("err", type(exc).__name__ + ": " + str(exc))
-
-        os.link = sync_link
+        target_x = race2 / auth_file_x
         try:
-            threads = [threading.Thread(target=attempt, args=(i,)) for i in range(2)]
-            for t in threads: t.start()
-            for t in threads: t.join(timeout=30)
+            atomic = competing_releases(lambda _idx: gen.main(), target_x)
         finally:
-            os.link = real_link
             gen.derive_identity = real_derive
 
-        ok_count = sum(1 for r in results if r and r[0] == "ok")
-        exit_count = sum(1 for r in results if r and r[0] == "exit")
-        err_count = sum(1 for r in results if r and r[0] == "err")
-        check("race_exactly_one_succeeds", ok_count == 1,
+        check("race_both_actors_reached_controlled_point",
+              len(set(atomic["absent_actors"])) == 2 or len(set(atomic["link_actors"])) == 2,
+              "absence_checks=%d link_calls=%d"
+              % (len(atomic["absent_actors"]), len(atomic["link_actors"])))
+        check("race_threads_finished", atomic["threads_finished"])
+        results = atomic["results"]
+        ok_count, exit_count, err_count = (
+            atomic["ok_count"], atomic["exit_count"], atomic["err_count"])
+        check("race_exactly_one_succeeds", atomic["exactly_one_succeeds"],
               "ok=%d exit=%d err=%d results=%s" % (ok_count, exit_count, err_count, results))
         check("race_other_refuses", exit_count == 1,
               "ok=%d exit=%d err=%d results=%s" % (ok_count, exit_count, err_count, results))
         check("race_no_thread_error", err_count == 0,
               "results=%s" % (results,))
-        target_x = race2 / auth_file_x
         check("race_winner_document_valid",
               target_x.is_file()
               and json.loads(target_x.read_text()).get("authority_id") == auth_id_x)
@@ -507,6 +585,33 @@ def main():
               target_x.is_file() and oct(target_x.stat().st_mode & 0o777) == "0o600")
         leftovers_x = [p.name for p in race2.iterdir() if ".tmp-" in p.name]
         check("race_no_temp_leftovers", not leftovers_x, str(leftovers_x))
+
+        # Retained negative control: this is the exact unsafe publication pattern,
+        # using distinct documents so the first successful publication is visibly
+        # overwritten. The same harness observes real absences before either write.
+        legacy_target = tmp / "legacy-admission.json"
+
+        def legacy_publish(idx):
+            if legacy_target.exists():
+                raise SystemExit("the admission already exists and is pinned")
+            legacy_target.write_bytes(encoded({"actor": idx}))
+
+        legacy = competing_releases(legacy_publish, legacy_target)
+        legacy_writes = legacy["writes"]
+        check("legacy_race_both_actors_observed_absence_before_writes",
+              len(set(legacy["absent_actors"])) == 2 and len(legacy_writes) == 2
+              and all(absences == 2 for _actor, absences, _raw in legacy_writes),
+              "absence_checks=%d writes=%d"
+              % (len(legacy["absent_actors"]), len(legacy_writes)))
+        check("legacy_race_threads_finished", legacy["threads_finished"])
+        check("legacy_race_two_successes",
+              legacy["ok_count"] == 2 and legacy["exit_count"] == legacy["err_count"] == 0,
+              str(legacy["results"]))
+        check("legacy_race_first_publication_overwritten",
+              len(legacy_writes) == 2 and legacy_writes[0][2] != legacy_writes[1][2]
+              and legacy_target.read_bytes() == legacy_writes[1][2])
+        check("legacy_race_detector_rejects_unsafe_publisher",
+              not legacy["exactly_one_succeeds"])
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

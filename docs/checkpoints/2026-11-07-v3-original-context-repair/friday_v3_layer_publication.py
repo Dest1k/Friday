@@ -46,6 +46,7 @@ LAYER_NAMES = (
     "write-file-format-guard",
     "bounded-resume-sidecar-guard",
     "bounded-7z-codec-activation",
+    "bounded-current-ask-identity",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -436,6 +437,51 @@ def resolve_layer_names(request):
     raise Refused("transaction_layer_names_required")
 
 
+def check_project_inventory(request, previous_input, current_input):
+    """Validate the exact operation delta without staging or publishing any bytes."""
+    layer_names = resolve_layer_names(request)
+    require(set(layer_names) <= set(LAYER_NAMES), "transaction_layer_names_unknown")
+    inventory = request["project_inventory"]
+    require(inventory == current_input["project_files"],
+            "transaction_project_inventory_changed")
+    require(digest(encoded(inventory)) == request["project_inventory_sha256"],
+            "transaction_project_inventory_changed")
+    previous_files = previous_input["project_files"]
+    current_files = current_input["project_files"]
+    additions = {f"patches/hermes/{name}-manifest.json" for name in layer_names} | \
+                {f"patches/hermes/{name}.patch" for name in layer_names}
+    require(additions <= set(current_files), "transaction_layer_files_missing")
+    require(set(previous_files) <= set(current_files),
+            "transaction_project_file_removed")
+    # Existing selected patches remain immutable. A genuinely new selected patch may
+    # arrive with its manifest, so the exact installed input remains the predecessor;
+    # no reconstructed baseline is needed merely to pretend the new patch was present.
+    new_patches = {f"patches/hermes/{name}.patch" for name in layer_names
+                   if f"patches/hermes/{name}.patch" not in previous_files}
+    expected_additions = {f"patches/hermes/{name}-manifest.json" for name in layer_names} | \
+                          new_patches | set(request["plugin_additions"])
+    require(set(current_files) - set(previous_files) == expected_additions,
+            "transaction_project_delta_changed")
+    for name in layer_names:
+        patch = f"patches/hermes/{name}.patch"
+        require(patch in current_files
+                and (patch not in previous_files
+                     or current_files[patch] == previous_files[patch]),
+                "transaction_layer_patch_pin_changed:" + patch)
+    for name in previous_files:
+        if name in request["plugin_set"]:
+            # the plugin set is published as its own step and is checked there
+            continue
+        if name in request.get("project_file_updates", []):
+            # a project file the transition deliberately updates; its bytes are proven
+            # against the candidate and published in its own step
+            continue
+        require(current_files[name] == previous_files[name],
+                "transaction_project_file_changed:" + name)
+
+    return layer_names
+
+
 def read_layers(candidate_root, receipt, home, project_files, layer_names):
     """Read the layer manifests of THIS operation from the candidate and bind them.
 
@@ -566,7 +612,7 @@ def row_bytes(layers, path):
 
 
 def apply_layers(layers, source, staging):
-    """Apply the four layers in order onto a private staging tree.
+    """Apply the selected layers in order onto a private staging tree.
 
     The staging tree holds only the files the layers touch, seeded with the live bytes.
     Each layer sees the previous layer's output. A layer whose result bytes are already in
@@ -713,7 +759,15 @@ def run(request, request_path, request_sha256):
     INJECT_SNAPSHOT_HOME = home
     candidate = Path(request["candidate_project"]).resolve()
     require(candidate.is_dir(), "transaction_candidate_missing")
-    seconds = int(request.get("seconds", 180))
+    seconds = request.get("seconds", 180)
+    require(type(seconds) is int and seconds > 0,
+            "transaction_seconds_positive_integer_required")
+    deadline = started + seconds
+
+    def forward_budget():
+        # Only forward work is budgeted. An expired operation must still restore every
+        # published beforeimage; Journal.restore calls publish directly, never this guard.
+        require(time.monotonic() < deadline, "transaction_deadline_expired")
 
     # 1. the gateway must be stopped: one receiver, never two.
     bench_home = request.get("bench_home")
@@ -722,7 +776,7 @@ def run(request, request_path, request_sha256):
 
     # 2. pins: every referenced byte must still be the pinned byte.
     for key in ("marker", "source_receipt", "stamp", "configuration", "profile", "launcher",
-                "current_input", "previous_input", "predecessor_request", "target_receipt",
+                "native_unit", "current_input", "previous_input", "predecessor_request", "target_receipt",
                 "candidate_input"):
         ref = request.get(key)
         require(isinstance(ref, dict) and "path" in ref and "sha256" in ref,
@@ -739,6 +793,8 @@ def run(request, request_path, request_sha256):
     marker = read_json(request["marker"]["path"])
     receipt = read_json(request["source_receipt"]["path"])
     previous_input = read_json(request["previous_input"]["path"])
+    require(marker.get("input_sha256") == request["previous_input"]["sha256"],
+            "transaction_previous_input_not_installed")
     current_input = read_json(request["current_input"]["path"])
     predecessor = read_json(request["predecessor_request"]["path"])
 
@@ -796,47 +852,10 @@ def run(request, request_path, request_sha256):
     # empty, malformed or repeated set is refused instead of silently widening the
     # operation to every known layer. The historical four-layer request keeps its exact
     # meaning because the generator names exactly those four layers.
-    layer_names = resolve_layer_names(request)
-    require(set(layer_names) <= set(LAYER_NAMES), "transaction_layer_names_unknown")
-    inventory = request["project_inventory"]
-    require(digest(encoded(inventory)) == request["project_inventory_sha256"],
-            "transaction_project_inventory_changed")
-    previous_files = previous_input["project_files"]
+    layer_names = check_project_inventory(request, previous_input, current_input)
     current_files = current_input["project_files"]
-    additions = {f"patches/hermes/{name}-manifest.json" for name in layer_names} | \
-                {f"patches/hermes/{name}.patch" for name in layer_names}
-    require(additions <= set(current_files), "transaction_layer_files_missing")
-    require(set(previous_files) <= set(current_files),
-            "transaction_project_file_removed")
-    # The delta: the four layer manifests (their patch bytes are already carried by the
-    # previous input) plus the new plugin files of the V3 product.
-    # The delta is exactly what the request declares: the layer manifests and patches of
-    # this bundle plus the plugin files the transition adds. Nothing else may appear or
-    # disappear, so a stray file in the candidate is refused.
-    # The layer manifests and the plugin files the transition adds are the delta; the layer
-    # patches may already be carried by the previous input, so they are checked by their
-    # presence and their pinned hash, not by their absence.
-    expected_additions = {f"patches/hermes/{name}-manifest.json" for name in layer_names} | \
-                          set(request["plugin_additions"])
-    require(set(current_files) - set(previous_files) == expected_additions,
-            "transaction_project_delta_changed")
-    for name in layer_names:
-        patch = f"patches/hermes/{name}.patch"
-        require(patch in current_files and patch in previous_files
-                and current_files[patch] == previous_files[patch],
-                "transaction_layer_patch_pin_changed:" + patch)
-    for name in previous_files:
-        if name in request["plugin_set"]:
-            # the plugin set is published as its own step and is checked there
-            continue
-        if name in request.get("project_file_updates", []):
-            # a project file the transition deliberately updates; its bytes are proven
-            # against the candidate and published in its own step
-            continue
-        require(current_files[name] == previous_files[name],
-                "transaction_project_file_changed:" + name)
 
-    # 7. the four layers: manifest bytes, patch bytes and preimages. The layers are read
+    # 7. the selected layers: manifest bytes, patch bytes and preimages. The layers are read
     #    from the candidate and tied to the hashes the current input pins; their preimage
     #    chain is checked against the receipt before anything is staged.
     layers = read_layers(candidate, receipt, home, current_files, layer_names)
@@ -856,6 +875,7 @@ def run(request, request_path, request_sha256):
     #    A bundle that is already published is NOT applied again: for layers that touch the
     #    same file the old patch would be applied to the final bytes and would not apply.
     #    Its final bytes and its receipt are checked instead.
+    forward_budget()
     staging_root = private_directory(home / "preparation" /
                                      ("ordinary-source-update-v45-" + request_sha256[:16]))
     staging = private_directory(staging_root / "staging")
@@ -930,6 +950,7 @@ def run(request, request_path, request_sha256):
                 journal.record_existing(target, owned_file(target))
             else:
                 journal.record_absent(target)
+        forward_budget()
         # The path is registered BEFORE the write: a failure between the rename and the
         # directory synchronisation leaves the file changed, and the rollback must still
         # know about it.
@@ -956,6 +977,7 @@ def run(request, request_path, request_sha256):
             journal.record_existing(target, owned_file(target))
         else:
             journal.record_absent(target)
+    forward_budget()
     journal.write_intent("intent.json", {
         "schema": "friday.ordinary-telegram-source-update-transaction.v1",
         "state": "SOURCE_UPDATE_INTENT",
@@ -991,8 +1013,14 @@ def run(request, request_path, request_sha256):
 
         # 10b. the project files the transition deliberately updates, then the V3 plugin set.
     #      Both are proven against the current input's pins before they are written.
-        project_updates = sorted(request.get("project_file_updates", []))
-        project_updates += sorted(request.get("layer_manifest_updates", []))
+        # New selected patches were not carried by the installed project. Publish them
+        # with their manifests through the same journal so the next operation can prove
+        # the installed project's complete pinned composition.
+        new_patches = {f"patches/hermes/{name}.patch" for name in layer_names
+                       if f"patches/hermes/{name}.patch" not in previous_input["project_files"]}
+        project_updates = sorted(set(request.get("project_file_updates", []))
+                                 | set(request.get("layer_manifest_updates", []))
+                                 | new_patches)
         plugin_set = sorted(request["plugin_set"])
         plugin_additions = sorted(request["plugin_additions"])
         for name in project_updates + plugin_set + plugin_additions:
@@ -1088,6 +1116,7 @@ def run(request, request_path, request_sha256):
         publish_with_journal(home / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
         publish_with_journal(Path(home) / "hermes-agent/install-stamp.json", stamp_data, 0o600)
 
+        forward_budget()
         # This operation's own record; the predecessor's record is left untouched and
         # that is proved on the bytes, not on a claim.
         require(predecessor_committed_path.read_bytes() == predecessor_committed_bytes,
