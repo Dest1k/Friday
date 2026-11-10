@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 10.11.2026, 21:49 МСК
+## Действующее продолжение Астры — 10.11.2026, 22:45 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -26,14 +26,15 @@
 Сол выполняет второй самостоятельный пакет `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1`:
 изолированная совместимая сборка полного headless Writer/Calc/Impress/Draw и два реальных
 RTF save/close/reopen цикла с регрессией. Exact source/config milestone принят только как
-подготовка; готового built artifact ещё нет. Один native pre-task compact на каждое новое
+подготовка; готовый built artifact ещё не принят. Один native pre-task compact на каждое новое
 назначение подтверждён; повторов задач/моделей/настроек нет. Установка toolchain — только
 после результата/QA/review, вне короткого maintenance-окна. Текущий toolchain не менялся.
 
 **Git.** При принятии HEAD = origin/main = remote main был
 `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
 После него опубликованы `bedbd946f663c76965c0baebaea81a85539c5e94` и
-`1632b288e4459f7ad8e28462d2f45f7bddecca80` — последний проверенный опубликованный baseline
+`1632b288e4459f7ad8e28462d2f45f7bddecca80`; затем Source196/evidence опубликованы в
+`48b57e346dbe0aeb3a964a671a47cb47895370ae` — последний проверенный опубликованный baseline
 перед этой дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
@@ -91,30 +92,79 @@ metadata/relationships/MIME не расширяет строгий source profil
   Gateway/AIAgent fixture через __new__, release_running_state=False; не installed bootstrap/
   Telegram/slot release. Не доказаны C/libarchive hang/RLIMIT_CPU exhaustion; wholeA13/A14 INCOMPLETE.
 
-**P1 F04 — текущая незавершённая очередь.**
-Первый ODT→DOCX R96 выполнен на195 один раз: запрос2724, два native отказа effect=none,
-text2726, full180; документа/публикации target нет. **FAIL_REQUIRED_DOCX_NOT_PRODUCED** сохранён.
-[Точный эффект и ошибочная атрибуция модели](evidence/astra-20261110/odt-docx-first-known-refusal.json).
-Реальный дефект был в проверке выходного DOCX, не исходного ODT. Он исправлен/установлен в196.
-Отдельный future max1 diagnostic того же шага допускается исходным контрактом §5line62/§6line75
-после исправления/регрессии/review/install; не является новым независимым входом и не стирает FAIL.
-Подготовленный issuer остановился **до release/bind/run/send** на формулировке SCOPE:
-[known-none prerelease refusal](evidence/astra-20261110/f04-diagnostic-prerelease-refusal.json).
-Frozen7CODE/старые proof/истёкшая ISSUE-фаза сохранены. Проверяется минимальный явный adapter
-с корректным отрицанием product/B00 acceptance, без ослабления validator/guards/max1.
-Следующая ISSUE — отдельная будущая операция только после review и свежих фактов; R номер не назначен.
+**P1 F04 — два прямых пользовательских пути подтверждены на196.**
 
-Первая original **ODS→XLSX ещё НЕ отправлена/не допущена**. После настоящей изолированной
-readiness и установленного исправления196 подготавливается явный successor её ordinary
-Source195-pinned gate/oracle. Original938B/numeric1 сохраняется; R86 с numeric2 не подменяет вход.
-Эта независимая операция использует обычный v42/issuer и не зависит от PASS предыдущего ODT.
-Старые v42/issuer/private oracle не переписываются; semantic OOXML ожидания не ослабляются.
+Первый ODT→DOCX R96 на195 сохранил **FAIL_REQUIRED_DOCX_NOT_PRODUCED**: запрос2724,
+два native отказа effect=none, text2726/full180, без документа/target.
+[Историческая оценка](evidence/astra-20261110/odt-docx-first-known-refusal.json) не переписана.
+Отдельный max1 diagnostic разрешён исходными §5line62/§6line75 после реального
+исправления/review/регрессии/установки и явного fullV3resume, не новым run-id сам по себе.
+Первый issuer остановился до release/bind/run/send на формулировке scope:
+[known-none](evidence/astra-20261110/f04-diagnostic-prerelease-refusal.json).
+Старые7CODE/истёкшая ISSUE-фаза сохранены. Минимальный отдельный adapter с точным
+отрицанием product/B00 acceptance прошёл135+75 контролей; старые validator/main/atomic/
+phase/max1 guards не менялись. Новая исправленная prerelease операция имела свои
+свежие факты/часы; старые не продлевались и не сбрасывались.
 
-Текущий сохранённый срез **503 canonical / native5431 / 45 unresolved / 3 UNKNOWN**.
+**R97 ODT→DOCX:** одна отправка2727 → получен2729,6034B,
+SHA `f42719eabacc4a58596f2bc3b00e5fcb78f69f7d7528b181783b30beb5dc9310`.
+Полное180 окно/exit0/raw reply custody/native source-call-output-received hashjoin PASS.
+16 точных абзацев/3 Heading1/Unicode/дата22 и original source6122 сохранены.
+На рабочей копии того же полученного DOCX выполнен один реальный Writer цикл:
+контролируемый marker → native save/close/reopen → restore/save/close/reopen;
+Root независимо проверил сохранённые marker/native-restored/UNO inventories,15 negatives.
+[Итог и границы](evidence/astra-20261110/odt-docx-postfix-diagnostic-root-review.json).
+Повторённые stored rows5434/5440 с тем же callID отделены от физических операций
+и не посчитаны двумя независимыми trial. Подготовительные Office ошибки readonly
+Basic/registry и локальные ошибки checker сохранены; завершённый документный цикл
+ради checker не повторялся. **Этот max1 diagnostic израсходован.** R96 остаётся FAIL.
+
+**R98 первая original ODS→XLSX:** одна отправка2730 → получен2732,5668B,
+SHA `3a1085209fb79574c8962e1a0ab2abc060592cd3018e54beb78ecc2afb3d5c9b`.
+Полное180/exit0/custody/native source-call-output-received join PASS. Exact938B source37a8,
+«Данные»/A1:B3/6 typed cells/5 strings/B3numeric1/no formulas подтверждены; R86numeric2
+не подменял вход. На копии именно2732 один реальный Calc цикл1→200→1/native saves/
+close/reopen, native и UNO сохранены,22 negatives; Root независимо проверил те же outputs.
+[Итог](evidence/astra-20261110/ods-xlsx-first-original-root-review.json).
+Обычный firstODS использовал явный196 successor старого strict195 gate/oracle;
+независимое ревью69+32 закрыло metadata check/use race до admission, строгие pins и
+семантика не ослаблялись. Actual v42/issuer неизменны за пределами исходных3 binding pins.
+ODS не зависел от semantic PASS ODT. Исторические материалы195 и все исходники сохранены.
+
+Formal tester у обоих остаётся **EVIDENCE_READY/RECEIVED_UNGRADED/NOT_ESTABLISHED**;
+это отдельный факт от Root semantic/application приёмки. GUI/визуальная fidelity,
+Microsoft Office cross-app и полный F04/форматы не объявлены принятыми.
+
+[Свежий runtime/3DB/границы](evidence/astra-20261110/p1-forward-conversions-runtime-checkpoint.json):
+196/постоянный824223/start4139883/bootd518, Telegramconnected, NRestarts0, leases0,
+данные default30/2,dest196/2,tester5457/5, quick_checkOK. **505canonical/native5457 /
+45старых unresolved / 3UNKNOWN**. Все операции этого forward плана закрыты;
+здоровый gateway оставлен работать. Источники/received/receipts/runs не менялись.
+
+**Ближайший следующий результат:** Root готовит обязательный обратный DOCX→ODT.
+На exact196 получен one-file candidate2b5da5…bf15: только native-output passive RDF и
+строго пустые label heading wrappers, public/source profile остаётся строгим.
+68 forward/7 consumer/12 semantic/136 независимых контролей; существующий реальный
+reverse-output и один рабочий ODT app-cycle приняты source/offline, не user/live.
+Состав197 ещё **не установлен**. Source-only author descriptor явно нормализован
+для publication (196 exact prerequisites), исходный descriptor сохранён; actual
+composition/rollback/negative106PASS, project474 сохраняет472 pins/17887 nontarget.
+Ближайший настоящий read_file consumer уже прочитал оба точных savedODT:16абзацев/3h1/Unicode, partial=false; финальный proof сохранности проверяется до maintenance;
+нельзя подменить его успехом XML-проверяющего. Новый reverse запрос пока не допущен:
+нужна точная исходная история/effect basis, source/fix сами повтор не разрешают.
+Один случайный unreceipted bytecode cache автора удалён Root по exact inode/hash;
+первичный факт сохранён, Python source/receipt196/данные не менялись, reinstall/restart нет.
+
+Сол независимо продолжает full compatible RTF toolchain build/QA на Standard;
+M1/M2 source/config/negative-baseline progress проверены, готовый binary ещё не принят.
+Его original compile deadline23:31 МСК не сбрасывался; организационная оценка не kill timer.
+Текущий установленный toolchain не менялся; Heading draft и proposed C++ остаются
+uninstalled до полноценного native roundtrip и независимого built-artifact review.
+
 R83 UNKNOWN_SEND/один readonly EMPTY quarantine, R85 PARTIAL/Question NOT_RUN,
-исчерпанные три C10 R89–R91, R42/R43/2257/S11/P01/Q02/G06/M10 и другие consumed/UNKNOWN
-сохранены без повторов. Отсутствие formal PASS не разрешает повторный эффект.
-Formal tester acceptance и полный V3 ни одним узким результатом здесь не установлены.
+исчерпанные три C10 R89–R91, R42/R43/2257/S11/P01/Q02/G06/M10 и прочие consumed/UNKNOWN
+сохранены. Отсутствие formal PASS не разрешает новый эффект. Полные170/120/B00,
+все обязательные варианты/регрессия/восстановление остаются объёмом active goal.
 
 ## Исторический чекпоинт Сола — OWNER_PAUSE, 10.11.2026, 20:09 МСК
 
