@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 11.11.2026, 01:54 МСК
+## Действующее продолжение Астры — 11.11.2026, 02:41 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -31,8 +31,33 @@ actualLOCAL consumer PASS, остальные направления огран�
 выполняет `ASTRA-SOL-V3-DSH-COHERENT-REPAIR-20261111#1`: предыдущее конечное ревью
 завершено CHANGES_REQUIRED; принят цельный наборF1–F8, кандидат не установлен.
 [Ревью / actual static / новая задача](evidence/astra-20261111/dsh-coarchitect-coherent-repair-checkpoint.json).
-Root параллельно готовит точное восстановление зависимостей и безопасную Office диагностику. Standard/прежняя TUI/oldgoalpaused сохранены.
+Root восстановил exactNode/CA/helper; currentDSH ещё не квалифицирован. M1/M2 Сола приняты,
+final coherent source/native review остаётся впереди.
+[Текущий совместный срез](evidence/astra-20261111/dsh-coherent-repair-milestones.json). Standard/прежняя TUI/oldgoalpaused сохранены.
 Никакое maintenance-окно не открыто на ожидание ревью.
+
+**11.11, 02:33:54 МСК: exact внешние зависимости восстановлены, Source198 сохранён.**
+[Полный состав/физические inode/неизменность/ограничения](evidence/astra-20261111/dsh-exact-dependency-restoration.json).
+Одна исходная240s операция, execution+readback0.842s: прежний Node22.23.2 с полным
+support-tree4750files/3relativealiases, исходныйCA и hermes_prepare8ccf; staging branches
+перемещены теми же inode, canonical readback полный. .local/bin/node вновь разрешается,
+но Node/helper не исполнялись. Marker/receipt/stamp/config bytes+inode/gateway1198290 неизменны.
+Все3DBquick_checkOK/leases0/counts30:2,196:2,5487:5. Это не DSH availability/T1/P/T2.
+Actual spec_checked в selectedprivateproject476 после восстановления выявил ещё недостающий
+old NEW-WORKER-WEB-POLICY-PROPOSED/e80b…; current-input совместимость проверяется до установки,
+старые proof/secret/TLS refs не подменяются свежим разрешением.
+[Реальные22retained unit observations](evidence/astra-20261111/dsh-retained-workers-readonly.json):
+allquiescent/closed ownclients, данные сохранены; для admission нужны свежие held observations.
+
+**PPTX chart inspection: закрытый отказ проверяющего, producer/output не повторялись.**
+[Истинные phases/clocks/cleanup и последующие source исправления](evidence/astra-20261111/office-chart-inspection-harness-failures.json).
+Первый частный app300 истёк без протокола; docload/render не установлены. Начальный
+STOP_UNCONFIRMED сохранён; позже точные leftovers уже отсутствовали, собственный stage очищен.
+Конкретный reserved ACCESS исправлен только в own macro. Bare compiler baseline прошёл,
+exact compile завершился SIG11; source-разбор выявил неподготовленный App-BASIC/VCL context.
+Точное место native сбоя не установлено; fixed/negatives не приняты.
+Готовится согласованный app-context recipe с durable phases; нового app admission ещё нет.
+Исторические rawODP/fallback missingresource FAIL, sameR92 PARTIAL и wholeOffice ограничения сохранены.
 
 **Git.** При принятии HEAD = origin/main = remote main был
 `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
@@ -44,7 +69,8 @@ Root параллельно готовит точное восстановлен
 `ed2788bab090fdf841e1e242814bf03506caa741`; R99 с Writer evidence опубликован в
 `bcb8241865a40b0d892444fd440c65f93815c151`; R100 с Calc evidence —
 `f441ab9c2751d1df6c4c4232bc1d6d0331e9a7ce`; Office partial/DSH blockers опубликованы в
-`ff83addc4aaaade0e8fcaa06a8f19419e97a98cb` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+`ff83addc4aaaade0e8fcaa06a8f19419e97a98cb`; F1–F8/currentinput срез —
+`addd212a3e59d8083648d61ce35254a5971b363d` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
