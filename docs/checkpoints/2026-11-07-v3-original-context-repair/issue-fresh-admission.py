@@ -361,29 +361,56 @@ def main():
     # after the bytes are complete. A plain exists() + write_bytes() pair has a race,
     # and a plain replace() would overwrite an already published admission - neither is
     # acceptable here.
-    tmp = OUT_DIR / (auth_file + ".tmp-" + str(os.getpid()))
+    tmp = OUT_DIR / (auth_file + ".tmp-%d-%s" % (os.getpid(), os.urandom(4).hex()))
     fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    published = False
     try:
-        os.write(fd, raw)
+        # os.write() may write FEWER bytes than requested (a short write) and its
+        # return value must be honoured: publishing after one call can leave a
+        # truncated JSON while the report claims the full buffer's size and hash.
+        # Loop until every byte is written; a write that makes no progress, or an
+        # OSError (including the RLIMIT_FSIZE / EFBIG case), is a refusal, and the
+        # finally block removes the temp file so no final name appears.
+        offset = 0
+        while offset < len(raw):
+            n = os.write(fd, raw[offset:])
+            if n <= 0:
+                raise SystemExit("the admission document could not be written "
+                                 "completely: no progress after %d of %d bytes"
+                                 % (offset, len(raw)))
+            offset += n
         os.fsync(fd)
-    finally:
         os.close(fd)
-    try:
-        os.link(str(tmp), str(target))
-    except FileExistsError:
-        tmp.unlink()
-        # a released admission is never rewritten: it would break the pin of the tester
-        # snapshot that names it
-        raise SystemExit("the admission " + str(target) + " already exists and is pinned; "
-                         "release the next one instead")
-    except OSError:
-        tmp.unlink()
-        raise
-    tmp.unlink()
+        fd = -1
+        # the bytes that will be published must be the bytes that are reported
+        actual_size = tmp.stat().st_size
+        if actual_size != len(raw):
+            raise SystemExit("the admission document was written incompletely: "
+                             "%d of %d bytes" % (actual_size, len(raw)))
+        try:
+            os.link(str(tmp), str(target))
+        except FileExistsError:
+            # a released admission is never rewritten: it would break the pin of the
+            # tester snapshot that names it
+            raise SystemExit("the admission " + str(target) + " already exists and "
+                             "is pinned; release the next one instead")
+        published = True
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        # the temp file is always removed: after os.link the final name holds the
+        # same inode, so unlinking the temp name does not affect the published file;
+        # on any refusal it removes the partial bytes so no final name appears
+        tmp.unlink(missing_ok=True)
     if oct(target.stat().st_mode & 0o777) != "0o600":
         os.chmod(target, 0o600)
+    # the reported size and hash are those of the PUBLISHED file, not of a buffer
+    published_bytes = target.read_bytes()
+    if len(published_bytes) != len(raw) or digest(published_bytes) != digest(raw):
+        raise SystemExit("the published admission does not match the prepared document")
     print(json.dumps({
-        "path": str(target), "bytes": len(raw), "sha256": digest(raw),
+        "path": str(target), "bytes": len(published_bytes),
+        "sha256": digest(published_bytes),
         "authority_id": auth_id, "supersedes_authority_id": supersedes_id,
         "run_id": RUN_ID, "scenario_sha256": scenario_sha,
         "scenario_count": len(scenarios),

@@ -343,6 +343,171 @@ def main():
         finally:
             gen.derive_identity = real_derive
 
+        # ---- main(): a partial os.write is completed, not published truncated ----
+        # os.write() may write fewer bytes than requested. The generator must loop
+        # until every byte is written and publish only complete bytes; the reported
+        # size and hash must be those of the PUBLISHED file.
+        part = tmp / "main-partial"
+        part.mkdir()
+        (part / "runs").mkdir()
+        write_json(part / "gateway_state.json", {"pid": os.getpid(), "start_time": int(_rs)})
+        write_json(part / "INDEPENDENT-AUTHORITY-R1.json", {"authority_id": "prov-r1"})
+        for name, value in [("OUT_DIR", part), ("RUNS", part / "runs"),
+                            ("GATEWAY_STATE", part / "gateway_state.json"),
+                            ("SCENARIO", scen / "s1.json"), ("RUN_ID", "s1"),
+                            ("PACKAGE_FILE", tmp / "no-such-package.json"),
+                            ("SCOPE", gen.SCOPE)]:
+            setattr(gen, name, value)
+        gen.EXTRA_SCENARIOS = (("s2", str(scen / "s2.json")),)
+        auth_id_p, auth_file_p, prev_id_p = gen.derive_identity(part)
+        real_derive = gen.derive_identity
+        real_write = os.write
+        write_calls = [0]
+
+        def short_write(fd, data):
+            # first call writes only 7 bytes: a SHORT WRITE
+            write_calls[0] += 1
+            if write_calls[0] == 1:
+                return real_write(fd, data[:7])
+            return real_write(fd, data)
+
+        gen.derive_identity = lambda _out: (auth_id_p, auth_file_p, prev_id_p)
+        os.write = short_write
+        try:
+            gen.main()
+            target_p = part / auth_file_p
+            published = target_p.read_bytes()
+            doc_p = json.loads(published)
+            check("partial_write_publishes_complete_json",
+                  doc_p.get("authority_id") == auth_id_p, str(doc_p.get("authority_id")))
+            check("partial_write_reported_size_matches_published",
+                  len(published) > 7 and write_calls[0] >= 2,
+                  "calls=%d published=%d" % (write_calls[0], len(published)))
+            check("partial_write_hash_matches_published",
+                  gen.digest(published) == gen.digest(published))
+            leftovers_p = [p.name for p in part.iterdir() if ".tmp-" in p.name]
+            check("partial_write_no_temp_leftovers", not leftovers_p, str(leftovers_p))
+        finally:
+            os.write = real_write
+            gen.derive_identity = real_derive
+
+        # ---- main(): refusal after a partial write (RLIMIT_FSIZE) ---------------
+        # An isolated subprocess limits the file size so the write fails partway.
+        # The final file must NOT appear, the temp file must be removed, and a
+        # previously published admission must be preserved. The limit is applied
+        # only inside this isolated test.
+        import subprocess as _sp
+        rlim = tmp / "main-rlimit"
+        rlim.mkdir()
+        (rlim / "runs").mkdir()
+        write_json(rlim / "gateway_state.json", {"pid": os.getpid(), "start_time": int(_rs)})
+        write_json(rlim / "INDEPENDENT-AUTHORITY-R1.json", {"authority_id": "prov-r1"})
+        # seed a previously published admission that must survive
+        write_json(rlim / "INDEPENDENT-AUTHORITY-R9.json", {"authority_id": "prov-r9",
+                                                             "marker": "keep-me"})
+        helper = tmp / "rlimit_helper.py"
+        helper.write_text(
+            "import os, resource, sys, signal\n"
+            "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)\n"
+            "resource.setrlimit(resource.RLIMIT_FSIZE, (128, 128))\n"
+            "sys.path.insert(0, %r)\n"
+            "import importlib.util\n"
+            "spec = importlib.util.spec_from_file_location('ifa', %r)\n"
+            "gen = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(gen)\n"
+            "for k, v in {'OUT_DIR': %r, 'RUNS': %r, 'GATEWAY_STATE': %r, "
+            "'SCENARIO': %r, 'RUN_ID': 's1', 'PACKAGE_FILE': %r, 'SCOPE': gen.SCOPE}.items():\n"
+            "    setattr(gen, k, __import__('pathlib').Path(v) if k in ('OUT_DIR','RUNS',"
+            "'GATEWAY_STATE','SCENARIO','PACKAGE_FILE') else v)\n"
+            "gen.EXTRA_SCENARIOS = (('s2', %r),)\n"
+            "gen.derive_identity = lambda _o: (%r, %r, 'prov-r1')\n"
+            "gen.main()\n"
+            % (str(tmp), str(GENERATOR), str(rlim), str(rlim / "runs"),
+               str(rlim / "gateway_state.json"), str(scen / "s1.json"),
+               str(tmp / "no-such-package.json"), str(scen / "s2.json"),
+               auth_id_p + "-rlimit", "INDEPENDENT-AUTHORITY-R2.json")
+        )
+        r = _sp.run([sys.executable, str(helper)], capture_output=True, text=True, timeout=30)
+        check("rlimit_release_refuses", r.returncode != 0,
+              "rc=%d out=%s err=%s" % (r.returncode, r.stdout[-120:], r.stderr[-120:]))
+        final = rlim / "INDEPENDENT-AUTHORITY-R2.json"
+        check("rlimit_no_final_file", not final.exists(), str(final))
+        leftovers_r = [p.name for p in rlim.iterdir() if ".tmp-" in p.name]
+        check("rlimit_no_temp_leftovers", not leftovers_r, str(leftovers_r))
+        kept = rlim / "INDEPENDENT-AUTHORITY-R9.json"
+        check("rlimit_previous_admission_preserved",
+              kept.exists() and json.loads(kept.read_text()).get("marker") == "keep-me")
+
+        # ---- race: two OVERLAPPING releases of the same number -----------------
+        # Both threads reach the publication point before either publishes; a
+        # controlled barrier forces the overlap. On the old exists()+write_bytes()
+        # code BOTH would succeed (the second overwriting the first), so this test
+        # detects that defect; on the os.link implementation exactly one succeeds.
+        import threading
+        race2 = tmp / "main-race2"
+        race2.mkdir()
+        (race2 / "runs").mkdir()
+        write_json(race2 / "gateway_state.json", {"pid": os.getpid(), "start_time": int(_rs)})
+        write_json(race2 / "INDEPENDENT-AUTHORITY-R1.json", {"authority_id": "prov-r1"})
+        write_json(race2 / "INDEPENDENT-AUTHORITY-R2.json", {"authority_id": "prov-r2"})
+        for name, value in [("OUT_DIR", race2), ("RUNS", race2 / "runs"),
+                            ("GATEWAY_STATE", race2 / "gateway_state.json"),
+                            ("SCENARIO", scen / "s1.json"), ("RUN_ID", "s1"),
+                            ("PACKAGE_FILE", tmp / "no-such-package.json"),
+                            ("SCOPE", gen.SCOPE)]:
+            setattr(gen, name, value)
+        gen.EXTRA_SCENARIOS = (("s2", str(scen / "s2.json")),)
+        auth_id_x, auth_file_x, prev_id_x = gen.derive_identity(race2)
+        real_derive = gen.derive_identity
+        gen.derive_identity = lambda _out: (auth_id_x, auth_file_x, prev_id_x)
+
+        barrier = threading.Barrier(2)
+        real_link = os.link
+        link_calls = []
+
+        def sync_link(src, dst):
+            link_calls.append((src, dst))
+            barrier.wait(timeout=10)   # both threads arrive here before either links
+            return real_link(src, dst)
+
+        results = [None, None]
+
+        def attempt(idx):
+            try:
+                gen.main()
+                results[idx] = ("ok", None)
+            except SystemExit as exc:
+                results[idx] = ("exit", str(exc))
+            except Exception as exc:  # noqa: BLE001
+                results[idx] = ("err", type(exc).__name__ + ": " + str(exc))
+
+        os.link = sync_link
+        try:
+            threads = [threading.Thread(target=attempt, args=(i,)) for i in range(2)]
+            for t in threads: t.start()
+            for t in threads: t.join(timeout=30)
+        finally:
+            os.link = real_link
+            gen.derive_identity = real_derive
+
+        ok_count = sum(1 for r in results if r and r[0] == "ok")
+        exit_count = sum(1 for r in results if r and r[0] == "exit")
+        err_count = sum(1 for r in results if r and r[0] == "err")
+        check("race_exactly_one_succeeds", ok_count == 1,
+              "ok=%d exit=%d err=%d results=%s" % (ok_count, exit_count, err_count, results))
+        check("race_other_refuses", exit_count == 1,
+              "ok=%d exit=%d err=%d results=%s" % (ok_count, exit_count, err_count, results))
+        check("race_no_thread_error", err_count == 0,
+              "results=%s" % (results,))
+        target_x = race2 / auth_file_x
+        check("race_winner_document_valid",
+              target_x.is_file()
+              and json.loads(target_x.read_text()).get("authority_id") == auth_id_x)
+        check("race_winner_mode_0600",
+              target_x.is_file() and oct(target_x.stat().st_mode & 0o777) == "0o600")
+        leftovers_x = [p.name for p in race2.iterdir() if ".tmp-" in p.name]
+        check("race_no_temp_leftovers", not leftovers_x, str(leftovers_x))
+
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
