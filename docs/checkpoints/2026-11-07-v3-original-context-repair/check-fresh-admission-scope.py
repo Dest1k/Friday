@@ -154,6 +154,42 @@ def main():
         got2 = gen.collect_scenarios("s1", scen / "s1.json", [], tmp / "no-such-package.json")
         check("collect_without_package_ok", set(got2) == {"s1"})
 
+        # ---- collect_scenarios: repeated run id INSIDE the package (raw JSON) ----
+        # The fixture must be RAW JSON text: a Python dict would silently drop the
+        # duplicate key and invalidate the check. json.loads() with a plain dict also
+        # drops it, so the generator must parse the PAIRS of the raw document.
+        s2_sha = gen.digest(gen.encoded({"b": 2}))
+
+        pkg_raw_same = tmp / "package-raw-same.json"
+        pkg_raw_same.write_text(
+            '{"s2": "' + s2_sha + '", "s2": "' + s2_sha + '"}\n')
+        refuses("collect_refuses_package_internal_repeat_same_hash",
+                gen.collect_scenarios, "s1", scen / "s1.json", [], pkg_raw_same,
+                fragment="repeated")
+
+        pkg_raw_diff = tmp / "package-raw-diff.json"
+        pkg_raw_diff.write_text(
+            '{"s2": "' + s2_sha + '", "s2": "' + "0" * 64 + '"}\n')
+        refuses("collect_refuses_package_internal_repeat_different_hash",
+                gen.collect_scenarios, "s1", scen / "s1.json", [], pkg_raw_diff,
+                fragment="repeated")
+
+        # a package with an internal repeat whose LAST value is the correct digest
+        # must still be refused (this is the exact shape that used to pass)
+        pkg_raw_last_ok = tmp / "package-raw-last-ok.json"
+        pkg_raw_last_ok.write_text(
+            '{"s2": "' + "0" * 64 + '", "s2": "' + s2_sha + '"}\n')
+        refuses("collect_refuses_package_internal_repeat_last_value_ok",
+                gen.collect_scenarios, "s1", scen / "s1.json", [], pkg_raw_last_ok,
+                fragment="repeated")
+
+        # control: a package WITHOUT a repeat passes and yields the right digest
+        pkg_ok = tmp / "package-ok.json"
+        pkg_ok.write_text('{"s2": "' + s2_sha + '"}\n')
+        got3 = gen.collect_scenarios("s1", scen / "s1.json", [], pkg_ok)
+        check("collect_package_without_repeat_ok",
+              set(got3) == {"s1", "s2"} and got3["s2"] == s2_sha, str(sorted(got3)))
+
         # ---- validate_scope ----------------------------------------------------
         many = {"fmt-docx-create-x": "h", "d12-write-file-check-01-r48": "h"}
         gen.validate_scope(gen.SCOPE, many)   # must NOT raise
@@ -226,6 +262,86 @@ def main():
         # the seeded file must be untouched
         check("main_released_file_untouched",
               json.loads((sandbox / auth_file).read_text()) == {"already": "released"})
+
+        # ---- main(): two competing releases of the same number ------------------
+        # The real main() is run twice against the same isolated OUT_DIR with the same
+        # derived identity. The first release must succeed; the second must refuse with
+        # the pinned-file reason, and the PUBLISHED BYTES AND HASH OF THE FIRST must be
+        # preserved untouched. This is the deterministic form of the race that
+        # exists() + write_bytes() used to lose.
+        race = tmp / "main-race"
+        race.mkdir()
+        (race / "runs").mkdir()
+        _rs = (Path("/proc") / str(os.getpid()) / "stat").read_text().split()[21]
+        write_json(race / "gateway_state.json", {"pid": os.getpid(), "start_time": int(_rs)})
+        write_json(race / "INDEPENDENT-AUTHORITY-R1.json", {"authority_id": "prov-r1"})
+        write_json(race / "INDEPENDENT-AUTHORITY-R2.json", {"authority_id": "prov-r2"})
+        for name, value in [("OUT_DIR", race), ("RUNS", race / "runs"),
+                            ("GATEWAY_STATE", race / "gateway_state.json"),
+                            ("SCENARIO", scen / "s1.json"), ("RUN_ID", "s1"),
+                            ("PACKAGE_FILE", tmp / "no-such-package.json"),
+                            ("SCOPE", gen.SCOPE)]:
+            setattr(gen, name, value)
+        gen.EXTRA_SCENARIOS = (("s2", str(scen / "s2.json")),)
+
+        auth_id_r, auth_file_r, prev_id_r = gen.derive_identity(race)
+        check("race_derived_predecessor_is_r2", prev_id_r == "prov-r2", prev_id_r)
+        real_derive = gen.derive_identity
+        gen.derive_identity = lambda _out: (auth_id_r, auth_file_r, prev_id_r)
+        try:
+            # release 1: succeeds
+            gen.main()
+            target_r = race / auth_file_r
+            check("race_first_release_wrote_file", target_r.is_file(), auth_file_r)
+            first_bytes = target_r.read_bytes()
+            first_hash = gen.digest(first_bytes)
+            check("race_first_release_mode_0600",
+                  oct(target_r.stat().st_mode & 0o777) == "0o600",
+                  oct(target_r.stat().st_mode & 0o777))
+            # release 2: must refuse and must NOT touch the published bytes
+            refuses("race_second_release_refuses", gen.main,
+                    fragment="already exists and is pinned")
+            check("race_published_bytes_preserved",
+                  target_r.read_bytes() == first_bytes,
+                  "bytes changed after the refused second release")
+            check("race_published_hash_preserved",
+                  gen.digest(target_r.read_bytes()) == first_hash)
+            # no leftover temp files from either release
+            leftovers = [p.name for p in race.iterdir()
+                         if p.name.endswith(".tmp-" + str(os.getpid()))]
+            check("race_no_temp_leftovers", not leftovers, str(leftovers))
+        finally:
+            gen.derive_identity = real_derive
+
+        # ---- main(): a normal successful release publishes complete JSON ---------
+        norm = tmp / "main-norm"
+        norm.mkdir()
+        (norm / "runs").mkdir()
+        write_json(norm / "gateway_state.json", {"pid": os.getpid(), "start_time": int(_rs)})
+        write_json(norm / "INDEPENDENT-AUTHORITY-R1.json", {"authority_id": "prov-r1"})
+        for name, value in [("OUT_DIR", norm), ("RUNS", norm / "runs"),
+                            ("GATEWAY_STATE", norm / "gateway_state.json"),
+                            ("SCENARIO", scen / "s1.json"), ("RUN_ID", "s1"),
+                            ("PACKAGE_FILE", tmp / "no-such-package.json"),
+                            ("SCOPE", gen.SCOPE)]:
+            setattr(gen, name, value)
+        gen.EXTRA_SCENARIOS = (("s2", str(scen / "s2.json")),)
+        auth_id_n, auth_file_n, prev_id_n = gen.derive_identity(norm)
+        real_derive = gen.derive_identity
+        gen.derive_identity = lambda _out: (auth_id_n, auth_file_n, prev_id_n)
+        try:
+            gen.main()
+            target_n = norm / auth_file_n
+            doc = json.loads(target_n.read_text())
+            check("normal_release_publishes_valid_json",
+                  doc.get("authority_id") == auth_id_n, str(doc.get("authority_id")))
+            check("normal_release_mode_0600",
+                  oct(target_n.stat().st_mode & 0o777) == "0o600",
+                  oct(target_n.stat().st_mode & 0o777))
+            check("normal_release_predecessor_recorded",
+                  doc.get("supersedes", {}).get("authority_id") == prev_id_n)
+        finally:
+            gen.derive_identity = real_derive
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

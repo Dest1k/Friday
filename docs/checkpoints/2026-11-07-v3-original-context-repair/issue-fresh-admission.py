@@ -213,7 +213,26 @@ def collect_scenarios(primary_id, primary_path, extra_scenarios, package_file):
         add(extra_id, "extra", digest(encoded(extra)))
 
     if package_file and Path(package_file).is_file():
-        for pkg_id, pkg_sha in json.loads(Path(package_file).read_text()).items():
+        # The package is raw JSON: a repeated run id must be detected on the PAIRS of
+        # the raw document, before any dict is built. json.loads() would silently keep
+        # only the last value of a repeated key, so the duplicate would reach add()
+        # only once and the refusal would never fire. The object_pairs_hook keeps every
+        # pair in order, so a repeated key is fed to add() twice and is refused.
+        raw_pairs = json.loads(Path(package_file).read_text(),
+                               object_pairs_hook=lambda pairs: pairs)
+        if not isinstance(raw_pairs, list):
+            raise SystemExit("package must be a JSON object of run id -> sha256")
+        # detect a repeated key BEFORE any digest check, so the refusal reason names
+        # the repetition and cannot be masked by a digest mismatch on one of the pairs
+        pkg_keys = {}
+        for pkg_id, _pkg_sha in raw_pairs:
+            if pkg_id in pkg_keys:
+                raise SystemExit(
+                    "the run id " + pkg_id + " is repeated INSIDE the package "
+                    "(raw JSON object keys: " + str([k for k, _ in raw_pairs]) + "); "
+                    "a repeated run id is refused")
+            pkg_keys[pkg_id] = True
+        for pkg_id, pkg_sha in raw_pairs:
             pkg_path = Path(primary_path).parent / (pkg_id + ".json")
             if not pkg_path.is_file():
                 raise SystemExit("package scenario file is absent: " + str(pkg_path))
@@ -333,13 +352,36 @@ def main():
     }
     raw = encoded(document)
     target = OUT_DIR / auth_file
-    if target.exists():
+    # Publish the COMPLETE document atomically. The bytes are first written in full to
+    # a uniquely named temporary file in the same directory, fsynced and closed, and
+    # only then hard-linked to the final name. os.link() fails with FileExistsError if
+    # the name is already taken, so two competing releases can never both publish the
+    # same number and the second can never overwrite the first. The final pathname is
+    # never visible to readers as a partially written JSON, because it only appears
+    # after the bytes are complete. A plain exists() + write_bytes() pair has a race,
+    # and a plain replace() would overwrite an already published admission - neither is
+    # acceptable here.
+    tmp = OUT_DIR / (auth_file + ".tmp-" + str(os.getpid()))
+    fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, raw)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.link(str(tmp), str(target))
+    except FileExistsError:
+        tmp.unlink()
         # a released admission is never rewritten: it would break the pin of the tester
         # snapshot that names it
         raise SystemExit("the admission " + str(target) + " already exists and is pinned; "
                          "release the next one instead")
-    target.write_bytes(raw)
-    os.chmod(target, 0o600)
+    except OSError:
+        tmp.unlink()
+        raise
+    tmp.unlink()
+    if oct(target.stat().st_mode & 0o777) != "0o600":
+        os.chmod(target, 0o600)
     print(json.dumps({
         "path": str(target), "bytes": len(raw), "sha256": digest(raw),
         "authority_id": auth_id, "supersedes_authority_id": supersedes_id,
