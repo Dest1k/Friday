@@ -1,0 +1,86 @@
+--- frozen/root_m09.py
++++ reviewer-fix/root_m09.py
+@@ -242,6 +242,8 @@
+ def native(proof,state,state_raw,*,require_sessions=True):
+     request=proof['native_request'];request_doc=json.loads(readref(request),object_pairs_hook=unique)
+     expected_kernel=kernel(state['pid'])
++    need(state.get('pid')==expected_kernel['pid'] and state.get('start_time')==expected_kernel['start_time'],
++         'M09_GATEWAY_STATE_KERNEL_BIRTH_MISMATCH')
+     need(request_doc.get('gateway')==dict(pid=expected_kernel['pid'],start_time=expected_kernel['start_time'])
+          and request_doc.get('boot_id')==expected_kernel['boot_id'], 'M09_ROOT_REQUEST_CURRENT_KERNEL_MISMATCH')
+     path=Path(proof['native_socket_path'])
+@@ -278,7 +280,7 @@
+     need(set(value.get('scopes',{}))=={'A','B'} and value.get('active_session_keys')==[],'M09_NATIVE_TWO_SCOPES_QUIESCENT')
+     work=value.get('existing_work',{})
+     need(work.get('registry_quiescent') is True and work.get('registry_recovery_blocked') is False
+-         and all(type(work.get(key)) is int and work[key]==0 for key in ('web_sessions','terminal_sessions','live_owned_delegations','durable_pending_delegations')),
++         and all(type(work.get(key)) is int and work[key]==0 for key in ('web_sessions','terminal_sessions','live_owned_delegations','durable_pending_delegations','durable_turn_leases')),
+          'M09_EXISTING_REGISTRY_DELEGATION_CUSTODY_NOT_QUIESCENT_OR_UNBOUND')
+     for slot,row in value['scopes'].items():
+         profile,user,principal=SLOTS[slot]
+@@ -755,6 +757,7 @@
+                         return 30
+                 receiver=M09ReadonlyCustody(View(),None,clock=time.time,sleep=lambda _:need(False,'M09_CUSTODY_NO_WAIT'))
+             receiver.verify_reply_custody(record)
++            need(receiver.ready(record),'M09_B_PREFIX_FULL180_TERMINAL_CAPTURE_UNBOUND')
+ 
+ 
+ def source_card(unit):
+@@ -774,7 +777,7 @@
+         name,length,raw_sha,semantic_sha=a.B_PINS[unit]
+         need(pin==dict(path=str(Path(a.PACKET['path']).parent/'scenarios'/name),bytes=length,sha256=raw_sha)
+              and digest(encoded(scenario))==semantic_sha,'M09_PINNED_PREFIX_SCENARIO_METADATA_DRIFT')
+-        return dict(unit_id=unit,card=pin,scenario=scenario)
++        return dict(unit_id=unit,card=pin,scenario=scenario,scenario_sha256=semantic_sha)
+     units=[a.ORDER[0],a.ORDER[1],a.ORDER[4]]
+     pin=packet['manual_A_cards'][units.index(unit)]
+     card=json.loads(readref(pin,private=False),object_pairs_hook=unique)
+--- frozen/ordinary_turn_projection.m09.py
++++ reviewer-fix/ordinary_turn_projection.m09.py
+@@ -443,10 +443,15 @@
+                 home_sha256=_m09_digest_scalar(_m09_fields(provider).get('_hermes_home'))))
+     ed = _m09_fields(engine)
+     options = ed.get('_bounded_multipass_options')
++    if options is not None and type(options) is not dict:
++        raise RuntimeError('m09_policy_storage_shape')
+     multipass = None if options is None else {key: options.get(key) for key in
+         ('enabled', 'max_calls', 'max_depth', 'max_attempt_seconds', 'max_call_seconds')}
+     if multipass is not None and any(type(value) not in (bool, int, type(None)) for value in multipass.values()):
+         raise RuntimeError('m09_policy_scalar_shape')
++    flags = {key: d.get(key) for key in ('_memory_enabled', '_user_profile_enabled')}
++    if any(value is not None and type(value) is not bool for value in flags.values()):
++        raise RuntimeError('m09_builtin_flag_scalar_shape')
+     sd = _m09_fields(store)
+     caps = {key: sd.get(key) for key in ('memory_char_limit', 'user_char_limit')}
+     if any(value is not None and type(value) is not int for value in caps.values()):
+@@ -475,7 +480,7 @@
+         engine=_m09_type(engine), providers=providers, multipass=multipass,
+         summary_producer=summary, embedding_observation=embedding,summary_carrier=carrier,
+         builtin=dict(present=store is not None, caps=caps,
+-            memory_enabled=d.get('_memory_enabled'), user_profile_enabled=d.get('_user_profile_enabled')))
++            memory_enabled=flags['_memory_enabled'], user_profile_enabled=flags['_user_profile_enabled']))
+ 
+ def _m09_digest_scalar(value):
+     if value is None:
+@@ -596,7 +601,7 @@
+                 and row.get('status') in delegation_module._LIVE_STATES for row in delegation_module._records.values())
+         finally:
+             delegation_module._records_lock.release()
+-    durable=0
++    durable=0;durable_leases=0
+     for path in (HOME/'state.db',*(HOME/'profiles'/profile/'state.db' for _,profile,_,_ in _M09_SCOPES)):
+         if any(p.is_symlink() for p in (path,*path.parents)):
+             raise RuntimeError('m09_existing_delegation_store_link')
+@@ -609,7 +614,11 @@
+             if len(rows)>1024:
+                 raise RuntimeError('m09_existing_delegation_bound')
+             durable+=sum(row[0] in keys or row[1] in ids for row in rows)
++            leases=db.execute('SELECT 1 FROM session_turn_leases LIMIT 1025').fetchall()
++            if len(leases)>1024:
++                raise RuntimeError('m09_existing_turn_lease_bound')
++            durable_leases+=len(leases)
+     return dict(registry_quiescent=all(value.get('status')=='QUIESCENT' and value['sessions']==[] for value in (web,terminal)),
+         registry_recovery_blocked=any(value.get('recovery_blocked') is not False for value in (web,terminal)),
+         web_sessions=len(web['sessions']),terminal_sessions=len(terminal['sessions']),
+-        live_owned_delegations=live,durable_pending_delegations=durable)
++        live_owned_delegations=live,durable_pending_delegations=durable,durable_turn_leases=durable_leases)
