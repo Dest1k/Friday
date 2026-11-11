@@ -1,13 +1,13 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **11.11.2026, 17:09 МСК**. **ACTIVE / основной функционал**.
+Обновлено **11.11.2026, 18:17 МСК**. **ACTIVE / основной функционал**.
 Астра — единственный lead/live-интегратор; реальный Сол — постоянный co-architect.
 Оба **Standard/default, gpt-6.1-sol, thread reasoning ultra**; настройки не менялись.
 [Native goal](ASTRA-GOAL-REVISION-2026-11-11.json): тот же thread
 `01a1c688-e36d-7021-8df4-9c5644a4d75b`, active, редакция11.11, история/учёт сохранены, общего cap нет.
 Принятая paused-точка `5ea64beb0ba87968aca0e1e9c32696ac85d27a76` остаётся историей.
 
-Перед этим checkpoint `HEAD=origin/main=7794b0099d50b21e3cafc74a47e519f5deeab5ab`;
+Перед этим checkpoint `HEAD=origin/main=2516868857ad3193a866e9c804c093dcc868c2dc`;
 новый SHA — содержащий эту сводку коммит, без literal self-hash.
 Чужие изменения сохранены и исключены: `docs/foundation-status.md`, v2
 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`.
@@ -33,15 +33,24 @@ Qwen/Spark и compressor: health200/authenticated models200, штатные ма
 Core: Telegram/продолжение, контекст/память/изоляция, файлы/доставка/форматы, статус/стоп,
 ошибки/восстановление. Раньше второго этапа — только минимальная доказанная зависимость конкретного core-пути.
 
-Астра ведёт интеграцию203 и дальнейшую core-очередь. Сол в прежней TUI
+Астра ведёт дальнейшую core-очередь и подготовленную установку204. Сол в прежней TUI
 `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18` завершил Task14: [MDv02 original criterion принят](evidence/astra-20261111/f01-md-v02-original-criterion-accepted.json)
 с явным origin-receipt limit, без новых отправок. После одного завершённого compact выполняет **Task15**:
-архитектурная оценка RTF optionalfootnote/unsupported-edit guard и точная source204 композиция от actual203.
-M2/freeze/review должны предшествовать Root GATE_READY и четырём новым source gates; liveправа не переданы.
+точная source204 композиция от actual203. Архитектура принята: только optionalfootnote-reader;
+предложенный blanket unsupported-edit guard отвергнут как регрессия, edit_rtf AST прежний.
+R2 source gates: два setupFAIL до CP publication, два NOT_RUN; исходные маркеры/часы сохранены.
+R3 исправляет duplicate RTF seed и проверяет selected PM Python/prefix/ruamel до intent.
+Root принял точную дельту/независимое review и выдал отдельный GATE_READY R3:
+четыре последовательных source gates600wall/420CPU/2GiB, без liveправ. Это не повтор пользовательских эффектов.
+Prepared204 frame/7CAS/29changed-controls проверен Root; finalgates/freshrequest/admission ещё UNBOUND.
 Task13 final203 завершён: [source + четыре gates](evidence/astra-20261111/core203-final-source-connected.json)
 205/101/205/101 named report checks, не уникальные V3-кейсы. Старый leadership goal Сола paused.
-Временные source203/frame/public/saved-RTF/installed203 review деревья завершены. Native child завершил
-точный RTF-parser source-кандидат и независимое review; runtime203 пока содержит прежний parser.
+Временные source203/frame/public/saved-RTF/installed203/204-frame/received-PPTX-source деревья завершены.
+M14 exact consumer/checker готовится source/offline с независимым review; authority/query NOT_RUN.
+Runtime203 пока содержит прежний RTF parser. Полученный V03/PPTX впервые открыт отдельно17:56;
+source6455 не открывался повторно, actual oneMain/open/close/twoPDF/10pages закрыт штатно.
+После app/review свежий readonly readback: те же203/services/threeDB quick_checkOK/leases0,
+generation0/quiescent, app unit absent, shared slot свободен. Активных live-операций нет.
 Shared live/home/main остаются только у Астры.
 
 Текущие обязательства привязаны к original170/120/B00, новый реестр не создаётся:
@@ -53,10 +62,11 @@ Shared live/home/main остаются только у Астры.
    Все53fields/3headings level1/table/footnote/headerfooter/Unicode/lastpage сохранены; два10723B отличаются одним байтом даты.
    Это privateb711+afba, не global/installed Office. Реальный RTF caller — native parser/writer;
    замена Officebank его не исправит. На тех же Writer10723B обнаружено исключение optional footnote:
-   16P/2stories вместо3, остальные cs/falt/ftnsep/userprops остаются unsupported. Минимальный source-кандидат
-   восстанавливает только инертную свежую optionalfootnote; сложный edit явно refuse. Source97/independent46+4+11
-   проверены; Сол оценивает достаточность границ перед окончательной204 композицией.
-   Следующий шаг — принять точную дельту/остаток по исходному критерию и довести нужный ordinary consumer.
+   16P/2stories вместо3, остальные cs/falt/ftnsep/userprops остаются partial flags. Принятый source204
+   восстанавливает только инертную свежую optionalfootnote; editor AST203 и прежние ограничения сохранены.
+   После четырёх актуальных gates/независимого finalreview: exact public/private integration, fresh203 CAS,
+   штатная установка204/новый процесс и installed consumer на тех же сохранённых байтах.
+   Новый native edit10730B не объявлять проверенным приложением по старой паре10723B.
    R92/g2/native566/старые readonly/отправки и часы не повторять.
 2. **ODP / F-02,F-03,F-04.** [Четыре saved artifacts app](evidence/astra-20261111/odp-readability-four-saved-app-assessment.json)
    закрыты: titles PASS; original PPTX4/5 уже overlap; oldnativeODP notes/chart FAIL неизменны.
@@ -65,6 +75,13 @@ Shared live/home/main остаются только у Астры.
    fresh installed readonly consumer проверил те же4202B без producer/Office/model/send.
    Default literal-only edit сохранён. Ordinary variants/canonicalFXseed/formaltester остаются отдельными
    обязательствами; исходный Gen4 PARTIAL/пропущенный Basic EntryComplete/history не переписаны.
+   **[Original V03/F03 received48067B/SHA586f…](evidence/astra-20261111/saved-received-v03-pptx-app-preservation.json):** native/package semantics Root PASS — только requested
+   title/chart cache+embedded workbook;59/62parts и5notes byteexact. Недостающее actual readonly приложение
+   выполнено17:56:25→28: oneopen/close/twoPDF/10pages, unit2.857s/CPU2.708s, strictclosure/CGabsent/noactors.
+   Все10PNG просмотрены Root и независимо;8неизменённых PNG+text byteexact к старому source48100B/SHA6455… baseline.
+   Изменённый title/диаграмма/table и5notes читаемы; source4/5 overlap сохранён как исходный дефект.
+   Old720closed/full180false/latequarantine/formalNOT_ESTABLISHED не меняются; нет current203 ordinary credit.
+   Saved F04 PPTX→ODP29345B/f321…: потеря ObjectReplacements fallback FAIL/NOT_READY, converter не повторять.
 3. **F-01 md/v02, json/v03.** [MD R101 read](evidence/astra-20261111/f01-md-v02-ordinary-read.json)
    и [R102 recall](evidence/astra-20261111/f01-md-v02-ordinary-recall.json) уже выполнены:31lines/table/tail PASS,
    ordinary context recall PASS; независимый законченный recall/criterion join принят Root с явным origin-receipt limit.
@@ -74,7 +91,18 @@ Shared live/home/main остаются только у Астры.
    факты корректны, claim нового read FAIL; compaction переписала старые call-id, не исполнила новый tool.
    Prefix-only provenance fix установлен203, старую summary/FAIL не переписывает и R104repeat не разрешает.
    Canonical formal acceptance NOT_ESTABLISHED отдельно от внешней содержательной оценки.
-4. **Другие original core-пути** продолжаются по исходным критериям, вариантам, последовательностям,
+4. **M-14/OP-001, original CASE93 / FX-DOC+FX-STATE.** Нужен поиск старого файла/версий/точной цитаты
+   после поддерживаемого рестарта с авторизацией и настоящим persistent/session retrieval либо его
+   поддерживаемым автоматическим эквивалентом. Использовать уже состоявшийся restart203 и canonical
+   a9b0…v1/e453…addendum; не вводить новый обязательный MD-вариант (EXT не связывает M14).
+   Root readonly связал native3119/3124 и4906 с двумя сохранёнными источниками того же SID/principal;
+   count/maxID5504, exactoriginalrequest отсутствует. Это readiness, не product search/M14 PASS;
+   semantically equivalent history/once/current admission ещё проверить. Ранее R50STOPPED и M06/111
+   narrow acceptance сохраняются. Новая query ещё NOT_RUN; upload/producer/restart/reset запрещены.
+   Материалы: `/home/jericho/.cache/FRW-ASTRA-V3-M14-POST203-FORWARD-PREP-20261111/RESULT.json` (053971c5…),
+   Root `M14-CURRENT-READONLY-SOURCE-LINEAGE.json` (ef7c2daa…) в postpower cache; consumer/checker source
+   в `FRW-ASTRA-V3-M14-EXACT-CONSUMER-PREP-20261111`, current authority UNBOUND.
+5. **Другие original core-пути** продолжаются по исходным критериям, вариантам, последовательностям,
    допустимым повторам, регрессии и восстановлению.170/120 не сокращены; narrow PASS и число слоёв не готовность.
 
 [XLSX5677B201 принят](evidence/astra-20261111/native201-installed-same-xlsx-consumer.json) без producer/model/send;
