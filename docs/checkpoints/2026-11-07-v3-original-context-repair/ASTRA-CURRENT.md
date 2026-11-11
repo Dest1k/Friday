@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 02:15 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
+Обновлено **12.11.2026, 02:25 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
 [Актуальный native/runtime readback](evidence/astra-20261111/f06-poststage-services-native-modes-20261112.json):
 тот же goal/thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**, история/учёт сохранены, общего cap нет.
 [Редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json), [Fast resume](ASTRA-FAST-RESUME-2026-11-12.json).
@@ -19,7 +19,7 @@ H=`.runtime/friday-normal-both-workers-frw032`; canonical receipt9d8d1d95…2a83
 Четыре canonicalSHA/identity проверены до/после native567; переустановок/миграций не было.
 Свежий02:14 readback: gateway174854/start1454011 и Dashboard175894/start1460381,
 прежниеInvocationID/active/running/NRestarts0/RuntimeMax infinity. Постоянные сервисы не останавливались.
-Root Office4 и native567 завершены, owned actors/pipes/namespace закрыты, slot свободен; живых операций сейчас нет.
+Root Office4/native567/Office5–6 завершены, owned actors/pipes/namespace закрыты, slot свободен; живых операций сейчас нет.
 Данные/WAL/SHM/история/private runs/downloads/closures сохранены. [Telegram/3DB quick_checkOK/leases0 снимок19:40](evidence/astra-20261111/post-m14-current203-services.json)
 — история, не новый допуск. DB-проверок/модельных запросов/Telegram-отправок в этом срезе не было.
 DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
@@ -36,7 +36,7 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
    | --- | --- | --- |
    | 1–3 DOCX/XLSX/PPTX | Original native R3 `cfb_header` FAIL/effectnone; входные App-пробы приняты | coherent Standard3.2/legacyCFB source → штатная установка → обоснованное недостающее исполнение |
    | 4 ODT compatible | Native UNKNOWN_AFTER_CREATE/missing correct_edit receipt; тот же10821B output App3PASS | Native-пробелы остаются; output не пересоздавать |
-   | 5 ODS /6 ODP compatible | Новый distinct native567: оба allchecks PASS, outputs сохранены | readonly Office missing/wrong/correct на тех же двух выходах |
+   | 5 ODS /6 ODP compatible | Distinct native567 allchecks PASS и samebytes App6PASS/0stores | Независимо приняты54/54; ordinaryLIVE_BOT после privacy/deployment |
    | 7 ODT modern | Native FAIL `odf_encryption_parameters_invalid`, edit effectnone/выхода нет; входные App3PASS | точная диагностика/граница поддержки, без переписывания FAIL/повтора7 |
 
    [G6 и семь входов](evidence/astra-20261111/f06-seven-input-oracle-native-partial-20261112.json): genuine7 ciphertext/hostcustody сохранены,
@@ -49,7 +49,8 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
    Независимое evidence-review345conditions **BOUNDED_PASS**; missing native receipt/остальные контроли не выдуманы.
    [Реальный distinct native567](evidence/astra-20261111/f06-native567-ods-odp-pass-latest-fail-20261112.json): отдельные Rootbinding+externalGRANT+once,
    только ещё не начатые5/6/7;5.6785s supervised/5.5694CPU/auditdenials0/closed/slotfree; old1..4/source7/canonical4 неизменны.
-   ODS10559B/398d3bd6…bdb7b и ODP11900B/140e1734…377e6 — custody/выходы есть, **App NOT_RUN**, не переигрывать native567.
+   [Те же ODS/ODP App6PASS](evidence/astra-20261111/f06-native56-retained-office-six-pass-20261112.json): correct B2=23/keep-001 и BRAVO/invariantbody, typed missing/wrongAbort283;0stores/2.845s unit/3.069s Root+unitCPU/fullCAS/closed/slotfree.
+   Независимое review финального пакета54/54 принято, findings0; native567/Officeпробы не переигрывать.
 
 2. **Распределение ближайшей работы.**
    **Сол Task21** — самостоятельный Standard3.2/legacyCFB пакет в своём private checkout; один native pre-task compact158.724s завершён до TASK.
@@ -58,8 +59,10 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
    Историческая метка `compatible1.3_or_Agile` не доказывает Agile. Не устанавливать header-only ради3PASS.
    Новый profile должен сохранять strictAgile/HMAC и честно различать отсутствие HMAC уStandard; никакого ложного data_integrity_verified.
    Точный Task21/offline-memory-only scope: private `B/SOL-TASK21-STANDARD32-TASK.txt`; H/native/live/Office/publication уRoot.
-   **Астра** — приёмка и same-byte Office двух retained5/6 после финального source-rebind/review. Новый metadataadapter e1e35 принят Roota55c;
-   child завершает только finalproof rebind в своей revision-r2. До готового review свежий300s clock/admission не открывать.
+   **Астра** — finalsourcea361/e1e35/Roota55c принят, exact handoff/R2 independent32+11 и Root20+18; same-byteOffice5/6 завершена6PASS.
+   Native5/6+samebyteOffice6 bounded независимо приняты54/54; ordinaryF06 не принят. Дальше — source-result Сола/согласованные незакрытые core-пути; deployment204/205 пока Gitblocked.
+   [Sol M1/Root design direction](evidence/astra-20261111/f06-sol-standard32-m1-design-20261112.json): exact Standard3.2 AES128/SHA1/50000, flatlegacytree, noHMAC;53syntheticassertions reported.
+   Finalcode/review/genuine3sourceassessment ещё не закрыты; уточнить255Unicode/UTF16 границу. Его25–40min — организационная оценка, не aborttimer.
    [ModernODT taxonomy](evidence/astra-20261111/f06-modern-odt-taxonomy-source-accepted-20261112.json) ea59d8aa source принят Root28delta/116syntheticchecks;
    native child review отказал `agent thread limit reached`, отказ сохранён; Root — независимый от автора reviewer. Не установлен.
    Известный bounded descriptor → algorithmunsupported после строгой структуры/лимитов; GCM/Argon2 decryption не добавлена,
