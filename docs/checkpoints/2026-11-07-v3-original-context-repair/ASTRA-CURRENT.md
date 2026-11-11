@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 00:42 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
+Обновлено **12.11.2026, 00:53 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
 [Фактический native readback](ASTRA-FAST-RESUME-2026-11-12.json): тот же goal/thread
 `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**; история/учёт сохранены, общего cap нет.
 [Дневная редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json) и [owner pause](evidence/astra-20261111/owner-pause-20261112-final-native.json)
@@ -37,13 +37,16 @@ Dashboard175894/start1460381, прежниеInvocationID/active/enabled/NRestart
    OOXML qualifiedIllegalArgumentException, ODFNone, eventsEMPTY. Это не доказывает тип отказа; genericexception/None не PWpass.
    [Readonly callbackdiagnostic](evidence/astra-20261111/f06-callback-fault-localized-20261112.json) на samebyteDOCX/ODT: 6loads/0stores; negativecallbacks
    вошли и упали на getRequest(SystemError), correct2PASS. Actors/pipes закрыты; original7ciphertext неизменны.
-   Следующий шаг — narrowPython/UNO generatedexception argscompat source/review и controlled contrast; затем оценка ТЕХ ЖЕ байтов, без regeneration/model/send.
+   [Exact5class argscompat +typed cancellation codec](evidence/astra-20261111/f06-password-oracle-codec-checked-20261112.json) прошёл69purecontrols/independentreview;
+   Root4negative/2positive DOCX/ODT подтвердили typedMSPWAbort/typedODFPWAbort→ECR2code283Abort. ОбщийOfficebank не менялся.
+   Next: verify-inputs-onlyfull7/21probe/0store с freshbeforeafterCAS/Rootadmission. Диагностические контрасты — representative, не full7admission.
+   [Код](drafts/f06-password-oracle-codec/README.md); none/genericexception/IO не PWpass. Пересоздание/model/send запрещены.
    Hostpath-проекция metadata выполнена с physicalCAS, raw all_pass=false не изменён. Nativequalification NOT_RUN/GRANTneverissued.
    G3/G4 normal81/emptycomponents/ownedFD; G4missingtrace и G5classREDACTED/EMPTY сохранены исторически; g1..g6 не переигрывать.
 
 2. **Сол Task19 возобновлён.** [M1/M2 и приёмка](evidence/astra-20261111/f06-sol-m1-m2-source-checkpoint.json),
    [его owner-pause](evidence/astra-20261111/owner-pause-20261112-final-native.json) — история; C5 продолжает прежний Task19, старый leadershipgoal paused.
-   Текущий самостоятельный пакет — dormant Root readonly output-oracle frame M3; Root владеет producer/Office/приёмкой, области разнесены. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
+   M3designc752321 проверен/received, exactqueueitem consumed; Текущий самостоятельный пакет — dormant Root readonly output-oracle frame M3; Root владеет producer/Office/приёмкой, области разнесены. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
    убирает известные технические дубликаты/логи пароля, не исходный приватный чат и не исторические БД.
    M2 [metadata/oracle source](drafts/f06-oracle-handoff-m2/README.md) получен; [Root приняла exact canonical fix](evidence/astra-20261111/f06-m2-canonical-root-delta-accepted-20261112.json).
    Автоматическое followup-review ранее отклонено possible cybersecurity risk; отказ сохранён, отклонённый вызов не повторялся.
