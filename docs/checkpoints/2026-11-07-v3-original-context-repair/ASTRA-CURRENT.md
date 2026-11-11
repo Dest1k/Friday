@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 02:53 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
+Обновлено **12.11.2026, 02:57 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
 [Актуальный native/runtime readback](evidence/astra-20261111/f06-source-checkpoint-services-modes-20261112.json):
 тот же goal/thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**, история/учёт сохранены, общего cap нет.
 [Редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json), [Fast resume](ASTRA-FAST-RESUME-2026-11-12.json).
@@ -13,7 +13,8 @@ Baseline этого среза — локальный `01f1705b66f72afde04cf7be2
 **GitHub недоступен по сообщению владельца. Только локальные коммиты; fetch/ls-remote/API/push не делать до его сообщения о восстановлении.**
 [Owner12.11: работа/локальная установка/проверки независимы отGitHub](ASTRA-LOCAL-WORK-2026-11-12.json).
 Нативный goal обновлён/readback active с прежней identity/учётом. Явный local-committed-main route для обоих Root204/205 frames
-готовится/ещё не принят: remote=None/deferred, exactHEAD/main/Gitobjects/source/CAS/predecessor/rollback остаются. Не подменять remote.
+[принят и внедрён в canonical frames](evidence/astra-20261111/core204-205-explicit-local-origin-integrated-20261112.json): remote=None/deferred,
+exactHEAD/main/Gitobjects/source/CAS/predecessor/rollback остаются; actual203→204 установка — следующийшаг. Не подменять remote.
 Чужие3 byteexact сохранены/исключены: `docs/foundation-status.md`, v2
 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`. Секреты/БД/private runs не коммитить.
 
@@ -80,8 +81,8 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
 3. **Локальная установка204/205 — ближайшая Root-интеграция, не GitHubблокер.**
    [Прежний originrepair](evidence/astra-20261111/core204-origin-policy-source-integrated.json) остаётся историей: immutablepublished48,
    public489/private28/currentreviewed5 сохраняются; прежняя freshremote зависимость superseded новой ownerдирективой.
-   Nativechild `core204_explicit_local_origin` готовит замкнутый явный localmode обоих Rootframes/их metadata/actor/templatepins;
-   GitHubнедоступность будет толькоотложенной публикацией. Кандидат/контроли/review ещё не приняты; actualH203не менялся.
+   [Explicit localmode обоих Rootframes внедрён](evidence/astra-20261111/core204-205-explicit-local-origin-integrated-20261112.json):15canonicalfiles/92refs,
+   39realGit+13independentcontrols/Root60conditions; actualcanonical204/205proofs наdcdf096 прошли, remoteNone. H203не менялся.
    Source/gates204/205 и public205five локально приняты; оба **НЕ УСТАНОВЛЕНЫ**. Далее: verifiedlocalcommittedHEAD → current203/CAS/realCP203
    → explicitone-layer204 → same10723B RTFconsumer(безmodel/Office/send) → genuineCP204 →205 → coherentF06 successor.
    Не203→205; builder только явный `--layer`; безad-hocHpatch и новых мнимыхreceipt. Полныеaffectedgates/consumer/rollback доlive.
