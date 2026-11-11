@@ -2544,11 +2544,27 @@ def project_current_request_metadata(request):
         'ordinary_project_current198_explicit_request_required')
 
 
-# At most three authenticated native CP edges after the current198 project transaction.
+# At most four authenticated native CP edges after the current198 project transaction.
 # Neither a future request digest nor a future input digest is compiled here.
 CURRENT_SOURCE_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v1'
 CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v2'
 CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v3'
+CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v4'
+CURRENT_SOURCE_FOURTH_LAYER = 'rtf-rich-odp-followup-and-office-bank-after-source201'
+CURRENT_SOURCE_FOURTH_MANIFEST = '38d600d2cdb4d2d6881845430e8dd4232e18ff09c12ba4f3ea44d82aba62e6f3'
+CURRENT_SOURCE_FOURTH_PATCH = 'd0a1358735c64c17bd3a4d1da5ee9874a969620db927131c215eb1530fc0367a'
+CURRENT_SOURCE_FOURTH_NATIVE = {
+    'hermes_cli/friday_prompt_scope.py':('0b7d416d12f1d3a6aea12f40ae45e290721004b179af59cd017cd4e25c7761db', 'd6ccec1324270283ad5484787c481637c93a1be214281362349644acbcc3388b', 133170, False),
+    'hermes_cli/friday_workspace_pdf.py':('b86a67b5e2aa109c79f9bed06d409a180e6ecff869b6979a348ae1d0ae205015', '71b27cee76d8b927bfad064ea8b79a4da7c2791357ab2a82c747e453e7ad03b5', 15861, False),
+    'hermes_cli/friday_workspace_presentation.py':('bec6d1f450e6e09d044d456e026e14061c182787898793615ad0d99d893a3c15', '2f6417738f5c441d3b6332a10886156c5218f24b3755014c8af59e7b2dc8dd21', 22441, False),
+    'tools/file_tools.py':('760a49c482e3e9febe18712ab96ab7ef8f6fafbc90881bd4e41e10090808237a', 'ac1b3388815a1f9006a74ea7684ec15b85bdda5c820a71b50cde3e4eeb02ce68', 183000, False),
+    'tools/read_extract.py':('6f9cb4be488308ec5055fd27ffe624e9190adcd317d45282384d26a2e1e247f4', '8f3ad405263470eac948a9f14fa6c0af18144697cf5244c6c8c8a4f7d543b339', 74912, False),
+    'tools/scoped_presentation_generated_odp.py':(None, 'f6bd93e88eb0d3049d89773c4b0e9f97f7547fcbc0f761ca3867b7114f0f1ca5', 11547, True),
+    'tools/scoped_presentation_odp_text_source.py':(None, 'd3f5d04456281e33df9fc5a6e4a2e13243a6c7805aa0d16ed373decc86c322a2', 4428, True),
+    'tools/scoped_presentation_text.py':('0893b1b22807a418618203dabd01a1bdc75f314930b4e389c176657af78bb9cf', '528e5a469c69dc6d17fdb452d2ecbea2b4ff63e27aa1c51514d7462b483595a9', 13270, False),
+    'tools/scoped_presentation_write.py':('f0138465ce1c2f0a9585d60f9a11b3020e93658ce1eb2f12c85cfbd48eb58842', '07b8fb513cf90d862d1504574bd2a4b862da243b33fa9dc549c3634cd242ab8d', 71590, False),
+    'tools/scoped_rtf.py':('ca17634765beb5210181ec5808d997150dcbcefad947b3d8d9a7c13f67e3d6dc', 'cf652ee67d08de6349900a81b84ccbd8ab0ce3a3253f91c6460c066dabff3af5', 37835, False),
+}
 CURRENT_SOURCE_THIRD_LAYER = 'retained-calc-xlsx-destination-after-source200'
 CURRENT_SOURCE_THIRD_MANIFEST = 'd9fec39ff5985fe0ccfcd3dd1cf4cfc8087b35f8d1994320cd1e40075589a185'
 CURRENT_SOURCE_THIRD_PATCH = '5b6a8ab625ad38f443ef13d4659b682ad25ea33d30db21b1060a30c49acb97e5'
@@ -2714,8 +2730,94 @@ def _current_source_cp_proof(home, tx, request, *, committed):
     return intent,commit
 
 
+_CURRENT_SOURCE_FOURTH_HISTORY_SEAL = object()
+
+
+class _CurrentSourceFourthHistory:
+    """Internal authenticated CP201 facts, scoped to one exact selected fourth edge."""
+    __slots__ = ('third_reference','second_reference','root_reference','selected_previous','selected_context','_seal')
+
+    def __init__(self, third_reference, second_reference, root_reference, selected_previous, selected_context, *, _seal):
+        api().require(_seal is _CURRENT_SOURCE_FOURTH_HISTORY_SEAL,
+            'ordinary_current_successor_internal_fourth_history_required')
+        self._seal = _seal
+        self.selected_context = encoded(selected_context)
+        self.third_reference = encoded(third_reference)
+        self.second_reference = encoded(second_reference)
+        self.root_reference = encoded(root_reference)
+        self.selected_previous = encoded(selected_previous)
+
+
+def _current_source_fourth_successor_checked(value, request, *, cli_only, source_update):
+    """Fixed root198 -> CP199 -> CP200 -> CP201 -> selected CP202; no recursion."""
+    f = api(); home = f.canonical(value['home']); context = request['current_source_successor']
+    f.require(set(context) == {'schema','root_project_update','previous_native_update'}
+        and context['schema'] == CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA,
+        'ordinary_current_successor_context_required')
+    third_ref = context['previous_native_update']
+    third_request = _current_source_json(_current_source_reference(third_ref))
+    _current_source_request_metadata(third_request,home)
+    third_context = third_request['current_source_successor']
+    f.require(encoded(request['previous_input']) == encoded(third_request['current_input'])
+        and encoded(third_context) == encoded({'schema':CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA,
+            'root_project_update':context['root_project_update'],
+            'previous_native_update':third_context.get('previous_native_update')}),
+        'ordinary_current_successor_third_edge_required')
+    third_tx = _current_source_cp_transactions(home,third_request['current_input'])
+    f.require(third_tx is not None and third_ref['path'] == str(third_tx/'request.json'),
+        'ordinary_current_successor_third_canonical_request_required')
+    _current_source_cp_proof(home,third_tx,third_request,committed=True)
+    second_ref = third_context['previous_native_update']
+    second_request = _current_source_json(_current_source_reference(second_ref))
+    _current_source_request_metadata(second_request,home)
+    second_context = second_request['current_source_successor']
+    f.require(encoded(third_request['previous_input']) == encoded(second_request['current_input'])
+        and encoded(second_context) == encoded({'schema':CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA,
+            'root_project_update':context['root_project_update'],
+            'previous_native_update':second_context.get('previous_native_update')}),
+        'ordinary_current_successor_prior_edge_required')
+    second_tx = _current_source_cp_transactions(home,second_request['current_input'])
+    f.require(second_tx is not None and second_ref['path'] == str(second_tx/'request.json'),
+        'ordinary_current_successor_prior_canonical_request_required')
+    _current_source_cp_proof(home,second_tx,second_request,committed=True)
+    first_ref = second_context['previous_native_update']
+    first_request = _current_source_json(_current_source_reference(first_ref))
+    _current_source_request_metadata(first_request,home)
+    f.require(encoded(first_request['current_source_successor']) == encoded({
+            'schema':CURRENT_SOURCE_SUCCESSOR_SCHEMA,'root_project_update':context['root_project_update']})
+        and encoded(second_request['previous_input']) == encoded(first_request['current_input']),
+        'ordinary_current_successor_first_edge_required')
+    first_tx = _current_source_cp_transactions(home,first_request['current_input'])
+    f.require(first_tx is not None and first_ref['path'] == str(first_tx/'request.json'),
+        'ordinary_current_successor_first_canonical_request_required')
+    _current_source_cp_proof(home,first_tx,first_request,committed=True)
+    marker = _current_source_json(home/f.MARKER)
+    if marker.get('input_sha256') == request['current_input']['sha256']:
+        selected_tx = _current_source_cp_transactions(home,request['current_input'])
+        f.require(selected_tx is not None,'ordinary_current_successor_leaf_journal_required')
+        marker = _current_source_json(selected_tx/'before'/f.MARKER)
+    first = _current_native_source_edge_checked(
+        _current_source_json(_current_source_reference(first_request['current_input'])),
+        cli_only=cli_only,source_update=first_request,
+        historical_marker=_current_source_json(second_tx/'before'/f.MARKER))
+    second = _current_native_source_edge_checked(
+        _current_source_json(_current_source_reference(second_request['current_input'])),
+        cli_only=cli_only,source_update=second_request,prior_edge=first,
+        historical_marker=_current_source_json(third_tx/'before'/f.MARKER))
+    # Mint only after all three canonical requests/commits and the fixed root/joins
+    # have been authenticated. It cannot enable arbitrary historical third mode.
+    proof = _CurrentSourceFourthHistory(third_ref,second_ref,context['root_project_update'],request['previous_input'],context,
+        _seal=_CURRENT_SOURCE_FOURTH_HISTORY_SEAL)
+    third = _current_native_source_edge_checked(
+        _current_source_json(_current_source_reference(third_request['current_input'])),
+        cli_only=cli_only,source_update=third_request,prior_edge=second,
+        historical_marker=marker,_fourth_history=proof)
+    return _current_native_source_edge_checked(value,cli_only=cli_only,
+        source_update=source_update,prior_edge=third)
+
+
 def current_native_source_successor_checked(value, *, cli_only, source_update=None):
-    """The v6 root, CP199, exact ODS CP200, and exact retained-XLSX CP201."""
+    """The v6 root and four fixed authenticated native CP edges."""
     f = api()
     if type(value) is not dict or type(value.get('home')) is not str:
         f.require(source_update is None,'ordinary_current_successor_value_required'); return None
@@ -2739,6 +2841,8 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
     context = request['current_source_successor']
     if context.get('schema') == CURRENT_SOURCE_SUCCESSOR_SCHEMA:
         return _current_native_source_edge_checked(value,cli_only=cli_only,source_update=source_update)
+    if context.get('schema') == CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA:
+        return _current_source_fourth_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
     third = context.get('schema') == CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA
     f.require(set(context) == {'schema','root_project_update','previous_native_update'}
         and context.get('schema') in (CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA,CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA),
@@ -2803,7 +2907,7 @@ def _current_source_request_metadata(request,home):
 
 
 def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
-        historical_marker=None, prior_edge=None):
+        historical_marker=None, prior_edge=None, _fourth_history=None):
     """Validate one bounded edge; historical mode returns facts, never admission."""
     f = api()
     if type(value) is not dict or type(value.get('home')) is not str:
@@ -2832,17 +2936,40 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         and request['home'] == str(home),'ordinary_current_successor_explicit_request_required')
     context = request['current_source_successor']
     continuation = prior_edge is not None
+    fourth = continuation and context.get('schema') == CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA
     third = continuation and context.get('schema') == CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA
-    second = continuation and not third
+    second = continuation and not third and not fourth
     f.require(type(context) is dict
         and set(context) == ({'schema','root_project_update','previous_native_update'} if continuation
             else {'schema','root_project_update'})
-        and context['schema'] == (CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA if third else
+        and context['schema'] == (CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA if fourth else
+            CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA if third else
             CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA if second else CURRENT_SOURCE_SUCCESSOR_SCHEMA)
         and (not continuation or prior_edge['request']['current_source_successor']['schema'] ==
-            (CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA if third else CURRENT_SOURCE_SUCCESSOR_SCHEMA))
-        and not (third and historical_marker is not None),
+            (CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA if fourth else
+                CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA if third else CURRENT_SOURCE_SUCCESSOR_SCHEMA))
+        and not (fourth and historical_marker is not None)
+        and (not (third and historical_marker is not None) or
+            type(_fourth_history) is _CurrentSourceFourthHistory
+            and _fourth_history._seal is _CURRENT_SOURCE_FOURTH_HISTORY_SEAL),
         'ordinary_current_successor_context_required')
+    if third and historical_marker is not None:
+        # The internal proof is bound to this canonical CP201, its exact CP200
+        # predecessor, the shared root, and the selected fourth's before input.
+        third_tx = _current_source_cp_transactions(home,request['current_input'])
+        f.require(third_tx is not None
+            and _fourth_history.third_reference == encoded({'path':str(third_tx/'request.json'),
+                'sha256':f.digest(f.owned_file(third_tx/'request.json',private=True))})
+            and _fourth_history.second_reference == encoded(context['previous_native_update'])
+            and _fourth_history.root_reference == encoded(context['root_project_update'])
+            and _fourth_history.selected_previous == encoded(request['current_input'])
+            and _fourth_history.selected_context == encoded({'schema':CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA,
+                'root_project_update':context['root_project_update'],
+                'previous_native_update':{'path':str(third_tx/'request.json'),
+                    'sha256':f.digest(f.owned_file(third_tx/'request.json',private=True))}})
+            and encoded(prior_edge['request']['current_input']) == encoded(request['previous_input']),
+            'ordinary_current_successor_authenticated_third_history_required')
+        _current_source_cp_proof(home,third_tx,request,committed=True)
     root_request,previous = _project_current_root_checked(home,context['root_project_update'])
     previous_ref = root_request['current_input']
     expected_before_receipt = PROJECT_DSH_CURRENT_RECEIPT
@@ -2853,7 +2980,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         previous = prior_edge['value']; previous_ref = prior_edge['request']['current_input']
         expected_before_receipt = prior_edge['receipt_sha256']
         expected_before_stamp = prior_edge['stamp_sha256']
-        before_layers = 200 if third else 199; before_project_count = 481 if third else 479
+        before_layers = 201 if fourth else 200 if third else 199
+        before_project_count = 483 if fourth else 481 if third else 479
     _current_source_reference(request['previous_input']); _current_source_reference(request['current_input'])
     current = _current_source_json(Path(request['current_input']['path']))
     f.require(encoded(value) == encoded(current) and current.get('home') == str(home)
@@ -2913,6 +3041,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_second_layer_required')
     f.require(not third or names == [CURRENT_SOURCE_THIRD_LAYER],
         'ordinary_current_successor_exact_third_layer_required')
+    f.require(not fourth or names == [CURRENT_SOURCE_FOURTH_LAYER],
+        'ordinary_current_successor_exact_fourth_layer_required')
     manifest_name = 'patches/hermes/'+names[0]+'-manifest.json'; patch_name = 'patches/hermes/'+names[0]+'.patch'
     old = previous['project_files']; files = current['project_files']
     f.require(type(old) is dict and type(files) is dict,'ordinary_current_successor_project_inventory_required')
@@ -2929,6 +3059,9 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     f.require(not third or (files.get(manifest_name) == CURRENT_SOURCE_THIRD_MANIFEST
         and files.get(patch_name) == CURRENT_SOURCE_THIRD_PATCH),
         'ordinary_current_successor_exact_third_layer_images_required')
+    f.require(not fourth or (files.get(manifest_name) == CURRENT_SOURCE_FOURTH_MANIFEST
+        and files.get(patch_name) == CURRENT_SOURCE_FOURTH_PATCH),
+        'ordinary_current_successor_exact_fourth_layer_images_required')
     for name,expected in files.items():
         path = Path(name)
         f.require(type(name) is str and not path.is_absolute() and name == path.as_posix()
@@ -2995,6 +3128,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_second_native_scope_required')
     f.require(not third or {row['path'] for row in rows} == set(CURRENT_SOURCE_THIRD_NATIVE),
         'ordinary_current_successor_exact_third_native_scope_required')
+    f.require(not fourth or {row['path'] for row in rows} == set(CURRENT_SOURCE_FOURTH_NATIVE),
+        'ordinary_current_successor_exact_fourth_native_scope_required')
     for row in rows:
         name = row['path']; prior = expected_files.get(name)
         f.require(type(row.get('new_file')) is bool and row['new_file'] is (prior is None)
@@ -3011,8 +3146,13 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
             f.require(row['new_file'] is False
                 and (row['before_sha256'],row['sha256']) == CURRENT_SOURCE_THIRD_NATIVE[name],
                 'ordinary_current_successor_exact_third_native_images_required')
+        if fourth:
+            f.require((row['before_sha256'],row['sha256'],row['bytes'],row['new_file']) == CURRENT_SOURCE_FOURTH_NATIVE[name],
+                'ordinary_current_successor_exact_fourth_native_images_required')
         after = dict(prior) if prior is not None else {}
         after.update({'sha256':row['sha256'],'bytes':row['bytes'],'mode':'100644'}); expected_files[name] = after
+    f.require(not fourth or len(expected_files) == 17890,
+        'ordinary_current_successor_exact_fourth_native_count_required')
     expected_receipt['layers'].append({'manifest':manifest_name,'manifest_sha256':files[manifest_name],
         'patch_sha256':files[patch_name]})
     expected_receipt['sources_lock_sha256'] = current['sources_lock']['sha256']

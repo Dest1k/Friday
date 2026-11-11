@@ -7,12 +7,13 @@ service_tier=default. [Дневная редакция native goal и readback](
 Исходный [paused-чекпоинт](evidence/astra-20261111/astra-owner-pause-fast-standard.json) — история.
 
 Принятая paused-точка: `5ea64beb0ba87968aca0e1e9c32696ac85d27a76`; перед этим checkpoint
-`HEAD = origin/main = e2f103dc03f3a6da6f1f96fa98931c40a1302457`.
+`HEAD = origin/main = 9f78efa72f47721b6ebbb3475caece746d16da0a`.
 SHA опубликованного среза — коммит этого файла (`git log -1 --format=%H -- ASTRA-CURRENT.md` в его каталоге)
 и финальный отчёт; literal self-hash в файл не записывается. Чужие изменения сохранены и исключены:
 `docs/foundation-status.md`, v2 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`.
-Последний исходный опубликованный блок: `e2f103dc03f3a6da6f1f96fa98931c40a1302457`.
-Новая дельта этого checkpoint — установленный201 и оценка сохранённого XLSX; чужие три файла исключены.
+Последний исходный опубликованный блок: `9f78efa72f47721b6ebbb3475caece746d16da0a`.
+Новая дельта: проверенный source202/v4, размещённый unselected Officebank и фактический RTF app PARTIAL.
+Чужие три файла исключены; установленный состав по-прежнему201.
 
 [Установлены native201 / project483 / 52plugins / 17888nativefiles](evidence/astra-20261111/native201-installed-same-xlsx-consumer.json).
 Input `4eca52…5023`, receipt `257e35…bd3f`; полный200prefix и17887остальных записей сохранены.
@@ -26,11 +27,11 @@ Root201 maintenance08:46:04→08:48:10/126.563s закрыт; actor/publisher te
 Астра остаётся sole lead/integrator. Сол — постоянный co-architect **Standard**, реальная сессия
 `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`, прежний leadership goal paused; сессия/настройки сохранены.
 Его [PARTIAL07:56](/home/jericho/.cache/FRW-SOL-V3-RTF-FIDELITY-REPAIR-20261111/PAUSE-POINTERS.json) сохранён и проверен: code/g2/остатки/критерии/следующий шаг.
-По новой директиве продолжен тот же unfinished RTF Task8#1 с его PARTIAL, без второго compact.
-Сол ведёт независимую core-ветку; общий goal/установку/main и живые ресурсы координирует Астра.
-Предыдущие деревья,201 final counterparts/CP gates и ODP saved-criteria подготовка — terminal.
-Root201 frame, ODP source/text-edit и v4preparation — terminal; private partials сохранены.
-Активно finite review product freshprofile delta; Sol и ODPapprecipe — source/prep, Office ещё NOT_RUN.
+Task8 sourceR4/entryR3 принят; Root исполнила новый rich-readonly batch, PARTIAL сохранён.
+После одного завершённого native pre-task compact Сол выполняет **Task9: saved-only RTF diagnosis/source repair**.
+Астра публикует принятый202source и готовит его установку; live/main/общие ресурсы — только Root.
+Временные ODPrecipe3/productprofile/helper202 деревья terminal. Активны finite Root202frame preparation
+и F01 MD/JSON history+tester readiness; им live effects не разрешены.
 
 **Обязательный порядок всей команды: основной функционал Friday → DSH → A0.**
 Core: обычный Telegram, контекст/память, изоляция, файлы/доставка/форматы, продолжение,
@@ -52,6 +53,10 @@ Producer/model/Office/send не повторены; общего F03/F04/formalt
    поддержку inert RTF stories и настоящих tool consumers. Post-load injected chapter fixture не
    доказывает потерю preexisting R92 wire; универсальная проверка108Officeсвойств не требуется.
    [RTF4/sourceR4 diff принят и опубликован](drafts/core-rtf-odp-source/README.md), не установлен.
+   [Новый synthetic rich-readonly app R3](evidence/astra-20261111/rtf-rich-readonly-app-r3-partial.json):
+   document-free init0/clean0/COMPONENTS0, затем единственный Main достиг75s; общий77.312s,
+   контролируемая остановка/CGempty, stage сохранён. Отсутствие audit не доказывает отсутствие открытия.
+   Сол разбирает сохранённый исход; тот же grant/Main не повторять.
    Старый отвергнутый Heading-draft не возобновлять; готовый R92цикл/отправку не повторять ради PASS.
 2. **ODP / F-02,F-03,F-04.** [Consumer draft](evidence/astra-20261111/office-generated-odp-consumer-source.json)
    не установлен. [Тот же Gen4 app PARTIAL](evidence/astra-20261111/office-odp-retained-app-partial.json):
@@ -63,14 +68,21 @@ Producer/model/Office/send не повторены; общего F03/F04/formalt
    доказывает потери стилей. PARTIAL/FALSE сохранены; installed consumer/source-edit/визуальные
    обязательства открыты. [ODP2 source/text-edit принят](drafts/core-rtf-odp-source/README.md):41author/26independent,
    реальные wrappers/CAS/изоляция с syntheticcap; generated-only3 остаётся отдельным. Девять файлов compose.
-   Core202 v4/helper подготовлен (pure45/parser76), финальные4counterpartgates ждут v2состава.
-   Newbank pptx_odp-only не установлен; cold-direct81 требует отдельного document-freeinit и
-   setup/buildid/emptyrepo guards. Productdelta23purePASS, independentreview активен; Basic/security не меняет.
+   [Точный source202/v4 подключён](evidence/astra-20261111/core202-final-source-connected.json):
+   10nativefiles/new2, project485/native17890; четыре whole consumer success/lateDEFAULTrollback gates
+   158/78/158/78, pure45/publisher98 PASS. Genuine actual201 readonly builder explicitlayer PASS;
+   ещё не установлен. Добавления имеют protected-parent/absence/CAS и точный journalrollback.
+   [Newbank физически размещён и проверен](evidence/astra-20261111/office-bank-physically-placed-unselected.json),
+   **unselected**; будущий selector только pptx_odp. Product freshprofile delta+independentreview приняты.
+   ODP recipe3 source READY: точный реальный productinitializer + readonly render тех же двухODP;
+   runtime/render/visual ещё NOT_RUN. Следующий допуск — после разбора применимости RTF QA отказа.
    Producer/Gen4/app/send ради статуса не повторять.
 3. **F-01/md/v02 и json/v03.** Частичные неисполненные пакеты:
    `/home/jericho/.cache/FRW-ASTRA-V3-NEXT-INDEPENDENT-FORMAT-PREP-20261111/RESULT.json`
    (`c4eefa…13d`). MD1309B retained; JSON831B inert fixture. История текущего продукта,
    точный tester/admission и fresh runtime/custody ещё не подтверждены; это не dispatch grant.
+   Native finite child готовит адресный readonly history/tool-effects join и current tester source/offline.
+   Новый CREATE, повтор старого S10/S16 и CSV quarantine этим не разрешены.
 
 Полный **V3:170 кейсов/120 расширений/B00, варианты, регрессия и восстановление** сохраняется.
 Это очередь действий, не новый реестр. Источник: исходный reference ZIP и immutable

@@ -80,7 +80,7 @@ def parse_args(argv=None):
     parser.add_argument("--current-source-project-update", type=Path,
                         help="exact committed v6 root request for the bounded native continuation")
     parser.add_argument("--current-source-native-predecessor", type=Path,
-                        help="exact canonical committed CP199 or CP200 request for the bounded next edge")
+                        help="exact canonical committed CP199, CP200 or CP201 request for the bounded next edge")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--seconds", type=int, default=180)
     args = parser.parse_args(argv)
@@ -201,11 +201,22 @@ def build_request(args):
         if getattr(args, "current_source_native_predecessor", None) is not None:
             predecessor_context = consumer.json.loads(
                 consumer.owned_file(args.current_source_native_predecessor)).get("current_source_successor")
-            third = type(predecessor_context) is dict and predecessor_context.get("schema") == "friday.current-source-native-successor.v2"
-            consumer.require(not third or args.layer_names == ("retained-calc-xlsx-destination-after-source200",),
+            supported = {
+                "friday.current-source-native-successor.v1": "friday.current-source-native-successor.v2",
+                "friday.current-source-native-successor.v2": "friday.current-source-native-successor.v3",
+                "friday.current-source-native-successor.v3": "friday.current-source-native-successor.v4",
+            }
+            previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
+            consumer.require(previous_schema in supported,
+                             "transaction_current_source_supported_predecessor_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v2"
+                             or args.layer_names == ("retained-calc-xlsx-destination-after-source200",),
                              "transaction_current_source_exact_third_layer_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v3"
+                             or args.layer_names == ("rtf-rich-odp-followup-and-office-bank-after-source201",),
+                             "transaction_current_source_exact_fourth_layer_required")
             request["current_source_successor"].update({
-                "schema": "friday.current-source-native-successor.v3" if third else "friday.current-source-native-successor.v2",
+                "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),
             })
     consumer.require_current_source_context(home, request)

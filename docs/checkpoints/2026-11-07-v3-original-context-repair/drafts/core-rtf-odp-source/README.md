@@ -1,6 +1,7 @@
 # RTF и ODP — принятые исходники, не установленный слой
 
-11.11.2026. Установленный native201 сохранён; эти два diff не подключены к LAYER_NAMES.
+11.11.2026. Установленный native201 сохранён; эти два исходных diff сохранены отдельно.
+Их конечная композиция подключена как source202, ещё не установлена.
 RTF4 и ODP2 применяются к точным actual201 preimages; неизменённый generated-ODP3 diff
 находится в [соседнем draft](../generated-odp-consumer/consumer-repair.patch).
 Три проверенных patch вместе дают9непересекающихся nativefiles, patch apply/AST PASS.
@@ -17,18 +18,20 @@ RTF4 и ODP2 применяются к точным actual201 preimages; неи�
   и сложные spans этим diff не добавлены. Directory payload/nested-span дефекты исправлены.
 
 Это source/offline приёмка, не installed/runtime/live/formal tester/V3 PASS.
-Готовится единый core202 со следующим точным actual201→202 переходом; старыйv3helper
-не поддерживает четвёртую связь. Новыйv4source/helper имеет pure45/parser76, финальные
-четыре whole-consumer gates ждут resolvedv2состава. Частные operational/public counterparts
-сохранены отдельно; private worker helper не публикуется.
+[Единый core202/v4](../../evidence/astra-20261111/core202-final-source-connected.json)
+подключён к LAYER_NAMES: точный actual201→202, 10nativefiles с двумя добавлениями.
+Четыре final whole-consumer gates success/lateDEFAULTrollback:158/78/158/78;
+pure45/publisher98 и настоящий readonly builder с explicit --layer PASS.
+Это synthetic/source проверки, не native/runtime acceptance. Private operational/public
+counterparts сохранены отдельно; private worker helper не публикуется.
 
-Для ODP producer нужен версионированный coherent b711+c459 bank, только для pptx_odp.
-Предложение прямого document entry выявило обязательную freshprofile инициализацию:
-старый холодный directcall давал81; oosplash способен повторять argv. Новая правка
-сначала реально инициализирует документ-free профиль, проверяет setup/buildid/пустые
-repositories/activation maps и затем допускает один directdocument call. Она ещё
-проходит независимое review. Basic/macrosecurity механизма в продукт не добавляет.
-Ни новый bank, ни202не установлены; новых Office/producer/model/send вызовов нет.
+Для pptx_odp подготовлен отдельный coherent b711+c459 bank с прямым exec-soffice.bin.
+[Банк физически размещён и проверен](../../evidence/astra-20261111/office-bank-physically-placed-unselected.json),
+но **unselected**, application qualification остаётся. Product freshprofile init/guards
+прошли независимое review; Basic/macrosecurity в продукт не добавлены. Native202 не установлен.
+[Новый private rich-RTF readonly batch](../../evidence/astra-20261111/rtf-rich-readonly-app-r3-partial.json)
+закрыт PARTIAL по75s Main limit; stage и исходные часы сохранены. Сол разбирает результат
+без повторного Office. ODP render recipe3 готов только как source; live grant не следует из README.
 
 R92/g2/Gen4, исходные FAIL/PARTIAL/UNKNOWN, канонические документы и часы неизменны.
 Отдельные новые readonly app/render рецепты требуют Root fresh admission; не запускать

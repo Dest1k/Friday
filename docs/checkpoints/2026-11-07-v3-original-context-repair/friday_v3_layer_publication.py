@@ -63,6 +63,7 @@ LAYER_NAMES = (
     "dashboard-native-status-after-source198",
     "ods-calc-retained-source-profile-after-source199",
     "retained-calc-xlsx-destination-after-source200",
+    "rtf-rich-odp-followup-and-office-bank-after-source201",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -253,6 +254,30 @@ def private_parents(root, relative):
                 "transaction_directory_custody_refused")
 
 
+def source_parents_checked(source, relative):
+    """Native additions use existing owned real protected source directories."""
+    current = Path(source)
+    for part in (None, *Path(relative).parent.parts):
+        if part is not None:
+            current = current / part
+        info = current.lstat()
+        require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) & 0o022 == 0,
+                "transaction_source_directory_custody_refused")
+
+
+def new_source_absence_checked(source, relative):
+    """ENOENT under checked existing parents only; links/errors are not absence."""
+    source_parents_checked(source, relative)
+    path = Path(source) / relative
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        require(not os.path.lexists(path), "transaction_new_source_exists:" + str(relative))
+        return
+    require(False, "transaction_new_source_exists:" + str(relative))
+
+
 # --------------------------------------------------------------------------- gateway
 
 
@@ -418,7 +443,28 @@ class Journal:
                 continue
             target = Path(path)
             if entry["state"] == "ABSENT":
-                if target.exists() or target.is_symlink():
+                expected = entry.get("published_after")
+                if expected is not None:
+                    source = self.home / "hermes-agent"
+                    relative = str(target.relative_to(source))
+                    source_parents_checked(source, relative)
+                    try:
+                        info = target.lstat()
+                    except FileNotFoundError:
+                        new_source_absence_checked(source, relative)
+                    else:
+                        data = owned_file(target)
+                        named = target.lstat()
+                        require(all(getattr(info, key) == getattr(named, key) for key in
+                                    ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
+                                     "st_size", "st_mtime_ns", "st_ctime_ns"))
+                                and digest(data) == expected["sha256"] and len(data) == expected["bytes"]
+                                and stat.S_IMODE(named.st_mode) == expected["mode"],
+                                "transaction_new_source_restoration_changed")
+                        target.unlink()
+                        sync_directory(target.parent)
+                    new_source_absence_checked(source, relative)
+                elif target.exists() or target.is_symlink():
                     target.unlink()
                     sync_directory(target.parent)
                 continue
@@ -604,8 +650,7 @@ def check_preimages(layers, source, receipt_files):
             require(row.get("new_file") is (expected is None),
                     "transaction_layer_new_file_flag_changed:" + path)
             if expected is None:
-                require(not os.path.lexists(Path(source) / path),
-                        "transaction_new_source_exists:" + path)
+                new_source_absence_checked(source, path)
             state[path] = row["sha256"]
     return state
 
@@ -682,15 +727,29 @@ def apply_layers(layers, source, staging):
     the tree is recognised as applied and skipped.
     """
     touched = []
+    first_rows = {}
     for layer in layers:
         for row in layer["files"]:
             path = row["path"]
             if path not in touched:
                 touched.append(path)
+                first_rows[path] = row
     for path in touched:
         target = Path(staging) / path
         private_parents(staging, path)
+        first = first_rows[path]
+        if first.get("new_file") is True:
+            require(first.get("before_sha256") is None,
+                    "transaction_layer_preimage_changed:" + path)
+            new_source_absence_checked(source, path)
+            # git apply creates the declared addition; an empty placeholder would
+            # turn its /dev/null preimage into an existing-file mutation.
+            continue
+        require(first.get("new_file") is False,
+                "transaction_layer_new_file_flag_changed:" + path)
         data = owned_file(Path(source) / path)
+        require(digest(data) == first.get("before_sha256"),
+                "transaction_layer_preimage_changed:" + path)
         write_atomic(target, data, 0o600)
     for layer in layers:
         if layer_already_applied(layer, staging):
@@ -821,7 +880,8 @@ def current_source_request_bytes(request, request_path, request_sha256):
         references = ("root_project_update",)
     else:
         require(context.get("schema") in ("friday.current-source-native-successor.v2",
-                    "friday.current-source-native-successor.v3")
+                    "friday.current-source-native-successor.v3",
+                    "friday.current-source-native-successor.v4")
                 and set(context) == {"schema", "root_project_update", "previous_native_update"},
                 "transaction_current_source_context_required")
         references = ("root_project_update", "previous_native_update")
@@ -1145,6 +1205,7 @@ def run(request, request_path, request_sha256):
     # 10. the journal: every file the operation touches is recorded before it is written.
     journal = Journal(staging_root, home)
     published = []
+    native_additions = {str(Path(source) / path) for path in touched if path not in receipt["files"]}
 
     def publish_with_journal(target, data, mode=0o600):
         """Publish a file and remember what it was before.
@@ -1159,6 +1220,10 @@ def run(request, request_path, request_sha256):
                 journal.record_existing(target, owned_file(target))
             else:
                 journal.record_absent(target)
+        if key in native_additions:
+            new_source_absence_checked(source, str(target.relative_to(source)))
+            journal.entries[key]["published_after"] = {"sha256": digest(data),
+                "bytes": len(data), "mode": mode}
         forward_budget()
         # The path is registered BEFORE the write: a failure between the rename and the
         # directory synchronisation leaves the file changed, and the rollback must still
@@ -1167,7 +1232,14 @@ def run(request, request_path, request_sha256):
         publish(target, data, mode)
 
     for path in touched:
-        journal.record_existing(Path(source) / path, owned_file(Path(source) / path))
+        target = Path(source) / path
+        if path in receipt["files"]:
+            journal.record_existing(target, owned_file(target))
+        else:
+            # check_preimages authenticated the addition's absence. Recheck at
+            # the journalling boundary, then restore absence on any late refusal.
+            new_source_absence_checked(source, path)
+            journal.record_absent(target)
     for name in sorted(request.get("plugin_set", [])) + sorted(request.get("plugin_additions", [])):
         target = Path(home) / name
         if target.exists() and not target.is_symlink():

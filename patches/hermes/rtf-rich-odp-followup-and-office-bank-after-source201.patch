@@ -1,0 +1,1127 @@
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -277,7 +277,11 @@
+     'RTF читается без выполнения полей, объектов и внешних ссылок. Для нового .rtf используй '
+     'rtf_create с обычным текстом или rtf_structured с JSON blocks: paragraph type/text, '
+     'heading type/text/level 1..9, list type/items/ordered (буквальные метки, без автонумерации), '
+-    'table type/rows из прямоугольных строковых ячеек. Для точечной правки RTF используй '
++    'table type/rows из прямоугольных строковых ячеек. Допустимы корневые header/footer '
++    'с обычным текстом, footnote у paragraph и блок page_break только с type. '
++    'Чтение раздельно показывает текст тела, колонтитулов и простых сносок, маркеры '
++    'ссылок инертны; оформление, комментарии, концевые сноски и сложные stories не проверяются. '
++    'Для точечной правки RTF используй '
+     'rtf_edit и source/old_text/new_text в НОВЫЙ .rtf: одно совпадение внутри абзаца или ячейки, '
+     'без смешанного форматирования, полей, объектов и отслеживаемых изменений. Остальные байты '
+     'сохраняются; чтение не проверяет внешний вид. '
+diff --git a/hermes_cli/friday_workspace_pdf.py b/hermes_cli/friday_workspace_pdf.py
+--- a/hermes_cli/friday_workspace_pdf.py
++++ b/hermes_cli/friday_workspace_pdf.py
+@@ -26,6 +26,7 @@
+ MAX_OUTPUT = 1000000
+ RENDER_SECONDS = 40
+ _TOOLCHAIN_NAME = 'libreoffice-26.2.5.2-ubuntu26.04-amd64'
++_PRESENTATION_TOOLCHAIN_NAME = 'libreofficedev-26.2.5.2-frw-b711-c459-direct-20261111'
+ _PREFIX = '/opt/friday-document-toolchain'
+ 
+ 
+@@ -79,8 +80,11 @@
+         raise ExportRefused('unsupported_package') from None
+ 
+ 
+-def _toolchain():
+-    root = Path(pwd.getpwuid(os.getuid()).pw_dir)/'.jericho/toolchains'/_TOOLCHAIN_NAME
++def _toolchain(*, family='default'):
++    if type(family) is not str or family not in ('default', 'presentation'):
++        raise ExportRefused('renderer_unavailable')
++    name = _TOOLCHAIN_NAME if family == 'default' else _PRESENTATION_TOOLCHAIN_NAME
++    root = Path(pwd.getpwuid(os.getuid()).pw_dir)/'.jericho/toolchains'/name
+     try:
+         info = root.lstat()
+         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+diff --git a/hermes_cli/friday_workspace_presentation.py b/hermes_cli/friday_workspace_presentation.py
+--- a/hermes_cli/friday_workspace_presentation.py
++++ b/hermes_cli/friday_workspace_presentation.py
+@@ -217,7 +217,11 @@
+         data = _private_bytes(output, 'input' + spec['output'], 1000000)
+         if _private_bytes(root, 'validated', 17) != b'NATIVE_VALIDATED\n':
+             raise ExportRefused('invalid_native_output')
+-        validate_native(data, spec['result'])
++        if spec['result'] == 'odp':
++            from tools.scoped_presentation_generated_odp import validate_generated_odp
++            validate_generated_odp(data)
++        else:
++            validate_native(data, spec['result'])
+         return data
+     except (OSError, PresentationRefused):
+         raise ExportRefused('invalid_native_output') from None
+@@ -237,7 +241,7 @@
+     spec = _OPERATIONS[operation]
+     check(cap)
+     validate_native(data, spec['input'])
+-    toolchain = _toolchain()
++    toolchain = _toolchain(family='presentation' if operation == 'pptx_odp' else 'default')
+     work = Path(tempfile.mkdtemp(prefix='friday-presentation-convert-'))
+     try:
+         work.chmod(0o700)
+@@ -299,9 +303,102 @@
+                            'effect_disposition': 'none'})
+ 
+ 
++def _prepare_presentation_profile(program, env, deadline):
++    """Initialize an empty private profile without ever passing document args.
++
++    Exact b711 normally requests restart on its first extension-cache cleanup.
++    A genuine document-free initialization writes that cache identity. Empty
++    readonly shared/bundled repositories and absent fresh activation maps then
++    exclude the other known extension-sync restart branch. Nothing fabricates
++    a cache marker or changes macro security; a later restart remains an error.
++    """
++    import stat
++    import time
++    from xml.etree import ElementTree as ET
++
++    program = Path(program)
++    profile = Path(env['HOME']) / 'profile'
++    if os.path.lexists(profile):
++        raise ValueError('presentation_profile_not_fresh')
++
++    def empty_repositories():
++        for name, expected in (('extensions', set()),
++                               ('uno_packages', {'cache', 'cache/uno_packages'})):
++            root = program.parent / 'share' / name
++            if root.is_symlink() or not root.is_dir():
++                raise ValueError('presentation_repository_layout')
++            members = list(root.rglob('*'))
++            if ({member.relative_to(root).as_posix() for member in members} != expected
++                    or any(member.is_symlink() or not member.is_dir()
++                           for member in members)):
++                raise ValueError('presentation_repository_not_empty')
++
++    def remaining():
++        value = deadline - time.monotonic()
++        if value <= 0:
++            raise TimeoutError('presentation_original_budget_exhausted')
++        return value
++
++    def own_regular(path):
++        for parent in (path.parent, *path.parent.parents):
++            if parent.is_symlink():
++                raise ValueError('presentation_profile_link')
++            if parent == profile:
++                break
++        info = path.lstat()
++        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
++                or info.st_nlink != 1 or info.st_size > 1000000):
++            raise ValueError('presentation_profile_file')
++        key = lambda value: (value.st_dev, value.st_ino, value.st_mode,
++                             value.st_uid, value.st_gid, value.st_nlink,
++                             value.st_size, value.st_mtime_ns, value.st_ctime_ns)
++        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
++        with os.fdopen(fd, 'rb') as stream:
++            if key(os.fstat(stream.fileno())) != key(info):
++                raise ValueError('presentation_profile_changed')
++            raw = stream.read(1000001)
++            if (len(raw) != info.st_size or key(os.fstat(stream.fileno())) != key(info)
++                    or key(path.lstat()) != key(info)):
++                raise ValueError('presentation_profile_changed')
++        return raw
++
++    empty_repositories()
++    version = (program / 'versionrc').read_bytes()
++    if [line for line in version.splitlines() if line.startswith(b'buildid=')] != [b'buildid=620(Build:2)']:
++        raise ValueError('presentation_bank_buildid')
++    subprocess.run([str(program / 'soffice'), '--headless', '--norestore',
++                    '--nodefault', '--nolockcheck', '--nofirststartwizard',
++                    '-env:UserInstallation=' + profile.as_uri(),
++                    '--terminate_after_init'],
++                   env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
++                   stderr=subprocess.DEVNULL, timeout=remaining(), check=True)
++    remaining()
++    registry = own_regular(profile / 'user/registrymodifications.xcu')
++    if b'<!DOCTYPE' in registry.upper():
++        raise ValueError('presentation_profile_registry')
++    root = ET.fromstring(registry)
++    oor = '{http://openoffice.org/2001/registry}'
++    values = [value.text for item in root
++              if item.get(oor + 'path') == '/org.openoffice.Setup/Office'
++              for prop in item if prop.get(oor + 'name') == 'ooSetupInstCompleted'
++              for value in prop.findall('value')]
++    if root.tag != oor + 'items' or values != ['true']:
++        raise ValueError('presentation_profile_initialization')
++    if own_regular(profile / 'user/extensions/buildid') != b'620(Build:2)':
++        raise ValueError('presentation_profile_buildid')
++    for relative in ('user/extensions/shared/extensions.pmap',
++                     'user/extensions/bundled/extensions.pmap',
++                     'user/uno_packages/cache/uno_packages.pmap'):
++        if os.path.lexists(profile / relative):
++            raise ValueError('presentation_profile_activation_state')
++    empty_repositories()
++    remaining()
++
++
+ def _render_child(operation):
+     import resource
+     import re
++    import time
+     prefix = '/opt/friday-document-toolchain'
+     if operation not in _OPERATIONS:
+         raise ValueError('unsupported_conversion')
+@@ -319,9 +416,15 @@
+            'XDG_CACHE_HOME': '/work/home/cache', 'XDG_CONFIG_HOME': '/work/home/config',
+            'XDG_RUNTIME_DIR': '/work/tmp',
+            'LD_LIBRARY_PATH': program + ':' + prefix + '/root/usr/lib/x86_64-linux-gnu'}
++    deadline = time.monotonic() + 35
++    if operation == 'pptx_odp':
++        _prepare_presentation_profile(program, env, deadline)
+     command = _office_command(operation)
++    timeout = deadline - time.monotonic() if operation == 'pptx_odp' else 35
++    if timeout <= 0:
++        raise TimeoutError('presentation_original_budget_exhausted')
+     subprocess.run(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+-                   stderr=subprocess.DEVNULL, timeout=35, check=True)
++                   stderr=subprocess.DEVNULL, timeout=timeout, check=True)
+     if operation == 'pptx_pdf':
+         with open('/work/pdfinfo', 'wb') as output:
+             subprocess.run(['/usr/bin/pdfinfo', '/work/out/input.pdf'], env=env,
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1487,6 +1487,8 @@
+ # Native RTF extends the same admitted document lane, without Office execution.
+ _RTF_GUIDANCE = (
+     'RTF: use rtf_create with plain text or rtf_structured with JSON {"blocks":[...]}, '
++    'optionally header/footer strings. Paragraph blocks may add a plain footnote string; '
++    'page_break blocks have only type and request an explicit page break. '
+     'into a NEW .rtf. Structured blocks match paragraph(type,text), heading(type,text,level1..9), '
+     'list(type,items,ordered) with literal labels rather than automatic numbering, and '
+     'table(type,rows) of rectangular strings. At most100000 UTF-8 input bytes. '
+@@ -1497,8 +1499,10 @@
+     'bytes and Unicode; ignored destinations are disclosed, never executed. No render '
+     'or layout validation is implied. Never save plain text under an RTF suffix. ')
+ READ_FILE_SCHEMA['description'] += (
+-    ' RTF exposes bounded body paragraphs, outline levels and table cells; header/footer, '
+-    'field, object, image and other ignored destinations are reported separately. No embedded '
++    ' RTF exposes bounded body paragraphs, outline levels, table cells, plain header/footer '
++    'and footnote stories, with explicit inert reference markers. Coverage and fixed limitation '
++    'codes disclose partial extraction; comments, endnotes, fields, images and complex stories '
++    'are not interpreted. No embedded '
+     'object or external link is executed or resolved.')
+ WRITE_FILE_SCHEMA['description'] = _RTF_GUIDANCE + WRITE_FILE_SCHEMA['description']
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] = (
+diff --git a/tools/read_extract.py b/tools/read_extract.py
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -368,7 +368,7 @@
+     elif format == 'rtf':
+         from tools.scoped_rtf import extract_rtf, RTFError
+         try:
+-            text = extract_rtf(data)
++            text = extract_rtf(data, checkpoint=checkpoint)
+         except RTFError as exc:
+             raise ScopedExtractionError(str(exc)) from None
+     elif format in ('odt', 'ott', 'fodt'):
+diff --git a/tools/scoped_presentation_generated_odp.py b/tools/scoped_presentation_generated_odp.py
+new file mode 100644
+--- /dev/null
++++ b/tools/scoped_presentation_generated_odp.py
+@@ -0,0 +1,249 @@
++"""A bounded destination profile for the private Impress PPTX -> ODP result.
++
++Only friday_workspace_presentation._read_native calls this after renderer custody
++checks. It is not a source/import/edit profile. SVM is never decoded or rendered;
++its framing and passive action families are checked, not its graphics fidelity.
++"""
++import posixpath
++import re
++import struct
++
++from tools.scoped_presentation import (
++    Package, PresentationError, extract_presentation, O, DR, XL, MIME, q,
++)
++from tools.scoped_presentation_write import PresentationRefused, _parts, _odp_structure
++from tools.scoped_presentation_variants import _guard_xml_context
++
++M = 'urn:oasis:names:tc:opendocument:xmlns:manifest:1.0'
++CHART = 'urn:oasis:names:tc:opendocument:xmlns:chart:1.0'
++GDI = 'application/x-openoffice-gdimetafile;windows_formatname="GDIMetaFile"'
++_TOP_XML = {
++    'content.xml': ('document-content', {'scripts', 'font-face-decls', 'automatic-styles', 'body'}),
++    'styles.xml': ('document-styles', {'font-face-decls', 'styles', 'automatic-styles', 'master-styles'}),
++    'meta.xml': ('document-meta', {'meta'}),
++    'settings.xml': ('document-settings', {'settings'}),
++}
++# SvmWriter/SvmReader frame actions with UInt16 type + VersionCompat(version,size).
++# Exclude bitmap/linked graphics, wallpaper, EPS, floating nested metafiles and
++# unclassified actions. Variable payloads remain opaque, never a render proof.
++_SVM_VERSIONS = {
++    109: 3, 111: 2, 113: 4, 129: 1, 130: 1, 132: 1, 133: 1, 134: 1,
++    135: 1, 136: 1, 137: 1, 138: 1, 139: 1, 140: 1, 149: 1, 150: 1, 512: 1,
++}
++_SVM_FIXED = {129: 16, 132: 5, 133: 5, 134: 4, 135: 5, 136: 2,
++              137: 33, 139: 2, 140: 0, 149: 4, 150: 2}
++_TEXT_COMMENTS = {b'XTEXT_PAINTSHAPE_BEGIN', b'XTEXT_PAINTSHAPE_END',
++                  b'XTEXT_EOC', b'XTEXT_EOL', b'XTEXT_EOP'}
++
++
++def _refuse(reason):
++    raise PresentationRefused('generated_odp_' + reason)
++
++
++def _comment(payload):
++    if len(payload) < 10:
++        _refuse('svm_comment')
++    count = struct.unpack_from('<H', payload)[0]
++    if not 1 <= count <= 64 or len(payload) < 10 + count:
++        _refuse('svm_comment')
++    label = payload[2:2 + count]
++    value, size = struct.unpack_from('<iI', payload, 2 + count)
++    if len(payload) != count + 10 + size or not 0 <= value <= 65535:
++        _refuse('svm_comment')
++    if label in _TEXT_COMMENTS or label == b'XPATHSTROKE_SEQ_END':
++        if size or (label != b'XTEXT_EOC' and value):
++            _refuse('svm_comment')
++    elif label == b'XPATHSTROKE_SEQ_BEGIN':
++        # This payload is SvtGraphicStroke, not GfxLink or a nested metafile.
++        # Bound it separately; its path geometry is not semantically interpreted.
++        if value or not 1 <= size <= 65536:
++            _refuse('svm_comment')
++    else:
++        _refuse('svm_comment_type')
++
++
++def _svm(data):
++    if not 61 <= len(data) <= 1_000_000 or data[:6] != b'VCLMTF':
++        _refuse('svm_header')
++    version, size, compression = struct.unpack_from('<HII', data, 6)
++    # SvmWriter v1's uncompressed 49-byte header, with a v1 MapMode(27).
++    if (version, size, compression) != (1, 49, 0):
++        _refuse('svm_header')
++    if struct.unpack_from('<HI', data, 16) != (1, 27):
++        _refuse('svm_mapmode')
++    width, height, count = struct.unpack_from('<iiI', data, 49)
++    if not 1 <= width <= 10_000_000 or not 1 <= height <= 10_000_000 or not 1 <= count <= 20000:
++        _refuse('svm_capacity')
++    offset = 61
++    stack = 0
++    for _ in range(count):
++        if len(data) - offset < 8:
++            _refuse('svm_action_bounds')
++        kind, version, size = struct.unpack_from('<HHI', data, offset)
++        offset += 8
++        if (_SVM_VERSIONS.get(kind) != version or size > 100000
++                or offset + size > len(data) or size != _SVM_FIXED.get(kind, size)):
++            _refuse('svm_action_profile')
++        payload = data[offset:offset + size]
++        if kind == 512:
++            _comment(payload)
++        elif kind == 139:
++            stack += 1
++            if stack > 64:
++                _refuse('svm_stack')
++        elif kind == 140:
++            stack -= 1
++            if stack < 0:
++                _refuse('svm_stack')
++        offset += size
++    if offset != len(data) or stack:
++        _refuse('svm_trailing_or_stack')
++
++
++def _manifest(pkg):
++    root = pkg.xml.get('META-INF/manifest.xml')
++    if root is None or root.tag != q(M, 'manifest') or set(root.attrib) != {q(M, 'version')}:
++        _refuse('manifest_structure')
++    if root.get(q(M, 'version')) not in ('1.2', '1.3', '1.4'):
++        _refuse('manifest_version')
++    entries = {}
++    for node in root:
++        path = node.get(q(M, 'full-path'))
++        if (node.tag != q(M, 'file-entry') or len(node) or (node.text or '').strip()
++                or set(node.attrib) - {q(M, 'full-path'), q(M, 'media-type'), q(M, 'version')}
++                or not {q(M, 'full-path'), q(M, 'media-type')} <= set(node.attrib)
++                or not path or path in entries):
++            _refuse('manifest_entry')
++        if q(M, 'version') in node.attrib and (path != '/' or node.get(q(M, 'version')) != root.get(q(M, 'version'))):
++            _refuse('manifest_version')
++        entries[path] = node.get(q(M, 'media-type'))
++    if entries.pop('/', None) != MIME:
++        _refuse('manifest_root')
++    objects = {name[:-1] for name, media in entries.items()
++               if name.endswith('/') and media == 'application/vnd.oasis.opendocument.chart'}
++    if any(re.fullmatch(r'Object [1-9][0-9]{0,2}', name) is None for name in objects):
++        _refuse('chart_directory')
++    expected = {name: 'text/xml' for name in ('content.xml', 'styles.xml', 'meta.xml')}
++    if 'settings.xml' in entries:
++        expected['settings.xml'] = 'text/xml'
++    for obj in objects:
++        expected[obj + '/'] = 'application/vnd.oasis.opendocument.chart'
++        expected[obj + '/content.xml'] = 'text/xml'
++        for leaf in ('styles.xml', 'meta.xml'):
++            if obj + '/' + leaf in entries:
++                expected[obj + '/' + leaf] = 'text/xml'
++    if 'Configurations2/' in entries:
++        expected['Configurations2/'] = 'application/vnd.sun.xml.ui.configuration'
++    for name in entries:
++        if re.fullmatch(r'Pictures/TablePreview[1-9][0-9]{0,2}\.svm', name):
++            expected[name] = ''
++        elif name.startswith('ObjectReplacements/') and name.removeprefix('ObjectReplacements/') in objects:
++            expected[name] = GDI
++        elif name == 'Thumbnails/thumbnail.png':
++            expected[name] = 'image/png'
++    if entries != expected:
++        _refuse('manifest_profile')
++    required_files = {name for name in entries if not name.endswith('/')}
++    if set(pkg.parts) != required_files | {'mimetype', 'META-INF/manifest.xml'}:
++        _refuse('member_closure')
++    for name in required_files:
++        if name not in pkg.parts:
++            _refuse('manifest_target_missing')
++    return objects
++
++
++def _xml_profile(pkg, objects):
++    for name, root in pkg.xml.items():
++        if name == 'META-INF/manifest.xml':
++            continue
++        leaf = name.rsplit('/', 1)[-1]
++        expected = _TOP_XML.get(leaf)
++        if expected is None or root.tag != q(O, expected[0]):
++            _refuse('xml_root')
++        seen = set()
++        for child in root:
++            if child.tag not in {q(O, item) for item in expected[1]} or child.tag in seen:
++                _refuse('xml_sections')
++            seen.add(child.tag)
++        if name != 'content.xml' and root.find(q(O, 'scripts')) is not None:
++            _refuse('script_location')
++        for node in root.iter():
++            _guard_xml_context(node)
++            if node.tag == q(O, 'binary-data'):
++                _refuse('inline_binary')
++        if '/' in name and leaf == 'content.xml':
++            bodies = root.findall(q(O, 'body'))
++            if len(bodies) != 1 or len(bodies[0]) != 1 or bodies[0][0].tag != q(O, 'chart'):
++                _refuse('chart_body')
++            charts = list(bodies[0].iter(q(CHART, 'chart')))
++            if len(charts) != 1:
++                _refuse('chart_body')
++
++
++def _resources(pkg, objects):
++    references = set()
++    used_objects = set()
++    for name, root in pkg.xml.items():
++        parents = {child: parent for parent in root.iter() for child in parent}
++        for node in root.iter():
++            href = node.get(q(XL, 'href'))
++            if href is None:
++                continue
++            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), href)).rstrip('/')
++            if node.tag == q(CHART, 'chart') and name in {obj + '/content.xml' for obj in objects}:
++                if href != '.' or target != name.rsplit('/', 1)[0]:
++                    _refuse('chart_reference')
++                continue
++            if name != 'content.xml' or node.tag not in (q(DR, 'object'), q(DR, 'image')):
++                _refuse('reference_role')
++            if target in references:
++                _refuse('duplicate_resource_reference')
++            references.add(target)
++            if node.tag == q(DR, 'object'):
++                if (target not in objects or parents[node].tag != q(DR, 'frame')
++                        or any(child.tag != '{urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0}p'
++                               or child.attrib or len(child) or (child.text or '').strip()
++                               or (child.tail or '').strip() for child in node)):
++                    _refuse('object_reference')
++                used_objects.add(target)
++                # The same native frame must carry the replacement for this object.
++                images = parents[node].findall(q(DR, 'image'))
++                replacement = 'ObjectReplacements/' + target
++                if replacement in pkg.parts:
++                    if len(images) != 1 or images[0].get(q(XL, 'href')) != './' + replacement:
++                        _refuse('chart_replacement')
++                elif images:
++                    _refuse('chart_replacement')
++            elif target not in pkg.parts or not (target.startswith('Pictures/') or target.startswith('ObjectReplacements/')):
++                _refuse('image_reference')
++    if used_objects != objects:
++        _refuse('unreferenced_chart')
++    binary = {name for name in pkg.parts if name.startswith(('Pictures/', 'ObjectReplacements/'))}
++    if references != binary | objects:
++        _refuse('resource_closure')
++    for name in binary:
++        _svm(pkg.parts[name])
++    thumbnail = pkg.parts.get('Thumbnails/thumbnail.png')
++    if thumbnail is not None and not thumbnail.startswith(b'\x89PNG\r\n\x1a\n'):
++        _refuse('thumbnail_format')
++
++
++def validate_generated_odp(data):
++    """Validate destination structure; do not grant source or renderer authority."""
++    try:
++        infos, parts = _parts(data, _generated_odp=True)
++        _odp_structure(infos, parts)
++        pkg = Package(data)
++        objects = _manifest(pkg)
++        _xml_profile(pkg, objects)
++        _resources(pkg, objects)
++        # Use the real data reader too: local chart ranges, data counts and notes.
++        view = extract_presentation(data, 'odp')
++        metadata = view.extraction_metadata
++        incomplete = {'odf_chart_range_not_resolved', 'chart_without_supported_series',
++                      'chart_values_not_available', 'unsupported_odf_object'}
++        if metadata['charts'] != len(objects) or incomplete.intersection(metadata['unsupported_features']):
++            _refuse('chart_data_coverage')
++    except PresentationError as error:
++        raise PresentationRefused(str(error)) from None
++    return True
+diff --git a/tools/scoped_presentation_odp_text_source.py b/tools/scoped_presentation_odp_text_source.py
+new file mode 100644
+--- /dev/null
++++ b/tools/scoped_presentation_odp_text_source.py
+@@ -0,0 +1,83 @@
++"""Passive ODP input for byte-preserving literal text edits only.
++
++This is an input profile, not evidence that a file came from our producer. It
++never renders, decodes graphics or opens embedded objects. Existing source
++admission stays strict for conversion, table editing and other operations.
++"""
++from copy import copy, deepcopy
++from io import BytesIO
++from zipfile import ZipFile
++
++from tools.scoped_presentation import Package, PresentationError, O, q, extract_presentation
++from tools.scoped_presentation_write import (
++    PresentationRefused, _parts, _xml, _tostring, _rewrite, _odp_structure,
++)
++from tools.scoped_presentation_variants import validate_profile
++
++
++def source_parts(data):
++    """Return the original package; permit only an exactly inert script section.
++
++    Ordinary supported ODPs keep their existing validator. The narrow fallback
++    validates the original ZIP/XML first and removes the inert section solely
++    from a private validation view, so the existing active-content checks still
++    inspect every other node/member. Returned bytes and edited output keep that
++    section and every unrelated payload verbatim. No generated-output flag or
++    producer marker participates in source admission.
++    """
++    try:
++        validate_profile(data, 'odp')
++        return _parts(data)
++    except PresentationRefused as error:
++        if str(error) != 'active_xml_content':
++            raise
++    try:
++        pkg = Package(data)
++        roots = {name: _xml(raw) for name, raw in pkg.parts.items()
++                 if name.endswith(('.xml', '.vml'))}
++        root = roots.get('content.xml')
++        if root is None or root.tag != q(O, 'document-content'):
++            raise PresentationRefused('passive_odp_content')
++        scripts = [node for node in root if node.tag == q(O, 'scripts')]
++        if (len(scripts) != 1 or scripts[0].attrib or len(scripts[0])
++                or scripts[0].text or (scripts[0].tail or '').strip()):
++            raise PresentationRefused('passive_odp_scripts')
++        with ZipFile(BytesIO(data)) as archive:
++            infos = archive.infolist()
++        if any(info.is_dir() and info.file_size != 0 for info in infos):
++            raise PresentationRefused('passive_odp_directory_payload')
++        original_parts = dict(pkg.parts)
++        original_parts.update((info.filename, b'') for info in infos if info.is_dir())
++        root.remove(scripts[0])
++        validation_view = _rewrite(infos, original_parts, {'content.xml': _tostring(root)})
++        _parts(validation_view)  # All original active/resource guards, no role flag.
++        _odp_structure(infos, original_parts)
++        # These helpers inspect only bounded passive structure. Calling them is
++        # not calling the generated-destination entry point or granting custody.
++        from tools.scoped_presentation_generated_odp import _manifest, _xml_profile, _resources
++        # An app save may leave the replacement's media type empty. This input
++        # profile accepts that declaration only when the existing strict role
++        # closure and bounded SVM framing validate its actual unchanged payload.
++        manifest_view = copy(pkg)
++        manifest_view.xml = dict(pkg.xml)
++        manifest = deepcopy(pkg.xml.get('META-INF/manifest.xml'))
++        if manifest is not None:
++            m = '{urn:oasis:names:tc:opendocument:xmlns:manifest:1.0}'
++            for entry in manifest:
++                if (entry.get(m+'full-path', '').startswith('ObjectReplacements/')
++                        and entry.get(m+'media-type') == ''):
++                    from tools.scoped_presentation_generated_odp import GDI
++                    entry.set(m+'media-type', GDI)
++            manifest_view.xml['META-INF/manifest.xml'] = manifest
++        objects = _manifest(manifest_view)
++        _xml_profile(pkg, objects)
++        _resources(pkg, objects)
++        view = extract_presentation(data, 'odp')
++        incomplete = {'odf_chart_range_not_resolved', 'chart_without_supported_series',
++                      'chart_values_not_available', 'unsupported_odf_object'}
++        if (view.extraction_metadata['charts'] != len(objects)
++                or incomplete.intersection(view.extraction_metadata['unsupported_features'])):
++            raise PresentationRefused('passive_odp_chart_data_coverage')
++        return infos, original_parts
++    except PresentationError as error:
++        raise PresentationRefused(str(error)) from None
+diff --git a/tools/scoped_presentation_text.py b/tools/scoped_presentation_text.py
+--- a/tools/scoped_presentation_text.py
++++ b/tools/scoped_presentation_text.py
+@@ -18,15 +18,14 @@
+     raise PresentationRefused(reason)
+ 
+ 
+-def _spans(raw, tag):
++def _spans(raw, tag, *, nested=False):
+     """Byte spans for simple XML text elements; never reserialize a source part."""
+     parser=expat.ParserCreate(encoding='UTF-8',namespace_separator='}')
+-    spans=[];active=None
++    spans=[];active=[]
+     def start(name,attrs):
+-        nonlocal active
+         if name != tag[1:]:
+             return
+-        if active is not None:
++        if active and not nested:
+             refuse('nested_text_element')
+         offset=parser.CurrentByteIndex;quote=None
+         for end in range(offset,len(raw)):
+@@ -36,12 +35,13 @@
+             elif byte in (34,39):quote=byte
+             elif byte==62:break
+         else:refuse('invalid_xml')
+-        active=(end+1,raw[offset:end].rstrip().endswith(b'/'))
++        active.append((end+1,raw[offset:end].rstrip().endswith(b'/'),len(spans)))
++        spans.append(None)
+     def end(name):
+-        nonlocal active
+         if name==tag[1:]:
+-            if active is None:refuse('invalid_xml')
+-            begin,empty=active;spans.append((begin,begin if empty else parser.CurrentByteIndex,empty));active=None
++            if not active:refuse('invalid_xml')
++            begin,empty,index=active.pop()
++            spans[index]=(begin,begin if empty else parser.CurrentByteIndex,empty)
+     def prohibited(*args):refuse('active_xml')
+     parser.StartElementHandler=start;parser.EndElementHandler=end
+     parser.StartDoctypeDeclHandler=prohibited;parser.EntityDeclHandler=prohibited
+@@ -66,12 +66,19 @@
+             tuple(_property_key(child) for child in node))
+ 
+ 
+-def _replace(raw, root, paragraphs, old, new, *, ooxml):
++def _replace(raw, root, paragraphs, old, new, *, ooxml, odf_span=False):
+     tag=q(A,'t') if ooxml else None
+     matches=[]
+     for paragraph in paragraphs:
+         nodes=list(paragraph.iter(tag)) if ooxml else [paragraph]
+-        if not ooxml and len(paragraph):
++        if (odf_span and not ooxml and len(paragraph)==1 and paragraph[0].tag==q(T,'span')
++                and not (paragraph.text or '') and not len(paragraph[0])
++                and not (paragraph[0].tail or '')
++                and set(paragraph[0].attrib)<={q(T,'style-name')}):
++            # One leaf span is one literal run. Keep its style and all XML bytes;
++            # fields, mixed runs, explicit whitespace and links stay unsupported.
++            nodes=[paragraph[0]]
++        elif not ooxml and len(paragraph):
+             # Styled spans, fields, bookmarks and explicit whitespace remain
+             # untouched; an unsupported paragraph cannot hide an occurrence.
+             try:
+@@ -163,8 +170,11 @@
+         # p/h tags can mix in one ODF part. Only leaf paragraphs are editable;
+         # the parser still records nonleaf spans and pairs by document order.
+         offsets={}
+-        for kind in (q(T,'p'),q(T,'h')):
+-            entire=list(root.iter(kind));spans=_spans(raw,kind)
++        kinds=[q(T,'p'),q(T,'h')]
++        if any(node.tag==q(T,'span') for node,_,_ in selected):
++            kinds.append(q(T,'span'))
++        for kind in kinds:
++            entire=list(root.iter(kind));spans=_spans(raw,kind,nested=kind==q(T,'span'))
+             if len(entire)!=len(spans):refuse('text_span_mismatch')
+             offsets.update(zip(entire,spans))
+     changes=[];remaining=new
+@@ -192,10 +202,14 @@
+     if any(ord(c)<32 for c in old+new):refuse('unsupported_text_whitespace')
+     if type(spec['slide']) is not int or spec['slide']<1 or spec['role'] not in ('slide','notes'):
+         refuse('text_edit_target')
+-    validate_profile(data,format)
++    if format=='odp':
++        from tools.scoped_presentation_odp_text_source import source_parts
++        infos,parts=source_parts(data)
++    else:
++        validate_profile(data,format)
+     if format=='fodp':
+         name=None;source_raw=data;root=_xml(data)
+-    else:
++    elif format!='odp':
+         infos,parts=_parts(data)
+     if format in OOXML:
+         paths=_slide_paths(parts)
+@@ -238,7 +252,10 @@
+                             q(T,'note'),q(DR,'object'),q(DR,'image'),q(DR,'object-ole')):
+                 excluded.update(node.iter())
+         paragraphs=[node for node in selected.iter() if node not in excluded and node.tag in (q(T,'p'),q(T,'h'))]
+-        raw=_replace(source_raw,root,paragraphs,old,new,ooxml=False)
++        raw=_replace(source_raw,root,paragraphs,old,new,ooxml=False,odf_span=format=='odp')
+     edited=raw if format=='fodp' else _rewrite(infos,parts,{name:raw})
+-    validate_profile(edited,format)
++    if format=='odp':
++        source_parts(edited)
++    else:
++        validate_profile(edited,format)
+     return edited
+diff --git a/tools/scoped_presentation_write.py b/tools/scoped_presentation_write.py
+--- a/tools/scoped_presentation_write.py
++++ b/tools/scoped_presentation_write.py
+@@ -70,10 +70,18 @@
+     return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+ 
+ 
+-def _xml_resource_guards(parts, name, root):
++def _xml_resource_guards(parts, name, root, *, _generated_odp=False):
+     xlink = '{http://www.w3.org/1999/xlink}href'
+     for node in root.iter():
+         local = node.tag.rsplit('}', 1)[-1]
++        # Only the captured native destination profile has this inert ODF section.
++        # Source/edit callers never set this private flag. No scripts are evaluated.
++        if (_generated_odp and name == 'content.xml'
++                and root.tag == '{urn:oasis:names:tc:opendocument:xmlns:office:1.0}document-content'
++                and node.tag == '{urn:oasis:names:tc:opendocument:xmlns:office:1.0}scripts'
++                and node in list(root) and not node.attrib and not len(node)
++                and not node.text and not (node.tail or '').strip()):
++            continue
+         if local in ('script', 'scripts', 'event-listener', 'event-listeners',
+                      'object-ole', 'plugin', 'applet'):
+             raise PresentationRefused('active_xml_content')
+@@ -94,7 +102,7 @@
+             raise PresentationRefused('missing_xlink_target')
+ 
+ 
+-def _parts(data, *, _depth=0, _budget=None):
++def _parts(data, *, _depth=0, _budget=None, _generated_odp=False):
+     if not isinstance(data, bytes) or not 1 <= len(data) <= MAX_PACKAGE or _depth > 2:
+         raise PresentationRefused('package_capacity')
+     budget = {'packages': 0, 'bytes': 0} if _budget is None else _budget
+@@ -158,7 +166,7 @@
+                     raise PresentationRefused('unsupported_embedded_package')
+         elif name.endswith(('.xml', '.vml')):
+             root = _xml(raw)
+-            _xml_resource_guards(parts, name, root)
++            _xml_resource_guards(parts, name, root, _generated_odp=_generated_odp)
+             if name == '[Content_Types].xml' and any(
+                     'macro' in (node.get('ContentType', '') + node.get('Extension', '')).lower()
+                     or 'vba' in node.get('ContentType', '').lower() for node in root):
+diff --git a/tools/scoped_rtf.py b/tools/scoped_rtf.py
+--- a/tools/scoped_rtf.py
++++ b/tools/scoped_rtf.py
+@@ -95,10 +95,14 @@
+     base_ignored: bool = False
+     heading: int | None = None
+     font_table: bool = False
++    story: object | None = None
++    story_root: bool = False
++    group_begin: int = 0
+ 
+     def clone(self):
+         return replace(self, formats=dict(self.formats), optional=False, fresh=True,
+-                       alternate=False, alternate_children=0, unicode_branch=False)
++                       alternate=False, alternate_children=0, unicode_branch=False,
++                       story_root=False)
+ 
+ 
+ @dataclass
+@@ -108,6 +112,7 @@
+     end: int
+     style: tuple
+     editable: bool
++    reference: str | None = None
+ 
+ 
+ @dataclass
+@@ -121,6 +126,19 @@
+     @property
+     def text(self):
+         return ''.join(g.text for g in self.glyphs)
++
++
++@dataclass
++class _Story:
++    destination: str
++    begin: int
++    end: int = 0
++    paragraphs: list = field(default_factory=list)
++    glyphs: list = field(default_factory=list)
++    row: int = 0
++    column: int = 1
++    _high: object | None = None
++    excluded_reason: str | None = None
+ 
+ 
+ class Document:
+@@ -132,6 +150,9 @@
+         self.data = data
+         self.checkpoint = checkpoint
+         self.paragraphs = []
++        self.stories = []
++        self.edit_boundaries = []
++        self.paragraph_count = 0
+         self.destinations = set()
+         self.unsupported = set()
+         self.fonts = {}
+@@ -146,36 +167,49 @@
+         self._high = None
+         self._parse()
+ 
++    def _stream(self, state):
++        return self if state.story is None else state.story
++
++    def _exclude_story(self, state, reason):
++        if state.story is not None and not state.ignored and not state.hidden:
++            state.story.excluded_reason = reason
++            state.story.paragraphs.clear()
++            state.story.glyphs.clear()
++            state.story._high = None
++            self.unsupported.add(reason)
++
+     def _style(self, state):
+         return (state.font, tuple(sorted(state.formats.items())))
+ 
+-    def _glyph(self, text, begin, end, state, *, editable=True):
++    def _glyph(self, text, begin, end, state, *, editable=True, reference=None):
+         if not text:
+             return
+-        if state.ignored or state.hidden:
++        stream = self._stream(state)
++        if state.ignored or state.hidden or getattr(stream, 'excluded_reason', None):
+             return
+-        if self._high is not None:
++        if stream._high is not None:
+             fail('unpaired_unicode_surrogate')
+         self.text_bytes += len(text.encode('utf-8'))
+         if self.text_bytes > MAX_TEXT:
+             fail('text_limit')
+-        self.glyphs.append(_Glyph(text, begin, end, self._style(state),
+-                                  editable and not state.formats.get('protect')))
++        stream.glyphs.append(_Glyph(text, begin, end, self._style(state),
++                                   editable and not state.formats.get('protect'), reference))
+ 
+     def _unit(self, value, begin, end, state):
+-        if state.ignored or state.hidden:
++        stream = self._stream(state)
++        if state.ignored or state.hidden or getattr(stream, 'excluded_reason', None):
+             return
+         if 0xD800 <= value <= 0xDBFF:
+-            if self._high is not None:
++            if stream._high is not None:
+                 fail('unpaired_unicode_surrogate')
+-            self._high = (value, begin, end, state.clone())
++            stream._high = (value, begin, end, state.clone())
+         elif 0xDC00 <= value <= 0xDFFF:
+-            if self._high is None:
++            if stream._high is None:
+                 fail('unpaired_unicode_surrogate')
+-            high, hbegin, hend, previous = self._high
++            high, hbegin, hend, previous = stream._high
+             if self._style(previous) != self._style(state):
+                 fail('surrogate_format_boundary')
+-            self._high = None
++            stream._high = None
+             self._glyph(chr(0x10000 + ((high - 0xD800) << 10) + value - 0xDC00),
+                         hbegin, end, state, editable=hend == begin and
+                         not any(c in self.data[hbegin:end] for c in (10, 13)))
+@@ -219,18 +253,20 @@
+ 
+     def _finish(self, state, kind='paragraph', *, even_empty=False):
+         self._flush(state)
+-        if state.ignored or state.hidden:
++        stream = self._stream(state)
++        if state.ignored or state.hidden or getattr(stream, 'excluded_reason', None):
+             return
+-        if self._high is not None:
++        if stream._high is not None:
+             fail('unpaired_unicode_surrogate')
+-        if self.glyphs or even_empty:
+-            if len(self.paragraphs) >= MAX_PARAGRAPHS:
++        if stream.glyphs or even_empty:
++            if self.paragraph_count >= MAX_PARAGRAPHS:
+                 fail('paragraph_limit')
+-            self.paragraphs.append(_Paragraph(self.glyphs,
++            self.paragraph_count += 1
++            stream.paragraphs.append(_Paragraph(stream.glyphs,
+                 'table_cell' if state.table else kind,
+-                self.row if state.table else None,
+-                self.column if state.table else None, state.heading))
+-            self.glyphs = []
++                stream.row if state.table else None,
++                stream.column if state.table else None, state.heading))
++            stream.glyphs = []
+ 
+     def _control(self, offset):
+         """One RTF lexical control; binary bytes remain opaque to the parser."""
+@@ -310,6 +346,7 @@
+                 if len(states) >= MAX_DEPTH or self.groups > MAX_GROUPS:
+                     fail('group_limit')
+                 child = state.clone()
++                child.group_begin = offset
+                 if state.alternate:
+                     state.alternate_children += 1
+                     if state.alternate_children > 2:
+@@ -327,6 +364,13 @@
+                     fail('unbalanced_group')
+                 if state.alternate and state.alternate_children != 2:
+                     fail('invalid_unicode_alternate')
++                if state.story_root:
++                    self._finish(replace(state, ignored=False, hidden=False),
++                                 even_empty=not state.story.paragraphs)
++                    state.story.end = offset + 1
++                    # The text on either side of a note group is never one
++                    # editable run, even if the source omitted its marker.
++                    states[-1].formats['_opaque'] = self.tokens
+                 if len(states) == 1:
+                     self._finish(state, even_empty=not self.paragraphs)
+                     root_closed = True
+@@ -362,9 +406,41 @@
+                 state.ignored = state.base_ignored
+                 state.optional = False
+                 state.destination = 'ud'
+-            elif word == 'upr':
++            elif word == 'upr' and not state.optional:
+                 state.alternate = True
+                 state.alternate_children = 0
++            elif word in ('header', 'headerl', 'headerr', 'headerf',
++                          'footer', 'footerl', 'footerr', 'footerf', 'footnote'):
++                # Retain boundaries even when a story is ignored/hidden or a later
++                # plain control resets formatting; body edits cannot cross it.
++                self.edit_boundaries.append(offset)
++                # A destination can open only its own fresh, visible group.
++                # Inherited exclusion/hidden state and optional destinations
++                # must never be turned back into a readable story.
++                allowed = (state.fresh and not state.optional and not state.ignored
++                           and not state.hidden and state.story is None
++                           and not state.destination and len(states) >= 2
++                           and (word == 'footnote' or len(states) == 2))
++                if allowed:
++                    if self._high is not None:
++                        fail('surrogate_story_boundary')
++                    story = _Story(word, state.group_begin)
++                    self.stories.append(story)
++                    state.story = story
++                    state.story_root = True
++                    state.table = False
++                    state.heading = None
++                    state.destination = word
++                else:
++                    if state.story is not None and not state.ignored:
++                        self._exclude_story(state, 'nested_story_not_supported')
++                    self.destinations.add(word)
++                    self.unsupported.add('excluded_' + word)
++                    if state.fresh and not state.optional and not state.ignored and not state.hidden:
++                        self.unsupported.add('complex_story_location_not_supported')
++                    state.destination = word
++                    state.ignored = True
++                state.optional = False
+             elif state.optional or word in DESTINATIONS:
+                 state.font_table = (word == 'fonttbl' and len(states) == 2
+                                     and not states[-1].ignored and not states[-1].hidden)
+@@ -373,6 +449,9 @@
+                 state.optional = False
+                 self.destinations.add(word)
+                 if word not in NONCONTENT:
++                    # Keep excluded content anchored relative to visible body text.
++                    # Metadata-only tables remain outside this content barrier.
++                    self.edit_boundaries.append(offset)
+                     self.unsupported.add('excluded_' + word)
+             elif word == 'rtf':
+                 if number != 1 or len(states) != 1:
+@@ -414,6 +493,9 @@
+                 if not state.ignored:
+                     fail('binary_outside_destination')
+             elif word == 'v':
++                if number != 0 and not state.ignored:
++                    # Retained hidden user content cannot be moved through a body edit.
++                    self.edit_boundaries.append(offset)
+                 state.hidden = number != 0
+                 self.unsupported.add('hidden_text_not_read')
+             elif word in ('deleted', 'revised'):
+@@ -434,21 +516,27 @@
+                 state.heading = number + 1 if number < 9 else None
+             elif word == 'intbl':
+                 state.table = number != 0
++                if state.table:
++                    self._exclude_story(state, 'complex_story_table_not_supported')
+             elif word == 'itap':
+                 if not state.ignored:
+                     if number not in (0, 1):
+                         fail('nested_table_not_supported')
+                     state.table = number == 1
++                    if state.table:
++                        self._exclude_story(state, 'complex_story_table_not_supported')
+             elif word == 'trowd':
+                 if not state.ignored:
+-                    self.row += 1
+-                    self.column = 1
++                    self._exclude_story(state, 'complex_story_table_not_supported')
++                    stream = self._stream(state)
++                    stream.row += 1
++                    stream.column = 1
+             elif word == 'par':
+                 self._finish(state, even_empty=True)
+             elif word == 'cell':
+                 self._finish(state, even_empty=True)
+                 if not state.ignored:
+-                    self.column += 1
++                    self._stream(state).column += 1
+             elif word == 'row':
+                 self._finish(state)
+             elif word in ('nestcell', 'nestrow'):
+@@ -467,7 +555,20 @@
+                     state.formats[word] = 1 if number is None else number
+             elif word in ('\n', '\r'):
+                 self._glyph('\n', offset, end, state)
+-            elif word in ('chdate', 'chdpl', 'chdpa', 'chtime', 'chpgn', 'sectnum', 'chftn', 'chatn'):
++            elif word == 'ftnalt':
++                if not state.ignored and not state.hidden:
++                    if state.story is not None and state.story.destination == 'footnote':
++                        self._exclude_story(state, 'endnote_not_supported')
++                    else:
++                        self.unsupported.add('endnote_not_supported')
++                state.formats['_opaque'] = self.tokens
++            elif word == 'chftn':
++                # A static, protected reference placeholder; no numbering or
++                # field evaluation is performed. One glyph keeps span indices
++                # aligned with Unicode character indices used by edit_rtf.
++                self._glyph('\ufffc', offset, end, state, editable=False,
++                            reference='note')
++            elif word in ('chdate', 'chdpl', 'chdpa', 'chtime', 'chpgn', 'sectnum', 'chatn'):
+                 self.unsupported.add('dynamic_fields_not_evaluated')
+                 state.formats['_opaque'] = self.tokens
+             else:
+@@ -492,17 +593,61 @@
+ def extract_rtf(data, *, checkpoint=None):
+     doc = Document(data, checkpoint)
+     rows = []
++    def reference_positions(paragraph):
++        return [{'character': position, 'type': 'static_note_reference'}
++                for position, glyph in enumerate(paragraph.glyphs) if glyph.reference]
+     for number, paragraph in enumerate(doc.paragraphs, 1):
+         value = {'text': paragraph.text}
++        if reference_positions(paragraph):
++            value['references'] = reference_positions(paragraph)
+         if paragraph.row is not None:
+             value.update(row=paragraph.row, column=paragraph.column)
+         if paragraph.heading is not None:
+             value['level'] = paragraph.heading
+         rows.append('[' + paragraph.kind.upper() + ' ' + str(number) + ' ' + json.dumps(value, ensure_ascii=False) + ']')
++    story_rows = []
++    references = []
++    for number, paragraph in enumerate(doc.paragraphs, 1):
++        for position, glyph in enumerate(paragraph.glyphs):
++            if glyph.reference:
++                references.append({'story': 'body', 'paragraph': number,
++                                   'character': position, 'type': glyph.reference})
++    for number, story in enumerate(doc.stories, 1):
++        story_rows.append({'number': number, 'destination': story.destination,
++                           'paragraphs': len(story.paragraphs),
++                           'excluded_reason': story.excluded_reason})
++        for paragraph_number, paragraph in enumerate(story.paragraphs, 1):
++            value = {'destination': story.destination, 'paragraph': paragraph_number,
++                     'text': paragraph.text}
++            if reference_positions(paragraph):
++                value['references'] = reference_positions(paragraph)
++            rows.append('[STORY ' + str(number) + ' ' + json.dumps(value, ensure_ascii=False) + ']')
++            for position, glyph in enumerate(paragraph.glyphs):
++                if glyph.reference:
++                    references.append({'story': number, 'paragraph': paragraph_number,
++                                       'character': position, 'type': glyph.reference})
++    # These fixed public codes survive the generic read_file redaction seam.
++    # Never put arbitrary destination/control names or source text in them.
++    limitations = ['rtf_images_and_layout_not_evaluated',
++                   'rtf_annotation_endnote_nested_complex_stories_not_supported',
++                   'rtf_note_reference_numbering_not_evaluated']
++    if doc.unsupported:
++        limitations.append('rtf_ignored_or_unsupported_content_present')
++    for reason, code in (('endnote_not_supported', 'rtf_endnote_story_not_read'),
++                         ('nested_story_not_supported', 'rtf_nested_story_not_read'),
++                         ('complex_story_location_not_supported', 'rtf_complex_story_not_read'),
++                         ('complex_story_table_not_supported', 'rtf_story_table_not_read')):
++        if reason in doc.unsupported:
++            limitations.append(code)
+     metadata = {'native_container': True, 'format': 'rtf', 'paragraphs': len(doc.paragraphs),
+                 'unsupported': sorted(doc.unsupported), 'excluded_destinations': sorted(doc.destinations),
+                 'fields_evaluated': False, 'objects_executed': False,
+-                'coverage': 'native_body_text_and_table_cells; excluded_destinations_disclosed; images_and_layout_not_covered'}
++                'limitations': limitations,
++                'semantic_status': ('partial_inert_text_view' if doc.unsupported
++                                    else 'supported_inert_text_view'),
++                'stories': story_rows, 'reference_placeholders': references,
++                'reference_placeholder_character': 'U+FFFC; protected static note reference; numbering not evaluated',
++                'coverage': 'native_body_text_and_table_cells; plain_header_footer_variants_and_footnotes; fixed_limits_for_excluded_content; annotation_endnote_nested_complex_stories_images_and_layout_not_covered'}
+     return RTFText('\n'.join(rows), metadata)
+ 
+ 
+@@ -568,14 +713,34 @@
+             paragraph(text)
+     else:
+         spec = _object(content)
+-        if not isinstance(spec, dict) or set(spec) != {'blocks'} or not isinstance(spec['blocks'], list) or len(spec['blocks']) > 512:
++        if (not isinstance(spec, dict) or 'blocks' not in spec
++                or set(spec) - {'blocks', 'header', 'footer'}
++                or not isinstance(spec['blocks'], list) or len(spec['blocks']) > 512):
+             fail('structured_schema')
++        for story in ('header', 'footer'):
++            if story in spec:
++                _tick(checkpoint)
++                parts.append(b'{\\' + story.encode('ascii') + b'\\pard\\plain\\f0\\fs20 '
++                             + value(spec[story]) + b'\\par}\n')
+         for block in spec['blocks']:
+             if not isinstance(block, dict):
+                 fail('structured_schema')
+             kind = block.get('type')
+-            if kind == 'paragraph' and set(block) == {'type', 'text'}:
+-                paragraph(block['text'])
++            if (kind == 'paragraph' and {'type', 'text'} <= set(block)
++                    and set(block) <= {'type', 'text', 'footnote'}):
++                if 'footnote' not in block:
++                    paragraph(block['text'])
++                else:
++                    paragraphs += 1
++                    if paragraphs > 512:
++                        fail('creation_paragraph_limit')
++                    _tick(checkpoint)
++                    parts.append(b'\\pard\\plain\\f0\\fs22 ' + value(block['text'])
++                                 + b'{\\super\\chftn}{\\footnote\\pard\\plain\\f0\\fs20 '
++                                 + b'{\\super\\chftn} ' + value(block['footnote']) + b'\\par}\\par\n')
++            elif kind == 'page_break' and set(block) == {'type'}:
++                _tick(checkpoint)
++                parts.append(b'\\pard\\plain\\page\n')
+             elif kind == 'heading' and set(block) == {'type', 'text', 'level'}:
+                 level = block['level']
+                 if type(level) is not int or not 1 <= level <= 9:
+@@ -638,7 +803,10 @@
+     index, start = matches[0]
+     paragraph = doc.paragraphs[index]
+     selected = paragraph.glyphs[start:start+len(old_text)]
+-    if not selected or any(not glyph.editable for glyph in selected) or len({g.style for g in selected}) != 1:
++    if (not selected or any(not glyph.editable for glyph in selected)
++            or len({g.style for g in selected}) != 1
++            or any(selected[0].begin < boundary < selected[-1].end
++                   for boundary in doc.edit_boundaries)):
+         fail('mixed_or_protected_text')
+     if any(left.end > right.begin for left, right in zip(selected, selected[1:])):
+         fail('overlapping_text_spans')
+@@ -664,4 +832,16 @@
+     after_structure = [(p.kind, p.row, p.column, p.heading) for p in check.paragraphs]
+     if before_structure != after_structure or check.destinations != doc.destinations:
+         fail('revision_structure_mismatch')
++    def story_structure(document):
++        return [(story.destination, story.excluded_reason,
++                 document.data[story.begin:story.end],
++                 [(p.text, p.kind, p.row, p.column, p.heading) for p in story.paragraphs])
++                for story in document.stories]
++    def references(document):
++        return [[(g.reference, document.data[g.begin:g.end])
++                 for g in p.glyphs if g.reference] for p in document.paragraphs]
++    if (story_structure(check) != story_structure(doc)
++            or references(check) != references(doc)
++            or check.unsupported != doc.unsupported):
++        fail('revision_story_mismatch')
+     return result
