@@ -1,12 +1,12 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 01:47 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
+Обновлено **12.11.2026, 01:54 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
 [Фактический native readback](ASTRA-FAST-RESUME-2026-11-12.json): тот же goal/thread
 `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**; история/учёт сохранены, общего cap нет.
 [Дневная редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json) и [owner pause](evidence/astra-20261111/owner-pause-20261112-final-native.json)
 сохраняются как история. Новая команда владельца завершила паузу, роль в native objective обновлена без нового goal.
 Астра — sole lead/live-интегратор Fast; Сол — постоянный co-architect Standard в прежней TUI; оба gpt-6.1-sol/ultra.
-Сол завершил конечный source-пакет Task19/M3R4; Task19/F06 в целом partial. Один native compact перед новым Task20 запущен; его завершение проверяется до доставки задачи. Прежний leadershipgoal Сола остаётся paused.
+Сол завершил конечный source-пакет Task19/M3R4; Task19/F06 в целом partial. После подтверждённого native compact129.714s он выполняет Task20 CFBsourcefix в прежней StandardTUI; прежний leadershipgoal paused.
 
 Исходный HEAD возобновления — `ec3ffc57b94af456c9d41a16a5128dd4f15966b7`.
 Новый SHA — содержащий эту сводку локальный коммит, без self-hash.
@@ -28,7 +28,7 @@ Dashboard175894/start1460381, прежниеInvocationID/active/enabled/NRestart
 [Исходный scope и ledgers](DSH-RESUME-2026-11-10.md#7-объём-v3); не заменять реестры новым параллельным учётом.
 [Предыдущая активная сводка](ASTRA-ACTIVE-2026-11-11.md) — подробная история, не очередь на повтор.
 
-1. **F06 — ближайшая core-задача.** [G3–G5 и диагностика](evidence/astra-20261111/f06-g3-g5-context-and-property-boundary.json):
+1. **F-06 / P0 / LIVE_BOT — ближайшая core-задача.** Исходный `case_catalog.json`/46e5d7e3…721f4 из referenceZIP требует чтение/разрешённуюправку с wrong/correctпаролем для поддерживаемыхOfficeсемейств; native/Appпроверки ниже не закрывают ordinaryLIVE_BOT и no-secret-persistence. ImmutableCASE-LEDGER не изменён. [G3–G5 и диагностика](evidence/astra-20261111/f06-g3-g5-context-and-property-boundary.json):
    [G6 создал genuine7 encryptedinputs](evidence/astra-20261111/f06-g6-seven-retained-oracle-fail-20261112.json); 7correctpassword opens/ALPHA17 PASS.
    Source4file typedsetter/qualifiedclass fix d2bab503, 65controls/independentreview PASS; [архив](drafts/f06-office-frame-g6/README.md).
    [Actual typedsetter diagnostic](evidence/astra-20261111/f06-typed-setter-actual-diagnostic-20261112.json) подтвердил invoke/commit/readback10 и3.
@@ -49,15 +49,20 @@ Dashboard175894/start1460381, прежниеInvocationID/active/enabled/NRestart
    [Composite7 и реальный native R3](evidence/astra-20261111/f06-seven-input-oracle-native-partial-20261112.json): composite7 принят по125independentchecks; Rootbinding+externalGRANT реально выданы/readback.
    **Native R3 один раз выполнен, exit2/PARTIAL FAIL, once consumed.** DOCX/XLSX/PPTX: `cfb_header`, installed203 требует minor0x003E, реальныеOfficecipher имеют0x003B.
    Затем2auditdenials `open`; пути/флаги не сохранены, точная причина UNKNOWN. Row4 не записана, но genuine `f06-4-edited.odt`10821B/7e91f2…6a52 уже существует.
-   Это custody существующего результата, не native/app PASS. Actors закрыты/slotfree; original7hashes прежние. Nativequalification целиком **не повторять**.
-   Root отдельно разбирает boundary и недостающую readonlyоценку тогоODT; Солу — CFBsourcefix. M3OfficeNOT_RUN/UNBOUND; обычныеF06/privacy/formal ещё открыты.
+   [Тот же ODT4 в Office](evidence/astra-20261111/f06-retained-odt4-actual-office-three-pass-20261112.json): **3readonlyпробы PASS/0stores**, видны BRAVOправка+invariantparagraph.
+   SourceM3R4/0629 принят Root41checks; actualunit2.225s/Root+unitCPU2.991s,2Office/2clients (81bootstrap), actors/pipes/namespaceclosed/slotfree/fulloriginal+copyCAStrue.
+   Row4nativeUNKNOWN_AFTER_CREATE/отсутствующаяcorrect_editreceipt и originalexit2/3CFBFAIL остаются; AppPASS их не заменяет. Отдельное evidence-review выполняется без новых проб.
+   [Auditobserver source](evidence/astra-20261111/f06-audit-observer-source-accepted-20261112.json) Root+independent принят:26policy/10labelcontrols/realNONSECRETdenials, guardpredicates неизменны.
+   Sourceфакт: extraction-only scoped_odf_review.py отсутствует вR3pins; это гипотеза к2open, не установленная историческая причина.
+   Nativequalification целиком **не повторять**. Nativechild готовит только ещё НЕ НАЧАТЫЕ5ODS/6ODP/7latestODT с новым ограниченным допуском/точнойdependencyclosure; executionNOT_RUN.
+   Солу — CFBsourcefix. ОбычныеF06/privacy/delivery/formal и недостающие nativeконтроли открыты.
 
    Hostpath-проекция metadata выполнена с physicalCAS, raw all_pass=false не изменён; исходныеFALSE/IO525 сохраняются.
    G3/G4 normal81/emptycomponents/ownedFD; G4missingtrace и G5classREDACTED/EMPTY сохранены исторически; g1..g6 не переигрывать.
 
 2. **Сол: Task19/M3R4 source завершён; следующий Task20 — CFB.** [M1/M2 и приёмка](evidence/astra-20261111/f06-sol-m1-m2-source-checkpoint.json),
    [его owner-pause](evidence/astra-20261111/owner-pause-20261112-final-native.json) — история; C5 продолжает прежний Task19, старый leadershipgoal paused.
-   M3R3 source7e61cb5 и M3R4/0629source/0c23result получены/verified/consumed; stableproofrebind/partialstage seam sourcecomplete с43independentchecks. Root принимает код перед интеграцией; Officeисполнения не было. Task19partial сохранён. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
+   M3R3 source7e61cb5 и M3R4/0629source/0c23result получены/verified/consumed; stableproofrebind/partialstage seam sourcecomplete с43independentchecks, Root41check принят. Только retainedODT4 actualApp3PASS; Task19partial сохранён. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
    убирает известные технические дубликаты/логи пароля, не исходный приватный чат и не исторические БД.
    M2 [metadata/oracle source](drafts/f06-oracle-handoff-m2/README.md) получен; [Root приняла exact canonical fix](evidence/astra-20261111/f06-m2-canonical-root-delta-accepted-20261112.json).
    Автоматическое followup-review ранее отклонено possible cybersecurity risk; отказ сохранён, отклонённый вызов не повторялся.
