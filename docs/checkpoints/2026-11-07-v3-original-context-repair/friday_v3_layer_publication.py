@@ -66,6 +66,7 @@ LAYER_NAMES = (
     "rtf-rich-odp-followup-and-office-bank-after-source201",
     "core-file-readability-and-context-provenance-after-source202",
     "rtf-optional-footnote-reader-after-source203",
+    "core-user-result-contracts-after-source204",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -503,7 +504,7 @@ class Journal:
 
 
 class _CurrentSourceV5Journal(Journal):
-    """Exact fifth/sixth-edge CAS and rollback; legacy callers keep their contract.
+    """Exact fifth/sixth/seventh-edge CAS and rollback; legacy callers keep their contract.
 
     Retain file identities as well as images.  A temporary file's identity is bound
     before rename, including when publication raises after rename and before fsync.
@@ -1073,7 +1074,8 @@ def current_source_request_bytes(request, request_path, request_sha256):
                     "friday.current-source-native-successor.v3",
                     "friday.current-source-native-successor.v4",
                     "friday.current-source-native-successor.v5",
-                    "friday.current-source-native-successor.v6")
+                    "friday.current-source-native-successor.v6",
+                    "friday.current-source-native-successor.v7")
                 and set(context) == {"schema", "root_project_update", "previous_native_update"},
                 "transaction_current_source_context_required")
         references = ("root_project_update", "previous_native_update")
@@ -1183,7 +1185,8 @@ def run(request, request_path, request_sha256):
     raw_current_request = current_source_request_bytes(request, request_path, request_sha256)
     current_context = raw_current_request is not None
     guarded_current = current_context and request["current_source_successor"]["schema"] in (
-        "friday.current-source-native-successor.v5", "friday.current-source-native-successor.v6")
+        "friday.current-source-native-successor.v5", "friday.current-source-native-successor.v6",
+        "friday.current-source-native-successor.v7")
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")

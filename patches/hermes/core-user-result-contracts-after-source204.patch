@@ -1,0 +1,110 @@
+--- a/gateway/run_attachment_presentation.py
++++ b/gateway/run_attachment_presentation.py
+@@ -255,8 +255,11 @@
+         'For comparison/editing, retrieve and read the actual original attachment with read_file, '
+         'and read both versions for a comparison. Prior assistant answers or chosen copies may '
+         'be mistaken; do not reuse them as original evidence. If the requested upload is absent '
+-        'or ambiguous (including legacy sanitized names), use session_search with role_filter=user '
+-        'and this session anchor for missing/compacted history. Active rows may already be in context; '
++        'or ambiguous (including legacy sanitized names), first call '
++        "session_search(query='<keywords>', role_filter='user') without session_id for missing/compacted history. "
++        'Select a relevant returned history hit for this conversation, then call '
++        "session_search(session_id='<returned session_id>', around_message_id=<match_message_id>) for its context. "
++        'The session_id below is a history reference, not a query filter. Active rows may already be in context; '
+         'use their unverified transcript references as candidates instead of repeating refused searches. '
+         'Read the actual candidate attachment paths; clarify if still ambiguous. '
+         'Upload order and matching project names do not establish which version the user means.]\n'
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -498,6 +498,7 @@
+         function['description'] += LEGACY_OPENOFFICE_GUIDANCE + LEGACY_WORD_GUIDANCE
+     else:
+         function['description'] = (
++            'Relay any returned conversion_limitations notices to the user when delivering converted files. '
+             'OneNote native literal copy edit: format=onenote_text_edit, NEW .one path, exact JSON {source,source_sha256,page_id,object_id,old_text,new_text}. Obtain persisted page_id/object_id from own-workspace read_file native_text_objects and the current source hash; explicitly supplied whole-paragraph literals only. The current body object must be unique, plain, have one or no formatting run, known supported properties, schema40 metadata and unshared storage; equal UTF-16 byte width and equal native byte width required. ANSI text is limited to German/English/French language IDs and non-control Latin-1 bytes; Unicode is UTF-16. A new dependent revision/transaction retains all original revision bytes; old text remains in native history. This is not redaction. Unknown properties (including common 0x34DD), fields, hidden text, links, multi-run text, titles, aliases, inherited backing, nonempty free lists and unsupported transaction geometry refuse. No general .one creation, .onepkg/.onetoc2 writes, conversion or raw overwrite. No application interoperability, rendering or sync behavior has been tested. ' 'OneNote .one: read_file returns bounded current titles and stored text in persisted page/outline order from desktop OneStore v42 sections (1000000-byte tool input). Continue every partial page using next_offset/next_char_offset and verify source_sha256. Coverage is PARTIAL: images, ink and attachments are explicit non-text markers, never rendered, recognized or extracted. Committed default-context role-1 revisions only; stale/uncommitted data is not scanned. Encrypted, conflict/deleted, unsupported graph/text or hidden paragraph-style profiles refuse. Hidden text runs are omitted. No .onepkg/.onetoc2/sync-store reads, password support, external-resource loading, general creation, conversion or raw overwrite; only the separate bounded onenote_text_edit profile can edit. '
+             'DjVu/DJV: read_file returns bounded stored page-zone text and page structure from genuine single-page or bundled DjVu files, with PARTIAL text-layer-only coverage and source SHA-256. No OCR, image or layout rendering, visible-text/fidelity validation, navigation/annotation interpretation, external-resource loading, creation, editing or conversion. Indirect documents, external dependencies and unsupported/malformed profiles refuse. Never write plain text under .djvu/.djv. '
+             'AbiWord ABW: read_file returns bounded stored paragraph and table-cell text from native .abw XML (UTF-8/UTF-16), not rendered/visible text. No DTD/entities/PI, resource fetching, fields, links, images, embedded data, lists, revisions, notes, frames, templates, compressed ABW or whole-format/application validation. abw_create creates a NEW .abw using exactly {"paragraphs":["First paragraph","Second paragraph"]}; plain single-line Unicode strings (tabs allowed), no inferred Markdown formatting. abw_edit creates a NEW .abw using exactly {"source":"document.abw","source_sha256":"<current read_file hash>","old_text":"Whole paragraph","new_text":"Replacement paragraph"}. Both literals must be explicit and single-line. Only a unique complete plain paragraph directly within a section in UTF-8 can change; mixed/ambiguous targets refuse. Source and all other bytes remain unchanged. No overwrite, raw write, conversion or visual-fidelity claim. '
+--- a/hermes_cli/friday_workspace_presentation.py
++++ b/hermes_cli/friday_workspace_presentation.py
+@@ -72,6 +72,19 @@
+                                      output_format=output_format, verify_source=verify))
+     if result.get('success') and extra:
+         result.update(extra)
++        if output_format == 'odp' and (
++                extra.get('export_mode') == 'pptx_odp' or
++                (extra.get('source_format') == 'pptx' and
++                 extra.get('conversion_mode') == 'isolated_office')):
++            result['conversion_limitations'] = [{
++                'code': 'pptx_odp_notes_page_geometry',
++                'scope': 'speaker_notes_pages',
++                'preservation': 'not_guaranteed',
++                'properties': ['page_size', 'layout', 'element_scale'],
++                'notice': ('PPTX→ODP may change the size, layout and element scale '
++                           'of speaker-notes pages. Review those pages before '
++                           'printing or sharing.'),
++            }]
+     return json.dumps(result, ensure_ascii=False)
+ 
+ 
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -819,6 +819,15 @@
+         check_search(profile, session_id, db)
+     except ScopeDenied:
+         return ordinary_tool_error_json("product_user_scope_refused") or tool_error("product_user_scope_refused", success=False)
++    if (isinstance(query, str) and query.strip()
++            and isinstance(session_id, str) and session_id.strip()
++            and around_message_id is None):
++        return tool_error("session_search_ambiguous_query_session", success=False, hint=(
++            "query + session_id without around_message_id is unsupported. For discovery, "
++            "omit session_id and use query with role_filter; then scroll a relevant result "
++            "with its returned session_id and match_message_id as around_message_id. "
++            "To read a session, omit query. role_filter filters discovery matches only; "
++            "returned context may include other roles."))
+     from hermes_state import format_session_db_unavailable
+     from hermes_state_registry import acquire, release_or_close
+     owned_dbs: List[Any] = []
+@@ -857,7 +866,10 @@
+         "`around_message_id` = scroll (window of messages around an anchor); "
+         "`session_id` alone = read a whole session — how you resolve an "
+         "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
+-        "args = browse recent sessions. Results are actual DB messages, no LLM. "
++        "args = browse recent sessions. A nonempty query + session_id without "
++        "around_message_id is rejected: omit session_id for discovery, then scroll "
++        "a returned hit with its session_id and match_message_id. "
++        "Results are actual DB messages, no LLM. "
+         "Searches conversation history ONLY — when the user gave a direct "
+         "source (URL, file, contact, live system), inspect that first; never "
+         "conclude 'not found' from history alone. Use for questions about past "
+@@ -873,7 +885,9 @@
+                 "description": (
+                     "Search query (discovery shape). Keywords, phrases, or boolean "
+                     "expressions to find in past sessions. Omit to browse recent "
+-                    "sessions. Ignored when session_id + around_message_id are set "
++                    "sessions. Do not combine with session_id unless around_message_id "
++                    "is set; that ambiguous combination is rejected. Ignored when "
++                    "session_id + around_message_id are set "
+                     "(scroll shape)."
+                 ),
+             },
+@@ -937,7 +951,8 @@
+                 "type": "string",
+                 "description": (
+                     "Session to read, or a returned @session: link. Used alone for read; "
+-                    "pair with around_message_id to scroll inside the session."
++                    "pair with around_message_id to scroll inside the session. It is "
++                    "not a discovery query filter; omit it when searching with query."
+                 ),
+             },
+             "content_offset": {
+@@ -972,7 +987,9 @@
+             "role_filter": {
+                 "type": "string",
+                 "description": (
+-                    "Optional. Comma-separated roles to include. Discovery defaults to "
++                    "Discovery only. Comma-separated roles of matching messages; "
++                    "returned context may include other roles. Ignored for read/scroll. "
++                    "Discovery defaults to "
+                     "'user,assistant' (tool output is usually noise). Pass "
+                     "'user,assistant,tool' to include tool output (debugging tool "
+                     "behaviour) or 'tool' to search tool output only."
