@@ -7,7 +7,7 @@
 
 Историческая передача 2026-11-10, МСК: DSH-сессия → Сол (временное принятие лидерства). Текущий ведущий — Астра, срез ниже.
 
-## Действующее продолжение Астры — 11.11.2026, 06:38 МСК
+## Действующее продолжение Астры — 11.11.2026, 07:28 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -27,14 +27,18 @@ Dashboard1661394/start7303836/newInvocation769bed…4bb9/native nonceVERIFIED, e
 Actual installed core на трёх прежних received/Calc marker/restore R100files: READ→edit201→restore
 PASS/0.202s, noncontent ZIPparts exact/staleexpected refused. Канонические байты не менялись;
 это узкая nativecore оценка, не новый Officecycle/ordinaryuser/formaltester PASS.
+Сохраняются canonicalR100 и прежниеR98/R100 effects. Новый локальный fixedOfficeproducer на Calc-restored workingcopy201 создал XLSX5677B/741faa…3f04, но installed200 consumer отклонил другой закрытый Calc-profile. Primary FAIL/unitclosed сохранены. Samebytes privatecandidate semanticPASS;55author+46independentcontrols, ещё НЕ установлен. [Producer/consumer/repair отдельно](evidence/astra-20261111/retained-ods-xlsx-producer-consumer-split.json). Producer/model/send ради PASS не повторять.
 
-CurrentD/T1/P/T2 и archive пустого H/pairing ещё NOT_RUN. Root200 намеренно не включалarchive:
-held3roles не исключают supported unbound pairingCLI. Следующий finite stopped boundary требует
-реального process census + Root soleintegrator/NoHwrites/no-own-pairinglaunch premise и exactCAS;
-новогоframework/kernel-lock/nativegrant не выдумывать. Root готовит callback, отдельный child —
-реальные durableQ/D/lateT1 inputs (18sourcepins и11694runtimeinputs; прежнее «8» было только числом
-семейств, а не точным количеством). Сол Standard уже локализовал RTFdefaultLeft cause и собрал
-минимальный компонент; ждём exactreviewed app/controlrecipe перед finite sharedslot grant.
+RTF g1 закрыт FAIL, firstsuite CUTcount UNKNOWN, все Office/R92phases NOT_RUN. Сохраняется originalg1; отдельный g2 допущен Root после source-proven восстановления обязательных SRC_ROOT/WORKDIR_FOR_BUILD и независимого review точных runners/outputmapping. В07:25 g2unit фактически running; PASS пока не заявлен. Native10/566 и ранее не начатые appphases только в original600/CPU400s/4GiB; старая попытка/её часы не переоткрываются. [Границыg1/g2](evidence/astra-20261111/rtf-fidelity-g1-closed-g2-prepared.json). DSHwindow до actualg2closed не открывать.
+
+CurrentD/T1/P/T2 и archive пустого H/pairing ещё NOT_RUN. Q/D готовы и независимо проверены:
+18sourcepins/11694runtimeinputs, memo11728physicalrows; pure once-consumer9432…ef6fдопуск
+проверен readonly без clock/nativeclaim. T1/P/T2 latebuilders, genuineCLI/release flow и actual
+installedAPI readback caller прошли source review. [Точная подготовка и оставшаяся граница](evidence/astra-20261111/current-dsh-declarations-and-root-boundary-prepared.json).
+Новый1740whole budget только будущий, T1/P/T2 original180 и archive60 не менялись. Перед окном:
+actualSolg2closed, bounded proc-read fix для5недоступных системных environ, свежие custody/CAS/
+quiescence/receipt/PM/profilechecks. 3roles не исключают supported unbound pairingCLI; process
+census+soleintegrator/NoHwrite/no-own-pairinglaunch — cooperativepremise, не kernel/nativegrant.
 
 Все приведённые ниже199/source200-not-installed срезы — **история** их времени.
 Текущее installed/runtime определяется этим блоком; все старые эффекты и verdict сохранены.
