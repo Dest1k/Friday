@@ -1,13 +1,13 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **11.11.2026, 18:17 МСК**. **ACTIVE / основной функционал**.
+Обновлено **11.11.2026, 18:40 МСК**. **ACTIVE / основной функционал**.
 Астра — единственный lead/live-интегратор; реальный Сол — постоянный co-architect.
 Оба **Standard/default, gpt-6.1-sol, thread reasoning ultra**; настройки не менялись.
 [Native goal](ASTRA-GOAL-REVISION-2026-11-11.json): тот же thread
 `01a1c688-e36d-7021-8df4-9c5644a4d75b`, active, редакция11.11, история/учёт сохранены, общего cap нет.
 Принятая paused-точка `5ea64beb0ba87968aca0e1e9c32696ac85d27a76` остаётся историей.
 
-Перед этим checkpoint `HEAD=origin/main=2516868857ad3193a866e9c804c093dcc868c2dc`;
+Перед этим checkpoint `HEAD=origin/main=3613264aae3421c6955af5028be6440372a589fc`;
 новый SHA — содержащий эту сводку коммит, без literal self-hash.
 Чужие изменения сохранены и исключены: `docs/foundation-status.md`, v2
 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`.
@@ -40,13 +40,16 @@ Core: Telegram/продолжение, контекст/память/изоля�
 предложенный blanket unsupported-edit guard отвергнут как регрессия, edit_rtf AST прежний.
 R2 source gates: два setupFAIL до CP publication, два NOT_RUN; исходные маркеры/часы сохранены.
 R3 исправляет duplicate RTF seed и проверяет selected PM Python/prefix/ruamel до intent.
-Root принял точную дельту/независимое review и выдал отдельный GATE_READY R3:
-четыре последовательных source gates600wall/420CPU/2GiB, без liveправ. Это не повтор пользовательских эффектов.
-Prepared204 frame/7CAS/29changed-controls проверен Root; finalgates/freshrequest/admission ещё UNBOUND.
+[R3 source204 завершён и подключён](evidence/astra-20261111/core204-final-source-connected.json): четыре последовательных
+source gates600wall/420CPU/2GiB PASS (189/123/189/123), независимое finalreview принято.
+Это не повтор пользовательских эффектов и не установка. Prepared204 frame/7CAS/29changed-controls
+проверен Root; fresh203request/admission/install ещё UNBOUND. Следующий пакет Сола — originalF04
+presentation remainder с актуальной saved/source базой, без переигрывания старых conversion/app.
 Task13 final203 завершён: [source + четыре gates](evidence/astra-20261111/core203-final-source-connected.json)
 205/101/205/101 named report checks, не уникальные V3-кейсы. Старый leadership goal Сола paused.
 Временные source203/frame/public/saved-RTF/installed203/204-frame/received-PPTX-source деревья завершены.
-M14 exact consumer/checker готовится source/offline с независимым review; authority/query NOT_RUN.
+M14 exact consumer/checker source/offline завершён (356controls; independent110+53); Root review,
+fresh facts/authority/query ещё NOT_RUN. Пакет `FRW-ASTRA-V3-M14-EXACT-CONSUMER-PREP-20261111/RESULT.json` (7eb8a8a1…).
 Runtime203 пока содержит прежний RTF parser. Полученный V03/PPTX впервые открыт отдельно17:56;
 source6455 не открывался повторно, actual oneMain/open/close/twoPDF/10pages закрыт штатно.
 После app/review свежий readonly readback: те же203/services/threeDB quick_checkOK/leases0,
@@ -64,7 +67,7 @@ Shared live/home/main остаются только у Астры.
    замена Officebank его не исправит. На тех же Writer10723B обнаружено исключение optional footnote:
    16P/2stories вместо3, остальные cs/falt/ftnsep/userprops остаются partial flags. Принятый source204
    восстанавливает только инертную свежую optionalfootnote; editor AST203 и прежние ограничения сохранены.
-   После четырёх актуальных gates/независимого finalreview: exact public/private integration, fresh203 CAS,
+   Четыре актуальных gates/независимое finalreview завершены; publicsource подключён. Далее fresh203 CAS,
    штатная установка204/новый процесс и installed consumer на тех же сохранённых байтах.
    Новый native edit10730B не объявлять проверенным приложением по старой паре10723B.
    R92/g2/native566/старые readonly/отправки и часы не повторять.

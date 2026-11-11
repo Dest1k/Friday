@@ -80,7 +80,7 @@ def parse_args(argv=None):
     parser.add_argument("--current-source-project-update", type=Path,
                         help="exact committed v6 root request for the bounded native continuation")
     parser.add_argument("--current-source-native-predecessor", type=Path,
-                        help="exact canonical committed CP199, CP200, CP201 or CP202 request for the bounded next edge")
+                        help="exact canonical committed CP199, CP200, CP201, CP202 or CP203 request for the bounded next edge")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--seconds", type=int, default=180)
     args = parser.parse_args(argv)
@@ -206,6 +206,7 @@ def build_request(args):
                 "friday.current-source-native-successor.v2": "friday.current-source-native-successor.v3",
                 "friday.current-source-native-successor.v3": "friday.current-source-native-successor.v4",
                 "friday.current-source-native-successor.v4": "friday.current-source-native-successor.v5",
+                "friday.current-source-native-successor.v5": "friday.current-source-native-successor.v6",
             }
             previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
             consumer.require(previous_schema in supported,
@@ -219,6 +220,9 @@ def build_request(args):
             consumer.require(previous_schema != "friday.current-source-native-successor.v4"
                              or args.layer_names == ("core-file-readability-and-context-provenance-after-source202",),
                              "transaction_current_source_exact_fifth_layer_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v5"
+                             or args.layer_names == ("rtf-optional-footnote-reader-after-source203",),
+                             "transaction_current_source_exact_sixth_layer_required")
             request["current_source_successor"].update({
                 "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),
