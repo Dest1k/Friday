@@ -1,22 +1,25 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **11.11.2026, 12:05 МСК**. **ACTIVE / CORE**. Возобновление владельца11.11 сохранено.
+Обновлено **11.11.2026, 13:09 МСК**. **ACTIVE / CORE**. Возобновление владельца11.11 сохранено.
 Астра — sole lead/integrator, Сол — постоянный co-architect; оба **Standard/default,
 gpt-6.1-sol, thread reasoning ultra**. [Native goal1111/readback](ASTRA-GOAL-REVISION-2026-11-11.json):
 тот же thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` active, история/учёт сохранены, общего cap нет.
 
 Принятая paused-точка `5ea64beb0ba87968aca0e1e9c32696ac85d27a76`. Перед этим checkpoint
-`HEAD=origin/main=c8f423e7ed55af96be45e133e8142e92fcf34f8e`; новый SHA — коммит этого файла,
+`HEAD=origin/main=703424641ea8eabcb763bfa1b8c8f7ab9c434137`; новый SHA — коммит этого файла,
 не literal self-hash. Чужие три изменения сохранены и исключены: `docs/foundation-status.md`,
 v2 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`.
 
 [**Установлен202/project485/plugins52/native17890/base17730**](evidence/astra-20261111/native202-installed-retained-consumers.json).
 Input `3572f3…1fe8f`, receipt `43a4a0…f36c`; точный201prefix и все non-target файлы сохранены.
-Gateway **1985071/start9206292**, Telegram connected/default,dest,tester; Dashboard
-**1986283/start9212640**, native nonce/auth/SPA VERIFIED. Оба enabled/active, RuntimeMax infinity.
-БД quick_check OK/leases0; messages/sessions30/2,196/2,5487/5. Данные и остановленные DB/WAL/SHM
-проверены до запуска; эволюция живых sidecars не приписывается исходникам. Maintenance
-11:45:04→11:47:10/126.813s закрыт, actor/publisher gone. Незавершённых живых операций нет.
+[После отключения питания](evidence/astra-20261111/postpower-native202-services-providers.json)
+boot `5e7fcf9b-04ea-4975-9b42-3b4e5f63c2c7`: Gateway **6480/start2521**, Telegram connected;
+Dashboard **6479/start2520**, native nonce/auth/SPA VERIFIED. Оба enabled/active, RuntimeMax infinity.
+Полные17890files/receipt/prefix/marker/stamp/project485/plugins52 подтверждены заново без переустановки.
+БД readonly с WAL: quick_check OK/leases0, messages/sessions30/2,196/2,5487/5; данные сохранены.
+Qwen и compressor: health200 и authenticated models200, штатные имена/маршруты прежние;
+inference не запускался. Maintenance11:45:04→11:47:10/126.813s закрыт до отключения;
+прежние PID/Invocation/boot исторические. Незавершённых живых операций нет.
 Genuine DEFAULT exit0 — source/spec, `WORKERS_PENDING/ready=false/runtime_acceptance=NOT_GRANTED`;
 worker/V3 приёмку это не даёт. Постоянные сервисы приняты отдельно, новый TTL не назначен.
 
@@ -24,25 +27,30 @@ worker/V3 приёмку это не даёт. Постоянные сервис
 Core: Telegram/продолжение, контекст/память/изоляция, файлы/доставка/форматы, статус/стоп,
 ошибки/восстановление. Исключение — только минимальная доказанная зависимость конкретного core-пути.
 
-Астра ведёт live/main/установку и следующую RTF/F01 квалификацию. Реальный Сол
-`01a1c407-7f0e-7273-9fd0-6bd9dc09ce18` на Standard выполняет **Task10: ODP/presentation readability**;
-предыдущий leadership goal paused. Task9 source принят, один native pre-task compact перед Task10
-завершён и actual TASK/turn подтверждён. Временные202frame/ODP20review/F01readiness деревья terminal.
-Новые finite пакеты: RTF corrected once-recipe и F01 actual202 bound tester; source/offline, live-прав нет.
-F01 binding уже подготовлен, Root final review/fresh admission остаются; старая authority не переносится.
+Астра ведёт live/main/установку и F01. Реальный Сол `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`
+на Standard завершил [Task10 source readability](evidence/astra-20261111/odp-readability-sol-final-source-received.json):
+6файлов/21source checks + independent affected review, **не установлено/не app PASS**.
+Сол выполняет Task11 — частную композицию точного следующего приращения и bounded fifth successor;
+один native pre-task compact завершён, фактический новый TASK/turn подтверждён. Live установки
+Солом нет; leadership goal paused.
+Временные202/RTF/ODP/F01prep/postpower integrity деревья terminal. Новый finite child исправляет
+actual-v42 API-стык F01 preparation; записи main/H/authority/отправки ему запрещены.
+F01 готовый source binding-рецепт ещё не фактический binding/admission/run; их отсутствие сверено.
 
 Текущая core-очередь — действия по исходным обязательствам, не новый реестр:
 
 1. **RTF/F-02,F-03/FXDOC.** Native R4 теперь установлен:16paragraphs/3inert stories у сохранённой
    пары, unsupported[], поля/объекты не выполняются. Header/footer/footnote и native byte-edit
-   подтверждены в ограниченном профиле; rich app/канонический FXDOC/LIVE_BOT/formaltester открыты.
+   подтверждены в ограниченном профиле; канонический FXDOC/LIVE_BOT/formaltester открыты.
    [R3 app77.312s/75s exhaustion](evidence/astra-20261111/rtf-rich-readonly-app-r3-partial.json) сохранён;
    actual error/effects не обнулены. [Исправление QA source Сола принято](evidence/astra-20261111/rtf-rich-qa-source-repair-received.json):
-   reserved Output, plain Err.Raise и cleanup исправлены. Новый recipe должен установить весь
-   InitOnly+Main один раз до document-free callback, подтвердить compile/clean0/COMPONENTS0 и
-   неизменный модуль до копирования той же пары; один Main в прежних180/CPU120/Main75.
-   Сам recipe — ещё подготовка, не grant. R92/g2/native566 и отправки не повторять;
-   afba — частный согласованный компонент, не установленный глобальный Office.
+   reserved Output, plain Err.Raise и cleanup исправлены. [Новая операция2.791s закрыта](evidence/astra-20261111/rtf-rich-corrected-saved-app-assessment.json):
+   полный модуль установлен один раз до document-free InitOnly/clean0/COMPONENTS0; один Main,
+   два readonly открытия/закрытия. Primary PARTIAL сохранён: gate ошибочно требовал export-only
+   DSO mapping при import. Те же120saved records получили64semantic checks + independent review;
+   три heading все level1, таблица/footnote/header/footer/last-page в узком профиле сохранены.
+   Importer runtime mapping и положение таблицы относительно body не наблюдались; global Office,
+   rich export и formal V3 не закрыты. R92/g2/native566/старые часы/отправки не повторять.
 2. **ODP/F-02,F-03,F-04.** Установлены generated-destination3/passive-source2 и новый банк только
    для pptx_odp; другие Office paths сохраняют прежний default. Те же30482B/35159B приняты
    actual installed byte profiles, общий strict source отказал `active_xml_content` как прежде.
@@ -50,15 +58,19 @@ F01 binding уже подготовлен, Root final review/fresh admission о�
    номера notes1–5 правильны, chart/table/leadingzeros/notes сохранены, unaffected2–5 PNG равны.
    Но title1 после длинной правки теряет читаемость; baseline ODP4/5 уже имеют overlap.
    Original PPTX geometry пересекается и normAutofit отличается от ODP; без исходного PPTX render
-   вклад conversion не установлен. Long-Cyrillic variant не закрыт. Сол локализует и исправляет
-   минимальную причину в собственной копии202, готовит недостающую app-проверку без исполнения.
+   вклад conversion не установлен. Long-Cyrillic variant не закрыт. Task10 дал opt-in `layout=fit_title`
+   с локальными стилями/геометрией и типографикой новых creators, default literal edit сохранён.
+   Source готов; точная композиция/установка и приложение для новых байтов остаются.
+   Сол готовит композицию; app recipe не grant.
    Пропавший final ENTRYCOMPLETE — Basic `EntryComplete:` label, не вызов; первичные PARTIAL/
    Gen4 rawFALSE неизменны, новые PDF/PNG оценены без повторного Office/edit/store/producer/send.
 3. **F-01/md/v02 и json/v03.** [Source readiness](evidence/astra-20261111/f01-md-json-source-readiness.json)
    подтверждает адресную историю5487/5, неизменные MD1309B/JSON831B и исправлениеcapture12000→8000.
    Actual parser4+/26− и oracle16 — offline. Новый bound tester/gate202 и existing atomic issuer
    подготовлены в `/home/jericho/.cache/FRW-ASTRA-V3-CORE-F01-BOUND-TESTER-PREP-20261111/RESULT.json`
-   (`355c7f…721f`); Root review → fresh mutable/effect/custody/authority/once admission → один read.
+   (`355c7f…721f`); actual readonly preflight остановился ДО admission: `read_document_input`
+   v42 требует guard, preparatory call его не передал. Source/API-ремонт → Root delta review →
+   fresh mutable/effect/custody/authority/once admission → один read. Ни authority, ни run не выданы.
    Recall отдельно после полученного read/семантики/custody/native cessation, history retrieval
    отличать от чистой памяти. Прежние CREATE/S10/S16/R100 не являются новым допуском.
 4. **Остальной обязательный core V3/B00** продолжается после этих пунктов;170/120, варианты,
