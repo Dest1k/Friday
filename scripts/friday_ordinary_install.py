@@ -4517,7 +4517,7 @@ def rebind_inference(request, request_path, budget):
             raise
 
 
-def apply_dsh_current_declarations(request, *, request_path, request_sha256):
+def _dispatch_dsh_current_native(request, *, request_path, request_sha256, operation):
     """Bootstrap the exact installed child after authenticating native source.
 
     This selects code, not authority. The writer retains the raw request and
@@ -4529,12 +4529,21 @@ def apply_dsh_current_declarations(request, *, request_path, request_sha256):
         DSH_CURRENT_APPLY_SCHEMA, _read_reference, _same, require,
     )
     require(sys.dont_write_bytecode, 'dsh_current_native_no_bytecode_required')
-    require(type(request) is dict and request.get('schema') == DSH_CURRENT_APPLY_SCHEMA,
-        'dsh_current_exact_apply_schema_required')
+    require(operation in ('declaration', 'observation'), 'dsh_current_native_operation_required')
+    schema = (DSH_CURRENT_APPLY_SCHEMA if operation == 'declaration'
+        else 'friday.dsh-current-observation.apply.v1')
+    require(type(request) is dict and request.get('schema') == schema,
+        'dsh_current_exact_apply_schema_required' if operation == 'declaration'
+            else 'dsh_current_exact_observation_schema_required')
+    if operation == 'observation':
+        require(set(request) == {'schema', 'seconds', 'home', 'profile', 'current_input',
+            'native_unit', 'native_pm', 'clock', 'pending_transaction'},
+            'dsh_current_exact_observation_request_required')
     reference = {'path': str(request_path), 'sha256': request_sha256}
     require(_same(_read_reference(reference), request), 'dsh_current_raw_request_changed')
-    require(request['previous_input'] == request['current_input'],
-        'dsh_current_installation_input_must_remain_unchanged')
+    if operation == 'declaration':
+        require(request['previous_input'] == request['current_input'],
+            'dsh_current_installation_input_must_remain_unchanged')
     current = _read_reference(request['current_input'])
     f = api()
     home = f.directory(f.canonical(request['home']))
@@ -4634,15 +4643,157 @@ def apply_dsh_current_declarations(request, *, request_path, request_sha256):
         sys.modules[canonical] = loaded
         spec.loader.exec_module(loaded)
         parent.friday_rework = loaded
-    from plugins.friday_rework.worker_declaration_writer import apply_declarations
+    if operation == 'declaration':
+        from plugins.friday_rework.worker_declaration_writer import apply_declarations
+        execute = apply_declarations
+    else:
+        from plugins.friday_rework.stopped_operator import observe_current_native
+        execute = observe_current_native
     loaded_origins()
     require(all(parents[name] == (getattr(sys.modules[name], '__file__', None),
         getattr(getattr(sys.modules[name], '__spec__', None), 'origin', None),
         tuple(sys.modules[name].__path__)) for name in parents)
         and str(home / 'plugins') not in sys.path,
         'dsh_current_native_parent_origin_changed')
-    return apply_declarations(request, request_path=request_path,
+    return execute(request, request_path=request_path,
         request_sha256=request_sha256)
+
+
+def apply_dsh_current_declarations(request, *, request_path, request_sha256):
+    return _dispatch_dsh_current_native(request, request_path=request_path,
+        request_sha256=request_sha256, operation='declaration')
+
+
+def observe_dsh_current(request, *, request_path, request_sha256):
+    return _dispatch_dsh_current_native(request, request_path=request_path,
+        request_sha256=request_sha256, operation='observation')
+
+
+def _dsh_current_observation_failure_diagnostic(error, f):
+    """Bounded causal metadata only; never exception text, locals or paths."""
+    import sys
+    phase = 'observe-dsh-current'
+    diagnostic = f.retained_diagnostic(error, phase)
+    reasons = {'diagnostic_unavailable', 'stop_unconfirmed', 'native_operation_failed',
+        'native_io_failed', 'invalid_input_shape', 'original_install_budget_exhausted'}
+    reason = diagnostic.get('reason')
+    safe = {'reason': reason if type(reason) is str and reason in reasons
+        else 'native_operation_failed'}
+    for key in ('timeout', 'reaped'):
+        value = diagnostic.get(key)
+        if type(value) is bool:
+            safe[key] = value
+    for key in ('errno', 'returncode'):
+        value = diagnostic.get(key)
+        if type(value) is int and -(2**31) <= value < 2**31:
+            safe[key] = value
+    cessation = diagnostic.get('cessation')
+    if type(cessation) is str and cessation in ('UNCONFIRMED', 'REAPED'):
+        safe['cessation'] = cessation
+    known = {OSError: 'os_error', PermissionError: 'permission_error',
+        FileNotFoundError: 'file_not_found', RuntimeError: 'runtime_error',
+        TypeError: 'type_error', ValueError: 'value_error', KeyError: 'key_error',
+        IndexError: 'index_error', AssertionError: 'assertion_error',
+        TimeoutError: 'timeout_error', json.JSONDecodeError: 'json_decode_error'}
+    native = sys.modules.get('scripts.dsh_prepare')
+    for cls, label in ((getattr(native, 'StopUnconfirmed', None), 'stop_unconfirmed'),
+            (getattr(native, 'CommandFailed', None), 'command_failed'),
+            (getattr(f, 'Refused', None), 'source_refused')):
+        if isinstance(cls, type):
+            known[cls] = label
+    location = {'exception_type': known.get(type(error), 'other'), 'source_frames': []}
+    allowed = {__file__: 'scripts/friday_ordinary_install.py'}
+    # Use only already-loaded fixed modules; failure handling cannot bootstrap H.
+    for name, relative in (
+            ('scripts.friday_install', 'scripts/friday_install.py'),
+            ('scripts.dsh_prepare', 'scripts/dsh_prepare.py'),
+            *[(prefix + '.' + name, 'plugins/friday_rework/' + name + '.py')
+                for prefix in ('plugins.friday_rework',
+                    '_friday_install_validation_plugins.friday_rework')
+                for name in ('stopped_operator', 'dsh_current_availability',
+                    'worker_declaration_writer', 'runtime_process',
+                    'runtime_primitives', 'runtime_containment')]):
+        module = sys.modules.get(name)
+        filename = vars(module).get('__file__') if module is not None else None
+        if type(filename) is str:
+            allowed[filename] = relative
+    tb = BaseException.__traceback__.__get__(error)
+    for _ in range(64):
+        if tb is None:
+            break
+        module = allowed.get(tb.tb_frame.f_code.co_filename)
+        if module is not None and 0 < tb.tb_lineno < 2**31:
+            location['source_frames'].append({'module': module, 'line': tb.tb_lineno})
+            location['source_frames'] = location['source_frames'][-8:]
+        tb = tb.tb_next
+    location['trace_truncated'] = tb is not None
+    return {'diagnostic': safe, 'failure_location': location}
+
+
+def dsh_current_observation_cli(request, *, request_path, request_sha256):
+    """Finish this observation invocation; print no proof, path or private data."""
+    import sys
+    try:
+        result = observe_dsh_current(request, request_path=request_path,
+            request_sha256=request_sha256)
+        if (type(result) is not dict
+                or result.get('state') != 'DSH_CURRENT_OBSERVATION_COMPLETE'
+                or result.get('ready') is not False
+                or result.get('effects') != 'OBSERVATION_ONLY'
+                or result.get('per_job_authority') != 'NOT_GRANTED'):
+            from scripts.dsh_prepare import StopUnconfirmed
+            raise StopUnconfirmed('dsh current observation returned outcome unconfirmed')
+    except Exception as error:
+        native = sys.modules.get('scripts.dsh_prepare')
+        uncertain_type = getattr(native, 'StopUnconfirmed', None)
+        uncertain = isinstance(uncertain_type, type) and isinstance(error, uncertain_type)
+        f = api()
+        # Original custody owns the terminal before diagnostics, formatting or IO.
+        transfer = f.InstallerExit(3 if uncertain else 2, error)
+        detail = {'phase': 'observe-dsh-current',
+            'request_sha256': request_sha256 if type(request_sha256) is str
+                and len(request_sha256) == 64
+                and all(c in '0123456789abcdef' for c in request_sha256) else 'UNAVAILABLE',
+            'diagnostic': {'reason': 'diagnostic_unavailable'},
+            'failure_location': {'exception_type': 'other', 'source_frames': [],
+                'trace_truncated': False}}
+        try:
+            detail.update(_dsh_current_observation_failure_diagnostic(error, f))
+        except BaseException as secondary:
+            f.remember_secondary(error, secondary)
+        # Root captures stderr privately. Each failed projection remains secondary;
+        # neither stream may replace the typed original or suppress the other.
+        def emit(value, channel):
+            try:
+                encoded = json.dumps(value, sort_keys=True)
+            except BaseException as secondary:
+                f.remember_secondary(error, secondary)
+                return
+            stream = getattr(sys, channel)
+            try:
+                stream.write(encoded + '\n')
+                stream.flush()
+            except BaseException as secondary:
+                f.remember_secondary(error, secondary)
+                # CPython retries original standard-stream flush at shutdown and
+                # replaces SystemExit 2/3 with 120 on failure. This terminal owns
+                # no further output; detach only its failed original IO stream.
+                if (isinstance(secondary, OSError)
+                        and stream is getattr(sys, '__' + channel + '__')
+                        and getattr(sys, channel) is stream):
+                    setattr(sys, channel, None)
+        emit(detail, 'stderr')
+        emit({'state': 'STOP_UNCONFIRMED' if uncertain else
+            'FAILED_CLOSED_RECONCILE_EXACT_JOURNAL', 'ready': False,
+            'error': 'dsh_current_observation_stop_unconfirmed' if uncertain else
+                'dsh_current_observation_failed_closed',
+            'effects': 'NO_ACCEPTANCE_CLAIM', 'per_job_authority': 'NOT_GRANTED'}, 'stdout')
+        transfer.friday_custody_secondary = getattr(error, 'friday_secondary_failures', ())
+        raise transfer from error
+    print(json.dumps({'state': 'DSH_CURRENT_OBSERVATION_COMPLETE', 'ready': False,
+        'effects': 'OBSERVATION_ONLY', 'per_job_authority': 'NOT_GRANTED'}, sort_keys=True))
+    # The file retains a second historical __main__; never enter it after P.
+    raise SystemExit(0)
 
 
 def dsh_current_declaration_cli(request, *, request_path, request_sha256):
@@ -4686,7 +4837,8 @@ def recovery_main():
     """Dedicated maintenance dispatch; the ordinary installer phases stay unchanged."""
     import sys
     import time
-    if 'rebind-worker-declarations' in sys.argv[1:] and not sys.dont_write_bytecode:
+    if any(phase in sys.argv[1:] for phase in ('rebind-worker-declarations',
+            'observe-dsh-current')) and not sys.dont_write_bytecode:
         # Refuse before importing a product module that could populate an
         # installed __pycache__ outside the five-file transaction.
         print(json.dumps({'state': 'NOT_STARTED', 'ready': False,
@@ -4698,12 +4850,16 @@ def recovery_main():
     f = api(); started = time.monotonic()
     parser = f.SafeParser(description=__doc__,allow_abbrev=False)
     parser.add_argument('phase',choices=('recover-first-contact-config','rebind-inference',
-        'rebind-worker-declarations'))
+        'rebind-worker-declarations', 'observe-dsh-current'))
     parser.add_argument('--request',required=True,type=Path)
     parser.add_argument('--request-sha256')
     args = parser.parse_args(); os.umask(0o077)
     try:
-        if args.phase == 'rebind-worker-declarations':
+        if args.phase in ('rebind-worker-declarations', 'observe-dsh-current'):
+            if args.phase == 'observe-dsh-current':
+                f.require(type(args.request_sha256) is str and len(args.request_sha256) == 64
+                    and all(char in '0123456789abcdef' for char in args.request_sha256),
+                    'dsh_current_exact_request_sha256_required')
             # The new maintenance phase owns an externally pinned original
             # clock; it must never inherit this dispatcher's fresh start.
             # Read only the pure selected-project validator before selecting
@@ -4713,6 +4869,17 @@ def recovery_main():
             )
             current_request = read_current_request(
                 {'path': str(args.request), 'sha256': args.request_sha256})
+            if args.phase == 'observe-dsh-current':
+                # This terminal phase cannot dispatch a declaration transaction.
+                f.require(type(current_request) is dict and current_request.get('schema')
+                    == 'friday.dsh-current-observation.apply.v1',
+                    'dsh_current_exact_observation_schema_required')
+                dsh_current_observation_cli(current_request, request_path=args.request,
+                    request_sha256=args.request_sha256)
+                return
+            f.require(type(current_request) is not dict or current_request.get('schema')
+                != 'friday.dsh-current-observation.apply.v1',
+                'dsh_current_observation_requires_own_phase')
             if (type(current_request) is dict
                     and current_request.get('schema') == DSH_CURRENT_APPLY_SCHEMA):
                 dsh_current_declaration_cli(current_request, request_path=args.request,
@@ -4734,7 +4901,8 @@ def recovery_main():
         print(json.dumps(result,sort_keys=True))
     except Exception as exc:
         from scripts.dsh_prepare import StopUnconfirmed
-        if args.phase in ('rebind-inference','rebind-worker-declarations') and isinstance(exc,StopUnconfirmed):
+        if args.phase in ('rebind-inference','rebind-worker-declarations',
+                'observe-dsh-current') and isinstance(exc,StopUnconfirmed):
             f.exit_retaining_cause(parser,3,exc,args.phase)
         f.exit_retaining_cause(parser,2,exc,args.phase)
 

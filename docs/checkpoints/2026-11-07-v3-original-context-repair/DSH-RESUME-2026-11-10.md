@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 11.11.2026, 03:50 МСК
+## Действующее продолжение Астры — 11.11.2026, 04:51 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -95,7 +95,7 @@ unit/start; guard не обходим. Staged --skip-build не разрешён
 публичный и operational варианты helper раздельны, private197404B workerhelper неизменён.
 Исторический535PASS25FAIL сохранён. Root принял scoped source/review, не nativeauthority.
 Установлен по-прежнему198/старый476; новый currentP/T1/T2 не выполнялись. Выявленный отсутствующий
-genuine P CLI/custodycaller готовится отдельно. Следующий native Source199 сейчас НЕ поддержан
+genuine P CLI/custodycaller позже source-интегрирован (новый срез ниже). На этом раннем этапе Source199 НЕ поддержан
 commonconsumer: Сол Standard получил отдельный конечный repair существующего CPjournal/defaultreader
 после одного завершённого nativecompact. Task4 закрыт, не изображается продолжающимся.
 Maintenance не открыт на ожидание. Root продолжает текущую интеграцию и проверку Office.
@@ -109,7 +109,30 @@ Binary/visual/style/appedit/product acceptance не доказаны; source/edi
 [Dashboard native status](evidence/astra-20261111/dashboard-native-status-source.json): fourfile
 patch/11controls+independentreviewPASS; terminal nonce status без fallback/start. Genuine newnative
 receipt/install/freshprocess/currentHTTP/user acceptance впереди, старый unit не установлен.
-Реальный Impress roundtrip именно сохранённого новогоODP готовится без повтора producer.
+Реальный Impress roundtrip позже дошёл до save/reopen; недостающая same-file оценка описана ниже.
+
+**Native P готов в исходниках; 198→199 пока удержан конкретной source-проблемой.**
+[Observer source](evidence/astra-20261111/dsh-native-observer-source.json): genuine ordinary CLI,
+исходные часы/custody/once-key/native bootstrap; actual fivefield scope contract и bounded
+санитизированная причина. Три main-файла,114PASS на точных байтах; nativeP не выполнялся.
+[Task5 → Root finding → Task6](evidence/astra-20261111/current-native-successor-mutable-leaf-finding.json):
+Task5 завершён, immutableCPjournal/current-source successor готов source-only; Root нашёл,
+что leaf неправильно привязан к историческим mutableconfig/marker и откажет после T1/T2.
+Сол Standard в прежней сессии исправляет и проверяет этот дефект на frozen483rows; Root
+не запускает заведомо красный finalgate/maintenance. План: coherent198project477 → genuine199
+Dashboard/fresh defaultconsumer → FINAL199 D/T1/P/T2. Полная source/native приёмка впереди.
+
+**ODP: сохранение и повторное открытие состоялись; оценка использует те же сохранённые байты.**
+[Четыре закрытые операции, часы, эффекты и отказы](evidence/astra-20261111/office-odp-app-roundtrip-effects.json).
+Gen1/2 отказали в checker до edit. Gen3 exact in-memory edit известен, dirtyFalse ошибочно
+остановил checker перед первым store; nonpersistent эффект закрыт, поздний flag0 не означает
+no-effect. После исправления конкретного oracle/API условия Gen4 04:47:15→04:47:17/1.659s:
+реальные edit→storeAs→close→reopen→close, outer0,8phases/8744events; все акторы завершены0.
+Сохранённая workingcopy35159B/c8037a…c5a8c0; finalassessment UNEXPECTED_TEXT_EDIT сохранён.
+Дальше только offline оценка этого же файла/протокола, без повтора приложения/producer/model/send.
+Source30482B/lib/base/host/29recipepins неизменны; globalOffice/runtime не переключались.
+Visual/fullstyle/automaticdirty/user/formal acceptance пока нет. Source ODS branch отдельно
+разбирает read/edit/reconvert на уже полученном R100; общий liveпуть не занят.
 
 **Git.** При принятии HEAD = origin/main = remote main был
 `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
@@ -124,7 +147,8 @@ receipt/install/freshprocess/currentHTTP/user acceptance впереди, ста�
 `ff83addc4aaaade0e8fcaa06a8f19419e97a98cb`; F1–F8/currentinput срез —
 `addd212a3e59d8083648d61ce35254a5971b363d`; exact зависимости/закрытые harness отказы —
 `f1921d4f2eaac3a60623af1b9eb0de0ae56ecbec`; chart native proofs —
-`ac7261eaf2a7335a86aa63591ddf030d031d448b` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+`ac7261eaf2a7335a86aa63591ddf030d031d448b`; Task4 source/drafts —
+`342fcdea7f97335132458ec1e425ae5fe94a2152` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.

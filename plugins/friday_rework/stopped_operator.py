@@ -16,6 +16,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import time
@@ -387,9 +388,12 @@ class StoppedOperator:
         _require(not os.path.lexists(alternate),
             'worker_declaration_native_pairing_migration_refused')
 
+    def _launcher_reference(self):
+        return self.request['launcher_source']
+
     def _launcher_layout(self):
         """Read the pinned existing launcher's native paths without importing it."""
-        raw = self.external[Path(self.request['launcher_source']['path'])]['data']
+        raw = self.external[Path(self._launcher_reference()['path'])]['data']
         tree = ast.parse(raw)
         wanted = {'ROOT', 'STATE', 'UID', 'INSTALLED_UNIT', 'UNIT_SHA256'}
         values = {}
@@ -1464,3 +1468,419 @@ class StoppedOperator:
             _require(self.ordinary.same_update_file(hr.lock_path(role), state),
                 'worker_declaration_native_released_lock_changed')
         return self
+
+
+OBSERVATION_APPLY_SCHEMA = 'friday.dsh-current-observation.apply.v1'
+OBSERVATION_FIELDS = frozenset({'schema', 'seconds', 'home', 'profile',
+    'current_input', 'native_unit', 'native_pm', 'clock', 'pending_transaction'})
+OBSERVATION_RESERVE = 30
+
+
+def validate_observation_request(request):
+    """Pure request grammar, before any native authority or module selection."""
+    _require(type(request) is dict and set(request) == OBSERVATION_FIELDS
+        and request.get('schema') == OBSERVATION_APPLY_SCHEMA
+        and type(request['seconds']) is int and 30 <= request['seconds'] <= 180,
+        'dsh_current_exact_observer_request_required')
+    for name in ('current_input', 'native_unit', 'clock', 'pending_transaction'):
+        _reference(request[name])
+    _require(type(request['native_pm']) is dict and set(request['native_pm']) == {
+        'runtime_facts', 'tool_facts', 'pyvenv_cfg', 'node'},
+        'dsh_current_observer_exact_native_pm_required')
+    for ref in request['native_pm'].values(): _reference(ref)
+    _require(type(request['home']) is str and Path(request['home']).is_absolute()
+        and str(Path(request['home'])) == request['home']
+        and '..' not in Path(request['home']).parts and request['home'] != '/'
+        and type(request['profile']) is str
+        and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', request['profile'])
+        and request['profile'] != 'default', 'dsh_current_observer_home_profile_required')
+    return request
+
+
+def observation_transaction(home, pending_transaction, declaration, cycle, boot_id):
+    """One P edge per genuinely completed T1 and current boot; no clock nonce.
+
+    The caller still authenticates all four inputs. This is only a deterministic
+    pathname, and cannot make historical evidence into native authority.
+    """
+    for reference in (pending_transaction, declaration, cycle):
+        _reference(reference)
+    _require(type(boot_id) is str and bool(boot_id), 'dsh_current_observer_boot_required')
+    edge = {'pending_transaction': pending_transaction, 'declaration': declaration,
+        'cycle': cycle, 'boot_id': boot_id}
+    return Path(home) / 'preparation' / ('dsh-current-observation-' + _sha(_encoded(edge)))
+
+
+class CurrentObservationOperator(StoppedOperator):
+    """A new finite observation under genuine native stopped root custody.
+
+    T1 is read-only causal evidence, never this operation's request or clock.
+    Existing root admission, role/build/PM locks, source origins, retained worker
+    quiescence and release checks are reused without invoking the T1 writer.
+    """
+
+    def _context(self):
+        super()._context()
+        _require(sys.dont_write_bytecode and self.request_reference is not None
+            and sys.argv[1:] == ['observe-dsh-current', '--request',
+                self.request_reference['path'], '--request-sha256', self.request_reference['sha256']],
+            'dsh_current_observer_exact_native_entry_required')
+
+    def _clock(self, *, cleanup=False):
+        from scripts.install_containment import Budget
+        from .dsh_current_availability import checked_clock
+        _require(type(self.budget) is Budget, 'dsh_current_observer_native_budget_required')
+        clock = checked_clock(self.request['clock'], active=not cleanup)
+        _require(clock['seconds'] == self.request['seconds']
+            and self.budget.deadline == clock['deadline_mono'],
+            'dsh_current_observer_original_clock_required')
+        self.budget.check(reserve=0 if cleanup else OBSERVATION_RESERVE)
+        return clock
+
+    def _launcher_reference(self):
+        return self.t1_request['launcher_source']
+
+    def _pending(self):
+        from .dsh_current_availability import checked_pending, runtime_semantic_digest, validate_current
+        self._clock()
+        value = validate_current(self.runtime, allow_pending=True)
+        _require(value['proof'] is None, 'dsh_current_pending_configuration_required')
+        result = checked_pending(self.request['pending_transaction'],
+            self.runtime['current_availability']['declaration'],
+            runtime_semantic_digest(self.runtime), self.runtime['current_availability']['cycle'],
+            config=self.runtime, observation_started_mono=self.clock['started_mono'])
+        _require(_same(result, self.t1_committed), 'dsh_current_observer_t1_changed')
+        return result
+
+    def preflight(self):
+        """Validate the real current deployment and completed T1 before consume."""
+        request = validate_observation_request(self.request)
+        from scripts import friday_ordinary_install as ordinary
+        from hermes_cli import friday_user_scope as user
+        from hermes_cli.plugins_state import _plugin_data_namespace
+        from hermes_cli.friday_product_access import profile_name
+        from hermes_cli.config import require_readable_config_before_write
+        from .worker_declarations import load_declaration_source, profile_dsh_path
+        from .worker_declaration_writer import _journal_reference
+        from .dsh_current_availability import (checked_pending, runtime_semantic_digest,
+            validate_current, identity)
+        self.ordinary, self.f = ordinary, ordinary.api()
+        _require(self.request_reference is not None, 'dsh_current_observer_raw_request_required')
+        self._pin(self.request_reference)
+        _require(_same(_read_reference(self.request_reference), request),
+            'dsh_current_observer_raw_request_changed')
+        self.home = self.f.directory(self.f.canonical(request['home']))
+        self.source = self.f.directory(self.home / 'hermes-agent')
+        self.profile = profile_name(request['profile'])
+        _require(self.profile != 'default', 'dsh_current_private_profile_required')
+        self.profile_home = self.f.directory(self.home / 'profiles' / self.profile)
+        self.f.directory(self.home / 'preparation')
+        self._context()  # Actual selected ordinary CLI; no argv/origin substitution.
+        self.clock = self._clock()
+        self.access_path = self.home / 'plugin-data' / _plugin_data_namespace('friday_rework', '') / 'state.json'
+        self._state_layout()
+        self.current = self.f.read_json(self._pin(request['current_input']))
+        self.previous = self.current  # Source inventory only, never a previous T1 request.
+        _require(self.current.get('home') == str(self.home)
+            and self.current.get('product', {}).get('runtime') == {'enabled': False},
+            'dsh_current_observer_installation_input_changed')
+        self.budget.call(self.f.inspect, self.current, request['current_input']['sha256'])
+        self.budget.call(self.f.spec_checked, self.current, cli_only=True)
+        self.marker = self.f.read_json(self.home / self.f.MARKER)
+        entry = self.marker['ordinary_gateway']['operator_entry']
+        _require(self.marker.get('completion_stage') == 'TELEGRAM_ORDINARY'
+            and self.marker.get('runtime_ready') is False
+            and self.marker.get('worker_state') == 'BOTH_WORKERS_PREPARATION_PENDING'
+            and self.marker.get('input_sha256') == request['current_input']['sha256']
+            and self.f.cli_historical_scope_closed(self.marker['original_attempt'], 'friday.native-install.v1')
+            and (self.marker.get('cli_segment') is None or self.f.cli_historical_scope_closed(
+                self.marker['cli_segment']['clock'], 'friday.cli-segment-clock.v1'))
+            and type(entry) is dict and set(entry) == {'script', 'input'}
+            and entry['input'] == request['current_input']
+            and entry['script'] == {'path': str(self.f.ROOT / 'scripts/friday_native.py'),
+                'sha256': self.current['project_files']['scripts/friday_native.py']},
+            'dsh_current_observer_native_operator_changed')
+        self._pin(entry['script'], private=False)
+        self._pin(request['native_unit'], private=False)
+        own = require_readable_config_before_write(self.profile_home / 'config.yaml')
+        self.runtime = copy.deepcopy(_at(own, profile_dsh_path(own)))
+        _require(self.runtime.get('runtime_home') == str(self.profile_home)
+            and self.runtime.get('runtime_profile') == self.profile,
+            'dsh_current_observer_runtime_home_changed')
+        verified = validate_current(self.runtime, allow_pending=True)
+        _require(verified['proof'] is None, 'dsh_current_pending_configuration_required')
+        self.t1_committed = checked_pending(request['pending_transaction'],
+            self.runtime['current_availability']['declaration'], runtime_semantic_digest(self.runtime),
+            self.runtime['current_availability']['cycle'], config=self.runtime,
+            observation_started_mono=self.clock['started_mono'])
+        t1_tx = _reference(request['pending_transaction']).parent
+        self._pin(request['pending_transaction'])
+        intent_ref = _journal_reference(t1_tx / 'intent.json')
+        completed_ref = _journal_reference(t1_tx / 'completed.json')
+        for ref in (intent_ref, completed_ref): self._pin(ref)
+        intent = _read_reference(intent_ref)
+        self._pin(intent['request_reference'])
+        self.t1_request = _read_reference(intent['request_reference'])
+        _require(self.t1_request['current_input'] == request['current_input']
+            and self.t1_request['native_unit'] == request['native_unit']
+            and self.t1_request['native_pm'] == request['native_pm'],
+            'dsh_current_observer_t1_deployment_changed')
+        for ref in self.t1_request['declaration_source'].values(): self._pin(ref)
+        self.declaration_bundle, self.worker_inputs, self.identity = load_declaration_source(
+            self.t1_request['declaration_source'])
+        self.dsh_current = True
+        self.service_source_transition = False
+        _require(self.declaration_bundle['schema'] == DSH_CURRENT_DECLARATION_SCHEMA
+            and _same(self.declaration_bundle['runtime_after'], self.runtime),
+            'dsh_current_observer_t1_pending_runtime_changed')
+        self._dsh_current_source_pins()
+        self._pin(request['clock'])
+        self._pin(self._launcher_reference(), private=False)
+        _require(self._launcher_reference() == {'path': str(self.f.ROOT / LAUNCHER),
+            'sha256': self.current['project_files'][LAUNCHER]},
+            'dsh_current_observer_launcher_source_changed')
+        self._pin(self.worker_inputs['workers']['a0']['a0']['launcher'], private=False)
+        self._launcher_layout()
+        self._worker_runtime_layout()
+        self.receipt = self.f.read_json(self.home / 'hermes-agent.source.json')
+        self._origins()
+        prefix = 'profiles/' + self.profile + '/'
+        names = {'config.yaml', self.f.MARKER, prefix + 'config.yaml',
+            prefix + user.ONBOARDING, prefix + user.MARKER}
+        _require(set(self.t1_committed['after']) == names,
+            'dsh_current_observer_exact_pending_inventory_required')
+        self.before = {}
+        for name in names:
+            state = self._state(self.home / name)
+            _require(state['mode'] == 0o600 and _sha(state['data']) == self.t1_committed['after'][name],
+                'dsh_current_observer_pending_afterimage_changed')
+            self.before[name] = state
+            for part in ('before', 'stage'):
+                self._pin(_journal_reference(t1_tx / part / name))
+        retained = self.t1_request['retained']
+        required = {'hermes-agent.source.json', 'hermes-agent/install-stamp.json',
+            'hermes-agent/.hermes/bin/hermes', 'hermes-agent/hermes_cli/web_dist/hermes-build.json',
+            'SOUL.md', prefix + 'SOUL.md', 'FRIDAY-PROFILE.json', '.env', prefix + '.env',
+            'auth.json', prefix + 'auth.json', str(self.access_path.relative_to(self.home)),
+            str(self.access_path.with_name('admission.lock').relative_to(self.home)),
+            str(self.access_path.with_name('.state.json.lock').relative_to(self.home)),
+            *self.marker['ordinary_gateway']['history']}
+        _require(type(retained) is dict and len(retained) <= MAX_RETAINED
+            and required <= set(retained) and not set(retained) & names,
+            'dsh_current_observer_exact_retained_inventory_required')
+        self.retained = {}
+        for name, ref in retained.items():
+            path = self.home / _relative(name)
+            if ref is None:
+                _require(name in ('auth.json', prefix + 'auth.json') and not os.path.lexists(path),
+                    'dsh_current_observer_retained_absence_changed')
+                self.retained[name] = None
+            else:
+                _require(_reference(ref) == path, 'dsh_current_observer_retained_path_changed')
+                state = self._state(path, private=name not in (
+                    'hermes-agent/install-stamp.json', 'hermes-agent/.hermes/bin/hermes',
+                    'hermes-agent/hermes_cli/web_dist/hermes-build.json'))
+                _require(_sha(state['data']) == ref['sha256'], 'dsh_current_observer_retained_changed')
+                self.retained[name] = state
+        _require(self.marker['source_receipt_sha256'] == retained['hermes-agent.source.json']['sha256'],
+            'dsh_current_observer_source_receipt_changed')
+        _require(not (set(self.external) | set(self._dsh_external))
+            & {self.home / name for name in self.before},
+            'dsh_current_observer_external_target_alias_refused')
+        self._profile(original=True)
+        self.tx = observation_transaction(self.home, request['pending_transaction'],
+            self.runtime['current_availability']['declaration'],
+            self.runtime['current_availability']['cycle'], identity()['boot_id'])
+        self.folder = self.tx / 'observation'
+        _require(self.clock['stage_folder'] == str(self.folder) and not os.path.lexists(self.tx),
+            'dsh_current_observer_consumed_or_folder_changed')
+        self.scope_units = tuple('friday-qualify-dsh-' + _sha(str(self.folder / name).encode())[:24] + '-1.scope'
+            for name in ('dsh-safety', 'dsh-network'))
+        self._pm_preflight()
+        self.source_unchanged()
+        self.before_unchanged()
+        self._pending()
+        return self
+
+    def consume(self):
+        """New durable one-shot P intent before the first native role claim."""
+        from .worker_archive import _Directory
+        _require(hasattr(self, 'tx') and not self.consumed and not self.entered,
+            'dsh_current_observer_preflight_before_consume_required')
+        self.before_unchanged()
+        self._pending()
+        attempted = False
+        try:
+            with _Directory(self.tx.parent) as parent:
+                attempted = True
+                try:
+                    os.mkdir(self.tx.name, 0o700, dir_fd=parent.fd)
+                except FileExistsError:
+                    attempted = False
+                    raise DeclarationError('dsh_current_observer_consumed_no_retry') from None
+                os.fsync(parent.fd)
+                info = os.stat(self.tx.name, dir_fd=parent.fd, follow_symlinks=False)
+                self._tx_identity = (info.st_dev, info.st_ino, info.st_uid, info.st_mode)
+                intent = {'schema': OBSERVATION_APPLY_SCHEMA, 'state': 'CONSUMED_NO_RETRY',
+                    'request_reference': self.request_reference,
+                    'request_semantic_sha256': _sha(self._request_bytes),
+                    'clock_reference': self.request['clock'], 'clock': self.clock,
+                    'pending_transaction': self.request['pending_transaction'],
+                    'current_input': self.request['current_input'],
+                    'after': self.t1_committed['after'], 'scope_units': list(self.scope_units),
+                    'retry_authorized': False, 'per_job_authority': 'NOT_GRANTED'}
+                self._intent = self._operation_journal('intent.json', _encoded(intent))
+                os.fsync(parent.fd)
+                parent.prove()
+                self.consumed = True
+                self._consumption()
+        except BaseException as error:
+            if attempted:
+                raise _stop('current observer consumption requires reconciliation', error) from error
+            raise
+        return self
+
+    def _operation_journal(self, name, data):
+        """Write only into this retained P directory, including after release."""
+        _require(name in ('intent.json', 'completed.json'), 'dsh_current_observer_journal_name_required')
+        txfd = os.open(self.tx, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            opened = os.fstat(txfd)
+            _require((opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode)
+                == self._tx_identity, 'dsh_current_observer_transaction_identity_changed')
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=txfd)
+            try:
+                os.fchmod(fd, 0o600)
+                created = os.fstat(fd)
+                state = {'data': data, 'mode': 0o600,
+                    'identity': tuple(getattr(created, key) for key in
+                        ('st_dev', 'st_ino', 'st_uid', 'st_nlink', 'st_mode'))}
+                _require(stat.S_ISREG(created.st_mode) and created.st_uid == os.getuid()
+                    and created.st_nlink == 1, 'dsh_current_observer_created_journal_identity_required')
+                view = memoryview(data)
+                while view:
+                    count = os.write(fd, view)
+                    _require(count > 0, 'dsh_current_observer_journal_write_unconfirmed')
+                    view = view[count:]
+                os.fsync(fd)
+                _require(self.ordinary.same_update_file(self.tx / name, state, parent_fd=txfd),
+                    'dsh_current_observer_journal_write_unconfirmed')
+            finally:
+                os.close(fd)
+            named = self.tx.lstat()
+            _require((named.st_dev, named.st_ino, named.st_uid, named.st_mode) == self._tx_identity,
+                'dsh_current_observer_transaction_identity_changed')
+            os.fsync(txfd)
+            return state
+        finally:
+            os.close(txfd)
+
+    def prove(self, *, cleanup=False):
+        super().prove(cleanup=cleanup)
+        self.before_unchanged() if not cleanup else self.pins_unchanged(cleanup=True)
+        if not cleanup:
+            self.source_unchanged()
+            self._pending()
+        return self
+
+    def scopes_released(self):
+        """Read exact operation scopes independently of admission/source drift.
+
+        Namespace/PID custody in dsh_observe owns stop/reap even when verify
+        refuses. This read never signals an unretained unit, reacquires native
+        authority, refreshes the clock, or substitutes a zero for UNKNOWN.
+        """
+        from scripts.dsh_prepare import run
+        from .supervision import NativeSupervisor
+        runtime = Path('/run/user') / str(os.getuid())
+        command = ['/usr/bin/env', 'XDG_RUNTIME_DIR=' + str(runtime),
+            'DBUS_SESSION_BUS_ADDRESS=unix:path=' + str(runtime / 'bus'), 'SYSTEMCTL_FORCE_BUS=1',
+            '/usr/bin/systemctl', '--user', 'show']
+        observations = []
+        fields = 'Id,LoadState,ActiveState,SubState,ControlGroup'
+        supervisor = NativeSupervisor()
+        for unit in self.scope_units:
+            raw = run(command + [unit, '--property=' + fields], self.f.ROOT,
+                timeout=min(5, self.budget.check()), env=self.f.clean_environment(self.home),
+                deadline=self.budget.deadline)[0]
+            rows = [line.split('=', 1) for line in raw.splitlines() if line]
+            value = dict(rows)
+            _require(len(rows) == 5 and all(len(row) == 2 for row in rows)
+                and set(value) == set(fields.split(',')) and value['Id'] == unit
+                and value['LoadState'] in ('loaded', 'not-found')
+                and (value['ActiveState'], value['SubState']) in (('inactive', 'dead'), ('failed', 'failed'))
+                and (not value['ControlGroup'] or value['ControlGroup'].endswith('/' + unit))
+                and (value['LoadState'] != 'not-found' or
+                    (value['ActiveState'], value['SubState'], value['ControlGroup']) == ('inactive', 'dead', ''))
+                and not supervisor._populated(value['ControlGroup']),
+                'dsh_current_observer_raw_scope_cessation_unconfirmed')
+            observations.append(value)
+        return observations
+
+
+def observe_current_native(request, *, request_path, request_sha256):
+    """Terminal P native caller: observe only, never write a declaration/config."""
+    validate_observation_request(request)
+    from .dsh_current_availability import checked_clock, observe_current, read_json
+    from .worker_declaration_writer import _request_snapshot
+    from scripts import friday_ordinary_install as ordinary
+    from scripts.install_containment import Budget
+    reference = {'path': str(request_path), 'sha256': request_sha256}
+    _reference(reference)
+    state = _request_snapshot(reference)
+    _require(_same(_read_reference(reference), request), 'dsh_current_observer_request_changed')
+    clock = checked_clock(request['clock'], active=True)
+    budget = Budget(clock['seconds'], started=clock['started_mono'], deadline=clock['deadline_mono'])
+    authority = CurrentObservationOperator(request, budget, request_reference=reference)
+    def request_unchanged():
+        _require(ordinary.same_update_file(Path(request_path), state),
+            'dsh_current_observer_request_identity_changed')
+    request_unchanged()
+    authority.preflight()
+    request_unchanged()
+    authority.consume()
+    proof = None
+    raw_scopes = None
+    primary = None
+    try:
+        with authority:
+            def verify():
+                request_unchanged()
+                authority.prove()
+                request_unchanged()
+            proof = observe_current(authority.runtime, clock_reference=request['clock'],
+                pending_transaction=request['pending_transaction'], folder=authority.folder,
+                verify=verify)
+            verify()
+        authority.prove_released()
+        request_unchanged()
+    except BaseException as error:
+        primary = error
+    try:
+        raw_scopes = authority.scopes_released()
+    except BaseException as cleanup:
+        if primary is not None:
+            raise _stop('current observer raw scope release requires reconciliation', primary, (cleanup,)) from primary
+        raise _stop('current observer raw scope release requires reconciliation', cleanup) from cleanup
+    if primary is not None:
+        raise primary
+    authority.before_unchanged()
+    request_unchanged()
+    proof_value = read_json(proof)
+    _require(proof_value['clock'] == request['clock']
+        and proof_value['pending_transaction'] == request['pending_transaction'],
+        'dsh_current_observer_returned_proof_changed')
+    result = {'state': 'DSH_CURRENT_OBSERVATION_COMPLETE', 'ready': False,
+        'effects': 'OBSERVATION_ONLY', 'per_job_authority': 'NOT_GRANTED',
+        'request_reference': reference, 'clock': request['clock'],
+        'pending_transaction': request['pending_transaction'], 'proof': proof,
+        'raw_scopes': raw_scopes, 'native_released': True,
+        'declaration_written': False, 'config_written': False}
+    try:
+        authority._consumption()
+        authority._operation_journal('completed.json', _encoded(result))
+    except BaseException as completion:
+        raise _stop('current observer completion journal requires reconciliation', completion) from completion
+    # Return only after durable exact completion; private details are CLI-filtered.
+    return result
