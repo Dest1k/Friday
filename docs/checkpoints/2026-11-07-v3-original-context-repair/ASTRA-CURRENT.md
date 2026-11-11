@@ -1,12 +1,12 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **11.11.2026, 14:00 МСК**. **ACTIVE / CORE**. Возобновление владельца11.11 сохранено.
+Обновлено **11.11.2026, 15:23 МСК**. **ACTIVE / CORE**. Возобновление владельца11.11 сохранено.
 Астра — sole lead/integrator, Сол — постоянный co-architect; оба **Standard/default,
 gpt-6.1-sol, thread reasoning ultra**. [Native goal1111/readback](ASTRA-GOAL-REVISION-2026-11-11.json):
 тот же thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` active, история/учёт сохранены, общего cap нет.
 
 Принятая paused-точка `5ea64beb0ba87968aca0e1e9c32696ac85d27a76`. Перед этим checkpoint
-`HEAD=origin/main=4152e0b7bd91f91dc69115e83ce04eb10dff2343`; новый SHA — коммит этого файла,
+`HEAD=origin/main=0e054c81fda353bebf43432787b8703a2368f993`; новый SHA — коммит этого файла,
 не literal self-hash. Чужие три изменения сохранены и исключены: `docs/foundation-status.md`,
 v2 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`.
 
@@ -17,10 +17,10 @@ boot `5e7fcf9b-04ea-4975-9b42-3b4e5f63c2c7`: Gateway **6480/start2521**, Telegra
 Dashboard **6479/start2520**, native nonce/auth/SPA VERIFIED. Оба enabled/active, RuntimeMax infinity.
 Полные17890files/receipt/prefix/marker/stamp/project485/plugins52 подтверждены заново без переустановки.
 После boot БД readonly с WAL quick_check OK/leases0, baseline30/2,196/2,5487/5 сохранён.
-После новых MDread/recall tester5493messages/5sessions, native generation2 quiescent; это новые эффекты,
+После MD/JSONread+recall tester5504messages/5sessions, native generation4 quiescent; это новые эффекты,
 не свежий допуск из старого baseline.
 Qwen и compressor: health200 и authenticated models200, штатные имена/маршруты прежние;
-inference не запускался. Maintenance11:45:04→11:47:10/126.813s закрыт до отключения;
+искусственный inference-health не запускался; реальные MD/JSON ответы и compaction наблюдались. Maintenance11:45:04→11:47:10/126.813s закрыт до отключения;
 прежние PID/Invocation/boot исторические. Незавершённых живых операций нет.
 Genuine DEFAULT exit0 — source/spec, `WORKERS_PENDING/ready=false/runtime_acceptance=NOT_GRANTED`;
 worker/V3 приёмку это не даёт. Постоянные сервисы приняты отдельно, новый TTL не назначен.
@@ -29,18 +29,22 @@ worker/V3 приёмку это не даёт. Постоянные сервис
 Core: Telegram/продолжение, контекст/память/изоляция, файлы/доставка/форматы, статус/стоп,
 ошибки/восстановление. Исключение — только минимальная доказанная зависимость конкретного core-пути.
 
-Астра ведёт live/main/установку и F01. Реальный Сол `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`
-на Standard завершил [Task10 source readability](evidence/astra-20261111/odp-readability-sol-final-source-received.json):
-6файлов/21source checks + independent affected review, **не установлено/не app PASS**.
-Сол выполняет Task11 — частную композицию точного следующего приращения и bounded fifth successor;
-один native pre-task compact завершён, фактический новый TASK/turn подтверждён. Live установки
-Солом нет; leadership goal paused.
-Временные source/API/binding/scope/MD-review деревья terminal. [MDread/summary](evidence/astra-20261111/f01-md-v02-ordinary-read.json)
-и [ordinary recall](evidence/astra-20261111/f01-md-v02-ordinary-recall.json) выполнены/оценены. Следующий live — JSONread.
-ODP app recipe15files подготовлен/independently reviewed; finite child готовит Root frame/retention/probe,
-банк5116SHA проверен readonly. App/unit/grant ещё NOT_RUN. App source:
-`/home/jericho/.cache/FRW-ASTRA-V3-ODP-READABILITY-APP-PREP-20261111/RESULT.json` (`ff872b…b1d6`);
-Root frame в `FRW-ASTRA-V3-ODP-APP-ROOT-FRAME-PREP-20261111`, ещё IN_PROGRESS, без grant.
+Астра ведёт live/main/установку. Реальный Сол `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18` на Standard
+завершил [Task12 RTF rich missing-stage source](evidence/astra-20261111/rtf-rich-missing-roundtrip-sol-source-received.json):
+78affected/46handshake/8parentdelta, actual save/reopen NOT_RUN. Task11 исходная203 композиция сохранена,
+но [удержана после новых product findings](evidence/astra-20261111/odp203-source-composition-held.json).
+После одного завершённого native compact Сол выполняет Task13: связная final203 от actual202,
+с typography guard, creator notes/chart и [prefix-only compaction fix](evidence/astra-20261111/core-compaction-tool-provenance-source.json).
+Три final source дельты Root принял/передал exact pins; fullgates после Root GATE_READY/newODP app.
+Старый leadership goal paused; Root один управляет live. Временные MD/JSON/source/main-review деревья terminal;
+[creator notes/chart source+review завершены](evidence/astra-20261111/odp-creator-visibility-source.json);
+новый finite child готовит app-recipe одного изменённогоODP4202B/30f91280, без H/main/Office прав.
+
+[Реальная проверка четырёх presentation artifacts закрыта](evidence/astra-20261111/odp-readability-four-saved-app-assessment.json):
+InitOnly0/components0/oneMain/4readonlyopens+closes/7PDF, 3.923s/CPU3.554s; strict actual0/CGabsent/noactors.
+Primary PARTIAL сохранён: последующий offline-reader отказал на пустом derived text. Те же7PDF
+дополнены толькоoffline:16PNG reuse+19missing; Root рассмотрел35pages. Titles PASS, nativeODP notes/chart FAIL.
+Unit/grant/Office/clocks не переигрывать. Новый app — только действительно изменённые creator bytes после review.
 
 Текущая core-очередь — действия по исходным обязательствам, не новый реестр:
 
@@ -55,7 +59,9 @@ Root frame в `FRW-ASTRA-V3-ODP-APP-ROOT-FRAME-PREP-20261111`, ещё IN_PROGRES
    DSO mapping при import. Те же120saved records получили64semantic checks + independent review;
    три heading все level1, таблица/footnote/header/footer/last-page в узком профиле сохранены.
    Importer runtime mapping и положение таблицы относительно body не наблюдались; global Office,
-   rich export и formal V3 не закрыты. R92/g2/native566/старые часы/отправки не повторять.
+   rich export и formal V3 не закрыты. Task12 подготовил отсутствовавшие4opens/2saves/4closes comparative
+   source+revision; fullmodule/handshake/source reviewed, Root actual app/банк/ресурсы ещё NOT_RUN.
+   R92/g2/native566/старые часы/отправки не повторять.
 2. **ODP/F-02,F-03,F-04.** Установлены generated-destination3/passive-source2 и новый банк только
    для pptx_odp; другие Office paths сохраняют прежний default. Те же30482B/35159B приняты
    actual installed byte profiles, общий strict source отказал `active_xml_content` как прежде.
@@ -65,20 +71,28 @@ Root frame в `FRW-ASTRA-V3-ODP-APP-ROOT-FRAME-PREP-20261111`, ещё IN_PROGRES
    Original PPTX geometry пересекается и normAutofit отличается от ODP; без исходного PPTX render
    вклад conversion не установлен. Long-Cyrillic variant не закрыт. Task10 дал opt-in `layout=fit_title`
    с локальными стилями/геометрией и типографикой новых creators, default literal edit сохранён.
-   Source готов; точная композиция/установка и приложение для новых байтов остаются.
-   Сол готовит композицию; app recipe не grant.
+   Actual4artifact app теперь подтвердил исправленные1/4/5 и оба108title, unaffected2/3 PNG byteexact;
+   originalPPTX4/5 сам имеет overlap. Но nativeODP notes5pages blank при сохранённых строках,
+   chart3 — пустой plot; таблица/zeros видимы. Creator fix source15+independent16 PASS;
+   новыйODP4202B требует отдельного actualapp; installed202 прежний.
+   Исходный203 остаётся draft: inheritedPPTX metrics guard требует новых exact pair/helper/input;
+   Task13 собирает всю связную дельту до дорогих gates/единственной штатной установки.
    Пропавший final ENTRYCOMPLETE — Basic `EntryComplete:` label, не вызов; первичные PARTIAL/
    Gen4 rawFALSE неизменны, новые PDF/PNG оценены без повторного Office/edit/store/producer/send.
 3. **F-01/md/v02 и json/v03.** MD новые R101/R102: send2739→reply2741/193.316s и
    send2742→reply2744/206.700s, каждый full180/одна попытка. Полные31строка/4строки таблицы/
    exacttail line31 + originalcustody/independent33checks PASS; recall корректен из контекста,
    ответы уже были в первой реплике. Purememory/новая независимая арифметика не доказаны.
-   Native5488–5493, нет активной работы; исходный MD/45старых unresolved/3UNKNOWN сохранены.
+   Native5488–5504, операций не осталось; исходники/45старых canonical unresolved/3UNKNOWN сохранены.
    Canonical formal acceptanceNOT_ESTABLISHED; узкий результат связан с тремя original MDv02 rows.
    [Preparatory fix](drafts/f01-bound-preparation/README.md): missingguard и repr-key-order исправлены;
    выпущенные R101/binding/tester не переписаны, issue/bind/создание/отправки не переиграны.
-   JSONv03 exact831B/source7cdb35… ещё NOT_RUN: отдельный fresh singleton read, затем только
-   условный ordinary recall после actual received/custody/semantics/full180/native cessation.
+   [JSON R103 read](evidence/astra-20261111/f01-json-v03-ordinary-read.json) send2745→2749/192.626s PASS:
+   full20lines/decodedUnicode+escapes/tailkey+line19, custody с явным native-origin receipt limit.
+   [R104 ordinary recall](evidence/astra-20261111/f01-json-v03-ordinary-recall.json) send2750→2752/204.229s:
+   факты PASS, claim новогоread FAIL. Compaction повторно записала старыеcall-id, не исполнила новыйtool.
+   Этот внешний semanticFAIL отдельно от45canonicalunresolved. Prefix-only fix source-reviewed, не установлен;
+   R104 не повторять, purememory/formal acceptance не закрыты.
 4. **Остальной обязательный core V3/B00** продолжается после этих пунктов;170/120, варианты,
    последовательности, регрессия и восстановление не сокращены. Узкие PASS и число слоёв не готовность.
 

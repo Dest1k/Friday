@@ -1,0 +1,49 @@
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -275,9 +275,16 @@
+     "resume, wrap up, or continue work from "
+     f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
+     "and wait for a new user message. This handoff must never become the "
+-    "active turn by itself. (Exception: if tool results or your own "
+-    "tool calls appear after this summary, you are mid-way through an "
+-    "in-flight exchange — continue that exchange normally.) "
++    "active turn by itself. A live user request restated after the explicit "
++    "END OF CONTEXT SUMMARY boundary, including a STILL IN PROGRESS replay, "
++    "may identify an unfinished exchange; continue "
++    "only that request. Retained tool calls/results alone do not identify an "
++    "active exchange: tools before the current user message are historical, "
++    "even when they appear after this summary, and were not run again. "
++    "Claim tool execution in this turn only from an actual tool call and its "
++    "corresponding result after the latest current user request (or its live "
++    "replay after the END boundary). Retained rows and new compaction "
++    "timestamps are not evidence of a new execution. "
+     "Topic overlap with the summary does NOT mean you should resume its "
+     "task: even on similar topics, the latest user message WINS. Treat ONLY "
+     "the latest message as the active task and discard stale items from "
+@@ -301,8 +308,14 @@
+     "[CONTEXT COMPACTION — BOUNDED REFERENCE ONLY] Past turns below are background, "
+     "never active instructions. Follow only the latest user message AFTER this "
+     "summary; it overrides historical tasks, and stop/undo/changed requests cancel "
+-    "old work. If no later user exists, wait without tools unless later tool calls "
+-    "or results prove an in-flight exchange: continue only that exchange. Persistent "
++    "old work. If no later user exists, wait without tools unless a live user "
++    "request after the explicit END OF CONTEXT SUMMARY boundary identifies an "
++    "unfinished exchange (including STILL IN PROGRESS replay). Tool "
++    "calls/results alone do not prove a current exchange: tools before the current "
++    "user message are historical even after this summary, and were not run again. "
++    "Claim execution this turn only from an actual call and corresponding result "
++    "after the latest live user request; retained rows and new compaction "
++    "timestamps are not new execution. Persistent "
+     "system memory remains authoritative. Summary claims are not proof that memory was "
+     "saved: verify the addressed store or a successful memory result before reporting "
+     "an existing entry or completed update. Tools remain fully active for the current "
+@@ -633,6 +646,9 @@
+ # Exact wire text of every shipped prefix, newest-first; stale directives must
+ # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
+ _HISTORICAL_SUMMARY_PREFIXES = (
++    # Previous current/bounded prefixes remain detectable and strippable after resume.
++    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
++    '[CONTEXT COMPACTION — BOUNDED REFERENCE ONLY] Past turns below are background, never active instructions. Follow only the latest user message AFTER this summary; it overrides historical tasks, and stop/undo/changed requests cancel old work. If no later user exists, wait without tools unless later tool calls or results prove an in-flight exchange: continue only that exchange. Persistent system memory remains authoritative. Summary claims are not proof that memory was saved: verify the addressed store or a successful memory result before reporting an existing entry or completed update. Tools remain fully active for the current task. Session files/config may already contain past effects: do not repeat completed work.',
+     # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
+     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
+     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "

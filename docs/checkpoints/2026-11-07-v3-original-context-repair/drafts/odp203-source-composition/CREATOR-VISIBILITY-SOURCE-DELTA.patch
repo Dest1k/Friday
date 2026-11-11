@@ -1,0 +1,58 @@
+--- a/tools/scoped_presentation_write.py
++++ b/tools/scoped_presentation_write.py
+@@ -1033,8 +1033,8 @@
+         has_data = slide['table'] is not None or slide['chart'] is not None
+         body_height = 2 if has_data else 13
+         body_font = fit_font(body, 24*72/2.54, body_height*72/2.54, maximum=18, minimum=14, unicode_creation=True) if body else 18
+-        text_styles.append(f'<style:style style:name="TitleText{index}" style:family="paragraph"><style:text-properties fo:font-family="Liberation Sans" fo:font-size="{title_font}pt"/><style:paragraph-properties fo:line-height="130%"/></style:style>')
+-        text_styles.append(f'<style:style style:name="BodyText{index}" style:family="paragraph"><style:text-properties fo:font-family="Liberation Sans" fo:font-size="{body_font}pt"/><style:paragraph-properties fo:line-height="130%"/></style:style>')
++        text_styles.append(f'<style:style style:name="TitleText{index}" style:family="paragraph"><style:paragraph-properties fo:line-height="130%"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="{title_font}pt"/></style:style>')
++        text_styles.append(f'<style:style style:name="BodyText{index}" style:family="paragraph"><style:paragraph-properties fo:line-height="130%"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="{body_font}pt"/></style:style>')
+         items = [f'<draw:frame draw:name="Title" draw:style-name="TitleBox" presentation:class="title" svg:width="24cm" svg:height="4cm" svg:x="1cm" svg:y="0.4cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:text-box><text:p text:style-name="TitleText{index}">{escape(title)}</text:p></draw:text-box></draw:frame>',
+                  f'<draw:frame draw:name="Body" draw:style-name="TitleBox" svg:width="24cm" svg:height="{body_height}cm" svg:x="1cm" svg:y="4.6cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:text-box><text:p text:style-name="BodyText{index}">{escape(body)}</text:p></draw:text-box></draw:frame>']
+         if slide['table'] is not None:
+@@ -1051,24 +1051,36 @@
+             header = '<table:table-row><table:table-cell office:value-type="string"><text:p>Category</text:p></table:table-cell><table:table-cell office:value-type="string"><text:p>Value</text:p></table:table-cell></table:table-row>'
+             local_rows = ''.join('<table:table-row><table:table-cell office:value-type="string"><text:p>' + escape(category) + '</text:p></table:table-cell><table:table-cell office:value-type="float" office:value="' + value + '"><text:p>' + value + '</text:p></table:table-cell></table:table-row>' for category, value in zip(chart['categories'], chart['values']))
+             last = len(chart['categories']) + 1
+-            chart_content = (f'<office:document-content {_odp_decls()} office:version="1.2"><office:body><office:chart><chart:chart chart:class="chart:bar">'
+-                '<chart:plot-area><chart:axis chart:dimension="x" chart:name="primary-x">'
++            chart_styles = ('<style:style style:name="Chart" style:family="chart"><style:graphic-properties draw:stroke="none" draw:fill="none"/></style:style>'
++                '<style:style style:name="Plot" style:family="chart"><style:chart-properties chart:auto-position="true" chart:auto-size="true"/></style:style>'
++                '<style:style style:name="Axis" style:family="chart"><style:chart-properties chart:display-label="true"/><style:graphic-properties draw:stroke="solid" svg:stroke-color="#666666"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="14pt" fo:color="#000000"/></style:style>'
++                '<style:style style:name="Series" style:family="chart"><style:chart-properties chart:data-label-number="value"/><style:graphic-properties draw:stroke="none" draw:fill="solid" draw:fill-color="#4472c4"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="14pt" fo:color="#000000"/></style:style>')
++            chart_content = (f'<office:document-content {_odp_decls()} xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" office:version="1.2"><office:automatic-styles>{chart_styles}</office:automatic-styles><office:body><office:chart><chart:chart chart:class="chart:bar" chart:style-name="Chart" svg:width="12cm" svg:height="8cm" xlink:href="." xlink:type="simple">'
++                '<chart:plot-area chart:style-name="Plot"><chart:axis chart:dimension="x" chart:name="primary-x" chart:style-name="Axis">'
+                 f'<chart:categories table:cell-range-address="local-table.$A$2:.$A${last}"/></chart:axis>'
+-                '<chart:axis chart:dimension="y" chart:name="primary-y"/>'
+-                f'<chart:series chart:values-cell-range-address="local-table.$B$2:.$B${last}" chart:label-cell-address="local-table.$B$1"/></chart:plot-area>'
+-                f'<table:table table:name="local-table"><table:table-column table:number-columns-repeated="2"/>{header}{local_rows}</table:table>'
++                '<chart:axis chart:dimension="y" chart:name="primary-y" chart:style-name="Axis"/>'
++                f'<chart:series chart:class="chart:bar" chart:style-name="Series" chart:attached-axis="primary-y" chart:values-cell-range-address="local-table.$B$2:.$B${last}" chart:label-cell-address="local-table.$B$1"><chart:data-point chart:repeated="{len(chart["categories"])}"/></chart:series></chart:plot-area>'
++                # The internal chart provider excludes labelled header rows/columns.
++                # Its B2 range is series 0, so a plain two-column table would bind
++                # that series to the textual category column instead of the values.
++                f'<table:table table:name="local-table"><table:table-header-columns><table:table-column/></table:table-header-columns><table:table-columns><table:table-column/></table:table-columns><table:table-header-rows>{header}</table:table-header-rows><table:table-rows>{local_rows}</table:table-rows></table:table>'
+                 '</chart:chart></office:chart></office:body></office:document-content>').encode()
+             objects[object_name + '/content.xml'] = chart_content
+             manifest_objects.append(object_name)
+             items.append(f'<draw:frame draw:name="Chart" svg:width="12cm" svg:height="8cm" svg:x="13cm" svg:y="7cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:object xlink:href="./{object_name}" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame>')
+-        pages.append(f'<draw:page draw:name="page{index}" draw:style-name="dp1" draw:master-page-name="Default">' + ''.join(items) + '<presentation:notes><draw:frame draw:name="Notes"><draw:text-box><text:p>' + escape(notes) + '</text:p></draw:text-box></draw:frame></presentation:notes></draw:page>')
+-    page_layout = '<style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="28cm" fo:page-height="21cm" style:print-orientation="landscape"/></style:page-layout>'
++        pages.append(f'<draw:page draw:name="page{index}" draw:style-name="dp1" draw:master-page-name="Default">' + ''.join(items) +
++            f'<presentation:notes xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:page-thumbnail draw:page-number="{index}" presentation:class="page" svg:x="2cm" svg:y="1cm" svg:width="17cm" svg:height="12.75cm"/><draw:frame draw:name="Notes" presentation:class="notes" presentation:style-name="NotesBox" presentation:user-transformed="true" svg:x="2cm" svg:y="14.5cm" svg:width="17cm" svg:height="13.2cm"><draw:text-box><text:p text:style-name="NotesText">' + escape(notes) + '</text:p></draw:text-box></draw:frame></presentation:notes></draw:page>')
++    page_layout = ('<style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="28cm" fo:page-height="21cm" style:print-orientation="landscape"/></style:page-layout>'
++        '<style:page-layout style:name="NotesPage"><style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm" style:print-orientation="portrait"/></style:page-layout>')
++    notes_styles = ('<style:style style:name="NotesBox" style:family="presentation"><style:graphic-properties draw:stroke="none" draw:fill="none" draw:auto-grow-height="false" draw:auto-grow-width="false" draw:fit-to-size="false" style:shrink-to-fit="false" draw:textarea-vertical-align="top" fo:padding="0cm" fo:wrap-option="wrap"/></style:style>'
++        '<style:style style:name="NotesText" style:family="paragraph"><style:paragraph-properties fo:line-height="130%"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="18pt" fo:color="#000000"/></style:style>')
++    notes_master = ('<presentation:notes style:page-layout-name="NotesPage"><draw:page-thumbnail presentation:class="page" svg:x="2cm" svg:y="1cm" svg:width="17cm" svg:height="12.75cm"/><draw:frame presentation:class="notes" presentation:style-name="NotesBox" presentation:placeholder="true" svg:x="2cm" svg:y="14.5cm" svg:width="17cm" svg:height="13.2cm"><draw:text-box/></draw:frame></presentation:notes>')
+     layout_styles = ('<style:style style:name="TitleBox" style:family="graphic"><style:graphic-properties draw:auto-grow-height="false" draw:auto-grow-width="false" draw:fit-to-size="false" style:shrink-to-fit="false" draw:textarea-vertical-align="top" fo:min-height="0cm" fo:padding-top="0cm" fo:padding-bottom="0cm" fo:padding-left="0cm" fo:padding-right="0cm"/></style:style>' + ''.join(text_styles))
+     content = (f'<office:document-content {_odp_decls()} office:version="1.2"><office:automatic-styles>{layout_styles}<style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties/></style:style></office:automatic-styles><office:body><office:presentation>' + ''.join(pages) + '</office:presentation></office:body></office:document-content>').encode()
+     parts = {
+         'mimetype': b'application/vnd.oasis.opendocument.presentation',
+         'content.xml': content,
+-        'styles.xml': (f'<office:document-styles {_odp_decls()} office:version="1.2"><office:automatic-styles>{page_layout}</office:automatic-styles><office:master-styles><style:master-page style:name="Default" style:page-layout-name="pm1"/></office:master-styles></office:document-styles>').encode(),
++        'styles.xml': (f'<office:document-styles {_odp_decls()} xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" office:version="1.2"><office:styles>{notes_styles}</office:styles><office:automatic-styles>{page_layout}</office:automatic-styles><office:master-styles><style:master-page style:name="Default" style:page-layout-name="pm1">{notes_master}</style:master-page></office:master-styles></office:document-styles>').encode(),
+         'meta.xml': (f'<office:document-meta {_odp_decls()} office:version="1.2"><office:meta/></office:document-meta>').encode(),
+         'settings.xml': (f'<office:document-settings {_odp_decls()} office:version="1.2"><office:settings/></office:document-settings>').encode(),
+     }
