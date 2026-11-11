@@ -1,12 +1,12 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **11.11.2026, 13:09 МСК**. **ACTIVE / CORE**. Возобновление владельца11.11 сохранено.
+Обновлено **11.11.2026, 14:00 МСК**. **ACTIVE / CORE**. Возобновление владельца11.11 сохранено.
 Астра — sole lead/integrator, Сол — постоянный co-architect; оба **Standard/default,
 gpt-6.1-sol, thread reasoning ultra**. [Native goal1111/readback](ASTRA-GOAL-REVISION-2026-11-11.json):
 тот же thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` active, история/учёт сохранены, общего cap нет.
 
 Принятая paused-точка `5ea64beb0ba87968aca0e1e9c32696ac85d27a76`. Перед этим checkpoint
-`HEAD=origin/main=703424641ea8eabcb763bfa1b8c8f7ab9c434137`; новый SHA — коммит этого файла,
+`HEAD=origin/main=4152e0b7bd91f91dc69115e83ce04eb10dff2343`; новый SHA — коммит этого файла,
 не literal self-hash. Чужие три изменения сохранены и исключены: `docs/foundation-status.md`,
 v2 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`.
 
@@ -16,7 +16,9 @@ Input `3572f3…1fe8f`, receipt `43a4a0…f36c`; точный201prefix и все
 boot `5e7fcf9b-04ea-4975-9b42-3b4e5f63c2c7`: Gateway **6480/start2521**, Telegram connected;
 Dashboard **6479/start2520**, native nonce/auth/SPA VERIFIED. Оба enabled/active, RuntimeMax infinity.
 Полные17890files/receipt/prefix/marker/stamp/project485/plugins52 подтверждены заново без переустановки.
-БД readonly с WAL: quick_check OK/leases0, messages/sessions30/2,196/2,5487/5; данные сохранены.
+После boot БД readonly с WAL quick_check OK/leases0, baseline30/2,196/2,5487/5 сохранён.
+После новых MDread/recall tester5493messages/5sessions, native generation2 quiescent; это новые эффекты,
+не свежий допуск из старого baseline.
 Qwen и compressor: health200 и authenticated models200, штатные имена/маршруты прежние;
 inference не запускался. Maintenance11:45:04→11:47:10/126.813s закрыт до отключения;
 прежние PID/Invocation/boot исторические. Незавершённых живых операций нет.
@@ -33,9 +35,12 @@ Core: Telegram/продолжение, контекст/память/изоля�
 Сол выполняет Task11 — частную композицию точного следующего приращения и bounded fifth successor;
 один native pre-task compact завершён, фактический новый TASK/turn подтверждён. Live установки
 Солом нет; leadership goal paused.
-Временные202/RTF/ODP/F01prep/postpower integrity деревья terminal. Новый finite child исправляет
-actual-v42 API-стык F01 preparation; записи main/H/authority/отправки ему запрещены.
-F01 готовый source binding-рецепт ещё не фактический binding/admission/run; их отсутствие сверено.
+Временные source/API/binding/scope/MD-review деревья terminal. [MDread/summary](evidence/astra-20261111/f01-md-v02-ordinary-read.json)
+и [ordinary recall](evidence/astra-20261111/f01-md-v02-ordinary-recall.json) выполнены/оценены. Следующий live — JSONread.
+ODP app recipe15files подготовлен/independently reviewed; finite child готовит Root frame/retention/probe,
+банк5116SHA проверен readonly. App/unit/grant ещё NOT_RUN. App source:
+`/home/jericho/.cache/FRW-ASTRA-V3-ODP-READABILITY-APP-PREP-20261111/RESULT.json` (`ff872b…b1d6`);
+Root frame в `FRW-ASTRA-V3-ODP-APP-ROOT-FRAME-PREP-20261111`, ещё IN_PROGRESS, без grant.
 
 Текущая core-очередь — действия по исходным обязательствам, не новый реестр:
 
@@ -64,15 +69,16 @@ F01 готовый source binding-рецепт ещё не фактически�
    Сол готовит композицию; app recipe не grant.
    Пропавший final ENTRYCOMPLETE — Basic `EntryComplete:` label, не вызов; первичные PARTIAL/
    Gen4 rawFALSE неизменны, новые PDF/PNG оценены без повторного Office/edit/store/producer/send.
-3. **F-01/md/v02 и json/v03.** [Source readiness](evidence/astra-20261111/f01-md-json-source-readiness.json)
-   подтверждает адресную историю5487/5, неизменные MD1309B/JSON831B и исправлениеcapture12000→8000.
-   Actual parser4+/26− и oracle16 — offline. Новый bound tester/gate202 и existing atomic issuer
-   подготовлены в `/home/jericho/.cache/FRW-ASTRA-V3-CORE-F01-BOUND-TESTER-PREP-20261111/RESULT.json`
-   (`355c7f…721f`); actual readonly preflight остановился ДО admission: `read_document_input`
-   v42 требует guard, preparatory call его не передал. Source/API-ремонт → Root delta review →
-   fresh mutable/effect/custody/authority/once admission → один read. Ни authority, ни run не выданы.
-   Recall отдельно после полученного read/семантики/custody/native cessation, history retrieval
-   отличать от чистой памяти. Прежние CREATE/S10/S16/R100 не являются новым допуском.
+3. **F-01/md/v02 и json/v03.** MD новые R101/R102: send2739→reply2741/193.316s и
+   send2742→reply2744/206.700s, каждый full180/одна попытка. Полные31строка/4строки таблицы/
+   exacttail line31 + originalcustody/independent33checks PASS; recall корректен из контекста,
+   ответы уже были в первой реплике. Purememory/новая независимая арифметика не доказаны.
+   Native5488–5493, нет активной работы; исходный MD/45старых unresolved/3UNKNOWN сохранены.
+   Canonical formal acceptanceNOT_ESTABLISHED; узкий результат связан с тремя original MDv02 rows.
+   [Preparatory fix](drafts/f01-bound-preparation/README.md): missingguard и repr-key-order исправлены;
+   выпущенные R101/binding/tester не переписаны, issue/bind/создание/отправки не переиграны.
+   JSONv03 exact831B/source7cdb35… ещё NOT_RUN: отдельный fresh singleton read, затем только
+   условный ordinary recall после actual received/custody/semantics/full180/native cessation.
 4. **Остальной обязательный core V3/B00** продолжается после этих пунктов;170/120, варианты,
    последовательности, регрессия и восстановление не сокращены. Узкие PASS и число слоёв не готовность.
 
@@ -88,7 +94,10 @@ CAS/predecessor и rollback двух добавлений; four whole gates158/7
 [Полный scope и surviving refs](DSH-RESUME-2026-11-10.md#7-объём-v3); ledgers/verdict не переписаны.
 
 **DSH/A0 отложены.** [Pairing архивирован один раз; T1 отказал до транзакции](evidence/astra-20261111/pairing-archive-t1-refusal-services-restored.json),
-P/T2 NOT_RUN,5CAS прежние. Архивацию не повторять. Три A0 launcher pins — установленная source-проблема;
+P/T2 NOT_RUN,5CAS прежние. Архивацию не повторять. [Свежие dependency facts](evidence/astra-20261111/postpower-retained-worker-dependency-observations.json):
+A0runtime/launcher2SHA mismatch и DSHresolver отсутствует; к power-loss причину не приписываем.
+Default workersfalse не состояние tester: оба testerworkers enabledtrue сохранены.
+Три прежних A0 launcher pins — отдельная source-проблема;
 скрытое CLI-исключение не наблюдалось. Самостоятельная DSH/A0 квалификация сейчас не запускается.
 
 Неповторы: R83 UNKNOWN_SEND + один EMPTY quarantine (EMPTY не отсутствие отправки); R85 stop/error/

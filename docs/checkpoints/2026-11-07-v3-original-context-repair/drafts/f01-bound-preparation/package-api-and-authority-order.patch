@@ -1,0 +1,27 @@
+--- a/package.py
++++ b/package.py
+@@ -39,7 +39,10 @@
+ 
+ def immutable(case):
+  require(digest(read(CARDS/'RESULT.json'))=='c12805823d4991abab8ffc839bfb86f98741b99e627c37d9e4e8e05c44c7a129'and digest(read(CARDS/'PLANS.json'))=='d661695f1a37174c1a7f9a6ba0c0251059198c759fe0e9b5e67d1cfe8c265e37','readiness snapshot changed')
+- require(digest(read(GENERATOR))==GENERATOR_SHA,'existing atomic issuer source changed');sc=scenario(case);readsc=scenario(case.replace('-recall','-read'));tester=load_tester();tester.validate_scenario(sc);raw=tester.read_document_input(readsc['steps'][0]['input']);require(digest(raw)==readsc['steps'][0]['input']['sha256'],'exact fixture descriptor custody changed');return sc
++ require(digest(read(GENERATOR))==GENERATOR_SHA,'existing atomic issuer source changed');sc=scenario(case);readsc=scenario(case.replace('-recall','-read'));tester=load_tester();tester.validate_scenario(sc)
++ # No run/deadline exists in this read-only pre-admission check. Match v42's
++ # read-only custody callsites; the real sender still passes self.guard(run).
++ raw=tester.read_document_input(readsc['steps'][0]['input'],lambda:None);require(digest(raw)==readsc['steps'][0]['input']['sha256'],'exact fixture descriptor custody changed');return sc
+ 
+ def history(case):
+  sc=scenario(case);rid=CASES[case][0];step=sc['steps'][0];text=step.get('request',step.get('input',{}).get('caption'));sha=step.get('input',{}).get('sha256');records=[];unresolved={};duplicates=[]
+@@ -90,7 +93,11 @@
+ 
+ def contract(case):return {'status':'ROOT_BOUND_ACTUAL202','case':case,'run_id':CASES[case][0],'adapter':pin(HERE/'adapter.py'),'current_gate':pin(HERE/'gate202.py'),'installed_review':pin(PROOF)}
+ 
+-def successor(case,authority,authority_id):return a.successor(read(BASE).decode(),case,authority,authority_id,contract(case))
++def successor(case,authority,authority_id):
++ require(type(authority)is dict and set(authority)=={'path','bytes','sha256'},'exact authority reference required')
++ # Canonical binding JSON sorts keys; preserve the original pin/repr byte order.
++ authority={key:authority[key]for key in('path','bytes','sha256')}
++ return a.successor(read(BASE).decode(),case,authority,authority_id,contract(case))
+ 
+ def authority_doc(path,case,obs,issue):
+  p=Path(path);require(p.parent==CHAIN and re.fullmatch(r'INDEPENDENT-AUTHORITY-R[0-9]+\.json',p.name),'existing canonical authority chain required');raw,doc=exact(p);require(raw==encoded(doc),'authority canonical bytes required');a.shape(case,CASES[case][0],scenario(case),doc)
