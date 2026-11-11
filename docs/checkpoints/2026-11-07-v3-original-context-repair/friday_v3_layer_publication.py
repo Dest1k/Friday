@@ -61,6 +61,7 @@ LAYER_NAMES = (
     "docx-odt-output-after-source196",
     "odf-reverse-output-after-source197",
     "dashboard-native-status-after-source198",
+    "ods-calc-retained-source-profile-after-source199",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -812,14 +813,22 @@ def current_source_request_bytes(request, request_path, request_sha256):
         require("current_source_successor" not in request,
                 "transaction_current_source_context_required")
         return None
-    require(type(context) is dict and set(context) == {"schema", "root_project_update"}
-            and context["schema"] == "friday.current-source-native-successor.v1",
-            "transaction_current_source_context_required")
-    ref = context["root_project_update"]
-    require(type(ref) is dict and set(ref) == {"path", "sha256"}
-            and type(ref["path"]) is str and type(ref["sha256"]) is str
-            and __import__("re").fullmatch("[0-9a-f]{64}", ref["sha256"]),
-            "transaction_current_source_root_reference_required")
+    require(type(context) is dict, "transaction_current_source_context_required")
+    if context.get("schema") == "friday.current-source-native-successor.v1":
+        require(set(context) == {"schema", "root_project_update"},
+                "transaction_current_source_context_required")
+        references = ("root_project_update",)
+    else:
+        require(context.get("schema") == "friday.current-source-native-successor.v2"
+                and set(context) == {"schema", "root_project_update", "previous_native_update"},
+                "transaction_current_source_context_required")
+        references = ("root_project_update", "previous_native_update")
+    for name in references:
+        ref = context[name]
+        require(type(ref) is dict and set(ref) == {"path", "sha256"}
+                and type(ref["path"]) is str and type(ref["sha256"]) is str
+                and __import__("re").fullmatch("[0-9a-f]{64}", ref["sha256"]),
+                "transaction_current_source_root_reference_required")
     path = Path(request_path)
     require(path.is_absolute() and str(path) == str(path.resolve()),
             "transaction_current_source_request_path_required")

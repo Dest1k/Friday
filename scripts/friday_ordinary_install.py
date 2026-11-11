@@ -2544,9 +2544,17 @@ def project_current_request_metadata(request):
         'ordinary_project_current198_explicit_request_required')
 
 
-# One authenticated native CP edge after the current198 project transaction.
+# At most two authenticated native CP edges after the current198 project transaction.
 # Neither a future request digest nor a future input digest is compiled here.
 CURRENT_SOURCE_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v1'
+CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v2'
+CURRENT_SOURCE_SECOND_LAYER = 'ods-calc-retained-source-profile-after-source199'
+CURRENT_SOURCE_SECOND_NATIVE = {
+    'tools/scoped_ods.py':('25569a964ee65dbe7ea7ee7dabbfa199c503b039725451e13e479cbd32b66df7',
+        'f31e03b82395e8fc6fb873d2b080e252de4912a2fa9562a61ad6b3f262411cc5'),
+    'tools/scoped_spreadsheet_conversion.py':('2afbe63a166449e6b8acc0b907def046f01735b6c7690c9facbeba92958b9d03',
+        '2b87906e30a590ec1e145edeb50e841d0161519147fe12a4069fe246bc2be040'),
+}
 CURRENT_SOURCE_CP_FIELDS = frozenset({'schema','seconds','home','previous_input','current_input',
     'candidate_input','candidate_project','marker','source_receipt','target_receipt','stamp',
     'configuration','profile','launcher','native_unit','transaction_history','predecessor_request',
@@ -2699,7 +2707,74 @@ def _current_source_cp_proof(home, tx, request, *, committed):
 
 
 def current_native_source_successor_checked(value, *, cli_only, source_update=None):
-    """One immediate native198 -> native199 CP continuation; no old parser fallback."""
+    """The committed v6 root, one CP199 edge and at most one exact ODS CP200 edge."""
+    f = api()
+    if type(value) is not dict or type(value.get('home')) is not str:
+        f.require(source_update is None,'ordinary_current_successor_value_required'); return None
+    home = f.canonical(value['home'])
+    tx_root = home/'preparation'/('ordinary-source-update-'+PROJECT_DSH_CURRENT_INPUT)
+    if source_update is None and not os.path.lexists(tx_root): return None
+    f.require(cli_only is True,'ordinary_project_current_source_cli_only_required'); f.directory(home)
+    if source_update is None:
+        root_intent = _current_source_json(tx_root/'intent.json')
+        f.require(type(root_intent) is dict,'ordinary_current_successor_root_intent_required')
+        _,root_value = _project_current_root_checked(home,root_intent.get('request_reference'))
+        if encoded(value) == encoded(root_value): return None
+        leaf_ref = f.read_json(home/f.MARKER).get('ordinary_gateway',{}).get('operator_entry',{}).get('input')
+        _current_source_reference(leaf_ref)
+        tx = _current_source_cp_transactions(home,leaf_ref)
+        f.require(tx is not None,'ordinary_current_successor_committed_edge_required')
+        request = _current_source_json(tx/'request.json')
+    else:
+        request = source_update
+    _current_source_request_metadata(request,home)
+    context = request['current_source_successor']
+    if context.get('schema') == CURRENT_SOURCE_SUCCESSOR_SCHEMA:
+        return _current_native_source_edge_checked(value,cli_only=cli_only,source_update=source_update)
+    f.require(set(context) == {'schema','root_project_update','previous_native_update'}
+        and context.get('schema') == CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA,
+        'ordinary_current_successor_context_required')
+    prior_ref = context['previous_native_update']
+    prior_request = _current_source_json(_current_source_reference(prior_ref))
+    _current_source_request_metadata(prior_request,home)
+    f.require(encoded(prior_request['current_source_successor']) == encoded({
+        'schema':CURRENT_SOURCE_SUCCESSOR_SCHEMA,'root_project_update':context['root_project_update']})
+        and encoded(request['previous_input']) == encoded(prior_request['current_input']),
+        'ordinary_current_successor_prior_edge_required')
+    prior_tx = _current_source_cp_transactions(home,prior_request['current_input'])
+    f.require(prior_tx is not None and prior_ref['path'] == str(prior_tx/'request.json'),
+        'ordinary_current_successor_prior_canonical_request_required')
+    _current_source_cp_proof(home,prior_tx,prior_request,committed=True)
+    current_marker = _current_source_json(home/f.MARKER)
+    leaf = current_marker.get('input_sha256') == request['current_input']['sha256']
+    if leaf:
+        tx = _current_source_cp_transactions(home,request['current_input'])
+        f.require(tx is not None,'ordinary_current_successor_leaf_journal_required')
+        prior_marker = _current_source_json(tx/'before'/f.MARKER)
+    else:
+        prior_marker = current_marker
+    # The first edge's historical project/helper and native bytes no longer
+    # describe live source200. Its exact retained before/staged/journal facts do.
+    # Its marker projection still binds the original semantic configuration seal.
+    prior_value = _current_source_json(_current_source_reference(prior_request['current_input']))
+    prior = _current_native_source_edge_checked(prior_value,cli_only=cli_only,
+        source_update=prior_request,historical_marker=prior_marker)
+    return _current_native_source_edge_checked(value,cli_only=cli_only,
+        source_update=source_update,prior_edge=prior)
+
+
+def _current_source_request_metadata(request,home):
+    f = api()
+    f.require(type(request) is dict and set(request) == CURRENT_SOURCE_CP_FIELDS
+        and request['schema'] == 'friday.ordinary-telegram-source-update.v46'
+        and type(request['seconds']) is int and 30 <= request['seconds'] <= 7200
+        and request['home'] == str(home) and type(request['current_source_successor']) is dict,
+        'ordinary_current_successor_explicit_request_required')
+
+
+def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
+        historical_marker=None, prior_edge=None):
+    """Validate one bounded edge; historical mode returns facts, never admission."""
     f = api()
     if type(value) is not dict or type(value.get('home')) is not str:
         f.require(source_update is None,'ordinary_current_successor_value_required'); return None
@@ -2726,18 +2801,36 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
         and type(request['seconds']) is int and 30 <= request['seconds'] <= 7200
         and request['home'] == str(home),'ordinary_current_successor_explicit_request_required')
     context = request['current_source_successor']
-    f.require(type(context) is dict and set(context) == {'schema','root_project_update'}
-        and context['schema'] == CURRENT_SOURCE_SUCCESSOR_SCHEMA,
+    second = prior_edge is not None
+    f.require(type(context) is dict
+        and set(context) == ({'schema','root_project_update','previous_native_update'} if second
+            else {'schema','root_project_update'})
+        and context['schema'] == (CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA if second
+            else CURRENT_SOURCE_SUCCESSOR_SCHEMA)
+        and not (second and historical_marker is not None),
         'ordinary_current_successor_context_required')
     root_request,previous = _project_current_root_checked(home,context['root_project_update'])
+    previous_ref = root_request['current_input']
+    expected_before_receipt = PROJECT_DSH_CURRENT_RECEIPT
+    expected_before_stamp = PROJECT_DSH_CURRENT_STAMP
+    before_layers = 198
+    before_project_count = 477
+    if second:
+        previous = prior_edge['value']; previous_ref = prior_edge['request']['current_input']
+        expected_before_receipt = prior_edge['receipt_sha256']
+        expected_before_stamp = prior_edge['stamp_sha256']
+        before_layers = 199; before_project_count = 479
     _current_source_reference(request['previous_input']); _current_source_reference(request['current_input'])
     current = _current_source_json(Path(request['current_input']['path']))
     f.require(encoded(value) == encoded(current) and current.get('home') == str(home)
-        and encoded(request['previous_input']) == encoded(root_request['current_input'])
+        and encoded(request['previous_input']) == encoded(previous_ref)
         and request['previous_input']['sha256'] != request['current_input']['sha256']
         and request['previous_input']['path'] != request['current_input']['path']
         and encoded(request['candidate_input']) == encoded(request['current_input'])
-        and request['candidate_project'] == str(f.ROOT)
+        and type(request['candidate_project']) is str
+        and (historical_marker is not None
+            and str(f.canonical(request['candidate_project'])) == request['candidate_project']
+            or request['candidate_project'] == str(f.ROOT))
         and encoded({k:v for k,v in previous.items() if k != 'project_files'}) ==
             encoded({k:v for k,v in current.items() if k != 'project_files'}),
         'ordinary_current_successor_input_join_changed')
@@ -2756,14 +2849,15 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
             and all(c in '0123456789abcdef' for c in _current_source_reference_metadata['sha256']),
             'ordinary_current_successor_before_reference_changed')
     f.require(encoded(request['source_receipt']) == encoded(request['target_receipt'])
-        and request['source_receipt']['sha256'] == PROJECT_DSH_CURRENT_RECEIPT
-        and request['stamp']['sha256'] == PROJECT_DSH_CURRENT_STAMP
-        and type(request['installed_layers']) is int and request['installed_layers'] == 198
+        and request['source_receipt']['sha256'] == expected_before_receipt
+        and request['stamp']['sha256'] == expected_before_stamp
+        and type(request['installed_layers']) is int and request['installed_layers'] == before_layers
         and type(request['installed_files']) is int and request['installed_files'] == 17888
         and encoded(request['plugin_set']) == encoded([]) and encoded(request['plugin_additions']) == encoded([])
         and encoded(request['staged_files']) == encoded([]),'ordinary_current_successor_exact_native198_required')
-    marker = _current_source_json(home/f.MARKER)
+    marker = historical_marker if historical_marker is not None else _current_source_json(home/f.MARKER)
     leaf = marker.get('input_sha256') == request['current_input']['sha256']
+    f.require(historical_marker is None or leaf,'ordinary_current_successor_historical_leaf_required')
     for key,name in {'configuration':'config.yaml','profile':'FRIDAY-PROFILE.json',
             'launcher':'hermes-agent/.hermes/bin/hermes'}.items():
         if key == 'configuration' and leaf:
@@ -2781,11 +2875,13 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
     f.require(type(names) is list and len(names) == 1 and type(names[0]) is str
         and names[0] and all(c in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in names[0]),
         'ordinary_current_successor_one_layer_required')
+    f.require(not second or names == [CURRENT_SOURCE_SECOND_LAYER],
+        'ordinary_current_successor_exact_second_layer_required')
     manifest_name = 'patches/hermes/'+names[0]+'-manifest.json'; patch_name = 'patches/hermes/'+names[0]+'.patch'
     old = previous['project_files']; files = current['project_files']
     f.require(type(old) is dict and type(files) is dict,'ordinary_current_successor_project_inventory_required')
     changes = {n for n in old if files.get(n) != old[n]}
-    f.require(type(files) is dict and len(old) == 477 and len(files) == 479
+    f.require(type(files) is dict and len(old) == before_project_count and len(files) == before_project_count + 2
         and set(files) == set(old) | {manifest_name,patch_name}
         and manifest_name not in old and patch_name not in old
         and changes <= PROJECT_DSH_CURRENT_HELPERS
@@ -2799,13 +2895,16 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
         f.require(type(name) is str and not path.is_absolute() and name == path.as_posix()
             and not any(part in ('.','..') for part in path.parts)
             and type(expected) is str and len(expected) == 64 and all(c in '0123456789abcdef' for c in expected)
-            and f.digest(f.owned_file(f.ROOT/name)) == expected,'ordinary_current_successor_project_pin_changed')
+            and (historical_marker is not None and name in PROJECT_DSH_CURRENT_HELPERS
+                or f.digest(f.owned_file(f.ROOT/name)) == expected),
+            'ordinary_current_successor_project_pin_changed')
     f.require(Path(f.__file__).resolve() == f.ROOT/'scripts/friday_install.py'
         and Path(__file__).resolve() == f.ROOT/PROJECT_DSH_CURRENT_HELPER,
         'ordinary_current_successor_helper_origin_changed')
     required = {str(p.relative_to(f.ROOT)) for relative in ('plugins/friday_rework','patches/hermes')
         for p in (f.ROOT/relative).rglob('*') if p.is_file() or p.is_symlink()}
-    f.require(required <= set(files),'ordinary_current_successor_extra_project_file')
+    f.require(historical_marker is not None or required <= set(files),
+        'ordinary_current_successor_extra_project_file')
     manifest = _current_source_json(f.ROOT/manifest_name,private=False)
     f.require(type(manifest) is dict and manifest.get('patch') == patch_name and manifest.get('patch_sha256') == files[patch_name]
         and type(manifest.get('files')) is list and manifest['files'],
@@ -2817,20 +2916,24 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
         'ordinary_current_successor_manifest_paths_changed')
     if tx is None: tx = _current_source_cp_transactions(home,request['current_input'])
     intent = commit = None
-    if tx is not None: intent,commit = _current_source_cp_proof(home,tx,request,committed=source_update is None)
+    if tx is not None: intent,commit = _current_source_cp_proof(home,tx,request,
+        committed=source_update is None or historical_marker is not None)
     f.require(source_update is not None or leaf,'ordinary_current_successor_current_marker_required')
     f.require(not leaf or tx is not None,'ordinary_current_successor_leaf_journal_required')
     before_receipt = _current_source_json(tx/'before/hermes-agent.source.json') if leaf else _current_source_json(home/'hermes-agent.source.json')
+    if second:
+        f.require(encoded(before_receipt) == encoded(prior_edge['receipt']),
+            'ordinary_current_successor_prior_receipt_changed')
     before_marker = _current_source_json(tx/'before'/f.MARKER) if leaf else marker
     before_stamp = _current_source_json(tx/'before/hermes-agent/install-stamp.json') if leaf else _current_source_json(source/'install-stamp.json')
     if not leaf:
         for key in ('source_receipt','marker','stamp'): _current_source_reference(request[key])
-    f.require(len(before_receipt.get('layers',[])) == 198 and len(before_receipt.get('files',{})) == 17888
+    f.require(len(before_receipt.get('layers',[])) == before_layers and len(before_receipt.get('files',{})) == 17888
         and type(before_receipt.get('source_file_count')) is int and before_receipt['source_file_count'] == 17730
         and manifest.get('base_commit') == before_receipt.get('commit')
         and before_marker.get('input_sha256') == request['previous_input']['sha256']
-        and before_marker.get('source_receipt_sha256') == PROJECT_DSH_CURRENT_RECEIPT
-        and before_marker.get('ordinary_gateway',{}).get('source_receipt_sha256') == PROJECT_DSH_CURRENT_RECEIPT
+        and before_marker.get('source_receipt_sha256') == expected_before_receipt
+        and before_marker.get('ordinary_gateway',{}).get('source_receipt_sha256') == expected_before_receipt
         and encoded(before_marker.get('ordinary_gateway',{}).get('operator_entry',{}).get('input')) == encoded(request['previous_input'])
         and encoded(before_stamp.get('fridaySource')) == encoded({'baseTree':before_receipt['base_tree'],'layers':before_receipt['layers']})
         and encoded(before_stamp.get('commit')) == encoded(before_receipt['commit']) and before_stamp.get('dirty') is True,
@@ -2844,7 +2947,13 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
         'ordinary_current_successor_previous_operator_changed')
     if not leaf:
         _current_source_reference(previous_script)
+    if second:
+        f.require(encoded(before_marker) == encoded(prior_edge['marker'])
+            and encoded(before_stamp) == encoded(prior_edge['stamp']),
+            'ordinary_current_successor_prior_metadata_changed')
     expected_receipt = json.loads(json.dumps(before_receipt)); expected_files = expected_receipt['files']
+    f.require(not second or {row['path'] for row in rows} == set(CURRENT_SOURCE_SECOND_NATIVE),
+        'ordinary_current_successor_exact_second_native_scope_required')
     for row in rows:
         name = row['path']; prior = expected_files.get(name)
         f.require(type(row.get('new_file')) is bool and row['new_file'] is (prior is None)
@@ -2853,19 +2962,25 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
             and type(row.get('sha256')) is str and len(row['sha256']) == 64
             and all(c in '0123456789abcdef' for c in row['sha256']),
             'ordinary_current_successor_native_preimage_changed')
+        if second:
+            f.require(row['new_file'] is False
+                and (row['before_sha256'],row['sha256']) == CURRENT_SOURCE_SECOND_NATIVE[name],
+                'ordinary_current_successor_exact_second_native_images_required')
         after = dict(prior) if prior is not None else {}
         after.update({'sha256':row['sha256'],'bytes':row['bytes'],'mode':'100644'}); expected_files[name] = after
     expected_receipt['layers'].append({'manifest':manifest_name,'manifest_sha256':files[manifest_name],
         'patch_sha256':files[patch_name]})
     expected_receipt['sources_lock_sha256'] = current['sources_lock']['sha256']
-    receipt = _current_source_json(home/'hermes-agent.source.json'); receipt_sha = f.digest(f.owned_file(home/'hermes-agent.source.json',private=True))
-    stamp = _current_source_json(source/'install-stamp.json')
+    receipt_path = tx/'hermes-agent.source.json' if historical_marker is not None else home/'hermes-agent.source.json'
+    stamp_path = tx/'install-stamp.json' if historical_marker is not None else source/'install-stamp.json'
+    receipt = _current_source_json(receipt_path); receipt_sha = f.digest(f.owned_file(receipt_path,private=True))
+    stamp = _current_source_json(stamp_path)
     expected_stamp = dict(before_stamp)
     expected_stamp['fridaySource'] = {'baseTree':expected_receipt['base_tree'],'layers':expected_receipt['layers']}
     selected = request['current_input'] if leaf else request['previous_input']; selected_files = files if leaf else old
     f.require(encoded(receipt) == encoded(expected_receipt if leaf else before_receipt)
         and encoded(stamp) == encoded(expected_stamp if leaf else before_stamp)
-        and (not leaf or len(receipt['layers']) == 199)
+        and (not leaf or len(receipt['layers']) == before_layers + 1)
         and (commit is None or commit['source_receipt_sha256'] == receipt_sha),
         'ordinary_current_successor_native_after_changed')
     if intent is not None:
@@ -2885,7 +3000,8 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
         expected_marker['input_sha256'] = request['current_input']['sha256']; expected_marker['source_receipt_sha256'] = receipt_sha
         expected_marker['ordinary_gateway']['source_receipt_sha256'] = receipt_sha
         expected_marker['ordinary_gateway']['operator_entry'] = {'input':request['current_input'],
-            'script':{'path':str(f.ROOT/'scripts/friday_native.py'),'sha256':files['scripts/friday_native.py']}}
+            'script':{'path':str(Path(request['candidate_project'])/'scripts/friday_native.py'),
+                'sha256':files['scripts/friday_native.py']}}
         # Keep the published CP afterimage immutable and exact. The native
         # five-file declaration writer later refreshes only the root config's
         # raw serialization pin; native ordinary.check deliberately validates
@@ -2903,8 +3019,11 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
             and f.owned_file(tx/'FRIDAY-INSTALL.json',private=True) == encoded(expected_marker)
             and encoded(source_marker) == encoded(expected_marker)
             and f.digest(f.owned_file(tx/'hermes-agent.source.json',private=True)) == receipt_sha
-            and f.digest(f.owned_file(tx/'install-stamp.json',private=True)) == f.digest(f.owned_file(source/'install-stamp.json',private=True)),
+            and f.digest(f.owned_file(tx/'install-stamp.json',private=True)) == f.digest(f.owned_file(stamp_path,private=True)),
             'ordinary_current_successor_metadata_afterimage_changed')
+    if historical_marker is not None:
+        return {'request':request,'value':current,'receipt':receipt,'receipt_sha256':receipt_sha,
+            'stamp':stamp,'stamp_sha256':f.digest(f.owned_file(stamp_path,private=True)),'marker':marker}
     checked_plugin_inventory(home,plugins)
     lock = _current_source_json(_current_source_reference(current['sources_lock']))
     donors = {row['id']:row for row in lock['repositories']}
