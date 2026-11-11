@@ -1,0 +1,195 @@
+--- F/embedded_entry.py
++++ T/embedded_entry.py
+@@ -64,7 +64,7 @@
+    frames.append(dict(file=code.co_filename,line=tb.tb_lineno,function=name if len(name)<=128 and (name.isidentifier() or name=='<module>') else 'REDACTED'))
+   tb=tb.tb_next
+  kind=type(exc).__name__
+- error=dict(status='ERROR',exception_class=kind if len(kind)<=128 and kind.isidentifier() else 'REDACTED',phase=producer_phase,source_frames=frames,traceback_truncated=tb is not None,exception_messages_or_locals_saved=False)
++ error=dict(status='ERROR',exception_class=kind if len(kind)<=128 and all(part.isidentifier() for part in kind.split('.')) else 'REDACTED',phase=producer_phase,source_frames=frames,traceback_truncated=tb is not None,exception_messages_or_locals_saved=False)
+  error['location_file_save_failed']=False
+  try:save(attempt/'PRODUCER-ERROR-LOCATION.json',error)
+  except Exception:error['location_file_save_failed']=True
+--- F/f06_contract.py
++++ T/f06_contract.py
+@@ -30,7 +30,7 @@
+ def utcmoscow():return datetime.datetime.now(MOSCOW).isoformat()
+ 
+ def operation(key,mode):
+- need((mode=='preflight' and key=='preflight-g1') or (mode=='generate' and key=='generate-g5') or (mode=='verify-inputs' and re.fullmatch('verify-inputs-[a-z0-9]{1,32}',key) is not None),'OPERATION_KEY')
++ need((mode=='preflight' and key=='preflight-g1') or (mode=='generate' and key=='generate-g6') or (mode=='verify-inputs' and re.fullmatch('verify-inputs-[a-z0-9]{1,32}',key) is not None),'OPERATION_KEY')
+  return B/'operations'/key
+ 
+ def unit_name(key):
+@@ -122,7 +122,7 @@
+  obj=json.loads(raw);rows=obj.get('fixtures',[])
+  need(obj.get('schema')=='friday.f06.reconciled-existing-inputs.v1' and obj.get('semantic')=='ALPHA17','RECONCILE_SCHEMA')
+  need(type(obj.get('known_prefix_count')) is int and obj['known_prefix_count']==len(rows) and 1<=len(rows)<=7,'RECONCILE_PREFIX')
+- custody=operation('generate-g5','generate')/'work'/'encrypted-inputs'
++ custody=operation('generate-g6','generate')/'work'/'encrypted-inputs'
+  need(obj.get('custody_root')==str(custody),'RECONCILE_ORIGINAL_CUSTODY')
+  safe_dir(custody);actual=[]
+  for i,row in enumerate(rows):
+--- F/office_fixture_driver.py
++++ T/office_fixture_driver.py
+@@ -108,7 +108,7 @@
+   provider=remote.ServiceManager.createInstanceWithContext('com.sun.star.configuration.ConfigurationProvider',remote)
+   config=provider.createInstanceWithArguments('com.sun.star.configuration.ConfigurationUpdateAccess',(prop('nodepath','/org.openoffice.Office.Common/Save/ODF'),))
+  def profile(version):
+-  config.setPropertyValue('DefaultVersion',uno.Any('short',version));config.commitChanges()
++  uno.invoke(config,'setPropertyValue',('DefaultVersion',uno.Any('short',version)));config.commitChanges()
+   if config.getPropertyValue('DefaultVersion')!=version:raise ValueError('odf_profile_readback')
+  def envelope(path,fmt,compatible):
+   if fmt in ('docx','xlsx','pptx'):
+--- F/root_frame.py
++++ T/root_frame.py
+@@ -192,7 +192,7 @@
+ def proof(row):return c.runtime_pin_check(row)
+ 
+ RETAINED_PREFLIGHT_ROOT=Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-ROOT-OFFICE-GENERATION-20261111')
+-REVIEWED_CHANGED_FILES=['embedded_entry.py','f06_contract.py','inside_once.py','root_frame.py']
++REVIEWED_CHANGED_FILES=['embedded_entry.py','f06_contract.py','inside_once.py','office_fixture_driver.py','root_frame.py']
+ RETAINED_PREFLIGHT_PINS='4242f4ea8bfe6110e53103b88696058a4a286cbf78a4d0591846672574b27a66'
+ RETAINED_PREFLIGHT_FILES={
+  'source_pins':('SOURCE-PINS.json',RETAINED_PREFLIGHT_PINS),
+@@ -246,65 +246,92 @@
+  need(closure['parent_pid']==parent['root_pid']==final['parent_pid'] and closure['parent_starttime']==parent['root_starttime'] and final['state']=='EXACT_PREFLIGHT_PARENT_REAPED_AND_SHARED_SLOT_FREE' and final['parent_absent'] is True and final['shared_slot_reacquired_and_released'] is True and final['same_unit_actors']==[] and final['operation_reexecuted'] is False,'RETAINED_PREFLIGHT_PARENT_SLOT_CLOSURE')
+  return reuse
+ 
+-MISSING_STAGE_ROOT=Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-PIPE-OBSERVER-FIX-20261111')
+-MISSING_STAGE_PRIOR_SOURCE='6cbe587b02b0dfec40a7fb1111aa373a768a96351cda8b69e9ffa68310893f75'
+-MISSING_STAGE_CLOSURE_SHA='d3f96a917c78b3e82c8b297ad263a88b04dce7cca480d747404c97395fd0ebf1'
+-MISSING_STAGE_FILES={'ROOT-RESULT.json': '88bfa1b837bafa8556fbb1702c7f75fb990b4a4fcb89516a56475391aa0451d0', 'UNIT-RESULT.json': '6c9253bc7ae69d9c7e36d4734f9dd49380ab3b29e121917b8247cc0123f73d55', 'PARENT-BINDING.json': 'f5e99a7cf0e258395831b16086cf3a9eca31fe48b2a13cabf861b39fd584e5ab', 'work/INSIDE-RESULT.json': 'f96f86e56415c3286bece2e02961e43afcd16af4429292b9744c031782a16e9f', 'work/attempt-2/CLIENT-READY.json': '2ac8e3248e86e8346d2ebd6a4e3ecb8b165f8392554b0ec0b6f8bbf60ec54597', 'work/attempt-2/PIPE-OBSERVATION.json': '7d16339842e6c55302a454246fb6090ca05484036b8cbbd27f54803216d91275', 'work/attempt-2/PIPE-OWNERSHIP-ACCEPTED.json': '76309741d14faac5ac4a59e64f4364935ea107bbd045020752e04835b4fa4d35', 'work/attempt-2/PRODUCER-ENTERED.json': '96daa440eb36ee039f8c0031e81b6e8c1832f72b7c1662bf704481c9d4d6d946', 'work/attempt-2/client.stdout.private': 'f687e298652364015e08992984dbd06b706f51bce9193c4f3886a03475ef114c'}
+-PRODUCER_CONTEXT_CHANGED_FILES=['embedded_entry.py','f06_contract.py','root_frame.py']
+-LOADER_COMPARISON_ROOT=Path('/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-PRODUCER-LOADER-COMPARISON-ONCE')
+-LOADER_COMPARISON_SHA='c93b0667a9230f139385ed1d25b8437d7d6496c017df5629190294efa0946750'
+-LOADER_COMPARISON_CLOSURE_SHA='ab05838cee4196355c53826441dc374c14997917de8e6103872d3ffafa7f68ae'
++MISSING_STAGE_ROOT=Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-PRODUCER-CONTEXT-DIAGNOSIS-20261111')
++MISSING_STAGE_PRIOR_SOURCE='a0e821bef60afba529381f48402299ccc6a2a7a6c87649216bb6dec07b63c6cb'
++TYPED_SETTER_CHANGED_FILES=['embedded_entry.py','f06_contract.py','office_fixture_driver.py','root_frame.py']
++MISSING_STAGE_CLOSURE_RELATIVE='operations/generate-g5/ROOT-G5-EMPTY-STAGE-OWNER-PAUSE-CLOSURE.json'
++MISSING_STAGE_CLOSURE_SHA='282a83223bd56443827d87401005367a6051b8aeec6a86aeffda6b58290af76f'
++TYPED_SETTER_POLICY=dict(property='DefaultVersion',invocation='uno.invoke',method='setPropertyValue',typed_argument='short',commitChanges=True,readback_values=[10,3])
+ BOOTSTRAP_POLICY=dict(profile='fresh_factory_private',max_Office_starts=3,max_successfully_connected_producers=1,continuation_only_after_actual_wait81=True,continuation_before_any_CLIENT_READY=True,prior_both_children_reaped=True,prior_owned_pipe_closed=True,same_original_absolute_operation_deadline=True,actual_zero_components_before_producer=True,own_endpoint_parent_accept_before_producer=True,old_g2_Office_exit='NOT_RECORDED_BY_OLD_OBSERVER',generic_further_generation=False)
+ 
++def empty_prior_directory(row):
++ # Historical g5 did mkdir/credential handling. It produced no document bytes.
++ # Match the actual empty directory, including identity, without altering it.
++ path=MISSING_STAGE_ROOT/'operations/generate-g5/work/encrypted-inputs'
++ need(set(row)=={'path','identity','entries'} and row['path']==str(path) and row['entries']==[],'MISSING_STAGE_EMPTY_DIRECTORY_PIN')
++ c.safe_dir(path);before=c.identity(path.lstat())
++ need(before==row['identity'] and list(path.iterdir())==[] and c.identity(path.lstat())==before,'MISSING_STAGE_EMPTY_DIRECTORY_CHANGED')
++
++TYPED_SETTER_DIAGNOSTIC_ROOT=Path('/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-TYPED-SETTER-DIAGNOSTIC-ONCE')
++TYPED_SETTER_DIAGNOSTIC_FILES={
++ 'source_pins':('SOURCE-PINS.json','865002d12a3c5c4f5e028ca4d6d624b3fc1e95609d0fc62af652fa10349210c2'),
++ 'diagnostic_result':('work/TYPED-SETTER-DIAGNOSTIC.json','2722ec83836fa78b9d45e636777e8de2672982e6ca30cc23ef0bf84e0e26fc0a'),
++ 'diagnostic_closure':('ROOT-RESULT.json','8f7484e68d08845fd3c091facbc294ca130e8a451580a4a4473ad8df832e4385')}
++
++def typed_setter_diagnostic(row):
++ # The actual fixed no-document contrast is reused; never replay it. A Root
++ # acceptance of these exact receipts is distinct from future stage admission.
++ need(row is not None and row['path']==str(B/'TYPED-SETTER-DIAGNOSTIC-ACCEPTANCE.json'),'TYPED_SETTER_DIAGNOSTIC_REQUIRED')
++ raw,p=c.private(row['path'],B);need(all(p[k]==row[k] for k in ('bytes','sha256','identity')),'TYPED_SETTER_DIAGNOSTIC_ACCEPTANCE_PIN');accepted=json.loads(raw)
++ need(accepted['schema']=='friday.f06.Root-typed-setter-diagnostic-acceptance.v1' and accepted['state']=='ROOT_ACCEPTED_DOCUMENT_FREE_TYPED_SETTER_DIAGNOSTIC','TYPED_SETTER_DIAGNOSTIC_ACCEPTANCE')
++ need(accepted['prior_source_pins_sha256']==MISSING_STAGE_PRIOR_SOURCE and accepted['typed_setter_policy']==TYPED_SETTER_POLICY and accepted['runtime_or_application_PASS'] is False,'TYPED_SETTER_DIAGNOSTIC_SCOPE')
++ need(set(accepted['evidence'])==set(TYPED_SETTER_DIAGNOSTIC_FILES),'TYPED_SETTER_DIAGNOSTIC_EVIDENCE_SET');observed={};pins={}
++ for name,(relative,sha) in TYPED_SETTER_DIAGNOSTIC_FILES.items():
++  r=accepted['evidence'][name];path=TYPED_SETTER_DIAGNOSTIC_ROOT/relative
++  need(r['path']==str(path),'TYPED_SETTER_DIAGNOSTIC_EXACT_PATH')
++  raw,p=c.private(path,TYPED_SETTER_DIAGNOSTIC_ROOT);need(p['sha256']==sha and all(p[k]==r[k] for k in ('bytes','sha256','identity')),'TYPED_SETTER_DIAGNOSTIC_EVIDENCE_PIN');observed[name]=json.loads(raw);pins[name]=p
++ result=observed['diagnostic_result'];closed=observed['diagnostic_closure']
++ expected_rows=[dict(version=10,before=3,direct_result='EXCEPTION',direct_exception_class='com.sun.star.uno.RuntimeException',after_direct=3,invoke_readback=10,invoke_pass=True),dict(version=3,before=10,direct_result='EXCEPTION',direct_exception_class='com.sun.star.uno.RuntimeException',after_direct=10,invoke_readback=3,invoke_pass=True)]
++ need(result['schema']=='friday.f06.typed-setter-diagnostic.v1' and result['rows']==expected_rows and result['all_pass'] is True and result['component_count_after']==0,'TYPED_SETTER_DIAGNOSTIC_ACTUAL_READBACKS')
++ need(all(result[k]==0 for k in ('document_loads','stores','password_probes','credential_reads','credential_mounts')) and result['exception_messages_or_locals_saved'] is False and result['configuration_scope']=='own fresh profile only' and result['not_product_or_F06_acceptance'] is True,'TYPED_SETTER_DIAGNOSTIC_NO_DOCUMENTS_OR_SECRETS')
++ need(closed['state']=='TYPED_SETTER_CONTRAST_KNOWN_CLOSED_PASS_NO_DOCUMENTS' and closed['source_pins_sha256']==pins['source_pins']['sha256'] and closed['diagnostic_ref']==pins['diagnostic_result'] and closed['diagnostic_all_pass'] is True,'TYPED_SETTER_DIAGNOSTIC_CLOSURE_JOIN')
++ need(closed['child_exit']==0 and closed['child_reaped'] is True and closed['owned_children_closed'] is True and closed['owned_pipes_closed'] is True and closed['slot_reacquired_and_released'] is True and closed['original_generation_replayed'] is False,'TYPED_SETTER_DIAGNOSTIC_KNOWN_CLOSED')
++ need(all(closed[k]==0 for k in ('document_loads','stores','password_probes','credential_reads','credential_mounts')),'TYPED_SETTER_DIAGNOSTIC_CLOSED_SCOPE')
++ return accepted
++
+ def missing_document_stage(a,review):
+- # Exact Root-selected new operation after proved context repair. G4 really
+- # entered the producer; only its seven document jobs remain unperformed.
+- need(a['mode']=='generate' and a['operation_key']=='generate-g5','MISSING_STAGE_EXACT_OPERATION')
++ # Exact successor only. Closed g5 effects/clocks remain consumed; no automatic
++ # fallback, replay, preflight, profile replacement or later generation.
++ need(a['mode']=='generate' and a['operation_key']=='generate-g6','MISSING_STAGE_EXACT_OPERATION')
+  row=a['missing_stage_authority']
+  need(row==review.get('missing_stage_authority') and row['path']==str(B/'MISSING-DOCUMENT-STAGE-AUTHORITY.json'),'MISSING_STAGE_REVIEW_BINDING')
+  raw,pin=c.private(row['path'],B);need(all(pin[k]==row[k] for k in ('bytes','sha256','identity')),'MISSING_STAGE_AUTHORITY_PIN');authority=json.loads(raw)
+- need(authority['schema']=='friday.f06.Root-producer-context-missing-document-authority.v1' and authority['state']=='ROOT_ACCEPTED_EXACT_PRODUCER_CONTEXT_FIX_MISSING_DOCUMENT_STAGE_ONLY','MISSING_STAGE_AUTHORITY')
+- need(authority['prior_source_pins_sha256']==MISSING_STAGE_PRIOR_SOURCE and authority['new_source_pins_sha256']==a['source_pins_sha256'] and authority['changed_source_files']==PRODUCER_CONTEXT_CHANGED_FILES,'MISSING_STAGE_SOURCE_MAPPING')
+- need(authority['prior_operation_key']=='generate-g4' and authority['new_operation_key']==a['operation_key'] and authority['new_unit']==c.unit_name(a['operation_key']) and authority['limits']==c.LIMITS,'MISSING_STAGE_UNIT_LIMITS')
+- need(authority['bootstrap_policy']==BOOTSTRAP_POLICY and authority['producer_execution_context']==dict(run_name='f06_producer_library',preserve_existing_main_module=True,explicit_main_call_once=True,unchanged_producer_sha256='795812f55fc8324b10a3810befad53b8ac3f932f924e6d45a59b690fe145bb8e'),'MISSING_STAGE_EXACT_EXECUTION_CONTEXT')
++ need(authority['schema']=='friday.f06.Root-typed-setter-missing-document-authority.v1' and authority['state']=='ROOT_ACCEPTED_EXACT_TYPED_SETTER_FIX_MISSING_DOCUMENT_STAGE_ONLY','MISSING_STAGE_AUTHORITY')
++ need(authority['prior_source_pins_sha256']==MISSING_STAGE_PRIOR_SOURCE and authority['new_source_pins_sha256']==a['source_pins_sha256'] and authority['changed_source_files']==TYPED_SETTER_CHANGED_FILES,'MISSING_STAGE_SOURCE_MAPPING')
++ need(authority['prior_operation_key']=='generate-g5' and authority['new_operation_key']==a['operation_key'] and authority['new_unit']==c.unit_name(a['operation_key']) and authority['limits']==c.LIMITS,'MISSING_STAGE_UNIT_LIMITS')
++ need(authority['bootstrap_policy']==BOOTSTRAP_POLICY and authority['producer_execution_context']==dict(run_name='f06_producer_library',preserve_existing_main_module=True,explicit_main_call_once=True) and authority['typed_setter_policy']==TYPED_SETTER_POLICY,'MISSING_STAGE_EXACT_EXECUTION_CONTEXT')
+  need(authority['original_operation_replay'] is False and authority['original_clocks_reset'] is False and authority['preflight_reexecuted'] is False and authority['prior_failure_preserved'] is True and authority['remaining_document_count']==7 and authority['remaining_stores']==7 and authority['remaining_password_probes']==21,'MISSING_STAGE_SCOPE')
+- need(authority['g4_producer_entered'] is True and authority['g4_credential_read_status']=='MAY_HAVE_BEEN_READ' and authority['g4_original_exception_location']=='NOT_RECORDED_BY_ORIGINAL_WRAPPER' and authority['old_g2_Office_exit']=='NOT_RECORDED_BY_OLD_OBSERVER','MISSING_STAGE_HONEST_PRIOR_FACTS')
+- evidence_specs=(('prior_source_pins',MISSING_STAGE_ROOT/'SOURCE-PINS.json',MISSING_STAGE_ROOT,MISSING_STAGE_PRIOR_SOURCE),('zero_document_closure',MISSING_STAGE_ROOT/'operations/generate-g4/ROOT-G4-ZERO-DOCUMENT-STAGE-AND-CLOSURE.json',MISSING_STAGE_ROOT,MISSING_STAGE_CLOSURE_SHA),('loader_comparison',LOADER_COMPARISON_ROOT/'work/LOADER-COMPARISON.json',LOADER_COMPARISON_ROOT,LOADER_COMPARISON_SHA),('loader_comparison_closure',LOADER_COMPARISON_ROOT/'ROOT-RESULT.json',LOADER_COMPARISON_ROOT,LOADER_COMPARISON_CLOSURE_SHA))
+- need(set(authority['evidence'])=={r[0] for r in evidence_specs},'MISSING_STAGE_EVIDENCE_SET');observed={}
+- for name,path,root,sha in evidence_specs:
+-  row=authority['evidence'][name];need(row['path']==str(path),'MISSING_STAGE_EXACT_EVIDENCE_PATH')
+-  raw,p=c.private(path,root);need(p['sha256']==sha and all(p[k]==row[k] for k in ('bytes','sha256','identity')),'MISSING_STAGE_EVIDENCE_PIN');observed[name]=json.loads(raw)
++ need(authority['g5_producer_entered'] is True and authority['g5_credential_read_status']=='MAY_HAVE_BEEN_READ' and authority['g5_observed_exception_class']=='REDACTED_BY_SAVED_WRAPPER','MISSING_STAGE_HONEST_PRIOR_FACTS')
++ specs=(('prior_source_pins',MISSING_STAGE_ROOT/'SOURCE-PINS.json',MISSING_STAGE_PRIOR_SOURCE),('empty_document_closure',MISSING_STAGE_ROOT/MISSING_STAGE_CLOSURE_RELATIVE,MISSING_STAGE_CLOSURE_SHA))
++ need(set(authority['evidence'])=={r[0] for r in specs},'MISSING_STAGE_EVIDENCE_SET');observed={}
++ for name,path,sha in specs:
++  r=authority['evidence'][name];need(r['path']==str(path),'MISSING_STAGE_EXACT_EVIDENCE_PATH')
++  raw,p=c.private(path,MISSING_STAGE_ROOT);need(p['sha256']==sha and all(p[k]==r[k] for k in ('bytes','sha256','identity')),'MISSING_STAGE_EVIDENCE_PIN');observed[name]=json.loads(raw)
+  oldfiles={r['name']:r for r in observed['prior_source_pins']['files']};newfiles={r['name']:r for r in json.loads(c.private(B/'SOURCE-PINS.json',B)[0])['files']}
+- need(set(oldfiles)==set(newfiles) and sorted(k for k in oldfiles if oldfiles[k]!=newfiles[k])==PRODUCER_CONTEXT_CHANGED_FILES,'MISSING_STAGE_EXACT_REVIEWED_SOURCE_DELTA')
+- closure=observed['zero_document_closure']
+- need(closure['schema']=='friday.f06.Root-g4-zero-document-stage-custody.v1' and closure['state']=='GENERATION_G4_CLOSED_AFTER_OWNERSHIP_AND_PRODUCER_ENTRY_SYSTEMERROR_BEFORE_DOCUMENT_DIRECTORY' and closure['original_source_pins_sha256']==MISSING_STAGE_PRIOR_SOURCE,'MISSING_STAGE_CLOSURE_SCHEMA')
+- need(closure['actual_root_parent_absent'] is True and closure['actual_unit_actors']==[] and closure['actual_shared_slot_reacquired_and_released'] is True and closure['original_operation_replay'] is False and closure['original_clocks_reset'] is False,'MISSING_STAGE_KNOWN_CLOSURE')
+- need(closure['Office_starts_consumed']==closure['client_starts_consumed']==2 and closure['actual_first_natural_Office_exit']==81 and closure['actual_second_Office_cleanup_exit']==-9 and closure['actual_second_client_exit']==2,'MISSING_STAGE_ACTUAL_G4_EXITS')
+- need(closure['actual_empty_component_count']==0 and closure['actual_pipe_listener_count']==closure['actual_pipe_connected_count']==1 and closure['producer_permissions']==1 and closure['producer_entered'] is True and closure['producer_exception_class']=='SystemError' and closure['producer_original_exception_location']=='NOT_RECORDED_BY_ORIGINAL_WRAPPER','MISSING_STAGE_ACTUAL_G4_PRODUCER_ENTRY')
+- need(all(closure[k]==0 for k in ('Office_input_document_loads','encrypted_stores','password_probes')) and closure['encrypted_output_directory_absent'] is True,'MISSING_STAGE_ZERO_DOCUMENT_CUSTODY')
+- for field,name in (('context_comparison','loader_comparison'),('context_comparison_root_closure','loader_comparison_closure')):
+-  need(all(closure[field][k]==authority['evidence'][name][k] for k in ('path','bytes','sha256')),'MISSING_STAGE_CAUSAL_EVIDENCE_JOIN')
+- need(set(closure['evidence'])==set(MISSING_STAGE_FILES),'MISSING_STAGE_CLOSED_EVIDENCE_SET');reports={}
+- for relative,sha in MISSING_STAGE_FILES.items():
+-  row=closure['evidence'][relative];need(row['path']==str(MISSING_STAGE_ROOT/'operations/generate-g4'/relative),'MISSING_STAGE_CLOSED_EXACT_PATH')
+-  raw,p=c.private(row['path'],MISSING_STAGE_ROOT);need(p['sha256']==sha and all(p[k]==row[k] for k in ('bytes','sha256','identity')),'MISSING_STAGE_CLOSED_EVIDENCE_PIN');reports[relative]=json.loads(raw)
+- root=reports['ROOT-RESULT.json'];unit=reports['UNIT-RESULT.json'];inside=reports['work/INSIDE-RESULT.json'];parent=reports['PARENT-BINDING.json'];ready=reports['work/attempt-2/CLIENT-READY.json']
++ need(set(oldfiles)==set(newfiles) and sorted(k for k in oldfiles if oldfiles[k]!=newfiles[k])==TYPED_SETTER_CHANGED_FILES,'MISSING_STAGE_EXACT_REVIEWED_SOURCE_DELTA')
++ closure=observed['empty_document_closure']
++ need(closure['schema']=='friday.f06.Root-g5-empty-document-stage-ownerpause.v1' and closure['state']=='G5_ALL_ACTORS_CLOSED_EMPTY_OUTPUT_DIRECTORY_OWNER_PAUSED' and closure['source_pins_sha256']==MISSING_STAGE_PRIOR_SOURCE,'MISSING_STAGE_CLOSURE_SCHEMA')
++ need(closure['actual_root_parent_absent'] is True and closure['actual_unit_actors']==[] and closure['actual_shared_slot_reacquired_and_released'] is True,'MISSING_STAGE_KNOWN_CLOSURE')
++ need(closure['encrypted_directory_created'] is True and all(closure[k]==0 for k in ('encrypted_files','document_loads','stores','password_probes')) and closure['observed_exception_class']=='REDACTED_BY_SAVED_WRAPPER','MISSING_STAGE_ZERO_DOCUMENT_CUSTODY')
++ expected_frames=[dict(file='/recipe/embedded_entry.py',line=56,function='<module>'),dict(file='/recipe/office_fixture_driver.py',line=176,function='main'),dict(file='/recipe/office_fixture_driver.py',line=111,function='profile')]
++ need(closure['observed_source_frames']==expected_frames,'MISSING_STAGE_ACTUAL_G5_FRAMES')
++ expected={'ROOT-RESULT.json','UNIT-RESULT.json','PARENT-BINDING.json','work/INSIDE-RESULT.json','work/attempt-2/PRODUCER-ERROR-LOCATION.json'}
++ need(set(closure['evidence'])==expected,'MISSING_STAGE_CLOSED_EVIDENCE_SET');reports={}
++ for relative,r in closure['evidence'].items():
++  path=MISSING_STAGE_ROOT/'operations/generate-g5'/relative;need(r['path']==str(path),'MISSING_STAGE_CLOSED_EXACT_PATH')
++  raw,p=c.private(path,MISSING_STAGE_ROOT);need(all(p[k]==r[k] for k in ('bytes','sha256','identity')),'MISSING_STAGE_CLOSED_EVIDENCE_PIN');reports[relative]=json.loads(raw)
++ root=reports['ROOT-RESULT.json'];unit=reports['UNIT-RESULT.json'];inside=reports['work/INSIDE-RESULT.json'];parent=reports['PARENT-BINDING.json'];error=reports['work/attempt-2/PRODUCER-ERROR-LOCATION.json']
+  need(root['state']=='ROOT_FINITE_UNIT_CLOSED' and root['actual_closure_observed'] is True and root['unit_result_exit']==1 and root['source_pins_sha256']==MISSING_STAGE_PRIOR_SOURCE and root['launch_attempts']==1,'MISSING_STAGE_ROOT_CLOSED_FAILURE')
+- need(root['operation_key']==unit['operation_key']=='generate-g4' and root['mode']==unit['mode']==inside['mode']=='generate' and root['unit']==unit['unit']==parent['unit']==c.unit_name('generate-g4') and root['boot_id']==parent['boot_id']==a['boot_id'] and parent['root_uid']==a['uid'],'MISSING_STAGE_OLD_OPERATION_JOIN')
++ need(root['operation_key']==unit['operation_key']=='generate-g5' and root['mode']==unit['mode']==inside['mode']=='generate' and root['unit']==unit['unit']==parent['unit']==c.unit_name('generate-g5') and root['boot_id']==parent['boot_id']==a['boot_id'] and parent['root_uid']==a['uid'],'MISSING_STAGE_OLD_OPERATION_JOIN')
+  need(unit['namespace_closed'] is True and unit['namespace_exit']==1 and unit['reason_code']=='NAMESPACE_TERMINAL_NONZERO' and abs(unit['original_unit_start_monotonic']-int(root['bound_unit']['ExecMainStartTimestampMonotonic'])/1e6)<.000002 and unit['cgroup']==root['bound_cgroup'],'MISSING_STAGE_NAMESPACE_JOIN')
+- need(inside['Office_starts']==inside['client_starts']==2 and inside['producer_permissions']==1 and inside['owned_children_closed'] is True and inside['owned_pipes_closed'] is True and inside['cleanup_errors']==[],'MISSING_STAGE_INSIDE_CLOSED_FAILURE')
+- need(len(inside['attempts'])==2,'MISSING_STAGE_TWO_ACTUAL_ATTEMPTS');first,second=inside['attempts']
+- need(first['Office_exit']==81 and first['Office_exit_observed_by_wait'] is True and first['Office_terminal_before_cleanup'] is True and first['client_ready'] is False and first['matching_socket_files']==[],'MISSING_STAGE_FIRST_ACTUAL_WAIT81')
+- need(second['Office_exit']==-9 and second['client_exit']==2 and second['Office_exit_observed_by_wait'] is True and second['client_exit_observed_by_wait'] is True and second['client_ready'] is True and second['pipe_accepted'] is True and second['producer_entered'] is True,'MISSING_STAGE_SECOND_ACTUAL_ENTRY_ERROR')
+- need(all(r['owned_children_closed'] is True and r['owned_pipe_closed'] is True and not r['document_phase_exists'] for r in (first,second)),'MISSING_STAGE_ATTEMPT_ZERO_DOCUMENTS_CLOSED')
+- need(ready['state']=='CONNECTED_ZERO_COMPONENTS_NO_DOCUMENT_OR_SECRET' and type(ready['component_count']) is int and ready['component_count']==0 and ready['pipe']==second['pipe'] and ready['pid']==second['client_birth']['pid'] and ready['starttime']==second['client_birth']['starttime'],'MISSING_STAGE_ACTUAL_READY_ZERO_COMPONENTS_JOIN')
+- entered=reports['work/attempt-2/PRODUCER-ENTERED.json'];need(entered['pipe']==ready['pipe'] and entered['pid']==ready['pid'] and entered['document_loads_yet']==0,'MISSING_STAGE_ACTUAL_PRODUCER_MARKER')
+- need(reports['work/attempt-2/client.stdout.private']==dict(status='ERROR',exception_class='SystemError'),'MISSING_STAGE_ORIGINAL_ERROR_CLASS_ONLY')
+- contrast=observed['loader_comparison'];good,bad=contrast['rows']
+- need(good==dict(style='custom_module_direct_main',status='PREFIX_PASS_NO_DOCUMENT_LOGIC') and bad['style']=='runpy___main__' and bad['status']=='PREFIX_EXCEPTION' and bad['exception_class']=='SystemError','MISSING_STAGE_CONTROLLED_LOADER_CONTRAST')
+- need(dict(file='/recipe/producer_prefix.py',line=89,function='main') in bad['frames'] and dict(file='/opt/friday-document-toolchain/root/usr/lib/libreoffice/program/uno.py',line=373,function='_uno_import') in bad['frames'] and contrast['source_boundary']=='outassignment/mkdir and alljobs excluded' and contrast['documents']==contrast['stores']==0 and contrast['messages_and_locals_saved'] is False,'MISSING_STAGE_CONTROLLED_PREFIX_LOCATION')
+- closed=observed['loader_comparison_closure']
+- need(closed['state']=='DISTINCT_PREFIX_LOADER_COMPARISON_KNOWN_CLOSED_NO_DOCUMENTS' and closed['original_producer_sha256']=='795812f55fc8324b10a3810befad53b8ac3f932f924e6d45a59b690fe145bb8e' and closed['original_stop_before_line']==165 and closed['owned_children_and_pipes_closed'] is True and closed['original_generations_replayed'] is False and closed['no_document_or_store_code_in_prefix'] is True,'MISSING_STAGE_CONTROLLED_CONTRAST_KNOWN_CLOSED')
++ need(inside['Office_starts']==inside['client_starts']==2 and inside['producer_permissions']==1 and inside['owned_children_closed'] is True and inside['owned_pipes_closed'] is True and inside['cleanup_errors']==[] and len(inside['attempts'])==2,'MISSING_STAGE_INSIDE_CLOSED_FAILURE')
++ first,second=inside['attempts']
++ need(first['Office_exit']==81 and first['Office_exit_observed_by_wait'] is True and first['Office_terminal_before_cleanup'] is True and first['client_ready'] is False and first['producer_entered'] is False and first['document_phase_exists'] is False,'MISSING_STAGE_FIRST_ACTUAL_WAIT81')
++ need(second['Office_exit']==-9 and second['client_exit']==2 and second['Office_exit_observed_by_wait'] is True and second['client_exit_observed_by_wait'] is True and second['client_ready'] is True and second['pipe_accepted'] is True and second['producer_entered'] is True and second['document_phase_exists'] is True,'MISSING_STAGE_SECOND_ACTUAL_PROFILE_ERROR')
++ need(all(r['owned_children_closed'] is True and r['owned_pipe_closed'] is True for r in (first,second)),'MISSING_STAGE_ATTEMPTS_CLOSED')
++ need(error==dict(status='ERROR',exception_class='REDACTED',phase='producer_main',source_frames=expected_frames,traceback_truncated=False,exception_messages_or_locals_saved=False,location_file_save_failed=False),'MISSING_STAGE_ORIGINAL_REDACTED_ERROR')
++ empty_prior_directory(authority['prior_empty_directory'])
++ typed_setter_diagnostic(authority['typed_setter_diagnostic_acceptance'])
+  return authority
+ 
+ def validate_admission(path,sha):
