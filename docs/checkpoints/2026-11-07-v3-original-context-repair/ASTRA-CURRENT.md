@@ -1,15 +1,14 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 00:19 МСК**. **OWNER PAUSE для переключения Астры на Fast.**
-[Native readback](evidence/astra-20261111/owner-pause-20261112-final-native.json): тот же goal/thread
-`01a1c688-e36d-7021-8df4-9c5644a4d75b` **paused**; история/учёт сохранены, общего cap нет.
-[Дневная редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json) была active до owner pause; это исторический readback.
-Нативные очереди Root/Sol пусты, автоматическое goal-продолжение выключено. До новой команды владельца не возобновлять.
-Астра — sole lead/live-интегратор; Сол — постоянный co-architect в своей прежней TUI.
-На финальном readback оба gpt-6.1-sol/ultra/Standard(default). Астра tier не меняла; владелец намерен включить Fast.
-После явного resume проверить фактически выбранный режим и обновить роль в goal без сброса истории; Сол остаётся Standard.
+Обновлено **12.11.2026, 00:34 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
+[Фактический native readback](ASTRA-FAST-RESUME-2026-11-12.json): тот же goal/thread
+`01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**; история/учёт сохранены, общего cap нет.
+[Дневная редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json) и [owner pause](evidence/astra-20261111/owner-pause-20261112-final-native.json)
+сохраняются как история. Новая команда владельца завершила паузу, роль в native objective обновлена без нового goal.
+Астра — sole lead/live-интегратор Fast; Сол — постоянный co-architect Standard в прежней TUI; оба gpt-6.1-sol/ultra.
+Сол продолжает то же незавершённое Task19 без повторного compact; его прежний leadershipgoal остаётся paused.
 
-Исходный HEAD этого чекпоинта — `464ec30dfba4ddd79ed8d29baa759a5fea86c5ad`.
+Исходный HEAD возобновления — `ec3ffc57b94af456c9d41a16a5128dd4f15966b7`.
 Новый SHA — содержащий эту сводку локальный коммит, без self-hash.
 `origin/main(tracking)=48de25314b76528b8525674097947a45750c46d3` — последняя проверенная публикация, не свежий remoteSHA.
 **Владелец подтвердил GitHub недоступен. Только локальные коммиты; fetch/ls-remote/API/push не делать до его сообщения о восстановлении.**
@@ -25,7 +24,7 @@ Dashboard175894/start1460381, прежниеInvocationID/active/enabled/NRestart
 [Telegram/3DB quick_checkOK/leases0 снимок19:40](evidence/astra-20261111/post-m14-current203-services.json) — история, не новый допуск.
 Постоянные сервисы не останавливались. DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
 
-**Приоритет после resume: основной функционал Friday → DSH → A0; полный170/120/B00 сохраняется.**
+**Приоритет: основной функционал Friday → DSH → A0; полный170/120/B00 сохраняется.**
 [Исходный scope и ledgers](DSH-RESUME-2026-11-10.md#7-объём-v3); не заменять реестры новым параллельным учётом.
 [Предыдущая активная сводка](ASTRA-ACTIVE-2026-11-11.md) — подробная история, не очередь на повтор.
 
@@ -34,16 +33,17 @@ Dashboard175894/start1460381, прежниеInvocationID/active/enabled/NRestart
    G4 SystemError локализован контролируемым prefix-контрастом: runpy(__main__) скрывал pyuno_runtime; исходный G4 trace не записан.
    Context-fix a0e821 прошёл review и actualG5 дошёл до profile(line111): direct setPropertyValue с uno.Any.
    Сохранённая ошибка имеет classREDACTED, sourceframes main176/profile111; output directory создан **пустым**, load/store/probe0.
-   Primarypyuno source запрещает directAny/указывает uno.invoke; сравнение typedsetter **NOT_RUN**, исправление не начато.
-   После resume: контролируемая проверка setter без документов → согласованный sourcefix/review и безопасный qualifiedclass observer
-   → только реально недостающий этап7stores/21probes с новой свежей authority. Старые preflight/g1..g5 не переигрывать/часы не сбрасывать.
+   [Actual typedsetter diagnostic](evidence/astra-20261111/f06-typed-setter-actual-diagnostic-20261112.json): directAny воспроизводит qualifiedRuntimeException,
+   uno.invoke/commit/readback10 и3 PASS, components0/loads0/stores0/secretmounts0; actors/pipe закрыты, slot освобождён.
+   Это новая отдельная диагностика, не ретроактивная запись класса G5. Minimal4file sourcefix и exact successor-only authority проходят review;
+   следующий шаг — реально недостающий этап7stores/21probes с новой свежей authority. Старые preflight/g1..g5 не переигрывать/часы не сбрасывать.
    [Код G5 сохранён как архив](drafts/f06-office-frame-g5/README.md), не установлен/не runnable-допуск и не F06 PASS.
-2. **Сол Task19 сохранён и остановлен.** [M1/M2 и приёмка](evidence/astra-20261111/f06-sol-m1-m2-source-checkpoint.json),
-   [его owner-pause](evidence/astra-20261111/owner-pause-20261112-final-native.json): прежняя TUI idle, старый leadershipgoal paused,
-   временные дети terminal, новых заданий нет. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
+2. **Сол Task19 возобновлён.** [M1/M2 и приёмка](evidence/astra-20261111/f06-sol-m1-m2-source-checkpoint.json),
+   [его owner-pause](evidence/astra-20261111/owner-pause-20261112-final-native.json) — история; C5 продолжает прежний Task19, старый leadershipgoal paused.
+   Текущий самостоятельный пакет — dormant Root readonly output-oracle frame M3; Root владеет producer/Office/приёмкой, области разнесены. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
    убирает известные технические дубликаты/логи пароля, не исходный приватный чат и не исторические БД.
-   M2 [metadata/oracle source](drafts/f06-oracle-handoff-m2/README.md) получен, Root-review canonical fix pending;
-   автоматическое followup-review отклонено possible cybersecurity risk, отказ сохранён/не обходился, приёмка не заявлена.
+   M2 [metadata/oracle source](drafts/f06-oracle-handoff-m2/README.md) получен; [Root приняла exact canonical fix](evidence/astra-20261111/f06-m2-canonical-root-delta-accepted-20261112.json).
+   Автоматическое followup-review ранее отклонено possible cybersecurity risk; отказ сохранён, отклонённый вызов не повторялся.
    Нужны реальные7байтов+Apporacle/physicalcustody/Root GRANT перед nativequalification. Она NOT_RUN/NOT_GRANTED.
    Readonly oracle тех же будущих native-output bytes требует отдельной Root-интеграции; ordinaryDOCX4singletons остаются UNBOUND.
 3. **204/205:** source/gates приняты, 205public5 локально подключены, оба **НЕ УСТАНОВЛЕНЫ**.
@@ -52,7 +52,7 @@ Dashboard175894/start1460381, прежниеInvocationID/active/enabled/NRestart
    → explicitone-layer204 install → same10723B consumer без model/Office/send → genuineCP204 →205. Не203→205.
    Privacy/M09 кандидаты не подключать ad-hoc вH; нужен штатный следующий native-переход после фактического префикса.
 4. **M09/CASE88:** [final review REQUEST_CHANGES](evidence/astra-20261111/m09-final-review-pending-root-delta.json),
-   [дельта](drafts/m09-reviewer-fix/README.md) сохранена; Root независимая приёмка2file fix ещё НЕ ВЫПОЛНЕНА.
+   [дельта](drafts/m09-reviewer-fix/README.md) сохранена; [Root независимо приняла2file fix](evidence/astra-20261111/m09-reviewer-fix-root-delta-accepted-20261112.json).
    Пять дефектов: B semanticSHA, durableleases, full180custody, gatewaybirth, metadata scalar/getter. Reviewer33controls не userPASS.
    ActualmanualA/ingress/summary/selectedprovider/once/admission remainUNBOUND, nativeopt-in не установлен.
    Старый инцидент4readonlyсканов/unknownfilecount/aggregatehash/atimeunmeasured и invalidzero-readreport сохранены.
