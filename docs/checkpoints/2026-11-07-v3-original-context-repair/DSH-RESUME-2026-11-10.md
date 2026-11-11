@@ -7,7 +7,7 @@
 
 Историческая передача 2026-11-10, МСК: DSH-сессия → Сол (временное принятие лидерства). Текущий ведущий — Астра, срез ниже.
 
-## Действующее продолжение Астры — 11.11.2026, 06:20 МСК
+## Действующее продолжение Астры — 11.11.2026, 06:38 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -15,6 +15,29 @@
 [объект и преемственность](ASTRA-GOAL-CONTINUATION-2026-11-10.json).
 Старые native goal Сола и DSH goal сохранены paused; UUID/накопленный учёт не переносились.
 Полные **170 кейсов / 120 расширений / B00**, варианты, регрессия и восстановление открыты.
+
+**Срез06:38: установлена native200 / project481 / 52plugins.**
+[Фактическая установка, fresh services и те же R100files](evidence/astra-20261111/native200-installed-ods-retained-core.json).
+Original1200maintenance06:26:58→06:29:01/123.249s, CP600/unit630; один явный2fileODSlayer,
+все17888nativefiles/199prefix/17886nontargetrows сохранены. Receiptbec142…43fb/inputd9ecfd…8dee.
+Fresh actual selectedPM DEFAULT spec/inspect PASS. Gateway1660371/start7297569/Telegramconnected,
+Dashboard1661394/start7303836/newInvocation769bed…4bb9/native nonceVERIFIED, enabled/active.
+Отдельный same-process TLS/HTML302/API401 readback PASS; root.env/config/profile/units сохранены,
+все3DBquick_checkOK/leases0/counts30:2,196:2,5487:5. У сервиса нет нового artificialTTL.
+Actual installed core на трёх прежних received/Calc marker/restore R100files: READ→edit201→restore
+PASS/0.202s, noncontent ZIPparts exact/staleexpected refused. Канонические байты не менялись;
+это узкая nativecore оценка, не новый Officecycle/ordinaryuser/formaltester PASS.
+
+CurrentD/T1/P/T2 и archive пустого H/pairing ещё NOT_RUN. Root200 намеренно не включалarchive:
+held3roles не исключают supported unbound pairingCLI. Следующий finite stopped boundary требует
+реального process census + Root soleintegrator/NoHwrites/no-own-pairinglaunch premise и exactCAS;
+новогоframework/kernel-lock/nativegrant не выдумывать. Root готовит callback, отдельный child —
+реальные durableQ/D/lateT1 inputs (18sourcepins и11694runtimeinputs; прежнее «8» было только числом
+семейств, а не точным количеством). Сол Standard уже локализовал RTFdefaultLeft cause и собрал
+минимальный компонент; ждём exactreviewed app/controlrecipe перед finite sharedslot grant.
+
+Все приведённые ниже199/source200-not-installed срезы — **история** их времени.
+Текущее installed/runtime определяется этим блоком; все старые эффекты и verdict сохранены.
 
 **Текущее установленное состояние: native199 / project479 / 52plugins.**
 [Установка и полные readback](evidence/astra-20261111/native199-installed-runtime.json):
@@ -1047,7 +1070,7 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 | `docs/checkpoints/2026-11-07-v2-bounded-diagnostics/PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md` | ?? (untracked) | Техническая заметка о переключении провайдера. Существовала до этого прохода. |
 | `docs/checkpoints/2026-11-07-v3-original-context-repair/FORMAT-COVERAGE-MAP.json` | ?? (untracked) | Карта покрытия форматов. Не входит в Git-дерево; исключена из SHA256SUMS. |
 
-## 2. Исторический runtime195 (10.11.2026; текущая199 и свежие наблюдения выше)
+## 2. Исторический runtime195 (10.11.2026; текущая200 и свежие наблюдения выше)
 
 | Предмет | Факт |
 |---|---|
