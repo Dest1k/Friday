@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 11.11.2026, 02:41 МСК
+## Действующее продолжение Астры — 11.11.2026, 03:36 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -31,8 +31,8 @@ actualLOCAL consumer PASS, остальные направления огран�
 выполняет `ASTRA-SOL-V3-DSH-COHERENT-REPAIR-20261111#1`: предыдущее конечное ревью
 завершено CHANGES_REQUIRED; принят цельный наборF1–F8, кандидат не установлен.
 [Ревью / actual static / новая задача](evidence/astra-20261111/dsh-coarchitect-coherent-repair-checkpoint.json).
-Root восстановил exactNode/CA/helper; currentDSH ещё не квалифицирован. M1/M2 Сола приняты,
-final coherent source/native review остаётся впереди.
+Root восстановил exactNode/CA/helper; currentDSH ещё не квалифицирован. M1/M2/M3 Сола приняты; реальный prospective source consumer5.03s PASS,
+final coherent source/native review и actualT1/P/T2 остаются впереди.
 [Текущий совместный срез](evidence/astra-20261111/dsh-coherent-repair-milestones.json). Standard/прежняя TUI/oldgoalpaused сохранены.
 Никакое maintenance-окно не открыто на ожидание ревью.
 
@@ -56,8 +56,37 @@ STOP_UNCONFIRMED сохранён; позже точные leftovers уже от
 Конкретный reserved ACCESS исправлен только в own macro. Bare compiler baseline прошёл,
 exact compile завершился SIG11; source-разбор выявил неподготовленный App-BASIC/VCL context.
 Точное место native сбоя не установлено; fixed/negatives не приняты.
-Готовится согласованный app-context recipe с durable phases; нового app admission ещё нет.
+Затем окончательный app-context recipe с mappedError5/prefix/deadline/pidfd принят; отдельная
+новая readonlyinspection03:06 завершена1.106s, не повтор producer/send, детали нового среза ниже.
 Исторические rawODP/fallback missingresource FAIL, sameR92 PARTIAL и wholeOffice ограничения сохранены.
+
+**Новый chart fallback: compiled candidate и два настоящих локальных результата, не установка.**
+[Компонент/draft/review](evidence/astra-20261111/office-chart-component-build.json): exactC++v2,
+105objects/104unchanged,2109exports/imports/DT_NEEDED/version/RUNPATH сохранены;1.872s build,
+411original inputs неизменны. Nativecomphelperc459…ee4 пока частный, canonicalOffice не менялся.
+[Real app state](evidence/astra-20261111/office-chart-real-application-state.json): same6455PPTX,
+chartalreadyRUNNING1/nonlink/internal/AddInnull, typednullBasic9; nativepreferred11240B/e820…9632,
+onecall/1.106s/CPU0.483/6phases/cleanup0/fullpinsunchanged. Originalfirstapp300 и barefailures сохранены.
+[Newcandidate conversion03:27](evidence/astra-20261111/office-chart-candidate-native-conversion.json):
+один init+PPTX→ODP /1.296s/CPU0.626,30482B/6e0425…7501. Единственный добавленный ZIPmember
+ObjectReplacements/Object 1 — ТОЧНО те же11240B/e820 nativevector; originalmembers не исчезли.
+Samebyte dataPASS/currentreferenceclosureclosedUNQUALIFIED; historical29345B/f321 FAIL неизменён.
+Новые profile/init/flags отличаютсяотстарогоcaller: не строгий onevariable causalproof.
+Binary/visual/style/appedit/fullOffice/product/formal/user acceptance ещё НЕ установлены.
+Currentproductdestination покаrejects inertoffice:scripts; точный generated-only consumer repair
+готовится, Source/untrusted guards не расширяются, новогоnativeproducer для оценки не нужно.
+
+**DSH M3 / Dashboard: реальные потребители и границы следующей установки.**
+[Source contract M3](evidence/astra-20261111/dsh-current-source-consumer-m3.json): actual prospective
+consumer прочиталSource198+currentconfig/TLS/credentials+477closurePASS5.03s без oldstaging readers;
+535PASS25FAIL/72subtests прежнегоgate сохранены. Exactcommonv6/authenticatedproof/2helpers,
+nativeCLI origin/финальный gate и immediate nextnative-source continuity остаются у СолаStandard.
+[Dashboard](evidence/astra-20261111/dashboard-current-native-admission-gap.json): listener/owner отсутствует,
+installedTLS присутствует. Standalone nativepreflight03:17 отказал credential_role_required ДО
+unit/start; guard не обходим. Staged --skip-build не разрешён exactargv; reattachCLI неreadonly.
+Узкий native dashboard--status/nonce+terminalno-start source fix готов:4existingmodules,
+11isolatedtests/independentreviewPASS; Root nativeintegrationreview впереди. Старый unsupportedunit
+не установлен; gateway1198290 не тронут. Никакой ShortWindow не открыт в ожидании.
 
 **Git.** При принятии HEAD = origin/main = remote main был
 `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
@@ -70,7 +99,8 @@ exact compile завершился SIG11; source-разбор выявил не�
 `bcb8241865a40b0d892444fd440c65f93815c151`; R100 с Calc evidence —
 `f441ab9c2751d1df6c4c4232bc1d6d0331e9a7ce`; Office partial/DSH blockers опубликованы в
 `ff83addc4aaaade0e8fcaa06a8f19419e97a98cb`; F1–F8/currentinput срез —
-`addd212a3e59d8083648d61ce35254a5971b363d` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+`addd212a3e59d8083648d61ce35254a5971b363d`; exact зависимости/закрытые harness отказы —
+`f1921d4f2eaac3a60623af1b9eb0de0ae56ecbec` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
@@ -330,19 +360,17 @@ Orientation/grouping — только LOprimary-source mapping, date/category di
 нужен для этой оценки; не дублировать closedэффекты Сола. **ODP→PPTX не FIRST**: V04sent2030/platform4095 уже был; wrongread/
 file_not_found/partialresponse сохранены, новыйversion не разрешает resend/replacement.
 
-**Текущая DSH availability — UNAVAILABLE**, независимо от исправногоOffice/gateway:
-[конкретные причины и подготовка восстановления](evidence/astra-20261111/dsh-current-readiness-repair-scope.json).
-Enabled testerworker ссылается на отсутствующие exactNode root (nodealias dangling), resolver иCA;
-webpolicy expired/otherboot, readiness receipt/runtimeinput/worker_web-source associations drift.
-Историческая принятая coding-задача/артефакт/followup не переигрываются. Source/staging Node exactSHA
-из официального signedarchive иCA exactSHA из retainedjob готовы; **ещё не восстановлены**. Exact
-resolver в boundedauthoritative search не найден; currentinputs proposal — отдельная будущая
-операция, не repinдляPASS. Root ведёт finite actualconsumer/postboot/readiness reconciliation и
-цельный минимальный repair до нового runtime допуска; Node-only install не равен availability.
-Причина/время удаления не установлены, старые policy/receipts/часы сохраняются. Source198,
-config/profile/gateway/данные ради диагноза не менялись, переезда/переустановки слоёв нет.
+**Текущая DSH availability — UNAVAILABLE**, при Source198/gateway healthy.
+ExactNode22/fullsupport иCA/helper восстановлены **02:33:54** (верхний proof);
+alias разрешается, все4750files/hashes/types/inode/3links verified, новыхслоёв не ставили.
+Старые webpolicy/boot/receipt/runtime/source associations ещё не currentqualification; originalresolver
+e6f… и дваoldinstall inputs не найденывboundedsearch. Отдельныйcurrentresolver574b stagedprivate,
+не выдаётсязаold. [ActualM3/defaultconsumer контракт](evidence/astra-20261111/dsh-current-source-consumer-m3.json):
+вместо rehydrationsecretrefs установленный sourceonly update сохраняетoldinputrefsinert, актуальные
+данные проверяетнаместе. Код покаowncandidate, finalgate/установка/currentT1/P/T2 ещё pending.
+Исторический coding artifact/followup/old clocks не повторяются. Причина удаления неизвестна.
 
-Сол завершил `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1`, RESULT1c9a85c3…7076 и41refs проверены;
+Исторический build-only срез: Сол завершил `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1`, RESULT1c9a85c3…7076 и41refs проверены;
 точный final peer item consumed. Full coherent LibreOfficeDev26.2.5.2 runtime779549647B/5114files,
 327ELF/28hostDSO closure,10nativeRTFsuites/566tests и один3.342s appbatchPASS:2prospectiveRTF
 fixtures/2edit-save-close-reopen cycles,Core4apps,R97DOCX/R98XLSX sameartifact privatecopies.
@@ -367,10 +395,11 @@ Private root0700 не доказывает canonical0500 selector. Общий sw
 того же finalreopen визуально читается, это не pixel/font/generalPDF proof. HistoricalR92/source/
 receipt/oldapplicationPARTIAL неизменны; model/producer/send/globalinstall0, ownprocesses0.
 
-**DSH: проверка кода native-пути выявила блокер до установки.**
+**История отказа первого DSH400 snapshot (до последующего M3), не текущая установка.**
 [Точный новый срез](evidence/astra-20261111/dsh-recovery-native-preflight-blocker.json).
 ПолныйNode support distribution5866members/4750files/196775086B/3relativealiases иCA проверены
-Root по всемhashes/types/modes/owners/links, канонически ещё не восстановлены. Оригинальный
+Root по всемhashes/types/modes/owners/links; тогда канонически ещё не восстановлены,
+затем actualrestore02:33 выполнен выше. Оригинальный
 prepfe1e… найден в retained native5599beforeimage с исходнымSHA; oldreceipts/clocks не переписаны.
 DSH source400snapshot3bb6610d… прошёл115+22subtests и independent119sourcechecks, но
 Root нашёл реальный blocker: native _workers_stopped всё ещё требует удаления/отсутствия

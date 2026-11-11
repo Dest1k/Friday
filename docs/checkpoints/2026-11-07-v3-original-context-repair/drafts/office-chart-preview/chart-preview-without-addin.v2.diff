@@ -1,0 +1,72 @@
+--- a/comphelper/source/container/embeddedobjectcontainer.cxx
++++ b/comphelper/source/container/embeddedobjectcontainer.cxx
+@@ -18,6 +18,8 @@
+  */
+ 
+ #include <com/sun/star/container/XChild.hpp>
++#include <com/sun/star/chart2/XChartDocument.hpp>
++#include <com/sun/star/util/XRefreshable.hpp>
+ #include <com/sun/star/container/XNameAccess.hpp>
+ #include <com/sun/star/embed/EmbeddedObjectCreator.hpp>
+ #include <com/sun/star/embed/WrongStateException.hpp>
+@@ -1179,6 +1181,49 @@
+     return true;
+ }
+ 
++// A running chart with its own data can render its preview without updating links.
++// Keep disabled active content, linked objects and unloaded objects excluded.
++static bool CanRenderRunningInternalChart(
++    const uno::Reference<embed::XEmbeddedObject>& xObj)
++{
++    if (officecfg::Office::Common::Security::Scripting::DisableActiveContent::get())
++        return false;
++
++    try
++    {
++        if (!xObj.is()
++            || xObj->getClassID() != MimeConfigurationHelper::GetSequenceClassID(SO3_SCH_CLASSID)
++            || xObj->getCurrentState() != embed::EmbedStates::RUNNING)
++            return false;
++
++        const uno::Reference<embed::XLinkageSupport> xLink(xObj, uno::UNO_QUERY);
++        if (!xLink.is() || xLink->isLink())
++            return false;
++
++        const uno::Reference<chart2::XChartDocument> xChart(xObj->getComponent(), uno::UNO_QUERY);
++        if (!xChart.is() || !xChart->hasInternalDataProvider())
++            return false;
++
++        // ChartView may refresh an AddIn while rendering even when link updates
++        // are forbidden. Only a known empty AddIn is eligible for this exception.
++        const uno::Reference<beans::XPropertySet> xProps(xObj->getComponent(), uno::UNO_QUERY);
++        if (!xProps.is())
++            return false;
++        const uno::Reference<beans::XPropertySetInfo> xInfo = xProps->getPropertySetInfo();
++        if (!xInfo.is() || !xInfo->hasPropertyByName(u"AddIn"_ustr))
++            return false;
++        const uno::Any aAddIn = xProps->getPropertyValue(u"AddIn"_ustr);
++        uno::Reference<util::XRefreshable> xAddIn;
++        if (aAddIn.hasValue() && !(aAddIn >>= xAddIn))
++            return false;
++        return !xAddIn.is();
++    }
++    catch (const uno::Exception&)
++    {
++        return false;
++    }
++}
++
+ bool EmbeddedObjectContainer::StoreAsChildren(bool _bOasisFormat,bool _bCreateEmbedded, bool _bAutoSaveEvent,
+                                               const uno::Reference < embed::XStorage >& _xStorage)
+ {
+@@ -1209,7 +1254,9 @@
+                         xStream = GetGraphicStream(xObj, &aMediaType);
+                     }
+ 
+-                    if (!xStream.is() && getUserAllowsLinkUpdate())
++                    if (!xStream.is()
++                        && (getUserAllowsLinkUpdate()
++                            || (_bOasisFormat && CanRenderRunningInternalChart(xObj))))
+                     {
+                         // the image must be regenerated
+                         // TODO/LATER: another aspect could be used
