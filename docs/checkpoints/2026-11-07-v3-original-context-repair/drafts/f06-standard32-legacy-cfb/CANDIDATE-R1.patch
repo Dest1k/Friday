@@ -1,0 +1,451 @@
+--- a/tools/scoped_ooxml_password.py
++++ b/tools/scoped_ooxml_password.py
+@@ -1,7 +1,7 @@
+-"""Bounded read-only ECMA-376 Agile AES/CBC OOXML password envelope.
++"""Bounded ECMA-376 Agile4.4 and Standard3.2 OOXML password envelopes.
+ 
+ CFB allocation parser specialized from tools.scoped_doc (Source129); no
+-legacy Office profiles are changed. Crypto follows MS-OFFCRYPTO 2.3.4.10-15
++legacy Office binary profiles are changed. Crypto follows MS-OFFCRYPTO 2.3.4.5-15
+ using installed Cryptodome AES and stdlib hashlib/hmac. No crypto algorithm
+ implementation or third-party source is vendored. See OOXML-PASSWORD-NOTES.md.
+ This module has no filesystem, subprocess, network or package installation.
+@@ -84,7 +84,7 @@
+         self.data = data
+         version = _u16(data, 26)
+         shift = _u16(data, 30)
+-        if (data[8:24] != b'\0' * 16 or _u16(data, 24) != 0x003E or version not in (3, 4)
++        if (data[8:24] != b'\0' * 16 or (_u16(data, 24), version) not in ((0x003B, 3), (0x003E, 3), (0x003E, 4))
+                 or _u16(data, 28) != 0xFFFE or shift != (9 if version == 3 else 12)
+                 or _u16(data, 32) != 6 or data[34:40] != b'\0' * 6
+                 or _u32(data, 56) != 4096):
+@@ -175,6 +175,10 @@
+             _fail('ooxml_cfb_clsid')
+         # Each storage has its own CFB red-black sibling tree. Every active
+         # entry must be reachable exactly once; storage cycles are forbidden.
++        # Allocation/name/order/reachability checks remain common. A narrowly
++        # admitted Standard3.2 two-stream legacy profile below may have the
++        # exact noncanonical sibling colors emitted by the retained producer.
++        tree_colors_invalid = False
+         forests = [(root[4], ())]
+         seen = {0}
+         streams = []
+@@ -195,9 +199,10 @@
+                 row = entries[idx]
+                 name, kind, left, right, child, clsid, start, size, color = row
+                 key = (len(name), name.upper())
+-                if ((low is not None and key <= low) or (high is not None and key >= high)
+-                        or (parent_red and color == 0) or (idx == first and color != 1)):
++                if (low is not None and key <= low) or (high is not None and key >= high):
+                     _fail('cfb_directory_tree')
++                if (parent_red and color == 0) or (idx == first and color != 1):
++                    tree_colors_invalid = True
+                 if name.casefold() in names or clsid != bytes(16):
+                     _fail('cfb_duplicate_or_clsid')
+                 names.add(name.casefold())
+@@ -217,7 +222,7 @@
+                 stack.extend(((left, low, key, color == 0, depth),
+                               (right, key, high, color == 0, depth)))
+             if len(leaf_depths) > 1:
+-                _fail('cfb_directory_tree')
++                tree_colors_invalid = True
+         if seen != {i for i, row in enumerate(entries) if row is not None}:
+             _fail('cfb_directory_orphan')
+         mini_table = self._chain(_u32(data, 60), self.fat, self.sector_size,
+@@ -249,7 +254,28 @@
+             _fail('cfb_unowned_minisector')
+         if not all((name,) in self.streams for name in ('EncryptionInfo', 'EncryptedPackage')):
+             _fail('ooxml_encryption_stream_missing')
+-        _dataspaces(self.streams, storages)
++        self.profile = 'agile4.4'
++        standard_shape = (version == 3 and not storages
++                          and set(self.streams) == {('EncryptionInfo',), ('EncryptedPackage',)})
++        if standard_shape and self.streams[('EncryptionInfo',)][:4] == struct.pack('<HH', 3, 2):
++            _standard_descriptor(self.streams[('EncryptionInfo',)])
++            # Compatibility is an explicit nonconforming color profile, not
++            # a claim that red siblings satisfy the strict CFB tree rules.
++            # Only this exact bounded flat topology may omit those color rules.
++            active = [i for i, row in enumerate(entries) if row is not None]
++            legacy_colors = (
++                _u16(data, 24) == 0x003B and active == [0, 1, 2]
++                and root[4] == 1 and root[8] == 0
++                and entries[1][0:5] == ('EncryptionInfo', 2, FREE, 2, FREE)
++                and entries[2][0:5] == ('EncryptedPackage', 2, FREE, FREE, FREE)
++                and entries[1][8] == entries[2][8] == 0)
++            if tree_colors_invalid and not legacy_colors:
++                _fail('cfb_directory_tree')
++            self.profile = 'standard3.2-aes128-sha1'
++        else:
++            if tree_colors_invalid:
++                _fail('cfb_directory_tree')
++            _dataspaces(self.streams, storages)
+ 
+     def _sector(self, sid):
+         if not 0 <= sid < self.sectors:
+@@ -457,6 +483,126 @@
+         _fail('ooxml_decrypted_package_invalid')
+ 
+ 
++# Source fragment for tools.scoped_ooxml_password. Existing imports/constants,
++# _fail, _round_block and _zip_preflight are used; no I/O is introduced.
++# Deliberately narrow support: Standard v3.2, Flags 0x24, AES-128, SHA-1,
++# CryptoAPI provider 24. Other Standard/CryptoAPI/RC4 profiles remain refused.
++
++
++def _standard_descriptor(data):
++    """Parse only the bounded Standard3.2 AES128/SHA1 descriptor.
++
++    header_bytes preserves the complete nonsecret prefix through the end of
++    EncryptionHeader, including the ignored Reserved1 and original CSP name.
++    This parser's exact flags/provider restrictions are support policy, not a
++    claim that MS-OFFCRYPTO disallows every other flag/provider combination.
++    """
++    if not isinstance(data, bytes) or not 118 <= len(data) <= MAX_DESCRIPTOR:
++        _fail('ooxml_encryption_descriptor_limit')
++    if data[:4] != struct.pack('<HH', 3, 2):
++        _fail('ooxml_encryption_version_unsupported')
++    outer_flags, header_size = struct.unpack_from('<II', data, 4)
++    # Eight DWORDs and one complete UTF-16 terminator; exactly one verifier.
++    if (header_size < 34 or header_size % 2
++            or header_size > MAX_DESCRIPTOR - 84
++            or len(data) != 12 + header_size + 72):
++        _fail('ooxml_encryption_descriptor')
++    flags, extra, alg, hash_alg, bits, provider, _reserved1, reserved2 = (
++        struct.unpack_from('<8I', data, 12))
++    if (outer_flags != 0x24 or flags != 0x24 or extra != 0
++            or alg != 0x660E or hash_alg != 0x8004
++            or bits != 128 or provider != 24 or reserved2 != 0):
++        _fail('ooxml_encryption_suite_unsupported')
++    csp = data[44:12 + header_size]
++    if not csp.endswith(b'\0\0'):
++        _fail('ooxml_encryption_descriptor')
++    try:
++        csp_name = csp[:-2].decode('utf-16le')
++    except UnicodeError:
++        _fail('ooxml_encryption_descriptor')
++    if not csp_name or '\0' in csp_name:
++        _fail('ooxml_encryption_descriptor')
++    at = 12 + header_size
++    salt_size = struct.unpack_from('<I', data, at)[0]
++    hash_size = struct.unpack_from('<I', data, at + 36)[0]
++    if salt_size != 16 or hash_size != 20:
++        _fail('ooxml_encryption_descriptor')
++    return {'profile': 'standard3.2-aes128-sha1',
++            'header_bytes': data[:at], 'salt': data[at + 4:at + 20],
++            'input': data[at + 20:at + 36], 'value': data[at + 40:at + 72]}
++
++
++def _standard_key(password, salt, check):
++    """MS-OFFCRYPTO 2.3.4.7: 50,000 SHA1 rounds and block number zero."""
++    if password is None:
++        _fail('ooxml_password_required')
++    # Supported Standard limit is255 Unicode code points (Agile unchanged).
++    if not isinstance(password, str) or len(password) > 255:
++        _fail('ooxml_password_invalid')
++    try:
++        encoded = password.encode('utf-16le')
++    except UnicodeError:
++        _fail('ooxml_password_invalid')
++    check()
++    value = hashlib.sha1(salt + encoded).digest()
++    for iteration in range(50000):
++        if iteration % 1024 == 0:
++            check()
++        value = hashlib.sha1(struct.pack('<I', iteration) + value).digest()
++    value = hashlib.sha1(value + struct.pack('<I', 0)).digest()
++    # For AES128 the required16 bytes come entirely from X1. X2 contributes
++    # only when more than20 bytes are required, outside this exact profile.
++    padded = bytes(byte ^ 0x36 for byte in value) + b'\x36' * (64 - len(value))
++    key = hashlib.sha1(padded).digest()[:16]
++    check()
++    return key
++
++
++def _standard_ecb_decrypt(data, key):
++    try:
++        from Cryptodome.Cipher import AES
++    except ImportError:
++        _fail('ooxml_encryption_crypto_unavailable')
++    return AES.new(key, AES.MODE_ECB).decrypt(data)
++
++
++def _standard_read(encrypted, params, password, check):
++    """Verify a supplied password and ZIP structure; Standard has no MAC.
++
++    Caller parsed params with _standard_descriptor and confines CFB topology.
++    StreamSize is the clear length. Padding bytes carry no authenticated
++    meaning and are ignored; PKCS#7 and zero padding are not required on read.
++    """
++    check()
++    if (not isinstance(encrypted, bytes) or len(encrypted) < 24
++            or (len(encrypted) - 8) % 16):
++        _fail('ooxml_encrypted_package_invalid')
++    size = struct.unpack_from('<Q', encrypted)[0]
++    if (not 1 <= size <= MAX_INPUT or len(encrypted) > MAX_INPUT
++            or len(encrypted) - 8 != _round_block(size)):
++        _fail('ooxml_encrypted_package_limit')
++    key = _standard_key(password, params['salt'], check)
++    verifier = _standard_ecb_decrypt(params['input'], key)
++    expected = _standard_ecb_decrypt(params['value'], key)[:20]
++    if not hmac.compare_digest(expected, hashlib.sha1(verifier).digest()):
++        _fail('ooxml_password_incorrect')
++    check()
++    clear = bytearray()
++    for at in range(8, len(encrypted), 4096):
++        check()
++        clear.extend(_standard_ecb_decrypt(encrypted[at:at + 4096], key))
++    output = bytes(clear[:size])
++    _zip_preflight(output, check)
++    check()
++    return output, {'encrypted': True,
++        'encryption': 'ECMA-376-Standard3.2-AES-ECB',
++        'encryption_profile': 'standard3.2-aes128-sha1',
++        'password_verified': True, 'data_integrity_verified': False,
++        'cryptographic_integrity': 'unavailable-in-profile',
++        'package_structure_verified': True,
++        'decrypted_output_published': False, 'read_only': True}
++
++
+ def prepare_read(data, format, password=None, *, checkpoint=None):
+     """Return immutable ZIP bytes and safe metadata, or refuse without text.
+ 
+@@ -474,7 +620,11 @@
+         _fail('ooxml_password_invalid')
+     if not data.startswith(CFB_SIGNATURE):
+         return data, None
+-    streams = _CFB(data).streams
++    envelope = _CFB(data)
++    streams = envelope.streams
++    if envelope.profile == 'standard3.2-aes128-sha1':
++        params = _standard_descriptor(streams[('EncryptionInfo',)])
++        return _standard_read(streams[('EncryptedPackage',)], params, password, check)
+     params, pwd = _descriptor(streams[('EncryptionInfo',)])
+     encrypted = streams[('EncryptedPackage',)]
+     if len(encrypted) < 24 or (len(encrypted) - 8) % 16:
+--- a/tools/scoped_ooxml_password_edit.py
++++ b/tools/scoped_ooxml_password_edit.py
+@@ -1,7 +1,7 @@
+-"""Memory-only re-protection for the bounded OOXML Agile reader profile.
++"""Memory-only re-protection for bounded Agile4.4 and Standard3.2 profiles.
+ 
+ AES is provided by installed Cryptodome. CFB writing is limited to the exact
+-six streams and four storages accepted by scoped_ooxml_password; no generic
++Agile six-stream/four-storage or Standard two-stream envelope; no generic
+ container or cryptographic implementation is included. Secrets and clear ZIP
+ bytes never leave this function except inside the returned encrypted envelope.
+ """
+@@ -26,10 +26,17 @@
+     return AES.new(key, AES.MODE_CBC, iv).encrypt(value)
+ 
+ 
+-def _cfb(streams, check):
++def _cfb(streams, check, *, standard=False):
+     """Write only the reader's fixed envelope, with canonical v3 geometry."""
+-    _read._dataspaces(streams, _read._STORAGES)
+-    paths = [()] + sorted(_read._STORAGES | set(streams), key=lambda p: (len(p), p))
++    storages = _read._STORAGES
++    if standard:
++        if set(streams) != {('EncryptionInfo',), ('EncryptedPackage',)}:
++            _read._fail('ooxml_standard_container_unsupported')
++        _read._standard_descriptor(streams[('EncryptionInfo',)])
++        storages = frozenset()
++    else:
++        _read._dataspaces(streams, storages)
++    paths = [()] + sorted(storages | set(streams), key=lambda p: (len(p), p))
+     ids = {p: i for i, p in enumerate(paths)}
+     rows = [bytearray(128) for _ in paths]
+     sectors, fat, mini, mini_fat = [], [], bytearray(), []
+@@ -70,7 +77,7 @@
+ 
+     # Fixed sibling forests, sorted by the CFB name ordering. The deepest
+     # incomplete level is red, giving equal black depth for every nil leaf.
+-    for parent in [()] + sorted(_read._STORAGES):
++    for parent in [()] + sorted(storages):
+         children = sorted((p for p in paths[1:] if p[:-1] == parent),
+                           key=lambda p: (len(p[-1]), p[-1].upper()))
+         red_level, remainder = 0, len(children) - 1
+@@ -179,13 +186,55 @@
+     return _cfb(replacement, check)
+ 
+ 
++# Source fragment for tools.scoped_ooxml_password_edit. Existing imports
++# hashlib, secrets, struct and _read are used. Parent owns canonical CFB output.
++
++
++def _reprotect_standard_streams(streams, clear, password, check):
++    """Return two Standard streams with the original suite and fresh randomness.
++
++    Caller verified original/password, preflighted replacement ZIP, and will
++    encrypt-only publish after a complete readback/byte comparison. Standard
++    protects confidentiality with AES128-ECB and verifies a password; neither
++    the verifier nor the ZIP CRC is cryptographic integrity of the package.
++    """
++    check()
++    if set(streams) != {('EncryptionInfo',), ('EncryptedPackage',)}:
++        _read._fail('ooxml_encryption_streams_unsupported')
++    if not isinstance(clear, bytes) or not 1 <= len(clear) <= _read.MAX_INPUT:
++        _read._fail('input_limit')
++    params = _read._standard_descriptor(streams[('EncryptionInfo',)])
++    salt, verifier = secrets.token_bytes(16), secrets.token_bytes(16)
++    # MS-OFFCRYPTO2.3.3 requires these independent values to be different.
++    if salt == verifier:
++        _read._fail('ooxml_reprotected_random_invalid')
++    key = _read._standard_key(password, salt, check)
++    try:
++        from Cryptodome.Cipher import AES
++    except ImportError:
++        _read._fail('ooxml_encryption_crypto_unavailable')
++    cipher = AES.new(key, AES.MODE_ECB)
++    descriptor = (params['header_bytes'] + struct.pack('<I', 16) + salt
++        + cipher.encrypt(verifier) + struct.pack('<I', 20)
++        + cipher.encrypt(hashlib.sha1(verifier).digest().ljust(32, b'\0')))
++    encrypted = bytearray(struct.pack('<Q', len(clear)))
++    for at in range(0, len(clear), 4096):
++        check()
++        block = clear[at:at + 4096]
++        encrypted.extend(cipher.encrypt(block.ljust(_read._round_block(len(block)), b'\0')))
++    if len(encrypted) > _read.MAX_INPUT:
++        _read._fail('ooxml_reprotected_package_limit')
++    check()
++    return {('EncryptionInfo',): descriptor, ('EncryptedPackage',): bytes(encrypted)}
++
++
+ def protect_like(original, clear, password, *, format, checkpoint=None):
+-    """Authenticate original; encrypt replacement ZIP with its exact suite.
++    """Verify original password/profile; encrypt replacement ZIP with its exact suite.
+ 
+     Returns encrypted bytes only. Uses the supplied password once per bounded
+     derivation, fresh random salts/verifier/package key/HMAC key, and the
+-    original independent keyData/password AES bit sizes, hashes and spin count.
+-    The existing reader authenticates and compares the final clear bytes before
++    original independent Agile keyData/password parameters or Standard AES128/SHA1.
++    The reader verifies the applicable integrity/structure and compares final bytes before
+     output is returned. No I/O, callbacks other than checkpoint, or metadata.
+     """
+     check = checkpoint if checkpoint is not None else lambda: None
+@@ -198,8 +247,13 @@
+         _read._fail('ooxml_password_required')
+     _read.prepare_read(original, format, password, checkpoint=check)
+     _read._zip_preflight(clear, check)
+-    streams = _read._CFB(original).streams
+-    output = _reprotect(streams, clear, password, check)
++    envelope = _read._CFB(original)
++    streams = envelope.streams
++    if envelope.profile == 'standard3.2-aes128-sha1':
++        replacement = _reprotect_standard_streams(streams, clear, password, check)
++        output = _cfb(replacement, check, standard=True)
++    else:
++        output = _reprotect(streams, clear, password, check)
+     check()
+     verified, metadata = _read.prepare_read(output, format, password, checkpoint=check)
+     if not metadata or not hmac.compare_digest(verified, clear):
+--- a/hermes_cli/friday_workspace_ooxml_password.py
++++ b/hermes_cli/friday_workspace_ooxml_password.py
+@@ -30,6 +30,8 @@
+     'Only the existing bounded native editor profiles are supported. '
+     'The original remains unchanged; the derivative is encrypted with the same supplied '
+     'password and fresh keys/salts. Never put passwords in names, prose, or receipts. '
++    'Agile requires authenticated integrity; Standard 3.2 AES-128/ECB SHA-1 verifies '
++    'only the password and package structure, without authenticated integrity. '
+     'An opening password does not authorize removing native edit restrictions: '
+     'locked, restricted, unsupported encryption, missing/wrong password and XLSB edits refuse. '
+     'No plaintext export, conversion, macro execution or visual/application validation is implied. '
+@@ -158,7 +160,8 @@
+         raise OOXMLPasswordError(str(error)) from None
+ 
+ 
+-def render_edit(data, profile, password, edit, *, checkpoint=None):
++def _render_edit_verified(data, profile, password, edit, *, checkpoint=None):
++    """Return encrypted bytes and source checks preserved by same-suite output."""
+     check = checkpoint if checkpoint is not None else lambda: None
+     check()
+     if type(edit) is not dict:
+@@ -174,7 +177,29 @@
+     from tools.scoped_ooxml_password_edit import protect_like
+     protected = protect_like(data, rendered, password, format=profile, checkpoint=check)
+     check()
++    return protected, metadata
++
++
++def render_edit(data, profile, password, edit, *, checkpoint=None):
++    """Keep the public pure-editor API: encrypted bytes only."""
++    protected, _ = _render_edit_verified(data, profile, password, edit, checkpoint=checkpoint)
+     return protected
++
++
++def _edit_metadata(metadata):
++    """Publish only content-free checks returned after successful verification.
++
++    Standard 3.2 has a password verifier but no authenticated data integrity.
++    A successful preserving edit cannot strengthen that original profile.
++    """
++    fields = ('encrypted', 'encryption', 'password_verified', 'data_integrity_verified',
++              'decrypted_output_published', 'encryption_profile', 'cryptographic_integrity',
++              'package_structure_verified')
++    result = {key: metadata[key] for key in fields if key in metadata}
++    if metadata.get('encryption_profile') == 'standard3.2-aes128-sha1':
++        result['integrity_notice'] = (
++            'Password verification and package structure checks do not authenticate document contents.')
++    return result
+ 
+ 
+ def create_edit(cap, fd, leaf, path, content):
+@@ -201,13 +226,13 @@
+             raise ScopeDenied()
+         if hashlib.sha256(data).hexdigest() != spec['source_sha256']:
+             _refuse('source_hash_mismatch')
+-        result = render_edit(data, profile, spec['password'], spec['edit'], checkpoint=lambda: check(cap))
++        result, metadata = _render_edit_verified(
++            data, profile, spec['password'], spec['edit'], checkpoint=lambda: check(cap))
+         check(cap)
+         return _publish(cap, fd, leaf, path, result, 'ooxml_password_edit', (source, data, identity),
+             {'source': relative, 'source_sha256': spec['source_sha256'], 'source_unchanged': True,
+-             'output_profile': profile, 'encrypted': True, 'password_verified': True,
++             'output_profile': profile, **_edit_metadata(metadata),
+              'same_password': True, 'encryption_parameters_preserved': True,
+-             'data_integrity_verified': True, 'decrypted_output_published': False,
+              'preserving_edit': True, 'macros_executed': False, 'macro_security_verified': False})
+     except ScopeDenied:
+         raise
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1901,8 +1901,8 @@
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] += _ZIP_ENCRYPTION_GUIDANCE
+ READ_FILE_SCHEMA["parameters"]["properties"]["password"]["description"] += " Also supports protected inert PDFs for read-only extraction when the document permits it; no decrypted output is published."
+ READ_FILE_SCHEMA["description"] += " For a protected PDF, pass the supplied password to read_file. Missing or wrong passwords and restricted extraction refuse explicitly. Original encrypted source hash is retained. pdf_form_fields and writes do not accept a PDF password."
+-READ_FILE_SCHEMA["parameters"]["properties"]["password"]["description"] += " Also supports read-only Agile AES/CBC encrypted OOXML in the own-user workspace; the supplied password and package HMAC are verified before extraction. No decrypted file is published."
+-READ_FILE_SCHEMA["description"] += " Protected DOCX/DOTX/DOCM/DOTM, XLSX/XLTX/XLSM/XLTM/XLSB and PPTX/POTX/PPSX/PPTM/POTM/PPSM support bounded Agile AES/CBC password reads. Pass only the user's supplied password. Wrong or missing password, unsupported encryption or damaged data refuse without partial content. Existing native format limits still apply; legacy binary Office encryption is unsupported. Use the separate ooxml_password_edit profile for bounded same-format encrypted edits."
++READ_FILE_SCHEMA["parameters"]["properties"]["password"]["description"] += " Also supports read-only Agile AES/CBC and Standard 3.2 AES-128/ECB SHA-1 encrypted OOXML in the own-user workspace. Agile verifies the supplied password and package HMAC; Standard verifies only the password and ZIP structure, without authenticated data integrity. No decrypted file is published."
++READ_FILE_SCHEMA["description"] += " Protected DOCX/DOTX/DOCM/DOTM, XLSX/XLTX/XLSM/XLTM/XLSB and PPTX/POTX/PPSX/PPTM/POTM/PPSM support bounded Agile AES/CBC and Standard 3.2 AES-128/ECB SHA-1 password reads. Pass only the user's supplied password. Agile requires HMAC authentication; Standard verifies only the password and ZIP structure, without authenticated data integrity. Wrong or missing password, unsupported encryption or failed checks refuse without partial content. Existing native format limits still apply; legacy binary Office encryption is unsupported. Use the separate ooxml_password_edit profile for bounded same-format encrypted edits."
+ _PDF_REDACT_GUIDANCE = (
+     'Genuine bounded PDF redaction: format=pdf_redact, NEW .pdf, exact JSON '
+     '{"source":"input.pdf","source_sha256":"<current read_file SHA256>","removals":[{"page":1,"text":"Secret code"}]}. '
+@@ -1951,7 +1951,7 @@
+ WRITE_FILE_SCHEMA['description'] += ' ' + _PDF_REPORT_GUIDANCE
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] += ' ' + _PDF_REPORT_GUIDANCE
+ 
+-_ODF_PASSWORD_GUIDANCE = 'Protected ODF: read_file accepts the supplied password for bounded ODT/OTT/ODS/OTS/ODP/OTP package decryption in memory. Missing/wrong passwords, unsupported encryption and active/signed packages refuse; never guess, echo or store passwords in files. AES-CBC and legacy Blowfish-CFB8 PBKDF2 profiles only. For an explicitly requested preserving edit use write_file format=odf_password_edit to a NEW name with the SAME extension, content JSON {"source":"private.odt","source_sha256":"<read_file hash>","password":"<supplied password>","edit":{"old_text":"Old","new_text":"New"}}. ODT/OTT edit is exact unique text; ODS/OTS edit is {"sheet":"Sheet1","cell":"A1","expected":"1","value":"2"}; ODP/OTP edit is {"slide":1,"role":"slide","old_text":"Old","new_text":"New"}. The output keeps encryption with the same password and fresh member salts/IVs; no plaintext file is published, original remains unchanged. Do not put the password in the output name, prose or receipt. Worksheet protection is not removed; existing native edit restrictions still apply. A password checksum does not verify authenticity. Encrypted OOXML uses a separate authenticated profile; same-profile edits use ooxml_password_edit, while conversion remains unsupported. '
++_ODF_PASSWORD_GUIDANCE = 'Protected ODF: read_file accepts the supplied password for bounded ODT/OTT/ODS/OTS/ODP/OTP package decryption in memory. Missing/wrong passwords, unsupported encryption and active/signed packages refuse; never guess, echo or store passwords in files. AES-CBC and legacy Blowfish-CFB8 PBKDF2 profiles only. For an explicitly requested preserving edit use write_file format=odf_password_edit to a NEW name with the SAME extension, content JSON {"source":"private.odt","source_sha256":"<read_file hash>","password":"<supplied password>","edit":{"old_text":"Old","new_text":"New"}}. ODT/OTT edit is exact unique text; ODS/OTS edit is {"sheet":"Sheet1","cell":"A1","expected":"1","value":"2"}; ODP/OTP edit is {"slide":1,"role":"slide","old_text":"Old","new_text":"New"}. The output keeps encryption with the same password and fresh member salts/IVs; no plaintext file is published, original remains unchanged. Do not put the password in the output name, prose or receipt. Worksheet protection is not removed; existing native edit restrictions still apply. A password checksum does not verify authenticity. Encrypted OOXML uses separate Agile (authenticated) and Standard 3.2 AES-128/ECB SHA-1 (password and package-structure checks only, without authenticated integrity) profiles; same-profile edits use ooxml_password_edit, while conversion remains unsupported. '
+ READ_FILE_SCHEMA["description"] += _ODF_PASSWORD_GUIDANCE
+ READ_FILE_SCHEMA["parameters"]["properties"]["password"]["description"] += _ODF_PASSWORD_GUIDANCE
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("odf_password_edit")
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -225,7 +225,7 @@
+ 
+ 
+ ORDINARY_IDENTITY = 'Ты — Пятница (Friday), ИИ-помощник с высокой, но управляемой инициативой.'
+-ODF_PASSWORD_GUIDANCE = 'Protected ODF: read_file accepts the supplied password for bounded ODT/OTT/ODS/OTS/ODP/OTP package decryption in memory. Missing/wrong passwords, unsupported encryption and active/signed packages refuse; never guess, echo or store passwords in files. AES-CBC and legacy Blowfish-CFB8 PBKDF2 profiles only. For an explicitly requested preserving edit use write_file format=odf_password_edit to a NEW name with the SAME extension, content JSON {"source":"private.odt","source_sha256":"<read_file hash>","password":"<supplied password>","edit":{"old_text":"Old","new_text":"New"}}. ODT/OTT edit is exact unique text; ODS/OTS edit is {"sheet":"Sheet1","cell":"A1","expected":"1","value":"2"}; ODP/OTP edit is {"slide":1,"role":"slide","old_text":"Old","new_text":"New"}. The output keeps encryption with the same password and fresh member salts/IVs; no plaintext file is published, original remains unchanged. Do not put the password in the output name, prose or receipt. Worksheet protection is not removed; existing native edit restrictions still apply. A password checksum does not verify authenticity. Encrypted OOXML uses a separate authenticated profile; same-profile edits use ooxml_password_edit, while conversion remains unsupported. '
++ODF_PASSWORD_GUIDANCE = 'Protected ODF: read_file accepts the supplied password for bounded ODT/OTT/ODS/OTS/ODP/OTP package decryption in memory. Missing/wrong passwords, unsupported encryption and active/signed packages refuse; never guess, echo or store passwords in files. AES-CBC and legacy Blowfish-CFB8 PBKDF2 profiles only. For an explicitly requested preserving edit use write_file format=odf_password_edit to a NEW name with the SAME extension, content JSON {"source":"private.odt","source_sha256":"<read_file hash>","password":"<supplied password>","edit":{"old_text":"Old","new_text":"New"}}. ODT/OTT edit is exact unique text; ODS/OTS edit is {"sheet":"Sheet1","cell":"A1","expected":"1","value":"2"}; ODP/OTP edit is {"slide":1,"role":"slide","old_text":"Old","new_text":"New"}. The output keeps encryption with the same password and fresh member salts/IVs; no plaintext file is published, original remains unchanged. Do not put the password in the output name, prose or receipt. Worksheet protection is not removed; existing native edit restrictions still apply. A password checksum does not verify authenticity. Encrypted OOXML uses separate Agile (authenticated) and Standard 3.2 AES-128/ECB SHA-1 (password and package-structure checks only, without authenticated integrity) profiles; same-profile edits use ooxml_password_edit, while conversion remains unsupported. '
+ 
+ PDF_SIGNATURE_GUIDANCE = (
+     'For a signed PDF, read_file pdf_signatures=true gives a bounded structural inventory and exact source_sha256, always NOT_CRYPTOGRAPHICALLY_VERIFIED. '
+@@ -492,7 +492,7 @@
+             'MSG email files: read_file returns paginated JSON of partial, untrusted stored properties only: subject, distinct sender/sent-representing claims, recipients, dates, plain body and attachment metadata/hashes. Continue all next_offset/next_char_offset pages and check source_sha256. No sending/import, header authentication, rendering, attachment extraction or whole-format acceptance. Use explicit msg_create/msg_edit for bounded new-file native creation/plain-body editing; no raw overwrite. HTML/RTF are not rendered, attachments and links are not opened. '
+             'Other binary formats are unsupported. For encrypted ZIP or 7z, pass password to read_file. ZIP supports bounded single-volume non-ZIP64 WinZip AES-256 AE-1/AE-2 stored/deflate data; member names stay visible. 7z supports the bounded AES/LZMA2 profile with optional private headers. Missing passwords, wrong passwords or damaged data and unsupported encrypted profiles refuse. Never repeat passwords in names or replies. '
+             'Raw split 7z needs path=NAME.7z.001 and explicit archive_parts=["NAME.7z.001","NAME.7z.002",...], same directory/base and exact order; 2..128 fixed-size parts (last may be shorter), 1 MB combined. No discovery; missing or inconsistent sets refuse. Only read and create-only 7z_extract support split sets. '
+-            'Protected OOXML DOCX/DOTX/DOCM/DOTM, XLSX/XLTX/XLSM/XLTM/XLSB and PPTX/POTX/PPSX/PPTM/POTM/PPSM support bounded Agile AES/CBC password reading. Use only the supplied password; authentication and source hash bind the encrypted original. Unsupported encryption, wrong password or damage refuses; plaintext export is unsupported. For same-format encrypted editing use the separate ooxml_password_edit profile. Native format limits still apply. '
++            'Protected OOXML DOCX/DOTX/DOCM/DOTM, XLSX/XLTX/XLSM/XLTM/XLSB and PPTX/POTX/PPSX/PPTM/POTM/PPSM support bounded Agile AES/CBC and Standard 3.2 AES-128/ECB SHA-1 password reading. Use only the supplied password. Agile requires HMAC authentication; Standard verifies only the password and ZIP structure, without authenticated data integrity. The source hash binds the encrypted original. Unsupported encryption, wrong password or failed checks refuse; plaintext export is unsupported. For same-format encrypted editing use the separate ooxml_password_edit profile. Native format limits still apply. '
+             'Encrypted or unsupported RAR refuses. '
+             'Before replacing an existing text file, read its complete current content in this task.')
+         function['description'] += LEGACY_OPENOFFICE_GUIDANCE + LEGACY_WORD_GUIDANCE
