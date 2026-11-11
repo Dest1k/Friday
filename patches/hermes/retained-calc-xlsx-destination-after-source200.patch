@@ -1,0 +1,158 @@
+--- a/tools/scoped_spreadsheet_conversion.py
++++ b/tools/scoped_spreadsheet_conversion.py
+@@ -26,6 +26,7 @@
+ XML_SPACE = '{http://www.w3.org/XML/1998/namespace}space'
+ CALCEXT = 'urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0'
+ FO = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
++_CALC_RETAINED_PROFILE = 'calc-retained-cambria11-v1'
+ 
+ 
+ class ConversionRefused(ODSError):
+@@ -105,6 +106,9 @@
+ @dataclass(frozen=True)
+ class Inventory:
+     sheets: tuple  # (name, ((row, column, Cell), ...)) in original sheet order
++    # Set only after the complete closed inbound Calc source profile passes.
++    # Keep its generated destination bundle separate from generic source styles.
++    destination_profile: str = ''
+ 
+     def digest(self):
+         # Private content never leaves this gate; only the digest is public.
+@@ -319,7 +323,7 @@
+         _passive(item, values, nested)
+ 
+ 
+-def _office_default_styles(book):
++def _office_default_styles(book, *, retained_calc=False):
+     """Calc's passive baseline style bank, only for validating its destination.
+ 
+     The unused builtin rows are checked too. Cell XFs cannot select their named
+@@ -332,6 +336,9 @@
+     fonts = [node('font', children=(node('sz', {'val':'10'}),
+              node('name', {'val':'Arial'}), node('family', {'val':family})))
+              for family in ('2','0','0','0')]
++    if retained_calc:
++        fonts[0] = node('font', children=(node('sz', {'val':'11'}),
++                   node('name', {'val':'Cambria'}), node('family', {'val':'0'})))
+     align = node('alignment', {'horizontal':'general','vertical':'bottom','textRotation':'0',
+                               'wrapText':'false','indent':'0','shrinkToFit':'false'})
+     protect = node('protection', {'locked':'true','hidden':'false'})
+@@ -429,7 +436,7 @@
+         refuse('conversion_office_default_unsupported')
+ 
+ 
+-def _office_default_metadata(book):
++def _office_default_metadata(book, *, retained_calc=False):
+     """Check all generated workbook/sheet metadata before scalar projection.
+ 
+     The enclosing scalar profile intentionally keeps its original source policy.
+@@ -479,6 +486,16 @@
+           'pageMargins': ({'left':'0.7875','right':'0.7875','top':'1.05277777777778','bottom':'1.05277777777778','header':'0.7875','footer':'0.7875'},()),
+           'pageSetup': ({'paperSize':'9','scale':'100','fitToWidth':'1','fitToHeight':'1','pageOrder':'downThenOver','orientation':'portrait','blackAndWhite':'false','draft':'false','cellComments':'none','firstPageNumber':'1','useFirstPageNumber':'true','horizontalDpi':'300','verticalDpi':'300','copies':'1'},()),
+         }
++        if retained_calc:
++            # A second complete observed bundle, bound to the closed Cambria
++            # inbound source profile. Do not combine its individual defaults
++            # with the original Arial bundle or admit arbitrary layout values.
++            defaults['sheetFormatPr'][0]['defaultColWidth'] = '8.7109375'
++            defaults['pageMargins'] = ({'left':'0.747916666666667','right':'0.747916666666667',
++                'top':'0.984027777777778','bottom':'0.984027777777778',
++                'header':'0.511811023622047','footer':'0.511811023622047'},())
++            for key in ('firstPageNumber','useFirstPageNumber'):
++                del defaults['pageSetup'][0][key]
+         for name,(attrs,children) in defaults.items():
+             _passive(tree.find(q(S,name)), attrs, children)
+         # A dimension is a declaration of the actual stored cell extent, not a
+@@ -487,7 +504,7 @@
+         _office_metadata_shape(data, ('row',)*len(data))
+         refs = []
+         for row in data:
+-            if (row.attrib != {'r':row.get('r'),'customFormat':'false','ht':'12.8','hidden':'false',
++            if (row.attrib != {'r':row.get('r'),'customFormat':'false','ht':'13.8' if retained_calc else '12.8','hidden':'false',
+                               'customHeight':'false','outlineLevel':'0','collapsed':'false'}
+                     or (row.text or '').strip() or any((child.tail or '').strip() for child in row)):
+                 refuse('conversion_office_default_unsupported')
+@@ -508,13 +525,14 @@
+         if (header.attrib != {'differentFirst':'false','differentOddEven':'false'} or len(header) != 2
+                 or (header.text or '').strip() or any((child.tail or '').strip() for child in header)):
+             refuse('conversion_office_default_unsupported')
+-        for child,name,text in zip(header,('oddHeader','oddFooter'),
+-                ('&C&"Times New Roman,Regular"&12&A','&C&"Times New Roman,Regular"&12Page &P')):
+-            if child.tag != q(S,name) or child.attrib or len(child) or child.text != text:
++        texts = ('','') if retained_calc else (
++            '&C&"Times New Roman,Regular"&12&A','&C&"Times New Roman,Regular"&12Page &P')
++        for child,name,text in zip(header,('oddHeader','oddFooter'),texts):
++            if child.tag != q(S,name) or child.attrib or len(child) or (child.text or '') != text:
+                 refuse('conversion_office_default_unsupported')
+ 
+ 
+-def _xlsx(data, checkpoint, *, office_generated=False):
++def _xlsx(data, checkpoint, *, office_generated=False, retained_calc=False):
+     book = ooxml(data, 'xlsx', writing=True, checkpoint=checkpoint,
+                  allow_empty_workbook_protection=office_generated)
+     allowed = {'[Content_Types].xml','_rels/.rels','xl/workbook.xml','xl/_rels/workbook.xml.rels',
+@@ -541,8 +559,8 @@
+     props = root.find(q(S,'workbookPr'))
+     if props is not None and props.get('date1904','0') not in ('0','false'):
+         refuse('conversion_date_epoch_unsupported')
+-    if office_generated: _office_default_metadata(book)
+-    styles = _office_default_styles(book) if office_generated else _xlsx_styles(book)
++    if office_generated: _office_default_metadata(book,retained_calc=retained_calc)
++    styles = _office_default_styles(book,retained_calc=retained_calc) if office_generated else _xlsx_styles(book)
+     strings = []
+     if book.shared_strings_part:
+         sst = book.xml[book.shared_strings_part]
+@@ -593,7 +611,7 @@
+         for row in groups[0]:
+             _attrs(row, ('r','spans') + (('customFormat','ht','hidden','customHeight','outlineLevel','collapsed') if office_generated else ()))
+             if office_generated and (any(row.get(key,'false') != 'false' for key in ('customFormat','hidden','customHeight','collapsed'))
+-                    or row.get('outlineLevel','0') != '0' or row.get('ht','12.8') != '12.8'):
++                    or row.get('outlineLevel','0') != '0' or row.get('ht','12.8') != ('13.8' if retained_calc else '12.8')):
+                 refuse('conversion_hidden_or_custom_layout_unsupported')
+             if row.tag != q(S,'row') or not row.get('r','').isdecimal():
+                 refuse('conversion_row_identity')
+@@ -1174,7 +1192,7 @@
+     result = _finish(sheets,checkpoint)
+     if (office_generated or calc_source) and used_style.declared_counts != (result.counts()['sheets'],result.counts()['nonempty_cells']):
+         refuse('conversion_generated_ods_statistics_changed')
+-    return result
++    return Inventory(result.sheets,_CALC_RETAINED_PROFILE) if calc_source else result
+ 
+ 
+ def inventory(data, format, *, checkpoint=None, source_profile=True):
+@@ -1198,19 +1216,23 @@
+ 
+ def validate_destination(source, data, target, *, checkpoint=None):
+     try:
+-        # Inbound Calc support does not enlarge the generated-output envelope.
+-        actual = inventory(data,target,checkpoint=checkpoint,source_profile=False)
++        if target == 'xlsx' and source.destination_profile == _CALC_RETAINED_PROFILE:
++            # Never fall back to generic/Arial output after this bound bundle
++            # fails: scalar equality alone cannot establish its format fidelity.
++            actual = _xlsx(data,checkpoint,office_generated=True,retained_calc=True)
++        else:
++            try:
++                actual = inventory(data,target,checkpoint=checkpoint,source_profile=False)
++            except ConversionRefused:
++                if target not in ('xlsx','ods'): raise
++                actual = (_xlsx(data,checkpoint,office_generated=True) if target == 'xlsx'
++                          else _ods(data,checkpoint,office_generated=True))
+     except ConversionRefused:
+-        if target not in ('xlsx','ods'): raise
+-        try:
+-            actual = (_xlsx(data,checkpoint,office_generated=True) if target == 'xlsx'
+-                      else _ods(data,checkpoint,office_generated=True))
+-        except ConversionRefused:
+-            raise
+-        except (ODSError, ODTError) as error:
+-            raise ConversionRefused(str(error)) from None
+-        except (KeyError, IndexError, TypeError, ValueError, OverflowError, ET.ParseError):
+-            raise ConversionRefused('conversion_malformed_package') from None
++        raise
++    except (ODSError, ODTError) as error:
++        raise ConversionRefused(str(error)) from None
++    except (KeyError, IndexError, TypeError, ValueError, OverflowError, ET.ParseError):
++        raise ConversionRefused('conversion_malformed_package') from None
+     if [name for name,_ in actual.sheets] != [name for name,_ in source.sheets]:
+         refuse('conversion_sheet_order_or_identity_changed')
+     for (_, before), (_, after) in zip(source.sheets,actual.sheets):
