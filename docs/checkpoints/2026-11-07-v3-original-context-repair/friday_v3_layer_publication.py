@@ -62,6 +62,7 @@ LAYER_NAMES = (
     "odf-reverse-output-after-source197",
     "dashboard-native-status-after-source198",
     "ods-calc-retained-source-profile-after-source199",
+    "retained-calc-xlsx-destination-after-source200",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -819,7 +820,8 @@ def current_source_request_bytes(request, request_path, request_sha256):
                 "transaction_current_source_context_required")
         references = ("root_project_update",)
     else:
-        require(context.get("schema") == "friday.current-source-native-successor.v2"
+        require(context.get("schema") in ("friday.current-source-native-successor.v2",
+                    "friday.current-source-native-successor.v3")
                 and set(context) == {"schema", "root_project_update", "previous_native_update"},
                 "transaction_current_source_context_required")
         references = ("root_project_update", "previous_native_update")

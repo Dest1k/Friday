@@ -1,3 +1,8 @@
+> Актуализация11.11.2026 после resume: public helper/builder/publisher201 подключены в source main,
+> [финальные source gates завершены и приняты](../../evidence/astra-20261111/source201-final-gates-connected.json).
+> Установлено пока200; отдельный admission/install ещё не выполнен. Ниже — сохранённый
+> paused-срез подготовки, его statements о неподключённом main и незавершённых gates исторические.
+
 # Кандидат 200→201 — OWNER_PAUSED; не подключён и не установлен
 
 Приоритет после новой директивы владельца: основной функционал → DSH → A0.
