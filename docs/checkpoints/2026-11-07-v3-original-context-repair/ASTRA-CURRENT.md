@@ -1,12 +1,12 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 01:13 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
+Обновлено **12.11.2026, 01:47 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
 [Фактический native readback](ASTRA-FAST-RESUME-2026-11-12.json): тот же goal/thread
 `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**; история/учёт сохранены, общего cap нет.
 [Дневная редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json) и [owner pause](evidence/astra-20261111/owner-pause-20261112-final-native.json)
 сохраняются как история. Новая команда владельца завершила паузу, роль в native objective обновлена без нового goal.
 Астра — sole lead/live-интегратор Fast; Сол — постоянный co-architect Standard в прежней TUI; оба gpt-6.1-sol/ultra.
-Сол продолжает то же незавершённое Task19 без повторного compact; его прежний leadershipgoal остаётся paused.
+Сол завершил конечный source-пакет Task19/M3R4; Task19/F06 в целом partial. Один native compact перед новым Task20 запущен; его завершение проверяется до доставки задачи. Прежний leadershipgoal Сола остаётся paused.
 
 Исходный HEAD возобновления — `ec3ffc57b94af456c9d41a16a5128dd4f15966b7`.
 Новый SHA — содержащий эту сводку локальный коммит, без self-hash.
@@ -43,19 +43,25 @@ Dashboard175894/start1460381, прежниеInvocationID/active/enabled/NRestart
    7latestODT missing/correct PASS, wrong directECR2.IO_GENERAL525 → **НЕ ПРИНЯТО**, rawall_pass=false. Source/original/stagedbeforeafterCAStrue.
    21probes/0stores/ownedactorsclosed. Ранний источник остановился ДО intent на proofCAS; oldadmission сохранён, Rootprivatebyte-snapshots/rebind47review PASS.
    [Readonly source](drafts/f06-full7-readonly-oracle/README.md), stagejournalfix11+oracle16+86base checks сохранены; никакого chmod/ослабленияCAS.
-   Next ONLYlatestODT: explicitPassword eagerlydecrypt→generic525 до verifier; sourceлокализован, готовится realXInteractionPassword ENTER/REENTER путь.
-   Не повторять первые6, не создавать/моделировать/отправлять заново; nativequalification всё ещё NOT_RUN/GRANTnone.
+   [Latest-only реальный парольный диалог](evidence/astra-20261111/f06-latest-interaction-three-pass-20261112.json): новые3readonlyпробы того7SHA **PASS**;
+   wrongnonemptyENTER→REENTER→Abort283, correctALPHA17/open/close; freshoriginal+copyCAS до/после каждой, ROmounts, actorsclosed.
+   [Код](drafts/f06-latest-odt-interaction/README.md),154purecontrols/independentreview. IO525/rawfalse не переписаны; первые6не повторялись.
+   [Composite7 и реальный native R3](evidence/astra-20261111/f06-seven-input-oracle-native-partial-20261112.json): composite7 принят по125independentchecks; Rootbinding+externalGRANT реально выданы/readback.
+   **Native R3 один раз выполнен, exit2/PARTIAL FAIL, once consumed.** DOCX/XLSX/PPTX: `cfb_header`, installed203 требует minor0x003E, реальныеOfficecipher имеют0x003B.
+   Затем2auditdenials `open`; пути/флаги не сохранены, точная причина UNKNOWN. Row4 не записана, но genuine `f06-4-edited.odt`10821B/7e91f2…6a52 уже существует.
+   Это custody существующего результата, не native/app PASS. Actors закрыты/slotfree; original7hashes прежние. Nativequalification целиком **не повторять**.
+   Root отдельно разбирает boundary и недостающую readonlyоценку тогоODT; Солу — CFBsourcefix. M3OfficeNOT_RUN/UNBOUND; обычныеF06/privacy/formal ещё открыты.
 
-   Hostpath-проекция metadata выполнена с physicalCAS, raw all_pass=false не изменён. Nativequalification NOT_RUN/GRANTneverissued.
+   Hostpath-проекция metadata выполнена с physicalCAS, raw all_pass=false не изменён; исходныеFALSE/IO525 сохраняются.
    G3/G4 normal81/emptycomponents/ownedFD; G4missingtrace и G5classREDACTED/EMPTY сохранены исторически; g1..g6 не переигрывать.
 
-2. **Сол Task19 возобновлён.** [M1/M2 и приёмка](evidence/astra-20261111/f06-sol-m1-m2-source-checkpoint.json),
+2. **Сол: Task19/M3R4 source завершён; следующий Task20 — CFB.** [M1/M2 и приёмка](evidence/astra-20261111/f06-sol-m1-m2-source-checkpoint.json),
    [его owner-pause](evidence/astra-20261111/owner-pause-20261112-final-native.json) — история; C5 продолжает прежний Task19, старый leadershipgoal paused.
-   M3R3 source7e61cb5 получен/verified/consumed (35м22с Standard); sourceonly, Task19 partial. Текущий пакет M3R4 — stableproofrebind/partialstage seam; Root владеет producer/Office/приёмкой, области разнесены. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
+   M3R3 source7e61cb5 и M3R4/0629source/0c23result получены/verified/consumed; stableproofrebind/partialstage seam sourcecomplete с43independentchecks. Root принимает код перед интеграцией; Officeисполнения не было. Task19partial сохранён. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
    убирает известные технические дубликаты/логи пароля, не исходный приватный чат и не исторические БД.
    M2 [metadata/oracle source](drafts/f06-oracle-handoff-m2/README.md) получен; [Root приняла exact canonical fix](evidence/astra-20261111/f06-m2-canonical-root-delta-accepted-20261112.json).
    Автоматическое followup-review ранее отклонено possible cybersecurity risk; отказ сохранён, отклонённый вызов не повторялся.
-   Реальные7байтов/physicalcustody есть; первые6AppPASS/7latestwrongunresolved. Нужна достаточная7app-оценка и Root GRANT; nativeNOT_RUN/NOT_GRANTED.
+   Реальные7байтов/physicalcustody есть, compositeAppPASS. NativeGRANT issued/onceconsumed/partialFAIL;3CFBотказа+row4partialODT сохранены. Новая Task20sourceonly, H/main/live уRoot.
    Readonly oracle тех же будущих native-output bytes требует отдельной Root-интеграции; ordinaryDOCX4singletons остаются UNBOUND.
 3. **204/205:** source/gates приняты, 205public5 локально подключены, оба **НЕ УСТАНОВЛЕНЫ**.
    [Source-origin исправление принято](evidence/astra-20261111/core204-origin-policy-source-integrated.json): immutable48/public489/private28
