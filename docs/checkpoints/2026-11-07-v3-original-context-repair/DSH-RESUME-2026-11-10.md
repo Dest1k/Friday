@@ -7,7 +7,7 @@
 
 Историческая передача 2026-11-10, МСК: DSH-сессия → Сол (временное принятие лидерства). Текущий ведущий — Астра, срез ниже.
 
-## Действующее продолжение Астры — 11.11.2026, 05:17 МСК
+## Действующее продолжение Астры — 11.11.2026, 06:11 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -15,6 +15,31 @@
 [объект и преемственность](ASTRA-GOAL-CONTINUATION-2026-11-10.json).
 Старые native goal Сола и DSH goal сохранены paused; UUID/накопленный учёт не переносились.
 Полные **170 кейсов / 120 расширений / B00**, варианты, регрессия и восстановление открыты.
+
+**Текущее установленное состояние: native199 / project479 / 52plugins.**
+[Установка и полные readback](evidence/astra-20261111/native199-installed-runtime.json):
+v6 project476→477 завершён05:33:47/100.485s; отдельный явный199layer завершён05:44:22/97.182s.
+Receipt537bca…936, input59f96b…e60b, все17888nativefiles и198prefix проверены;
+обязательный свежий DEFAULT spec/inspect PASS после nativeзамены. Gateway1611703/start7031976,
+Telegram connected, все3DBquick_checkOK/leases0/counts30:2,196:2,5487:5.
+[Dashboard восстановлен](evidence/astra-20261111/dashboard-native199-restored.json): enabled/active,
+PID1621997/start7144924, native nonce/HMAC VERIFIED, HTTPS/TLS и sessionauth граница проверены
+на том же процессе: HTML302→login, API401 без сессии. Ошибка проверяющего, ожидавшего HTTPBasic
+сохранена отдельно; install/start не повторялись. Интерактивный вход и userUX ещё не оценены.
+Новый срок жизни исправным постоянным сервисам не назначен. Это снимки наблюдений, не будущий допуск.
+
+**Следующая интеграция — ODS200 и текущая DSH qualification.**
+[Результат Source200 и самостоятельная следующая ветка Сола](evidence/astra-20261111/sol-source200-result-rtf-next-task.json).
+Сол Standard завершил Source200continuity; Root принял точные64final+6M1refs и consumed exactitems,
+независимое code-review/gate впереди: Source200 пока НЕ установлен. Сол уже выполняет новый
+RTF-fidelity repair в прежней TUI после одного completedcompact, без live/sharedwrites.
+Астра проверяет2fileODS/currentcontinuity и планирует первый новый currentD/T1/P/T2 на финальном
+составе; эти операции ещё НЕ выполнялись. Ожидание ревью вне maintenance/коротких окон.
+Old45unresolved/3UNKNOWN и все consumed/UNKNOWN эффекты остаются историей, пересылок/модели не было.
+
+Дальнейшие промежуточные срезы этой секции сохранены хронологически как **история**.
+Их прежние «не установлен/199 впереди/198 текущий» относятся к указанному времени;
+актуальное installed/runtime и очередь определены блоками выше.
 
 **Сол — постоянный co-architect на Standard** в своей реальной прежней TUI/сессии,
 Астра — Fast: [проверенные роли и первая задача](evidence/astra-20261110/sol-permanent-coarchitect-rtf-assignment.json).
@@ -1009,7 +1034,7 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 | `docs/checkpoints/2026-11-07-v2-bounded-diagnostics/PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md` | ?? (untracked) | Техническая заметка о переключении провайдера. Существовала до этого прохода. |
 | `docs/checkpoints/2026-11-07-v3-original-context-repair/FORMAT-COVERAGE-MAP.json` | ?? (untracked) | Карта покрытия форматов. Не входит в Git-дерево; исключена из SHA256SUMS. |
 
-## 2. Исторический runtime195 (10.11.2026; текущая198 и свежие допуски выше)
+## 2. Исторический runtime195 (10.11.2026; текущая199 и свежие наблюдения выше)
 
 | Предмет | Факт |
 |---|---|
