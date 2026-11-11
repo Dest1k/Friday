@@ -77,6 +77,8 @@ def parse_args(argv=None):
     parser.add_argument("--previous-input", type=Path,
                         help="exact input pinned by the installed marker")
     parser.add_argument("--current-input", type=Path)
+    parser.add_argument("--current-source-project-update", type=Path,
+                        help="exact committed v6 root request for the one native successor")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--seconds", type=int, default=180)
     args = parser.parse_args(argv)
@@ -84,6 +86,8 @@ def parse_args(argv=None):
         parser.error("--layer names must not repeat")
     if args.seconds <= 0:
         parser.error("--seconds must be positive")
+    if args.current_source_project_update is not None and args.layer is None:
+        parser.error("--current-source-project-update requires an explicit --layer")
     args.layer_names = tuple(args.layer) if args.layer is not None else LAYER_NAMES
     args.home = args.home.resolve()
     args.candidate_project = args.candidate_project.resolve()
@@ -92,6 +96,8 @@ def parse_args(argv=None):
     args.previous_input = (args.previous_input or base / "INPUT-PREVIOUS-RECONSTRUCTED.json").resolve()
     args.current_input = (args.current_input or base / "INPUT-LAYERS.json").resolve()
     args.output = (args.output or base / "REQUEST-LAYERS.json").resolve()
+    if args.current_source_project_update is not None:
+        args.current_source_project_update = args.current_source_project_update.resolve()
     return args
 
 
@@ -181,12 +187,20 @@ def build_request(args):
         "installed_files": len(receipt["files"]),
         "transaction_history": history,
     }
+    if getattr(args, "current_source_project_update", None) is not None:
+        request["current_source_successor"] = {
+            "schema": "friday.current-source-native-successor.v1",
+            "root_project_update": pin(args.current_source_project_update),
+        }
+    consumer.require_current_source_context(home, request)
     # Run the actual consumer's source preflight before issuing a request. This does not
     # stage, publish, stop services, or change the installed home.
     names = consumer.check_project_inventory(request, previous, current)
     layers = consumer.read_layers(candidate, receipt, home, current["project_files"], names)
     if not consumer.bundle_already_applied(layers, home / "hermes-agent", receipt, request):
         consumer.check_preimages(layers, home / "hermes-agent", receipt["files"])
+    if "current_source_successor" in request:
+        consumer.current_source_consumer_checked(current, request, candidate)
     return request
 
 

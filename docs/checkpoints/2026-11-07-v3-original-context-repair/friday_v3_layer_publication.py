@@ -39,6 +39,8 @@ SCHEMA = "friday.ordinary-telegram-source-update.v45"
 # the field `layer_names`, and the validator refuses an absent, empty, malformed or
 # repeated set instead of widening the operation to every known layer.
 SCHEMA_EXPLICIT = "friday.ordinary-telegram-source-update.v46"
+# The already reviewed historical root, never a future request or input digest.
+CURRENT_SOURCE_V6_ROOT_INPUT = "dfc6fd4a552d9088887746c7329febcf1f4b152f01c81841cd2bb36241a891df"
 LAYER_NAMES = (
     "source157-original-context-deterministic-overhead-after-source156",
     "source157-bounded-schema-hints-after-source156",
@@ -58,6 +60,7 @@ LAYER_NAMES = (
     "odf-native-conversion-output-after-source195",
     "docx-odt-output-after-source196",
     "odf-reverse-output-after-source197",
+    "dashboard-native-status-after-source198",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -172,13 +175,23 @@ def sync_directory(path):
         os.close(fd)
 
 
+def write_all(fd, data):
+    """Complete a regular-file write or refuse before its publication."""
+    offset = 0
+    while offset < len(data):
+        count = os.write(fd, data[offset:])
+        require(type(count) is int and 0 < count <= len(data) - offset,
+                "transaction_write_failed")
+        offset += count
+
+
 def write_atomic(path, data, mode=0o600):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name("." + path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
-        os.write(fd, data)
+        write_all(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -201,7 +214,7 @@ def publish(target, data, mode=0o600):
         tmp.unlink()
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        os.write(fd, data)
+        write_all(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -369,7 +382,11 @@ class Journal:
         info = path.lstat()
         entry = {"state": "EXISTED", "sha256": digest(data), "bytes": len(data),
                  "mode": stat.S_IMODE(info.st_mode)}
-        write_atomic(self._target(path), data, 0o600)
+        saved = self._target(path)
+        write_atomic(saved, data, 0o600)
+        recorded = owned_file(saved)
+        require(len(recorded) == entry["bytes"] and digest(recorded) == entry["sha256"],
+                "transaction_beforeimage_write_failed")
         self.entries[key] = entry
         return entry
 
@@ -404,9 +421,16 @@ class Journal:
                     sync_directory(target.parent)
                 continue
             saved = self._target(path)
-            if not saved.exists():
-                continue
-            publish(target, owned_file(saved), entry.get("mode", 0o600))
+            require(os.path.lexists(saved), "transaction_beforeimage_missing")
+            recorded = owned_file(saved)
+            require(len(recorded) == entry["bytes"] and digest(recorded) == entry["sha256"],
+                    "transaction_beforeimage_changed")
+            mode = entry.get("mode", 0o600)
+            publish(target, recorded, mode)
+            restored = owned_file(target)
+            require(len(restored) == entry["bytes"] and digest(restored) == entry["sha256"]
+                    and stat.S_IMODE(target.lstat().st_mode) == mode,
+                    "transaction_restoration_changed")
 
     def write_intent(self, name, payload):
         write_atomic(self.root / name, encoded(payload), 0o600)
@@ -774,11 +798,127 @@ def history_map(home):
 # --------------------------------------------------------------------------- main
 
 
+def require_current_source_context(home, request):
+    """A current v6 home cannot bypass continuity by omitting the opt-in field."""
+    root = Path(home) / "preparation" / ("ordinary-source-update-" + CURRENT_SOURCE_V6_ROOT_INPUT)
+    require("current_source_successor" in request or not os.path.lexists(root),
+            "transaction_current_source_context_required")
+
+
+def current_source_request_bytes(request, request_path, request_sha256):
+    """Retain the exact new-context request; historical requests keep their contract."""
+    context = request.get("current_source_successor")
+    if context is None:
+        require("current_source_successor" not in request,
+                "transaction_current_source_context_required")
+        return None
+    require(type(context) is dict and set(context) == {"schema", "root_project_update"}
+            and context["schema"] == "friday.current-source-native-successor.v1",
+            "transaction_current_source_context_required")
+    ref = context["root_project_update"]
+    require(type(ref) is dict and set(ref) == {"path", "sha256"}
+            and type(ref["path"]) is str and type(ref["sha256"]) is str
+            and __import__("re").fullmatch("[0-9a-f]{64}", ref["sha256"]),
+            "transaction_current_source_root_reference_required")
+    path = Path(request_path)
+    require(path.is_absolute() and str(path) == str(path.resolve()),
+            "transaction_current_source_request_path_required")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(fd)
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
+                and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o600
+                and before.st_size <= 8 * 1024 ** 2,
+                "transaction_current_source_owned_request_required")
+        chunks = []; size = 0
+        while size <= 8 * 1024 ** 2:
+            chunk = os.read(fd, min(1024 ** 2, 8 * 1024 ** 2 + 1 - size))
+            if not chunk: break
+            chunks.append(chunk); size += len(chunk)
+        after = os.fstat(fd); named = path.lstat()
+        attributes = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink",
+                      "st_size", "st_mtime_ns", "st_ctime_ns")
+        require(size <= 8 * 1024 ** 2 and size == before.st_size
+                and all(getattr(before, key) == getattr(after, key) == getattr(named, key)
+                        for key in attributes), "transaction_current_source_request_identity_changed")
+    finally:
+        os.close(fd)
+    raw = b"".join(chunks)
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, "transaction_current_source_duplicate_json_key")
+            value[key] = item
+        return value
+    def invalid_constant(value):
+        raise Refused("transaction_current_source_nonfinite_json")
+    def finite_float(text):
+        value = float(text)
+        require(__import__("math").isfinite(value), "transaction_current_source_nonfinite_json")
+        return value
+    parsed = json.loads(raw, object_pairs_hook=unique, parse_constant=invalid_constant,
+                        parse_float=finite_float)
+    require(type(request_sha256) is str
+            and __import__("re").fullmatch("[0-9a-f]{64}", request_sha256)
+            and digest(raw) == request_sha256 and encoded(parsed) == encoded(request),
+            "transaction_current_source_raw_request_changed")
+    return raw
+
+
+def retain_current_source_request(path, raw):
+    """Publish once below the new private transaction, before any proof refers to it."""
+    path = Path(path)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        offset = 0
+        while offset < len(raw):
+            count = os.write(fd, raw[offset:])
+            require(type(count) is int and 0 < count <= len(raw) - offset,
+                    "transaction_current_source_request_write_failed")
+            offset += count
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    sync_directory(path.parent)
+
+
+def current_source_consumer_checked(value, request, candidate, *, committed=False, inspect=False):
+    """Use the selected product consumer, including its default postcommit dispatch."""
+    import importlib
+    import importlib.util
+    candidate = Path(candidate)
+    scripts_path = str(candidate / "scripts")
+    for name in ("scripts.friday_install", "scripts.friday_ordinary_install"):
+        relative = "scripts/" + name.rsplit(".", 1)[1] + ".py"
+        require(digest(owned_file(candidate / relative)) == value["project_files"].get(relative),
+                "transaction_current_source_consumer_pin_changed")
+        loaded = sys.modules.get(name)
+        require(loaded is None or Path(loaded.__file__).resolve()
+                == candidate / relative
+                and loaded.__spec__ is not None
+                and Path(loaded.__spec__.origin).resolve() == candidate / relative,
+                "transaction_current_source_foreign_consumer_loaded")
+    package = importlib.util.module_from_spec(
+        importlib.machinery.ModuleSpec("scripts", loader=None, is_package=True))
+    package.__path__ = [scripts_path]
+    sys.modules["scripts"] = package
+    product = importlib.import_module("scripts.friday_install")
+    require(Path(product.__file__).resolve() == candidate / "scripts/friday_install.py"
+            and digest(owned_file(product.__file__)) == value["project_files"]["scripts/friday_install.py"],
+            "transaction_current_source_consumer_origin_changed")
+    kwargs = {} if committed else {"source_update": request}
+    product.spec_checked(value, cli_only=True, **kwargs)
+    if inspect:
+        product.inspect(value, request["current_input"]["sha256"], **kwargs)
+
+
 def run(request, request_path, request_sha256):
     global INJECT_AFTER_RENAME, INJECT_TARGET, INJECT_SNAPSHOT_DIR, INJECT_SNAPSHOT_FILES
     global INJECT_SNAPSHOT_HOME
     started = time.monotonic()
     os.umask(0o077)
+    raw_current_request = current_source_request_bytes(request, request_path, request_sha256)
+    current_context = raw_current_request is not None
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")
@@ -791,6 +931,10 @@ def run(request, request_path, request_sha256):
         require(snapshot.is_absolute() and not str(snapshot).startswith(str(home) + "/"),
                 "transaction_injection_snapshot_outside_home")
     require(home.is_dir(), "transaction_home_missing")
+    require_current_source_context(home, request)
+    current_transaction = home / "preparation" / ("ordinary-source-update-v45-" + request_sha256[:16])
+    if current_context:
+        require(not os.path.lexists(current_transaction), "transaction_current_source_already_consumed")
     require(os.environ.get("HERMES_HOME") == str(home), "transaction_environment_required")
     # the snapshot reads from the VERIFIED home of this transaction
     INJECT_SNAPSHOT_HOME = home
@@ -912,14 +1056,26 @@ def run(request, request_path, request_sha256):
     # must be known before staging or intent, as well as before the journal records them.
     check_plugin_preimages(request, previous_input, current_input, marker, home,
                            already_published=already_published)
+    if current_context:
+        forward_budget()
+        current_source_consumer_checked(current_input, request, candidate)
+        forward_budget()
 
     # 8. apply the layers onto a private staging tree that holds only the touched files.
     #    A bundle that is already published is NOT applied again: for layers that touch the
     #    same file the old patch would be applied to the final bytes and would not apply.
     #    Its final bytes and its receipt are checked instead.
     forward_budget()
-    staging_root = private_directory(home / "preparation" /
-                                     ("ordinary-source-update-v45-" + request_sha256[:16]))
+    if current_context:
+        # mkdir is the consuming no-retry edge. Never overwrite an old transaction,
+        # including one that failed before intent or rolled back afterwards.
+        os.mkdir(current_transaction, 0o700)
+        sync_directory(current_transaction.parent)
+        staging_root = private_directory(current_transaction)
+        retain_current_source_request(staging_root / "request.json", raw_current_request)
+        request_reference = {"path": str(staging_root / "request.json"), "sha256": request_sha256}
+    else:
+        staging_root = private_directory(current_transaction)
     staging = private_directory(staging_root / "staging")
     if already_published:
         touched = []
@@ -1037,6 +1193,8 @@ def run(request, request_path, request_sha256):
                      "hermes-agent/install-stamp.json"],
         "gateway_started": False,
         "workers_enabled": False,
+        **({"request_reference": request_reference,
+            "current_source_successor": request["current_source_successor"]} if current_context else {}),
     })
 
     try:
@@ -1158,6 +1316,11 @@ def run(request, request_path, request_sha256):
         publish_with_journal(home / "FRIDAY-INSTALL.json", encoded(new_marker), 0o600)
         publish_with_journal(Path(home) / "hermes-agent/install-stamp.json", stamp_data, 0o600)
 
+        if current_context:
+            forward_budget()
+            current_source_consumer_checked(current_input, request, candidate, inspect=True)
+            forward_budget()
+
         forward_budget()
         # This operation's own record; the predecessor's record is left untouched and
         # that is proved on the bytes, not on a claim.
@@ -1177,17 +1340,33 @@ def run(request, request_path, request_sha256):
             "gateway_started": False,
             "workers_enabled": False,
             "seconds": round(time.monotonic() - started, 3),
+            **({"request_reference": request_reference,
+                "current_source_successor": request["current_source_successor"]} if current_context else {}),
         }), 0o600)
-    except Exception:
+        if current_context:
+            # A committed source that cannot enter the ordinary default reader is
+            # rolled back inside this same transaction, never returned as success.
+            forward_budget()
+            current_source_consumer_checked(current_input, request, candidate,
+                                            committed=True, inspect=True)
+            forward_budget()
+    except BaseException as original:
+        if not current_context and not isinstance(original, Exception):
+            raise
         # One rollback for the whole operation: the source files, the project files, the
         # plugin set, the receipt, the marker and the stamp. Files that this operation
         # added are removed again.
-        journal.restore(published)
-        write_atomic(staging_root / "rolled-back.json", encoded({
-            "state": "ROLLED_BACK",
-            "published": [str(p) for p in published],
-            "entries": sorted(journal.entries),
-        }), 0o600)
+        try:
+            journal.restore(published)
+            write_atomic(staging_root / "rolled-back.json", encoded({
+                "state": "ROLLED_BACK",
+                "published": [str(p) for p in published],
+                "entries": sorted(journal.entries),
+            }), 0o600)
+        except BaseException as restoration:
+            if current_context:
+                raise StopUnconfirmed("current source rollback requires reconciliation") from restoration
+            raise
         raise
 
     # 12. clean up the staging tree; the journal keeps the evidence.

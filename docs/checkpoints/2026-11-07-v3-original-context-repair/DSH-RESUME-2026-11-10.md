@@ -5,9 +5,9 @@
 Оба старых файла сохранены как история; их инструкции по выбору home, переносу
 данных и повторной подготовке профилей **не действуют**.
 
-Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
+Историческая передача 2026-11-10, МСК: DSH-сессия → Сол (временное принятие лидерства). Текущий ведущий — Астра, срез ниже.
 
-## Действующее продолжение Астры — 11.11.2026, 04:51 МСК
+## Действующее продолжение Астры — 11.11.2026, 05:17 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -118,7 +118,7 @@ receipt/install/freshprocess/currentHTTP/user acceptance впереди, ста�
 [Task5 → Root finding → Task6](evidence/astra-20261111/current-native-successor-mutable-leaf-finding.json):
 Task5 завершён, immutableCPjournal/current-source successor готов source-only; Root нашёл,
 что leaf неправильно привязан к историческим mutableconfig/marker и откажет после T1/T2.
-Сол Standard в прежней сессии исправляет и проверяет этот дефект на frozen483rows; Root
+На момент9f57среза Сол Standard исправлял дефект на frozen483rows; финальное707разрешение ниже. Root
 не запускает заведомо красный finalgate/maintenance. План: coherent198project477 → genuine199
 Dashboard/fresh defaultconsumer → FINAL199 D/T1/P/T2. Полная source/native приёмка впереди.
 
@@ -129,10 +129,43 @@ Gen1/2 отказали в checker до edit. Gen3 exact in-memory edit изве
 no-effect. После исправления конкретного oracle/API условия Gen4 04:47:15→04:47:17/1.659s:
 реальные edit→storeAs→close→reopen→close, outer0,8phases/8744events; все акторы завершены0.
 Сохранённая workingcopy35159B/c8037a…c5a8c0; finalassessment UNEXPECTED_TEXT_EDIT сохранён.
-Дальше только offline оценка этого же файла/протокола, без повтора приложения/producer/model/send.
+Offline оценка позднее завершена PARTIAL (срез ниже), без повтора приложения/producer/model/send.
 Source30482B/lib/base/host/29recipepins неизменны; globalOffice/runtime не переключались.
 Visual/fullstyle/automaticdirty/user/formal acceptance пока нет. Source ODS branch отдельно
 разбирает read/edit/reconvert на уже полученном R100; общий liveпуть не занят.
+
+**Финальный198→199 source-состав проверен; следующий шаг — штатная установка с новым допуском.**
+[Полный итог и реальные границы](evidence/astra-20261111/current199-final-source-composition.json).
+Task6 завершён,32refs/7protectedaliases/483originalrows Root проверены; исходный дефект воспроизведён
+на настоящем fivefile serializer/native semantic functions под явными fixtureauthorityseams.
+Исправлен только current199reader: historicalCPbytes остаются immutable, currentconfig проверяется
+исходным native semantic seal, один rawconfig markerpin — только typed metadata. Source/operator/
+receipt/stamp/plugins/прочийmarker строгие. Native199послеT1/T2 source-совместим в проверенном объёме.
+Root собрал окончательные op477/52 и отдельные publichelpers; реальный198preflight477/17888PASS5.046s.
+**707PASS+72subtests/240.40s**, whole242.14s/2CPU/peak701.2MiB,807sourcefiles неизменны,
+nativegateunitinactive/dead/MainPID0/success, свои fixture dirs удалены. Source198/старый476 ещё
+установлены; genuine v6commit,199CP/fresh defaultreader/Dashboard/currentD/T1/P/T2 не выполнены.
+Первый native Source199 ограничен одной CPedge; Source200 сейчас отдельно готовит Сол Standard
+после одного completedcompact в прежней TUI. Его результат не задерживает ближайшую установку199.
+Частная первая baseline ребёнка была затёрта им при точном199rerun: старыйSHA не восстановлен
+и не объявленMATCH; новая independently bound199baseline21 сохраняется отдельно. Полные ограничения в evidence.
+
+**ODS после Calc: принята узкая source-реализация, ещё не установленная.**
+[Код/139author+28Root/ограничения](evidence/astra-20261111/ods-retained-source-compatibility.json).
+На тех же R100received и двух существующих actualCalcкопиях READ уже былPASS, но editconstraints
+и inboundstyles отказывали. Теперь scalar edit/restore/inbound inventory проходят; wholeforms/
+localnames constraints проверяются до targetbreak, passivealiasbank закрытый. Destination envelope
+не расширен, futureOfficebank70 не включён. Готовится отдельный200layer+sourcecontinuity;
+новой Office/liveconversion/TG/модели не было, все старые эффекты и FAIL сохранены.
+
+**ODP actualapp: same-file итог PARTIAL, сохранённый текст подтверждён.**
+[Недостающая оценка без runtimeповтора](evidence/astra-20261111/office-odp-retained-app-partial.json).
+Тот же35159B/c8037a marker сохраняет в XML и native reopen, остальные24literalзначения неизменны;
+2253PROPERTY/22STYLE/27SHAPE/table/chart/renderer observations совпадают. Четыре intermediate
+page-numberresults различаются; rawedited/reopened equality FALSE, это остаётся PARTIAL.
+Исходный UNEXPECTED_TEXT_EDIT/report не переписан. Source/saved exactfielddefinitions и native
+TextField joins дают только узкую persistedliteral приёмку.5UNAVAILABLE/fullstyle/visual/wholeOffice
+не закрыты. Код checker проверен25+8 offlineконтролями, приложение/producer/model/send не повторялись.
 
 **Git.** При принятии HEAD = origin/main = remote main был
 `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
@@ -148,7 +181,8 @@ Visual/fullstyle/automaticdirty/user/formal acceptance пока нет. Source O
 `addd212a3e59d8083648d61ce35254a5971b363d`; exact зависимости/закрытые harness отказы —
 `f1921d4f2eaac3a60623af1b9eb0de0ae56ecbec`; chart native proofs —
 `ac7261eaf2a7335a86aa63591ddf030d031d448b`; Task4 source/drafts —
-`342fcdea7f97335132458ec1e425ae5fe94a2152` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+`342fcdea7f97335132458ec1e425ae5fe94a2152`; Psource/закрытыеOfficeэффекты —
+`9f57b8697df224d3a46bf8553994d06afd82a799` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
@@ -975,7 +1009,7 @@ SHA256SUMS, `issue-fresh-admission.py`, `check-fresh-admission-scope.py`,
 | `docs/checkpoints/2026-11-07-v2-bounded-diagnostics/PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md` | ?? (untracked) | Техническая заметка о переключении провайдера. Существовала до этого прохода. |
 | `docs/checkpoints/2026-11-07-v3-original-context-repair/FORMAT-COVERAGE-MAP.json` | ?? (untracked) | Карта покрытия форматов. Не входит в Git-дерево; исключена из SHA256SUMS. |
 
-## 2. Обслуживаемый runtime (установка195, 10.11.2026; история194 отдельно выше)
+## 2. Исторический runtime195 (10.11.2026; текущая198 и свежие допуски выше)
 
 | Предмет | Факт |
 |---|---|

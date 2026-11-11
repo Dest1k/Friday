@@ -1,0 +1,102 @@
+--- immutable-gen4/evaluate_roundtrip.py
++++ offline-gen5/evaluate_roundtrip.py
+@@ -173,6 +173,54 @@
+  elif rows and rows[-2:]==[['SECOND_CLOSED'],['DONE']]:out['state']='APP_COMPLETE_PROTOCOL_CANDIDATE'
+  return out
+ 
++
++def page_number_definitions(raw):
++ """Derive eligible fields structurally, never from a document/hash allowlist."""
++ with zipfile.ZipFile(io.BytesIO(raw)) as z:
++  need(len(z.infolist())<=1024 and sum(x.file_size for x in z.infolist())<=16*1024**2 and all(x.file_size<=4*1024**2 for x in z.infolist()),'FIELD_PACKAGE_BOUNDARY')
++  root=ET.fromstring(z.read('content.xml'))
++ def canonical(node):
++  return (node.tag,tuple(sorted(node.attrib.items())),node.text or '',tuple(canonical(x) for x in node),node.tail or '')
++ result={}
++ for i,page in enumerate(root.findall('.//d:page',NS)):
++  notes=page.find('p:notes',NS)
++  if notes is None:continue
++  for j,shape in enumerate(notes):
++   if shape.get('{'+NS['p']+'}class')!='page-number':continue
++   path=f'notes/{i}/{j}';paras=shape.findall('./d:text-box/t:p',NS)
++   need(len(paras)==1,'FIELD_SINGLE_SOURCE_PARAGRAPH')
++   para=paras[0];fields=para.findall('.//t:page-number',NS)
++   allowed={'{'+NS['t']+'}p','{'+NS['t']+'}span','{'+NS['t']+'}page-number'}
++   need(len(fields)==1 and len(fields[0])==0 and all(x.tag in allowed for x in para.iter()) and text(para)==text(fields[0]),'FIELD_EXACT_PAGE_NUMBER_LEAF')
++   result[path]=canonical(fields[0])
++ return result
++
++def join_page_number_results(rows,definitions):
++ results={}
++ for path in definitions:
++  shapes=[r for r in rows if r[0]=='SHAPE' and r[1]==path]
++  need(len(shapes)==1 and unhex(shapes[0][2])=='com.sun.star.presentation.SlideNumberShape','FIELD_NATIVE_SHAPE_JOIN')
++  texts=[r for r in rows if r[0]=='TEXT' and r[1]==path]
++  paragraphs=[r for r in rows if r[0]=='PARAGRAPH' and r[1]==path]
++  portions=[r for r in rows if r[0]=='PORTION' and r[1]==path]
++  need(len(texts)==len(paragraphs)==len(portions)==1 and paragraphs[0][2]=='0' and portions[0][2:4]==('0','0'),'FIELD_NATIVE_SINGLE_PORTION_JOIN')
++  need(texts[0][-1]==paragraphs[0][-1]==portions[0][-1],'FIELD_NATIVE_PAYLOAD_JOIN')
++  prop_path=path+'/paragraph/0/portion/0'
++  kinds=[r for r in rows if r[0]=='PROPERTY' and r[1]==prop_path and r[2]=='TextPortionType']
++  need(len(kinds)==1 and unhex(kinds[0][-1])=='TextField','FIELD_NATIVE_TEXTFIELD_JOIN')
++  results[path]=unhex(texts[0][-1])
++ return results
++
++def compare_page_number_scope(snapshots,source,edited):
++ definitions=page_number_definitions(source);saved=page_number_definitions(edited)
++ need(definitions==saved,'SOURCE_SAVED_PAGE_NUMBER_DEFINITION_JOIN')
++ results={label:join_page_number_results(snapshots[label],definitions) for label in SNAPSHOTS}
++ need(results['before']==results['reopened'],'DYNAMIC_PAGE_NUMBER_REOPENED_RESULT_CHANGED')
++ changed=[path for path in definitions if results['edited'][path]!=results['before'][path]]
++ def normalized(rows):
++  return [(r[:-1]+('__DYNAMIC_PAGE_NUMBER_RESULT__',)) if r[0] in ('TEXT','PARAGRAPH','PORTION') and r[1] in definitions else r for r in rows]
++ return dict(definitions=definitions,results=results,changed=changed,normalized={label:normalized(snapshots[label]) for label in SNAPSHOTS})
++
+ def assess(events,source,edited):
+  need(len(events)<=2*1024**2 and events.endswith(b'\n'),'EVENT_CAP_OR_TORN')
+  lines=events.decode('ascii').splitlines();rows=[x.split('\t') for x in lines]
+@@ -206,9 +254,19 @@
+  before,mid,after=(textmap(x) for x in SNAPSHOTS)
+  need(before.keys()==mid.keys()==after.keys(),'TEXT_STRUCTURE_DRIFT')
+  need(before.get(target)==old and mid.get(target)==after.get(target)==old+marker,'EDIT_NOT_PERSISTED')
+- need(all(mid[k]==before[k] for k in before if k!=target),'UNEXPECTED_TEXT_EDIT')
+- need(snapshots['edited']==snapshots['reopened'],'SAVE_REOPEN_PROPERTIES_CONTENT_STRUCTURE_DRIFT')
++ fieldscope=compare_page_number_scope(snapshots,source,edited)
++ dynamic=set(fieldscope['definitions'])
++ need(all(mid[k]==before[k] for k in before if k!=target and k not in dynamic),'UNEXPECTED_TEXT_EDIT')
++ # Raw inequality remains an explicit PARTIAL result. Only positively joined
++ # intermediate page-number payloads are scoped out of invariant comparisons.
++ need(fieldscope['normalized']['edited']==fieldscope['normalized']['reopened'],'SAVE_REOPEN_PROPERTIES_CONTENT_STRUCTURE_DRIFT')
+  expected,chartvalues=source_expectations(source)
++ need(target in expected and target not in dynamic,'SOURCE_EDIT_TARGET_LITERAL_JOIN')
++ saved_expected,saved_chartvalues=source_expectations(edited)
++ need(expected.keys()==saved_expected.keys(),'SOURCE_SAVED_LITERAL_PATH_SET')
++ need(all(saved_expected[k]==expected[k]+marker if k==target else saved_expected[k]==expected[k] for k in expected),'SOURCE_SAVED_LITERAL_EDIT_SCOPE')
++ need(all(after.get(k)==v for k,v in saved_expected.items()),'SAVED_XML_NATIVE_REOPENED_LITERAL_JOIN')
++ need(saved_chartvalues==chartvalues and source_chart_identity(source)==source_chart_identity(edited),'SOURCE_SAVED_CHART_IDENTITY')
+  need(all(before.get(k)==v for k,v in expected.items()),'SOURCE_NATIVE_TEXT_DISAGREEMENT')
+  chart=[]
+  for r in snapshots['before']:
+@@ -236,12 +294,17 @@
+   need([r for r in rr if r[0]=='RENDERERS']==[('RENDERERS','5')],'RENDERER_COUNT')
+   need(len([r for r in rr if r[0]=='RENDER_PAGE_SIZE'])==5,'RENDERER_PROPERTIES')
+  outside_target=lambda rr:[r for r in rr if not (len(r)>1 and (r[1]==target or r[1].startswith(target+'/')))]
+- need(outside_target(snapshots['before'])==outside_target(snapshots['edited']),'UNEXPECTED_NON_TARGET_DRIFT')
++ need(outside_target(fieldscope['normalized']['before'])==outside_target(fieldscope['normalized']['edited']),'UNEXPECTED_NON_TARGET_DRIFT')
+  property_changes=sum(a!=b for a,b in zip([r for r in snapshots['before'] if r[0]=='PROPERTY'],[r for r in snapshots['edited'] if r[0]=='PROPERTY']))
+- return dict(state='ROUNDTRIP_APP_CHECKS_OBSERVED_NO_VISUAL_ACCEPTANCE',dirty_state_observations=dirty,automatic_dirty_notification_acceptance=False,chart_application_state_control=chartstarts,actual_app_event_sha256=hashlib.sha256(events).hexdigest(),source_expected_text_paths=len(expected),slides=5,notes_pages=5,tables=1,table_dimensions=[5,2],native_charts=1,chart_numeric_values=3,source_chart_category_labels_matched=len(identity['category_labels']),source_chart_series_names_matched=len(identity['series_names']),source_chart_diagram_type_matched=True,
+-  controlled_text_edit_persisted=True,all_other_native_text_unchanged=True,edited_reopened_exact_observed_snapshots_equal=True,
+-  before_edited_non_target_observations_equal=True,property_row_changes_within_edit_target=property_changes,
++ return dict(state='PARTIAL_PERSISTED_LITERAL_EDIT_WITH_DYNAMIC_PAGE_NUMBER_RESULT_VARIATION' if fieldscope['changed'] else 'SCOPED_PERSISTED_LITERAL_EDIT_OBSERVED_NO_FULL_ACCEPTANCE',dirty_state_observations=dirty,automatic_dirty_notification_acceptance=False,chart_application_state_control=chartstarts,actual_app_event_sha256=hashlib.sha256(events).hexdigest(),source_expected_text_paths=len(expected),slides=5,notes_pages=5,tables=1,table_dimensions=[5,2],native_charts=1,chart_numeric_values=3,source_chart_category_labels_matched=len(identity['category_labels']),source_chart_series_names_matched=len(identity['series_names']),source_chart_diagram_type_matched=True,
++  controlled_text_edit_persisted=True,all_other_native_text_unchanged=all(mid[k]==before[k] for k in before if k!=target),all_other_nonfield_native_text_before_edited_unchanged=all(mid[k]==before[k] for k in before if k!=target and k not in dynamic),all_other_native_before_reopened_text_unchanged=all(after[k]==before[k] for k in before if k!=target),edited_reopened_exact_observed_snapshots_equal=snapshots['edited']==snapshots['reopened'],
++  before_edited_non_target_observations_equal=outside_target(snapshots['before'])==outside_target(snapshots['edited']),
++  positively_joined_page_number_field_count=len(dynamic),intermediate_page_number_result_variation_count=len(fieldscope['changed']),
++  page_number_before_reopened_raw_results_equal=True,source_saved_page_number_definitions_equal=True,
++  scoped_nonfield_snapshot_invariants_equal=True,raw_snapshot_equality_acceptance=False if fieldscope['changed'] else True,
++  dynamic_result_semantic_or_visual_acceptance=False,full_app_acceptance=False,
++  persisted_saved_xml_marker_and_literal_scope_equal=True,saved_xml_native_reopened_literal_scope_equal=True,property_row_changes_within_edit_target=property_changes,
+   optional_metadata_unavailable_records=sum(r[0]=='UNAVAILABLE' for r in snapshots['before']),style_scope='UNAVAILABLE is explicit absence/error metadata, never style acceptance; listed effective scalar values and XPropertyState for shape/paragraph/portion/style plus style parent name; parent effective chain and all unlisted complex properties NOT captured',
+   rendering_scope='XRenderable metadata only; no raster/PDF/native renderer called',source_inventory=inventory(source),edited_inventory=inventory(edited),
+-  source_comparison='private ODP literal text/chart values against actual initial app observations; original PPTX visual fidelity NOT assessed',
++  source_comparison='private original/saved ODP literal text+chart identities joined with actual initial/reopened app; exact dynamic source/saved definitions and native portion joins scoped separately. Original PPTX fidelity NOT assessed',
+   binary_graphics_validity=False,visual_acceptance=False,whole_toolchain_acceptance=False,untrusted_source_qualification=False)

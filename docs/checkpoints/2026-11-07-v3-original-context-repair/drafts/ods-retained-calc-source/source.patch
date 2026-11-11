@@ -1,0 +1,264 @@
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -26,6 +26,7 @@
+ NUM = 'urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0'
+ XL = 'http://www.w3.org/1999/xlink'
+ OF = 'urn:oasis:names:tc:opendocument:xmlns:of:1.2'
++CALCEXT = 'urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0'
+ MIME = 'application/vnd.oasis.opendocument.spreadsheet'
+ MIMES = {'ods': MIME, 'ots': MIME + '-template'}
+ MAX_CELLS = 4096
+@@ -89,6 +90,14 @@
+     if column > MAX_COLS or row > MAX_ROWS:
+         fail('invalid_cell_address')
+     return row, column
++
++
++def _empty_forms(node):
++    # The sole inert Calc forms scaffold; all attributes and content are closed.
++    return (not len(node) and node.attrib == {
++        '{urn:oasis:names:tc:opendocument:xmlns:form:1.0}automatic-focus':'false',
++        '{urn:oasis:names:tc:opendocument:xmlns:form:1.0}apply-design-mode':'false'}
++        and node.text in (None,'') and node.tail in (None,''))
+ 
+ 
+ class Spreadsheet(Package):
+@@ -193,6 +202,8 @@
+                     yield child
+                 elif child.tag in {q(TB, n) for n in ('table-header-rows', 'table-row-group', 'table-rows')}:
+                     yield from walk(child)
++                elif child.tag == q(O,'forms') and _empty_forms(child):
++                    continue
+                 elif child.tag not in {q(TB, n) for n in ('table-column', 'table-columns', 'table-column-group', 'table-header-columns', 'shapes', 'named-expressions')}:
+                     self.unsupported.add('unread_sheet_structure')
+         return walk(sheet)
+@@ -552,7 +563,21 @@
+     if not isinstance(spec['sheet'], str): fail('ods_edit_schema')
+     book = Spreadsheet(data, format, checkpoint=checkpoint)
+     if book.unsupported: fail('unsupported_preserving_edit')
+-    if any(n.tag in {q(TB, k) for k in ('named-expressions', 'database-ranges', 'content-validations')} for n in book.body):
++    # Validate every forms scaffold before target search can break at a cell.
++    # A hidden/active tail or another sheet must not escape the preserving gate.
++    forms_seen = set()
++    for tree in book.xml.values():
++        if tree.tag == q(O,'forms'): fail('unsupported_preserving_edit')
++        for parent in tree.iter():
++            tick(checkpoint)
++            for node in parent:
++                if node.tag == q(O,'forms'):
++                    if parent not in book.sheets or parent in forms_seen or not _empty_forms(node):
++                        fail('unsupported_preserving_edit')
++                    forms_seen.add(parent)
++    if any(n.tag in {q(TB, k) for k in ('named-expressions', 'database-ranges', 'content-validations')}
++           and (n.tag != q(TB,'named-expressions') or n.attrib or len(n)
++                or n.text not in (None,'') or n.tail not in (None,'')) for n in book.xml['content.xml'].iter()):
+         # They are preserved, but target constraints require a separate editor.
+         fail('edit_constraints_not_supported')
+     targets = [s for s in book.sheets if s.get(q(TB, 'name')) == spec['sheet']]
+@@ -582,17 +607,21 @@
+         if type(value) is not bool: fail('invalid_boolean_value')
+         attrs = {q(O, 'value-type'): 'boolean', q(O, 'boolean-value'): str(value).lower()}; display = str(value).lower()
+     # Keep style and identity; refuse arbitrary rich content rather than drop it.
+-    if set(target.attrib) - {q(O, k) for k in ('value-type', 'value', 'string-value', 'boolean-value')} - {q(TB, 'style-name')}:
++    if set(target.attrib) - {q(O, k) for k in ('value-type', 'value', 'string-value', 'boolean-value')} - {q(TB, 'style-name'), q(CALCEXT, 'value-type')}:
+         fail('unsupported_target_attributes')
+     if any(child.tag != q(T, 'p') or len(child) or child.attrib for child in target):
+         fail('unsupported_target_content')
+     if q(TB, 'style-name') in target.attrib: attrs[q(TB, 'style-name')] = target.get(q(TB, 'style-name'))
++    if q(CALCEXT, 'value-type') in target.attrib:
++        if target.get(q(CALCEXT, 'value-type')) != old['type']:
++            fail('ambiguous_target_type')
++        attrs[q(CALCEXT, 'value-type')] = old['type']
+     root = book.xml['content.xml']; cells = [n for n in root.iter() if n.tag in (q(TB, 'table-cell'), q(TB, 'covered-table-cell'))]
+     raw = book.parts['content.xml']; begin, end = _cell_span(raw, cells.index(target))
+     content = _edited_cell_content(raw[begin:end], display)
+     # Local namespace declarations make this independent of the source prefixes.
+-    attributes = ''.join(' ' + ('office:' if key.startswith('{'+O+'}') else 'table:') + key.split('}', 1)[1] + '="' + escape(text, {'"': '&quot;'}) + '"' for key, text in attrs.items())
+-    replacement = ('<table:table-cell xmlns:table="'+TB+'" xmlns:office="'+O+'" xmlns:text="'+T+'"'+attributes+'>').encode() + content + b'</table:table-cell>'
++    attributes = ''.join(' ' + ('office:' if key.startswith('{'+O+'}') else 'calcext:' if key.startswith('{'+CALCEXT+'}') else 'table:') + key.split('}', 1)[1] + '="' + escape(text, {'"': '&quot;'}) + '"' for key, text in attrs.items())
++    replacement = ('<table:table-cell xmlns:table="'+TB+'" xmlns:office="'+O+'" xmlns:text="'+T+'" xmlns:calcext="'+CALCEXT+'"'+attributes+'>').encode() + content + b'</table:table-cell>'
+     changed = raw[:begin] + replacement + raw[end:]
+     if format == 'fods':
+         result = changed
+--- a/tools/scoped_spreadsheet_conversion.py
++++ b/tools/scoped_spreadsheet_conversion.py
+@@ -862,7 +862,109 @@
+             refuse('conversion_generated_ods_xml_unsupported')
+ 
+ 
+-def _ods_generated_profile(book):
++# The inbound Calc scalar profile is separate from the destination profile.
++# This fingerprint describes the complete normalized DEFAULT ASSET tree, never
++# a workbook, cell payload, ZIP or caller identity. Only the closed aliases and
++# passive edit bookkeeping below vary. Cell styles/values/formulas and every
++# resource still pass the independent existing semantic/package guards.
++_ODS_CALC_SOURCE_STYLES = 'c61586ce111f66e62377a94b61e564ecf961d63c40ab17b36f9598206602a8a5'
++
++
++def _ods_calc_source_parts(styles, statistics, settings, sheet_name):
++    config = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
++    meta = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
++    dc = 'http://purl.org/dc/elements/1.1/'
++    loext = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
++    # Calc reassigns unused built-in numeric aliases on save. Bind declarations
++    # and references before comparing their complete default definitions.
++    aliases = {}
++    for node in styles.iter():
++        if node.tag.startswith('{'+NUM+'}') and q(ST,'name') in node.attrib:
++            name = node.get(q(ST,'name'))
++            if not re.fullmatch(r'N[0-9]{1,5}(?:P[0-9]{1,2})?',name or '') or name in aliases:
++                refuse('conversion_calc_source_style_identity')
++            aliases[name] = '@number-'+str(len(aliases))+'@'
++    for node in styles.iter():
++        if node.tag.startswith('{'+NUM+'}') and q(ST,'name') in node.attrib:
++            node.set(q(ST,'name'),aliases[node.get(q(ST,'name'))])
++        for key in (q(ST,'data-style-name'),q(ST,'apply-style-name')):
++            if key in node.attrib:
++                if node.get(key) not in aliases:
++                    refuse('conversion_calc_source_style_identity')
++                node.set(key,aliases[node.get(key)])
++    section = styles.find(q(O,'styles'))
++    if section is None: refuse('conversion_calc_source_styles_unsupported')
++    for node in section.findall(q(ST,'default-style')):
++        if node.get(q(ST,'family')) == 'graphic':
++            for props in node.findall(q(ST,'paragraph-properties')):
++                if q(loext,'tab-stop-distance') in props.attrib:
++                    if props.get(q(loext,'tab-stop-distance')) != '0in':
++                        refuse('conversion_calc_source_styles_unsupported')
++                    del props.attrib[q(loext,'tab-stop-distance')]
++    times = list(styles.iter(q(T,'time')))
++    dates = list(styles.iter(q(T,'date')))
++    if len(times) != 1 or len(dates) != 1:
++        refuse('conversion_calc_source_styles_unsupported')
++    time = times[0]
++    if time.attrib:
++        if (set(time.attrib) != {q(ST,'data-style-name'),q(T,'time-value')}
++                or time.get(q(ST,'data-style-name')) != dates[0].get(q(ST,'data-style-name'))
++                or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,9})?',time.get(q(T,'time-value'),''))):
++            refuse('conversion_calc_source_styles_unsupported')
++        time.attrib.clear()
++    # Save bookkeeping has a bounded lexical schema; no arbitrary metadata,
++    # user content, duplicate entries, links or hidden children are discarded.
++    body = statistics.find(q(O,'meta'))
++    if body is None: refuse('conversion_calc_source_metadata_unsupported')
++    optional = {q(dc,'date'),q(meta,'editing-duration'),q(meta,'editing-cycles')}
++    seen = set()
++    for node in list(body):
++        if node.tag not in optional: continue
++        if node.tag in seen or node.attrib or len(node) or node.tail not in (None,''):
++            refuse('conversion_calc_source_metadata_unsupported')
++        seen.add(node.tag); value = node.text or ''
++        if node.tag == q(dc,'date'):
++            if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,9})?',value):
++                refuse('conversion_calc_source_metadata_unsupported')
++            _date(value[:10])
++        elif node.tag == q(meta,'editing-cycles'):
++            if not re.fullmatch(r'[1-9][0-9]{0,5}',value):
++                refuse('conversion_calc_source_metadata_unsupported')
++        elif value.endswith('T') or not re.fullmatch(r'P[0-9]{1,6}D(?:T(?:[0-9]{1,6}H)?(?:[0-9]{1,6}M)?(?:[0-9]{1,6}(?:\.[0-9]{1,9})?S)?)?',value):
++            refuse('conversion_calc_source_metadata_unsupported')
++        body.remove(node)
++    if seen and seen != optional:
++        refuse('conversion_calc_source_metadata_unsupported')
++    body[:] = sorted(body,key=lambda node:node.tag)
++    # A native save adds an inert sheet code-name map and an empty printer
++    # token. Require the exact closed structure and bind the map to this sheet.
++    script_maps = 0
++    for parent in settings.iter():
++        for node in list(parent):
++            if node.tag == q(config,'config-item-map-named'):
++                script_maps += 1
++                if (script_maps != 1 or parent.tag != q(config,'config-item-set')
++                        or parent.attrib != {q(config,'name'):'ooo:configuration-settings'}
++                        or node.attrib != {q(config,'name'):'ScriptConfiguration'} or len(node) != 1
++                        or node.text not in (None,'') or node.tail not in (None,'')):
++                    refuse('conversion_calc_source_settings_unsupported')
++                entry = node[0]
++                if (entry.tag != q(config,'config-item-map-entry') or entry.attrib != {q(config,'name'):sheet_name}
++                        or len(entry) != 1 or entry.text not in (None,'') or entry.tail not in (None,'')):
++                    refuse('conversion_calc_source_settings_unsupported')
++                item = entry[0]
++                if (item.tag != q(config,'config-item') or item.attrib != {q(config,'name'):'CodeName',q(config,'type'):'string'}
++                        or len(item) or item.text != 'Sheet1' or item.tail not in (None,'')):
++                    refuse('conversion_calc_source_settings_unsupported')
++                parent.remove(node)
++            elif node.tag == q(config,'config-item') and node.get(q(config,'name')) == 'PrinterSetup':
++                if (node.attrib != {q(config,'name'):'PrinterSetup',q(config,'type'):'base64Binary'}
++                        or len(node) or node.text not in (None,'','AAA=')):
++                    refuse('conversion_calc_source_settings_unsupported')
++                node.text = None
++
++
++def _ods_generated_profile(book, *, calc_source=False):
+     from copy import deepcopy
+     config = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
+     meta = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
+@@ -938,13 +1040,16 @@
+             extents.append(node.get(q(config,'name'))); node.text='@view-extent@'
+     if sorted(extents) != ['VisibleAreaHeight','VisibleAreaWidth']:
+         refuse('conversion_generated_ods_settings_unsupported')
++    if calc_source:
++        _ods_calc_source_parts(styles,statistics,settings_root,sheet_name)
+     normalized = {'styles.xml':styles,'meta.xml':statistics,'settings.xml':settings_root}
+     for part in ('styles.xml','meta.xml','settings.xml','manifest.rdf','META-INF/manifest.xml'):
+         if part == 'manifest.rdf':
+             if hashlib.sha256(book.parts[part]).hexdigest() != _ODS_CALC_PASSIVE[part]:
+                 refuse('conversion_generated_ods_passive_part_unsupported')
+             continue
+-        if _ods_tree_digest(normalized.get(part,book.xml[part])) != _ODS_CALC_PASSIVE[part]:
++        expected_digest = (_ODS_CALC_SOURCE_STYLES if calc_source and part == 'styles.xml' else _ODS_CALC_PASSIVE[part])
++        if _ods_tree_digest(normalized.get(part,book.xml[part])) != expected_digest:
+             refuse('conversion_generated_ods_passive_part_unsupported')
+     _ods_png_preview(book.parts['Thumbnails/thumbnail.png'])
+     for parent, tag in ((content,q(O,'scripts')),(book.body,q(TB,'named-expressions'))):
+@@ -981,13 +1086,13 @@
+     return used
+ 
+ 
+-def _ods(data, checkpoint, *, office_generated=False):
++def _ods(data, checkpoint, *, office_generated=False, calc_source=False):
+     book = Spreadsheet(data,'ods',checkpoint)
+     if book.unsupported: refuse('conversion_active_or_linked_content')
+     _formula_namespaces(book.parts['content.xml'])
+     if set(book.parts)-{'mimetype','content.xml','styles.xml','meta.xml','settings.xml','META-INF/manifest.xml', 'manifest.rdf','Thumbnails/thumbnail.png'}:
+         refuse('conversion_package_features_unsupported')
+-    used_style = _ods_generated_profile(book) if office_generated else _ods_styles(book)
++    used_style = _ods_generated_profile(book,calc_source=calc_source) if office_generated or calc_source else _ods_styles(book)
+     content = book.xml['content.xml']
+     _attrs(content, (q(O,'version'),))
+     _children(content, (q(O,x) for x in ('font-face-decls','automatic-styles','body')),
+@@ -1067,15 +1172,21 @@
+         if book.unsupported: refuse('conversion_structure_unsupported')
+         sheets.append((name,cells))
+     result = _finish(sheets,checkpoint)
+-    if office_generated and used_style.declared_counts != (result.counts()['sheets'],result.counts()['nonempty_cells']):
++    if (office_generated or calc_source) and used_style.declared_counts != (result.counts()['sheets'],result.counts()['nonempty_cells']):
+         refuse('conversion_generated_ods_statistics_changed')
+     return result
+ 
+ 
+-def inventory(data, format, *, checkpoint=None):
++def inventory(data, format, *, checkpoint=None, source_profile=True):
+     try:
+         if format == 'xlsx': return _xlsx(data,checkpoint)
+-        if format == 'ods': return _ods(data,checkpoint)
++        if format == 'ods':
++            try: return _ods(data,checkpoint)
++            except ConversionRefused:
++                if not source_profile: raise
++                # A closed inbound default-Calc scalar dialect; the original
++                # strict-source parser and destination profile stay intact.
++                return _ods(data,checkpoint,calc_source=True)
+         refuse('conversion_pair_unsupported')
+     except ConversionRefused:
+         raise
+@@ -1087,7 +1198,8 @@
+ 
+ def validate_destination(source, data, target, *, checkpoint=None):
+     try:
+-        actual = inventory(data,target,checkpoint=checkpoint)
++        # Inbound Calc support does not enlarge the generated-output envelope.
++        actual = inventory(data,target,checkpoint=checkpoint,source_profile=False)
+     except ConversionRefused:
+         if target not in ('xlsx','ods'): raise
+         try:

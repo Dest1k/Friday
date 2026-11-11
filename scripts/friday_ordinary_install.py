@@ -2544,7 +2544,384 @@ def project_current_request_metadata(request):
         'ordinary_project_current198_explicit_request_required')
 
 
-def project_current_source_checked(value, *, cli_only, project_update=None):
+# One authenticated native CP edge after the current198 project transaction.
+# Neither a future request digest nor a future input digest is compiled here.
+CURRENT_SOURCE_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v1'
+CURRENT_SOURCE_CP_FIELDS = frozenset({'schema','seconds','home','previous_input','current_input',
+    'candidate_input','candidate_project','marker','source_receipt','target_receipt','stamp',
+    'configuration','profile','launcher','native_unit','transaction_history','predecessor_request',
+    'predecessor_current_input_sha256','predecessor_receipt_sha256','installed_layers','installed_files',
+    'project_inventory','project_inventory_sha256','layer_names','layer_manifest_updates',
+    'project_file_updates','plugin_set','plugin_additions','staged_files','current_source_successor'})
+CURRENT_SOURCE_CP_INTENT_FIELDS = frozenset({'schema','state','request_sha256','request_reference',
+    'current_source_successor','home','previous_input','current_input','source_receipt','layers','files',
+    'plugin_set','plugin_additions','project_file_updates','metadata','gateway_started','workers_enabled'})
+CURRENT_SOURCE_CP_COMMIT_FIELDS = frozenset({'schema','state','request_sha256','request_reference',
+    'current_source_successor','previous_input','current_input','predecessor_request_sha256',
+    'predecessor_receipt_sha256','source_receipt_sha256','layers','files','gateway_started','workers_enabled','seconds'})
+
+
+def _current_source_json(path, *, private=True):
+    """All new continuity JSON is duplicate-free, finite and size bounded."""
+    f = api(); raw = f.owned_file(path,private=private)
+    f.require(len(raw) <= 16 * 1024**2,'ordinary_current_successor_document_too_large')
+    def nonfinite(_):
+        f.require(False,'ordinary_current_successor_nonfinite_json')
+    def finite_float(text):
+        value = float(text)
+        f.require(__import__('math').isfinite(value),'ordinary_current_successor_nonfinite_json')
+        return value
+    return json.loads(raw,object_pairs_hook=f.unique,parse_constant=nonfinite,parse_float=finite_float)
+
+
+def _current_source_reference(ref):
+    f = api()
+    f.require(type(ref) is dict and set(ref) == {'path','sha256'}
+        and type(ref['path']) is str and type(ref['sha256']) is str
+        and len(ref['sha256']) == 64 and all(c in '0123456789abcdef' for c in ref['sha256']),
+        'ordinary_current_successor_exact_reference_required')
+    return f.pin(ref)
+
+
+def _project_current_root_checked(home, reference):
+    """Authenticate v6 evidence, without reopening ancestral mutable/source pins."""
+    f = api(); tx = f.directory(home/'preparation'/('ordinary-source-update-'+PROJECT_DSH_CURRENT_INPUT))
+    f.require(not os.path.lexists(tx/'rolled-back.json'),'ordinary_project_current_source_rolled_back')
+    intent = _current_source_json(tx/'intent.json'); committed = _current_source_json(tx/'committed.json')
+    intent_fields = {'schema','state','project_only','native_source_unchanged','request_reference',
+        'request_sha256','seconds','previous_input','current_input','publication_ancestor','reviewed_delta',
+        'gateway_started','workers_enabled','before'}
+    commit_fields = {'schema','state','project_only','native_source_unchanged','request_reference',
+        'request_sha256','previous_input','current_input','source_receipt_sha256','gateway_started','workers_enabled'}
+    f.require(type(intent) is dict and set(intent) == intent_fields
+        and type(committed) is dict and set(committed) == commit_fields
+        and intent['state'] == 'SOURCE_UPDATE_CONSUMED_NO_RETRY'
+        and committed['state'] == 'SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED'
+        and all(body['schema'] == 'friday.ordinary-telegram-source-update-transaction.v1'
+            and body['project_only'] is True and body['native_source_unchanged'] is True
+            and body['gateway_started'] is False and body['workers_enabled'] is False
+            for body in (intent,committed)), 'ordinary_project_current_source_committed_proof_required')
+    request_ref = intent['request_reference']
+    _current_source_reference(request_ref)
+    f.require(encoded(reference) == encoded(request_ref) == encoded(committed['request_reference'])
+        and intent['request_sha256'] == committed['request_sha256'] == request_ref.get('sha256'),
+        'ordinary_current_successor_root_request_changed')
+    request = _current_source_json(_current_source_reference(request_ref))
+    project_current_request_metadata(request)
+    f.require(request['home'] == str(home),'ordinary_project_current_source_home_changed')
+    previous = _current_source_json(_current_source_reference(request['previous_input']))
+    current = _current_source_json(_current_source_reference(request['current_input']))
+    plugins = project_current_delta(request,previous,current,check_origin=False)
+    f.require(current.get('home') == str(home)
+        and encoded(current['product']['runtime']) == encoded({'enabled':False})
+        and all(encoded(body['previous_input']) == encoded(request['previous_input'])
+            and encoded(body['current_input']) == encoded(request['current_input']) for body in (intent,committed))
+        and encoded(intent['seconds']) == encoded(request['seconds'])
+        and encoded(intent['publication_ancestor']) == encoded(request['publication_ancestor'])
+        and encoded(intent['reviewed_delta']) == encoded(request['reviewed_delta'])
+        and committed['source_receipt_sha256'] == PROJECT_DSH_CURRENT_RECEIPT,
+        'ordinary_project_current_source_commit_binding_changed')
+    before = intent['before']; names = set(plugins) | {f.MARKER}
+    f.require(type(before) is dict and set(before) == names
+        and all(type(before[n]) is dict and set(before[n]) == {'sha256','mode'}
+            and type(before[n]['mode']) is int and before[n]['mode'] in (0o600,0o644)
+            and before[n]['sha256'] == (request['marker']['sha256'] if n == f.MARKER else previous['project_files'][n])
+            if n == f.MARKER or n in previous['project_files'] else before[n] is None for n in names),
+        'ordinary_project_current_source_before_metadata_changed')
+    for name,row in before.items():
+        if row is not None:
+            f.require(f.digest(f.owned_file(tx/'before'/name,private=True)) == row['sha256'],
+                'ordinary_current_successor_root_beforeimage_changed')
+    project_current_history(home,request)
+    return request,current
+
+
+def _current_source_cp_transactions(home, leaf):
+    """Select by either half of a claim so partial claims cannot become fallback."""
+    f = api(); matches = []; roots = list(f.directory(home/'preparation').iterdir())
+    f.require(len(roots) <= 4096,'ordinary_current_successor_history_limit')
+    for tx in roots:
+        if not tx.name.startswith('ordinary-source-update-v45-'): continue
+        f.directory(tx)
+        selected = False
+        for name in ('intent.json','committed.json','request.json'):
+            if not os.path.lexists(tx/name): continue
+            body = _current_source_json(tx/name)
+            ref = body.get('current_input') if type(body) is dict else None
+            if type(ref) is dict and (ref.get('path') == leaf['path'] or ref.get('sha256') == leaf['sha256']):
+                selected = True
+        if selected: matches.append(tx)
+    f.require(len(matches) <= 1,'ordinary_current_successor_duplicate_edge')
+    return matches[0] if matches else None
+
+
+def _current_source_cp_proof(home, tx, request, *, committed):
+    f = api(); f.directory(tx)
+    f.require(not os.path.lexists(tx/'rolled-back.json'),'ordinary_current_successor_rolled_back')
+    raw = f.owned_file(tx/'request.json',private=True); raw_sha = f.digest(raw)
+    f.require(stat.S_IMODE((tx/'request.json').lstat().st_mode) == 0o600,
+        'ordinary_current_successor_raw_request_private_mode_required')
+    reference = {'path':str(tx/'request.json'),'sha256':raw_sha}
+    f.require(tx.name == 'ordinary-source-update-v45-'+raw_sha[:16]
+        and encoded(_current_source_json(_current_source_reference(reference))) == encoded(request),
+        'ordinary_current_successor_canonical_request_changed')
+    intent = _current_source_json(tx/'intent.json')
+    f.require(type(intent) is dict and set(intent) == CURRENT_SOURCE_CP_INTENT_FIELDS
+        and intent['state'] == 'SOURCE_UPDATE_INTENT' and intent['home'] == str(home),
+        'ordinary_current_successor_intent_required')
+    bodies = [intent]; commit = None
+    if committed or os.path.lexists(tx/'committed.json'):
+        commit = _current_source_json(tx/'committed.json')
+        f.require(type(commit) is dict and set(commit) == CURRENT_SOURCE_CP_COMMIT_FIELDS
+            and commit['state'] == 'SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED'
+            and type(commit['seconds']) in (int,float) and __import__('math').isfinite(commit['seconds'])
+            and 0 <= commit['seconds'] <= request['seconds']
+            and commit['predecessor_request_sha256'] == request['predecessor_request']['sha256']
+            and commit['predecessor_receipt_sha256'] == request['predecessor_receipt_sha256'],
+            'ordinary_current_successor_commit_required')
+        bodies.append(commit)
+    f.require(all(body['schema'] == 'friday.ordinary-telegram-source-update-transaction.v1'
+        and body['request_sha256'] == raw_sha and encoded(body['request_reference']) == encoded(reference)
+        and encoded(body['current_source_successor']) == encoded(request['current_source_successor'])
+        and encoded(body['previous_input']) == encoded(request['previous_input'])
+        and encoded(body['current_input']) == encoded(request['current_input'])
+        and body['gateway_started'] is False and body['workers_enabled'] is False
+        for body in bodies), 'ordinary_current_successor_journal_binding_changed')
+    for key in ('source_receipt','plugin_set','plugin_additions','project_file_updates'):
+        f.require(encoded(intent[key]) == encoded(request[key]),'ordinary_current_successor_intent_binding_changed')
+    f.require(encoded(intent['metadata']) == encoded(['hermes-agent.source.json',f.MARKER,'hermes-agent/install-stamp.json']),
+        'ordinary_current_successor_metadata_scope_changed')
+    for key,name in {'source_receipt':'hermes-agent.source.json','marker':f.MARKER,
+            'stamp':'hermes-agent/install-stamp.json'}.items():
+        f.require(f.digest(f.owned_file(tx/'before'/name,private=True)) == request[key]['sha256'],
+            'ordinary_current_successor_beforeimage_changed')
+    return intent,commit
+
+
+def current_native_source_successor_checked(value, *, cli_only, source_update=None):
+    """One immediate native198 -> native199 CP continuation; no old parser fallback."""
+    f = api()
+    if type(value) is not dict or type(value.get('home')) is not str:
+        f.require(source_update is None,'ordinary_current_successor_value_required'); return None
+    home = f.canonical(value['home']); tx_root = home/'preparation'/('ordinary-source-update-'+PROJECT_DSH_CURRENT_INPUT)
+    if source_update is None and not os.path.lexists(tx_root): return None
+    f.require(cli_only is True,'ordinary_project_current_source_cli_only_required'); f.directory(home)
+    source = f.directory(home/'hermes-agent')
+    leaf_ref = None; tx = None
+    if source_update is None:
+        root_intent = _current_source_json(tx_root/'intent.json')
+        f.require(type(root_intent) is dict,'ordinary_current_successor_root_intent_required')
+        root_ref = root_intent.get('request_reference')
+        root_request,previous = _project_current_root_checked(home,root_ref)
+        if encoded(value) == encoded(previous): return None
+        leaf_ref = f.read_json(home/f.MARKER).get('ordinary_gateway',{}).get('operator_entry',{}).get('input')
+        _current_source_reference(leaf_ref)
+        tx = _current_source_cp_transactions(home,leaf_ref)
+        f.require(tx is not None,'ordinary_current_successor_committed_edge_required')
+        request = _current_source_json(tx/'request.json')
+    else:
+        request = source_update
+    f.require(type(request) is dict and set(request) == CURRENT_SOURCE_CP_FIELDS
+        and request['schema'] == 'friday.ordinary-telegram-source-update.v46'
+        and type(request['seconds']) is int and 30 <= request['seconds'] <= 7200
+        and request['home'] == str(home),'ordinary_current_successor_explicit_request_required')
+    context = request['current_source_successor']
+    f.require(type(context) is dict and set(context) == {'schema','root_project_update'}
+        and context['schema'] == CURRENT_SOURCE_SUCCESSOR_SCHEMA,
+        'ordinary_current_successor_context_required')
+    root_request,previous = _project_current_root_checked(home,context['root_project_update'])
+    _current_source_reference(request['previous_input']); _current_source_reference(request['current_input'])
+    current = _current_source_json(Path(request['current_input']['path']))
+    f.require(encoded(value) == encoded(current) and current.get('home') == str(home)
+        and encoded(request['previous_input']) == encoded(root_request['current_input'])
+        and request['previous_input']['sha256'] != request['current_input']['sha256']
+        and request['previous_input']['path'] != request['current_input']['path']
+        and encoded(request['candidate_input']) == encoded(request['current_input'])
+        and request['candidate_project'] == str(f.ROOT)
+        and encoded({k:v for k,v in previous.items() if k != 'project_files'}) ==
+            encoded({k:v for k,v in current.items() if k != 'project_files'}),
+        'ordinary_current_successor_input_join_changed')
+    old_cp = _current_source_json(_current_source_reference(root_request['publication_ancestor']['request']))
+    f.require(all(encoded(request[k]) == encoded(old_cp[k]) for k in
+        ('predecessor_request','predecessor_current_input_sha256','predecessor_receipt_sha256','transaction_history')),
+        'ordinary_current_successor_engineering_anchor_changed')
+    for key,name in {'source_receipt':'hermes-agent.source.json','target_receipt':'hermes-agent.source.json',
+            'marker':f.MARKER,'stamp':'hermes-agent/install-stamp.json','configuration':'config.yaml'}.items():
+        _current_source_reference_metadata = request[key]
+        f.require(type(_current_source_reference_metadata) is dict
+            and set(_current_source_reference_metadata) == {'path','sha256'}
+            and _current_source_reference_metadata['path'] == str(home/name)
+            and type(_current_source_reference_metadata['sha256']) is str
+            and len(_current_source_reference_metadata['sha256']) == 64
+            and all(c in '0123456789abcdef' for c in _current_source_reference_metadata['sha256']),
+            'ordinary_current_successor_before_reference_changed')
+    f.require(encoded(request['source_receipt']) == encoded(request['target_receipt'])
+        and request['source_receipt']['sha256'] == PROJECT_DSH_CURRENT_RECEIPT
+        and request['stamp']['sha256'] == PROJECT_DSH_CURRENT_STAMP
+        and type(request['installed_layers']) is int and request['installed_layers'] == 198
+        and type(request['installed_files']) is int and request['installed_files'] == 17888
+        and encoded(request['plugin_set']) == encoded([]) and encoded(request['plugin_additions']) == encoded([])
+        and encoded(request['staged_files']) == encoded([]),'ordinary_current_successor_exact_native198_required')
+    marker = _current_source_json(home/f.MARKER)
+    leaf = marker.get('input_sha256') == request['current_input']['sha256']
+    for key,name in {'configuration':'config.yaml','profile':'FRIDAY-PROFILE.json',
+            'launcher':'hermes-agent/.hermes/bin/hermes'}.items():
+        if key == 'configuration' and leaf:
+            # The CP request authenticates its before-config, not every later
+            # native onboarding edit. Current bytes still have private custody
+            # and must satisfy the unchanged native normalized deployment seal.
+            f.owned_file(home/name,private=True)
+        else:
+            _current_source_reference(request[key])
+        f.require(request[key]['path'] == str(home/name),'ordinary_current_successor_current_pin_path_changed')
+    _current_source_reference(request['native_unit'])
+    f.require(request['native_unit']['path'] == root_request['native_unit']['path'],
+        'ordinary_current_successor_native_unit_path_changed')
+    names = request['layer_names']
+    f.require(type(names) is list and len(names) == 1 and type(names[0]) is str
+        and names[0] and all(c in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in names[0]),
+        'ordinary_current_successor_one_layer_required')
+    manifest_name = 'patches/hermes/'+names[0]+'-manifest.json'; patch_name = 'patches/hermes/'+names[0]+'.patch'
+    old = previous['project_files']; files = current['project_files']
+    f.require(type(old) is dict and type(files) is dict,'ordinary_current_successor_project_inventory_required')
+    changes = {n for n in old if files.get(n) != old[n]}
+    f.require(type(files) is dict and len(old) == 477 and len(files) == 479
+        and set(files) == set(old) | {manifest_name,patch_name}
+        and manifest_name not in old and patch_name not in old
+        and changes <= PROJECT_DSH_CURRENT_HELPERS
+        and encoded(request['project_file_updates']) == encoded(sorted(changes))
+        and encoded(request['layer_manifest_updates']) == encoded([manifest_name])
+        and encoded(request['project_inventory']) == encoded(files)
+        and request['project_inventory_sha256'] == f.digest(encoded(files)),
+        'ordinary_current_successor_exact_project_delta_required')
+    for name,expected in files.items():
+        path = Path(name)
+        f.require(type(name) is str and not path.is_absolute() and name == path.as_posix()
+            and not any(part in ('.','..') for part in path.parts)
+            and type(expected) is str and len(expected) == 64 and all(c in '0123456789abcdef' for c in expected)
+            and f.digest(f.owned_file(f.ROOT/name)) == expected,'ordinary_current_successor_project_pin_changed')
+    f.require(Path(f.__file__).resolve() == f.ROOT/'scripts/friday_install.py'
+        and Path(__file__).resolve() == f.ROOT/PROJECT_DSH_CURRENT_HELPER,
+        'ordinary_current_successor_helper_origin_changed')
+    required = {str(p.relative_to(f.ROOT)) for relative in ('plugins/friday_rework','patches/hermes')
+        for p in (f.ROOT/relative).rglob('*') if p.is_file() or p.is_symlink()}
+    f.require(required <= set(files),'ordinary_current_successor_extra_project_file')
+    manifest = _current_source_json(f.ROOT/manifest_name,private=False)
+    f.require(type(manifest) is dict and manifest.get('patch') == patch_name and manifest.get('patch_sha256') == files[patch_name]
+        and type(manifest.get('files')) is list and manifest['files'],
+        'ordinary_current_successor_manifest_required')
+    rows = manifest['files']; touched = [r.get('path') for r in rows if type(r) is dict]
+    f.require(len(touched) == len(rows) and len(touched) == len(set(touched))
+        and all(type(n) is str and n and not Path(n).is_absolute() and n == Path(n).as_posix()
+            and not any(p in ('.','..') for p in Path(n).parts) for n in touched),
+        'ordinary_current_successor_manifest_paths_changed')
+    if tx is None: tx = _current_source_cp_transactions(home,request['current_input'])
+    intent = commit = None
+    if tx is not None: intent,commit = _current_source_cp_proof(home,tx,request,committed=source_update is None)
+    f.require(source_update is not None or leaf,'ordinary_current_successor_current_marker_required')
+    f.require(not leaf or tx is not None,'ordinary_current_successor_leaf_journal_required')
+    before_receipt = _current_source_json(tx/'before/hermes-agent.source.json') if leaf else _current_source_json(home/'hermes-agent.source.json')
+    before_marker = _current_source_json(tx/'before'/f.MARKER) if leaf else marker
+    before_stamp = _current_source_json(tx/'before/hermes-agent/install-stamp.json') if leaf else _current_source_json(source/'install-stamp.json')
+    if not leaf:
+        for key in ('source_receipt','marker','stamp'): _current_source_reference(request[key])
+    f.require(len(before_receipt.get('layers',[])) == 198 and len(before_receipt.get('files',{})) == 17888
+        and type(before_receipt.get('source_file_count')) is int and before_receipt['source_file_count'] == 17730
+        and manifest.get('base_commit') == before_receipt.get('commit')
+        and before_marker.get('input_sha256') == request['previous_input']['sha256']
+        and before_marker.get('source_receipt_sha256') == PROJECT_DSH_CURRENT_RECEIPT
+        and before_marker.get('ordinary_gateway',{}).get('source_receipt_sha256') == PROJECT_DSH_CURRENT_RECEIPT
+        and encoded(before_marker.get('ordinary_gateway',{}).get('operator_entry',{}).get('input')) == encoded(request['previous_input'])
+        and encoded(before_stamp.get('fridaySource')) == encoded({'baseTree':before_receipt['base_tree'],'layers':before_receipt['layers']})
+        and encoded(before_stamp.get('commit')) == encoded(before_receipt['commit']) and before_stamp.get('dirty') is True,
+        'ordinary_current_successor_before_native_join_changed')
+    previous_script = before_marker['ordinary_gateway']['operator_entry'].get('script')
+    f.require(type(previous_script) is dict and set(previous_script) == {'path','sha256'}
+        and type(previous_script['path']) is str
+        and str(f.canonical(previous_script['path'])) == previous_script['path']
+        and Path(previous_script['path']).parts[-2:] == ('scripts','friday_native.py')
+        and previous_script['sha256'] == old['scripts/friday_native.py'],
+        'ordinary_current_successor_previous_operator_changed')
+    if not leaf:
+        _current_source_reference(previous_script)
+    expected_receipt = json.loads(json.dumps(before_receipt)); expected_files = expected_receipt['files']
+    for row in rows:
+        name = row['path']; prior = expected_files.get(name)
+        f.require(type(row.get('new_file')) is bool and row['new_file'] is (prior is None)
+            and row.get('before_sha256') == (None if prior is None else prior['sha256'])
+            and type(row.get('bytes')) is int and row['bytes'] >= 0 and row.get('mode') == '100644'
+            and type(row.get('sha256')) is str and len(row['sha256']) == 64
+            and all(c in '0123456789abcdef' for c in row['sha256']),
+            'ordinary_current_successor_native_preimage_changed')
+        after = dict(prior) if prior is not None else {}
+        after.update({'sha256':row['sha256'],'bytes':row['bytes'],'mode':'100644'}); expected_files[name] = after
+    expected_receipt['layers'].append({'manifest':manifest_name,'manifest_sha256':files[manifest_name],
+        'patch_sha256':files[patch_name]})
+    expected_receipt['sources_lock_sha256'] = current['sources_lock']['sha256']
+    receipt = _current_source_json(home/'hermes-agent.source.json'); receipt_sha = f.digest(f.owned_file(home/'hermes-agent.source.json',private=True))
+    stamp = _current_source_json(source/'install-stamp.json')
+    expected_stamp = dict(before_stamp)
+    expected_stamp['fridaySource'] = {'baseTree':expected_receipt['base_tree'],'layers':expected_receipt['layers']}
+    selected = request['current_input'] if leaf else request['previous_input']; selected_files = files if leaf else old
+    f.require(encoded(receipt) == encoded(expected_receipt if leaf else before_receipt)
+        and encoded(stamp) == encoded(expected_stamp if leaf else before_stamp)
+        and (not leaf or len(receipt['layers']) == 199)
+        and (commit is None or commit['source_receipt_sha256'] == receipt_sha),
+        'ordinary_current_successor_native_after_changed')
+    if intent is not None:
+        f.require(encoded(intent['layers']) == encoded([manifest_name]) and encoded(intent['files']) == encoded(touched)
+            and (commit is None or encoded(commit['layers']) == encoded([manifest_name])
+                and encoded(commit['files']) == encoded(touched)), 'ordinary_current_successor_journal_native_scope_changed')
+    plugins = {n:h for n,h in selected_files.items() if n.startswith('plugins/friday_rework/')}
+    f.require(len(plugins) == 52 and encoded(before_marker.get('plugin_files')) == encoded(plugins)
+        and marker.get('schema') == f.SCHEMA and marker.get('home') == str(home) and marker.get('source') == str(source)
+        and marker.get('state') == 'INSTALLED_TEMPLATE_INCOMPLETE' and marker.get('completion_stage') == 'TELEGRAM_ORDINARY'
+        and marker.get('runtime_ready') is False and marker.get('worker_state') == 'BOTH_WORKERS_PREPARATION_PENDING'
+        and marker.get('input_sha256') == selected['sha256'] and marker.get('source_receipt_sha256') == receipt_sha
+        and marker.get('ordinary_gateway',{}).get('source_receipt_sha256') == receipt_sha
+        and encoded(marker.get('plugin_files')) == encoded(plugins), 'ordinary_current_successor_marker_changed')
+    if leaf:
+        expected_marker = json.loads(json.dumps(before_marker))
+        expected_marker['input_sha256'] = request['current_input']['sha256']; expected_marker['source_receipt_sha256'] = receipt_sha
+        expected_marker['ordinary_gateway']['source_receipt_sha256'] = receipt_sha
+        expected_marker['ordinary_gateway']['operator_entry'] = {'input':request['current_input'],
+            'script':{'path':str(f.ROOT/'scripts/friday_native.py'),'sha256':files['scripts/friday_native.py']}}
+        # Keep the published CP afterimage immutable and exact. The native
+        # five-file declaration writer later refreshes only the root config's
+        # raw serialization pin; native ordinary.check deliberately validates
+        # that config semantically, including its permitted onboarding/theme
+        # edits. Never let a later marker replace the original deployment seal.
+        staged_marker = _current_source_json(tx/'FRIDAY-INSTALL.json')
+        profile_files = marker.get('profile_files')
+        f.require(type(profile_files) is dict and type(profile_files.get('config.yaml')) is str
+            and len(profile_files['config.yaml']) == 64
+            and all(c in '0123456789abcdef' for c in profile_files['config.yaml']),
+            'ordinary_current_successor_native_config_metadata_changed')
+        source_marker = json.loads(json.dumps(marker))
+        source_marker['profile_files']['config.yaml'] = expected_marker['profile_files']['config.yaml']
+        f.require(encoded(staged_marker) == encoded(expected_marker)
+            and f.owned_file(tx/'FRIDAY-INSTALL.json',private=True) == encoded(expected_marker)
+            and encoded(source_marker) == encoded(expected_marker)
+            and f.digest(f.owned_file(tx/'hermes-agent.source.json',private=True)) == receipt_sha
+            and f.digest(f.owned_file(tx/'install-stamp.json',private=True)) == f.digest(f.owned_file(source/'install-stamp.json',private=True)),
+            'ordinary_current_successor_metadata_afterimage_changed')
+    checked_plugin_inventory(home,plugins)
+    lock = _current_source_json(_current_source_reference(current['sources_lock']))
+    donors = {row['id']:row for row in lock['repositories']}
+    f.require({'hermes','dsh','a0'} <= set(donors),'complete_donor_pins_required')
+    f.composition_checked(current if leaf else previous,source,receipt,donors['hermes'])
+    if 'tls' in current['product']['dashboard']:
+        expected_tls = {relative:current['dashboard_tls'][key]['sha256'] for key,relative in current['product']['dashboard']['tls'].items()}
+        f.require(encoded(marker.get('tls_files')) == encoded(expected_tls)
+            and all(f.digest(f.owned_file(home/n,private=True)) == sha for n,sha in expected_tls.items()),'installed_dashboard_tls_changed')
+    f.native_packages(source)
+    from hermes_cli.friday_ordinary_gateway import check
+    from hermes_cli.friday_user_scope import authority
+    with authority(home): check(home,role=False)
+    return home,donors
+
+
+def project_current_source_checked(value, *, cli_only, project_update=None, source_update=None):
     """Current project source, never archival installation or worker preparation.
 
     Before commit, only the explicit typed publisher context selects this path.
@@ -2552,6 +2929,10 @@ def project_current_source_checked(value, *, cli_only, project_update=None):
     An occupied but incomplete purported transaction is a refusal, never fallback.
     """
     f = api()
+    f.require(project_update is None or source_update is None,'ordinary_current_successor_conflicting_context')
+    if project_update is None:
+        successor = current_native_source_successor_checked(value,cli_only=cli_only,source_update=source_update)
+        if successor is not None: return successor
     if type(value) is not dict or type(value.get('home')) is not str:
         f.require(project_update is None,'ordinary_project_current_source_value_required')
         return None
@@ -2682,7 +3063,7 @@ def project_current_source_checked(value, *, cli_only, project_update=None):
     return home,donors
 
 
-def project_current_delta(request, previous, current):
+def project_current_delta(request, previous, current, *, check_origin=True):
     """Bind the reviewed final hashes without widening historical project predicates."""
     f = api(); delta = f.read_json(f.pin(request['reviewed_delta']))
     old = previous.get('project_files'); new = current.get('project_files')
@@ -2720,9 +3101,10 @@ def project_current_delta(request, previous, current):
             and type(row['after_sha256']) is str and len(row['after_sha256']) == 64
             and all(c in '0123456789abcdef' for c in row['after_sha256'])
             for row in rows), 'ordinary_project_exact_reviewed_current198_delta_required')
-    f.require(Path(__file__).resolve() == f.ROOT/PROJECT_DSH_CURRENT_HELPER
-        and f.digest(f.owned_file(Path(__file__).resolve())) == new[PROJECT_DSH_CURRENT_HELPER],
-        'ordinary_project_exact_current198_helper_origin_required')
+    if check_origin:
+        f.require(Path(__file__).resolve() == f.ROOT/PROJECT_DSH_CURRENT_HELPER
+            and f.digest(f.owned_file(Path(__file__).resolve())) == new[PROJECT_DSH_CURRENT_HELPER],
+            'ordinary_project_exact_current198_helper_origin_required')
     return {n:new[n] for n in sorted(plugins)}
 
 
