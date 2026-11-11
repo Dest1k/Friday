@@ -1,134 +1,112 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **11.11.2026, 22:35 МСК**. **ACTIVE / основной функционал; публикация BLOCKED GitHub403**.
-Астра — единственный lead/live-интегратор; постоянный Сол — co-architect в своей прежней TUI.
-Оба **Standard/default, gpt-6.1-sol, thread reasoning ultra**, проверено настоящим API readback.
-[Native objective11.11](ASTRA-GOAL-REVISION-2026-11-11.json): тот же thread
-`01a1c688-e36d-7021-8df4-9c5644a4d75b`, active; история/учёт сохранены, общего cap нет.
-Старый leadership goal Сола paused; только конечные задания под координацией Астры.
+Обновлено **11.11.2026, 23:04 МСК**. **ACTIVE / основной функционал; публикация BLOCKED GitHub403**.
+Астра — sole lead/live-интегратор; Сол — постоянный co-architect в прежней TUI.
+Оба Standard/default, gpt-6.1-sol/thread ultra, фактический native readback; настройки не менялись.
+[Native objective11.11](ASTRA-GOAL-REVISION-2026-11-11.json): тот же Root thread
+`01a1c688-e36d-7021-8df4-9c5644a4d75b`, active, история/учёт без общегоcap.
+Старый leadershipgoal Сола paused; его текущие конечныеTASK работают под координацией Root.
 
-Исходный HEAD этого рабочего среза — `416ddeb3bac75a0455c7b40ab068928ac698bb11` (локальный checkpoint).
-`origin/main(tracking)=48de25314b76528b8525674097947a45750c46d3`; это последняя проверенная публикация.
-Новый SHA — содержащий эту сводку локальный коммит, без self-hash. Свежий remote SHA неизвестен.
-**Свежий remote недоступен:** [git и существующее GitHub-соединение вернули403/account suspended](evidence/astra-20261111/core204-origin-access-refusal.json).
-Никаких замен credentials/account/remote и обхода fresh-origin guard. Владелец уведомлён; локальная core-работа продолжается.
-Чужие3 сохранены и исключены: `docs/foundation-status.md`, v2 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`,
-`FORMAT-COVERAGE-MAP.json`. Их не включать в свой коммит.
+Исходный HEAD этого среза — `188bb12f3c5593b0622e4a770014433443f051f1` (локальный checkpoint).
+Новый SHA — содержащий эту сводку коммит, без self-hash. Последняя проверенная публикация/tracking
+`48de25314b76528b8525674097947a45750c46d3`; свежий remoteSHA неизвестен.
+[Git+существующее GitHub-соединение403/account suspended](evidence/astra-20261111/core204-origin-access-refusal.json).
+Владелец уведомлён. Credentials/account/remote не менять, tracking не свежийremote, guard не обходить.
+Чужие3 сохранены/исключены: `docs/foundation-status.md`, v2 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`,
+`FORMAT-COVERAGE-MAP.json`. Не включать автоматически в свой коммит.
 
-**[Установлен203/project487/native17891/plugins52/base17730](evidence/astra-20261111/native203-installed-and-same-odp-consumer.json)**.
-Receipt `9d8d1d95…2a83c2`, input `31178b28…6f513ad`;202prefix/17884non-target rows сохранены.
-Штатная установка20316:52:00→16:54:08/128.200s; все17891native/7afterimages и9stoppedDB/WAL/SHM проверены до starts.
-[Readonly checkpoint19:40](evidence/astra-20261111/post-m14-current203-services.json): boot
-`5e7fcf9b-04ea-4975-9b42-3b4e5f63c2c7`; gateway **174854/start1454011**, Telegram connected;
-Dashboard **175894/start1460381**. Оба enabled/active/NRestarts0/RuntimeMax infinity.
-Три БД quick_checkOK/leases0, messages/sessions30/2,196/2,5510/5; ordinary generation1/quiescent.
-Это снимок, не новый допуск. Kernel/systemd22:34 после F06 подтвердили те же PID/start/InvocationID без рестартов;
-это не свежаяTelegram/DB/quiescent-оценка. Постоянныеproductunits не останавливались.
-На19:40 receiver/shared locks свободны; M14 actor закрыт,204builder/request/admission/maintenance не начинались.
-БД после starts не приписываются byteexact старому снимку. DEFAULT `effectsNONE/WORKERS_PENDING/readyfalse`
-не приёмка workers. Qwen/Spark+compressor после питания проверены; реальныеMD/JSON/M14 ответы работали,
-маршруты/состав/данные сохранены без повторного переезда/переустановки прежних слоёв.
+**[Реально установлен203/project487/native17891/plugins52/base17730](evidence/astra-20261111/native203-installed-and-same-odp-consumer.json)**.
+H=`.runtime/friday-normal-both-workers-frw032`; receipt9d8d1d95…2a83c2/input31178b28…6f513ad.
+[Kernel/systemd23:02 после F06g2](evidence/astra-20261111/f06-second-generation-zero-document-refusal.json):
+boot5e7fcf9b…c2c7, gateway174854/start1454011, Dashboard175894/start1460381;
+прежниеInvocationID, enabled/active/NRestarts0/RuntimeMax infinity. Постоянные сервисы не останавливали.
+[Telegram/native/DB снимок19:40](evidence/astra-20261111/post-m14-current203-services.json): connected,
+3quick_checkOK/leases0, messages/sessions30/2,196/2,5510/5, ordinarygen1/quiescent.
+Это история, не свежий допуск. DEFAULT effectsNONE/WORKERS_PENDING/readyfalse не worker/user приёмка.
+Qwen/Spark+compressor после питания проверены; MD/JSON/M14 ответы были реальными. Данные/БД/WAL/SHM сохранены.
 
 **Приоритет всей команды: основной функционал Friday → DSH → A0.**
-Core — Telegram/продолжение, контекст/память/изоляция, файлы/доставка/форматы, статус/стоп/ошибки/восстановление.
-Раньше следующего этапа допустима только минимальная доказанная зависимость конкретного core-пути.
+Полный170/120/B00 сохраняется. Ранняя работа DSH/A0 только минимальная доказанная зависимость конкретногоcore-пути.
+Source-ready, установка, runtime/userpath и формальная приёмка — разные факты.
 
-**Исполнители и ближайшая интеграция.** Сол `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18` завершил Task15/16.
-**Task17 source205 завершён**: [final4native/10CAS/project491 + четыре реальные source gates и независимое finalreview приняты](evidence/astra-20261111/core205-final-source-connected.json).
-Search-shape2 + PPTX→ODP loss-notice2, exact204→205 successor/28private-public differences; `tools/file_tools.py` прежний.
-279/209/279/209 checks, wall224.129/187.291/219.228/179.289s; это synthetic source, не native/runtime/user приёмка.
-Пять проверенных public-файлов подключены локально; 204и205 ещё не установлены. Фактически H203, realCP204 отсутствует.
-**Task18 завершён и принят**: [точная source-only интеграция11canonicalфайлов/9beforeimages/33+36source_refs](evidence/astra-20261111/core204-origin-policy-source-integrated.json).
-После одного completed nativecompact Сол выполняет **Task19: F06 защищённыеOffice**, sourceprivacy/исходныйкритерий/nativeconsumer.
-Астра владеет отдельной реальнойOffice-generation; SolOffice/live/H/main не допущены. Source-only зависимость204 — ниже, не DSH/A0 этап.
-Root принял законченные source204frame/95boundary-controls, M14consumer/lifetime review100controls,
-search-shape49PASS+originaldefect/review и Task16saved pair. Временные эти деревья завершены.
-M09 packet/native suite/summary-provider map приняты в ограниченном scope; [Root205 frameR2 source принят](evidence/astra-20261111/core205-root-frame-r2-source-accepted.json).
-Эти временные деревья завершены. [M09 current-consumer source/review принят Root](evidence/astra-20261111/m09-current-consumer-source-accepted.json);
-Rootchecker/driver/nativeopt-in в отдельнойsourceветке, finalreview ещё нужен; живойM09 не начат.
-В source-тестах driver произошли4неразрешённых readonlyскана canonicaltesterhistory; записьбезчтений отозвана,
-достоверный incident/fence/sourcefix сохранены; writes/API/send не было. Финальныйreview обязан учесть эту границу.
-Source-only подготовка не создаёт runtime admission; Sharedlive/H/main только у Астры.
+**Исполнители/текущая граница.** Root владеет H/sharedslot/admission/Office/установкой/main.
+Сол `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`: Task19
+`ASTRA-SOL-V3-F06-PROTECTED-OFFICE-CORE-20261111#1` — критерий/privacyR2/native read/edit harness;
+один completednativecompact передTASK, continuationC1/C2 без второгоcompact. Office/live ему не выданы.
+Task17/18 приняты; прежние временныеsource204/205/frame/input/observer деревья завершены.
+Временный `f06_coherent_profile_bootstrap` готовит законченный source/review; `m09_root_checker_driver` — finalsource/review.
+F06g1/g2 actualunits/namespace/родители закрыты; Root проверил sharedslot free. НоваяOffice-операция не начата.
 
-Текущая очередь связана с original170/120/B00, без нового параллельного реестра:
+Ближайшая очередь связана с исходными обязательствами, без нового параллельного реестра:
 
-1. **RTF / F-02,F-03,FXDOC — установка204.** [Final source204 подключён и опубликован](evidence/astra-20261111/core204-final-source-connected.json),
-   четыре реальные source gates189/123/189/123 и independentfinalreview приняты; R2дваsetupFAIL/дваNOTRUN сохранены.
-   Только inert optionalfootnote-reader; edit_rtf AST203 прежний, cs/falt/ftnsep/userprops partial flags остаются.
-   Root204первая readonly граница отказала на GitHub **до** builder/request/clock: ничего не останавливали/не ставили.
-   [После подключения205 изменились три public-source guard строки](evidence/astra-20261111/core204-published-prefix-origin-source-gap.json):
-   одного HEAD-rebind недостаточно. [Task18 sourcefix принят и canonicalподключён](evidence/astra-20261111/core204-origin-policy-source-integrated.json):
-   неизменный опубликованный204snapshot48/full489/private28 отдельно от reviewedcurrent5+actualfreshHEAD/origin.
-   Guards/CAS/204candidatecb35/94aea/исходныеsourceacceptance иgates сохранены. Старый48proof не текущийHEAD.
-   После восстановления GitHub: legitimatepublication/freshactual203/CAS/realcanonicalCP203 → explicitone-layer builder
-   → boundmetadata/minimumunchangedbankprofile → actualfinite admission/install. Не расширять defaultfour слоёв.
-   Далее installed consumer на тех же saved10723B, без model/Office/send. [Rich save/reopen](evidence/astra-20261111/rtf-rich-missing-roundtrip-independent-pass.json)
-   уже PASS53fields/4opens2saves4closes/privateb711+afba; не globalOffice. Новый native10730B не app-tested по старой паре.
-2. **M-14/OP-001/M-14-01, CASE93 — [одна originalquery исполнена](evidence/astra-20261111/m14-original-postrestart-query-partial-fail.json)**:
-  2753→2755, knownsent1, fresh native5505..5510. Quoteexact PASS; canonicaloriginal/addendum relation **FAIL**:
-   MDперечитан, unrelatedJSON назван дополнением. Реальный session_search(query+SID/noanchor) вернул READ/recent8mixedroles,
-   затем реальный MDread; старые R104calls не выданы за новые. CLI98.108s exit2 STOPPED/TRANSPORT_OUTCOME_UNKNOWN/poll_http,
-   full180 **не завершён**; capturedtask/ACK/window/raw/text custody проверен настоящим fullconsumer readonly.
-   Не resume/resend/quarantine/regrade; oldM14phase consumed. [Frozen exact203 source](evidence/tester/m14-original-postrestart-203/README.md).
-   Source205 guard после auth/доacquire + schema/attachment guidance исправляют неоднозначность, не доказаны solecause/wholeM14.
-   History descriptor уточнён отдельно:653userrows all5testerprofile sessions,428sameSID до query; первичные proofs/часы неизменны.
-3. **Presentation / F-02,F-03,F-04.** [Saved forward6455PPTX48100B→6e04ODP30482B принят в узком scope](evidence/astra-20261111/presentation-forward-saved-join.json):
-   freshgolden/data/chart/table/5notes/resources и20retained images;10textpairs exact, без нового converter/Office.
-   Notes19.05×25.4→A4 — явная потеря geometry; всеnotes/numbers видимы, original4/5titleoverlap унаследован.
-   Wholedeck/readability/ordinaryF04/formal/всеvariants не закрыты. OriginalEXT20..24: notes/chart/theme/longCyrillic/**editable round-trip**,
-   не large (Task16parent prose ошибка, его собственные criteria правильны). Root сверяет genuinely missing ordinaryforward,
-   nominal2138→2142 — sameformat edit; reverse2030/4095 consumedpartial не новый FIRST. Actual203 metadata
-   не передаёт известное ограничение notes-page geometry пользователю, только generic fidelity guidance.
-   [Source-only notice/caller fix принят](evidence/astra-20261111/f04-loss-notice-source-accepted.json): actual `_publish` metadata
-   и действительная `ordinary_file_schema`/model_tools projection; ранний неработающий file_tools draft исключён.
-   Пользовательская доставка предупреждения NOT_RUN; fix входит в205 и нужен до ordinary300/full180/reserve5.
-   Нового converter/app precheck не требуется; F04ordinary historical eligibility условна, не текущий live-допуск.
-   [V03received48067B586f… app17:56](evidence/astra-20261111/saved-received-v03-pptx-app-preservation.json) уже закрыт:
-  8unaffectedPNG/text exactsource6455baseline; requestedtitle/chart/table/5notes читаемы, old720/full180false/latequarantine сохраняются.
-   [Creator4202B](evidence/astra-20261111/odp-new-creator-real-app-bounded-pass.json) app+independent PASS,203samebytes consumer принят;
-   old3383blanknotes/chart и old29345f321missingfallback FAIL неизменны. Новые конверсии/отправки не следуют из этих PASS.
-4. **M-09/OP-001, originalCASE88 / FXDOC+FXSTATE.** [Packet и native offline scope приняты Root](evidence/astra-20261111/m09-bounded-native-isolation.json).
-   NEW synthetic bytes не восстановленные старыеfixtures. Настоящие native auth/scopes/file/memory/SQLite+FTS/skills/registry:
-   62baseassertions; два checker-falseFAIL исправлены по тем же сохранённым ответам; ещё6affectedFD/FTS events,
-   не68разныхкейсов. OwnFTS2hits/чужие4queries0hits; без патча продукта. Исходные ошибки/разныеPM/ограничения audit сохранены.
-   Manualsummary не genuine compression/cachehit; embedding/currentordinaryA/B/ACL/once/admission/ingestion ещё UNBOUND.
-   Старый memory-cap после reenable проверен без authenticatedctx: только unauthenticated refusal, не sticky-credit.
-   Следующая граница — genuine A/B/summary/runtime binding и отдельный currentconsumer; A humanmanual, никакого owner impersonation.
-   [Карта реальных summary/provider путей +14 новых internal-storage controls приняты](evidence/astra-20261111/m09-summary-provider-selected-config.json).
-   Successfulcompaction удаляет multipassnodes: повторное чтение summary не cachehit. Четыре provider пути, включаяOpenViking,
-   существуют; current readonlyconfig выбрал builtinmemory/corecompressor в двух разных homes/accessprincipals(gens1/2).
-   Runtime retainedmanager не наблюдался; это не blanketembeddingunsupported/ordinaryA-Badmission. Config/state byteidentity сохранены.
-   Отдельный M09 current-consumer source принят: старыйv42/190methods/memoryguard прежний; отдельные53controls/10negatives,
-   proposedB300/full180/ACK30/reserve5; proof120s толькоpreintent, не обрезаетcapture knownsend.
-   Driver/currentchecker и минимальныйnative m09-current opt-in ещё source-only/независимыйreview; currentH203 их не содержит.
-   memorygrantv4 не расширять/fakeM06 запрещён. WholeM09/live/formal остаются неподтверждёнными.
-5. **F-01 md/v02,json/v03 и остальные core.** [MD R101/R102](evidence/astra-20261111/f01-md-v02-original-criterion-accepted.json)
-   exact3originalrows приняты с origin-receipt limit, ordinaryrecall не purememory. [JSON R103read](evidence/astra-20261111/f01-json-v03-ordinary-read.json)
-   PASS20lines/escapes/tail; [R104recall](evidence/astra-20261111/f01-json-v03-ordinary-recall.json) factsPASS/falsefreshreadFAIL,
-   prefix-only fix установлен203, oldFAIL/summary не меняет и повтор не разрешает. M11postcompact/G05nominal уже оценены — не повторять.
-   [XLSX5677B201](evidence/astra-20261111/native201-installed-same-xlsx-consumer.json) принят на тех же байтах,200FAIL сохранён;
-   spreadsheet не менялся202/203. **OriginalP0 F06 protectedOffice**: старые6fixtures/RESULT отсутствуют, NEWplaininputs не recovery.
-   [Реальный embeddedUNO preflight прошёл; ошибочное сравнение mutableExecStart остановило наблюдатель](evidence/astra-20261111/f06-preflight-observer-failure-reconciled.json).
-   Consumer0/namespaceclosed/0.573s, Office/docs/secret0. Exactunit/родитель закрыты, sharedslot свободен; originalFAIL/30s неизменны.
-   Конечная дельта наблюдателя/reuse техже preflightproofs в независимомsource-fix/review; повтор preflight запрещён.
-   Затем первый genuine7stores/21probes (6compatible1.3/Agile+currentdefaultlatestODT), НЕ уже полученныеencryptedbytes.
-   SolTask19 независимо проверяет persistenceR2/критерий и готовит actualnative read/wrong-rightedit на этих будущихбайтах;
-   privacy4native SOURCE_ONLY/неустановлен, rawintentionalchat/history сохраняются. OrdinaryDOCX4singleton подготовлены:
-   wrongread/firstupload→correctreadsameingress→wrongedit→correctedit+delivery; proposed300/full180/ACK10/reserve5 UNBOUND.
-   Native/app/installation/userpath/formal отдельно. Остальные обязательные варианты/регрессия/восстановление открыты.
+1. **P0F-06/B00: protectedOffice wrong/correct read и разрешённаяправка.** Старые6fixtures/RESULT отсутствуют;
+   NEWplaininputs не recovery/не encryptedPASS. [Реальный typedUNO preflight](evidence/astra-20261111/f06-preflight-observer-failure-reconciled.json)
+   прошёл, parent ошибся на mutableExecStart. Exactunit/parent/slot позже закрыты; originalfailure/30s не переписаны.
+   Observer4efe/38+43checks принят; preflight не повторяли. [G1](evidence/astra-20261111/f06-first-generation-zero-document-refusal.json)
+   завершён доproducer: qualifiedNoConnect не совпал с baretypename, stores/probes0.
+   Typedexception865e/48+134checks принят; [G2](evidence/astra-20261111/f06-second-generation-zero-document-refusal.json)
+   завершён доREADY: OWN_OFFICE_DIED, кодOffice выхода старыйobserver не сохранил. Factoryprofileflag — не observed81/OOM.
+   Office/client по1 вg1 иg2 состоялись; credentialstage было. Все закрыты, documents/stores/probes0; encryptedbytes ещёнет.
+   **Далее:** coherentprofilebootstrap source/review → Root g2zero-doc/closure authority → свежаяграница → только недостающий
+   семидокументныйэтап:6compatible1.3/Agile+currentdefault/latestODT,7stores/21probes. План futuremax3 normal81-only docfree
+   starts/одинproducer/один абсолютныйclock; фактическиеexitcodes/zero-components/ownedpipe доproducer. Это не готовыйдопуск.
+   Nativequalification по темже будущимбайтам и privacy4native candidate ещё не установлены/не приняты пользователем.
+   Rawintentional privatechat/history сохраняются; credentialfield projection не абсолютное удалениевсехсекретов.
+   Prepared ordinaryDOCX4singletons: wrongread/firstupload→correctreadsameingress→wrongedit→correctedit+delivery;
+   proposed300/full180/ACK10/reserve5 остаётся UNBOUND до Root originalbudgetpolicy/currentauthority.
+2. **RTF/F-02,F-03 —204, затем M-14/F-04 —205.** [Final204source опубликован](evidence/astra-20261111/core204-final-source-connected.json),
+   gates189/123/189/123 иreview приняты; [final205source5public подключён локально](evidence/astra-20261111/core205-final-source-connected.json),
+   gates279/209/279/209+review приняты. Source2054native/10CAS/project491/17891native; file_tools прежний. Это не install.
+   [Task18 source-origin fix canonical11files/9beforeimages/33+36refs принят](evidence/astra-20261111/core204-origin-policy-source-integrated.json):
+   immutablepublished48/public489/private28 отдельно от reviewedcurrent5/workingbytes/freshactualHEAD==origin.
+   Original204acceptance/targetcb35/receipt94aea/gates неизменны; old48proof не currentHEAD. После GitHubrestoration:
+   publish/current203/CAS/realCP203 → explicitone-layer builder → boundmetadata/finiteinstall204;
+   same10723B consumer без model/Office/send. Только genuineinstalled204/canonicalCP204 могут питать205;203→205 запрещён.
+   [Rich10723appPASS53fields](evidence/astra-20261111/rtf-rich-missing-roundtrip-independent-pass.json) — privateb711+afba, не globalOffice;
+   новый native10730 не app-tested по старойпаре. Optionalfootnote reader204 не меняет edit_rtfAST203; сложныеflags остаютсяpartial.
+3. **M-14/OP-001/CASE93.** [Originalquery2753→2755 исполнена](evidence/astra-20261111/m14-original-postrestart-query-partial-fail.json):
+   quotePASS, canonicaloriginal/addendum relationFAIL; unrelatedJSON назван дополнением. Genuine session_search(query+SID/noanchor)
+   вернулREAD/recent8mixedroles, затемMDread. CLI98.108s STOPPED/TRANSPORT_OUTCOME_UNKNOWN/poll_http; full180 не завершён.
+   Capture/custody оценены; не resume/resend/quarantine/regrade. [Exact203source](evidence/tester/m14-original-postrestart-203/README.md).
+   Source205searchguard/schema guidance не доказаны solecause/wholeM14fix. Descriptor653all5sessions/428sameSID уточнён отдельно.
+4. **Presentation/F-02,F-03,F-04/EXT20..24.** [Saved6455PPTX→30482BODP](evidence/astra-20261111/presentation-forward-saved-join.json)
+   узко принят: data/chart/table/5notes/resources/20retainedimages/10textpairs; notes19.05×25.4→A4 geometryloss явная,
+   old4/5titleoverlap унаследован. EXT24=editable round-trip, неlarge. Wholedeck/всеvariants/ordinary/formal не закрыты.
+   [Lossnotice sourcefix принят](evidence/astra-20261111/f04-loss-notice-source-accepted.json), входит205; пользовательскийrelay NOT_RUN.
+   Только после установки205 freshconditionaladmission genuinelymissing forwardordinary300/full180/reserve5;
+   nominal2138→2142 sameformat edit, reverse2030/4095 consumedpartial, не новыйFIRST. Новыйconverter/app precheck не нужен.
+   [V03received48067B app](evidence/astra-20261111/saved-received-v03-pptx-app-preservation.json) ужеPASS8unaffectedPNG/text,
+   old720/full180false/latequarantine сохранены. [Creator4202B app+203samebytesconsumerPASS](evidence/astra-20261111/odp-new-creator-real-app-bounded-pass.json);
+   old3383blanknotes/chart и29345missingfallbackFAIL прежние. Эти оценки не разрешают новыеотправки.
+5. **M-09/OP-001/CASE88/FXDOC+FXSTATE.** [Packet/native offline scope](evidence/astra-20261111/m09-bounded-native-isolation.json)
+   принят:62base+6affectedevents не68кейсов; FTSown2/foreign4queries0; checkerfalseFAIL исправлены потемжерезультатам.
+   [Summary/provider routes/currentconfig](evidence/astra-20261111/m09-summary-provider-selected-config.json): builtin/core в2разныхhomes/principals,
+   retainedmanager не наблюдался. Manualsummary не genuinecompression/cachehit; successfulcompaction удаляет multipassnodes.
+   [Explicitcurrentconsumer принят](evidence/astra-20261111/m09-current-consumer-source-accepted.json): frozenv42/190methods/memoryguard прежние,
+   separate53+10controls; B300/full180/ACK30/reserve5, proof120s preintentonly, не обрезаетcapture knownsend.
+   Rootchecker/driver+native m09-current opt-in finalsource/review, не установлен/не granted. ActualmanualA/ingress/once/history/
+   summary/selectedembedding-route и все6surfaces UNBOUND; humanA не impersonate/fakeM06/memorygrantv4 не расширять.
+   Genuinecommittedsummarycarrier отличается от optionalmultipasshit; builtin+actualwarmmanagerNONE допускает только narrowNOT_SELECTED,
+   не blanket4pluginsunsupported. Wrappedcarrier/activeproviderreceipt — по реально наблюдаемому source-пути, не придуманныеproofs.
+   Sourceharness раньше сделал4недопущенных readonlycanonicalhistoryскана; rawpayload не опубликован/aggregateSHA попал в traceback.
+   Earlierzero-read report отозван; incident/defaultargfix/auditfence сохранены, writes/API/send0; finalreview обязан учесть.
+6. **Другиеcore/original170/120.** [MD R101/R102](evidence/astra-20261111/f01-md-v02-original-criterion-accepted.json) exact3rows принят с originreceiptlimit,
+   ordinaryrecall не purememory; [JSONR103](evidence/astra-20261111/f01-json-v03-ordinary-read.json) PASS20lines,
+   [R104](evidence/astra-20261111/f01-json-v03-ordinary-recall.json) factsPASS/falsefreshreadFAIL; prefixfix203 не переписываетoldsummary/FAIL.
+   [XLSX5677B201](evidence/astra-20261111/native201-installed-same-xlsx-consumer.json) принят потемжебайтам,200FAIL сохранён.
+   R93UnicodeODTapp/R94R95recall/ODScomments195 narrow/R96..R100 conversions уже оценены; не повторять по старойочереди.
+   Остальные обязательные варианты, регрессия и восстановление продолжаются по исходнымкритериям.
 
-Canonical **3UNKNOWN/45structural unresolved** прежние; R104 и новый M14semanticFAIL считаются отдельно.
-Исходные immutable `CASE-LEDGER.json9671de…82d`/`EXTENSION-OPERATION-LEDGER.jsonf16a8d…03f` в
-`/home/jericho/.jericho/team/kimi/assignments/KIMI-B253-B00-FINAL-PHASE-QUEUE-INTEGRATION/CURRENT86-IMMUTABLE-SNAPSHOTS/`.
-[Scope/surviving refs](DSH-RESUME-2026-11-10.md#7-объём-v3). NarrowPASS/слои/числоchecks не готовность170/120/B00.
+Canonical3UNKNOWN/45structuralunresolved прежние; R104/M14semanticFAIL отдельно. Originalimmutable CASE-LEDGER9671de…82d /
+EXTENSION-OPERATION-LEDGERf16a8d…03f: `CURRENT86-IMMUTABLE-SNAPSHOTS` в прежнем B253assignment.
+[Исходный scope/ссылки170/120/B00](DSH-RESUME-2026-11-10.md#7-объём-v3). Числоchecks/слоёв/narrowPASS не readiness.
+**DSH/A0 отложены:** [archiveonce/T1pretransaction refusal](evidence/astra-20261111/pairing-archive-t1-refusal-services-restored.json),
+P/T2 NOT_RUN/5CAS прежние; archive не повторять. [A0twoSHA mismatch/DSHresolver absent](evidence/astra-20261111/postpower-retained-worker-dependency-observations.json)
+не наблюдённый hiddenCLIexception/не причинаpowerloss; самостоятельнойквалификации не было, testerworkers enabledtrue сохранены.
 
-**DSH/A0 отложены.** [Pairing archiveonce/T1pretransaction refusal](evidence/astra-20261111/pairing-archive-t1-refusal-services-restored.json),
-P/T2 NOTRUN/5CAS прежние; archive не повторять. [A0twoSHA mismatch/DSHresolver absent](evidence/astra-20261111/postpower-retained-worker-dependency-observations.json)
-не приписаны power-loss/скрытому CLI exception; standalonequalification не запускалась. Оба testerworkers enabledtrue сохранены.
-
-Неповторы: R83UNKNOWN_SEND + один EMPTYquarantine (EMPTY не отсутствие отправки); R85stop/error/QuestionNOTRUN;
-триC10R89–91 exhausted; R42/R43/старыеS11/P01Q02/G06M10/2257 и прочиеconsumed/UNKNOWN. Новые day/goal/model/run-id/фикс/нетPASS
-не разрешают повтор. Canonicalsource/received/receipts, private runs/downloads/closures, БД/WAL/SHM/история сохраняются.
-Журналируемый rollback не power-lossatomicity. Постоянные gateway/Dashboard работают без искусственного TTL.
-Дневную nativeobjective редакцию обновлять на безопасной границе активного нового дня/смене этапа; ownerpause сама не возобновляется.
-Подробная история — [DSH-RESUME](DSH-RESUME-2026-11-10.md).
+Неповторы: R83UNKNOWN_SEND+один EMPTYquarantine (EMPTY не no-send); R85stop/error/QuestionNOT_RUN;
+C10R89–91 exactly3 exhausted; R42/R43/старыеS11/P01Q02/G06M10/2257/другиеconsumed иUNKNOWN.
+Новыеday/goal/model/run-id/фикс/нетPASS не разрешают повтор. Canonicalsource/received/receipt/private runs/downloads/closures/БД/WAL/SHM/история сохраняются.
+Journaledrollback не powerlossatomicity. Исправные постоянныепродукты без TTL; budgets конкретныхопераций сохраняются.
+Дневнуюnativeobjective обновлять на безопаснойгранице новогоактивногодня/сменыэтапа; ownerpause сама не возобновляется.
+Подробнаяистория — [DSH-RESUME](DSH-RESUME-2026-11-10.md).
