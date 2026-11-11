@@ -6,18 +6,22 @@ service_tier=default. [Дневная редакция native goal и readback](
 Тот же goal/thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` active; createdAt/история/учёт сохранены.
 Исходный [paused-чекпоинт](evidence/astra-20261111/astra-owner-pause-fast-standard.json) — история.
 
-Принятый финальный checkpoint: `HEAD = origin/main = 5ea64beb0ba87968aca0e1e9c32696ac85d27a76`.
+Принятая paused-точка: `5ea64beb0ba87968aca0e1e9c32696ac85d27a76`; перед этим checkpoint
+`HEAD = origin/main = e2f103dc03f3a6da6f1f96fa98931c40a1302457`.
 SHA опубликованного среза — коммит этого файла (`git log -1 --format=%H -- ASTRA-CURRENT.md` в его каталоге)
 и финальный отчёт; literal self-hash в файл не записывается. Чужие изменения сохранены и исключены:
 `docs/foundation-status.md`, v2 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`.
-Текущая собственная дельта: дневная постановка, exact public helper/builder/publisher201 и финальные source/ODP evidence.
-Слой201 подключён в source main; установленный runtime пока200. Чужие три файла исключены.
+Последний исходный опубликованный блок: `e2f103dc03f3a6da6f1f96fa98931c40a1302457`.
+Новая дельта этого checkpoint — установленный201 и оценка сохранённого XLSX; чужие три файла исключены.
 
-Установлены **native200 / project481 / 52plugins / 17888nativefiles**. Input `d9ecfd…8dee`, receipt `bec142…43fb`.
-Срез07:51: gateway **1751566/start7681708**, Telegram connected, три профиля; Dashboard
-**1753078/start7688120**, enabled/active, native nonce/auth/SPA VERIFIED. Оба постоянные, нового TTL нет.
-Три БД quick_check OK, leases0, messages/sessions **30/2,196/2,5487/5**; DB/WAL/SHM и данные сохранены.
-Root maintenance закрыт07:33:05/186.807s; g2/временные fixtures закрыты. На07:59 сервисы active с теми же PID; живой операции нет.
+[Установлены native201 / project483 / 52plugins / 17888nativefiles](evidence/astra-20261111/native201-installed-same-xlsx-consumer.json).
+Input `4eca52…5023`, receipt `257e35…bd3f`; полный200prefix и17887остальных записей сохранены.
+На08:48:10 gateway **1832821/start8132191**, Telegram connected, три профиля; Dashboard
+**1834071/start8138614**, enabled/active, native nonce/auth/SPA VERIFIED. Оба постоянные, нового TTL нет.
+Три БД quick_check OK, leases0, messages/sessions **30/2,196/2,5487/5**; DB/WAL/SHM сохранены.
+Root201 maintenance08:46:04→08:48:10/126.563s закрыт; actor/publisher terminal, незавершённых живых операций нет.
+Свежий genuine DEFAULT exit0 — source/spec check, `WORKERS_PENDING/ready=false/runtime_acceptance=NOT_GRANTED`;
+это не квалификация workers. Постоянные сервисы проверены отдельно и оставлены работающими.
 
 Астра остаётся sole lead/integrator. Сол — постоянный co-architect **Standard**, реальная сессия
 `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`, прежний leadership goal paused; сессия/настройки сохранены.
@@ -25,7 +29,8 @@ Root maintenance закрыт07:33:05/186.807s; g2/временные fixtures �
 По новой директиве продолжен тот же unfinished RTF Task8#1 с его PARTIAL, без второго compact.
 Сол ведёт независимую core-ветку; общий goal/установку/main и живые ресурсы координирует Астра.
 Предыдущие деревья,201 final counterparts/CP gates и ODP saved-criteria подготовка — terminal.
-Активен finite review Root201 maintenance/recovery frame; H/main/live effects ребёнку не поручены.
+Root201 frame/recovery review с дочерними проверками terminal. Активен конечный native child
+ODP source/text-edit prepare в отдельной копии; H/main/live effects ему не поручены.
 
 **Обязательный порядок всей команды: основной функционал Friday → DSH → A0.**
 Core: обычный Telegram, контекст/память, изоляция, файлы/доставка/форматы, продолжение,
@@ -34,24 +39,20 @@ Core: обычный Telegram, контекст/память, изоляция, 
 
 Текущая core-очередь:
 
-1. **ODS→XLSX / F-04, сохранённые edit-последовательности F-03.** Producer уже создал XLSX5677B
-   `741faa7ac2d0df3aea7010ad5315e6f1cf51e2132c4e0ced0b761dcd6c963f04`; installed200 consumer FAIL
-   `conversion_office_default_unsupported`. [Native201 pair](evidence/astra-20261111/source201-pair-packaged-continuity-refused.json)
-   опубликован; main LAYER_NAMES теперь включает201, установки ещё нет. [Точный v3 helper/consumer draft](drafts/native201-continuity/README.md)
-   уже проходит настоящий actual200 builder, source success172/rollback107 и independent review;
-   [Финальные source gates](evidence/astra-20261111/source201-final-gates-connected.json) приняты Root:
-   public success172/rollback107, CP/parser76, operational172/107 переиспользованы.
-   До окна завершается независимое review Root maintenance/recovery frame.
-   **Свежий admission/install ещё не начат**.
-   После установки — свежий процесс/DEFAULT и оценка **тех же** XLSXбайтов. Producer/model/send не повторять.
-2. **RTF / F-03.** [g2 на том же R92](evidence/astra-20261111/rtf-g2-actual-narrow-gate.json):566native,
+Закрыт ближайший XLSX-блокер: [те же5677B](evidence/astra-20261111/native201-installed-same-xlsx-consumer.json)
+`741faa…3f04` приняты установленным201 consumer за0.066s; шесть типизированных ячеек равны,
+unbound profile отказал. Исторический installed200 FAIL `conversion_office_default_unsupported` сохранён.
+Producer/model/Office/send не повторены; общего F03/F04/formaltester PASS из этого не следует.
+[Source/final gates](evidence/astra-20261111/source201-final-gates-connected.json) приняты ранее без повторов.
+
+1. **RTF / F-03.** [g2 на том же R92](evidence/astra-20261111/rtf-g2-actual-narrow-gate.json):566native,
    три heading1,15prose+1empty/30cells/Unicode и42alignment — узкий PASS частного согласованного компонента.
-   Глобальный Office не установлен. [Критерии и остаток Сола](/home/jericho/.cache/FRW-SOL-V3-RTF-FIDELITY-REPAIR-20261111/ORIGINAL-USER-CRITERIA-LINKS.json): chapter/style/formatting
+   Этот компонент не подключён к глобальному Office. [Критерии и остаток Сола](/home/jericho/.cache/FRW-SOL-V3-RTF-FIDELITY-REPAIR-20261111/ORIGINAL-USER-CRITERIA-LINKS.json):
    исходный FX-DOC требует также header/footer и footnote-or-comment. Сол продолжает минимальную
    поддержку inert RTF stories и настоящих tool consumers. Post-load injected chapter fixture не
    доказывает потерю preexisting R92 wire; универсальная проверка108Officeсвойств не требуется.
    Старый отвергнутый Heading-draft не возобновлять; готовый R92цикл/отправку не повторять ради PASS.
-3. **ODP / F-02,F-03,F-04.** [Consumer draft](evidence/astra-20261111/office-generated-odp-consumer-source.json)
+2. **ODP / F-02,F-03,F-04.** [Consumer draft](evidence/astra-20261111/office-generated-odp-consumer-source.json)
    не установлен. [Тот же Gen4 app PARTIAL](evidence/astra-20261111/office-odp-retained-app-partial.json):
    marker+24literal/2253properties/22styles/27shapes сохранены; четыре промежуточных page-number
    результата отличаются, raw equality FALSE, visual/reference/fidelity не приняты. Недостающие
@@ -59,8 +60,11 @@ Core: обычный Telegram, контекст/память, изоляция, 
    типы/определения5page-number полей сохранены, четыре разницы — вычисленные представления;
    причина и правильность отображения ещё не доказаны. EMPTY_STYLE у5notes thumbnails не
    доказывает потери стилей. PARTIAL/FALSE сохранены; installed consumer/source-edit/визуальные
-   обязательства открыты. Producer/Gen4/app/send ради статуса не повторять.
-4. **F-01/md/v02 и json/v03.** Частичные неисполненные пакеты:
+   обязательства открыты. Отдельный source/text-edit candidate для пустого office:scripts/строгого
+   retained package готовится с настоящими consumer controls; generated-only patch остаётся отдельным.
+   Для будущей интеграции нужен поддержанный переход от actual201; текущий helper не поддерживает v4/202.
+   Producer/Gen4/app/send ради статуса не повторять.
+3. **F-01/md/v02 и json/v03.** Частичные неисполненные пакеты:
    `/home/jericho/.cache/FRW-ASTRA-V3-NEXT-INDEPENDENT-FORMAT-PREP-20261111/RESULT.json`
    (`c4eefa…13d`). MD1309B retained; JSON831B inert fixture. История текущего продукта,
    точный tester/admission и fresh runtime/custody ещё не подтверждены; это не dispatch grant.

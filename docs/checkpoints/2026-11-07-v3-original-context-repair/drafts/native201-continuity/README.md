@@ -1,4 +1,8 @@
-> Актуализация11.11.2026 после resume: public helper/builder/publisher201 подключены в source main,
+> **11.11.2026,08:48 МСК:201 установлен; свежие сервисы и same-XLSX consumer проверены.**
+> [Фактическая установка и границы приёмки](../../evidence/astra-20261111/native201-installed-same-xlsx-consumer.json).
+> Пакет ниже сохраняется как исторический draft; его не нужно устанавливать повторно.
+
+> Source-срез11.11.2026,08:38 МСК после resume (исторический): public helper/builder/publisher201 подключены в source main,
 > [финальные source gates завершены и приняты](../../evidence/astra-20261111/source201-final-gates-connected.json).
 > Установлено пока200; отдельный admission/install ещё не выполнен. Ниже — сохранённый
 > paused-срез подготовки, его statements о неподключённом main и незавершённых gates исторические.
