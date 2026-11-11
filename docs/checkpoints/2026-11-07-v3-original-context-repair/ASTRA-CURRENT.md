@@ -1,12 +1,12 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **11.11.2026, 15:23 МСК**. **ACTIVE / CORE**. Возобновление владельца11.11 сохранено.
+Обновлено **11.11.2026, 16:42 МСК**. **ACTIVE / CORE**. Возобновление владельца11.11 сохранено.
 Астра — sole lead/integrator, Сол — постоянный co-architect; оба **Standard/default,
 gpt-6.1-sol, thread reasoning ultra**. [Native goal1111/readback](ASTRA-GOAL-REVISION-2026-11-11.json):
 тот же thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` active, история/учёт сохранены, общего cap нет.
 
 Принятая paused-точка `5ea64beb0ba87968aca0e1e9c32696ac85d27a76`. Перед этим checkpoint
-`HEAD=origin/main=0e054c81fda353bebf43432787b8703a2368f993`; новый SHA — коммит этого файла,
+`HEAD=origin/main=3e77d2bf30e842a9ebbd5d2b2d8dd7a74a3d18a4`; новый SHA — коммит этого файла,
 не literal self-hash. Чужие три изменения сохранены и исключены: `docs/foundation-status.md`,
 v2 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`.
 
@@ -33,18 +33,24 @@ Core: Telegram/продолжение, контекст/память/изоля�
 завершил [Task12 RTF rich missing-stage source](evidence/astra-20261111/rtf-rich-missing-roundtrip-sol-source-received.json):
 78affected/46handshake/8parentdelta, actual save/reopen NOT_RUN. Task11 исходная203 композиция сохранена,
 но [удержана после новых product findings](evidence/astra-20261111/odp203-source-composition-held.json).
-После одного завершённого native compact Сол выполняет Task13: связная final203 от actual202,
-с typography guard, creator notes/chart и [prefix-only compaction fix](evidence/astra-20261111/core-compaction-tool-provenance-source.json).
-Три final source дельты Root принял/передал exact pins; fullgates после Root GATE_READY/newODP app.
-Старый leadership goal paused; Root один управляет live. Временные MD/JSON/source/main-review деревья terminal;
-[creator notes/chart source+review завершены](evidence/astra-20261111/odp-creator-visibility-source.json);
-новый finite child готовит app-recipe одного изменённогоODP4202B/30f91280, без H/main/Office прав.
+[Task13 final203 завершён](evidence/astra-20261111/core203-final-source-connected.json): точная fifth202→203,
+7native/project487/native17891, actualbuilder/spec+independent source review и4final whole source gates
+205/101/205/101 report checks PASS. Root принял пять public targets; установка ещё NOT_RUN, текущий202 сохранён.
+После одного завершённого native compact Сол выполняет Task14: исходные оставшиеся core-обязательства →
+один следующий допустимый самостоятельный пакет по original ledgers/effect lineage, без liveправ.
+Старый leadership goal paused; Root один управляет live. Все прежние временные деревья terminal;
+новыйODP app/source+saved review завершены. RTF300 Rootframe source+independent review готов,
+[actual rich save/reopen](evidence/astra-20261111/rtf-rich-missing-roundtrip-root-pass.json) Root boundedPASS, independent savedreview выполняется. Новый finite child готовит штатный203maintenance/recovery frame;
+maintenance не открыт, постоянные сервисы не затронуты.
 
 [Реальная проверка четырёх presentation artifacts закрыта](evidence/astra-20261111/odp-readability-four-saved-app-assessment.json):
 InitOnly0/components0/oneMain/4readonlyopens+closes/7PDF, 3.923s/CPU3.554s; strict actual0/CGabsent/noactors.
 Primary PARTIAL сохранён: последующий offline-reader отказал на пустом derived text. Те же7PDF
 дополнены толькоoffline:16PNG reuse+19missing; Root рассмотрел35pages. Titles PASS, nativeODP notes/chart FAIL.
-Unit/grant/Office/clocks не переигрывать. Новый app — только действительно изменённые creator bytes после review.
+Unit/grant/Office/clocks не переигрывать. [ИзменённыйODP4202B отдельно проверен](evidence/astra-20261111/odp-new-creator-real-app-bounded-pass.json):
+1readonlyopen/close/2PDF/10pages,2.675s/CPU2.404s; all5notes+chart/table/108title PASS, independent review PASS,
+strictactual0/CGabsent/noactors. Primary VISUAL_PENDING не переписан; внешний boundedPASS не installed203/полныйV3.
+Предварительный Rootfilled-template отказ до unit/clock сохранён; placeholders корректно связаны до первогоactualapp.
 
 Текущая core-очередь — действия по исходным обязательствам, не новый реестр:
 
@@ -60,7 +66,7 @@ Unit/grant/Office/clocks не переигрывать. Новый app — то�
    три heading все level1, таблица/footnote/header/footer/last-page в узком профиле сохранены.
    Importer runtime mapping и положение таблицы относительно body не наблюдались; global Office,
    rich export и formal V3 не закрыты. Task12 подготовил отсутствовавшие4opens/2saves/4closes comparative
-   source+revision; fullmodule/handshake/source reviewed, Root actual app/банк/ресурсы ещё NOT_RUN.
+   source+revision; 11.11/16:36 actual4opens/2saves/4closes завершены за4.284s/CPU3.112s. Все53semanticfields/Unicode/table/notes/headerfooter/lastpage сохранены, strictclosure подтверждён. Это Root boundedPASS в privateb711+afba; independent savedreview выполняется. Global/installed Office и ordinary F02/F03/FXDOC остаются открыты.
    R92/g2/native566/старые часы/отправки не повторять.
 2. **ODP/F-02,F-03,F-04.** Установлены generated-destination3/passive-source2 и новый банк только
    для pptx_odp; другие Office paths сохраняют прежний default. Те же30482B/35159B приняты
@@ -74,9 +80,9 @@ Unit/grant/Office/clocks не переигрывать. Новый app — то�
    Actual4artifact app теперь подтвердил исправленные1/4/5 и оба108title, unaffected2/3 PNG byteexact;
    originalPPTX4/5 сам имеет overlap. Но nativeODP notes5pages blank при сохранённых строках,
    chart3 — пустой plot; таблица/zeros видимы. Creator fix source15+independent16 PASS;
-   новыйODP4202B требует отдельного actualapp; installed202 прежний.
+   новыйODP4202B actualapp+independent savedreview PASS; installed202 прежний;4final gates/review завершены, штатная установка203 ещё NOT_RUN.
    Исходный203 остаётся draft: inheritedPPTX metrics guard требует новых exact pair/helper/input;
-   Task13 собирает всю связную дельту до дорогих gates/единственной штатной установки.
+   Task13 final композиция принята с4final gates; Root готовит единственную штатную установку203.
    Пропавший final ENTRYCOMPLETE — Basic `EntryComplete:` label, не вызов; первичные PARTIAL/
    Gen4 rawFALSE неизменны, новые PDF/PNG оценены без повторного Office/edit/store/producer/send.
 3. **F-01/md/v02 и json/v03.** MD новые R101/R102: send2739→reply2741/193.316s и

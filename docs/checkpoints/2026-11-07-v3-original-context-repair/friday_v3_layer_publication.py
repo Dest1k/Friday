@@ -64,6 +64,7 @@ LAYER_NAMES = (
     "ods-calc-retained-source-profile-after-source199",
     "retained-calc-xlsx-destination-after-source200",
     "rtf-rich-odp-followup-and-office-bank-after-source201",
+    "core-file-readability-and-context-provenance-after-source202",
 )
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -202,7 +203,7 @@ def write_atomic(path, data, mode=0o600):
     sync_directory(path.parent)
 
 
-def publish(target, data, mode=0o600):
+def publish(target, data, mode=0o600, *, _before_replace=None, _temporary_suffix=".publish.tmp"):
     """Publish bytes to the home through a private temporary file and one rename.
 
     A failure between the rename and the directory synchronisation leaves the file
@@ -212,17 +213,33 @@ def publish(target, data, mode=0o600):
     global INJECT_AFTER_RENAME
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name("." + target.name + ".publish.tmp")
-    if tmp.exists():
+    tmp = target.with_name("." + target.name + _temporary_suffix)
+    if _before_replace is not None:
+        require(not os.path.lexists(tmp), "transaction_v5_publication_temp_exists")
+    elif tmp.exists():
         tmp.unlink()
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         write_all(fd, data)
         os.fsync(fd)
+        if _before_replace is not None:
+            os.fchmod(fd, mode)
+            staged_identity = os.fstat(fd)
     finally:
         os.close(fd)
-    # the mode is set explicitly: the process umask would otherwise reduce it
-    os.chmod(tmp, mode)
+    # The legacy three-argument path keeps its exact close/chmod sequence.
+    if _before_replace is None:
+        os.chmod(tmp, mode)
+    else:
+        def staged_unchanged():
+            named = tmp.lstat()
+            require(all(getattr(staged_identity, key) == getattr(named, key) for key in
+                        ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
+                         "st_size", "st_mtime_ns", "st_ctime_ns")),
+                    "transaction_v5_temporary_identity_changed")
+        staged_unchanged()
+        _before_replace(tmp)
+        staged_unchanged()
     os.replace(tmp, target)
     if INJECT_AFTER_RENAME and (INJECT_TARGET is None or str(target) == INJECT_TARGET):
         # The injection is one-shot: it fires on the publication of the named target and
@@ -482,6 +499,178 @@ class Journal:
 
     def write_intent(self, name, payload):
         write_atomic(self.root / name, encoded(payload), 0o600)
+
+
+class _CurrentSourceV5Journal(Journal):
+    """Exact fifth-edge CAS and rollback; legacy Journal callers keep their contract.
+
+    Retain file identities as well as images.  A temporary file's identity is bound
+    before rename, including when publication raises after rename and before fsync.
+    This is a stopped, sole-writer boundary, not an atomic CAS against hostile writers.
+    """
+    _stable = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
+               "st_size", "st_mtime_ns", "st_ctime_ns")
+    _parent = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode")
+
+    def __init__(self, root, home, before_pins):
+        super().__init__(root, home)
+        self.before_pins = {str(path): pin for path, pin in before_pins.items()}
+        self.before_states = {}
+        self.after_states = {}
+
+    def _relative(self, path):
+        path = Path(path)
+        require(path.is_absolute() and path == self.home / path.relative_to(self.home)
+                and not any(part in (".", "..") for part in path.parts),
+                "transaction_v5_target_outside_home")
+        return path.relative_to(self.home)
+
+    def _parents(self, path):
+        relative = self._relative(path)
+        current = self.home
+        result = []
+        for part in (None, *relative.parent.parts):
+            if part is not None:
+                current = current / part
+            fd = os.open(current, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                held = os.fstat(fd); named = current.lstat()
+                require(stat.S_ISDIR(held.st_mode) and held.st_uid == os.getuid()
+                        and held.st_mode & 0o022 == 0
+                        and all(getattr(held, key) == getattr(named, key) for key in self._parent),
+                        "transaction_v5_parent_custody_changed")
+                result.append((str(current), tuple(getattr(held, key) for key in self._parent)))
+            finally:
+                os.close(fd)
+        return result
+
+    def _state(self, path):
+        path = Path(path); parents = self._parents(path)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            require(not os.path.lexists(path) and self._parents(path) == parents,
+                    "transaction_v5_absence_changed")
+            return {"state": "ABSENT", "parents": parents}, None
+        try:
+            first = os.fstat(fd)
+            require(stat.S_ISREG(first.st_mode) and first.st_uid == os.getuid()
+                    and first.st_nlink == 1 and stat.S_IMODE(first.st_mode) in (0o600, 0o644)
+                    and first.st_size <= 256 * 1024 ** 2,
+                    "transaction_v5_file_custody_changed")
+            chunks = []; size = 0
+            while size <= first.st_size:
+                chunk = os.read(fd, min(1024 ** 2, first.st_size + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk); size += len(chunk)
+            after = os.fstat(fd); named = path.lstat()
+            require(size == first.st_size
+                    and all(getattr(first, key) == getattr(after, key) == getattr(named, key)
+                            for key in self._stable)
+                    and self._parents(path) == parents,
+                    "transaction_v5_file_identity_changed")
+            data = b"".join(chunks)
+            state = {"state": "EXISTED", "parents": parents, "sha256": digest(data),
+                     "bytes": len(data), "mode": stat.S_IMODE(first.st_mode),
+                     "identity": {key: getattr(first, key) for key in self._stable}}
+            return state, data
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _matches(actual, expected):
+        return all(actual.get(key) == value for key, value in expected.items() if key != "identity") \
+            and all(actual.get("identity", {}).get(key) == value
+                    for key, value in expected.get("identity", {}).items())
+
+    def preflight(self):
+        """Authenticate all selected beforeimages before the consuming mkdir."""
+        for key, pin in self.before_pins.items():
+            state, _ = self._state(key)
+            require((state["state"] == "ABSENT" if pin is None else
+                     state["state"] == "EXISTED"
+                     and all(state.get(field) == value for field, value in pin.items())),
+                    "transaction_v5_authenticated_preimage_changed:" + key)
+            self.before_states[key] = state
+
+    def record_existing(self, path, data):
+        key = str(path); state, actual = self._state(path)
+        require(key in self.before_states and actual == data
+                and self._matches(state, self.before_states[key]),
+                "transaction_v5_recorded_preimage_changed")
+        entry = super().record_existing(path, data)
+        require(self._matches(self._state(path)[0], state),
+                "transaction_v5_recorded_identity_changed")
+        return entry
+
+    def record_absent(self, path):
+        key = str(path); state, _ = self._state(path)
+        require(key in self.before_states and state["state"] == "ABSENT"
+                and self._matches(state, self.before_states[key]),
+                "transaction_v5_recorded_absence_changed")
+        return super().record_absent(path)
+
+    def prepare_publication(self, target, data, mode):
+        """Bind intended bytes before publish; bind its inode before replace."""
+        key = str(target)
+        require(key in self.entries and key in self.before_states,
+                "transaction_v5_unrecorded_target")
+        intended = {"sha256": digest(data), "bytes": len(data), "mode": mode}
+        self.entries[key]["published_after"] = dict(intended)
+        expected = self.after_states.get(key, [self.before_states[key]])[-1]
+        require(self._matches(self._state(target)[0], expected),
+                "transaction_v5_publish_preimage_changed")
+        def before_replace(tmp):
+            require(self._matches(self._state(target)[0], expected),
+                    "transaction_v5_publish_preimage_changed")
+            after, _ = self._state(tmp)
+            require(all(after.get(field) == value for field, value in intended.items()),
+                    "transaction_v5_temporary_afterimage_changed")
+            # rename can update ctime. Its known inode, mode, owner, link count,
+            # size and mtime remain exact; each later read checks ctime stability.
+            after["identity"].pop("st_ctime_ns")
+            self.after_states.setdefault(key, []).append(after)
+            self.entries[key]["published_after"] = dict(after)
+        return before_replace
+
+    def restore(self, paths):
+        seen = set()
+        for path in reversed(list(paths)):
+            key = str(path)
+            if key in seen or key not in self.entries:
+                continue
+            seen.add(key); target = Path(path); before = self.before_states[key]
+            actual, _ = self._state(target)
+            if self._matches(actual, before):
+                continue  # publish failed before replacing the original target
+            require(any(self._matches(actual, own) for own in self.after_states.get(key, [])),
+                    "transaction_v5_restoration_foreign_state")
+            if before["state"] == "ABSENT":
+                require(self._matches(self._state(target)[0], actual),
+                        "transaction_v5_restoration_identity_changed")
+                target.unlink(); sync_directory(target.parent)
+                require(self._matches(self._state(target)[0], before),
+                        "transaction_v5_absence_restoration_changed")
+                continue
+            entry = self.entries[key]; recorded = owned_file(self._target(path))
+            require(digest(recorded) == entry["sha256"] and len(recorded) == entry["bytes"],
+                    "transaction_beforeimage_changed")
+            restored_identity = []
+            def before_restore(tmp):
+                require(self._matches(self._state(target)[0], actual),
+                        "transaction_v5_restoration_identity_changed")
+                state, _ = self._state(tmp)
+                require(state["sha256"] == entry["sha256"] == before["sha256"]
+                        and state["bytes"] == entry["bytes"] and state["mode"] == entry["mode"],
+                        "transaction_v5_restoration_temporary_changed")
+                state["identity"].pop("st_ctime_ns")
+                restored_identity.append(state)
+            publish(target, recorded, entry["mode"], _before_replace=before_restore,
+                    _temporary_suffix=".restore.tmp")
+            require(restored_identity and self._matches(self._state(target)[0], restored_identity[0])
+                    and digest(recorded) == before["sha256"],
+                    "transaction_v5_restoration_changed")
 
 
 # ------------------------------------------------------------------ layer inventory
@@ -881,7 +1070,8 @@ def current_source_request_bytes(request, request_path, request_sha256):
     else:
         require(context.get("schema") in ("friday.current-source-native-successor.v2",
                     "friday.current-source-native-successor.v3",
-                    "friday.current-source-native-successor.v4")
+                    "friday.current-source-native-successor.v4",
+                    "friday.current-source-native-successor.v5")
                 and set(context) == {"schema", "root_project_update", "previous_native_update"},
                 "transaction_current_source_context_required")
         references = ("root_project_update", "previous_native_update")
@@ -990,6 +1180,7 @@ def run(request, request_path, request_sha256):
     os.umask(0o077)
     raw_current_request = current_source_request_bytes(request, request_path, request_sha256)
     current_context = raw_current_request is not None
+    guarded_v5 = current_context and request["current_source_successor"]["schema"] == "friday.current-source-native-successor.v5"
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")
@@ -1132,6 +1323,31 @@ def run(request, request_path, request_sha256):
         current_source_consumer_checked(current_input, request, candidate)
         forward_budget()
 
+    guarded_journal = None
+    if guarded_v5:
+        # Only selected targets are authenticated. An unchanged installed helper
+        # may legitimately differ from the new candidate's helper inventory.
+        before_pins = {}
+        for name in final_state:
+            row = receipt["files"].get(name)
+            before_pins[str(source / name)] = None if row is None else {
+                "sha256": row["sha256"], "bytes": row["bytes"]}
+        project_targets = (set(request.get("project_file_updates", []))
+            | set(request.get("layer_manifest_updates", []))
+            | {f"patches/hermes/{name}.patch" for name in layer_names
+               if f"patches/hermes/{name}.patch" not in previous_input["project_files"]}
+            | set(request["plugin_set"]) | set(request["plugin_additions"]))
+        for name in project_targets:
+            pin = previous_input["project_files"].get(name)
+            before_pins[str(home / name)] = None if pin is None else {"sha256": pin}
+        for key, name in (("source_receipt", "hermes-agent.source.json"),
+                          ("marker", "FRIDAY-INSTALL.json"),
+                          ("stamp", "hermes-agent/install-stamp.json")):
+            before_pins[str(home / name)] = {"sha256": request[key]["sha256"]}
+        require(not request.get("staged_files"), "transaction_v5_unexpected_staged_target")
+        guarded_journal = _CurrentSourceV5Journal(current_transaction, home, before_pins)
+        guarded_journal.preflight()
+
     # 8. apply the layers onto a private staging tree that holds only the touched files.
     #    A bundle that is already published is NOT applied again: for layers that touch the
     #    same file the old patch would be applied to the final bytes and would not apply.
@@ -1203,7 +1419,7 @@ def run(request, request_path, request_sha256):
         require(digest(staged) == final_state[path], "transaction_staged_bytes_changed:" + path)
 
     # 10. the journal: every file the operation touches is recorded before it is written.
-    journal = Journal(staging_root, home)
+    journal = guarded_journal if guarded_journal is not None else Journal(staging_root, home)
     published = []
     native_additions = {str(Path(source) / path) for path in touched if path not in receipt["files"]}
 
@@ -1228,8 +1444,13 @@ def run(request, request_path, request_sha256):
         # The path is registered BEFORE the write: a failure between the rename and the
         # directory synchronisation leaves the file changed, and the rollback must still
         # know about it.
+        before_replace = (guarded_journal.prepare_publication(target, data, mode)
+                          if guarded_journal is not None else None)
         published.append(target)
-        publish(target, data, mode)
+        if before_replace is None:
+            publish(target, data, mode)
+        else:
+            publish(target, data, mode, _before_replace=before_replace)
 
     for path in touched:
         target = Path(source) / path

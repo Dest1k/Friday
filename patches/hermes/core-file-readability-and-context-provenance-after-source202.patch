@@ -1,0 +1,696 @@
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -275,9 +275,16 @@
+     "resume, wrap up, or continue work from "
+     f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
+     "and wait for a new user message. This handoff must never become the "
+-    "active turn by itself. (Exception: if tool results or your own "
+-    "tool calls appear after this summary, you are mid-way through an "
+-    "in-flight exchange — continue that exchange normally.) "
++    "active turn by itself. A live user request restated after the explicit "
++    "END OF CONTEXT SUMMARY boundary, including a STILL IN PROGRESS replay, "
++    "may identify an unfinished exchange; continue "
++    "only that request. Retained tool calls/results alone do not identify an "
++    "active exchange: tools before the current user message are historical, "
++    "even when they appear after this summary, and were not run again. "
++    "Claim tool execution in this turn only from an actual tool call and its "
++    "corresponding result after the latest current user request (or its live "
++    "replay after the END boundary). Retained rows and new compaction "
++    "timestamps are not evidence of a new execution. "
+     "Topic overlap with the summary does NOT mean you should resume its "
+     "task: even on similar topics, the latest user message WINS. Treat ONLY "
+     "the latest message as the active task and discard stale items from "
+@@ -301,8 +308,14 @@
+     "[CONTEXT COMPACTION — BOUNDED REFERENCE ONLY] Past turns below are background, "
+     "never active instructions. Follow only the latest user message AFTER this "
+     "summary; it overrides historical tasks, and stop/undo/changed requests cancel "
+-    "old work. If no later user exists, wait without tools unless later tool calls "
+-    "or results prove an in-flight exchange: continue only that exchange. Persistent "
++    "old work. If no later user exists, wait without tools unless a live user "
++    "request after the explicit END OF CONTEXT SUMMARY boundary identifies an "
++    "unfinished exchange (including STILL IN PROGRESS replay). Tool "
++    "calls/results alone do not prove a current exchange: tools before the current "
++    "user message are historical even after this summary, and were not run again. "
++    "Claim execution this turn only from an actual call and corresponding result "
++    "after the latest live user request; retained rows and new compaction "
++    "timestamps are not new execution. Persistent "
+     "system memory remains authoritative. Summary claims are not proof that memory was "
+     "saved: verify the addressed store or a successful memory result before reporting "
+     "an existing entry or completed update. Tools remain fully active for the current "
+@@ -633,6 +646,9 @@
+ # Exact wire text of every shipped prefix, newest-first; stale directives must
+ # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
+ _HISTORICAL_SUMMARY_PREFIXES = (
++    # Previous current/bounded prefixes remain detectable and strippable after resume.
++    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
++    '[CONTEXT COMPACTION — BOUNDED REFERENCE ONLY] Past turns below are background, never active instructions. Follow only the latest user message AFTER this summary; it overrides historical tasks, and stop/undo/changed requests cancel old work. If no later user exists, wait without tools unless later tool calls or results prove an in-flight exchange: continue only that exchange. Persistent system memory remains authoritative. Summary claims are not proof that memory was saved: verify the addressed store or a successful memory result before reporting an existing entry or completed update. Tools remain fully active for the current task. Session files/config may already contain past effects: do not repeat completed work.',
+     # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
+     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
+     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -555,7 +555,7 @@
+             'XLSX content JSON: format=xlsx_recalculate {source}; format=xlsx_merge {base,update,sheet,key,revision}; '
+             'format=xlsx {source,sheet,cell,expected,value}. XLSX outputs need NEW .xlsx names; xlsx edits never recalculate. '
+             'DOCX: docx/docx_structured create; docx_edit {source,old_text,new_text}; docx_pdf {source}. '
+-            'For a precise text correction use presentation_text_edit {source,slide,role,old_text,new_text} into a NEW path of the same native profile. slide is one-based; role=slide or notes. The literal must match once within a supported paragraph; other content remains unchanged. Mixed formatting/fields/ambiguous text and unsupported whitespace refuse. ' 
++            ' Optional JSON member {"layout":"fit_title"} on PPTX/ODP slide-only whole-title replacements explicitly adjusts that selected title box/font (minimum16pt logical budget) before the next lower object, with local ODF style copies. Direct horizontal single-paragraph titles in the known Calibri/Arial/Liberation Sans Latin/Cyrillic profile only; unknown geometry, transforms or insufficient capacity refuse. Every other shape/shared style/payload and the original remain unchanged. Without layout the old text-only byte-preserving contract applies. Logical fitting is not rendered/application fidelity; inspect the actual output. For a precise text correction use presentation_text_edit {source,slide,role,old_text,new_text} into a NEW path of the same native profile. slide is one-based; role=slide or notes. The literal must match once within a supported paragraph; other content remains unchanged. Mixed formatting/fields/ambiguous text and unsupported whitespace refuse. ' 
+             'Presentation variants: presentation_create {slides} uses the ODP slide schema and a NEW .pptx/.potx/.ppsx/.odp/.otp/.fodp destination. presentation_convert {source} chooses the native output profile or PDF by NEW destination suffix. presentation_edit {source,edit} uses a NEW destination of the same profile: edit fields for OOXML are slide/old_title/new_title/category/old_value/new_value; ODF uses slide/table/row/column/old_value/new_value. Only the bounded supported edit is available. Macro and binary legacy creation/conversion is not supported by presentation_create; legacy OpenOffice XML uses legacy_openoffice_create. Cross-family conversion may change rendering; no visual fidelity claim. ' 
+             'Presentations: source-bound pptx_create {source,data} computes typed real-table facts (see tool contract); authored pptx_create {source,slides,series} leaves prose unverified; pptx_edit {source,slide,old_title,new_title,category,old_value,new_value}; odp_create {slides}; odp_edit {source,slide,table,row,column,old_value,new_value}; pptx_pdf/odp_pptx/pptx_odp {source}. All produce NEW native files with typed JSON only. '
+             'Use tool_describe for full schema before tool_call; pass each JSON object as the content string. '
+diff --git a/hermes_cli/friday_workspace_presentation_text.py b/hermes_cli/friday_workspace_presentation_text.py
+--- a/hermes_cli/friday_workspace_presentation_text.py
++++ b/hermes_cli/friday_workspace_presentation_text.py
+@@ -14,7 +14,12 @@
+     from tools.scoped_presentation_variants import FORMATS
+     try:
+         target = _destination(cap, fd, leaf, path)
+-        request = json_object(content, ('source', 'slide', 'role', 'old_text', 'new_text'))
++        try:
++            request = json_object(content, ('source', 'slide', 'role', 'old_text', 'new_text'))
++        except PresentationRefused as error:
++            if str(error) != 'exact_json_schema':
++                raise
++            request = json_object(content, ('source', 'slide', 'role', 'old_text', 'new_text', 'layout'))
+         if not isinstance(request['source'], str):
+             raise ScopeDenied()
+         format = Path(request['source']).suffix.lower().lstrip('.')
+@@ -28,7 +33,9 @@
+                         {'source': relative, 'source_sha256': hashlib.sha256(original).hexdigest(),
+                          'source_unchanged': True, 'preserving_edit': True,
+                          'edit_mode': 'unique_native_text', 'slide': request['slide'],
+-                         'role': request['role'], 'output_profile': format})
++                         'role': request['role'], 'output_profile': format,
++                         'layout_mode': request.get('layout', 'text_only'),
++                         'rendered_layout_verified': False})
+     except ScopeDenied:
+         raise
+     except PresentationRefused as error:
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1394,7 +1394,7 @@
+ 
+ WRITE_FILE_SCHEMA = {
+     "name": "write_file",
+-    "description": 'MSG files require explicit msg_create or msg_edit into a NEW .msg path; no raw overwrite, sending or import. Native slide text: presentation_text_edit uses exactly source/slide/role/old_text/new_text into a NEW path of the same native profile. slide is one-based; role is slide or notes. Replaces one unique literal occurrence within a supported paragraph. Equally formatted OOXML split runs and plain ODF paragraphs supported; typed/cached or repeated ODF table cells, mixed formatting, fields, links, whitespace that changes native semantics, ambiguous or missing text refuse. Only selected text-element contents are rewritten; other XML bytes and archive payloads preserved. Native presentation variants: presentation_create uses slides with title/body/notes/table/chart (the ODP schema) into a NEW .pptx/.potx/.ppsx/.odp/.otp/.fodp path. presentation_convert uses exactly {"source":"deck.odp"}; the NEW output suffix selects a supported native profile or PDF. Macro and legacy binary formats excluded. presentation_edit uses {"source":"deck.otp","edit":{"slide":1,"table":1,"row":2,"column":2,"old_value":"24","new_value":"25"}} into the same native profile at a NEW path. PPTX/POTX/PPSX edit keys: slide/old_title/new_title/category/old_value/new_value; changes one title and chart datum. ODF edit changes one numeric table cell. Cross-family conversion uses isolated Office; visual fidelity not claimed. External resources, active content and conflicting flat styles refuse. PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/rar_extract/tar_extract use {source} and a NEW folder. Genuine bounded single-volume stored or version29 LZ/Huffman RAR4 and supported RAR5 regular files/directories can be read, extracted or converted into ZIP/TAR; RAR4 PPMd/VM/other compression versions, RAR creation/editing, encrypted/multivolume/linked/special/unsupported members refuse. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. For 7z, creation accepts optional password and header_encryption=true (requires password); 7z_extract accepts source/password. read_file accepts password for own-workspace 7z. AES-256 plus LZMA2 data and AES-only private headers are supported with bounded KDF, exact padding and complete streams; other encrypted profiles refuse. Missing/wrong passwords refuse without publication. Never echo passwords in replies, filenames or member names. Encrypted conversion/editing is unsupported. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. In result row_sources, source/source_row/revision identify only the selected row. Each observed item is [source, source_row, revision], with source base or update; complete lists retain every occurrence, including duplicates. provenance gives the observation field order, reason legend, complete flag, returned/total observation counts, omitted_rows for observation lists, and selected_rows_omitted for whole metadata records. Result metadata is bounded; missing records or observed lists mean unknown/omitted provenance, never absent input membership. For omitted details inspect both unchanged source rows. Never infer both-input membership from the selected source: say both only when that row has observed entries from base and update. selection_reason derives from numeric revision equality, not spelling. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use only pptx_pdf, odp_pptx or pptx_odp; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. ' 'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=xlsx; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. ' "For own user workspace, format=xlsx creates a NEW workbook copy changing one numeric cell; content JSON requires source, sheet, cell, expected, value. Preserves other parts/formulas, no formula recalculation. Never write spreadsheet text under .xlsx/.xls. Explicit format=docx creates a NEW .docx from short plain paragraphs (100000 UTF-8 bytes, 2000 paragraphs); existing names are refused. For preserving revisions use docx_edit with the original source; these creation modes rebuild documents. Omit format for normal text. Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
++    "description": 'MSG files require explicit msg_create or msg_edit into a NEW .msg path; no raw overwrite, sending or import. Native slide text: Optional JSON member {"layout":"fit_title"} on PPTX/ODP slide-only whole-title replacements explicitly adjusts that selected title box/font (minimum16pt logical budget) before the next lower object, with local ODF style copies. Direct horizontal single-paragraph titles in the known Calibri/Arial/Liberation Sans Latin/Cyrillic profile only; unknown geometry, transforms or insufficient capacity refuse. Every other shape/shared style/payload and the original remain unchanged. Without layout the old text-only byte-preserving contract applies. Logical fitting is not rendered/application fidelity; inspect the actual output. presentation_text_edit uses source/slide/role/old_text/new_text into a NEW path of the same native profile. slide is one-based; role is slide or notes. Replaces one unique literal occurrence within a supported paragraph. Equally formatted OOXML split runs and plain ODF paragraphs supported; typed/cached or repeated ODF table cells, mixed formatting, fields, links, whitespace that changes native semantics, ambiguous or missing text refuse. Without layout, only selected text-element contents are rewritten; other XML bytes and archive payloads preserved. Native presentation variants: presentation_create uses slides with title/body/notes/table/chart (the ODP schema) into a NEW .pptx/.potx/.ppsx/.odp/.otp/.fodp path. presentation_convert uses exactly {"source":"deck.odp"}; the NEW output suffix selects a supported native profile or PDF. Macro and legacy binary formats excluded. presentation_edit uses {"source":"deck.otp","edit":{"slide":1,"table":1,"row":2,"column":2,"old_value":"24","new_value":"25"}} into the same native profile at a NEW path. PPTX/POTX/PPSX edit keys: slide/old_title/new_title/category/old_value/new_value; changes one title and chart datum. ODF edit changes one numeric table cell. Cross-family conversion uses isolated Office; visual fidelity not claimed. External resources, active content and conflicting flat styles refuse. PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. ' 'XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. ' 'Archives: zip/7z/tar/tar.gz/tar.bz2/tar.xz/tar.zst use entries source/member and a NEW matching archive path; zip_extract/7z_extract/rar_extract/tar_extract use {source} and a NEW folder. Genuine bounded single-volume stored or version29 LZ/Huffman RAR4 and supported RAR5 regular files/directories can be read, extracted or converted into ZIP/TAR; RAR4 PPMd/VM/other compression versions, RAR creation/editing, encrypted/multivolume/linked/special/unsupported members refuse. archive_convert uses {source} between supported ZIP/7z/TAR families preserving names and bytes; explicit directories cannot be encoded to 7z. Single-stream compression: gzip/bzip2/xz/zstd use {source} into a NEW .gz/.bz2/.xz/.zst path; stream_extract uses {source} into a NEW folder. The single extracted name is the input compressed basename minus its compression suffix, never an embedded header name. read_file lists this derived entry, not decoded text. For 7z, creation accepts optional password and header_encryption=true (requires password); 7z_extract accepts source/password. read_file accepts password for own-workspace 7z. AES-256 plus LZMA2 data and AES-only private headers are supported with bounded KDF, exact padding and complete streams; other encrypted profiles refuse. Missing/wrong passwords refuse without publication. Never echo passwords in replies, filenames or member names. Encrypted conversion/editing is unsupported. Sources are unchanged. Compressed input/output and decoded single payload are bounded to 1000000 bytes. Unsupported, encrypted, unsafe, concatenated or over-limit streams refuse; never just rename extensions. ' 'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. In result row_sources, source/source_row/revision identify only the selected row. Each observed item is [source, source_row, revision], with source base or update; complete lists retain every occurrence, including duplicates. provenance gives the observation field order, reason legend, complete flag, returned/total observation counts, omitted_rows for observation lists, and selected_rows_omitted for whole metadata records. Result metadata is bounded; missing records or observed lists mean unknown/omitted provenance, never absent input membership. For omitted details inspect both unchanged source rows. Never infer both-input membership from the selected source: say both only when that row has observed entries from base and update. selection_reason derives from numeric revision equality, not spelling. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. ' 'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. ' 'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use only pptx_pdf, odp_pptx or pptx_odp; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. ' 'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=xlsx; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. ' "For own user workspace, format=xlsx creates a NEW workbook copy changing one numeric cell; content JSON requires source, sheet, cell, expected, value. Preserves other parts/formulas, no formula recalculation. Never write spreadsheet text under .xlsx/.xls. Explicit format=docx creates a NEW .docx from short plain paragraphs (100000 UTF-8 bytes, 2000 paragraphs); existing names are refused. For preserving revisions use docx_edit with the original source; these creation modes rebuild documents. Omit format for normal text. Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+     "parameters": {
+         "type": "object",
+         "properties": {
+diff --git a/tools/scoped_presentation_layout.py b/tools/scoped_presentation_layout.py
+new file mode 100644
+--- /dev/null
++++ b/tools/scoped_presentation_layout.py
+@@ -0,0 +1,455 @@
++"""Opt-in local title fitting. Logical capacity is not rendered fidelity.
++
++Only a direct, horizontal, one-paragraph title is supported. Unselected XML,
++shared styles and all other package payloads remain byte-for-byte unchanged.
++"""
++from copy import deepcopy
++from pathlib import PurePosixPath
++from decimal import Decimal
++import re
++import textwrap
++import unicodedata
++from xml.etree import ElementTree as ET
++from xml.parsers import expat
++
++from tools.scoped_presentation import O, DR, PR, T, q
++from tools.scoped_presentation_write import A, P, R, PresentationRefused, _xml, _rels, _resolve
++
++ST = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0'
++SVG = 'urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0'
++FO = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
++
++
++def refuse(reason):
++    raise PresentationRefused('title_layout_' + reason)
++
++
++def fit_font(value, width, height, maximum=26, minimum=16, *, unicode_creation=False):
++    """Conservative Latin/Cyrillic profile: 1.1em columns, 1.3em lines.
++
++    Font substitution/shaping is not measured here. Actual app assessment is
++    required; unlike shape autofit this never silently selects < minimum pt.
++    """
++    if not value: refuse('text_profile')
++    bounded = not any(unicodedata.category(c).startswith('C') or
++                         unicodedata.combining(c) or
++                         not (c.isspace() or '\u0020' <= c <= '\u024f' or
++                              '\u0400' <= c <= '\u052f' or
++                              '\u2000' <= c <= '\u206f' and unicodedata.category(c).startswith('P') or c == '\u2116') for c in value)
++    if not bounded and not unicode_creation:
++        refuse('text_profile')
++    # Creation keeps all previously accepted Unicode literals. Unknown scripts,
++    # combining marks and wide glyphs consume two conservative logical cells;
++    # this is not a shaping or glyph-availability promise.
++    estimate = value if bounded else ''.join(c if c.isspace() else 'XX' for c in value)
++    for font in range(min(int(maximum), 96), minimum-1, -1):
++        columns = int(width / (font * 1.1))
++        if columns < 1:
++            continue
++        lines = textwrap.wrap(estimate, width=columns, expand_tabs=False,
++                              replace_whitespace=False, drop_whitespace=False,
++                              break_long_words=True, break_on_hyphens=False)
++        if len(lines) * font * 1.3 <= height:
++            return font
++    refuse('capacity')
++
++
++def _spans(raw, root, tag):
++    nodes = list(root.iter(tag)); spans = []; stack = []
++    parser = expat.ParserCreate(namespace_separator='}')
++    def start(name, attrs):
++        if name != tag[1:]:
++            return
++        offset = parser.CurrentByteIndex; quote = None
++        for end in range(offset, len(raw)):
++            c = raw[end]
++            if quote is not None:
++                if c == quote: quote = None
++            elif c in (34, 39): quote = c
++            elif c == 62: break
++        else: refuse('xml')
++        slot = len(spans); spans.append(None)
++        stack.append((slot, offset, end+1, raw[offset:end].rstrip().endswith(b'/')))
++    def end(name):
++        if name == tag[1:]:
++            slot, begin, opening_end, empty = stack.pop()
++            stop = parser.CurrentByteIndex if empty else raw.find(b'>', parser.CurrentByteIndex)+1
++            if stop < opening_end: refuse('xml')
++            spans[slot] = (begin, stop, opening_end, empty)
++    parser.StartElementHandler = start; parser.EndElementHandler = end
++    parser.Parse(raw, True)
++    if len(nodes) != len(spans): refuse('xml')
++    return dict(zip(nodes, spans))
++
++
++def _patch(raw, changes):
++    last = len(raw)
++    for begin, end, value in sorted(changes, reverse=True):
++        if not 0 <= begin <= end <= last: refuse('overlapping_change')
++        raw = raw[:begin] + value + raw[end:]; last = begin
++    _xml(raw)
++    return raw
++
++
++def _length(value):
++    match = re.fullmatch(r'([0-9]+(?:\.[0-9]+)?)(cm|mm|in|pt)', value or '')
++    if not match: refuse('geometry')
++    factors = {'cm': Decimal(72)/Decimal('2.54'), 'mm': Decimal(72)/Decimal('25.4'),
++               'in': Decimal(72), 'pt': Decimal(1)}
++    result = float(Decimal(match[1]) * factors[match[2]])
++    if not 0 <= result <= 4000: refuse('geometry')
++    return result
++
++
++def _cm(points):
++    return format(Decimal(str(points))*Decimal('2.54')/Decimal(72), '.6f') + 'cm'
++
++
++def _region(box, others, minimum_top, gap):
++    x, y, width, height = box
++    if width <= 0 or height <= 0: refuse('geometry')
++    bottom = y + height
++    upper = minimum_top
++    for ox, oy, ow, oh in others:
++        if ow <= 0 or oh <= 0: refuse('geometry')
++        if x < ox+ow and ox < x+width:
++            if oy > y: bottom = min(bottom, oy-gap)
++            elif oy+oh <= y: upper = max(upper, oy+oh+gap)
++            else: refuse('ambiguous_overlap')
++    if bottom <= y or upper > y: refuse('geometry')
++    return y, bottom, upper
++
++
++def require_title_preimage(root, value, *, ooxml):
++    """Bind the edit target before replacement, never by new-text coincidence."""
++    if ooxml:
++        tree=root.find('./'+q(P,'cSld')+'/'+q(P,'spTree'))
++        titles=[] if tree is None else [s for s in tree if s.tag==q(P,'sp') and any(p.get('type') in ('title','ctrTitle') for p in s.findall('./'+q(P,'nvSpPr')+'/'+q(P,'nvPr')+'/'+q(P,'ph')))]
++        paragraphs=[] if len(titles)!=1 else titles[0].findall('./'+q(P,'txBody')+'/'+q(A,'p'))
++        if len(paragraphs)!=1: refuse('whole_title_required')
++        paragraph=paragraphs[0]
++        if any(n.tag not in (q(A,'pPr'),q(A,'r'),q(A,'endParaRPr')) for n in paragraph): refuse('mixed_text')
++        runs=paragraph.findall(q(A,'r'))
++        if len(runs)!=1 or len(runs[0].findall(q(A,'t')))!=1: refuse('mixed_text')
++        text=runs[0].find(q(A,'t'))
++        if len(text): refuse('mixed_text')
++        actual=text.text or ''
++    else:
++        titles=[n for n in root if n.get(q(PR,'class'))=='title']
++        if len(titles)!=1 or titles[0].tag!=q(DR,'frame'): refuse('whole_title_required')
++        paragraphs=titles[0].findall('./'+q(DR,'text-box')+'/'+q(T,'p'))
++        if len(paragraphs)!=1: refuse('whole_title_required')
++        paragraph=paragraphs[0]
++        if len(paragraph)==1 and paragraph[0].tag==q(T,'span') and not len(paragraph[0]) and not (paragraph.text or '') and not (paragraph[0].tail or ''):
++            actual=paragraph[0].text or ''
++        elif not len(paragraph): actual=paragraph.text or ''
++        else: refuse('mixed_text')
++    if actual!=value: refuse('whole_title_required')
++
++
++def fit_odf(raw, parts, slide, value):
++    root = _xml(raw)
++    pages = root.findall('./'+q(O,'body')+'/'+q(O,'presentation')+'/'+q(DR,'page'))
++    page = pages[slide-1]
++    titles = [n for n in page if n.get(q(PR,'class')) == 'title']
++    if len(titles) != 1 or titles[0].tag != q(DR,'frame'): refuse('title')
++    frame = titles[0]
++    if q(DR,'transform') in frame.attrib: refuse('transform')
++    if len(frame) != 1 or frame[0].tag != q(DR,'text-box'): refuse('title_structure')
++    paragraphs = frame.findall('./'+q(DR,'text-box')+'/'+q(T,'p'))
++    if len(frame[0]) != 1: refuse('paragraph')
++    if len(paragraphs) != 1: refuse('paragraph')
++    paragraph = paragraphs[0]
++    if len(paragraph) == 1 and paragraph[0].tag == q(T,'span') and not len(paragraph[0]) and not (paragraph.text or '') and not (paragraph[0].tail or ''):
++        leaf = paragraph[0]
++    elif not len(paragraph): leaf = paragraph
++    else: refuse('mixed_text')
++    if (leaf.text or '') != value: refuse('whole_title_required')
++    style_roots = [root]
++    if 'styles.xml' in parts: style_roots.append(_xml(parts['styles.xml']))
++    styles = [s for r in style_roots for s in r.iter(q(ST,'style'))]
++    def lookup(name, family):
++        found = [s for s in styles if s.get(q(ST,'name')) == name and s.get(q(ST,'family')) == family]
++        if len(found) != 1: refuse('style')
++        return found[0]
++    style_attr = q(PR,'style-name') if frame.get(q(PR,'style-name')) else q(DR,'style-name')
++    graphic = lookup(frame.get(style_attr), 'presentation' if style_attr == q(PR,'style-name') else 'graphic')
++    gp = graphic.find(q(ST,'graphic-properties'))
++    if gp is None: refuse('style')
++    # Inherited padding/rotation/writing modes would require a full style engine.
++    if any(n.get(q(ST,'writing-mode'), 'lr-tb') != 'lr-tb' for n in graphic): refuse('writing_mode')
++    def padding(name):
++        if q(FO,'padding-'+name) not in gp.attrib: refuse('inherited_padding')
++        return _length(gp.get(q(FO,'padding-'+name)))
++    pad_x = padding('left')+padding('right'); pad_y = padding('top')+padding('bottom')
++    text_style_name = leaf.get(q(T,'style-name'))
++    family = 'text' if leaf is not paragraph else 'paragraph'
++    text_style = lookup(text_style_name, family)
++    tp = text_style.find(q(ST,'text-properties'))
++    if tp is None or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?pt', tp.get(q(FO,'font-size'), '')): refuse('font')
++    def known_family(value):
++        if not isinstance(value,str): refuse('font_family')
++        value=value.strip()
++        if len(value)>=2 and value[0]==value[-1] and value[0] in ('"',"'"):
++            value=value[1:-1]
++        if value not in ('Calibri','Arial','Liberation Sans'): refuse('font_family')
++        return value
++    font_alias=tp.get(q(ST,'font-name'))
++    direct_family=tp.get(q(FO,'font-family'))
++    if font_alias is not None:
++        faces=[face for r in style_roots for face in r.iter(q(ST,'font-face'))
++               if face.get(q(ST,'name'))==font_alias]
++        if not faces: refuse('font_family')
++        families={known_family(face.get(q(SVG,'font-family'))) for face in faces}
++        if len(families)!=1: refuse('font_family')
++        if direct_family is not None and known_family(direct_family) not in families: refuse('font_family')
++    else:
++        known_family(direct_family)
++    if tp.get(q(FO,'letter-spacing'),'normal') != 'normal' or tp.get(q(ST,'text-position'),'0% 100%') != '0% 100%': refuse('text_metrics')
++    paragraph_style = lookup(paragraph.get(q(T,'style-name')), 'paragraph')
++    def metric_chain(node):
++        seen=set()
++        while node is not None:
++            key=(node.get(q(ST,'family')),node.get(q(ST,'name')))
++            if key in seen: refuse('style_cycle')
++            seen.add(key)
++            for props in node.findall(q(ST,'text-properties')):
++                for key,normal in ((q(FO,'letter-spacing'),'normal'),(q(ST,'text-scale'),'100%'),
++                                   (q(ST,'text-position'),'0% 100%'),(q(ST,'text-rotation-angle'),'0')):
++                    if props.get(key,normal)!=normal: refuse('text_metrics')
++            parent=node.get(q(ST,'parent-style-name'))
++            node=lookup(parent,node.get(q(ST,'family'))) if parent else None
++    for node in (graphic,text_style,paragraph_style): metric_chain(node)
++    shape_text=frame.get(q(DR,'text-style-name'))
++    if shape_text: metric_chain(lookup(shape_text,'paragraph'))
++    for r in style_roots:
++        for node in r.iter(q(ST,'default-style')):
++            if node.get(q(ST,'family')) in ('graphic','presentation','paragraph','text'): metric_chain(node)
++    maximum = _length(tp.get(q(FO,'font-size')))
++    def box(n):
++        if q(DR,'transform') in n.attrib: refuse('transform')
++        return tuple(_length(n.get(q(SVG,k))) for k in ('x','y','width','height'))
++    geometry = box(frame); others = []
++    masters = [m for r in style_roots for m in r.iter(q(ST,'master-page'))
++               if m.get(q(ST,'name')) == page.get(q(DR,'master-page-name'))]
++    if len(masters) != 1: refuse('page_layout')
++    layouts = [l for r in style_roots for l in r.iter(q(ST,'page-layout'))
++               if l.get(q(ST,'name')) == masters[0].get(q(ST,'page-layout-name'))]
++    if len(layouts) != 1: refuse('page_layout')
++    page_props = layouts[0].find(q(ST,'page-layout-properties'))
++    if page_props is None: refuse('page_layout')
++    page_width = _length(page_props.get(q(FO,'page-width')))
++    page_height = _length(page_props.get(q(FO,'page-height')))
++    if geometry[0]+geometry[2] > page_width or geometry[1]+geometry[3] > page_height: refuse('outside_page')
++    for other in page:
++        if other is frame or other.tag == q(PR,'notes'): continue
++        if other.tag not in (q(DR,'frame'), q(DR,'custom-shape')): refuse('obstacle')
++        others.append(box(other))
++    y, bottom, upper = _region(geometry, others, min(geometry[1], 72*.4/2.54), 72*.15/2.54)
++    try: font = fit_font(value, geometry[2]-pad_x, bottom-y-pad_y, maximum)
++    except PresentationRefused as error:
++        if str(error) != 'title_layout_capacity' or upper >= y: raise
++        y = upper
++        font = fit_font(value, geometry[2]-pad_x, bottom-y-pad_y, maximum)
++    auto = root.find(q(O,'automatic-styles'))
++    if auto is None: refuse('automatic_styles')
++    names = {s.get(q(ST,'name')) for s in styles}
++    def clone(original):
++        node = deepcopy(original); index = 1
++        while 'FridayTitleFit'+str(index) in names: index += 1
++        name = 'FridayTitleFit'+str(index); names.add(name); node.set(q(ST,'name'), name)
++        return node, name
++    local_graphic, graphic_name = clone(graphic)
++    local_gp = local_graphic.find(q(ST,'graphic-properties'))
++    for key, val in ((q(DR,'auto-grow-height'),'false'), (q(DR,'auto-grow-width'),'false'),
++                     (q(DR,'fit-to-size'),'false'), (q(ST,'shrink-to-fit'),'false'),
++                     (q(FO,'min-height'),'0cm'), (q(DR,'textarea-vertical-align'),'top')):
++        local_gp.set(key, val)
++    local_gp.set(q(FO,'max-height'), _cm(bottom-y))
++    local_text, text_name = clone(text_style)
++    local_tp = local_text.find(q(ST,'text-properties'))
++    for key in (q(FO,'font-size'), q(ST,'font-size-asian'), q(ST,'font-size-complex')): local_tp.set(key, str(font)+'pt')
++    local_paragraph, paragraph_name = clone(paragraph_style)
++    pp = local_paragraph.find(q(ST,'paragraph-properties'))
++    if pp is None: pp = ET.SubElement(local_paragraph,q(ST,'paragraph-properties'))
++    pp.set(q(FO,'line-height'),'130%'); pp.set(q(ST,'writing-mode'),'lr-tb')
++    for key in ('margin-left','margin-right','margin-top','margin-bottom','text-indent'): pp.set(q(FO,key),'0cm')
++    changed = deepcopy(frame); changed.set(style_attr, graphic_name)
++    changed.set(q(SVG,'y'), _cm(y)); changed.set(q(SVG,'height'), _cm(bottom-y))
++    changed_paragraph = changed.find('./'+q(DR,'text-box')+'/'+q(T,'p'))
++    changed_paragraph.set(q(T,'style-name'),paragraph_name)
++    changed_leaf = changed_paragraph[0] if leaf is not paragraph else changed_paragraph
++    if leaf is not paragraph: changed_leaf.set(q(T,'style-name'), text_name)
++    else:
++        local_paragraph_tp=local_paragraph.find(q(ST,'text-properties'))
++        if local_paragraph_tp is not None: local_paragraph.remove(local_paragraph_tp)
++        local_paragraph.append(deepcopy(local_tp))
++    begin, end, _, _ = _spans(raw, root, frame.tag)[frame]
++    a_begin, a_end, a_open, a_empty = _spans(raw, root, auto.tag)[auto]
++    additions = b''.join(ET.tostring(n,encoding='utf-8') for n in (local_graphic,local_text,local_paragraph))
++    if a_empty: refuse('automatic_styles_empty')
++    close = raw.rfind(b'</', a_open, a_end)
++    if close < a_open: refuse('xml')
++    return _patch(raw, [(begin,end,ET.tostring(changed,encoding='utf-8')), (close,close,additions)])
++
++
++def _ooxml_title_metrics(shape, presentation, parts, slide_name):
++    """Reject unbudgeted title metrics; do not implement a style engine.
++
++    defRPr supplies run properties absent from rPr. Check the selected local
++    body plus its exact layout/master title inheritance and text defaults.
++    A masked unsupported setting may conservatively refuse as in the ODF path.
++    """
++    def related(owner, kind):
++        path = PurePosixPath(owner)
++        rel = str(path.parent / '_rels' / (path.name + '.rels'))
++        links = [r for r in _rels(parts, rel).values() if r.get('Type') == R+'/'+kind]
++        if len(links) != 1 or links[0].get('TargetMode') is not None:
++            refuse('style_inheritance')
++        target = _resolve(owner, links[0].get('Target', ''))
++        if not target.startswith('ppt/') or target not in parts:
++            refuse('style_inheritance')
++        node = _xml(parts[target])
++        if node.tag != q(P, 'sldLayout' if kind == 'slideLayout' else 'sldMaster'):
++            refuse('style_inheritance')
++        return target, node
++    if not isinstance(slide_name, str) or slide_name not in parts or not slide_name.startswith('ppt/slides/'):
++        refuse('style_inheritance')
++    layout_name, layout = related(slide_name, 'slideLayout')
++    _, master = related(layout_name, 'slideMaster')
++    if any(not node.tag.startswith(('{'+P+'}', '{'+A+'}')) for source in (presentation, layout, master) for node in source.iter()):
++        refuse('style_inheritance')
++    placeholder = shape.findall('./'+q(P,'nvSpPr')+'/'+q(P,'nvPr')+'/'+q(P,'ph'))
++    if len(placeholder) != 1 or not placeholder[0].get('idx', '0').isdigit():
++        refuse('style_inheritance')
++    index = int(placeholder[0].get('idx', '0'))
++    bodies = shape.findall(q(P,'txBody'))
++    if len(bodies) != 1: refuse('style_inheritance')
++    for inherited in (layout, master):
++        matches = []
++        for other in inherited.findall('./'+q(P,'cSld')+'/'+q(P,'spTree')+'/'+q(P,'sp')):
++            phs = other.findall('./'+q(P,'nvSpPr')+'/'+q(P,'nvPr')+'/'+q(P,'ph'))
++            if not phs: continue
++            if len(phs) != 1 or not phs[0].get('idx','0').isdigit(): refuse('style_inheritance')
++            ph = phs[0]
++            if ph.get('type') in ('title','ctrTitle') or (ph.get('idx') is not None and int(ph.get('idx')) == index):
++                matches.append(other)
++        direct_placeholders = {ph for other in inherited.findall('./'+q(P,'cSld')+'/'+q(P,'spTree')+'/'+q(P,'sp')) for ph in other.findall('./'+q(P,'nvSpPr')+'/'+q(P,'nvPr')+'/'+q(P,'ph'))}
++        for ph in inherited.iter(q(P,'ph')):
++            if ph not in direct_placeholders and (ph.get('type') in ('title','ctrTitle') or ph.get('idx') == str(index)):
++                refuse('style_inheritance')
++        if len(matches) > 1: refuse('style_inheritance')
++        if matches:
++            inherited_bodies = matches[0].findall(q(P,'txBody'))
++            if len(inherited_bodies) > 1: refuse('style_inheritance')
++            bodies.extend(inherited_bodies)
++    roots = list(bodies)
++    for source, path in ((presentation, q(P,'defaultTextStyle')),
++                         (master, './'+q(P,'txStyles')+'/'+q(P,'titleStyle'))):
++        defaults = source.findall(path)
++        if len(defaults) > 1: refuse('style_inheritance')
++        roots.extend(defaults)
++    normal = {'spc': ('0',), 'baseline': ('0',), 'kern': ('0',),
++              'normalizeH': ('0','false'), 'kumimoji': ('0','false'), 'cap': ('none',)}
++    for source in roots:
++        for node in source.iter():
++            if node.tag in (q(A,'rPr'), q(A,'defRPr'), q(A,'endParaRPr')):
++                if any(key in node.attrib and node.get(key) not in values for key, values in normal.items()):
++                    refuse('text_metrics')
++                if node.find(q(A,'sym')) is not None or node.find(q(A,'extLst')) is not None:
++                    refuse('text_metrics')
++                if any(child.get('val','1') not in ('0','false') for child in node.findall(q(A,'rtl'))):
++                    refuse('text_metrics')
++            if node.tag in (q(A,'pPr'), q(A,'defPPr')) or node.tag in {q(A,'lvl'+str(i)+'pPr') for i in range(1,10)}:
++                if node.get('rtl','0') not in ('0','false') or node.get('fontAlgn','base') not in ('base','auto'):
++                    refuse('text_metrics')
++            if node.tag in (q(A,'buChar'), q(A,'buAutoNum'), q(A,'buBlip')):
++                refuse('text_metrics')
++    direct = bodies[0].find('./'+q(A,'p')+'/'+q(A,'r')+'/'+q(A,'rPr'))
++    latin = [] if direct is None else direct.findall(q(A,'latin'))
++    if len(latin) != 1 or set(latin[0].attrib) != {'typeface'}:
++        refuse('font_family')
++    body_properties = []
++    for body in bodies:
++        properties = body.findall(q(A,'bodyPr'))
++        if len(properties) != 1: refuse('style_inheritance')
++        bp = properties[0]; body_properties.append(bp)
++        expected = {'rot': ('0',), 'vert': ('horz',), 'numCol': ('1',), 'spcCol': ('0',),
++                    'rtlCol': ('0','false'), 'anchorCtr': ('0','false'),
++                    'compatLnSpc': ('0','false'), 'fromWordArt': ('0','false'),
++                    'spcFirstLastPara': ('0','false')}
++        if any(key in bp.attrib and bp.get(key) not in values for key,values in expected.items()):
++            refuse('body_metrics')
++        if any(child.tag not in (q(A,'noAutofit'),q(A,'normAutofit'),q(A,'spAutoFit')) for child in bp):
++            refuse('body_metrics')
++    # The caller uses standard insets when absent. Refuse an unmasked inherited
++    # different inset rather than silently budgeting the standard value.
++    for key, default in (('lIns',91440),('rIns',91440),('tIns',45720),('bIns',45720)):
++        if body_properties[0].get(key) is None:
++            for inherited in body_properties[1:]:
++                value = inherited.get(key)
++                if value is not None and (not value.isdigit() or int(value) != default):
++                    refuse('inherited_padding')
++
++
++def fit_ooxml(raw, value, parts, slide_name):
++    root = _xml(raw); tree = root.find('./'+q(P,'cSld')+'/'+q(P,'spTree'))
++    if tree is None: refuse('title')
++    titles = [s for s in tree if s.tag == q(P,'sp') and any(p.get('type') in ('title','ctrTitle') for p in s.findall('./'+q(P,'nvSpPr')+'/'+q(P,'nvPr')+'/'+q(P,'ph')))]
++    if len(titles) != 1: refuse('title')
++    shape = titles[0]; body = shape.find(q(P,'txBody'))
++    ps = body.findall(q(A,'p')) if body is not None else []
++    if len(ps) != 1 or len(ps[0].findall(q(A,'r'))) != 1 or ''.join(ps[0].itertext()) != value: refuse('whole_title_required')
++    run = ps[0].find(q(A,'r')); props = run.find(q(A,'rPr'))
++    if props is None or not (props.get('sz') or '').isdigit(): refuse('font')
++    latin=props.find(q(A,'latin'))
++    if latin is None or latin.get('typeface') not in ('Calibri','Arial','Liberation Sans'): refuse('font_family')
++    if props.get('spc','0') != '0' or props.get('baseline','0') != '0': refuse('text_metrics')
++    def box(s):
++        transform = s.find(q(P,'xfrm')) if s.tag == q(P,'graphicFrame') else s.find('./'+q(P,'spPr')+'/'+q(A,'xfrm'))
++        if transform is None or any(k in transform.attrib for k in ('rot','flipH','flipV')): refuse('direct_geometry_required')
++        off = transform.find(q(A,'off')); size = transform.find(q(A,'ext'))
++        if off is None or size is None: refuse('geometry')
++        vals = [off.get('x'),off.get('y'),size.get('cx'),size.get('cy')]
++        if any(not (v or '').isdigit() for v in vals): refuse('geometry')
++        return tuple(int(v)/12700 for v in vals)
++    geometry = box(shape); others = []
++    presentation=_xml(parts.get('ppt/presentation.xml',b''))
++    size=presentation.find(q(P,'sldSz'))
++    if size is None or any(not (size.get(k) or '').isdigit() for k in ('cx','cy')): refuse('page_layout')
++    if geometry[0]+geometry[2]>int(size.get('cx'))/12700 or geometry[1]+geometry[3]>int(size.get('cy'))/12700: refuse('outside_page')
++    _ooxml_title_metrics(shape, presentation, parts, slide_name)
++    for other in tree:
++        if other is shape or other.tag in (q(P,'nvGrpSpPr'),q(P,'grpSpPr')): continue
++        if other.tag not in (q(P,'sp'),q(P,'graphicFrame'),q(P,'pic')): refuse('obstacle')
++        others.append(box(other))
++    bp = body.find(q(A,'bodyPr'))
++    if bp is None or bp.get('vert','horz') != 'horz' or bp.get('rot','0') != '0': refuse('writing_mode')
++    pads = []
++    for k, default in (('lIns','91440'),('rIns','91440'),('tIns','45720'),('bIns','45720')):
++        v = bp.get(k,default)
++        if not v.isdigit(): refuse('padding')
++        pads.append(int(v)/12700)
++    y,bottom,upper = _region(geometry,others,min(geometry[1],72*.4/2.54),72*.15/2.54)
++    try: font = fit_font(value,geometry[2]-sum(pads[:2]),bottom-y-sum(pads[2:]),int(props.get('sz'))/100)
++    except PresentationRefused as error:
++        if str(error) != 'title_layout_capacity' or upper >= y: raise
++        y = upper; font = fit_font(value,geometry[2]-sum(pads[:2]),bottom-y-sum(pads[2:]),int(props.get('sz'))/100)
++    changed = deepcopy(shape); nb = changed.find(q(P,'txBody')); np = nb.find(q(A,'bodyPr'))
++    for child in list(np):
++        if child.tag in (q(A,'noAutofit'),q(A,'normAutofit'),q(A,'spAutoFit')): np.remove(child)
++    ET.SubElement(np,q(A,'noAutofit')); np.set('anchor','t'); np.set('wrap','square')
++    for n in nb.iter():
++        if n.tag in (q(A,'rPr'),q(A,'endParaRPr'),q(A,'defRPr')): n.set('sz',str(font*100))
++    paragraph=nb.find(q(A,'p')); pp=paragraph.find(q(A,'pPr'))
++    if pp is None: pp=ET.Element(q(A,'pPr'));paragraph.insert(0,pp)
++    pp.set('marL','0');pp.set('marR','0');pp.set('indent','0')
++    for name in ('lnSpc','spcBef','spcAft'):
++        previous=pp.find(q(A,name))
++        if previous is not None: pp.remove(previous)
++    for index,(name,child,val) in enumerate((('lnSpc','spcPct','130000'),('spcBef','spcPts','0'),('spcAft','spcPts','0'))):
++        n=ET.Element(q(A,name));ET.SubElement(n,q(A,child),{'val':val});pp.insert(index,n)
++    tr = changed.find('./'+q(P,'spPr')+'/'+q(A,'xfrm'))
++    tr.find(q(A,'off')).set('y',str(round(y*12700))); tr.find(q(A,'ext')).set('cy',str(round((bottom-y)*12700)))
++    begin,end,_,_ = _spans(raw,root,shape.tag)[shape]
++    return _patch(raw,[(begin,end,ET.tostring(changed,encoding='utf-8'))])
+diff --git a/tools/scoped_presentation_text.py b/tools/scoped_presentation_text.py
+--- a/tools/scoped_presentation_text.py
++++ b/tools/scoped_presentation_text.py
+@@ -196,8 +196,12 @@
+ 
+ 
+ def edit_text(data,format,spec):
+-    if format not in FORMATS or not isinstance(spec,dict) or set(spec)!={'slide','role','old_text','new_text'}:
++    fields={'slide','role','old_text','new_text'}
++    if format not in FORMATS or not isinstance(spec,dict) or set(spec) not in (fields, fields|{'layout'}):
+         refuse('text_edit_schema')
++    layout=spec.get('layout')
++    if 'layout' in spec and (layout!='fit_title' or format not in ('odp','pptx') or spec['role']!='slide'):
++        refuse('title_layout_profile')
+     old=text(spec['old_text'],limit=4000);new=text(spec['new_text'],empty=True,limit=4000)
+     if any(ord(c)<32 for c in old+new):refuse('unsupported_text_whitespace')
+     if type(spec['slide']) is not int or spec['slide']<1 or spec['role'] not in ('slide','notes'):
+@@ -232,6 +236,9 @@
+                 if placeholder is not None and placeholder.get('type','body') in ('sldImg','sldNum','dt','hdr','ftr'):
+                     excluded.update(shape.iter(q(A,'p')))
+             paragraphs=[paragraph for paragraph in paragraphs if paragraph not in excluded]
++        if layout=='fit_title':
++            from tools.scoped_presentation_layout import require_title_preimage
++            require_title_preimage(root,old,ooxml=True)
+         raw=_replace(parts[name],root,paragraphs,old,new,ooxml=True)
+     else:
+         if format!='fodp':
+@@ -252,7 +259,13 @@
+                             q(T,'note'),q(DR,'object'),q(DR,'image'),q(DR,'object-ole')):
+                 excluded.update(node.iter())
+         paragraphs=[node for node in selected.iter() if node not in excluded and node.tag in (q(T,'p'),q(T,'h'))]
++        if layout=='fit_title':
++            from tools.scoped_presentation_layout import require_title_preimage
++            require_title_preimage(page,old,ooxml=False)
+         raw=_replace(source_raw,root,paragraphs,old,new,ooxml=False,odf_span=format=='odp')
++    if layout=='fit_title':
++        from tools.scoped_presentation_layout import fit_odf, fit_ooxml
++        raw=fit_odf(raw,parts,spec['slide'],new) if format=='odp' else fit_ooxml(raw,new,parts,name)
+     edited=raw if format=='fodp' else _rewrite(infos,parts,{name:raw})
+     if format=='odp':
+         source_parts(edited)
+diff --git a/tools/scoped_presentation_write.py b/tools/scoped_presentation_write.py
+--- a/tools/scoped_presentation_write.py
++++ b/tools/scoped_presentation_write.py
+@@ -588,7 +588,12 @@
+ def _sp(shape_id, name, x, y, cx, cy, value, *, title=False):
+     placeholder = '<p:ph type="title"/>' if title else ''
+     font = 24 if title else 18
+-    lines = _layout_lines(value, cx, cy, font)
++    if title:
++        from tools.scoped_presentation_layout import fit_font
++        font = fit_font(value, cx/12700, cy/12700, maximum=24, unicode_creation=True)
++        lines = [value]
++    else:
++        lines = _layout_lines(value, cx, cy, font)
+     if title:
+         # Keep the original single title run for the preserving-edit consumer.
+         lines = [value]
+@@ -1015,6 +1020,7 @@
+     if not isinstance(slides, list) or not 1 <= len(slides) <= 20:
+         raise PresentationRefused('slide_bounds')
+     pages = []
++    text_styles = []
+     manifest_objects = []
+     objects = {}
+     for index, slide in enumerate(slides, 1):
+@@ -1022,10 +1028,17 @@
+             raise PresentationRefused('odp_slide_schema')
+         title = text(slide['title'], limit=256); body = text(slide['body'], empty=True)
+         notes = text(slide['notes'], empty=True)
+-        items = [f'<draw:frame draw:name="Title" svg:width="24cm" svg:height="2cm" svg:x="1cm" svg:y="1cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:text-box><text:p>{escape(title)}</text:p></draw:text-box></draw:frame>',
+-                 f'<draw:frame draw:name="Body" svg:width="24cm" svg:height="2cm" svg:x="1cm" svg:y="3.5cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:text-box><text:p>{escape(body)}</text:p></draw:text-box></draw:frame>']
++        from tools.scoped_presentation_layout import fit_font
++        title_font = fit_font(title, 24*72/2.54, 4*72/2.54, maximum=26, unicode_creation=True)
++        has_data = slide['table'] is not None or slide['chart'] is not None
++        body_height = 2 if has_data else 13
++        body_font = fit_font(body, 24*72/2.54, body_height*72/2.54, maximum=18, minimum=14, unicode_creation=True) if body else 18
++        text_styles.append(f'<style:style style:name="TitleText{index}" style:family="paragraph"><style:paragraph-properties fo:line-height="130%"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="{title_font}pt"/></style:style>')
++        text_styles.append(f'<style:style style:name="BodyText{index}" style:family="paragraph"><style:paragraph-properties fo:line-height="130%"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="{body_font}pt"/></style:style>')
++        items = [f'<draw:frame draw:name="Title" draw:style-name="TitleBox" presentation:class="title" svg:width="24cm" svg:height="4cm" svg:x="1cm" svg:y="0.4cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:text-box><text:p text:style-name="TitleText{index}">{escape(title)}</text:p></draw:text-box></draw:frame>',
++                 f'<draw:frame draw:name="Body" draw:style-name="TitleBox" svg:width="24cm" svg:height="{body_height}cm" svg:x="1cm" svg:y="4.6cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:text-box><text:p text:style-name="BodyText{index}">{escape(body)}</text:p></draw:text-box></draw:frame>']
+         if slide['table'] is not None:
+-            items.append(_odp_table('Orders' + str(index), slide['table']))
++            items.append('<draw:frame draw:name="Table" svg:x="1cm" svg:y="7cm" svg:width="11cm" svg:height="10cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0">' + _odp_table('Orders' + str(index), slide['table']) + '</draw:frame>')
+         if slide['chart'] is not None:
+             chart = slide['chart']
+             if not isinstance(chart, dict) or set(chart) != {'categories', 'values'} or not isinstance(chart['categories'], list) or not isinstance(chart['values'], list) or not 1 <= len(chart['categories']) == len(chart['values']) <= 128:
+@@ -1038,23 +1051,36 @@
+             header = '<table:table-row><table:table-cell office:value-type="string"><text:p>Category</text:p></table:table-cell><table:table-cell office:value-type="string"><text:p>Value</text:p></table:table-cell></table:table-row>'
+             local_rows = ''.join('<table:table-row><table:table-cell office:value-type="string"><text:p>' + escape(category) + '</text:p></table:table-cell><table:table-cell office:value-type="float" office:value="' + value + '"><text:p>' + value + '</text:p></table:table-cell></table:table-row>' for category, value in zip(chart['categories'], chart['values']))
+             last = len(chart['categories']) + 1
+-            chart_content = (f'<office:document-content {_odp_decls()} office:version="1.2"><office:body><office:chart><chart:chart chart:class="chart:bar">'
+-                '<chart:plot-area><chart:axis chart:dimension="x" chart:name="primary-x">'
++            chart_styles = ('<style:style style:name="Chart" style:family="chart"><style:graphic-properties draw:stroke="none" draw:fill="none"/></style:style>'
++                '<style:style style:name="Plot" style:family="chart"><style:chart-properties chart:auto-position="true" chart:auto-size="true"/></style:style>'
++                '<style:style style:name="Axis" style:family="chart"><style:chart-properties chart:display-label="true"/><style:graphic-properties draw:stroke="solid" svg:stroke-color="#666666"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="14pt" fo:color="#000000"/></style:style>'
++                '<style:style style:name="Series" style:family="chart"><style:chart-properties chart:data-label-number="value"/><style:graphic-properties draw:stroke="none" draw:fill="solid" draw:fill-color="#4472c4"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="14pt" fo:color="#000000"/></style:style>')
++            chart_content = (f'<office:document-content {_odp_decls()} xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" office:version="1.2"><office:automatic-styles>{chart_styles}</office:automatic-styles><office:body><office:chart><chart:chart chart:class="chart:bar" chart:style-name="Chart" svg:width="12cm" svg:height="8cm" xlink:href="." xlink:type="simple">'
++                '<chart:plot-area chart:style-name="Plot"><chart:axis chart:dimension="x" chart:name="primary-x" chart:style-name="Axis">'
+                 f'<chart:categories table:cell-range-address="local-table.$A$2:.$A${last}"/></chart:axis>'
+-                '<chart:axis chart:dimension="y" chart:name="primary-y"/>'
+-                f'<chart:series chart:values-cell-range-address="local-table.$B$2:.$B${last}" chart:label-cell-address="local-table.$B$1"/></chart:plot-area>'
+-                f'<table:table table:name="local-table"><table:table-column table:number-columns-repeated="2"/>{header}{local_rows}</table:table>'
++                '<chart:axis chart:dimension="y" chart:name="primary-y" chart:style-name="Axis"/>'
++                f'<chart:series chart:class="chart:bar" chart:style-name="Series" chart:attached-axis="primary-y" chart:values-cell-range-address="local-table.$B$2:.$B${last}" chart:label-cell-address="local-table.$B$1"><chart:data-point chart:repeated="{len(chart["categories"])}"/></chart:series></chart:plot-area>'
++                # The internal chart provider excludes labelled header rows/columns.
++                # Its B2 range is series 0, so a plain two-column table would bind
++                # that series to the textual category column instead of the values.
++                f'<table:table table:name="local-table"><table:table-header-columns><table:table-column/></table:table-header-columns><table:table-columns><table:table-column/></table:table-columns><table:table-header-rows>{header}</table:table-header-rows><table:table-rows>{local_rows}</table:table-rows></table:table>'
+                 '</chart:chart></office:chart></office:body></office:document-content>').encode()
+             objects[object_name + '/content.xml'] = chart_content
+             manifest_objects.append(object_name)
+-            items.append(f'<draw:frame draw:name="Chart" svg:width="12cm" svg:height="8cm" svg:x="13cm" svg:y="6cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:object xlink:href="./{object_name}" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame>')
+-        pages.append(f'<draw:page draw:name="page{index}" draw:style-name="dp1" draw:master-page-name="Default">' + ''.join(items) + '<presentation:notes><draw:frame draw:name="Notes"><draw:text-box><text:p>' + escape(notes) + '</text:p></draw:text-box></draw:frame></presentation:notes></draw:page>')
+-    page_layout = '<style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="28cm" fo:page-height="21cm" style:print-orientation="landscape"/></style:page-layout>'
+-    content = (f'<office:document-content {_odp_decls()} office:version="1.2"><office:automatic-styles><style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties/></style:style></office:automatic-styles><office:body><office:presentation>' + ''.join(pages) + '</office:presentation></office:body></office:document-content>').encode()
++            items.append(f'<draw:frame draw:name="Chart" svg:width="12cm" svg:height="8cm" svg:x="13cm" svg:y="7cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:object xlink:href="./{object_name}" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame>')
++        pages.append(f'<draw:page draw:name="page{index}" draw:style-name="dp1" draw:master-page-name="Default">' + ''.join(items) +
++            f'<presentation:notes xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:page-thumbnail draw:page-number="{index}" presentation:class="page" svg:x="2cm" svg:y="1cm" svg:width="17cm" svg:height="12.75cm"/><draw:frame draw:name="Notes" presentation:class="notes" presentation:style-name="NotesBox" presentation:user-transformed="true" svg:x="2cm" svg:y="14.5cm" svg:width="17cm" svg:height="13.2cm"><draw:text-box><text:p text:style-name="NotesText">' + escape(notes) + '</text:p></draw:text-box></draw:frame></presentation:notes></draw:page>')
++    page_layout = ('<style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="28cm" fo:page-height="21cm" style:print-orientation="landscape"/></style:page-layout>'
++        '<style:page-layout style:name="NotesPage"><style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm" style:print-orientation="portrait"/></style:page-layout>')
++    notes_styles = ('<style:style style:name="NotesBox" style:family="presentation"><style:graphic-properties draw:stroke="none" draw:fill="none" draw:auto-grow-height="false" draw:auto-grow-width="false" draw:fit-to-size="false" style:shrink-to-fit="false" draw:textarea-vertical-align="top" fo:padding="0cm" fo:wrap-option="wrap"/></style:style>'
++        '<style:style style:name="NotesText" style:family="paragraph"><style:paragraph-properties fo:line-height="130%"/><style:text-properties fo:font-family="Liberation Sans" fo:font-size="18pt" fo:color="#000000"/></style:style>')
++    notes_master = ('<presentation:notes style:page-layout-name="NotesPage"><draw:page-thumbnail presentation:class="page" svg:x="2cm" svg:y="1cm" svg:width="17cm" svg:height="12.75cm"/><draw:frame presentation:class="notes" presentation:style-name="NotesBox" presentation:placeholder="true" svg:x="2cm" svg:y="14.5cm" svg:width="17cm" svg:height="13.2cm"><draw:text-box/></draw:frame></presentation:notes>')
++    layout_styles = ('<style:style style:name="TitleBox" style:family="graphic"><style:graphic-properties draw:auto-grow-height="false" draw:auto-grow-width="false" draw:fit-to-size="false" style:shrink-to-fit="false" draw:textarea-vertical-align="top" fo:min-height="0cm" fo:padding-top="0cm" fo:padding-bottom="0cm" fo:padding-left="0cm" fo:padding-right="0cm"/></style:style>' + ''.join(text_styles))
++    content = (f'<office:document-content {_odp_decls()} office:version="1.2"><office:automatic-styles>{layout_styles}<style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties/></style:style></office:automatic-styles><office:body><office:presentation>' + ''.join(pages) + '</office:presentation></office:body></office:document-content>').encode()
+     parts = {
+         'mimetype': b'application/vnd.oasis.opendocument.presentation',
+         'content.xml': content,
+-        'styles.xml': (f'<office:document-styles {_odp_decls()} office:version="1.2"><office:automatic-styles>{page_layout}</office:automatic-styles><office:master-styles><style:master-page style:name="Default" style:page-layout-name="pm1"/></office:master-styles></office:document-styles>').encode(),
++        'styles.xml': (f'<office:document-styles {_odp_decls()} xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" office:version="1.2"><office:styles>{notes_styles}</office:styles><office:automatic-styles>{page_layout}</office:automatic-styles><office:master-styles><style:master-page style:name="Default" style:page-layout-name="pm1">{notes_master}</style:master-page></office:master-styles></office:document-styles>').encode(),
+         'meta.xml': (f'<office:document-meta {_odp_decls()} office:version="1.2"><office:meta/></office:document-meta>').encode(),
+         'settings.xml': (f'<office:document-settings {_odp_decls()} office:version="1.2"><office:settings/></office:document-settings>').encode(),
+     }
