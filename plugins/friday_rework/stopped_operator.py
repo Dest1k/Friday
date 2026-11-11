@@ -7,7 +7,7 @@ producers and consumers of authority.  This module does not install or start one
 """
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import ast
 import copy
 import fcntl
@@ -24,6 +24,9 @@ from .worker_declarations import (
     DeclarationError, _read_reference, _reference, _same, SERVICE_SCHEMA,
     service_installed_discriminator, service_transition_pair,
     service_installation_delta, service_source_transition,
+    DSH_CURRENT_APPLY_SCHEMA, DSH_CURRENT_SCHEMAS,
+    DSH_CURRENT_DECLARATION_SCHEMA,
+    profile_dsh_path, dsh_current_transaction_name, dsh_current_consumption_check, _at,
 )
 
 SCHEMA = 'friday.worker-declarations.apply.v1'
@@ -50,6 +53,25 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def selected_native_profile(request, *, root_home=None, identity=None):
+    """Select an exact native private profile; this grants no authority."""
+    from hermes_cli.friday_product_access import profile_name
+    _require(type(request) is dict and request.get('schema') in (SCHEMA, DSH_CURRENT_APPLY_SCHEMA),
+        'worker_declaration_native_profile_request_required')
+    profile = profile_name(request.get('profile'))
+    if request['schema'] == SCHEMA:
+        _require(profile == PROFILE, 'worker_declaration_exact_native_profile_required')
+    else:
+        _require(profile != 'default', 'dsh_current_private_profile_required')
+        if identity is not None:
+            _require(root_home is not None and type(identity) is dict
+                and identity.get('profile') == str(Path(root_home) / 'profiles' / profile)
+                and type(identity.get('binding')) is dict
+                and identity['binding'].get('runtime_profile') == profile,
+                'dsh_current_native_profile_identity_changed')
+    return profile
+
+
 def _relative(name):
     _require(type(name) is str and name and '\x00' not in name,
         'worker_declaration_retained_name_required')
@@ -65,6 +87,89 @@ def _stop(reason, primary=None, secondary=()):
     error.friday_custody_primary = primary
     error.friday_custody_secondary = tuple(secondary)
     return error
+
+
+class _NativePairingDirectory:
+    """Retain native pairing children below an exactly private owned root.
+
+    Native pairing permits same-uid/gid group-writable children under H0700.
+    Keep that exception here; the generic archive directory guard stays strict.
+    """
+    def __init__(self, home, path):
+        from .worker_archive import _Directory
+        self.root = None
+        self.edges = []
+        self.stamps = {}
+        try:
+            _require(path.is_relative_to(home) and path != home,
+                'worker_declaration_native_pairing_scope_required')
+            self.root = _Directory(home)
+            self.ancestors = tuple((name, self._identity(os.fstat(fd)))
+                for _, name, fd, _ in self.root.edges)
+            info = os.fstat(self.root.fd)
+            _require(info.st_gid == os.getgid(),
+                'worker_declaration_native_pairing_directory_required')
+            self.root_identity = self._identity(info)
+            self.stamps[self.root.fd] = (info.st_mtime_ns, info.st_ctime_ns)
+            parent = self.root.fd
+            for name in path.relative_to(home).parts:
+                fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent)
+                info = os.fstat(fd)
+                self.edges.append((parent, name, fd, self._identity(info)))
+                self.stamps[fd] = (info.st_mtime_ns, info.st_ctime_ns)
+                _require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                    and info.st_gid == os.getgid() and not stat.S_IMODE(info.st_mode) & 0o7002,
+                    'worker_declaration_native_pairing_directory_required')
+                parent = fd
+            self.prove()
+        except BaseException:
+            self.close()
+            raise
+
+    @staticmethod
+    def _identity(info):
+        return tuple(getattr(info, key) for key in ('st_dev', 'st_ino', 'st_uid', 'st_gid', 'st_mode'))
+
+    @property
+    def fd(self):
+        return self.edges[-1][2]
+
+    @property
+    def identity(self):
+        return (self.root_identity, tuple((name, identity) for _, name, _, identity in self.edges),
+            self.ancestors)
+
+    def prove(self):
+        self.root.prove()
+        _require(tuple((name, self._identity(os.fstat(fd)))
+            for _, name, fd, _ in self.root.edges) == self.ancestors,
+            'worker_declaration_native_pairing_directory_changed')
+        _require(self._identity(os.fstat(self.root.fd)) == self.root_identity,
+            'worker_declaration_native_pairing_directory_changed')
+        for parent, name, fd, identity in self.edges:
+            _require(self._identity(os.fstat(fd)) == identity == self._identity(
+                os.stat(name, dir_fd=parent, follow_symlinks=False)),
+                'worker_declaration_native_pairing_directory_changed')
+        for fd, stamp in self.stamps.items():
+            info = os.fstat(fd)
+            _require((info.st_mtime_ns, info.st_ctime_ns) == stamp,
+                'worker_declaration_native_pairing_directory_changed')
+
+    def close(self):
+        for _, _, fd, _ in reversed(self.edges):
+            os.close(fd)
+        self.edges.clear()
+        self.stamps.clear()
+        if self.root is not None:
+            self.root.close()
+            self.root = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
 
 class StoppedOperator:
@@ -126,8 +231,9 @@ class StoppedOperator:
         _require(Path(sys.argv[0]).resolve() == self.f.ROOT / 'scripts/friday_ordinary_install.py',
             'worker_declaration_native_operator_cli_required')
 
-    def _state(self, path, *, private=True):
-        state = self.ordinary.update_file_state(path)
+    def _state(self, path, *, private=True, parent_fd=None):
+        state = (self.ordinary.update_file_state(path) if parent_fd is None
+            else self.ordinary.update_file_state(path, parent_fd=parent_fd))
         _require(state is not None and state['mode'] in ((0o400, 0o600) if private
             else (0o400, 0o600, 0o644, 0o755)),
             'worker_declaration_owned_reference_required')
@@ -221,11 +327,10 @@ class StoppedOperator:
             if hasattr(self, 'binding'):
                 _require(_same(binding, self.binding) and _same(row, self.row),
                     'worker_declaration_current_user_authority_changed')
-            self._pairing_custody(binding)
-            from gateway.pairing import PairingStore
-            _require(PairingStore(initialize=False).is_approved(binding['platform'], binding['user_id']),
-                'worker_declaration_current_native_grant_required')
-            self._pairing_custody(binding)
+            with self._pairing_custody(binding):
+                from gateway.pairing import PairingStore
+                _require(PairingStore.is_approved_storage_readonly(binding['platform'], binding['user_id']),
+                    'worker_declaration_current_native_grant_required')
             if original:
                 home, verified_binding, verified_row, proof = Onboarding(None)._prepared(
                     self.home, PluginState('friday_rework'), *principal, row['generation'])
@@ -238,15 +343,15 @@ class StoppedOperator:
                     user.UserScope(self.home, self.profile_home, self.request['profile'], principal,
                         dict(binding), (info.st_dev, info.st_ino), row['generation']).check()
 
+    @contextmanager
     def _pairing_custody(self, binding):
         """Retain the existing grant layout around the native non-initializing read.
 
-        PairingStore(initialize=False) cannot mkdir or migrate even when a
+        The static storage-only reader cannot mkdir or migrate even when a
         concurrent pairing CLI changes this layout. These comparisons detect
         such drift without repairing it or implementing a second grant store.
         """
         from gateway import pairing
-        from .worker_archive import _Directory
         _require(binding['platform'] == 'telegram' and pairing.PAIRING_DIR is None,
             'worker_declaration_native_pairing_scope_required')
         active = pairing._default_pairing_dir()
@@ -256,21 +361,29 @@ class StoppedOperator:
         alternate = choices[1] if active == choices[0] else choices[0]
         _require(not os.path.lexists(alternate),
             'worker_declaration_native_pairing_migration_refused')
-        with _Directory(active) as retained:
-            names = sorted(os.listdir(retained.fd))
-            _require(len(names) <= MAX_RETAINED and 'telegram-approved.json' in names,
-                'worker_declaration_existing_native_pairing_required')
-            inventory = {name: self._state(active / name) for name in names}
-            retained.prove()
-            info = os.fstat(retained.fd)
-            signature = (str(active), (info.st_dev, info.st_ino, info.st_uid, info.st_mode), inventory)
-        if hasattr(self, '_pairing_state'):
-            _require(signature == self._pairing_state,
-                'worker_declaration_native_pairing_custody_changed')
-        else:
-            self._pairing_state = signature
-            for name, state in inventory.items():
-                self.external[active / name] = state
+        with _NativePairingDirectory(self.home, active) as retained:
+            def prove():
+                _require(not os.path.lexists(alternate),
+                    'worker_declaration_native_pairing_migration_refused')
+                retained.prove()
+                names = sorted(os.listdir(retained.fd))
+                _require(len(names) <= MAX_RETAINED and 'telegram-approved.json' in names,
+                    'worker_declaration_existing_native_pairing_required')
+                inventory = {name: self._state(active / name, parent_fd=retained.fd) for name in names}
+                retained.prove()
+                signature = (str(active), retained.identity, inventory)
+                if hasattr(self, '_pairing_state'):
+                    _require(signature == self._pairing_state,
+                        'worker_declaration_native_pairing_custody_changed')
+                else:
+                    self._pairing_state = signature
+                    for name, state in inventory.items():
+                        self.external[active / name] = state
+            prove()
+            try:
+                yield
+            finally:
+                prove()
         _require(not os.path.lexists(alternate),
             'worker_declaration_native_pairing_migration_refused')
 
@@ -391,6 +504,129 @@ class StoppedOperator:
                 'worker_declaration_service_before_reference_changed')
             self.service_after[name] = self.external[path]
 
+    def _dsh_current_source_pins(self):
+        """Retain D/P and their pinned leaves throughout stopped publication.
+
+        Their semantic validation runs in the typed plan, before consumption
+        and again under native custody. This adds unchanged inode custody;
+        references do not become native authority by being present here.
+        """
+        runtime = self.declaration_bundle.get('runtime_after')
+        _require(type(runtime) is dict, 'dsh_current_runtime_postimage_required')
+        current = runtime.get('current_availability')
+        _require(type(current) is dict and set(current) == {'declaration', 'proof', 'cycle'},
+            'dsh_current_exact_availability_required')
+        self._dsh_external = {}
+        self._dsh_missing = set()
+
+        def retain(value):
+            if type(value) is dict:
+                if set(value) == {'path', 'sha256'}:
+                    path = _reference(value)
+                    state = self._dsh_reference_state(path)
+                    _require(state['sha256'] == value['sha256'], 'dsh_current_reference_changed')
+                    previous = self._dsh_external.get(path)
+                    _require(previous is None or previous == state, 'dsh_current_reference_changed')
+                    self._dsh_external[path] = state
+                else:
+                    for item in value.values():
+                        retain(item)
+            elif type(value) is list:
+                for item in value:
+                    retain(item)
+
+        for name in ('declaration', 'proof', 'cycle'):
+            ref = current[name]
+            if ref is None:
+                _require(name == 'proof' and self.declaration_bundle['schema'] == DSH_CURRENT_DECLARATION_SCHEMA,
+                    'dsh_current_t2_proof_required')
+                continue
+            self._pin(ref)
+            document = _read_reference(ref)
+            if name == 'declaration' and type(document) is dict and type(document.get('history')) is dict \
+                    and 'current_requalification' in document['history']:
+                from .dsh_current_availability import history_custody_references
+                physical, absent = history_custody_references(runtime, document['history'], document['native'])
+                # This exact typed history subtree has separate provenance.
+                # The same ref anywhere else must still pass normal custody.
+                retain({key:value for key,value in document.items() if key != 'history'})
+                for reference in physical:
+                    retain(reference)
+                for reference in absent:
+                    self._dsh_missing.add(_reference(reference))
+                self._dsh_missing_unchanged()
+            else:
+                retain(document)
+
+    def _dsh_missing_unchanged(self):
+        for path in getattr(self, '_dsh_missing', ()):
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            _require(False, 'dsh_current_historical_absence_changed')
+
+    def _dsh_current_before_pins(self):
+        """Retain retired D/P/cycle documents without rechecking old sources."""
+        from hermes_cli.config import fast_safe_load
+        prefix = str(self.profile_home.relative_to(self.home)) + '/'
+        own = fast_safe_load(self.before[prefix + 'config.yaml']['data'].decode('utf-8-sig'))
+        runtime = _at(own, profile_dsh_path(own))
+        self.dsh_previous = runtime.get('current_availability')
+        if self.dsh_previous is not None:
+            _require(type(self.dsh_previous) is dict
+                and set(self.dsh_previous) == {'declaration', 'proof', 'cycle'},
+                'dsh_current_exact_historical_availability_required')
+            for ref in self.dsh_previous.values():
+                # An existing pending declaration may only continue its T2.
+                # It cannot be reset by inventing another T1 request clock.
+                if ref is not None:
+                    self._pin(ref)
+
+    def _dsh_current_transaction(self):
+        """Read-only consumed-edge check; no native claim or new directory."""
+        return dsh_current_consumption_check(self.home / 'preparation',
+            self.declaration_bundle, self.dsh_previous)
+
+    def _dsh_reference_state(self, path, *, previous=None):
+        """Stream pinned code/binaries without changing the document reader.
+
+        Historical 0664 source under an owned 0700 ancestor remains readable;
+        it is never chmodded or repinned merely to satisfy a mode assertion.
+        """
+        _require(path.resolve() == path, 'dsh_current_reference_link_refused')
+        fields = ('st_dev', 'st_ino', 'st_uid', 'st_nlink', 'st_mode',
+            'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            first = os.fstat(fd)
+            identity = tuple(getattr(first, key) for key in fields)
+            _require(stat.S_ISREG(first.st_mode) and first.st_uid == os.getuid()
+                and first.st_nlink == 1 and not first.st_mode & 0o002
+                and (not first.st_mode & 0o020 or any(parent.stat().st_uid == os.getuid()
+                    and stat.S_IMODE(parent.stat().st_mode) == 0o700 for parent in path.parents))
+                and first.st_size <= 512 * 1024**2, 'dsh_current_reference_identity')
+            if previous is not None:
+                _require(identity == previous['identity'], 'dsh_current_reference_changed')
+                digest = previous['sha256']
+            else:
+                hasher, size = hashlib.sha256(), 0
+                while True:
+                    self.budget.check(reserve=RESERVE)
+                    data = os.read(fd, 1024 * 1024)
+                    if not data:
+                        break
+                    size += len(data)
+                    _require(size <= 512 * 1024**2, 'dsh_current_reference_identity')
+                    hasher.update(data)
+                _require(size == first.st_size, 'dsh_current_reference_changed')
+                digest = hasher.hexdigest()
+            _require(identity == tuple(getattr(os.fstat(fd), key) for key in fields)
+                == tuple(getattr(path.lstat(), key) for key in fields), 'dsh_current_reference_changed')
+            return {'identity': identity, 'sha256': digest}
+        finally:
+            os.close(fd)
+
     def preflight(self):
         """Read-only native validation, before durable single-use consumption."""
         from scripts import friday_ordinary_install as ordinary
@@ -399,10 +635,11 @@ class StoppedOperator:
         self.ordinary, self.f = ordinary, ordinary.api()
         request = self.request
         _require(type(request) is dict and set(request) == FIELDS
-            and request['schema'] == SCHEMA and request['profile'] == PROFILE
+            and request['schema'] in (SCHEMA, DSH_CURRENT_APPLY_SCHEMA)
             and type(request['seconds']) is int and 30 <= request['seconds'] <= 180
             and type(request['before']) is dict and type(request['retained']) is dict,
             'worker_declaration_exact_native_request_required')
+        self.profile = selected_native_profile(request)
         _require(self.request_reference is not None,
             'worker_declaration_exact_raw_request_reference_required')
         request_path = self._pin(self.request_reference)
@@ -410,7 +647,7 @@ class StoppedOperator:
             'worker_declaration_raw_request_changed')
         self.home = self.f.directory(self.f.canonical(request['home']))
         self.source = self.f.directory(self.home / 'hermes-agent')
-        self.profile_home = self.f.directory(self.home / 'profiles' / PROFILE)
+        self.profile_home = self.f.directory(self.home / 'profiles' / self.profile)
         self.f.directory(self.home / 'preparation')
         self._context()
         self.access_path = self.home / 'plugin-data' / _plugin_data_namespace('friday_rework', '') / 'state.json'
@@ -423,15 +660,25 @@ class StoppedOperator:
             self._pin(ref)
         from .worker_declarations import load_declaration_source
         self.declaration_bundle, self.worker_inputs, self.identity = load_declaration_source(companion)
+        self.dsh_current = request['schema'] == DSH_CURRENT_APPLY_SCHEMA
+        _require(self.dsh_current == (self.declaration_bundle.get('schema') in DSH_CURRENT_SCHEMAS),
+            'dsh_current_apply_discriminator_changed')
+        if self.dsh_current:
+            selected_native_profile(request, root_home=self.home, identity=self.identity)
         self.service_source_transition = self.declaration_bundle.get('schema') == SERVICE_SCHEMA
         self.previous = self.f.read_json(self._pin(request['previous_input']))
         self.current = self.f.read_json(self._pin(request['current_input']))
-        _require((self.service_source_transition or request['previous_input'] != request['current_input'])
+        _require((self.dsh_current or self.service_source_transition or request['previous_input'] != request['current_input'])
             and self.previous.get('home') == self.current.get('home') == str(self.home)
             and type(self.previous.get('product')) is dict and type(self.current.get('product')) is dict
             and self.previous['product'].get('runtime') == self.current['product'].get('runtime') == {'enabled': False},
             'worker_declaration_exact_input_successor_required')
-        if self.service_source_transition:
+        if self.dsh_current:
+            _require(request['previous_input'] == request['current_input']
+                and _same(self.previous, self.current),
+                'dsh_current_installation_input_must_remain_unchanged')
+            self._dsh_current_source_pins()
+        elif self.service_source_transition:
             service_installation_delta(self.previous, self.current,
                 {'service_source_transition': service_installed_discriminator(
                     self.current['project_files'])})
@@ -510,7 +757,7 @@ class StoppedOperator:
         self._origins()
         if self.service_source_transition:
             self._service_source_layout()
-        prefix = 'profiles/' + PROFILE + '/'
+        prefix = 'profiles/' + self.profile + '/'
         before_names = {'config.yaml', self.f.MARKER, prefix + 'config.yaml',
             prefix + user.ONBOARDING, prefix + user.MARKER}
         if self.service_source_transition:
@@ -526,6 +773,8 @@ class StoppedOperator:
             _require(state['mode'] in modes and _sha(state['data']) == ref['sha256'],
                 'worker_declaration_beforeimage_changed')
             self.before[name] = state
+        if self.dsh_current:
+            self._dsh_current_before_pins()
         self.access_path = self.home / 'plugin-data' / _plugin_data_namespace('friday_rework', '') / 'state.json'
         retained = request['retained']
         required = {'hermes-agent.source.json', 'hermes-agent/install-stamp.json',
@@ -557,10 +806,14 @@ class StoppedOperator:
             'worker_declaration_native_source_receipt_required')
         # References may neither alias destinations nor borrow an inode from
         # retained deployment data. Hard links are already refused by readers.
-        _require(not set(self.external) & {self.home / name for name in self.before},
+        _require(not (set(self.external) | set(getattr(self, '_dsh_external', {})))
+            & {self.home / name for name in self.before},
             'worker_declaration_external_target_alias_refused')
         self._profile(original=True)
-        self.tx = self.home / 'preparation' / ('ordinary-worker-declarations-' + request['previous_input']['sha256'])
+        if self.dsh_current:
+            self.tx = self._dsh_current_transaction()
+        else:
+            self.tx = self.home / 'preparation' / ('ordinary-worker-declarations-' + request['previous_input']['sha256'])
         _require(not os.path.lexists(self.tx), 'worker_declaration_consumed_no_retry')
         self._pm_preflight()
         self.source_unchanged()
@@ -718,6 +971,9 @@ class StoppedOperator:
             'worker_declaration_preflight_before_consume_required')
         self.before_unchanged()
         self.clock = self._clock()
+        if getattr(self, 'dsh_current', False):
+            _require(self.tx == self._dsh_current_transaction(),
+                'dsh_current_consumption_edge_changed')
         attempted = False
         try:
             with _Directory(self.tx.parent) as parent:
@@ -800,6 +1056,10 @@ class StoppedOperator:
             for name, state in self.retained.items())
             and all(self.ordinary.same_update_file(path, state) for path, state in self.external.items()),
             'worker_declaration_retained_or_external_changed')
+        for path, previous in getattr(self, '_dsh_external', {}).items():
+            _require(self._dsh_reference_state(path, previous=previous) == previous,
+                'dsh_current_reference_changed')
+        self._dsh_missing_unchanged()
         if self.consumed:
             self._consumption()
         return self
@@ -851,7 +1111,9 @@ class StoppedOperator:
             'MainPID': '0', 'ControlPID': '0', 'ControlGroup': '', 'InvocationID': ''}
         _require(len(rows) == len(expected) and all(len(row) == 2 for row in rows)
             and dict(rows) == expected, 'worker_declaration_native_workers_stop_required')
-        for folder in ('dsh-safety', 'dsh-probe'):
+        if self.dsh_current:
+            self._dsh_retained_workers_quiescent(command, cleanup=cleanup)
+        for folder in (() if self.dsh_current else ('dsh-safety', 'dsh-probe')):
             prefix = 'friday-qualify-dsh-' + _sha(str(
                 self.profile_home / 'workers/qualification' / folder).encode())[:24]
             scopes = command[:6] + ['list-units', '--all', '--no-legend', '--plain', prefix + '-*.scope']
@@ -862,13 +1124,205 @@ class StoppedOperator:
                 env=self.f.clean_environment(self.home),
                 deadline=self.budget.deadline if cleanup else self.budget.deadline - RESERVE)[0]
             _require(not listed.strip(), 'worker_declaration_native_worker_scope_present')
-        absent = (self.profile_home / 'workers',
+        absent = ((() if self.dsh_current else (self.profile_home / 'workers',)) + (
             self._worker_root / 'config/local-route.json',
             self._worker_state / 'rootlesskit/child_pid',
-            self._worker_state / 'route-guard.json')
+            self._worker_state / 'route-guard.json'))
         _require(not any(os.path.lexists(path) for path in absent)
             and get_running_pid_identity_strict(self.profile_home / 'gateway.pid') is None,
             'worker_declaration_native_worker_activity_present')
+
+    @contextmanager
+    def _dsh_profile_admission(self):
+        """Retain the existing profile admission lock; never initialize it.
+
+        The outer native transaction already owns root admission/config and
+        host-role custody. Worker admission uses this separate profile store.
+        Acquisition order stays root then profile. No worker/history is moved.
+        """
+        from hermes_cli import friday_user_scope as users
+        from hermes_cli.plugins_state import PluginState
+        from .associations import Associations
+        with users.authority(self.profile_home):
+            directory = PluginState('friday_rework').directory_storage_readonly
+        self._retain_directory(self.profile_home/'workers',private=True)
+        self._retain_directory(directory, private=True)
+        path = directory / 'admission.lock'
+        expected = self._state(path)
+        _require(expected['mode'] == 0o600 and expected['data'] == b'v1\n',
+            'dsh_current_existing_profile_admission_required')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        held = False
+        try:
+            Associations._check_readonly_admission(path, fd, expected['identity'][:2])
+            self.budget.check(reserve=RESERVE)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise DeclarationError('dsh_current_profile_admission_busy') from None
+            held = True
+            self._dsh_admission_held = True
+            self._dsh_profile_store = directory
+            self._dsh_profile_admission_before = expected
+            self._dsh_profile_state_before = self._state(directory / 'state.json')
+            def prove():
+                Associations._check_readonly_admission(path, fd, expected['identity'][:2])
+                _require(held and self._dsh_admission_held
+                    and self.ordinary.same_update_file(path, expected)
+                    and os.pread(fd,4,0) == b'v1\n'
+                    and self.ordinary.same_update_file(directory / 'state.json',
+                        self._dsh_profile_state_before),
+                    'dsh_current_profile_metadata_changed')
+            prove()
+            yield prove
+            prove()
+        finally:
+            self._dsh_admission_held = False
+            if held: fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def _dsh_retained_workers_quiescent(self, command, *, cleanup=False):
+        """Current native cessation over retained data, with no reconciliation.
+
+        Historical UNKNOWN delivery/qualification remains history. An absent
+        host-quiescence producer, current live unit, lease or unreadable native
+        state refuses maintenance; this function never marks a job stopped.
+        """
+        from hermes_cli import friday_user_scope as users
+        from hermes_cli.plugins_state import PluginState
+        from .associations import KEY, _validate_store
+        from .supervision import NativeSupervisor
+        from hermes_state_holders import read_only_db_uri
+        import sqlite3
+        from scripts.dsh_prepare import run
+        reserve = 0 if cleanup else RESERVE
+        workers = self.profile_home/'workers'
+        users._private(workers,directory=True)
+        _require(workers.resolve() == workers,'dsh_current_workers_tree_link')
+        if self.active:
+            _require(getattr(self,'_dsh_admission_held',False),
+                'dsh_current_profile_admission_custody_required')
+            self._dsh_profile_admission_prove()
+        stores = []
+        for home in (self.home,self.profile_home):
+            self.budget.check(reserve=reserve)
+            with users.authority(home):
+                state = PluginState('friday_rework')
+                directory = state.directory_storage_readonly
+                if home == self.profile_home:
+                    _require(directory == self._dsh_profile_store
+                        and self.ordinary.same_update_file(directory/'admission.lock',
+                            self._dsh_profile_admission_before)
+                        and self.ordinary.same_update_file(directory/'state.json',
+                            self._dsh_profile_state_before),
+                        'dsh_current_profile_metadata_changed')
+                missing = object()
+                raw_before = self.ordinary.update_file_state(directory/'state.json')
+                _require(raw_before is not None,'dsh_current_existing_associations_required')
+                def unique(pairs):
+                    result = {}
+                    for key,value in pairs:
+                        _require(key not in result,'dsh_current_metadata_duplicate_json')
+                        result[key] = value
+                    return result
+                def nonfinite(value):
+                    raise DeclarationError('dsh_current_metadata_nonfinite')
+                document = json.loads(raw_before['data'],object_pairs_hook=unique,parse_constant=nonfinite)
+                rows = state.get_storage_readonly(KEY,missing,
+                    lock_deadline=min(self.budget.deadline-reserve,time.monotonic()+.25))
+                _require(rows is not missing,'dsh_current_existing_associations_required')
+                _require(type(document) is dict and KEY in document
+                    and _same(rows,document[KEY])
+                    and self.ordinary.same_update_file(directory/'state.json',raw_before),
+                    'dsh_current_native_metadata_changed')
+                _validate_store(rows)
+                stores.append(rows)
+            path = home/'state.db'
+            users._private(path)
+            _require(path.resolve() == path,'dsh_current_state_database_link')
+            before_db = self.ordinary.update_file_state(path)
+            before_wal = self.ordinary.update_file_state(Path(str(path)+'-wal'))
+            # Native SessionDB's read-only URI preserves live WAL visibility.
+            # Its full constructor can create empty WAL/SHM caches, so do not
+            # construct a writer/SessionDB here. A verified no-WAL snapshot may
+            # use immutable=1 only while checking DB/WAL and directory CAS on
+            # both sides; an existing WAL is NEVER ignored.
+            parent_before = path.parent.stat()
+            uri = read_only_db_uri(path)
+            if before_wal is None:
+                _require(not os.path.lexists(Path(str(path)+'-shm')),
+                    'dsh_current_orphan_native_shm')
+                uri += '&immutable=1'
+            else:
+                users._private(Path(str(path)+'-wal'))
+                users._private(Path(str(path)+'-shm'))
+            db = sqlite3.connect(uri,uri=True,timeout=min(.25,self.budget.check(reserve=reserve)),
+                isolation_level=None)
+            try:
+                db.execute('PRAGMA query_only=ON')
+                db.set_progress_handler(
+                    lambda: int(time.monotonic() >= self.budget.deadline-reserve),1000)
+                db.execute('BEGIN')
+                for table in ('session_turn_leases','compression_locks'):
+                    _require(db.execute('SELECT 1 FROM '+table+' LIMIT 1').fetchone() is None,
+                        'dsh_current_native_lease_or_lock_present')
+            finally:
+                db.close()
+            parent_after = path.parent.stat()
+            _require(self.ordinary.same_update_file(path,before_db)
+                and self.ordinary.same_update_file(Path(str(path)+'-wal'),before_wal)
+                and all(getattr(parent_before,key) == getattr(parent_after,key) for key in (
+                    'st_dev','st_ino','st_uid','st_mode','st_mtime_ns','st_ctime_ns')),
+                'dsh_current_native_database_changed')
+            self.budget.check(reserve=reserve)
+        supervisor = NativeSupervisor()
+        seen = {}
+        for store in stores:
+            for row in store['jobs'].values():
+                _require(type(row.get('host')) is dict
+                    and row['host'].get('quiescence') is not None,
+                    'dsh_current_worker_cessation_unknown')
+                unit = row['supervisor']['unit']
+                _require(unit not in seen,'dsh_current_worker_unit_duplicate')
+                seen[unit] = row
+                observed = supervisor.observe(row,deadline=self.budget.deadline-reserve)
+                _require(observed.quiescent,'dsh_current_worker_native_activity_present')
+                self.budget.check(reserve=reserve)
+        # Include unknown/orphan units and newer observation stages, whose
+        # scope prefix is derived from their actual operation folder rather
+        # than the legacy qualification directory.
+        listed = run(command[:6]+['list-units','--all','--no-legend','--plain','--no-pager',
+            'friday-rework-worker-*.service','friday-qualify-dsh-*.scope'],self.f.ROOT,
+            timeout=min(5,self.budget.check(reserve=reserve)),
+            env=self.f.clean_environment(self.home),deadline=self.budget.deadline-reserve)[0]
+        _require(len(listed) <= 131072,'dsh_current_native_unit_inventory_too_large')
+        units = [line.split()[0] for line in listed.splitlines() if line.strip()]
+        _require(len(units) <= 256 and len(units) == len(set(units)),
+            'dsh_current_native_unit_inventory_invalid')
+        import re
+        for unit in units:
+            if unit in seen:
+                _require(supervisor.observe(seen[unit],deadline=self.budget.deadline-reserve).quiescent,
+                    'dsh_current_worker_changed_during_inspection')
+                continue
+            _require(re.fullmatch(r'friday-qualify-dsh-[0-9a-f]{24}-[1-9][0-9]*\.scope',unit),
+                'dsh_current_unowned_worker_unit_present')
+            fields = 'Id,LoadState,ActiveState,SubState,ControlGroup'
+            raw = run(command[:6]+['show',unit,'--property='+fields],self.f.ROOT,
+                timeout=min(5,self.budget.check(reserve=reserve)),
+                env=self.f.clean_environment(self.home),deadline=self.budget.deadline-reserve)[0]
+            pairs = [line.split('=',1) for line in raw.splitlines() if line]
+            value = dict(pairs)
+            _require(len(pairs) == 5 and all(len(pair) == 2 for pair in pairs)
+                and set(value) == set(fields.split(',')) and value['Id'] == unit
+                and value['LoadState'] in ('loaded','not-found')
+                and (value['ActiveState'],value['SubState']) in (('inactive','dead'),('failed','failed'))
+                and (not value['ControlGroup'] or value['ControlGroup'].endswith('/'+unit))
+                and (value['LoadState'] != 'not-found' or (value['ActiveState'],
+                    value['SubState'],value['ControlGroup']) == ('inactive','dead',''))
+                and not supervisor._populated(value['ControlGroup']),
+                'dsh_current_qualification_scope_not_quiescent')
+        if self.active: self._dsh_profile_admission_prove()
 
     def _retain_directory(self, path, *, private=False):
         from .worker_archive import _Directory
@@ -920,6 +1374,8 @@ class StoppedOperator:
             self._pm_prove = self._stack.enter_context(self.ordinary.retained_pm_lock(self.home, self.source))
             self._lock_prove = self._stack.enter_context(
                 self.ordinary.inference_locks(self.home, self.profile_home, self.access_path, self.budget))
+            if self.dsh_current:
+                self._dsh_profile_admission_prove = self._stack.enter_context(self._dsh_profile_admission())
             self._pm_identity(check_build=True)
             for path in sorted({path.parent for path in self._pm_state[2]}
                     | {Path(self._pm_state[1]).parent}, key=str):

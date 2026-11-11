@@ -27,7 +27,17 @@ from hermes_cli.plugin_command_context import _command_context
 from hermes_cli.plugins_state import PluginState
 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 from tools.registry import registry
-from tests.gateway.test_admitted_ingress import native, offline_boundary
+from unittest.mock import patch
+from hermes_cli import env_loader as _fixture_env_loader
+# Installed Source198 imports a managed startup credential gate. This source
+# fixture owns no installed marker and claims no startup admission. Suppress
+# only import-time dotenv loading (including the real project's fallback), then
+# restore both bindings before any actual test or native consumer executes.
+_native_dotenv_loader = _fixture_env_loader.load_hermes_dotenv
+with patch.object(_fixture_env_loader, 'load_hermes_dotenv', return_value=[]):
+    from tests.gateway.test_admitted_ingress import native, offline_boundary
+    import gateway.run as _fixture_gateway
+_fixture_gateway.load_hermes_dotenv = _native_dotenv_loader
 
 SOURCE = Path(__file__).resolve().parents[1] / "plugins/friday_rework"
 ARGS = dict(worker="dsh", brief="Read the supplied fixture only.", goal_check="Host independently checks the fixture bytes.")
@@ -86,6 +96,13 @@ def setup(isolated, native, tmp_path, monkeypatch):
     runtime_module = sys.modules[package + ".host_runtime"]
     record_module = sys.modules[package + ".host_record"]
     supervisor_module = sys.modules[package + ".supervision"]
+    adapter_module = sys.modules[package + ".adapters.dsh"]
+    def offline_apparmor(config, boundary):
+        # Host attachment/file checks belong to the synthetic native boundary.
+        # Retain the real selector and argument construction in source controls.
+        assert boundary[0] == '/usr/bin/bwrap'
+        return ['/usr/local/libexec/friday-dsh-bwrap', *boundary[1:]]
+    monkeypatch.setattr(adapter_module, '_apparmor_boundary', offline_apparmor)
     jobs, staging, cache, payload, tools = [tmp_path / name for name in ("jobs", "staged", "cache", "payload", "toolchain")]
     for directory in (jobs, staging, cache, payload, tools):
         directory.mkdir(mode=0o700)

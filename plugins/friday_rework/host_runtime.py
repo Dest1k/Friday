@@ -48,7 +48,7 @@ def validate_runtime(value):
         return validate_a0_runtime(value)
     required = {"enabled", "runtime_profile", "runtime_home", "workspace_root", "staging_root", "cache_roots",
                 "budget_seconds", "max_file_bytes", "max_total_bytes", "dsh", "runtime_receipt"}
-    if (not isinstance(value, dict) or set(value) != required or value["enabled"] is not True
+    if (not isinstance(value, dict) or set(value) not in (required, required | {"current_availability"}) or value["enabled"] is not True
             or not isinstance(value["runtime_profile"], str)
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value["runtime_profile"])):
         raise HostUnavailable("worker_not_configured")
@@ -90,6 +90,9 @@ def validate_runtime(value):
     if not isinstance(dsh["key_name"], str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", dsh["key_name"]):
         raise HostUnavailable("invalid_key_reference")
     _pin(value["runtime_receipt"])
+    if "current_availability" in value:
+        from .dsh_current_availability import current_shape
+        current_shape(value["current_availability"])
     return copy.deepcopy(value)
 
 
@@ -185,6 +188,10 @@ def check_runtime(value, associations):
     web = _dsh_web(dsh)
     if web:
         web.checked_patch(_pin(dsh['patch']).read())
+    if "current_availability" in config:
+        from .dsh_current_availability import validate_current
+        validate_current(config)
+        return config
     receipt = json.loads(_pin(config["runtime_receipt"]).read())
     adapter_hash = hashlib.sha256(Path(__file__).with_name("adapters").joinpath("dsh.py").read_bytes()).hexdigest()
     fields = {"schema", "ready", "runtime_sha256", "adapter_sha256", "evidence"}
@@ -474,6 +481,10 @@ def deployment_health(config):
     from .worker_web import web_policy, checked_network_observation
     import time
     c = validate_runtime(config); home = Path(c['runtime_home'])
+    if 'current_availability' in c:
+        from .dsh_current_availability import validate_current
+        validate_current(c)
+        return c
     if 'a0' in c: a0_deployment_contract(c)
     else:
         web = _dsh_web(c['dsh'])

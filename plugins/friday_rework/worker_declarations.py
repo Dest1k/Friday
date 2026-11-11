@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -38,6 +39,12 @@ NATIVE_GAPS = (
     'reviewed_launcher_promotion_and_all_input_pin_propagation_required',
 )
 MAX_SOURCE_BYTES = 32 * 1024 * 1024
+DSH_CURRENT_DECLARATION_SCHEMA = 'friday.dsh-current-declaration-stage.v1'
+DSH_CURRENT_PROOF_SCHEMA = 'friday.dsh-current-proof-stage.v1'
+DSH_CURRENT_SCHEMAS = frozenset({DSH_CURRENT_DECLARATION_SCHEMA, DSH_CURRENT_PROOF_SCHEMA})
+DSH_CURRENT_APPLY_SCHEMA = 'friday.dsh-current-availability.apply.v1'
+PROFILE_DSH = SETTINGS + ('runtime', 'workers', 'dsh')
+DSH_DECLARATION_PATHS = (('dsh', 'web', 'egress_evidence'), ('dsh', 'web', 'resolver'))
 
 # These are public source bytes, not an installed worker/service receipt.  The
 # guarded-six operational predecessor has additional private history and is not
@@ -404,7 +411,7 @@ def _read_reference(ref, *, json_document=True):
         os.close(parent_fd)
 
 
-def _identity_join(root_config, profile_config, identity, bundle):
+def _identity_join(root_config, profile_config, identity, bundle, *, dsh_current=False):
     require(type(identity) is dict and identity.get('schema') ==
         'frw.current-dest-worker-identity.v1', 'worker_declaration_identity_schema')
     binding = identity.get('binding')
@@ -424,7 +431,9 @@ def _identity_join(root_config, profile_config, identity, bundle):
     require(type(identity.get('generation')) is int and identity['generation'] > 0
         and identity.get('enabled') is True,
         'worker_declaration_current_generation_required')
-    require(identity.get('profile_template') == 'friday-ordinary-local'
+    require((identity.get('profile_template') == 'friday-ordinary-local' or (
+            dsh_current and type(identity.get('profile_template')) is str
+            and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', identity['profile_template'])))
         and identity.get('worker_attach_template') == 'friday-local',
         'worker_declaration_template_identity_changed')
     profile_home = _absolute(identity.get('profile'))
@@ -440,8 +449,9 @@ def _identity_join(root_config, profile_config, identity, bundle):
         'worker_declaration_current_binding_changed')
     for document in (root_config, profile_config):
         settings = _at(document, SETTINGS)
-        require(type(settings) is dict and _same(settings.get('runtime'), {'enabled': False})
-            and 'worker_requirements' not in settings,
+        require(type(settings) is dict and (dsh_current or (
+            _same(settings.get('runtime'), {'enabled': False})
+            and 'worker_requirements' not in settings)),
             'worker_declaration_ordinary_profile_required')
     refs = identity.get('source_refs')
     require(type(refs) is dict and set(refs) == {'access_state', 'configuration',
@@ -547,6 +557,8 @@ def plan_declaration_delta(root_config, profile_config, worker_inputs, identity,
     require(type(root_config) is dict and type(profile_config) is dict
         and type(worker_inputs) is dict and type(bundle) is dict,
         'worker_declaration_documents_required')
+    if bundle.get('schema') in DSH_CURRENT_SCHEMAS:
+        return dsh_current_plan(root_config, profile_config, worker_inputs, identity, bundle)
     if bundle.get('schema') == SERVICE_SCHEMA:
         return service_declaration_plan(root_config, profile_config, worker_inputs, identity, bundle)
     require(bundle.get('schema') == 'frw.current-both-spark-declaration-change-data.v1'
@@ -626,6 +638,387 @@ def plan_declaration_delta(root_config, profile_config, worker_inputs, identity,
         'generation': identity['generation'], 'profile': str(profile_home),
         'launcher': {'reference': copy.deepcopy(launcher),
             'state': 'ALREADY_PROMOTED_LAUNCHER_REQUIRED_AT_NATIVE_APPLY', 'installed': False},
+        'missing_native_prerequisites': list(NATIVE_GAPS)}
+
+
+def profile_dsh_path(profile_config):
+    """Retain the native single-worker or worker-map configuration shape."""
+    runtime = _at(profile_config, SETTINGS + ('runtime',))
+    require(type(runtime) is dict and runtime.get('enabled') is True,
+        'dsh_current_enabled_profile_required')
+    if 'dsh' in runtime:
+        require('a0' not in runtime and 'workers' not in runtime, 'dsh_current_runtime_shape')
+        return SETTINGS + ('runtime',)
+    require(type(runtime.get('workers')) is dict and 'dsh' in runtime['workers'],
+        'dsh_current_runtime_shape')
+    return PROFILE_DSH
+
+
+def historical_dsh_current(runtime, native, *, source_names=None):
+    """Check the signed retired D/P headers without granting current health.
+
+    Old source paths may now contain a reviewed successor and an old resolver
+    may be absent. Only the exact old D/P/cycle documents are retained here;
+    current-source, boot and environment observations belong to the new D/P.
+    """
+    from .dsh_current_availability import (
+        DECLARATION, PROOF, HISTORY_NAMES, checked_cycle, source_pins,
+        runtime_semantic_digest, runtime_input_pins)
+    previous = runtime.get('current_availability')
+    require(type(previous) is dict and set(previous) == {'declaration', 'proof', 'cycle'}
+        and previous['proof'] is not None, 'dsh_current_refresh_active_beforeimage_required')
+    for ref in previous.values():
+        _reference(ref)
+    old = _read_reference(previous['declaration'])
+    proof = _read_reference(previous['proof'])
+    checked_cycle(previous['cycle'])
+    require(type(old) is dict and set(old) == {'schema', 'runtime_home', 'runtime_profile',
+        'runtime_sha256', 'policy', 'policy_authority', 'native', 'sources', 'inputs', 'history'}
+        and old['schema'] == DECLARATION
+        and old['runtime_home'] == runtime['runtime_home']
+        and old['runtime_profile'] == runtime['runtime_profile']
+        and old['runtime_sha256'] == runtime_semantic_digest(runtime)
+        and _same(old['native'], native)
+        and _same(old['policy'], _at(runtime, ('dsh', 'web', 'egress_evidence')))
+        and _same(old['inputs'], runtime_input_pins(runtime)),
+        'dsh_current_historical_declaration_join_changed')
+    if source_names is None:
+        source_names = set(source_pins())
+    require(type(old['sources']) is dict and set(old['sources']) == source_names
+        and type(old['history']) is dict and HISTORY_NAMES <= set(old['history'])
+        and set(old['history']) <= HISTORY_NAMES | {'preparation_provenance', 'current_requalification'}
+        and type(old['history']['retained']) is dict
+        and type(old['policy_authority']) is dict and set(old['policy_authority']) == {'id', 'generation'}
+        and type(old['policy_authority']['id']) is str and old['policy_authority']['id']
+        and type(old['policy_authority']['generation']) is int and old['policy_authority']['generation'] > 0,
+        'dsh_current_historical_declaration_shape_changed')
+    for ref in (*old['sources'].values(), *old['inputs'].values(),
+            *(old['history'][name] for name in HISTORY_NAMES - {'retained'}),
+            *old['history']['retained'].values()):
+        _reference(ref)
+    if 'preparation_provenance' in old['history']:
+        provenance = old['history']['preparation_provenance']
+        require(type(provenance) is dict and set(provenance) == {'intent', 'committed'},
+            'dsh_current_historical_provenance_shape_changed')
+        for ref in provenance.values():
+            _reference(ref)
+    if 'current_requalification' in old['history']:
+        # Retired headers retain their complete typed metadata. Do not reopen
+        # missing historical originals or rerun old readiness after reboot.
+        mode = old['history']['current_requalification']
+        require(type(mode) is dict and set(mode) == {'schema', 'purpose',
+            'historical_graph_integrity', 'missing_as_of', 'recovery_provenance',
+            'edges', 'static_smoke'}
+            and mode['schema'] == 'friday.dsh-current-history-requalification.v1'
+            and mode['purpose'] == 'DSH_CURRENT_ONLY_NO_HISTORICAL_REACCEPTANCE'
+            and mode['historical_graph_integrity'] == 'INCOMPLETE'
+            and type(mode['missing_as_of']) is str and re.fullmatch(
+                r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+]03:00', mode['missing_as_of'])
+            and type(mode['edges']) is dict
+            and set(mode['edges']) == set(old['history']['retained']),
+            'dsh_current_historical_requalification_shape')
+        _reference(mode['recovery_provenance'])
+        for name, item in mode['edges'].items():
+            require(type(item) is dict and set(item) == {'reference', 'state', 'copy'}
+                and _same(item['reference'], old['history']['retained'][name])
+                and item['state'] in ('VERIFIED_ORIGINAL', 'VERIFIED_EXACT_COPY', 'MISSING_AS_OF'),
+                'dsh_current_historical_requalification_edge_shape')
+            if item['state'] == 'VERIFIED_EXACT_COPY':
+                _reference(item['copy'])
+                require(item['copy']['sha256'] == item['reference']['sha256']
+                    and item['copy']['path'] != item['reference']['path'],
+                    'dsh_current_historical_requalification_alias_shape')
+            else:
+                require(item['copy'] is None, 'dsh_current_historical_requalification_alias_shape')
+        smoke = mode['static_smoke']
+        require(type(smoke) is dict and set(smoke) == {'observation', 'canonical_observation', 'reuse'}
+            and _same(smoke['canonical_observation'], old['history']['observation'])
+            and smoke['reuse'] == 'EXACT_SAME_STATIC_INPUTS_ONLY',
+            'dsh_current_historical_static_provenance_shape')
+        _reference(smoke['observation']); _reference(smoke['canonical_observation'])
+    require(type(proof) is dict and set(proof) == {'schema', 'effects', 'per_job_authority',
+        'declaration', 'runtime_sha256', 'policy', 'native', 'sources', 'inputs', 'current',
+        'clock', 'observed_mono', 'pending_transaction', 'folder', 'safety', 'network', 'cycle'}
+        and proof['schema'] == PROOF and proof['effects'] == 'OBSERVATION_ONLY'
+        and proof['per_job_authority'] == 'NOT_GRANTED'
+        and _same(proof['declaration'], previous['declaration'])
+        and _same(proof['cycle'], previous['cycle'])
+        and proof['runtime_sha256'] == old['runtime_sha256']
+        and all(_same(proof[name], old[name]) for name in ('policy', 'native', 'sources', 'inputs')),
+        'dsh_current_historical_proof_join_changed')
+    _reference(proof['clock']); _reference(proof['pending_transaction'])
+    _absolute(proof['folder'])
+    context = proof['current']
+    require(type(context) is dict and set(context) == {'boot_id', 'net_namespace'}
+        and type(context['boot_id']) is str and context['boot_id']
+        and type(context['net_namespace']) is list and len(context['net_namespace']) == 2
+        and all(type(value) is int and value >= 0 for value in context['net_namespace']),
+        'dsh_current_historical_proof_context_changed')
+    require(type(proof.get('observed_mono')) in (int, float)
+        and math.isfinite(proof['observed_mono']) and proof['observed_mono'] >= 0,
+        'dsh_current_historical_proof_time_changed')
+    return copy.deepcopy(previous)
+
+
+def dsh_current_transaction_name(bundle, previous=None, *, before_configurations=None):
+    """Consume a signed before-edge, never declaration encoding or a new clock."""
+    from .dsh_current_availability import identity
+    current = bundle['runtime_after']['current_availability']
+    declaration_stage = bundle['schema'] == DSH_CURRENT_DECLARATION_SCHEMA
+    if not declaration_stage:
+        # One signed pending edge permits one activation attempt. Neither a
+        # different observation nor formatting/path/clock changes can replay a
+        # consumed or UNKNOWN T2. A new cycle requires its own typed T1.
+        _reference(current['declaration']); _reference(current['cycle'])
+        key = fingerprint({'schema':'friday.dsh-current-activation-key.v1',
+            'declaration':current['declaration'],'cycle':current['cycle']})
+        return 'ordinary-dsh-current-activation-' + key
+    if declaration_stage and previous is not None:
+        observed = identity()
+        require(_same(bundle.get('refresh_context'), observed),
+            'dsh_current_refresh_context_changed')
+        key = fingerprint({'schema': 'friday.dsh-current-refresh-key.v1',
+            'stage': DSH_CURRENT_DECLARATION_SCHEMA, 'previous': previous,
+            'declaration_semantic_sha256': fingerprint(_read_reference(current['declaration'])),
+            'current': observed})
+        return 'ordinary-dsh-current-refresh-' + key
+    # The authenticated initial root/profile beforeimage and native capability
+    # identify this first edge. Neither a changed D, its path/JSON encoding nor
+    # a different request/cycle clock grants a second attempt on that baseline.
+    _reference(bundle['root_before']); _reference(bundle['profile_before'])
+    if before_configurations is None:
+        from hermes_cli.config import fast_safe_load
+        before_configurations = tuple(fast_safe_load(_read_reference(bundle[name],
+            json_document=False).decode('utf-8-sig'))
+            for name in ('root_before', 'profile_before'))
+    require(type(before_configurations) is tuple and len(before_configurations) == 2
+        and all(type(value) is dict for value in before_configurations),
+        'dsh_current_initial_semantic_beforeimage_required')
+    native = _read_reference(current['declaration'])['native']
+    key = fingerprint({'schema': 'friday.dsh-current-initial-key.v1',
+        'root_before_sha256': fingerprint(before_configurations[0]),
+        'profile_before_sha256': fingerprint(before_configurations[1]),
+        'native': native})
+    return 'ordinary-dsh-current-initial-' + key
+
+
+def dsh_current_consumption_check(preparation, bundle, previous=None):
+    """Read-only once check, retaining every legacy raw consumed intent.
+
+    Unresolved legacy partial directories fail closed: no old intent is
+    migrated, repaired, removed or silently assigned a fresh clock. The same
+    check is required immediately before the atomic primary mkdir.
+    """
+    preparation = Path(preparation)
+    name = dsh_current_transaction_name(bundle, previous)
+    target = preparation / name
+    require(not os.path.lexists(target), 'worker_declaration_consumed_no_retry')
+    if bundle['schema'] != DSH_CURRENT_DECLARATION_SCHEMA or previous is not None:
+        return target
+    if not os.path.lexists(preparation):
+        return target
+    info = preparation.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+        and stat.S_IMODE(info.st_mode) == 0o700 and preparation.resolve() == preparation,
+        'dsh_current_consumption_parent_identity')
+    count = 0
+    for entry in preparation.iterdir():
+        if not entry.name.startswith('ordinary-dsh-current-declaration-'):
+            continue
+        count += 1
+        require(count <= 256, 'dsh_current_legacy_consumption_limit')
+        state = entry.lstat()
+        require(stat.S_ISDIR(state.st_mode) and state.st_uid == os.getuid()
+            and stat.S_IMODE(state.st_mode) == 0o700 and entry.resolve() == entry,
+            'dsh_current_legacy_consumption_unresolved')
+        try:
+            def legacy_json(path):
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+                try:
+                    first = os.fstat(fd)
+                    require(stat.S_ISREG(first.st_mode) and first.st_uid == os.getuid()
+                        and first.st_nlink == 1 and stat.S_IMODE(first.st_mode) == 0o600
+                        and first.st_size <= MAX_SOURCE_BYTES,
+                        'dsh_current_legacy_consumption_unresolved')
+                    data = os.read(fd, MAX_SOURCE_BYTES + 1)
+                    fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_nlink',
+                        'st_size', 'st_mtime_ns', 'st_ctime_ns')
+                    require(len(data) == first.st_size and all(getattr(first, k)
+                        == getattr(os.fstat(fd), k) == getattr(path.lstat(), k) for k in fields),
+                        'dsh_current_legacy_consumption_unresolved')
+                finally:
+                    os.close(fd)
+                return _read_reference({'path': str(path),
+                    'sha256': hashlib.sha256(data).hexdigest()})
+            intent = legacy_json(entry / 'intent.json')
+            require(intent.get('state') == 'CONSUMED_NO_RETRY'
+                and intent.get('retry_authorized') is False,
+                'dsh_current_legacy_consumption_unresolved')
+            request = _read_reference(intent['request_reference'])
+            require(intent['request_sha256'] == intent['request_reference']['sha256']
+                and request['schema'] == DSH_CURRENT_APPLY_SCHEMA
+                and _same(intent, {'schema': 'friday.worker-declarations.apply.v1',
+                    'state': 'CONSUMED_NO_RETRY', 'request_sha256': intent['request_reference']['sha256'],
+                    'request_reference': intent['request_reference'],
+                    'request_semantic_sha256': hashlib.sha256((json.dumps(request,
+                        sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()).hexdigest(),
+                    'clock': _read_reference(request['clock']), 'clock_reference': request['clock'],
+                    'previous_input': request['previous_input'], 'current_input': request['current_input'],
+                    'before': request['before'], 'ready': False, 'retry_authorized': False,
+                    'consumers_started': False, 'workers_enabled': False, 'runtime_acceptance': 'NOT_GRANTED'}),
+                'dsh_current_legacy_consumption_unresolved')
+            old, _, _ = load_declaration_source(request['declaration_source'])
+            require(old['schema'] == DSH_CURRENT_DECLARATION_SCHEMA
+                and entry.name == 'ordinary-dsh-current-declaration-'
+                    + old['runtime_after']['current_availability']['declaration']['sha256'],
+                'dsh_current_legacy_consumption_unresolved')
+            # Refresh had a separate semantic namespace even in the legacy
+            # implementation; a raw legacy initial key must not assert refresh.
+            require('refresh_context' not in old,
+                'dsh_current_legacy_consumption_unresolved')
+            from hermes_cli.config import fast_safe_load
+            old_runtime = old['runtime_after']
+            root_home = _absolute(_read_reference(
+                old_runtime['current_availability']['declaration'])['native']['authorization_home'])
+            own_path = _absolute(old_runtime['runtime_home'])
+            own_name = str(own_path.relative_to(root_home)) + '/config.yaml'
+            require(_same(old['root_before'], request['before'].get('config.yaml'))
+                and _same(old['profile_before'], request['before'].get(own_name)),
+                'dsh_current_legacy_consumption_unresolved')
+            originals = []
+            for document, relative in (('root_before', 'config.yaml'),
+                    ('profile_before', own_name)):
+                original = old[document]
+                archive = entry / 'before' / relative
+                ref = ({'path': str(archive), 'sha256': original['sha256']}
+                    if os.path.lexists(archive) else original)
+                originals.append(fast_safe_load(_read_reference(ref,
+                    json_document=False).decode('utf-8-sig')))
+            require(dsh_current_transaction_name(old,
+                before_configurations=tuple(originals)) != name,
+                'worker_declaration_consumed_no_retry')
+        except DeclarationError:
+            raise
+        except (OSError, ValueError, KeyError, TypeError):
+            raise DeclarationError('dsh_current_legacy_consumption_unresolved') from None
+    current_info = preparation.lstat()
+    require((info.st_dev, info.st_ino, info.st_uid, info.st_mode)
+        == (current_info.st_dev, current_info.st_ino, current_info.st_uid, current_info.st_mode),
+        'dsh_current_consumption_parent_changed')
+    return target
+
+
+def dsh_current_plan(root_config, profile_config, worker_inputs, identity, bundle):
+    """Plan the DSH policy declaration edge or its later proof activation.
+
+    This is source data. Current native admission and stopped publication
+    custody belong to the existing writer. Historical receipts are preserved.
+    """
+    from .dsh_current_availability import validate_declaration, validate_proof, checked_cycle
+    from .host_runtime import HostUnavailable
+    require(type(bundle) is dict and set(bundle) in ({'schema', 'state',
+        'root_before', 'profile_before', 'identity_reference', 'changes', 'runtime_after'},
+        {'schema', 'state', 'root_before', 'profile_before', 'identity_reference',
+            'changes', 'runtime_after', 'refresh_context'})
+        and bundle['schema'] in DSH_CURRENT_SCHEMAS
+        and bundle['state'] == 'PROPOSED_NOT_APPLIED_NOT_AN_EXECUTABLE_MIGRATION_REQUEST',
+        'dsh_current_exact_stage_bundle_required')
+    _reference(bundle['identity_reference'])
+    home, profile_home = _identity_join(root_config, profile_config, identity, bundle,
+        dsh_current=True)
+    before_inputs = _at(root_config, TEMPLATE_INPUTS)
+    require(_same(before_inputs, worker_inputs),
+        'dsh_current_global_worker_inputs_must_remain_unchanged')
+    runtime_path = profile_dsh_path(profile_config)
+    before_runtime = _at(profile_config, runtime_path)
+    after_runtime = bundle['runtime_after']
+    require(type(before_runtime) is dict and type(after_runtime) is dict
+        and before_runtime.get('enabled') is True and after_runtime.get('enabled') is True
+        and before_runtime.get('runtime_home') == after_runtime.get('runtime_home') == str(profile_home)
+        and before_runtime.get('runtime_profile') == after_runtime.get('runtime_profile') == profile_home.name,
+        'dsh_current_exact_profile_runtime_required')
+    rows = bundle['changes']
+    require(type(rows) is list and len(rows) == 1 and type(rows[0]) is dict
+        and set(rows[0]) == {'document', 'path', 'before_sha256', 'after_reference'}
+        and rows[0]['document'] == 'root_config' and rows[0]['path'] == list(TEMPLATE_INPUTS)
+        and rows[0]['before_sha256'] == fingerprint(before_inputs),
+        'dsh_current_exact_template_row_required')
+    _reference(rows[0]['after_reference'])
+    current = after_runtime.get('current_availability')
+    require(type(current) is dict and set(current) == {'declaration', 'proof', 'cycle'},
+        'dsh_current_exact_availability_required')
+    _reference(current['declaration'])
+    _reference(current['cycle'])
+    declaration = _read_reference(current['declaration'])
+    native = declaration.get('native') if type(declaration) is dict else None
+    require(type(native) is dict and native.get('authorization_home') == str(home)
+        and _same(native.get('binding'), identity['binding'])
+        and type(native.get('generation')) is int and native['generation'] == identity['generation'],
+        'dsh_current_native_declaration_join_changed')
+    try:
+        new_cycle = checked_cycle(current['cycle'])
+        validate_declaration(after_runtime, declaration, check_config=False)
+        if bundle['schema'] == DSH_CURRENT_DECLARATION_SCHEMA:
+            require(current['proof'] is None, 'dsh_current_t1_pending_proof_required')
+            previous = before_runtime.get('current_availability')
+            if previous is not None:
+                previous = historical_dsh_current(before_runtime, native,
+                    source_names=set(declaration['sources']))
+                require(previous['cycle']['sha256'] != current['cycle']['sha256'],
+                    'dsh_current_refresh_new_cycle_required')
+                old_proof = _read_reference(previous['proof'])
+                if new_cycle['boot_id'] == old_proof['current']['boot_id']:
+                    require(new_cycle['started_mono'] >= old_proof['observed_mono'],
+                        'dsh_current_refresh_clock_precedes_old_observation')
+                dsh_current_transaction_name(bundle, previous)
+            else:
+                require('refresh_context' not in bundle,
+                    'dsh_current_unexpected_refresh_context')
+            restored_runtime = copy.deepcopy(after_runtime)
+            if previous is None:
+                restored_runtime.pop('current_availability')
+            else:
+                restored_runtime['current_availability'] = copy.deepcopy(previous)
+            for path in DSH_DECLARATION_PATHS:
+                old_runtime, new_runtime = _at(before_runtime, path), _at(after_runtime, path)
+                for pin in (old_runtime, new_runtime):
+                    _reference(pin)
+                _replace(restored_runtime, path, old_runtime)
+            require(_same(restored_runtime, before_runtime), 'dsh_current_unrelated_runtime_delta')
+        else:
+            require('refresh_context' not in bundle, 'dsh_current_unexpected_refresh_context')
+            require(_same(before_inputs, worker_inputs), 'dsh_current_t2_worker_inputs_changed')
+            previous = before_runtime.get('current_availability')
+            require(type(previous) is dict and set(previous) == {'declaration', 'proof', 'cycle'}
+                and previous['proof'] is None
+                and _same(previous['declaration'], current['declaration']),
+                'dsh_current_t2_pending_declaration_required')
+            _reference(current['proof'])
+            restored = copy.deepcopy(after_runtime)
+            restored['current_availability']['proof'] = None
+            require(_same(restored, before_runtime), 'dsh_current_t2_unrelated_runtime_delta')
+            validate_proof(after_runtime, declaration, _read_reference(current['proof']))
+    except HostUnavailable:
+        raise DeclarationError('dsh_current_evidence_invalid') from None
+    root_after, profile_after = copy.deepcopy(root_config), copy.deepcopy(profile_config)
+    _replace(root_after, TEMPLATE_INPUTS, worker_inputs)
+    _replace(profile_after, runtime_path, after_runtime)
+    changes = []
+    if not _same(before_inputs, worker_inputs):
+        changes.append({'document': 'root_config', 'path': list(TEMPLATE_INPUTS),
+            'before_sha256': fingerprint(before_inputs), 'after_sha256': fingerprint(worker_inputs)})
+    changes.append({'document': 'profile_config', 'path': list(runtime_path),
+        'before_sha256': fingerprint(before_runtime), 'after_sha256': fingerprint(after_runtime)})
+    return {'schema': 'friday.worker-declaration-delta.v1',
+        'state': 'SOURCE_DECLARATION_DELTA_ONLY_NOT_NATIVE_AUTHORITY',
+        'ready': False, 'native_authority': False, 'native_apply_implemented': True,
+        'workers_enabled': False, 'dsh_current_stage': bundle['schema'],
+        'root_config': root_after, 'profile_config': profile_after,
+        'semantic_changes': changes, 'principal': identity['principal'],
+        'generation': identity['generation'], 'profile': str(profile_home),
+        'launcher': {'reference': copy.deepcopy(_at(worker_inputs,
+            ('workers', 'a0', 'a0', 'launcher'))),
+            'state': 'UNCHANGED_A0_STOP_CUSTODY_SOURCE_ONLY', 'installed': False},
         'missing_native_prerequisites': list(NATIVE_GAPS)}
 
 

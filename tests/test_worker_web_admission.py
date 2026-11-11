@@ -85,7 +85,8 @@ def producer():
 def test_current_dns_tls_producer_uses_exact_sandbox_without_keys(producer):
     f,c,p=producer;calls=[]
     def run(argv,**kwargs):
-        calls.append((argv,kwargs)); assert argv[0]=='/usr/bin/bwrap';assert '/etc/resolv.conf' in argv
+        calls.append((argv,kwargs)); assert argv[0]=='/usr/local/libexec/friday-dsh-bwrap';assert '/etc/resolv.conf' in argv
+        assert '--clearenv' in argv
         assert 'EXA_API_KEY' not in kwargs['env'];assert kwargs['timeout']<=5
         return subprocess.CompletedProcess(argv,0,json.dumps(observation(json.loads(argv[-1]))).encode(),b'')
     with patch('subprocess.run',run):r=c(f.f.row,f.web)
@@ -153,8 +154,9 @@ async def test_ordinary_native_host_calls_concrete_producer_twice_then_same_work
         with (setup.home/'.env').open('a') as out:out.write('EXA_API_KEY=SYNTHETIC_EXA\n')
     prior=subprocess.run;seen=[]
     def run(argv,**kw):
-        if argv[0]=='/usr/bin/bwrap':
+        if argv[0]=='/usr/local/libexec/friday-dsh-bwrap':
             seen.append(argv);assert 'EXA_API_KEY' not in kw['env']
+            assert '--clearenv' in argv
             return subprocess.CompletedProcess(argv,0,json.dumps(observation(json.loads(argv[-1]))).encode(),b'')
         if web_profile == 'exa-paid':assert kw['env']['EXA_API_KEY']=='SYNTHETIC_EXA'
         else:assert 'EXA_API_KEY' not in kw['env']

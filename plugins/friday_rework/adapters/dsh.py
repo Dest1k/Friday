@@ -60,6 +60,22 @@ def _apparmor_boundary(config, boundary):
     return [_APPARMOR_ENTRY, *boundary[1:]]
 
 
+def _bootstrap(credential_names=(), *, web=False):
+    """Fresh in-boundary enforcement check before keys or native command use.
+
+    Hashing the root policy file cannot establish loaded enforcement. This
+    check runs after the dedicated executable's kernel attachment on every
+    probe and CLI launch; unload, complain and an unexpected stack refuse.
+    """
+    return ('import os,sys\nfrom pathlib import Path\n'
+            'if Path("/proc/self/attr/current").read_text().strip() != "friday-dsh-native-v1 (enforce)":\n'
+            ' raise RuntimeError("dsh_apparmor_enforcement_unconfirmed")\n'
+            'env={"PATH":sys.argv[1]+":/usr/bin:/bin","HOME":"/job-home","DSH_HOME":"/job-home/dsh","LANG":"C.UTF-8","DSH_TELEMETRY_DISABLED":"1","DSH_PERMISSION_MODE":"workspace-write"}\n'
+            + ('env["NODE_EXTRA_CA_CERTS"]="/job-input/web-ca.pem"\n' if web else '')
+            + f'for name in {tuple(credential_names)!r}:\n if name in os.environ:env[name]=os.environ[name]\n'
+            + 'os.execve(sys.argv[2],sys.argv[2:],env)\n').encode()
+
+
 @dataclass(frozen=True)
 class PinnedFile:
     path: Path
@@ -320,6 +336,21 @@ class DshAdapter:
         if self._retained_stop(row):
             raise AdapterError("stopped_or_expired")
 
+    @staticmethod
+    def _launch_binding(row):
+        # Preserve the original launch scope without expanding the retained
+        # receipt/stop identity. Raw legacy adapter rows have no host binding.
+        return json.dumps({"owner": row["owner"], "binding": row.get("host", {}).get("binding")},
+                          sort_keys=True, separators=(",", ":"))
+
+    def _launch_authority(self, row, binding):
+        """Native launch permission only; cancellation never calls this."""
+        if self._launch_binding(row) != binding:
+            raise AdapterError("retained_launch_binding_changed")
+        if "host" in row:
+            from hermes_cli.friday_user_scope import check_retained_job
+            check_retained_job(row)
+
     def _retained_stop(self, row):
         return (row["stop_intent"] is not None or self.clock() >= row["deadline_unix"]
                 or row["elapsed_seconds"] >= row["budget_seconds"])
@@ -411,10 +442,7 @@ class DshAdapter:
             _write(root / 'inputs/web-network.mjs', DSH_NETWORK_PROBE.encode())
         _write(control / "finalize.py", _FINALIZE)
         names = self._credential_names()
-        bootstrap = ('import os,sys\nenv={"PATH":sys.argv[1]+":/usr/bin:/bin","HOME":"/job-home","DSH_HOME":"/job-home/dsh","LANG":"C.UTF-8","DSH_TELEMETRY_DISABLED":"1","DSH_PERMISSION_MODE":"workspace-write"}\n'
-                     + (f'env["NODE_EXTRA_CA_CERTS"]="/job-input/web-ca.pem"\n' if self.config.web else '')
-                     + f'for name in {names!r}:\n if name in os.environ:env[name]=os.environ[name]\n'
-                     + 'os.execve(sys.argv[2],sys.argv[2:],env)\n').encode()
+        bootstrap = _bootstrap(names, web=self.config.web is not None)
         _write(root / "inputs/bootstrap.py", bootstrap)
         for v, data in values:
             _write(root / "inputs/verified" / Path(v.worker_path).name, data)
@@ -446,6 +474,9 @@ class DshAdapter:
                 or receipt["reference"] != prepared.reference):
             raise AdapterError("preparation_changed")
         if verify_files:
+            if _regular(root / "inputs/bootstrap.py").read_bytes() != _bootstrap(
+                    self._credential_names(), web=self.config.web is not None):
+                raise AdapterError("prepared_bootstrap_changed")
             if receipt["pins"] != self._pins():
                 raise AdapterError("preparation_changed")
             for path, digest in receipt["files"].items():
@@ -480,6 +511,13 @@ class DshAdapter:
                 *(c.web.mounts() if c.web else ()),
                 "--chdir", "/workspace", "--remount-ro", "/",
                 "--", "/usr/bin/python3", "-I", "/job-input/bootstrap.py", str(c.node.path.parent), *command]
+
+    def _confined_boundary(self, root, command, *, keyless=False):
+        """One selector for ordinary probes, qualification and native CLI."""
+        boundary = self._boundary(root, command)
+        if keyless:
+            boundary.insert(1, "--clearenv")
+        return _apparmor_boundary(self.config, boundary)
 
     @staticmethod
     def _environment():
@@ -620,15 +658,14 @@ class DshAdapter:
         argv += ['--setenv='+name for name in sorted(grant)]
         # --clearenv leaves only the explicit local key; bootstrap replaces all
         # worker environment with the minimal reviewed native environment.
-        boundary = self._boundary(root, command)
-        if not grant:
-            boundary.insert(1, "--clearenv")
-        argv += _apparmor_boundary(c, boundary)
+        argv += self._confined_boundary(root, command, keyless=not grant)
         return argv
 
     def submit(self, association, brief, inputs, prepared, on_native_observed):
         row, root = self._row(association)
         self._admit(row)
+        launch_binding = self._launch_binding(row)
+        self._launch_authority(row, launch_binding)
         if row["submission_observation"] != "UNKNOWN" or row["native"] is not None:
             raise AdapterError("durable_unknown_required")
         root, control = self._prepared(row, prepared, brief, inputs)
@@ -648,6 +685,7 @@ class DshAdapter:
             self.config.verify_web_network(row, self.config.web)
             current, _ = self._row(row)
             self._admit(current)
+            self._launch_authority(current, launch_binding)
         grant = dict(self.config.environment())
         allowed = set(self._credential_names())
         if (set(grant) not in ((allowed,) if self.config.web else (set(), allowed))
@@ -666,11 +704,13 @@ class DshAdapter:
         try:
             current, _ = self._row(row)
             self._admit(current)
+            self._launch_authority(current, launch_binding)
             if self.config.web:
                 self.config.verify_web_network(current, self.config.web)
                 self._prepared(current, prepared, brief, inputs)
                 current, _ = self._row(row)
                 self._admit(current)
+                self._launch_authority(current, launch_binding)
                 if dict(self.config.environment()) != grant:
                     raise AdapterError('scoped_environment_changed_before_launch')
             remaining = self._remaining(current)
@@ -679,6 +719,11 @@ class DshAdapter:
             argv = self._launch_argv(current, root, control, remaining, grant, command)
             _write(control/"launch-grant.json", {"argv": argv, "remaining_seconds": remaining,
                                                 "deadline_unix": current["deadline_unix"], "at_unix": self.clock()})
+            # A key provider/receipt write is not authority to retain a row.
+            # Re-read after those callbacks and immediately before the RPC.
+            current, _ = self._row(row)
+            self._admit(current)
+            self._launch_authority(current, launch_binding)
             # One bounded native launch. Timeout is uncertain, never retry.
             r = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False)
             ids = re.findall(rb"invocation ID: ([0-9a-f]{32})", r.stderr)

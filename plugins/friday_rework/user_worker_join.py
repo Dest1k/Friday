@@ -334,6 +334,10 @@ def deployment_health(c, *, binding=None, generation=None):
     from .host_runtime import deployment_observations, a0_deployment_contract, _dsh_web
     from .worker_web import web_policy
     c=validate_runtime(c)
+    if 'current_availability' in c:
+        from .dsh_current_availability import validate_current
+        validate_current(c,binding=binding,generation=generation)
+        return c
     if 'a0' in c: a0_deployment_contract(c)
     else:
         web=_dsh_web(c['dsh'])

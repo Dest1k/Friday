@@ -19,6 +19,9 @@ from .worker_declarations import (
     DeclarationError, _read_reference, _reference, _same, fingerprint,
     load_declaration_source, plan_declaration_delta, require, _at, _replace,
     TEMPLATE_INPUTS,
+    DSH_CURRENT_APPLY_SCHEMA, DSH_CURRENT_SCHEMAS,
+    DSH_CURRENT_DECLARATION_SCHEMA, profile_dsh_path,
+    dsh_current_transaction_name,
     service_transition_pair,
     service_installation_delta, service_publication_sources,
     validate_declaration_source,
@@ -29,6 +32,261 @@ APPLY_FIELDS = frozenset({'schema', 'seconds', 'home', 'profile',
     'previous_input', 'current_input', 'native_unit', 'before', 'retained',
     'declaration_source', 'launcher_source', 'clock', 'native_pm'})
 CLEANUP_RESERVE = 20
+COMPLETED_SCHEMA = 'friday.worker-declarations.completed.v1'
+
+
+def _journal_reference(path):
+    """Name an existing private journal without accepting a caller's pathname."""
+    path = Path(path)
+    require(path.resolve() == path, 'dsh_current_journal_link_refused')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        first = os.fstat(fd)
+        require(stat.S_ISREG(first.st_mode) and first.st_uid == os.getuid()
+            and first.st_nlink == 1 and stat.S_IMODE(first.st_mode) == 0o600
+            and first.st_size <= 32 * 1024**2, 'dsh_current_journal_identity')
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            data = stream.read(32 * 1024**2 + 1)
+        fields = ('st_dev', 'st_ino', 'st_uid', 'st_mode', 'st_nlink',
+            'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        require(len(data) == first.st_size and all(getattr(first, key)
+            == getattr(os.fstat(fd), key) == getattr(path.lstat(), key) for key in fields),
+            'dsh_current_journal_changed')
+        return {'path': str(path), 'sha256': hashlib.sha256(data).hexdigest()}
+    finally:
+        os.close(fd)
+
+
+def _dsh_completed(authority, result, commit_state, owned):
+    """Create success only after native release and exact live/commit CAS.
+
+    A durable committed.json alone can still represent UNKNOWN. Any exception
+    before this point leaves the consumed transaction without this success edge.
+    """
+    from scripts import friday_ordinary_install as ordinary
+    from .dsh_current_availability import identity
+    require(authority.declaration_bundle['schema'] == DSH_CURRENT_DECLARATION_SCHEMA,
+        'dsh_current_t1_completion_required')
+    authority.prove_released()
+    require(ordinary.same_update_file(authority.tx / 'committed.json', commit_state),
+        'dsh_current_completion_commit_changed')
+    require(set(owned) == set(result['after']) and all(
+        ordinary.same_update_file(authority.home / name, state)
+        and hashlib.sha256(state['data']).hexdigest() == result['after'][name]
+        for name, state in owned.items()), 'dsh_current_completion_afterimage_changed')
+    clock = authority.clock
+    now = time.monotonic()
+    require(clock['started_mono'] <= now <= clock['deadline_mono']
+        and clock['boot_id'] == identity()['boot_id'],
+        'dsh_current_completion_original_clock_changed')
+    value = {'schema': COMPLETED_SCHEMA, 'state': 'COMMITTED_RELEASED',
+        'transaction': str(authority.tx),
+        'intent': _journal_reference(authority.tx / 'intent.json'),
+        'committed': {'path': str(authority.tx / 'committed.json'),
+            'sha256': hashlib.sha256(commit_state['data']).hexdigest()},
+        'request': copy.deepcopy(authority.request_reference),
+        'clock': copy.deepcopy(authority.request['clock']),
+        'after': copy.deepcopy(result['after']), 'completed_mono': now,
+        'boot_id': clock['boot_id']}
+    state = _new_journal(authority.tx / 'completed.json', ordinary.encoded(value))
+    require(ordinary.same_update_file(authority.tx / 'completed.json', state),
+        'dsh_current_completion_identity_changed')
+    return value
+
+
+def checked_dsh_current_commit(reference, declaration_reference, runtime_sha256, cycle,
+        *, config, observation_started_mono=None):
+    """Reconcile a genuine deterministic T1, never a claimed status report.
+
+    This is read-only evidence, not admission authority. The exact consumed
+    request/intent, original clock, typed transition, successful release and
+    five signed staged afterimages must agree. Active T2 retains that original
+    pending afterimage; it does not hash its own future config into P.
+    """
+    from scripts import friday_ordinary_install as ordinary
+    from hermes_cli import friday_user_scope as users
+    from hermes_cli.config import fast_safe_load
+    from hermes_cli.config_effective import _effective
+    from hermes_cli.friday_ordinary_gateway import normalized_configuration
+    from .dsh_current_availability import checked_cycle, _native
+
+    states = {}
+    metadata = {}
+    def read(ref, *, json_document=True):
+        path = _reference(ref)
+        state = _request_snapshot(ref)
+        previous_state = states.setdefault(path, state)
+        require(previous_state == state, 'dsh_current_t1_evidence_changed')
+        info = path.lstat()
+        fields = ('st_dev', 'st_ino', 'st_uid', 'st_mode', 'st_nlink',
+            'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        current_metadata = tuple(getattr(info, key) for key in fields)
+        require(metadata.setdefault(path, current_metadata) == current_metadata,
+            'dsh_current_t1_evidence_changed')
+        return _read_reference(ref, json_document=json_document)
+
+    declaration = read(declaration_reference)
+    native = declaration['native']
+    home, profile_home = Path(native['authorization_home']), Path(config['runtime_home'])
+    require(home.resolve() == home and profile_home == home / 'profiles' / config['runtime_profile'],
+        'dsh_current_t1_home_changed')
+    cap = _native(config, native, check_config=False)
+    committed_path = _reference(reference)
+    tx = committed_path.parent
+    require(committed_path.name == 'committed.json' and tx.parent == home / 'preparation'
+        and tx.resolve() == tx, 'dsh_current_t1_transaction_path_changed')
+    directories = []
+    for path in (tx.parent, tx, tx / 'before', tx / 'stage'):
+        info = path.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+            and stat.S_IMODE(info.st_mode) == 0o700 and path.resolve() == path,
+            'dsh_current_t1_directory_identity')
+        directories.append((path, (info.st_dev, info.st_ino, info.st_uid, info.st_mode)))
+    require(not os.path.lexists(tx / 'rolled-back.json'), 'dsh_current_t1_rolled_back')
+    intent_ref = _journal_reference(tx / 'intent.json')
+    intent = read(intent_ref)
+    request_ref = intent['request_reference']
+    request = read(request_ref)
+    require(type(request) is dict and set(request) == APPLY_FIELDS
+        and request['schema'] == DSH_CURRENT_APPLY_SCHEMA
+        and request['home'] == str(home) and request['profile'] == config['runtime_profile']
+        and _same(request['previous_input'], request['current_input'])
+        and _same(request['clock'], cycle), 'dsh_current_t1_request_changed')
+    read(cycle)
+    clock = checked_cycle(cycle)
+    require(type(request['seconds']) is int and request['seconds'] == clock['seconds']
+        and _same(intent, {'schema': APPLY_SCHEMA, 'state': 'CONSUMED_NO_RETRY',
+            'request_sha256': request_ref['sha256'], 'request_reference': request_ref,
+            'request_semantic_sha256': hashlib.sha256((json.dumps(request, sort_keys=True,
+                separators=(',', ':'), allow_nan=False) + '\n').encode()).hexdigest(),
+            'clock': clock, 'clock_reference': cycle,
+            'previous_input': request['previous_input'], 'current_input': request['current_input'],
+            'before': request['before'], 'ready': False, 'retry_authorized': False,
+            'consumers_started': False, 'workers_enabled': False, 'runtime_acceptance': 'NOT_GRANTED'}),
+        'dsh_current_t1_intent_changed')
+    bundle, inputs, identity = load_declaration_source(request['declaration_source'])
+    for ref in request['declaration_source'].values():
+        read(ref)
+    require(bundle['schema'] == DSH_CURRENT_DECLARATION_SCHEMA
+        and _same(bundle['runtime_after']['current_availability'],
+            {'declaration': declaration_reference, 'proof': None, 'cycle': cycle})
+        and _same(bundle['profile_before'], request['before'].get(
+            str(profile_home.relative_to(home)) + '/config.yaml'))
+        and _same(bundle['root_before'], request['before'].get('config.yaml')),
+        'dsh_current_t1_bundle_changed')
+    prefix = str(profile_home.relative_to(home)) + '/'
+    names = {'config.yaml', prefix + 'config.yaml', prefix + users.ONBOARDING,
+        prefix + users.MARKER, ordinary.api().MARKER}
+    require(type(request['before']) is dict and set(request['before']) == names,
+        'dsh_current_t1_before_inventory_changed')
+    before, after = {}, {}
+    for name in names:
+        require(_reference(request['before'][name]) == home / name,
+            'dsh_current_t1_before_path_changed')
+        before[name] = read({'path': str(tx / 'before' / name),
+            'sha256': request['before'][name]['sha256']}, json_document=False)
+        after[name] = read(_journal_reference(tx / 'stage' / name), json_document=False)
+    root_before = fast_safe_load(before['config.yaml'].decode('utf-8-sig'))
+    own_before = fast_safe_load(before[prefix + 'config.yaml'].decode('utf-8-sig'))
+    previous = _at(own_before, profile_dsh_path(own_before)).get('current_availability')
+    require(tx.name == dsh_current_transaction_name(bundle, previous,
+        before_configurations=(root_before, own_before)),
+        'dsh_current_t1_semantic_transaction_changed')
+    plan = plan_declaration_delta(root_before, own_before, inputs, identity, bundle)
+    require(_same(fast_safe_load(after['config.yaml'].decode('utf-8-sig')), plan['root_config'])
+        and _same(fast_safe_load(after[prefix + 'config.yaml'].decode('utf-8-sig')),
+            plan['profile_config']), 'dsh_current_t1_config_afterimage_changed')
+    hashes = {name: hashlib.sha256(data).hexdigest() for name, data in after.items()}
+    proof_before = json.loads(before[prefix + users.ONBOARDING])
+    marker_before = json.loads(before[prefix + users.MARKER])
+    require(_same(json.loads(after[prefix + users.ONBOARDING]),
+            dict(proof_before, config_sha256=hashes[prefix + 'config.yaml']))
+        and _same(json.loads(after[prefix + users.MARKER]),
+            dict(marker_before, onboarding_sha256=hashes[prefix + users.ONBOARDING]))
+        and proof_before['authorization_home'] == str(home)
+        and proof_before['directory_identity'] == native['directory_identity']
+        and proof_before['binding_sha256'] == fingerprint(native['binding'])
+        and proof_before['schema'] == 'friday.onboarding.v1'
+        and proof_before['config_sha256'] == request['before'][prefix + 'config.yaml']['sha256']
+        and marker_before == {'schema': 'friday.user-home.v1',
+            'principal': identity['principal'], 'profile': config['runtime_profile'],
+            'binding_sha256': proof_before['binding_sha256'],
+            'onboarding_sha256': request['before'][prefix + users.ONBOARDING]['sha256']},
+        'dsh_current_t1_signed_afterimage_changed')
+    expected_marker = json.loads(before[ordinary.api().MARKER])
+    require(expected_marker['profile_files']['config.yaml']
+        == request['before']['config.yaml']['sha256']
+        and expected_marker['input_sha256'] == request['previous_input']['sha256']
+        and _same(expected_marker['ordinary_gateway']['operator_entry']['input'], request['previous_input']),
+        'dsh_current_t1_before_native_marker_changed')
+    expected_marker['input_sha256'] = request['current_input']['sha256']
+    expected_marker['profile_files']['config.yaml'] = hashes['config.yaml']
+    expected_marker['ordinary_gateway']['configuration_sha256'] = normalized_configuration(
+        _effective(plan['root_config']))
+    expected_marker['ordinary_gateway']['operator_entry']['input'] = request['current_input']
+    require(_same(json.loads(after[ordinary.api().MARKER]), expected_marker),
+        'dsh_current_t1_native_marker_afterimage_changed')
+    committed = read(reference)
+    expected = {'state': 'WORKER_DECLARATIONS_REBOUND_CONSUMERS_STOPPED',
+        'ready': False, 'workers_enabled': False, 'consumers_started': False,
+        'database_changed': False, 'native_migration': 'IMPLEMENTED',
+        'runtime_acceptance': 'NOT_GRANTED', 'automatic_prepare': False,
+        'request_sha256': request_ref['sha256'], 'clock': cycle,
+        'previous_input': request['previous_input'], 'current_input': request['current_input'],
+        'semantic_changes': plan['semantic_changes'], 'after': hashes,
+        'original_attempt_consumed': True,
+        'dsh_current': {'stage': DSH_CURRENT_DECLARATION_SCHEMA,
+            'declaration': declaration_reference, 'proof': None, 'cycle': cycle,
+            'runtime_sha256': runtime_sha256}}
+    require(_same(committed, expected), 'dsh_current_t1_commit_changed')
+    completed_ref = _journal_reference(tx / 'completed.json')
+    completed = read(completed_ref)
+    completed_mono = completed.get('completed_mono')
+    require(type(completed_mono) in (int, float) and math.isfinite(completed_mono)
+        and clock['started_mono'] <= completed_mono <= clock['deadline_mono']
+        and _same(completed, {'schema': COMPLETED_SCHEMA, 'state': 'COMMITTED_RELEASED',
+            'transaction': str(tx), 'intent': intent_ref, 'committed': reference,
+            'request': request_ref, 'clock': cycle, 'after': hashes,
+            'completed_mono': completed_mono, 'boot_id': clock['boot_id']}),
+        'dsh_current_t1_successful_release_unverified')
+    if observation_started_mono is not None:
+        require(type(observation_started_mono) in (int, float)
+            and math.isfinite(observation_started_mono)
+            and completed_mono <= observation_started_mono,
+            'dsh_current_observation_precedes_t1_completion')
+    pending_runtime = bundle['runtime_after']
+    restored = copy.deepcopy(config)
+    restored['current_availability']['proof'] = None
+    require(_same(restored, pending_runtime), 'dsh_current_t1_runtime_join_changed')
+    live_config = fast_safe_load(read(_journal_reference(profile_home / 'config.yaml'),
+        json_document=False).decode('utf-8-sig'))
+    live_runtime = _at(live_config, profile_dsh_path(live_config))
+    if _same(live_runtime, pending_runtime):
+        for name, digest in hashes.items():
+            require(hashlib.sha256(read(_journal_reference(home / name),
+                json_document=False)).hexdigest() == digest,
+                'dsh_current_t1_live_pending_afterimage_changed')
+    else:
+        require(config['current_availability']['proof'] is not None
+            and _same(live_runtime, config), 'dsh_current_t1_current_runtime_changed')
+    # Detect journal substitution during this reconciliation as well as hashes.
+    require(_journal_reference(tx / 'intent.json') == intent_ref
+        and _journal_reference(tx / 'completed.json') == completed_ref
+        and _journal_reference(committed_path) == reference,
+        'dsh_current_t1_journal_changed')
+    require(all(ordinary.same_update_file(path, state) for path, state in states.items()),
+        'dsh_current_t1_evidence_identity_changed')
+    require(all(tuple(getattr(path.lstat(), key) for key in (
+        'st_dev', 'st_ino', 'st_uid', 'st_mode', 'st_nlink', 'st_size',
+        'st_mtime_ns', 'st_ctime_ns')) == value for path, value in metadata.items()),
+        'dsh_current_t1_evidence_metadata_changed')
+    for path, expected_identity in directories:
+        info = path.lstat()
+        require((info.st_dev, info.st_ino, info.st_uid, info.st_mode) == expected_identity,
+            'dsh_current_t1_directory_changed')
+    with users.authority(profile_home):
+        cap.check()
+    return committed
 
 
 def _request_snapshot(reference):
@@ -120,6 +378,11 @@ def validate_installation_delta(previous, current, plan):
     also carries the matching policy/endpoints consumed by worker_install's
     real validator; these three leaves derive from the same typed declaration.
     """
+    if 'dsh_current_stage' in plan:
+        require(plan['dsh_current_stage'] in DSH_CURRENT_SCHEMAS
+            and type(previous) is dict and type(current) is dict and _same(previous, current),
+            'dsh_current_installation_input_must_remain_unchanged')
+        return
     if _service_publication_names(plan):
         service_installation_delta(previous, current, plan)
         return
@@ -290,6 +553,13 @@ def _native_final_check(authority):
         user.UserScope(authority.home, authority.profile_home,
             authority.profile_home.name, principal, dict(authority.binding),
             (identity.st_dev, identity.st_ino), row['generation']).check()
+    if getattr(authority, 'dsh_current', False):
+        from hermes_cli.config import require_readable_config_before_write
+        from .dsh_current_availability import validate_current
+        own = require_readable_config_before_write(authority.profile_home / 'config.yaml')
+        runtime = _at(own, profile_dsh_path(own))
+        validate_current(runtime, binding=authority.binding, generation=row['generation'],
+            allow_pending=authority.declaration_bundle['schema'] == DSH_CURRENT_DECLARATION_SCHEMA)
     f.inspect(authority.current, authority.request['current_input']['sha256'])
 
 
@@ -312,6 +582,19 @@ def _planned_delta(authority):
     require(inputs['workers']['a0']['a0']['launcher']['sha256']
         == request['launcher_source']['sha256'],
         'worker_declaration_current_launcher_join_changed')
+    require((request['schema'] == DSH_CURRENT_APPLY_SCHEMA)
+        == ('dsh_current_stage' in plan), 'dsh_current_apply_discriminator_changed')
+    if 'dsh_current_stage' in plan:
+        require(identity['profile_template'] == authority.proof['template'],
+            'dsh_current_native_template_identity_changed')
+        if plan['dsh_current_stage'] == DSH_CURRENT_DECLARATION_SCHEMA:
+            runtime = _at(plan['profile_config'], profile_dsh_path(plan['profile_config']))
+            require(_same(runtime['current_availability']['cycle'], request['clock']),
+                'dsh_current_t1_original_clock_join_changed')
+        else:
+            runtime = _at(plan['profile_config'], profile_dsh_path(plan['profile_config']))
+            require(runtime['current_availability']['cycle']['sha256'] != request['clock']['sha256'],
+                'dsh_current_t2_separate_original_clock_required')
     validate_installation_delta(authority.previous, authority.current, plan)
     return plan
 
@@ -319,7 +602,7 @@ def _planned_delta(authority):
 def apply_declarations(request, *, request_path=None, request_sha256=None):
     """Publish one finite, native stopped transaction; no automatic reprepare."""
     require(type(request) is dict and set(request) == APPLY_FIELDS
-        and request.get('schema') == APPLY_SCHEMA,
+        and request.get('schema') in (APPLY_SCHEMA, DSH_CURRENT_APPLY_SCHEMA),
         'worker_declaration_exact_apply_request_required')
     reference = {'path': str(request_path) if request_path is not None else None,
         'sha256': request_sha256}
@@ -416,6 +699,12 @@ def apply_declarations(request, *, request_path=None, request_sha256=None):
                         'semantic_changes': plan['semantic_changes'],
                         'after': {key: f.digest(value['data']) for key, value in after.items()},
                         'original_attempt_consumed': True}
+                    if 'dsh_current_stage' in plan:
+                        from .dsh_current_availability import runtime_semantic_digest
+                        runtime = _at(plan['profile_config'], profile_dsh_path(plan['profile_config']))
+                        result['dsh_current'] = {'stage': plan['dsh_current_stage'],
+                            **copy.deepcopy(runtime['current_availability']),
+                            'runtime_sha256': runtime_semantic_digest(runtime)}
                     commit_state = _new_journal(authority.tx / 'committed.json', ordinary.encoded(result))
                     require(commit_state is not None and commit_state['data'] == ordinary.encoded(result),
                         'worker_declaration_commit_receipt_changed')
@@ -448,6 +737,8 @@ def apply_declarations(request, *, request_path=None, request_sha256=None):
             for key in authority.before)
             and ordinary.same_update_file(authority.tx / 'committed.json', commit_state),
             'worker_declaration_released_result_identity_changed')
+        if getattr(authority, 'dsh_current', False) and plan['dsh_current_stage'] == DSH_CURRENT_DECLARATION_SCHEMA:
+            _dsh_completed(authority, result, commit_state, owned)
         return result
     except BaseException as error:
         if committed:

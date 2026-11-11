@@ -64,6 +64,7 @@ class WorkerWeb(unittest.TestCase):
         with patch.dict('os.environ',{'EXA_API_KEY':'SYNTHETIC_EXA','LOCAL_TEST_KEY':'SYNTHETIC_LOCAL',
                                      'HTTP_PROXY':'FOREIGN','OTHER_KEY':'FOREIGN'},clear=True), \
              patch('sys.argv',['bootstrap','/tool','/node','cli']), \
+             patch('pathlib.Path.read_text',return_value='friday-dsh-native-v1 (enforce)\n'), \
              patch('os.execve',side_effect=lambda exe,args,env:captured.append(dict(env))):
             exec(compile(bootstrap.read_bytes(),str(bootstrap),'exec'),{})
         self.assertEqual(captured[0]['EXA_API_KEY'],'SYNTHETIC_EXA')

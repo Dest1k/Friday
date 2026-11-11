@@ -754,69 +754,82 @@ def private_tree_snapshot(root):
 
 @pytest.fixture
 def pairing_grant(env):
-    """Actual native synthetic grant; initialize=False is NOT write authority."""
+    """Prepare a synthetic grant with the ordinary writer; observe via static API."""
     from gateway import pairing
     env.monkeypatch.setattr(pairing, 'PAIRING_DIR', None)
     PairingStore = pairing.PairingStore
     grant(env)
     store = PairingStore()
-    # Preparation may use the process umask; the observer requires the actual
-    # private custody contract. Tighten only this disposable fixture's dirs.
+    # Reproduce the installed native layout only in this disposable fixture.
     current = store._dir
     while current != env.home:
         assert env.home in current.parents
-        current.chmod(0o700)
+        current.chmod(0o775)
         current = current.parent
     assert store.is_approved('telegram', '1')
     return SimpleNamespace(e=env, store=store, active=store._dir)
 
 
-def test_native_noninitializing_pairing_constructor_reads_existing_grant_without_mkdir_or_migration(pairing_grant, monkeypatch):
+def pairing_observer(env):
+    observed = StoppedOperator({}, Budget(180))
+    observed.home = env.home
+    observed.ordinary = native_update
+    return observed
+
+
+def test_native_static_pairing_reader_with_caller_custody_reads_existing_grant_without_mkdir_or_migration(pairing_grant, monkeypatch):
     from gateway import pairing
     s = pairing_grant
     before = private_tree_snapshot(s.e.home)
-    def forbidden(*args, **kwargs): pytest.fail('noninitializing pairing constructor attempted initialization')
+    def forbidden(*args, **kwargs): pytest.fail('static pairing observer attempted initialization')
     with monkeypatch.context() as boundary:
         boundary.setattr(pairing, '_migrate_split_pairing_dirs', forbidden)
+        boundary.setattr(pairing.PairingStore, '__init__', forbidden)
         boundary.setattr(Path, 'mkdir', forbidden)
-        observed = pairing.PairingStore(initialize=False)
-        assert observed.is_approved('telegram', '1')
-        assert not observed.is_approved('telegram', 'foreign-unapproved')
+        with pairing_observer(s.e)._pairing_custody(ident()):
+            assert pairing.PairingStore.is_approved_storage_readonly('telegram', '1')
+            assert not pairing.PairingStore.is_approved_storage_readonly('telegram', 'foreign-unapproved')
     assert private_tree_snapshot(s.e.home) == before
 
 
-def test_native_noninitializing_pairing_constructor_refuses_missing_directory_without_creating_it(env):
+def test_native_static_pairing_missing_storage_is_not_created_and_caller_refuses_it(env):
     from gateway import pairing
     env.monkeypatch.setattr(pairing, 'PAIRING_DIR', None)
     PairingStore = pairing.PairingStore
     before = private_tree_snapshot(env.home)
-    with pytest.raises(REFUSED): PairingStore(initialize=False)
+    assert not PairingStore.is_approved_storage_readonly('telegram', '1')
+    with pytest.raises(REFUSED):
+        with pairing_observer(env)._pairing_custody(ident()):
+            pytest.fail('missing pairing custody accepted')
     assert private_tree_snapshot(env.home) == before
 
 
-@pytest.mark.parametrize('initialize', [None, 0, 1, 'false', {}, []])
-def test_native_pairing_initialization_option_requires_exact_boolean_before_effects(env, initialize):
+@pytest.mark.parametrize('platform', [None, 0, 1, '', {}, [], 'unsafe/path', 'x' * 129])
+def test_native_static_pairing_requires_valid_platform_before_effects(env, platform):
     from gateway import pairing
     env.monkeypatch.setattr(pairing, 'PAIRING_DIR', None)
     PairingStore = pairing.PairingStore
     before = private_tree_snapshot(env.home)
-    with pytest.raises((ValueError, TypeError)): PairingStore(initialize=initialize)
+    with pytest.raises((ValueError, TypeError)): PairingStore.is_approved_storage_readonly(platform, '1')
     assert private_tree_snapshot(env.home) == before
 
 
-@pytest.mark.parametrize('unsafe', ['public-directory', 'symlink-directory'])
-def test_native_noninitializing_pairing_constructor_refuses_unproved_directory_custody(pairing_grant, unsafe):
+@pytest.mark.parametrize('unsafe', ['public-root', 'symlink-directory'])
+def test_native_static_pairing_and_caller_refuse_unproved_directory_custody(pairing_grant, unsafe):
     from gateway.pairing import PairingStore
     s = pairing_grant
-    if unsafe == 'public-directory': s.active.chmod(0o755)
+    if unsafe == 'public-root': s.e.home.chmod(0o755)
     else:
         retained = s.active.with_name('foreign-retained-pairing'); s.active.rename(retained); s.active.symlink_to(retained, target_is_directory=True)
     before = private_tree_snapshot(s.e.home)
-    with pytest.raises(REFUSED): PairingStore(initialize=False)
+    with pytest.raises(REFUSED): PairingStore.is_approved_storage_readonly('telegram', '1')
+    with pytest.raises(REFUSED):
+        with pairing_observer(s.e)._pairing_custody(ident()):
+            pytest.fail('unsafe pairing custody accepted')
     assert private_tree_snapshot(s.e.home) == before
 
 
-def test_native_pairing_alternate_layout_creation_race_is_never_migrated_by_observer(pairing_grant, monkeypatch):
+def test_native_static_pairing_alternate_layout_race_is_never_migrated_and_caller_refuses_it(pairing_grant, monkeypatch):
     from gateway import pairing
     s = pairing_grant
     alternate = (s.e.home / 'pairing' if s.active == s.e.home / 'platforms/pairing'
@@ -824,17 +837,21 @@ def test_native_pairing_alternate_layout_creation_race_is_never_migrated_by_obse
     assert not alternate.exists()
     original = pairing._default_pairing_dir
     expected = []
+    calls = []
     def alternate_after_layout_selection():
         selected = original()
         assert selected == s.active
-        private_document(alternate / 'telegram-approved.json', {
-            'race-foreign': {'approved_at': 1, 'user_name': CANARY}})
-        expected.append(private_tree_snapshot(s.e.home))
+        calls.append(selected)
+        if len(calls) == 2:
+            private_document(alternate / 'telegram-approved.json', {
+                'race-foreign': {'approved_at': 1, 'user_name': CANARY}})
+            expected.append(private_tree_snapshot(s.e.home))
         return selected
     monkeypatch.setattr(pairing, '_default_pairing_dir', alternate_after_layout_selection)
-    observed = pairing.PairingStore(initialize=False)
-    assert len(expected) == 1 and observed._dir == s.active
-    assert observed.is_approved('telegram', '1') and not observed.is_approved('telegram', 'race-foreign')
+    with pytest.raises(REFUSED):
+        with pairing_observer(s.e)._pairing_custody(ident()):
+            assert pairing.PairingStore.is_approved_storage_readonly('telegram', '1')
+    assert len(expected) == 1
     assert private_tree_snapshot(s.e.home) == expected[0]
     assert read(alternate / 'telegram-approved.json')['race-foreign']['user_name'] == CANARY
 

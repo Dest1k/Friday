@@ -2509,8 +2509,566 @@ PROJECT_AFTER = {
 }
 
 
+# Exact current198 DSH project-only successor. Native layers and receipt are retained.
+PROJECT_DSH_CURRENT_SCHEMA = 'friday.ordinary-telegram-project-update.v6'
+PROJECT_DSH_CURRENT_DELTA_SCHEMA = 'friday.dsh-current-project-reviewed-delta.v1'
+PROJECT_DSH_CURRENT_INPUT = 'dfc6fd4a552d9088887746c7329febcf1f4b152f01c81841cd2bb36241a891df'
+PROJECT_DSH_CURRENT_INVENTORY = '4badb3bb935877a7f41d3b3b30a6f25ca070126cd698008c21df83e1be8165f1'
+PROJECT_DSH_CURRENT_RECEIPT = 'ace1b232a41736589c0185821003a74b0502e5aeda5c3ca21bdff39d232b989f'
+PROJECT_DSH_CURRENT_STAMP = '94197aeda7061c67ac163e93e2ba920ae71504bd29c6a0188f3af99e8919f911'
+PROJECT_DSH_CURRENT_ANCESTOR = {
+    'request':'e4ba5af4591331bd65a699b139a5e39dad91e61813b67502dfd656a9cabd85c5',
+    'intent':'a37eeb484a99670aeb86e512bbffb5716d0837b3a599450ff483748e850c5696',
+    'committed':'6c7b2c048e4eb347c11ca3046e5af06871a5c0adbda34eea3e5767f84e85f8fd',
+}
+PROJECT_DSH_CURRENT_HELPER = 'scripts/friday_ordinary_install.py'
+PROJECT_DSH_CURRENT_ADDITION = 'plugins/friday_rework/dsh_current_availability.py'
+PROJECT_DSH_CURRENT_REQUIRED = frozenset('plugins/friday_rework/'+name for name in (
+    'host_runtime.py','runtime_observers.py','stopped_operator.py','user_worker_join.py',
+    'worker_declaration_writer.py','worker_declarations.py','worker_web.py'))
+PROJECT_DSH_CURRENT_OPTIONAL = frozenset({'plugins/friday_rework/adapters/dsh.py'})
+
+
+PROJECT_DSH_CURRENT_HELPERS = frozenset({PROJECT_DSH_CURRENT_HELPER,'scripts/friday_install.py'})
+PROJECT_DSH_CURRENT_REQUEST_FIELDS = frozenset({'schema','seconds','home','previous_input','current_input',
+    'marker','source_receipt','stamp','configuration','profile','launcher','credential_files','native_unit',
+    'transaction_history','predecessor_update','publication_ancestor','reviewed_delta'})
+
+
+def project_current_request_metadata(request):
+    """The immutable typed request, without reopening its mutable before pins."""
+    f = api()
+    f.require(type(request) is dict and set(request) == PROJECT_DSH_CURRENT_REQUEST_FIELDS
+        and request['schema'] == PROJECT_DSH_CURRENT_SCHEMA
+        and type(request['seconds']) is int and 30 <= request['seconds'] <= 7200,
+        'ordinary_project_current198_explicit_request_required')
+
+
+def project_current_source_checked(value, *, cli_only, project_update=None):
+    """Current project source, never archival installation or worker preparation.
+
+    Before commit, only the explicit typed publisher context selects this path.
+    Afterwards the canonical transaction and exact current marker select it.
+    An occupied but incomplete purported transaction is a refusal, never fallback.
+    """
+    f = api()
+    if type(value) is not dict or type(value.get('home')) is not str:
+        f.require(project_update is None,'ordinary_project_current_source_value_required')
+        return None
+    home = Path(value['home'])
+    tx = home/'preparation'/('ordinary-source-update-'+PROJECT_DSH_CURRENT_INPUT)
+    if project_update is None and not os.path.lexists(tx): return None
+    f.require(cli_only is True,'ordinary_project_current_source_cli_only_required')
+    home = f.directory(f.canonical(str(home))); source = f.directory(home/'hermes-agent')
+    committed_context = project_update is None
+    if committed_context:
+        f.directory(tx)
+        f.require(not os.path.lexists(tx/'rolled-back.json'),'ordinary_project_current_source_rolled_back')
+        intent = f.read_json(tx/'intent.json'); committed = f.read_json(tx/'committed.json')
+        intent_fields = {'schema','state','project_only','native_source_unchanged','request_reference',
+            'request_sha256','seconds','previous_input','current_input','publication_ancestor','reviewed_delta',
+            'gateway_started','workers_enabled','before'}
+        commit_fields = {'schema','state','project_only','native_source_unchanged','request_reference',
+            'request_sha256','previous_input','current_input','source_receipt_sha256','gateway_started','workers_enabled'}
+        f.require(type(intent) is dict and set(intent) == intent_fields
+            and type(committed) is dict and set(committed) == commit_fields
+            and intent['state'] == 'SOURCE_UPDATE_CONSUMED_NO_RETRY'
+            and committed['state'] == 'SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED'
+            and all(body['schema'] == 'friday.ordinary-telegram-source-update-transaction.v1'
+                and body['project_only'] is True and body['native_source_unchanged'] is True
+                and body['gateway_started'] is False and body['workers_enabled'] is False
+                for body in (intent,committed)), 'ordinary_project_current_source_committed_proof_required')
+        request_ref = intent['request_reference']
+        f.require(type(request_ref) is dict and set(request_ref) == {'path','sha256'}
+            and encoded(committed['request_reference']) == encoded(request_ref)
+            and intent['request_sha256'] == committed['request_sha256'] == request_ref['sha256'],
+            'ordinary_project_current_source_request_binding_changed')
+        request = f.read_json(f.pin(request_ref))
+    else:
+        request = project_update
+    project_current_request_metadata(request)
+    f.require(request['home'] == str(home),'ordinary_project_current_source_home_changed')
+    previous = f.read_json(f.pin(request['previous_input']))
+    current = f.read_json(f.pin(request['current_input']))
+    f.require(encoded(value) == encoded(current) and current.get('home') == str(home)
+        and encoded(current['product']['runtime']) == encoded({'enabled':False}) and current['product']['runtime']['enabled'] is False,
+        'ordinary_project_current_source_exact_value_required')
+    plugins_after = project_current_delta(request,previous,current)
+    if committed_context:
+        f.require(all(encoded(body['previous_input']) == encoded(request['previous_input'])
+            and encoded(body['current_input']) == encoded(request['current_input']) for body in (intent,committed))
+            and encoded(intent['seconds']) == encoded(request['seconds'])
+            and encoded(intent['publication_ancestor']) == encoded(request['publication_ancestor'])
+            and encoded(intent['reviewed_delta']) == encoded(request['reviewed_delta'])
+            and committed['source_receipt_sha256'] == PROJECT_DSH_CURRENT_RECEIPT,
+            'ordinary_project_current_source_commit_binding_changed')
+        before = intent['before']; expected_names = set(plugins_after) | {f.MARKER}
+        f.require(type(before) is dict and set(before) == expected_names
+            and type(before[f.MARKER]) is dict and set(before[f.MARKER]) == {'sha256','mode'}
+            and before[f.MARKER]['sha256'] == request['marker']['sha256']
+            and type(before[f.MARKER]['mode']) is int and before[f.MARKER]['mode'] in (0o600,0o644)
+            and all(before[n] is None if previous['project_files'].get(n) is None else
+                type(before[n]) is dict and set(before[n]) == {'sha256','mode'}
+                and before[n]['sha256'] == previous['project_files'][n]
+                and type(before[n]['mode']) is int and before[n]['mode'] in (0o600,0o644)
+                for n in plugins_after), 'ordinary_project_current_source_before_metadata_changed')
+    # Old installer leaf references are inert metadata authenticated by the exact
+    # old198 input. Only the current project and source lock are consumed here.
+    files = current['project_files']
+    f.require(len(files) == 477 and Path(f.__file__).resolve() == f.ROOT/'scripts/friday_install.py'
+        and f.digest(f.owned_file(Path(f.__file__).resolve())) == files['scripts/friday_install.py'],
+        'ordinary_project_current_source_consumer_origin_changed')
+    for name,expected in files.items():
+        path = Path(name)
+        f.require(type(name) is str and not path.is_absolute() and name == path.as_posix()
+            and not any(part in ('.','..') for part in path.parts)
+            and type(expected) is str and len(expected) == 64
+            and all(c in '0123456789abcdef' for c in expected)
+            and f.digest(f.owned_file(f.ROOT/name)) == expected,
+            'ordinary_project_current_source_pin_changed')
+    required = {str(p.relative_to(f.ROOT)) for relative in ('plugins/friday_rework','patches/hermes')
+        for p in (f.ROOT/relative).rglob('*') if p.is_file() or p.is_symlink()}
+    f.require(required <= set(files),'ordinary_project_current_source_extra_file')
+    lock = f.read_json(f.pin(current['sources_lock']))
+    donors = {row['id']:row for row in lock['repositories']}
+    f.require({'hermes','dsh','a0'} <= set(donors),'complete_donor_pins_required')
+    f.require(encoded(request['source_receipt']) == encoded({'path':str(home/'hermes-agent.source.json'),
+            'sha256':PROJECT_DSH_CURRENT_RECEIPT})
+        and encoded(request['stamp']) == encoded({'path':str(source/'install-stamp.json'),'sha256':PROJECT_DSH_CURRENT_STAMP})
+        and f.digest(f.owned_file(home/'hermes-agent.source.json',private=True)) == PROJECT_DSH_CURRENT_RECEIPT
+        and f.digest(f.owned_file(source/'install-stamp.json',private=True)) == PROJECT_DSH_CURRENT_STAMP,
+        'ordinary_project_current_source_native_pins_changed')
+    receipt = f.read_json(home/'hermes-agent.source.json')
+    stamp = f.read_json(source/'install-stamp.json')
+    f.require(len(receipt.get('layers',[])) == 198 and len(receipt.get('files',{})) == 17888
+        and receipt.get('source_file_count') == 17730
+        and encoded(stamp.get('fridaySource')) == encoded({'baseTree':receipt['base_tree'],'layers':receipt['layers']})
+        and encoded(stamp.get('commit')) == encoded(receipt['commit']) and stamp.get('dirty') is True,
+        'ordinary_project_current_source_native_identity_changed')
+    f.composition_checked(current,source,receipt,donors['hermes'])
+    project_current_history(home,request)
+    marker_raw = f.owned_file(home/f.MARKER,private=True); marker = f.read_json(home/f.MARKER)
+    installed = request['current_input'] if marker.get('input_sha256') == request['current_input']['sha256'] else request['previous_input']
+    installed_files = files if encoded(installed) == encoded(request['current_input']) else previous['project_files']
+    f.require(marker.get('schema') == f.SCHEMA and marker.get('state') == 'INSTALLED_TEMPLATE_INCOMPLETE'
+        and marker.get('completion_stage') == 'TELEGRAM_ORDINARY'
+        and marker.get('home') == str(home) and marker.get('source') == str(source)
+        and marker.get('runtime_ready') is False and marker.get('worker_state') == 'BOTH_WORKERS_PREPARATION_PENDING'
+        and marker.get('input_sha256') == installed['sha256']
+        and (not committed_context or encoded(installed) == encoded(request['current_input']))
+        and (encoded(installed) == encoded(request['current_input']) or f.digest(marker_raw) == request['marker']['sha256'])
+        and marker.get('source_receipt_sha256') == PROJECT_DSH_CURRENT_RECEIPT,
+        'ordinary_project_current_source_marker_changed')
+    ancestor = f.read_json(f.pin(request['publication_ancestor']['request']))
+    operator_root = f.ROOT if encoded(installed) == encoded(request['current_input']) else Path(ancestor['candidate_project'])
+    f.require(encoded(marker.get('ordinary_gateway',{}).get('operator_entry')) == encoded({'input':installed,
+            'script':{'path':str(operator_root/'scripts/friday_native.py'),
+                'sha256':installed_files['scripts/friday_native.py']}})
+        and marker['ordinary_gateway'].get('source_receipt_sha256') == PROJECT_DSH_CURRENT_RECEIPT,
+        'ordinary_project_current_source_operator_entry_changed')
+    plugins = {n:h for n,h in installed_files.items() if n.startswith('plugins/friday_rework/')}
+    f.require(encoded(marker.get('plugin_files')) == encoded(plugins),'ordinary_project_current_source_plugin_marker_changed')
+    checked_plugin_inventory(home,plugins)
+    if 'tls' in current['product']['dashboard']:
+        expected_tls = {relative:current['dashboard_tls'][key]['sha256']
+            for key,relative in current['product']['dashboard']['tls'].items()}
+        f.require(encoded(marker.get('tls_files')) == encoded(expected_tls)
+            and all(f.digest(f.owned_file(home/n,private=True)) == sha for n,sha in expected_tls.items()),
+            'installed_dashboard_tls_changed')
+    f.native_packages(source)
+    from hermes_cli.friday_ordinary_gateway import check
+    from hermes_cli.friday_user_scope import authority
+    with authority(home): check(home,role=False)
+    return home,donors
+
+
+def project_current_delta(request, previous, current):
+    """Bind the reviewed final hashes without widening historical project predicates."""
+    f = api(); delta = f.read_json(f.pin(request['reviewed_delta']))
+    old = previous.get('project_files'); new = current.get('project_files')
+    f.require(type(old) is dict and type(new) is dict
+        and request['previous_input']['sha256'] == PROJECT_DSH_CURRENT_INPUT
+        and len(old) == 476 and len(new) == 477
+        and f.digest(encoded(old)) == PROJECT_DSH_CURRENT_INVENTORY
+        and encoded({k:v for k,v in previous.items() if k != 'project_files'}) ==
+            encoded({k:v for k,v in current.items() if k != 'project_files'})
+        and set(new) == set(old) | {PROJECT_DSH_CURRENT_ADDITION}
+        and PROJECT_DSH_CURRENT_ADDITION not in old,
+        'ordinary_project_exact_current198_inventory_required')
+    f.require(type(delta) is dict and set(delta) == {'schema','previous_input_sha256',
+        'previous_project_files_sha256','source_receipt_sha256','native_layers','native_files',
+        'project_file_updates'} and delta['schema'] == PROJECT_DSH_CURRENT_DELTA_SCHEMA
+        and delta['previous_input_sha256'] == PROJECT_DSH_CURRENT_INPUT
+        and delta['previous_project_files_sha256'] == PROJECT_DSH_CURRENT_INVENTORY
+        and delta['source_receipt_sha256'] == PROJECT_DSH_CURRENT_RECEIPT
+        and type(delta['native_layers']) is int and delta['native_layers'] == 198
+        and type(delta['native_files']) is int and delta['native_files'] == 17888,
+        'ordinary_project_reviewed_current198_delta_required')
+    rows = delta['project_file_updates']
+    f.require(type(rows) is list and all(type(row) is dict and set(row) ==
+        {'path','before_sha256','after_sha256'} and type(row['path']) is str for row in rows),
+        'ordinary_project_exact_reviewed_delta_rows_required')
+    names = [row['path'] for row in rows]
+    changed = {n for n in new if new[n] != old.get(n)}
+    plugins = changed - PROJECT_DSH_CURRENT_HELPERS
+    f.require(names == sorted(set(names)) and set(names) == changed
+        and PROJECT_DSH_CURRENT_REQUIRED | {PROJECT_DSH_CURRENT_ADDITION} <= plugins
+        and plugins <= PROJECT_DSH_CURRENT_REQUIRED | PROJECT_DSH_CURRENT_OPTIONAL | {PROJECT_DSH_CURRENT_ADDITION}
+        and PROJECT_DSH_CURRENT_HELPERS <= changed
+        and all(row['before_sha256'] == old.get(row['path'])
+            and row['after_sha256'] == new[row['path']]
+            and type(row['after_sha256']) is str and len(row['after_sha256']) == 64
+            and all(c in '0123456789abcdef' for c in row['after_sha256'])
+            for row in rows), 'ordinary_project_exact_reviewed_current198_delta_required')
+    f.require(Path(__file__).resolve() == f.ROOT/PROJECT_DSH_CURRENT_HELPER
+        and f.digest(f.owned_file(Path(__file__).resolve())) == new[PROJECT_DSH_CURRENT_HELPER],
+        'ordinary_project_exact_current198_helper_origin_required')
+    return {n:new[n] for n in sorted(plugins)}
+
+
+def project_current_history(home, request):
+    """Authenticate the actual V3 commit and retain its engineering ancestry unchanged."""
+    f = api(); refs = request['publication_ancestor']
+    f.require(type(refs) is dict and set(refs) == set(PROJECT_DSH_CURRENT_ANCESTOR)
+        and all(type(refs[n]) is dict and refs[n].get('sha256') == sha
+            for n,sha in PROJECT_DSH_CURRENT_ANCESTOR.items())
+        and encoded(request['predecessor_update']) == encoded(refs['request']),
+        'ordinary_project_exact_current198_ancestor_required')
+    paths = {n:f.pin(ref) for n,ref in refs.items()}
+    old = f.read_json(paths['request'])
+    tx = home/'preparation'/('ordinary-source-update-v45-'+refs['request']['sha256'][:16])
+    f.require(paths['intent'] == tx/'intent.json' and paths['committed'] == tx/'committed.json'
+        and not os.path.lexists(tx/'rolled-back.json')
+        and old.get('schema') == 'friday.ordinary-telegram-source-update.v46'
+        and old.get('home') == str(home) and encoded(old.get('current_input')) == encoded(request['previous_input'])
+        and old.get('project_inventory_sha256') == PROJECT_DSH_CURRENT_INVENTORY,
+        'ordinary_project_exact_current198_predecessor_required')
+    intent = f.read_json(paths['intent']); committed = f.read_json(paths['committed'])
+    f.require(intent.get('state') == 'SOURCE_UPDATE_INTENT'
+        and committed.get('state') == 'SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED'
+        and all(body.get('schema') == 'friday.ordinary-telegram-source-update-transaction.v1'
+            and body.get('request_sha256') == refs['request']['sha256']
+            and encoded(body.get('previous_input')) == encoded(old['previous_input'])
+            and encoded(body.get('current_input')) == encoded(request['previous_input'])
+            and body.get('gateway_started') is False and body.get('workers_enabled') is False
+            for body in (intent,committed))
+        and committed.get('source_receipt_sha256') == request['source_receipt']['sha256']
+            == PROJECT_DSH_CURRENT_RECEIPT
+        and encoded(intent.get('source_receipt')) == encoded(old['source_receipt']),
+        'ordinary_project_current198_commit_binding_changed')
+    for field,name in {'source_receipt':'hermes-agent.source.json','marker':'FRIDAY-INSTALL.json',
+            'stamp':'hermes-agent/install-stamp.json'}.items():
+        f.require(f.digest(f.owned_file(tx/'before'/name,private=True)) == old[field]['sha256'],
+            'ordinary_project_current198_original_beforeimage_changed')
+    before_receipt = f.read_json(tx/'before/hermes-agent.source.json')
+    before_marker = f.read_json(tx/'before/FRIDAY-INSTALL.json')
+    f.require(len(before_receipt.get('layers',[])) == 197
+        and before_marker.get('input_sha256') == old['previous_input']['sha256']
+        and before_marker.get('source_receipt_sha256') == old['source_receipt']['sha256']
+        and f.digest(f.owned_file(tx/'hermes-agent.source.json',private=True)) == PROJECT_DSH_CURRENT_RECEIPT
+        and f.digest(f.owned_file(tx/'install-stamp.json',private=True)) == request['stamp']['sha256']
+            == PROJECT_DSH_CURRENT_STAMP, 'ordinary_project_current198_original_images_changed')
+    # The original engineering156 request/receipt remain historical facts. In
+    # particular its after[] receipt and later corrected receipt are not conflated.
+    engineering_ref = old['predecessor_request']; engineering = f.read_json(f.pin(engineering_ref))
+    engineering_tx = home/'preparation'/('ordinary-source-update-successor-'+engineering_ref['sha256'])
+    f.require(Path(engineering_ref['path']) == engineering_tx/'request.json'
+        and engineering.get('schema') == 'frw.root.engineering152-successor-request.v1'
+        and engineering.get('home') == str(home)
+        and engineering.get('current_input',{}).get('sha256') == old['predecessor_current_input_sha256'],
+        'ordinary_project_current198_engineering_ancestor_changed')
+    engineering_commit = f.read_json(engineering_tx/'committed.json')
+    f.require(engineering_commit.get('state') == 'SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED'
+        and encoded(engineering_commit.get('current_input')) == encoded(engineering['current_input'])
+        and encoded(engineering_commit.get('previous_input')) == encoded(engineering['previous_input'])
+        and engineering_commit.get('source_receipt_sha256') == old['predecessor_receipt_sha256']
+        and engineering_commit.get('gateway_started') is False
+        and engineering_commit.get('workers_enabled') is False
+        and not os.path.lexists(engineering_tx/'rolled-back.json'),
+        'ordinary_project_current198_engineering_commit_changed')
+    f.pin(old['previous_input']); f.pin(old['current_input'])
+    actual = {}; base = {}
+    roots = (TRANSACTION,'preparation/ordinary-gateway-archive',
+        str(engineering_tx.relative_to(home)),str(tx.relative_to(home)))
+    for index,name in enumerate(roots):
+        for path in f.directory(home/name).rglob('*'):
+            f.require(not path.is_symlink(),'ordinary_update_history_link_refused')
+            if path.is_dir(): f.directory(path)
+            else:
+                key = str(path.relative_to(home)); actual[key] = f.digest(f.owned_file(path,private=True))
+                if index < 2: base[key] = actual[key]
+    f.require(encoded(base) == encoded(old['transaction_history']) and type(request['transaction_history']) is dict
+        and encoded(actual) == encoded(request['transaction_history'])
+        and f.read_json(home/TRANSACTION/'committed.json').get('state') ==
+            'SOURCE_ACTIVATED_NOT_RUNTIME_ACCEPTED', 'ordinary_project_current198_history_changed')
+    return actual
+
+
+@contextlib.contextmanager
+def project_current_admission_locks(home, budget):
+    """Retain existing admission locks in every native root/named-profile store.
+
+    No PluginState constructor property that initializes storage is used. The
+    existing native readonly directory API resolves the namespace under authority.
+    """
+    from hermes_cli.plugins_state import PluginState
+    from hermes_cli.friday_user_scope import authority
+    f = api(); profiles = f.directory(home/'profiles')
+    names = sorted(p.name for p in profiles.iterdir())
+    homes = [home]+[f.directory(profiles/n) for n in names]
+    held = []; directories = {}
+    def identity(path):
+        f.directory(path); s = path.lstat()
+        return tuple(getattr(s,k) for k in ('st_dev','st_ino','st_uid','st_mode'))
+    directories[profiles] = identity(profiles)
+    try:
+        for profile_home in homes:
+            budget.check(reserve=15)
+            with authority(profile_home):
+                directory = PluginState('friday_rework').directory_storage_readonly
+            f.require(directory.parent == profile_home/'plugin-data',
+                'ordinary_project_current198_admission_scope_changed')
+            for path in (profile_home,directory.parent,directory): directories[path] = identity(path)
+            path = directory/'admission.lock'; state = update_file_state(path)
+            f.require(state is not None and state['data'] == b'v1\n' and state['mode'] == 0o600,
+                'ordinary_project_current198_existing_admission_required')
+            fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+            try:
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                info = os.fstat(fd)
+                f.require(tuple(getattr(info,k) for k in ('st_dev','st_ino','st_uid','st_nlink','st_mode'))
+                    == state['identity'],'ordinary_project_current198_admission_identity_changed')
+            except BaseException:
+                os.close(fd); raise
+            held.append((path,fd,state))
+        def prove():
+            f.require(sorted(p.name for p in profiles.iterdir()) == names
+                and all(identity(p) == value for p,value in directories.items()),
+                'ordinary_project_current198_profile_custody_changed')
+            for path,fd,state in held:
+                info = os.fstat(fd)
+                f.require(tuple(getattr(info,k) for k in ('st_dev','st_ino','st_uid','st_nlink','st_mode'))
+                    == state['identity'] and same_update_file(path,state),
+                    'ordinary_project_current198_admission_identity_changed')
+        prove(); yield prove; prove()
+    finally:
+        for path,fd,state in reversed(held): os.close(fd)
+
+
+def project_current_inputs(request, budget):
+    """Exact current198 admission; the v1-v5 validators below stay unchanged."""
+    f = api(); budget.check(reserve=15)
+    fields = {'schema','seconds','home','previous_input','current_input','marker','source_receipt',
+        'stamp','configuration','profile','launcher','credential_files','native_unit',
+        'transaction_history','predecessor_update','publication_ancestor','reviewed_delta'}
+    f.require(type(request) is dict and set(request) == fields
+        and request['schema'] == PROJECT_DSH_CURRENT_SCHEMA
+        and type(request['seconds']) is int and 30 <= request['seconds'] <= 7200,
+        'ordinary_project_current198_explicit_request_required')
+    home = f.directory(f.canonical(request['home'])); source = f.directory(home/'hermes-agent')
+    f.require(os.environ.get('HERMES_HOME') == str(home),'ordinary_update_exact_environment_required')
+    paths = {name:budget.call(f.pin,request[name]) for name in ('previous_input','current_input',
+        'marker','source_receipt','stamp','configuration','profile','launcher','native_unit')}
+    for name,path in {'marker':home/f.MARKER,'source_receipt':home/'hermes-agent.source.json',
+        'stamp':source/'install-stamp.json','configuration':home/'config.yaml',
+        'profile':home/'FRIDAY-PROFILE.json','launcher':source/'.hermes/bin/hermes'}.items():
+        f.require(paths[name] == path,'ordinary_update_exact_installed_inputs_required')
+    previous = f.read_json(paths['previous_input']); current = f.read_json(paths['current_input'])
+    expected = project_current_delta(request,previous,current)
+    f.require(current.get('home') == str(home) and encoded(current['product']['runtime']) == encoded({'enabled':False}) and current['product']['runtime']['enabled'] is False
+        and encoded(request['previous_input']) != encoded(request['current_input']),
+        'ordinary_update_operational_settings_changed')
+    _,donors = budget.call(f.spec_checked,current,cli_only=True,project_update=request)
+    marker = f.read_json(paths['marker']); receipt = f.read_json(paths['source_receipt'])
+    plugins = {n:h for n,h in previous['project_files'].items() if n.startswith('plugins/friday_rework/')}
+    f.require(marker.get('schema') == f.SCHEMA and marker.get('completion_stage') == 'TELEGRAM_ORDINARY'
+        and marker.get('state') == 'INSTALLED_TEMPLATE_INCOMPLETE'
+        and marker.get('home') == str(home) and marker.get('source') == str(source)
+        and marker.get('runtime_ready') is False
+        and marker.get('worker_state') == 'BOTH_WORKERS_PREPARATION_PENDING'
+        and marker.get('input_sha256') == PROJECT_DSH_CURRENT_INPUT
+        and marker.get('source_receipt_sha256') == request['source_receipt']['sha256'] == PROJECT_DSH_CURRENT_RECEIPT
+        and request['stamp']['sha256'] == PROJECT_DSH_CURRENT_STAMP
+        and marker.get('ordinary_gateway',{}).get('source_receipt_sha256') == PROJECT_DSH_CURRENT_RECEIPT
+        and encoded(marker['ordinary_gateway'].get('operator_entry',{}).get('input')) == encoded(request['previous_input'])
+        and encoded(marker.get('plugin_files')) == encoded(plugins) and len(plugins) == 51
+        and len(receipt.get('layers',[])) == 198 and len(receipt.get('files',{})) == 17888
+        and receipt.get('source_file_count') == 17730,
+        'ordinary_project_exact_current198_installed_required')
+    old_entry = marker['ordinary_gateway']['operator_entry']['script']
+    old_script = f.pin(old_entry)
+    ancestor = f.read_json(f.pin(request['publication_ancestor']['request']))
+    f.require(old_script == Path(ancestor['candidate_project'])/'scripts/friday_native.py'
+        and old_entry['sha256'] == previous['project_files']['scripts/friday_native.py'],
+        'ordinary_project_current198_previous_operator_changed')
+    checked_plugin_inventory(home,plugins)
+    for name in expected:
+        f.require(f.digest(f.owned_file(f.ROOT/name)) == expected[name],
+            'ordinary_update_worker_plugin_source_changed')
+    budget.call(f.composition_checked,previous,source,receipt,donors['hermes'])
+    budget.call(f.composition_checked,current,source,receipt,donors['hermes'])
+    project_current_history(home,request)
+    f.require(all(f.digest(f.owned_file(home/name,private=True)) == sha
+        for name,sha in marker['profile_files'].items() if name != 'config.yaml'),
+        'ordinary_update_profile_changed')
+    credentials = request['credential_files']
+    f.require(type(credentials) is dict and set(credentials) == {'.env','auth.json'},
+        'ordinary_update_credential_pins_required')
+    for name,ref in credentials.items():
+        f.require(not os.path.lexists(home/name) if ref is None else f.pin(ref) == home/name,
+            'ordinary_update_credential_pin_changed')
+    f.native_packages(source)
+    from hermes_cli.friday_ordinary_gateway import check
+    check(home,role=False)
+    tx = home/'preparation'/('ordinary-source-update-'+request['previous_input']['sha256'])
+    f.directory(tx.parent)
+    f.require(not os.path.lexists(tx),'ordinary_update_consumed_no_retry')
+    return home,source,previous,current,marker,receipt,donors,tx
+
+
+def project_current_update(request, request_path, budget):
+    """Publish only reviewed plugin files through the existing native custody/CAS path."""
+    import copy
+    f = api(); home = f.directory(f.canonical(request['home']))
+    fd = os.open(home,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); directories = None
+    try:
+        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        home,source,previous,current,marker,receipt,donors,tx = project_current_inputs(request,budget)
+        expected = project_current_delta(request,previous,current)
+        names = [*sorted(expected),f.MARKER]
+        pm_name = 'installs/'+f.digest(str(source).encode('utf-8'))[:16]+'/.install.lock'
+        directories = SourceUpdateDirectories(home,[*names,'preparation/.project-only-custody',
+            'hermes-agent/.project-only-custody',pm_name],set())
+        f.require(SourceUpdateDirectories.identity(os.fstat(fd)) == directories.identities[''],
+            'ordinary_project_home_lock_generation_changed')
+        with stopped_consumers(home,request['native_unit'],budget) as native_prove, \
+                retained_build_lock(source) as build_prove, retained_pm_lock(home,source) as pm_prove, \
+                project_current_admission_locks(home,budget) as admission_prove:
+            from gateway import host_rendezvous as hr
+            role_directory = f.directory(hr.host_state_dir())
+            role_identity = SourceUpdateDirectories.identity(role_directory.lstat())
+            role_states = {role:(hr.lock_path(role),update_file_state(hr.lock_path(role)))
+                for role in (hr.ROLE_GATEWAY,hr.ROLE_SERVE,hr.ROLE_DESKTOP_SERVE)}
+            f.require(all(state is not None and hr.owns_host_lock(role)
+                for role,(path,state) in role_states.items()),'ordinary_project_native_role_custody_required')
+            def prove(*,forward=True):
+                f.require(SourceUpdateDirectories.identity(os.fstat(fd)) == directories.identities[''],
+                    'ordinary_project_home_lock_generation_changed')
+                directories.prove(); native_prove(); build_prove(); pm_prove(); admission_prove()
+                f.require(SourceUpdateDirectories.identity(role_directory.lstat()) == role_identity
+                    and all(hr.owns_host_lock(role) and same_update_file(path,state)
+                    for role,(path,state) in role_states.items()),'ordinary_project_native_role_custody_changed')
+                budget.check(reserve=15 if forward else 0)
+            request_state = update_file_state(request_path)
+            f.require(request_state is not None and request_state['mode'] == 0o600
+                and encoded(json.loads(request_state['data'],object_pairs_hook=f.unique)) == encoded(request),
+                'ordinary_update_request_changed')
+            project_current_inputs(request,budget)
+            saved = {n:update_file_state(home/n,directories.parent_fd(n)) for n in names}
+            pins = {n:previous['project_files'].get(n) for n in expected}; pins[f.MARKER] = request['marker']['sha256']
+            f.require(all((row is None and pins[n] is None) or (row is not None
+                and row['mode'] in (0o600,0o644) and f.digest(row['data']) == pins[n])
+                for n,row in saved.items()),'ordinary_update_beforeimage_changed')
+            retained_paths = {n:Path(request[n]['path']) for n in ('previous_input','current_input',
+                'source_receipt','stamp','configuration','profile','launcher','native_unit','reviewed_delta')}
+            retained_paths.update({n:home/n for n in ('.env','auth.json')})
+            retained = {n:update_file_state(path) for n,path in retained_paths.items()}
+            f.require(all(state is not None and f.digest(state['data']) == request[n]['sha256']
+                for n,state in retained.items() if n not in ('.env','auth.json')),
+                'ordinary_project_retained_pin_changed')
+            for n in ('.env','auth.json'):
+                state = retained[n]; ref = request['credential_files'][n]
+                f.require(state is None if ref is None else state is not None
+                    and f.digest(state['data']) == ref['sha256'],'ordinary_update_credential_pin_changed')
+            def unchanged(*,forward=True,composition=False):
+                prove(forward=forward)
+                f.require(same_update_file(request_path,request_state)
+                    and all(same_update_file(retained_paths[n],state) for n,state in retained.items()),
+                    'ordinary_project_retained_file_changed')
+                project_current_history(home,request)
+                if composition:
+                    budget.call(f.spec_checked,current,cli_only=True,project_update=request)
+                    budget.call(f.composition_checked,current,source,receipt,donors['hermes'])
+                prove(forward=forward)
+            updated = copy.deepcopy(marker)
+            updated['input_sha256'] = request['current_input']['sha256']
+            updated['plugin_files'] = {n:h for n,h in current['project_files'].items() if n.startswith('plugins/friday_rework/')}
+            updated['ordinary_gateway']['operator_entry'] = {'input':request['current_input'],
+                'script':{'path':str(f.ROOT/'scripts/friday_native.py'),
+                    'sha256':current['project_files']['scripts/friday_native.py']}}
+            plugin_data = {n:f.owned_file(f.ROOT/n) for n in sorted(expected)}
+            f.require(all(f.digest(data) == expected[n] for n,data in plugin_data.items()),
+                'ordinary_update_worker_plugin_source_changed')
+            unchanged(composition=True)
+            # The previous-input key is consumed even after rollback; changing
+            # request names, hashes or seconds never creates another effect slot.
+            os.mkdir(tx.name,mode=0o700,dir_fd=directories.fds['preparation'])
+            before = tx/'before'; before.mkdir(mode=0o700)
+            for name,row in saved.items():
+                budget.check(reserve=15)
+                if row is not None:
+                    private_parents(before,name); write(before/name,row['data'])
+            budget.check(reserve=15)
+            write(tx/'intent.json',encoded({'schema':'friday.ordinary-telegram-source-update-transaction.v1',
+                'state':'SOURCE_UPDATE_CONSUMED_NO_RETRY','project_only':True,'native_source_unchanged':True,
+                'request_sha256':f.digest(request_state['data']),
+                'request_reference':{'path':str(f.canonical(str(request_path))),'sha256':f.digest(request_state['data'])},
+                'seconds':request['seconds'],
+                'previous_input':request['previous_input'],'current_input':request['current_input'],
+                'publication_ancestor':request['publication_ancestor'],'reviewed_delta':request['reviewed_delta'],
+                'gateway_started':False,'workers_enabled':False,
+                'before':{n:None if row is None else {'sha256':f.digest(row['data']),'mode':row['mode']}
+                    for n,row in saved.items()}}),0o400)
+            sync_directory(before); sync_directory(tx); sync_directory(tx.parent)
+            owned = {}; commit_started = False
+            try:
+                unchanged()
+                for name,data in [*plugin_data.items(),(f.MARKER,encoded(updated))]:
+                    unchanged()
+                    publish_update_file(home/name,data,saved[name]['mode'] if saved[name] is not None else 0o600,
+                        saved[name],owned,name,parent_fd=directories.parent_fd(name))
+                from hermes_cli.friday_ordinary_gateway import check
+                check(home,role=False); checked_plugin_inventory(home,updated['plugin_files'])
+                budget.call(f.inspect,current,request['current_input']['sha256'],project_update=request)
+                unchanged(composition=True)
+                f.require(all(same_update_file(home/n,owned[n],directories.parent_fd(n)) for n in names),
+                    'ordinary_update_commit_ownership_changed')
+                commit_started = True
+                write(tx/'committed.json',encoded({'schema':'friday.ordinary-telegram-source-update-transaction.v1',
+                    'state':'SOURCE_UPDATED_NOT_RUNTIME_ACCEPTED',
+                    'request_reference':{'path':str(f.canonical(str(request_path))),'sha256':f.digest(request_state['data'])},
+                    'request_sha256':f.digest(request_state['data']),
+                    'project_only':True,'native_source_unchanged':True,
+                    'previous_input':request['previous_input'],'current_input':request['current_input'],
+                    'source_receipt_sha256':request['source_receipt']['sha256'],
+                    'gateway_started':False,'workers_enabled':False}),0o400)
+                sync_directory(tx)
+                return {'state':'TELEGRAM_ORDINARY_PROJECT_UPDATED','ready':False,'gateway_started':False,
+                    'workers_enabled':False,'full_release_accepted':False,'native_source_unchanged':True,
+                    'source_receipt_sha256':request['source_receipt']['sha256']}
+            except BaseException as original:
+                if commit_started and os.path.lexists(tx/'committed.json'):
+                    from scripts.dsh_prepare import StopUnconfirmed
+                    raise StopUnconfirmed('ordinary project commit publication requires reconciliation') from original
+                try:
+                    prove(forward=False); restore_update_files(home,saved,owned,directories)
+                    unchanged(forward=False)
+                    write(tx/'rolled-back.json',encoded({'state':'ROLLED_BACK_OWN_SOURCE_ONLY_NO_RETRY',
+                        'project_only':True,'native_source_unchanged':True}),0o400); sync_directory(tx)
+                except BaseException as restoration:
+                    from scripts.dsh_prepare import StopUnconfirmed
+                    f.remember_secondary(original,restoration)
+                    raise StopUnconfirmed('ordinary project update restoration requires reconciliation') from original
+                raise
+    finally:
+        if directories is not None: directories.close()
+        os.close(fd)
+
+
 def project_update_inputs(request, budget):
     """Exact project-only successors; no donor source layer is introduced."""
+    if type(request) is dict and request.get('schema') == PROJECT_DSH_CURRENT_SCHEMA:
+        return project_current_inputs(request,budget)
     f = api()
     dashboard = type(request) is dict and request.get('schema') == PROJECT_DASHBOARD_SCHEMA
     fields = {'schema','seconds','home','previous_input','current_input','marker','source_receipt',
@@ -2667,6 +3225,8 @@ def project_update_inputs(request, budget):
 
 def project_update(request, request_path, budget):
     """Existing ordinary custody and journal, restricted to the reviewed installed plugin delta."""
+    if type(request) is dict and request.get('schema') == PROJECT_DSH_CURRENT_SCHEMA:
+        return project_current_update(request,request_path,budget)
     f = api(); home = f.directory(f.canonical(request['home']))
     fd = os.open(home,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try:
@@ -2786,7 +3346,7 @@ def project_update(request, request_path, budget):
 def update(request, request_path, budget):
     """One finite committed-phase source update; original activation stays intact."""
     if type(request) is dict and request.get('schema') in (PROJECT_UPDATE_SCHEMA, PROJECT_QUALIFICATION_SCHEMA,
-            PROJECT_RUNTIME_SCHEMA, PROJECT_INFERENCE_HELPER_SCHEMA, PROJECT_DASHBOARD_SCHEMA):
+            PROJECT_RUNTIME_SCHEMA, PROJECT_INFERENCE_HELPER_SCHEMA, PROJECT_DASHBOARD_SCHEMA, PROJECT_DSH_CURRENT_SCHEMA):
         return project_update(request,request_path,budget)
     f = api(); home = f.directory(f.canonical(request['home']))
     directories = None
@@ -3957,6 +4517,171 @@ def rebind_inference(request, request_path, budget):
             raise
 
 
+def apply_dsh_current_declarations(request, *, request_path, request_sha256):
+    """Bootstrap the exact installed child after authenticating native source.
+
+    This selects code, not authority. The writer retains the raw request and
+    original clock and obtains all admission/stop/CAS custody itself.
+    """
+    import importlib.util
+    import sys
+    from _friday_install_validation_plugins.friday_rework.worker_declarations import (
+        DSH_CURRENT_APPLY_SCHEMA, _read_reference, _same, require,
+    )
+    require(sys.dont_write_bytecode, 'dsh_current_native_no_bytecode_required')
+    require(type(request) is dict and request.get('schema') == DSH_CURRENT_APPLY_SCHEMA,
+        'dsh_current_exact_apply_schema_required')
+    reference = {'path': str(request_path), 'sha256': request_sha256}
+    require(_same(_read_reference(reference), request), 'dsh_current_raw_request_changed')
+    require(request['previous_input'] == request['current_input'],
+        'dsh_current_installation_input_must_remain_unchanged')
+    current = _read_reference(request['current_input'])
+    f = api()
+    home = f.directory(f.canonical(request['home']))
+    source = f.directory(home / 'hermes-agent')
+    require(current.get('home') == str(home)
+        and os.environ.get('HERMES_HOME') == str(home),
+        'dsh_current_exact_native_home_required')
+    checked_home, donors = f.spec_checked(current, cli_only=True)
+    require(checked_home == home, 'dsh_current_current_input_home_changed')
+    marker = f.read_json(home / f.MARKER)
+    entry = marker['ordinary_gateway']['operator_entry']
+    require(marker.get('input_sha256') == request['current_input']['sha256']
+        and type(entry) is dict and set(entry) == {'script', 'input'}
+        and entry['input'] == request['current_input']
+        and entry['script'] == {'path': str(f.ROOT / 'scripts/friday_native.py'),
+            'sha256': current['project_files']['scripts/friday_native.py']},
+        'dsh_current_native_operator_input_join_changed')
+    for name in ('scripts/friday_install.py', 'scripts/friday_ordinary_install.py',
+            'scripts/friday_native.py'):
+        require(f.digest(f.owned_file(f.ROOT / name)) == current['project_files'][name],
+            'dsh_current_selected_operator_source_changed')
+    receipt_raw = f.owned_file(home / 'hermes-agent.source.json', private=True)
+    require(f.digest(receipt_raw) == marker.get('source_receipt_sha256'),
+        'dsh_current_native_source_receipt_changed')
+    receipt = json.loads(receipt_raw, object_pairs_hook=f.unique)
+    f.composition_checked(current, source, receipt, donors['hermes'])
+
+    prefix = 'plugins/friday_rework/'
+    expected = {name: sha for name, sha in current['project_files'].items()
+        if name.startswith(prefix)}
+    require(expected and prefix + '__init__.py' in expected
+        and marker.get('plugin_files') == expected,
+        'dsh_current_installed_plugin_inventory_changed')
+    child = f.directory(home / 'plugins' / 'friday_rework')
+    expected_directories = {str(parent) for name in expected
+        for parent in Path(name).parents if str(parent).startswith(prefix.rstrip('/'))}
+    actual = set()
+    # Check every installed leaf, including non-Python resources, before init.
+    # No linked directory, extra file, bytecode cache or borrowed inode is code.
+    for directory, directories, files in os.walk(child, followlinks=False):
+        require(str(Path(directory).relative_to(home)) in expected_directories,
+            'dsh_current_installed_plugin_inventory_changed')
+        f.directory(Path(directory))
+        for name in directories:
+            path = Path(directory) / name
+            require(str(path.relative_to(home)) in expected_directories,
+                'dsh_current_installed_plugin_inventory_changed')
+            f.directory(path)
+        for name in files:
+            path = Path(directory) / name
+            relative = str(path.relative_to(home))
+            require(relative in expected and f.digest(f.owned_file(path, private=True))
+                == expected[relative], 'dsh_current_installed_plugin_source_changed')
+            actual.add(relative)
+            require(len(actual) <= len(expected), 'dsh_current_installed_plugin_inventory_changed')
+    require(actual == set(expected), 'dsh_current_installed_plugin_inventory_changed')
+
+    canonical = 'plugins.friday_rework'
+    def loaded_origins():
+        for name, module in tuple(sys.modules.items()):
+            if name != canonical and not name.startswith(canonical + '.'):
+                continue
+            relative = prefix + name[len(canonical):].lstrip('.').replace('.', '/')
+            package = getattr(module, '__path__', None) is not None
+            relative = (relative.rstrip('/') + '/__init__.py' if package else relative + '.py')
+            path = home / relative
+            require(relative in expected and getattr(module, '__file__', None) == str(path)
+                and Path(module.__file__).resolve() == path
+                and getattr(getattr(module, '__spec__', None), 'origin', None) == str(path)
+                and (not package or list(module.__path__) == [str(path.parent)])
+                and f.digest(f.owned_file(path, private=True)) == expected[relative],
+                'dsh_current_loaded_installed_plugin_origin_required')
+
+    loaded_origins()  # Refuse active foreign children; never replace them.
+    require(_same(_read_reference(reference), request)
+        and _same(_read_reference(request['current_input']), current)
+        and f.read_json(home / f.MARKER) == marker,
+        'dsh_current_bootstrap_inputs_changed')
+    f.native_packages(source)  # Native parents retain N + selected project.
+    parents = {name: (getattr(sys.modules[name], '__file__', None),
+        getattr(getattr(sys.modules[name], '__spec__', None), 'origin', None),
+        tuple(sys.modules[name].__path__)) for name in ('plugins', 'tools')}
+    require(str(home / 'plugins') not in sys.path,
+        'dsh_current_installed_parent_search_path_refused')
+    parent = sys.modules['plugins']
+    loaded = sys.modules.get(canonical)
+    attached = getattr(parent, 'friday_rework', None)
+    require(attached is None or attached is loaded,
+        'dsh_current_loaded_installed_plugin_origin_required')
+    loaded_origins()
+    if loaded is None:
+        spec = importlib.util.spec_from_file_location(canonical, child / '__init__.py',
+            submodule_search_locations=[str(child)])
+        require(spec is not None and spec.loader is not None,
+            'dsh_current_installed_plugin_loader_required')
+        loaded = importlib.util.module_from_spec(spec)
+        sys.modules[canonical] = loaded
+        spec.loader.exec_module(loaded)
+        parent.friday_rework = loaded
+    from plugins.friday_rework.worker_declaration_writer import apply_declarations
+    loaded_origins()
+    require(all(parents[name] == (getattr(sys.modules[name], '__file__', None),
+        getattr(getattr(sys.modules[name], '__spec__', None), 'origin', None),
+        tuple(sys.modules[name].__path__)) for name in parents)
+        and str(home / 'plugins') not in sys.path,
+        'dsh_current_native_parent_origin_changed')
+    return apply_declarations(request, request_path=request_path,
+        request_sha256=request_sha256)
+
+
+def dsh_current_declaration_cli(request, *, request_path, request_sha256):
+    """Project only bounded status; journals and private pins stay private."""
+    import sys
+    try:
+        result = apply_dsh_current_declarations(request, request_path=request_path,
+            request_sha256=request_sha256)
+        if (type(result) is not dict
+                or result.get('state') != 'WORKER_DECLARATIONS_REBOUND_CONSUMERS_STOPPED'
+                or result.get('ready') is not False
+                or result.get('workers_enabled') is not False
+                or result.get('native_migration') != 'IMPLEMENTED'
+                or result.get('consumers_started') is not False
+                or result.get('runtime_acceptance') != 'NOT_GRANTED'):
+            # A returned unexpected result can follow commit. Do not label it
+            # a failed preflight or publish any value supplied in that result.
+            print(json.dumps({'state': 'STOP_UNCONFIRMED', 'ready': False,
+                'error': 'worker_declaration_returned_outcome_unconfirmed',
+                'native_migration': 'NO_ACCEPTANCE_CLAIM'}, sort_keys=True))
+            raise SystemExit(3)
+    except Exception as error:
+        native = sys.modules.get('scripts.dsh_prepare')
+        uncertain_type = getattr(native, 'StopUnconfirmed', None)
+        uncertain = isinstance(uncertain_type, type) and isinstance(error, uncertain_type)
+        print(json.dumps({'state': 'STOP_UNCONFIRMED' if uncertain else
+                'FAILED_CLOSED_RECONCILE_EXACT_JOURNAL', 'ready': False,
+            'error': 'worker_declaration_stop_unconfirmed' if uncertain else
+                'worker_declaration_request_failed_closed',
+            'native_migration': 'NO_ACCEPTANCE_CLAIM'}, sort_keys=True))
+        raise SystemExit(3 if uncertain else 2) from None
+    print(json.dumps({'state': 'WORKER_DECLARATIONS_REBOUND_CONSUMERS_STOPPED',
+        'ready': False, 'workers_enabled': False, 'native_migration': 'IMPLEMENTED',
+        'runtime_acceptance': 'NOT_GRANTED'}, sort_keys=True))
+    # The retained ordinary file has a second historical __main__ below this
+    # dispatcher. Finish this exact current invocation before that old entry.
+    raise SystemExit(0)
+
+
 def recovery_main():
     """Dedicated maintenance dispatch; the ordinary installer phases stay unchanged."""
     import sys
@@ -3981,6 +4706,18 @@ def recovery_main():
         if args.phase == 'rebind-worker-declarations':
             # The new maintenance phase owns an externally pinned original
             # clock; it must never inherit this dispatcher's fresh start.
+            # Read only the pure selected-project validator before selecting
+            # the exact current branch; native child code is still cold.
+            from _friday_install_validation_plugins.friday_rework.worker_declarations import (
+                DSH_CURRENT_APPLY_SCHEMA, _read_reference as read_current_request,
+            )
+            current_request = read_current_request(
+                {'path': str(args.request), 'sha256': args.request_sha256})
+            if (type(current_request) is dict
+                    and current_request.get('schema') == DSH_CURRENT_APPLY_SCHEMA):
+                dsh_current_declaration_cli(current_request, request_path=args.request,
+                    request_sha256=args.request_sha256)
+                return
             from plugins.friday_rework.worker_declarations import _read_reference
             from plugins.friday_rework.worker_declaration_writer import apply_declarations
             request = _read_reference({'path': str(args.request), 'sha256': args.request_sha256})

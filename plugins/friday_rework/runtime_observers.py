@@ -245,9 +245,9 @@ def dsh_safety_observe(runtime, home, folder, budget):
 
 
 
-def dsh_observe(runtime, home, folder, budget, *, safety_only=False):
+def dsh_observe(runtime, home, folder, budget, *, safety_only=False, network_only=False, current_policy=False):
     """No-model smoke and DNS/TLS inside the actual native adapter boundary."""
-    from .adapters.dsh import DshAdapter, DshHostConfig
+    from .adapters.dsh import DshAdapter, DshHostConfig, _bootstrap
     from .host_runtime import _pin, _dsh_web
     from .worker_web import web_policy, DSH_NETWORK_PROBE, checked_network_observation
     from .runtime_containment import namespace_exit, checked_binary
@@ -255,16 +255,21 @@ def dsh_observe(runtime, home, folder, budget, *, safety_only=False):
     d = runtime['dsh']; web = _dsh_web(d)
     require(web is not None, 'mandatory_dsh_web_required')
     web.checked_patch(_pin(d['patch']).read())
-    policy = web_policy(web, str(home), runtime['runtime_profile'], time.time())
+    require(not (safety_only and network_only), 'dsh_observation_mode_invalid')
+    if current_policy:
+        from .dsh_current_availability import durable_policy
+        policy = durable_policy(web,str(home),runtime['runtime_profile'])
+    else:
+        require(not network_only, 'dsh_network_only_current_policy_required')
+        policy = web_policy(web, str(home), runtime['runtime_profile'], time.time())
     st = Path('/proc/self/ns/net').stat()
     identity = (Path('/proc/sys/kernel/random/boot_id').read_text().strip(), [st.st_dev, st.st_ino])
-    require(identity == (policy['boot_id'], policy['net_namespace']), 'dsh_web_namespace_changed')
+    if not current_policy:
+        require(identity == (policy['boot_id'], policy['net_namespace']), 'dsh_web_namespace_changed')
     for name in ('home', 'workspace', 'inputs'): (folder / name).mkdir(mode=0o700)
     # Same adapter mounts/bootstrap layout, explicitly without any credential.
     for name, raw in {'web-ca.pem': web.trust_bundle.read(), 'web-network.mjs': DSH_NETWORK_PROBE.encode(),
-        'bootstrap.py': ('import os,sys\nenv={"PATH":sys.argv[1]+":/usr/bin:/bin","HOME":"/job-home",'
-            '"DSH_HOME":"/job-home/dsh","LANG":"C.UTF-8","DSH_TELEMETRY_DISABLED":"1",'
-            '"NODE_EXTRA_CA_CERTS":"/job-input/web-ca.pem"}\nos.execve(sys.argv[2],sys.argv[2:],env)\n').encode()}.items():
+        'bootstrap.py': _bootstrap(web=True)}.items():
         path = folder / 'inputs' / name
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
         with os.fdopen(fd, 'wb') as f: f.write(raw); f.flush(); os.fsync(f.fileno())
@@ -297,7 +302,8 @@ def dsh_observe(runtime, home, folder, budget, *, safety_only=False):
         r, w = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         observation = {}; failure = None; output = ''
         try:
-            limit = min(20 if safety_only else 5, budget.check(reserve=1))
+            cleanup = 30 if current_policy else 1
+            limit = min(20 if safety_only else 5, budget.check(reserve=cleanup))
             row = {'admission_hash':hashlib.sha256(str(folder).encode()).hexdigest(),
                    'supervisor':{'unit':'friday-qualification-construction-only.service'}}
             # Use the exact installed adapter selector. Only its foreground
@@ -310,7 +316,7 @@ def dsh_observe(runtime, home, folder, budget, *, safety_only=False):
             envelope = {'unit': 'friday-qualify-dsh-' + hashlib.sha256(str(folder).encode()).hexdigest()[:24]
                          + '-' + str(count) + '.scope',
                         'memory_bytes': cfg.memory_bytes, 'cpu_percent': cfg.cpu_percent, 'tasks': cfg.tasks,
-                        'boot_id': identity[0], 'deadline': min(budget.deadline - 1, time.monotonic() + limit)}
+                        'boot_id': identity[0], 'deadline': min(budget.deadline - cleanup, time.monotonic() + limit)}
             argv = ['/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--no-ask-password',
                     '--expand-environment=no', '--unit=' + envelope['unit'],
                     '--property=MemoryMax=' + str(cfg.memory_bytes), '--property=MemorySwapMax=0',
@@ -344,9 +350,9 @@ def dsh_observe(runtime, home, folder, budget, *, safety_only=False):
         return {'report':report,'execution':execution,
                 'specimen_sha256':hashlib.sha256(DSH_NATIVE_SAFETY.encode()).hexdigest()}
     smoke = []
-    for kind, args in [('version', ['--version']), ('help', ['--help']),
+    for kind, args in ([] if network_only else [('version', ['--version']), ('help', ['--help']),
                        ('headless-config', ['--profile','headless','--dump-default-config']),
-                       ('headless-help', ['--profile','headless','--help'])]:
+                       ('headless-help', ['--profile','headless','--help'])]):
         _, observed = observe([str(cfg.node.path), str(cfg.cli.path), *args])
         smoke.append({'kind': kind, 'observation': observed})
     urls = [('https://mcp.exa.ai/' if web.profile == 'exa-keyless' else 'https://api.exa.ai/'), *policy['document_probes']]
@@ -354,9 +360,13 @@ def dsh_observe(runtime, home, folder, budget, *, safety_only=False):
     network = checked_network_observation(out, urls)
     adapter._pins()
     st = Path('/proc/self/ns/net').stat()
+    after_policy = (durable_policy(web,str(home),runtime['runtime_profile']) if current_policy else
+        web_policy(web,str(home),runtime['runtime_profile'],time.time()))
     require(identity == (Path('/proc/sys/kernel/random/boot_id').read_text().strip(), [st.st_dev,st.st_ino])
-            and policy == web_policy(web,str(home),runtime['runtime_profile'],time.time()),
+            and policy == after_policy,
             'dsh_web_changed_during_qualification')
-    return {'smoke': smoke, 'network': network, 'network_execution': network_execution,
-            'policy_sha256': web.egress_evidence.sha256}
+    result = {'network': network, 'network_execution': network_execution,
+              'policy_sha256': web.egress_evidence.sha256}
+    if not network_only: result['smoke'] = smoke
+    return result
 

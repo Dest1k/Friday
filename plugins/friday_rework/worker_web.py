@@ -234,9 +234,16 @@ class DshNetworkCheck:
         import os
         import subprocess
         from .adapters.dsh import _identity
+        from hermes_cli.friday_user_scope import check_retained_job
+        # Keep a value snapshot: retained JSON from a new read must not adopt
+        # a changed ingress, principal generation or runtime during a probe.
+        launch_binding = self.adapter._launch_binding(original)
         def current():
             row, root = self.adapter._row(original)
             self.adapter._admit(row)
+            check_retained_job(row)
+            if self.adapter._launch_binding(row) != launch_binding:
+                raise WorkerWebError('worker_web_retained_authority_changed')
             if row.get('host',{}).get('binding',{}).get('runtime') != self.config:
                 raise WorkerWebError('worker_web_runtime_changed')
             self.adapter._pins()
@@ -245,9 +252,15 @@ class DshNetworkCheck:
             st = Path('/proc/self/ns/net').stat()
             return Path('/proc/sys/kernel/random/boot_id').read_text().strip(), [st.st_dev,st.st_ino]
         row, root = current()
-        policy = web_policy(web,self.config['runtime_home'],self.config['runtime_profile'],self.store.clock())
+        durable = 'current_availability' in self.config
+        if durable:
+            from .dsh_current_availability import validate_current, durable_policy
+            validate_current(self.config)
+            policy = durable_policy(web,self.config['runtime_home'],self.config['runtime_profile'])
+        else:
+            policy = web_policy(web,self.config['runtime_home'],self.config['runtime_profile'],self.store.clock())
         before = identity()
-        if before != (policy['boot_id'],policy['net_namespace']):
+        if not durable and before != (policy['boot_id'],policy['net_namespace']):
             raise WorkerWebError('worker_web_namespace_changed')
         urls = [('https://mcp.exa.ai/' if web.profile == 'exa-keyless' else 'https://api.exa.ai/'),*policy['document_probes']]
         left = self.adapter._remaining(row)
@@ -256,9 +269,11 @@ class DshNetworkCheck:
         script = root/'inputs/web-network.mjs'
         if script.read_bytes() != DSH_NETWORK_PROBE.encode():
             raise WorkerWebError('worker_web_probe_changed')
-        argv = self.adapter._boundary(root,[str(self.adapter.config.node.path),'/job-input/web-network.mjs',json.dumps(urls)])
+        argv = self.adapter._confined_boundary(root,[str(self.adapter.config.node.path),'/job-input/web-network.mjs',json.dumps(urls)],keyless=True)
         try:
-            r = subprocess.run(argv,env=self.adapter._environment(),stdin=subprocess.DEVNULL,
+            probe_env = {k:v for k,v in self.adapter._environment().items()
+                if k not in (self.adapter.config.key_name,'EXA_API_KEY')}
+            r = subprocess.run(argv,env=probe_env,stdin=subprocess.DEVNULL,
                                capture_output=True,timeout=min(5,left),check=False)
             if r.returncode != 0 or r.stderr:
                 raise ValueError()
@@ -266,8 +281,13 @@ class DshNetworkCheck:
         except (OSError,subprocess.TimeoutExpired,ValueError,TypeError,KeyError):
             raise WorkerWebError('worker_web_native_dns_tls_refused') from None
         after, _ = current()
+        if durable:
+            validate_current(self.config)
+            after_policy = durable_policy(web,self.config['runtime_home'],self.config['runtime_profile'])
+        else:
+            after_policy = web_policy(web,self.config['runtime_home'],self.config['runtime_profile'],self.store.clock())
         if (_identity(after) != _identity(row) or identity() != before
-                or web_policy(web,self.config['runtime_home'],self.config['runtime_profile'],self.store.clock()) != policy):
+                or after_policy != policy):
             raise WorkerWebError('worker_web_changed_during_probe')
         return {'identity':_identity(after),'policy_sha256':web.egress_evidence.sha256,'observation':v}
 

@@ -1,0 +1,307 @@
+--- a/hermes_cli/friday_workspace_presentation.py
++++ b/hermes_cli/friday_workspace_presentation.py
+@@ -217,7 +217,11 @@
+         data = _private_bytes(output, 'input' + spec['output'], 1000000)
+         if _private_bytes(root, 'validated', 17) != b'NATIVE_VALIDATED\n':
+             raise ExportRefused('invalid_native_output')
+-        validate_native(data, spec['result'])
++        if spec['result'] == 'odp':
++            from tools.scoped_presentation_generated_odp import validate_generated_odp
++            validate_generated_odp(data)
++        else:
++            validate_native(data, spec['result'])
+         return data
+     except (OSError, PresentationRefused):
+         raise ExportRefused('invalid_native_output') from None
+--- /dev/null
++++ b/tools/scoped_presentation_generated_odp.py
+@@ -0,0 +1,249 @@
++"""A bounded destination profile for the private Impress PPTX -> ODP result.
++
++Only friday_workspace_presentation._read_native calls this after renderer custody
++checks. It is not a source/import/edit profile. SVM is never decoded or rendered;
++its framing and passive action families are checked, not its graphics fidelity.
++"""
++import posixpath
++import re
++import struct
++
++from tools.scoped_presentation import (
++    Package, PresentationError, extract_presentation, O, DR, XL, MIME, q,
++)
++from tools.scoped_presentation_write import PresentationRefused, _parts, _odp_structure
++from tools.scoped_presentation_variants import _guard_xml_context
++
++M = 'urn:oasis:names:tc:opendocument:xmlns:manifest:1.0'
++CHART = 'urn:oasis:names:tc:opendocument:xmlns:chart:1.0'
++GDI = 'application/x-openoffice-gdimetafile;windows_formatname="GDIMetaFile"'
++_TOP_XML = {
++    'content.xml': ('document-content', {'scripts', 'font-face-decls', 'automatic-styles', 'body'}),
++    'styles.xml': ('document-styles', {'font-face-decls', 'styles', 'automatic-styles', 'master-styles'}),
++    'meta.xml': ('document-meta', {'meta'}),
++    'settings.xml': ('document-settings', {'settings'}),
++}
++# SvmWriter/SvmReader frame actions with UInt16 type + VersionCompat(version,size).
++# Exclude bitmap/linked graphics, wallpaper, EPS, floating nested metafiles and
++# unclassified actions. Variable payloads remain opaque, never a render proof.
++_SVM_VERSIONS = {
++    109: 3, 111: 2, 113: 4, 129: 1, 130: 1, 132: 1, 133: 1, 134: 1,
++    135: 1, 136: 1, 137: 1, 138: 1, 139: 1, 140: 1, 149: 1, 150: 1, 512: 1,
++}
++_SVM_FIXED = {129: 16, 132: 5, 133: 5, 134: 4, 135: 5, 136: 2,
++              137: 33, 139: 2, 140: 0, 149: 4, 150: 2}
++_TEXT_COMMENTS = {b'XTEXT_PAINTSHAPE_BEGIN', b'XTEXT_PAINTSHAPE_END',
++                  b'XTEXT_EOC', b'XTEXT_EOL', b'XTEXT_EOP'}
++
++
++def _refuse(reason):
++    raise PresentationRefused('generated_odp_' + reason)
++
++
++def _comment(payload):
++    if len(payload) < 10:
++        _refuse('svm_comment')
++    count = struct.unpack_from('<H', payload)[0]
++    if not 1 <= count <= 64 or len(payload) < 10 + count:
++        _refuse('svm_comment')
++    label = payload[2:2 + count]
++    value, size = struct.unpack_from('<iI', payload, 2 + count)
++    if len(payload) != count + 10 + size or not 0 <= value <= 65535:
++        _refuse('svm_comment')
++    if label in _TEXT_COMMENTS or label == b'XPATHSTROKE_SEQ_END':
++        if size or (label != b'XTEXT_EOC' and value):
++            _refuse('svm_comment')
++    elif label == b'XPATHSTROKE_SEQ_BEGIN':
++        # This payload is SvtGraphicStroke, not GfxLink or a nested metafile.
++        # Bound it separately; its path geometry is not semantically interpreted.
++        if value or not 1 <= size <= 65536:
++            _refuse('svm_comment')
++    else:
++        _refuse('svm_comment_type')
++
++
++def _svm(data):
++    if not 61 <= len(data) <= 1_000_000 or data[:6] != b'VCLMTF':
++        _refuse('svm_header')
++    version, size, compression = struct.unpack_from('<HII', data, 6)
++    # SvmWriter v1's uncompressed 49-byte header, with a v1 MapMode(27).
++    if (version, size, compression) != (1, 49, 0):
++        _refuse('svm_header')
++    if struct.unpack_from('<HI', data, 16) != (1, 27):
++        _refuse('svm_mapmode')
++    width, height, count = struct.unpack_from('<iiI', data, 49)
++    if not 1 <= width <= 10_000_000 or not 1 <= height <= 10_000_000 or not 1 <= count <= 20000:
++        _refuse('svm_capacity')
++    offset = 61
++    stack = 0
++    for _ in range(count):
++        if len(data) - offset < 8:
++            _refuse('svm_action_bounds')
++        kind, version, size = struct.unpack_from('<HHI', data, offset)
++        offset += 8
++        if (_SVM_VERSIONS.get(kind) != version or size > 100000
++                or offset + size > len(data) or size != _SVM_FIXED.get(kind, size)):
++            _refuse('svm_action_profile')
++        payload = data[offset:offset + size]
++        if kind == 512:
++            _comment(payload)
++        elif kind == 139:
++            stack += 1
++            if stack > 64:
++                _refuse('svm_stack')
++        elif kind == 140:
++            stack -= 1
++            if stack < 0:
++                _refuse('svm_stack')
++        offset += size
++    if offset != len(data) or stack:
++        _refuse('svm_trailing_or_stack')
++
++
++def _manifest(pkg):
++    root = pkg.xml.get('META-INF/manifest.xml')
++    if root is None or root.tag != q(M, 'manifest') or set(root.attrib) != {q(M, 'version')}:
++        _refuse('manifest_structure')
++    if root.get(q(M, 'version')) not in ('1.2', '1.3', '1.4'):
++        _refuse('manifest_version')
++    entries = {}
++    for node in root:
++        path = node.get(q(M, 'full-path'))
++        if (node.tag != q(M, 'file-entry') or len(node) or (node.text or '').strip()
++                or set(node.attrib) - {q(M, 'full-path'), q(M, 'media-type'), q(M, 'version')}
++                or not {q(M, 'full-path'), q(M, 'media-type')} <= set(node.attrib)
++                or not path or path in entries):
++            _refuse('manifest_entry')
++        if q(M, 'version') in node.attrib and (path != '/' or node.get(q(M, 'version')) != root.get(q(M, 'version'))):
++            _refuse('manifest_version')
++        entries[path] = node.get(q(M, 'media-type'))
++    if entries.pop('/', None) != MIME:
++        _refuse('manifest_root')
++    objects = {name[:-1] for name, media in entries.items()
++               if name.endswith('/') and media == 'application/vnd.oasis.opendocument.chart'}
++    if any(re.fullmatch(r'Object [1-9][0-9]{0,2}', name) is None for name in objects):
++        _refuse('chart_directory')
++    expected = {name: 'text/xml' for name in ('content.xml', 'styles.xml', 'meta.xml')}
++    if 'settings.xml' in entries:
++        expected['settings.xml'] = 'text/xml'
++    for obj in objects:
++        expected[obj + '/'] = 'application/vnd.oasis.opendocument.chart'
++        expected[obj + '/content.xml'] = 'text/xml'
++        for leaf in ('styles.xml', 'meta.xml'):
++            if obj + '/' + leaf in entries:
++                expected[obj + '/' + leaf] = 'text/xml'
++    if 'Configurations2/' in entries:
++        expected['Configurations2/'] = 'application/vnd.sun.xml.ui.configuration'
++    for name in entries:
++        if re.fullmatch(r'Pictures/TablePreview[1-9][0-9]{0,2}\.svm', name):
++            expected[name] = ''
++        elif name.startswith('ObjectReplacements/') and name.removeprefix('ObjectReplacements/') in objects:
++            expected[name] = GDI
++        elif name == 'Thumbnails/thumbnail.png':
++            expected[name] = 'image/png'
++    if entries != expected:
++        _refuse('manifest_profile')
++    required_files = {name for name in entries if not name.endswith('/')}
++    if set(pkg.parts) != required_files | {'mimetype', 'META-INF/manifest.xml'}:
++        _refuse('member_closure')
++    for name in required_files:
++        if name not in pkg.parts:
++            _refuse('manifest_target_missing')
++    return objects
++
++
++def _xml_profile(pkg, objects):
++    for name, root in pkg.xml.items():
++        if name == 'META-INF/manifest.xml':
++            continue
++        leaf = name.rsplit('/', 1)[-1]
++        expected = _TOP_XML.get(leaf)
++        if expected is None or root.tag != q(O, expected[0]):
++            _refuse('xml_root')
++        seen = set()
++        for child in root:
++            if child.tag not in {q(O, item) for item in expected[1]} or child.tag in seen:
++                _refuse('xml_sections')
++            seen.add(child.tag)
++        if name != 'content.xml' and root.find(q(O, 'scripts')) is not None:
++            _refuse('script_location')
++        for node in root.iter():
++            _guard_xml_context(node)
++            if node.tag == q(O, 'binary-data'):
++                _refuse('inline_binary')
++        if '/' in name and leaf == 'content.xml':
++            bodies = root.findall(q(O, 'body'))
++            if len(bodies) != 1 or len(bodies[0]) != 1 or bodies[0][0].tag != q(O, 'chart'):
++                _refuse('chart_body')
++            charts = list(bodies[0].iter(q(CHART, 'chart')))
++            if len(charts) != 1:
++                _refuse('chart_body')
++
++
++def _resources(pkg, objects):
++    references = set()
++    used_objects = set()
++    for name, root in pkg.xml.items():
++        parents = {child: parent for parent in root.iter() for child in parent}
++        for node in root.iter():
++            href = node.get(q(XL, 'href'))
++            if href is None:
++                continue
++            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), href)).rstrip('/')
++            if node.tag == q(CHART, 'chart') and name in {obj + '/content.xml' for obj in objects}:
++                if href != '.' or target != name.rsplit('/', 1)[0]:
++                    _refuse('chart_reference')
++                continue
++            if name != 'content.xml' or node.tag not in (q(DR, 'object'), q(DR, 'image')):
++                _refuse('reference_role')
++            if target in references:
++                _refuse('duplicate_resource_reference')
++            references.add(target)
++            if node.tag == q(DR, 'object'):
++                if (target not in objects or parents[node].tag != q(DR, 'frame')
++                        or any(child.tag != '{urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0}p'
++                               or child.attrib or len(child) or (child.text or '').strip()
++                               or (child.tail or '').strip() for child in node)):
++                    _refuse('object_reference')
++                used_objects.add(target)
++                # The same native frame must carry the replacement for this object.
++                images = parents[node].findall(q(DR, 'image'))
++                replacement = 'ObjectReplacements/' + target
++                if replacement in pkg.parts:
++                    if len(images) != 1 or images[0].get(q(XL, 'href')) != './' + replacement:
++                        _refuse('chart_replacement')
++                elif images:
++                    _refuse('chart_replacement')
++            elif target not in pkg.parts or not (target.startswith('Pictures/') or target.startswith('ObjectReplacements/')):
++                _refuse('image_reference')
++    if used_objects != objects:
++        _refuse('unreferenced_chart')
++    binary = {name for name in pkg.parts if name.startswith(('Pictures/', 'ObjectReplacements/'))}
++    if references != binary | objects:
++        _refuse('resource_closure')
++    for name in binary:
++        _svm(pkg.parts[name])
++    thumbnail = pkg.parts.get('Thumbnails/thumbnail.png')
++    if thumbnail is not None and not thumbnail.startswith(b'\x89PNG\r\n\x1a\n'):
++        _refuse('thumbnail_format')
++
++
++def validate_generated_odp(data):
++    """Validate destination structure; do not grant source or renderer authority."""
++    try:
++        infos, parts = _parts(data, _generated_odp=True)
++        _odp_structure(infos, parts)
++        pkg = Package(data)
++        objects = _manifest(pkg)
++        _xml_profile(pkg, objects)
++        _resources(pkg, objects)
++        # Use the real data reader too: local chart ranges, data counts and notes.
++        view = extract_presentation(data, 'odp')
++        metadata = view.extraction_metadata
++        incomplete = {'odf_chart_range_not_resolved', 'chart_without_supported_series',
++                      'chart_values_not_available', 'unsupported_odf_object'}
++        if metadata['charts'] != len(objects) or incomplete.intersection(metadata['unsupported_features']):
++            _refuse('chart_data_coverage')
++    except PresentationError as error:
++        raise PresentationRefused(str(error)) from None
++    return True
+--- a/tools/scoped_presentation_write.py
++++ b/tools/scoped_presentation_write.py
+@@ -70,10 +70,18 @@
+     return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+ 
+ 
+-def _xml_resource_guards(parts, name, root):
++def _xml_resource_guards(parts, name, root, *, _generated_odp=False):
+     xlink = '{http://www.w3.org/1999/xlink}href'
+     for node in root.iter():
+         local = node.tag.rsplit('}', 1)[-1]
++        # Only the captured native destination profile has this inert ODF section.
++        # Source/edit callers never set this private flag. No scripts are evaluated.
++        if (_generated_odp and name == 'content.xml'
++                and root.tag == '{urn:oasis:names:tc:opendocument:xmlns:office:1.0}document-content'
++                and node.tag == '{urn:oasis:names:tc:opendocument:xmlns:office:1.0}scripts'
++                and node in list(root) and not node.attrib and not len(node)
++                and not node.text and not (node.tail or '').strip()):
++            continue
+         if local in ('script', 'scripts', 'event-listener', 'event-listeners',
+                      'object-ole', 'plugin', 'applet'):
+             raise PresentationRefused('active_xml_content')
+@@ -94,7 +102,7 @@
+             raise PresentationRefused('missing_xlink_target')
+ 
+ 
+-def _parts(data, *, _depth=0, _budget=None):
++def _parts(data, *, _depth=0, _budget=None, _generated_odp=False):
+     if not isinstance(data, bytes) or not 1 <= len(data) <= MAX_PACKAGE or _depth > 2:
+         raise PresentationRefused('package_capacity')
+     budget = {'packages': 0, 'bytes': 0} if _budget is None else _budget
+@@ -158,7 +166,7 @@
+                     raise PresentationRefused('unsupported_embedded_package')
+         elif name.endswith(('.xml', '.vml')):
+             root = _xml(raw)
+-            _xml_resource_guards(parts, name, root)
++            _xml_resource_guards(parts, name, root, _generated_odp=_generated_odp)
+             if name == '[Content_Types].xml' and any(
+                     'macro' in (node.get('ContentType', '') + node.get('Extension', '')).lower()
+                     or 'vba' in node.get('ContentType', '').lower() for node in root):

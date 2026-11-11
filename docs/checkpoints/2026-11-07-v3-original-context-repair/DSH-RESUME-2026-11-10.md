@@ -7,7 +7,7 @@
 
 Дата: 2026-11-10, МСК. Передача: DSH-сессия → Сол (временное принятие лидерства).
 
-## Действующее продолжение Астры — 11.11.2026, 03:36 МСК
+## Действующее продолжение Астры — 11.11.2026, 03:50 МСК
 
 Астра — единственный ведущий, координатор и live-интегратор, Fast. Native goal
 **FRIDAY-RELEASE-V3-ASTRA-CONTINUATION-2026-11-10** создан и readback подтвердил
@@ -27,12 +27,13 @@
 material customchapter-assignment loss оставляют полную RTF fidelity открытой. Built runtime
 пока **не установлен**. Пакет `ASTRA-SOL-V3-LO-CONSUMER-BUNDLE-20261110#1` завершён: четыре
 actualLOCAL consumer PASS, остальные направления ограничены; общийOffice switch не допущен.
-[Итог wholebundle](evidence/astra-20261111/office-native-consumer-bundle-final.json). Сейчас Сол
-выполняет `ASTRA-SOL-V3-DSH-COHERENT-REPAIR-20261111#1`: предыдущее конечное ревью
+[Итог wholebundle](evidence/astra-20261111/office-native-consumer-bundle-final.json). Завершённый Task4:
+`ASTRA-SOL-V3-DSH-COHERENT-REPAIR-20261111#1`: finalsource593PASS принят,
+его ранний этап ниже сохранён как история: предыдущее конечное ревью
 завершено CHANGES_REQUIRED; принят цельный наборF1–F8, кандидат не установлен.
 [Ревью / actual static / новая задача](evidence/astra-20261111/dsh-coarchitect-coherent-repair-checkpoint.json).
 Root восстановил exactNode/CA/helper; currentDSH ещё не квалифицирован. M1/M2/M3 Сола приняты; реальный prospective source consumer5.03s PASS,
-final coherent source/native review и actualT1/P/T2 остаются впереди.
+finalsource позже принят; nativeустановка и actualT1/P/T2 остаются впереди (новый срез ниже).
 [Текущий совместный срез](evidence/astra-20261111/dsh-coherent-repair-milestones.json). Standard/прежняя TUI/oldgoalpaused сохранены.
 Никакое maintenance-окно не открыто на ожидание ревью.
 
@@ -73,8 +74,8 @@ ObjectReplacements/Object 1 — ТОЧНО те же11240B/e820 nativevector; or
 Samebyte dataPASS/currentreferenceclosureclosedUNQUALIFIED; historical29345B/f321 FAIL неизменён.
 Новые profile/init/flags отличаютсяотстарогоcaller: не строгий onevariable causalproof.
 Binary/visual/style/appedit/fullOffice/product/formal/user acceptance ещё НЕ установлены.
-Currentproductdestination покаrejects inertoffice:scripts; точный generated-only consumer repair
-готовится, Source/untrusted guards не расширяются, новогоnativeproducer для оценки не нужно.
+Установленный productdestination пока rejects inertoffice:scripts; новый generated-only source
+consumer56+56 принят ниже, не установлен; Source/untrusted guards не расширены.
 
 **DSH M3 / Dashboard: реальные потребители и границы следующей установки.**
 [Source contract M3](evidence/astra-20261111/dsh-current-source-consumer-m3.json): actual prospective
@@ -88,6 +89,28 @@ unit/start; guard не обходим. Staged --skip-build не разрешён
 11isolatedtests/independentreviewPASS; Root nativeintegrationreview впереди. Старый unsupportedunit
 не установлен; gateway1198290 не тронут. Никакой ShortWindow не открыт в ожидании.
 
+**DSH: финальный код принят в main; установка и current qualification ещё не выполнены.**
+[Final source](evidence/astra-20261111/dsh-current-source-final.json): 9plugins+2helpers,
+25main files с тестами, final593PASS+72subtests/234.06s. Actual operative477 consumerPASS5.127s;
+публичный и operational варианты helper раздельны, private197404B workerhelper неизменён.
+Исторический535PASS25FAIL сохранён. Root принял scoped source/review, не nativeauthority.
+Установлен по-прежнему198/старый476; новый currentP/T1/T2 не выполнялись. Выявленный отсутствующий
+genuine P CLI/custodycaller готовится отдельно. Следующий native Source199 сейчас НЕ поддержан
+commonconsumer: Сол Standard получил отдельный конечный repair существующего CPjournal/defaultreader
+после одного завершённого nativecompact. Task4 закрыт, не изображается продолжающимся.
+Maintenance не открыт на ожидание. Root продолжает текущую интеграцию и проверку Office.
+
+**Подготовленные native-возможности, пока drafts.**
+[ODP destination](evidence/astra-20261111/office-generated-odp-consumer-source.json): тот же30482B
+проходит настоящий `_read_native` с candidate; old29345B missingresource refusal и source-отказ
+сохранены. Baseline12/candidate56/independent56 PASS. Пустой office:scripts разрешён только
+generated destination; manifest/resource/chart-data closure и passiveSVM envelope строго ограничены.
+Binary/visual/style/appedit/product acceptance не доказаны; source/edit/import не расширены.
+[Dashboard native status](evidence/astra-20261111/dashboard-native-status-source.json): fourfile
+patch/11controls+independentreviewPASS; terminal nonce status без fallback/start. Genuine newnative
+receipt/install/freshprocess/currentHTTP/user acceptance впереди, старый unit не установлен.
+Реальный Impress roundtrip именно сохранённого новогоODP готовится без повтора producer.
+
 **Git.** При принятии HEAD = origin/main = remote main был
 `01a59f9fb245d9dbb3a898d34551f0ce59eb3b14`; более новых коммитов не было.
 После него опубликованы `bedbd946f663c76965c0baebaea81a85539c5e94` и
@@ -100,7 +123,8 @@ unit/start; guard не обходим. Staged --skip-build не разрешён
 `f441ab9c2751d1df6c4c4232bc1d6d0331e9a7ce`; Office partial/DSH blockers опубликованы в
 `ff83addc4aaaade0e8fcaa06a8f19419e97a98cb`; F1–F8/currentinput срез —
 `addd212a3e59d8083648d61ce35254a5971b363d`; exact зависимости/закрытые harness отказы —
-`f1921d4f2eaac3a60623af1b9eb0de0ae56ecbec` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
+`f1921d4f2eaac3a60623af1b9eb0de0ae56ecbec`; chart native proofs —
+`ac7261eaf2a7335a86aa63591ddf030d031d448b` — baseline перед текущей дельтой. SHA следующего checkpoint проверяется после commit/push, не пишется
 внутрь самого себя. Три чужих изменения §1 сохранены с исходными SHA/identity и отдельно от
 собственных коммитов. В baseline передачи было349 уникальных checksum entries, в1632b28 —359;
 текущий SHA256SUMS обновляется по фактической собственной дельте и проверяется целиком.
@@ -367,7 +391,7 @@ alias разрешается, все4750files/hashes/types/inode/3links verified
 e6f… и дваoldinstall inputs не найденывboundedsearch. Отдельныйcurrentresolver574b stagedprivate,
 не выдаётсязаold. [ActualM3/defaultconsumer контракт](evidence/astra-20261111/dsh-current-source-consumer-m3.json):
 вместо rehydrationsecretrefs установленный sourceonly update сохраняетoldinputrefsinert, актуальные
-данные проверяетнаместе. Код покаowncandidate, finalgate/установка/currentT1/P/T2 ещё pending.
+данные проверяетнаместе. Finalsource593gate принят и код интегрирован вmain; установка/currentT1/P/T2 pending.
 Исторический coding artifact/followup/old clocks не повторяются. Причина удаления неизвестна.
 
 Исторический build-only срез: Сол завершил `ASTRA-SOL-V3-LO-RTF-BUILD-20261110#1`, RESULT1c9a85c3…7076 и41refs проверены;

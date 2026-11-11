@@ -1,0 +1,104 @@
+--- a/hermes_cli/friday_dashboard_owner.py
++++ b/hermes_cli/friday_dashboard_owner.py
+@@ -598,8 +598,9 @@
+     from gateway import host_rendezvous as hr
+     token = read_owned(hr.token_path(record.role), private=True).decode('utf-8-sig').strip()
+     require(hr.token_fingerprint(token) == record.token_fingerprint)
+-    from hermes_cli.web_server import _SESSION_HEADER_NAME
+-    return {_SESSION_HEADER_NAME: token, 'X-Hermes-Probe-Nonce': secrets.token_hex(16)}
++    # The native wire header is fixed; importing the HTTP server here would
++    # mount plugin APIs and could acquire web dependencies during a status read.
++    return {'X-Hermes-Session-Token': token, 'X-Hermes-Probe-Nonce': secrets.token_hex(16)}
+ 
+ 
+ def proof_mac(identity, nonce, pid, start_time, token, secret):
+--- a/hermes_cli/friday_ordinary_gateway.py
++++ b/hermes_cli/friday_ordinary_gateway.py
+@@ -247,6 +247,7 @@
+     ]
+     dash = contract['native_dashboard']
+     exact.append(['dashboard','--host',dash['host'],'--port',str(dash['port']),'--no-open'])
++    exact.append(['dashboard','--status'])
+     if args not in exact:
+         entry = phase['operator_entry']
+         from hermes_cli.friday_dashboard_owner import read_owned
+--- a/hermes_cli/main.py
++++ b/hermes_cli/main.py
+@@ -3534,6 +3534,16 @@
+             if current_child() is None:
+                 return own_existing_entrypoint()
+ 
++    if sys.argv[1:] == ["dashboard", "--status"]:
++        from hermes_constants import get_hermes_home
++        from hermes_cli import friday_dashboard_owner as owner
++
++        if get_hermes_home() == owner.SOURCE.parent and owner.enabled():
++            # This exact native action admits itself before probing, and must
++            # not enter generic home maintenance or a Dashboard start path.
++            _report_dashboard_status()
++            return
++
+     _set_process_title()
+     _warn_if_unsupervised_pid1()
+     _advertise_agent_env()
+--- a/hermes_cli/main_dashboard.py
++++ b/hermes_cli/main_dashboard.py
+@@ -564,6 +564,58 @@
+     augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
+     ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
+     """
++    from hermes_cli import friday_dashboard_owner as owner
++    from hermes_constants import get_hermes_home
++
++    home = get_hermes_home()
++    if home == owner.SOURCE.parent and owner.enabled():
++        # The genuine status invocation must pass ordinary native admission.
++        # A missing/unproved owner always exits here; status never starts one.
++        import json
++
++        result = {"schema": "friday.dashboard.status.v1", "state": "UNKNOWN", "verified": False}
++        exit_code = 78
++        try:
++            from hermes_cli.friday_ordinary_gateway import check
++
++            check(home)
++            from gateway import host_rendezvous as hr
++
++            record = hr.read_record(hr.ROLE_SERVE, include_stale=True)
++            if record is None:
++                path = hr.record_path(hr.ROLE_SERVE)
++                try:
++                    path.lstat()
++                except FileNotFoundError:
++                    result["state"] = "ABSENT"
++                    exit_code = 3
++                else:
++                    raise ValueError("dashboard_status_record_unproved")
++            else:
++                if (record.role != hr.ROLE_SERVE or record.home != str(home)
++                        or record.friday_owner is None or hr.record_is_stale(record)):
++                    raise ValueError("dashboard_status_owner_unproved")
++                payload = hr.probe_owner(record)
++                if payload is None:
++                    raise ValueError("dashboard_status_probe_unproved")
++                owner.check_attachment(record, payload)
++                result = {
++                    "schema": "friday.dashboard.status.v1", "state": "VERIFIED", "verified": True,
++                    "pid": record.pid, "startTime": record.start_time,
++                    "auth_required": payload["auth_required"], "servesSpa": payload["servesSpa"],
++                    "source_receipt_sha256": payload["fridayOwner"]["source"]["receipt"],
++                    "nonce_verified": True,
++                }
++                exit_code = 0
++        except (Exception, SystemExit):
++            # Native helpers can carry private paths/settings in exceptions.
++            # Expose only this stable failure, never an owner or secret value.
++            pass
++        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
++        if exit_code:
++            raise SystemExit(exit_code)
++        return 1
++
+     from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
+     from gateway.status import _pid_exists
+     binds = _ledger_serve_binds()

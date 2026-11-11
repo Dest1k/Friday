@@ -296,8 +296,11 @@ def native_packages(source):
     package.__path__=[str(ROOT/'scripts'),str(source/'scripts')]
 
 
-def spec_checked(value, *, cli_only=False):
+def spec_checked(value, *, cli_only=False, project_update=None):
     require(type(cli_only) is bool, 'explicit_cli_declaration_mode_required')
+    from scripts.friday_ordinary_install import project_current_source_checked
+    current_source = project_current_source_checked(value,cli_only=cli_only,project_update=project_update)
+    if current_source is not None: return current_source
     fields = {'home', 'bootstrap_python', 'hermes_donor', 'hermes_prepare',
               'sources_lock', 'dsh_donor', 'a0_donor', 'product', 'project_files', 'seconds', 'containment'}
     require(isinstance(value, dict) and set(value) == fields | (set(value) & {'dashboard_tls', 'credential_sources', 'worker_install'}), 'explicit_install_fields_required')
@@ -1352,13 +1355,14 @@ def resume_cli(request, request_path, *, prepared=None, segment=None):
     return budget.call(inspect,value,request['current_input']['sha256'])
 
 
-def inspect(value, input_hash, *, marker_override=None):
+def inspect(value, input_hash, *, marker_override=None, project_update=None):
     home = canonical(value['home']); directory(home)
     marker = read_json(home / MARKER) if marker_override is None else marker_override
     require(marker.get('schema') == SCHEMA and marker.get('home') == str(home)
             and marker.get('input_sha256') == input_hash
             and marker.get('state') == 'INSTALLED_TEMPLATE_INCOMPLETE', 'foreign_or_partial_install')
-    home, donors = spec_checked(value, cli_only=marker.get('completion_stage') in (CLI_STAGE,'TELEGRAM_ORDINARY'))
+    home, donors = spec_checked(value, cli_only=marker.get('completion_stage') in (CLI_STAGE,'TELEGRAM_ORDINARY'),
+        **({'project_update':project_update} if project_update is not None else {}))
     if 'tls' in value['product']['dashboard']:
         expected = {path: value['dashboard_tls'][key]['sha256']
             for key, path in value['product']['dashboard']['tls'].items()}
