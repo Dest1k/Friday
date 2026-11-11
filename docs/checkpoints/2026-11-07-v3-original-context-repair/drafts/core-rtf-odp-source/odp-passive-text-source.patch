@@ -1,0 +1,191 @@
+--- a/tools/scoped_presentation_text.py
++++ b/tools/scoped_presentation_text.py
+@@ -18,15 +18,14 @@
+     raise PresentationRefused(reason)
+ 
+ 
+-def _spans(raw, tag):
++def _spans(raw, tag, *, nested=False):
+     """Byte spans for simple XML text elements; never reserialize a source part."""
+     parser=expat.ParserCreate(encoding='UTF-8',namespace_separator='}')
+-    spans=[];active=None
++    spans=[];active=[]
+     def start(name,attrs):
+-        nonlocal active
+         if name != tag[1:]:
+             return
+-        if active is not None:
++        if active and not nested:
+             refuse('nested_text_element')
+         offset=parser.CurrentByteIndex;quote=None
+         for end in range(offset,len(raw)):
+@@ -36,12 +35,13 @@
+             elif byte in (34,39):quote=byte
+             elif byte==62:break
+         else:refuse('invalid_xml')
+-        active=(end+1,raw[offset:end].rstrip().endswith(b'/'))
++        active.append((end+1,raw[offset:end].rstrip().endswith(b'/'),len(spans)))
++        spans.append(None)
+     def end(name):
+-        nonlocal active
+         if name==tag[1:]:
+-            if active is None:refuse('invalid_xml')
+-            begin,empty=active;spans.append((begin,begin if empty else parser.CurrentByteIndex,empty));active=None
++            if not active:refuse('invalid_xml')
++            begin,empty,index=active.pop()
++            spans[index]=(begin,begin if empty else parser.CurrentByteIndex,empty)
+     def prohibited(*args):refuse('active_xml')
+     parser.StartElementHandler=start;parser.EndElementHandler=end
+     parser.StartDoctypeDeclHandler=prohibited;parser.EntityDeclHandler=prohibited
+@@ -66,12 +66,19 @@
+             tuple(_property_key(child) for child in node))
+ 
+ 
+-def _replace(raw, root, paragraphs, old, new, *, ooxml):
++def _replace(raw, root, paragraphs, old, new, *, ooxml, odf_span=False):
+     tag=q(A,'t') if ooxml else None
+     matches=[]
+     for paragraph in paragraphs:
+         nodes=list(paragraph.iter(tag)) if ooxml else [paragraph]
+-        if not ooxml and len(paragraph):
++        if (odf_span and not ooxml and len(paragraph)==1 and paragraph[0].tag==q(T,'span')
++                and not (paragraph.text or '') and not len(paragraph[0])
++                and not (paragraph[0].tail or '')
++                and set(paragraph[0].attrib)<={q(T,'style-name')}):
++            # One leaf span is one literal run. Keep its style and all XML bytes;
++            # fields, mixed runs, explicit whitespace and links stay unsupported.
++            nodes=[paragraph[0]]
++        elif not ooxml and len(paragraph):
+             # Styled spans, fields, bookmarks and explicit whitespace remain
+             # untouched; an unsupported paragraph cannot hide an occurrence.
+             try:
+@@ -163,8 +170,11 @@
+         # p/h tags can mix in one ODF part. Only leaf paragraphs are editable;
+         # the parser still records nonleaf spans and pairs by document order.
+         offsets={}
+-        for kind in (q(T,'p'),q(T,'h')):
+-            entire=list(root.iter(kind));spans=_spans(raw,kind)
++        kinds=[q(T,'p'),q(T,'h')]
++        if any(node.tag==q(T,'span') for node,_,_ in selected):
++            kinds.append(q(T,'span'))
++        for kind in kinds:
++            entire=list(root.iter(kind));spans=_spans(raw,kind,nested=kind==q(T,'span'))
+             if len(entire)!=len(spans):refuse('text_span_mismatch')
+             offsets.update(zip(entire,spans))
+     changes=[];remaining=new
+@@ -192,10 +202,14 @@
+     if any(ord(c)<32 for c in old+new):refuse('unsupported_text_whitespace')
+     if type(spec['slide']) is not int or spec['slide']<1 or spec['role'] not in ('slide','notes'):
+         refuse('text_edit_target')
+-    validate_profile(data,format)
++    if format=='odp':
++        from tools.scoped_presentation_odp_text_source import source_parts
++        infos,parts=source_parts(data)
++    else:
++        validate_profile(data,format)
+     if format=='fodp':
+         name=None;source_raw=data;root=_xml(data)
+-    else:
++    elif format!='odp':
+         infos,parts=_parts(data)
+     if format in OOXML:
+         paths=_slide_paths(parts)
+@@ -238,7 +252,10 @@
+                             q(T,'note'),q(DR,'object'),q(DR,'image'),q(DR,'object-ole')):
+                 excluded.update(node.iter())
+         paragraphs=[node for node in selected.iter() if node not in excluded and node.tag in (q(T,'p'),q(T,'h'))]
+-        raw=_replace(source_raw,root,paragraphs,old,new,ooxml=False)
++        raw=_replace(source_raw,root,paragraphs,old,new,ooxml=False,odf_span=format=='odp')
+     edited=raw if format=='fodp' else _rewrite(infos,parts,{name:raw})
+-    validate_profile(edited,format)
++    if format=='odp':
++        source_parts(edited)
++    else:
++        validate_profile(edited,format)
+     return edited
+--- /dev/null
++++ b/tools/scoped_presentation_odp_text_source.py
+@@ -0,0 +1,83 @@
++"""Passive ODP input for byte-preserving literal text edits only.
++
++This is an input profile, not evidence that a file came from our producer. It
++never renders, decodes graphics or opens embedded objects. Existing source
++admission stays strict for conversion, table editing and other operations.
++"""
++from copy import copy, deepcopy
++from io import BytesIO
++from zipfile import ZipFile
++
++from tools.scoped_presentation import Package, PresentationError, O, q, extract_presentation
++from tools.scoped_presentation_write import (
++    PresentationRefused, _parts, _xml, _tostring, _rewrite, _odp_structure,
++)
++from tools.scoped_presentation_variants import validate_profile
++
++
++def source_parts(data):
++    """Return the original package; permit only an exactly inert script section.
++
++    Ordinary supported ODPs keep their existing validator. The narrow fallback
++    validates the original ZIP/XML first and removes the inert section solely
++    from a private validation view, so the existing active-content checks still
++    inspect every other node/member. Returned bytes and edited output keep that
++    section and every unrelated payload verbatim. No generated-output flag or
++    producer marker participates in source admission.
++    """
++    try:
++        validate_profile(data, 'odp')
++        return _parts(data)
++    except PresentationRefused as error:
++        if str(error) != 'active_xml_content':
++            raise
++    try:
++        pkg = Package(data)
++        roots = {name: _xml(raw) for name, raw in pkg.parts.items()
++                 if name.endswith(('.xml', '.vml'))}
++        root = roots.get('content.xml')
++        if root is None or root.tag != q(O, 'document-content'):
++            raise PresentationRefused('passive_odp_content')
++        scripts = [node for node in root if node.tag == q(O, 'scripts')]
++        if (len(scripts) != 1 or scripts[0].attrib or len(scripts[0])
++                or scripts[0].text or (scripts[0].tail or '').strip()):
++            raise PresentationRefused('passive_odp_scripts')
++        with ZipFile(BytesIO(data)) as archive:
++            infos = archive.infolist()
++        if any(info.is_dir() and info.file_size != 0 for info in infos):
++            raise PresentationRefused('passive_odp_directory_payload')
++        original_parts = dict(pkg.parts)
++        original_parts.update((info.filename, b'') for info in infos if info.is_dir())
++        root.remove(scripts[0])
++        validation_view = _rewrite(infos, original_parts, {'content.xml': _tostring(root)})
++        _parts(validation_view)  # All original active/resource guards, no role flag.
++        _odp_structure(infos, original_parts)
++        # These helpers inspect only bounded passive structure. Calling them is
++        # not calling the generated-destination entry point or granting custody.
++        from tools.scoped_presentation_generated_odp import _manifest, _xml_profile, _resources
++        # An app save may leave the replacement's media type empty. This input
++        # profile accepts that declaration only when the existing strict role
++        # closure and bounded SVM framing validate its actual unchanged payload.
++        manifest_view = copy(pkg)
++        manifest_view.xml = dict(pkg.xml)
++        manifest = deepcopy(pkg.xml.get('META-INF/manifest.xml'))
++        if manifest is not None:
++            m = '{urn:oasis:names:tc:opendocument:xmlns:manifest:1.0}'
++            for entry in manifest:
++                if (entry.get(m+'full-path', '').startswith('ObjectReplacements/')
++                        and entry.get(m+'media-type') == ''):
++                    from tools.scoped_presentation_generated_odp import GDI
++                    entry.set(m+'media-type', GDI)
++            manifest_view.xml['META-INF/manifest.xml'] = manifest
++        objects = _manifest(manifest_view)
++        _xml_profile(pkg, objects)
++        _resources(pkg, objects)
++        view = extract_presentation(data, 'odp')
++        incomplete = {'odf_chart_range_not_resolved', 'chart_without_supported_series',
++                      'chart_values_not_available', 'unsupported_odf_object'}
++        if (view.extraction_metadata['charts'] != len(objects)
++                or incomplete.intersection(view.extraction_metadata['unsupported_features'])):
++            raise PresentationRefused('passive_odp_chart_data_coverage')
++        return infos, original_parts
++    except PresentationError as error:
++        raise PresentationRefused(str(error)) from None

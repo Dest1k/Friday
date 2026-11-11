@@ -29,8 +29,8 @@ Root201 maintenance08:46:04→08:48:10/126.563s закрыт; actor/publisher te
 По новой директиве продолжен тот же unfinished RTF Task8#1 с его PARTIAL, без второго compact.
 Сол ведёт независимую core-ветку; общий goal/установку/main и живые ресурсы координирует Астра.
 Предыдущие деревья,201 final counterparts/CP gates и ODP saved-criteria подготовка — terminal.
-Root201 frame/recovery review с дочерними проверками terminal. Активен конечный native child
-ODP source/text-edit prepare в отдельной копии; H/main/live effects ему не поручены.
+Root201 frame, ODP source/text-edit и v4preparation — terminal; private partials сохранены.
+Активно finite review product freshprofile delta; Sol и ODPapprecipe — source/prep, Office ещё NOT_RUN.
 
 **Обязательный порядок всей команды: основной функционал Friday → DSH → A0.**
 Core: обычный Telegram, контекст/память, изоляция, файлы/доставка/форматы, продолжение,
@@ -51,6 +51,7 @@ Producer/model/Office/send не повторены; общего F03/F04/formalt
    исходный FX-DOC требует также header/footer и footnote-or-comment. Сол продолжает минимальную
    поддержку inert RTF stories и настоящих tool consumers. Post-load injected chapter fixture не
    доказывает потерю preexisting R92 wire; универсальная проверка108Officeсвойств не требуется.
+   [RTF4/sourceR4 diff принят и опубликован](drafts/core-rtf-odp-source/README.md), не установлен.
    Старый отвергнутый Heading-draft не возобновлять; готовый R92цикл/отправку не повторять ради PASS.
 2. **ODP / F-02,F-03,F-04.** [Consumer draft](evidence/astra-20261111/office-generated-odp-consumer-source.json)
    не установлен. [Тот же Gen4 app PARTIAL](evidence/astra-20261111/office-odp-retained-app-partial.json):
@@ -60,9 +61,11 @@ Producer/model/Office/send не повторены; общего F03/F04/formalt
    типы/определения5page-number полей сохранены, четыре разницы — вычисленные представления;
    причина и правильность отображения ещё не доказаны. EMPTY_STYLE у5notes thumbnails не
    доказывает потери стилей. PARTIAL/FALSE сохранены; installed consumer/source-edit/визуальные
-   обязательства открыты. Отдельный source/text-edit candidate для пустого office:scripts/строгого
-   retained package готовится с настоящими consumer controls; generated-only patch остаётся отдельным.
-   Для будущей интеграции нужен поддержанный переход от actual201; текущий helper не поддерживает v4/202.
+   обязательства открыты. [ODP2 source/text-edit принят](drafts/core-rtf-odp-source/README.md):41author/26independent,
+   реальные wrappers/CAS/изоляция с syntheticcap; generated-only3 остаётся отдельным. Девять файлов compose.
+   Core202 v4/helper подготовлен (pure45/parser76), финальные4counterpartgates ждут v2состава.
+   Newbank pptx_odp-only не установлен; cold-direct81 требует отдельного document-freeinit и
+   setup/buildid/emptyrepo guards. Productdelta23purePASS, independentreview активен; Basic/security не меняет.
    Producer/Gen4/app/send ради статуса не повторять.
 3. **F-01/md/v02 и json/v03.** Частичные неисполненные пакеты:
    `/home/jericho/.cache/FRW-ASTRA-V3-NEXT-INDEPENDENT-FORMAT-PREP-20261111/RESULT.json`
