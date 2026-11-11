@@ -1,0 +1,144 @@
+--- a/rich-readonly.bas
++++ b/rich-readonly.bas
+@@ -1,47 +1,56 @@
+ Option Explicit
+ Global stage As String
+-Global output As Object
++Global observationOutput As Object
+ Global activeDoc As Object
+ Global entryCount As Long
+ Global openCount As Long
+ Global closeCount As Long
+ Sub Main
+  Dim sfa As Object, stream As Object
++ Dim failureCode As Long, failureLine As Long
+  On Error GoTo Failed
+  stage = "@STAGE@"
+  AppendJournal "ENTRY", CStr(entryCount + 1)
+  entryCount = entryCount + 1
+- If entryCount <> 1 Then Err.Raise 7201, "Main", "duplicate macro entry"
++ If entryCount <> 1 Then FailGuard 7201 ' Main: duplicate macro entry
+  sfa = CreateUnoService("com.sun.star.ucb.SimpleFileAccess")
+  stream = sfa.openFileWrite(ConvertToURL(stage & "/rich-observations.tsv"))
+- output = CreateUnoService("com.sun.star.io.TextOutputStream")
+- output.setOutputStream(stream): output.setEncoding("UTF-8")
++ observationOutput = CreateUnoService("com.sun.star.io.TextOutputStream")
++ observationOutput.setOutputStream(stream): observationOutput.setEncoding("UTF-8")
+  Emit "BEGIN", "rich-native-pair-independent-readonly-open"
+  Emit "ENTRY_COUNT", CStr(entryCount)
+  Observe "source.rtf"
+  Observe "revision.rtf"
+- If openCount <> 2 Or closeCount <> 2 Then Err.Raise 7202, "Main", "incomplete pair counts"
++ If openCount <> 2 Or closeCount <> 2 Then FailGuard 7202 ' Main: incomplete pair counts
+  Emit "FINAL_COUNTS", CStr(entryCount) & ":" & CStr(openCount) & ":" & CStr(closeCount)
+  AppendJournal "COMPLETE", "1:2:2"
+  Emit "COMPLETE", "RICH_PAIR_READONLY_OBSERVED"
+- output.closeOutput()
++ observationOutput.closeOutput()
+  StarDesktop.terminate()
+  Exit Sub
+ Failed:
++ failureCode = Err: failureLine = Erl
++ FailureCleanup failureCode, failureLine
++End Sub
++Sub FailureCleanup(failureCode As Long, failureLine As Long)
+  On Error Resume Next
+- AppendJournal "FAIL", CStr(Err)
+- Emit "FAIL", CStr(Err) & ":" & CStr(Erl)
++ AppendJournal "FAIL", CStr(failureCode)
++ Emit "FAIL", CStr(failureCode) & ":" & CStr(failureLine)
+  activeDoc.close(True)
+- output.closeOutput()
++ observationOutput.closeOutput()
+  StarDesktop.terminate()
++End Sub
++Sub FailGuard(guardCode As Long)
++ AppendJournal "GUARD", CStr(guardCode)
++ Error 5
+ End Sub
+ Sub Emit(key As String, value As String)
+  value = Replace(value, "\", "\\")
+  value = Replace(value, Chr(9), "\t")
+  value = Replace(value, Chr(13), "\r")
+  value = Replace(value, Chr(10), "\n")
+- output.writeString(key & Chr(9) & value & Chr(10))
+- output.flush()
++ observationOutput.writeString(key & Chr(9) & value & Chr(10))
++ observationOutput.flush()
+ End Sub
+ Sub Observe(filename As String)
+  Dim props(4) As New com.sun.star.beans.PropertyValue
+@@ -55,7 +64,7 @@
+  props(2).Name = "MacroExecutionMode": props(2).Value = 0
+  props(3).Name = "UpdateDocMode": props(3).Value = 0
+  props(4).Name = "FilterName": props(4).Value = "Rich Text Format"
+- If openCount >= 2 Then Err.Raise 7203, "Observe", "extra document open"
++ If openCount >= 2 Then FailGuard 7203 ' Observe: extra document open
+  openCount = openCount + 1
+  AppendJournal "OPEN", filename
+  Emit "OPEN_INTENT", filename
+@@ -104,17 +113,17 @@
+  descriptor.SearchString = "ЗАВЕРШЕНИЕ."
+  hits = activeDoc.findAll(descriptor)
+  Emit "FINAL_FACT_HITS", CStr(hits.getCount())
+- If hits.getCount() <> 1 Then Err.Raise 7101, "Observe", "terminal fact missing or ambiguous"
++ If hits.getCount() <> 1 Then FailGuard 7101 ' Observe: terminal fact missing or ambiguous
+  view = activeDoc.getCurrentController().getViewCursor()
+  view.gotoRange(hits.getByIndex(0).getStart(), False)
+  Emit "FINAL_FACT_PAGE", CStr(view.getPage())
+- If Not view.jumpToLastPage() Then Err.Raise 7102, "Observe", "last page unavailable"
++ If Not view.jumpToLastPage() Then FailGuard 7102 ' Observe: last page unavailable
+  pageCount = view.getPage()
+- If pageCount < 1 Or pageCount > 32 Then Err.Raise 7106, "Observe", "bounded page count required"
++ If pageCount < 1 Or pageCount > 32 Then FailGuard 7106 ' Observe: bounded page count required
+  Emit "LAST_PAGE", CStr(pageCount)
+- If Not view.jumpToFirstPage() Then Err.Raise 7103, "Observe", "first page unavailable"
++ If Not view.jumpToFirstPage() Then FailGuard 7103 ' Observe: first page unavailable
+  For pageNumber = 1 To pageCount
+-  If view.getPage() <> pageNumber Then Err.Raise 7104, "Observe", "page walk mismatch"
++  If view.getPage() <> pageNumber Then FailGuard 7104 ' Observe: page walk mismatch
+   styleName = view.PageStyleName
+   Emit "PAGE_STYLE:" & CStr(pageNumber), styleName
+   pageStyle = styles.getByName(styleName)
+@@ -126,7 +135,7 @@
+   If pageStyle.HeaderIsOn Then Emit "HEADER:" & CStr(pageNumber), pageStyle.HeaderText.getString()
+   If pageStyle.FooterIsOn Then Emit "FOOTER:" & CStr(pageNumber), pageStyle.FooterText.getString()
+   If pageNumber < pageCount Then
+-   If Not view.jumpToNextPage() Then Err.Raise 7105, "Observe", "next page unavailable"
++   If Not view.jumpToNextPage() Then FailGuard 7105 ' Observe: next page unavailable
+   End If
+  Next pageNumber
+  Emit "MODIFIED_AFTER", CStr(activeDoc.isModified())
+--- a/init-only.bas
++++ b/init-only.bas
+@@ -6,17 +6,17 @@
+  On Error GoTo Failed
+  stage = "@STAGE@"
+  initEntryCount = initEntryCount + 1
+- If initEntryCount <> 1 Then Err.Raise 7303, "InitOnly", "duplicate preparation callback"
++ If initEntryCount <> 1 Then Error 5 ' guard 7303 InitOnly: duplicate preparation callback
+  handle = FreeFile
+  Open stage & "/prep-pass-current.tag" For Input Access Read As #handle
+  Line Input #handle, tag
+  Close #handle
+- If tag <> "1" And tag <> "2" And tag <> "3" Then Err.Raise 7301, "InitOnly", "bad finite preparation index"
++ If tag <> "1" And tag <> "2" And tag <> "3" Then Error 5 ' guard 7301 InitOnly: bad finite preparation index
+  components = StarDesktop.getComponents().createEnumeration(): count = 0
+  While components.hasMoreElements()
+   item = components.nextElement(): count = count + 1
+  Wend
+- If count <> 0 Then Err.Raise 7302, "InitOnly", "document-free component set required"
++ If count <> 0 Then Error 5 ' guard 7302 InitOnly: document-free component set required
+  handle = FreeFile
+  Open stage & "/init-only-" & tag & ".tsv" For Output Access Write Lock Write As #handle
+  Print #handle, "INIT_ONLY" & Chr(9) & tag
+@@ -26,6 +26,9 @@
+  StarDesktop.terminate()
+  Exit Sub
+ Failed:
++ InitFailureCleanup handle
++End Sub
++Sub InitFailureCleanup(handle As Integer)
+  On Error Resume Next
+  Close #handle
+  StarDesktop.terminate()
