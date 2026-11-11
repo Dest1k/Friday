@@ -1,0 +1,117 @@
+--- V/run_once.py
++++ reviewer-fixed/run_once.py
+@@ -49,13 +49,20 @@
+  with os.fdopen(fd,'wb') as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
+  return pin
+ 
+-def stage(mode,op,a):
++def stage(mode,op,a,custody=None):
+  # Refuse before mkdir, credential read, copy or any launch.
+  c.operation(a['operation_key'],mode);c.require_final_codec()
++ if custody is None:custody={}
++ inputs=op/'inputs';custody.update(inputs_path=str(inputs),inputs_created=False,original_expected_pins=[],original_inputs_before=[],fixture_copy_attempts=[],stage_completed=False)
+  raw,mp=c.private(a['reconciled_manifest']['path'],c.B);c.need(mp==a['reconciled_manifest'],'RECONCILED_MANIFEST_PIN')
++ rows=c.reconciled_contract(json.loads(raw))
++ custody['original_expected_pins']=[{k:r[k] for k in ('path','bytes','sha256','identity')} for r in rows]
+  c.codec_acceptance(a['codec_acceptance'])
+  obj,pins=c.reconciled_inputs(raw,mp)
+- inputs=op/'inputs';inputs.mkdir(mode=0o700)
++ custody['original_inputs_before']=pins
++ # The caller owns this journal before any input directory/copy can exist.
++ # Tuple return assignment alone loses all progress when a later step raises.
++ inputs.mkdir(mode=0o700);custody['inputs_created']=True
+  ref,_=c.credential_reference();secret=Path(ref['path']);_,sp=c.private(secret,c.P);c.need(sp['sha256']==ref['sha256'],'SECRET_EXACT_REF')
+  copy_private(secret,inputs/'credential.private.json',sp)
+  (inputs/'encrypted-inputs').mkdir(mode=0o700)
+@@ -63,12 +70,56 @@
+  provenance=[]
+  for p in pins:
+   target=inputs/'encrypted-inputs'/Path(p['path']).name
++  attempt=dict(original_host_pin=p,staged_host_path=str(target),namespace_path='/inputs/encrypted-inputs/'+target.name,copy_is_original=False,copy_completed=False)
++  custody['fixture_copy_attempts'].append(attempt)
+   copy_private(p['path'],target,p);_,copypin=c.private(target,inputs)
++  attempt['staged_host_pin']=copypin
+   c.need(all(copypin[k]==p[k] for k in ('bytes','sha256')) and copypin['identity'][:2]!=p['identity'][:2],'STAGED_COPY_SHA_AND_DISTINCT_INODE')
+   _,after=c.stable(p['path']);c.need(after==p,'ORIGINAL_AFTER_COPY_CAS')
++  attempt['copy_completed']=True
+   provenance.append(dict(original_host_pin=p,staged_host_pin=copypin,namespace_path='/inputs/encrypted-inputs/'+target.name,copy_is_original=False))
+  c.save(inputs/'STAGED.json',dict(mode=mode,operation_key=a['operation_key'],input_sha256=mp['sha256'],source_pins=pins,credential_source=sp,provenance=provenance,original_oracle=obj['original_oracle'],original_all_pass=False))
++ custody['stage_completed']=True
+  return inputs,pins
++
++def readonly_after(a,custody,report):
++ # Inspect every known original and attempted copy even if another check fails.
++ # Partial bytes stay in place; an incomplete/unpinned copy never counts as CAS.
++ report['stage_progress']=custody
++ pins=custody.get('original_expected_pins',[])
++ if not pins:return
++ report['original_inputs_before']=custody['original_inputs_before']
++ errors=[];after_pins=[];original_observations=[];metadata_ok=False
++ try:
++  raw,mp=c.private(a['reconciled_manifest']['path'],c.B);c.need(mp==a['reconciled_manifest'],'AFTER_MANIFEST_CAS')
++  _,after_pins=c.reconciled_inputs(raw,mp);c.need(after_pins==pins,'ORIGINAL_INPUT_AFTER_CAS');metadata_ok=True
++ except BaseException as error:errors.append(dict(check='original_manifest_and_custody',error_class=type(error).__name__))
++ if metadata_ok:
++  original_observations=[dict(path=p['path'],observed_pin=p,cas_verified=True) for p in after_pins]
++ else:
++  # A failed whole-custody check must not hide later originals from observation.
++  after_pins=[]
++  for expected in pins:
++   row=dict(path=expected['path'],cas_verified=False);original_observations.append(row)
++   try:
++    _,now=c.private(expected['path'],c.ORIGINAL_CUSTODY);row['observed_pin']=now;after_pins.append(now)
++    c.need(now==expected,'ORIGINAL_INPUT_AFTER_CAS');row['cas_verified']=True
++   except BaseException as error:row['error_class']=type(error).__name__
++ report['original_inputs_after']=after_pins;report['original_inputs_after_observations']=original_observations
++ copies=[];copy_observations=[];inputs=Path(custody['inputs_path'])
++ for attempt in custody['fixture_copy_attempts']:
++  row=dict(path=attempt['staged_host_path'],copy_completed=attempt['copy_completed'],cas_verified=False);copy_observations.append(row)
++  try:
++   _,now=c.private(row['path'],inputs);row['observed_pin']=now;copies.append(now)
++   c.need(attempt['copy_completed'] and now==attempt.get('staged_host_pin'),'STAGED_COPY_AFTER_CAS');row['cas_verified']=True
++  except BaseException as error:row['error_class']=type(error).__name__
++ codec_ok=False
++ try:c.codec_acceptance(a['codec_acceptance']);codec_ok=True
++ except BaseException as error:errors.append(dict(check='codec_acceptance',error_class=type(error).__name__))
++ report['staged_copies_before']=[{k:r[k] for k in ('original_host_pin','staged_host_pin','namespace_path','copy_is_original')} for r in custody['fixture_copy_attempts'] if 'staged_host_pin' in r]
++ report['staged_copies_after']=copies;report['staged_copies_after_observations']=copy_observations;report['custody_check_errors']=errors
++ report['readonly_custody_after_cas']=bool(custody['stage_completed'] and metadata_ok and codec_ok and len(original_observations)==7 and all(r['cas_verified'] for r in original_observations) and len(copy_observations)==7 and all(r['cas_verified'] for r in copy_observations))
++ if not report['readonly_custody_after_cas'] and report['state']!='STOP_UNCONFIRMED':report['state']='FAILED_OR_PARTIAL_PRESERVED_NO_REPLAY'
+ 
+ def root_parent(op,admission_sha,a,unit):
+  raw,pin=c.private(op/'PARENT-BINDING.json',c.B);v=json.loads(raw)
+@@ -89,13 +140,13 @@
+  c.need(ad['boot_id']==Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'UNIT_BOOT')
+  c.safe_dir(op);root_parent(op,a.admission_sha256,ad,unit);c.need(not os.path.lexists(op/'UNIT-INTENT.json') and not os.path.lexists(op/'work'),'UNIT_NO_REPLAY')
+  report=dict(state='FAILED_OR_PARTIAL_PRESERVED_NO_REPLAY',unit=unit,mode=mode,operation_key=key,cgroup=str(cg),original_unit_start_monotonic=origin,namespace_closed=False)
+- c.save(op/'UNIT-INTENT.json',report);process=None;pidfd=None;logs=[];before=None;inputs=None;pins=[]
++ c.save(op/'UNIT-INTENT.json',report);process=None;pidfd=None;logs=[];before=None;inputs=None;pins=[];custody={}
+  def interrupt(signum,_):raise InterruptedError('UNIT_SIGNAL')
+  for sig in (signal.SIGINT,signal.SIGTERM):signal.signal(sig,interrupt)
+  try:
+   c.within(lim['cleanup_reserve_seconds']);before=c.bank_snapshot()
+   inputs=None;pins=[]
+-  inputs,pins=stage(mode,op,ad);report['original_inputs_before']=pins
++  inputs,pins=stage(mode,op,ad,custody);report['original_inputs_before']=pins
+   report['staged_copies_before']=json.loads(c.private(inputs/'STAGED.json',inputs)[0])['provenance']
+   work=op/'work';work.mkdir(mode=0o700)
+   logs=[(op/'bwrap.stdout.private').open('xb'),(op/'bwrap.stderr.private').open('xb')]
+@@ -128,17 +179,7 @@
+   finally:
+    if pidfd is not None:os.close(pidfd)
+    for stream in logs:stream.close()
+-  if inputs is not None and pins:
+-   try:
+-    manifest_raw,manifest_pin=c.private(ad['reconciled_manifest']['path'],c.B);c.need(manifest_pin==ad['reconciled_manifest'],'AFTER_MANIFEST_CAS')
+-    _,after_pins=c.reconciled_inputs(manifest_raw,manifest_pin);c.need(after_pins==pins,'ORIGINAL_INPUT_AFTER_CAS')
+-    staged=json.loads(c.private(inputs/'STAGED.json',inputs)[0]);after_copies=[]
+-    for row in staged['provenance']:
+-     _,now=c.private(row['staged_host_pin']['path'],inputs);c.need(now==row['staged_host_pin'],'STAGED_COPY_AFTER_CAS');after_copies.append(now)
+-    c.codec_acceptance(ad['codec_acceptance']);report['original_inputs_after']=after_pins;report['staged_copies_after']=after_copies;report['readonly_custody_after_cas']=True
+-   except BaseException as error:
+-    report['readonly_custody_after_cas']=False;report['custody_error_class']=type(error).__name__
+-    if report['state']!='STOP_UNCONFIRMED':report['state']='FAILED_OR_PARTIAL_PRESERVED_NO_REPLAY'
++  readonly_after(ad,custody,report)
+   if not report['namespace_closed']:report['state']='STOP_UNCONFIRMED'
+   report['whole_cgroup_CPU_seconds']=cpu(cg);report['elapsed_whole_unit_seconds']=time.monotonic()-origin
+   report['CPU_monitor_is_aggregate_sampled_not_atomic']=True;report['disk_cap_is_declared_plus_sampled_not_atomic_quota']=True

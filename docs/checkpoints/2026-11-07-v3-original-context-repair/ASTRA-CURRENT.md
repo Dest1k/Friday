@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 00:53 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
+Обновлено **12.11.2026, 01:13 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
 [Фактический native readback](ASTRA-FAST-RESUME-2026-11-12.json): тот же goal/thread
 `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**; история/учёт сохранены, общего cap нет.
 [Дневная редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json) и [owner pause](evidence/astra-20261111/owner-pause-20261112-final-native.json)
@@ -39,18 +39,23 @@ Dashboard175894/start1460381, прежниеInvocationID/active/enabled/NRestart
    вошли и упали на getRequest(SystemError), correct2PASS. Actors/pipes закрыты; original7ciphertext неизменны.
    [Exact5class argscompat +typed cancellation codec](evidence/astra-20261111/f06-password-oracle-codec-checked-20261112.json) прошёл69purecontrols/independentreview;
    Root4negative/2positive DOCX/ODT подтвердили typedMSPWAbort/typedODFPWAbort→ECR2code283Abort. ОбщийOfficebank не менялся.
-   Next: verify-inputs-onlyfull7/21probe/0store с freshbeforeafterCAS/Rootadmission. Диагностические контрасты — representative, не full7admission.
-   [Код](drafts/f06-password-oracle-codec/README.md); none/genericexception/IO не PWpass. Пересоздание/model/send запрещены.
+   [Actual full7 readonly](evidence/astra-20261111/f06-full7-readonly-six-pass-latest-io-20261112.json): первые6compatible **APP PASS** всехmissing/wrong/correct;
+   7latestODT missing/correct PASS, wrong directECR2.IO_GENERAL525 → **НЕ ПРИНЯТО**, rawall_pass=false. Source/original/stagedbeforeafterCAStrue.
+   21probes/0stores/ownedactorsclosed. Ранний источник остановился ДО intent на proofCAS; oldadmission сохранён, Rootprivatebyte-snapshots/rebind47review PASS.
+   [Readonly source](drafts/f06-full7-readonly-oracle/README.md), stagejournalfix11+oracle16+86base checks сохранены; никакого chmod/ослабленияCAS.
+   Next ONLYlatestODT: explicitPassword eagerlydecrypt→generic525 до verifier; sourceлокализован, готовится realXInteractionPassword ENTER/REENTER путь.
+   Не повторять первые6, не создавать/моделировать/отправлять заново; nativequalification всё ещё NOT_RUN/GRANTnone.
+
    Hostpath-проекция metadata выполнена с physicalCAS, raw all_pass=false не изменён. Nativequalification NOT_RUN/GRANTneverissued.
    G3/G4 normal81/emptycomponents/ownedFD; G4missingtrace и G5classREDACTED/EMPTY сохранены исторически; g1..g6 не переигрывать.
 
 2. **Сол Task19 возобновлён.** [M1/M2 и приёмка](evidence/astra-20261111/f06-sol-m1-m2-source-checkpoint.json),
    [его owner-pause](evidence/astra-20261111/owner-pause-20261112-final-native.json) — история; C5 продолжает прежний Task19, старый leadershipgoal paused.
-   M3designc752321 проверен/received, exactqueueitem consumed; Текущий самостоятельный пакет — dormant Root readonly output-oracle frame M3; Root владеет producer/Office/приёмкой, области разнесены. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
+   M3R3 source7e61cb5 получен/verified/consumed (35м22с Standard); sourceonly, Task19 partial. Текущий пакет M3R4 — stableproofrebind/partialstage seam; Root владеет producer/Office/приёмкой, области разнесены. M1 narrow5file privacy source принят; [patch](drafts/f06-credential-projections/README.md)
    убирает известные технические дубликаты/логи пароля, не исходный приватный чат и не исторические БД.
    M2 [metadata/oracle source](drafts/f06-oracle-handoff-m2/README.md) получен; [Root приняла exact canonical fix](evidence/astra-20261111/f06-m2-canonical-root-delta-accepted-20261112.json).
    Автоматическое followup-review ранее отклонено possible cybersecurity risk; отказ сохранён, отклонённый вызов не повторялся.
-   Реальные7байтов/physicalcustody уже есть; нужны исправленная app-оценка и Root GRANT перед nativequalification. Она NOT_RUN/NOT_GRANTED.
+   Реальные7байтов/physicalcustody есть; первые6AppPASS/7latestwrongunresolved. Нужна достаточная7app-оценка и Root GRANT; nativeNOT_RUN/NOT_GRANTED.
    Readonly oracle тех же будущих native-output bytes требует отдельной Root-интеграции; ordinaryDOCX4singletons остаются UNBOUND.
 3. **204/205:** source/gates приняты, 205public5 локально подключены, оба **НЕ УСТАНОВЛЕНЫ**.
    [Source-origin исправление принято](evidence/astra-20261111/core204-origin-policy-source-integrated.json): immutable48/public489/private28
