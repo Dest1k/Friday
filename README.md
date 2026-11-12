@@ -6,6 +6,8 @@ Friday (Пятница) is our effort to build an assistant that can keep track 
 
 There are four of us: **two system administrators and two software developers**. This repository contains the Friday integration, patches, deployment tools, and development records. The project is in active development.
 
+Canonical repository: **[Dest1k/Friday](https://github.com/Dest1k/Friday)**, branch **main**. Start with the [web audit entry](docs/handoff/web-audit-entry.md) and [current operational checkpoint](docs/checkpoints/2026-11-07-v3-original-context-repair/ASTRA-CURRENT.md).
+
 ## What we are building
 
 The intended system brings together:
@@ -35,9 +37,9 @@ The [Telegram and document observations](docs/review-candidates/ordinary-telegra
 
 ## Current development status
 
-**Status snapshot: 22 October 2026, Moscow time.**
+**Status snapshot: 12 November 2026, Moscow time.**
 
-Friday is a development project, and a complete release has not yet been validated. The latest recorded startup attempt failed to establish readiness. A reviewed startup change is awaiting installation after an updater compatibility issue; its effect on startup readiness has not yet been verified. See the [startup and installation status](docs/review-candidates/startup-two-flush-await-bounds-source95-20261022/STATUS.json) for the exact snapshot.
+Friday is a development project, and a complete release has not yet been validated. The current VM checkpoint records installed composition 203 with the gateway and dashboard running. The first attempt to install composition 204 left the source unchanged; the publisher's exit remains unknown, and the services were restored on 203. An observer fix and the protected Office file work remain in progress. See the [current operational checkpoint](docs/checkpoints/2026-11-07-v3-original-context-repair/ASTRA-CURRENT.md) for the evidence, exact limits, and next steps.
 
 Current work includes startup and update reliability, incoming documents, grounded web research, complete worker workflows, and broader validation of memory, skills, administration, and user isolation. Earlier successful exchanges remain useful evidence; each new installed build still needs its own checks.
 
@@ -62,7 +64,7 @@ That lets us develop and test parts of Friday. We want additional inference capa
 
 Our long-term target is an **eight-GPU NVIDIA H200 NVL inference server**. The full configuration we have in mind is now estimated at **over US$900,000 locally**, well beyond what we can fund ourselves. We can make progress toward that target in smaller steps.
 
-If you would like to help, contributions toward hardware, equipment offers, or introductions to someone who might support the project would be welcome. We can share the current results, the proposed configuration, and what we want to test next. You can [get in touch through a repository issue](https://github.com/alinescafs3mp-afk/friday_rework/issues).
+If you would like to help, contributions toward hardware, equipment offers, or introductions to someone who might support the project would be welcome. We can share the current results, the proposed configuration, and what we want to test next. You can [get in touch through a repository issue](https://github.com/Dest1k/Friday/issues).
 
 ## Exploring the repository
 
@@ -77,6 +79,8 @@ If you would like to help, contributions toward hardware, equipment offers, or i
 
 For technical work, start with:
 
+- [Web audit entry and current project pointers](docs/handoff/web-audit-entry.md)
+- [Current operational checkpoint and V3 queue](docs/checkpoints/2026-11-07-v3-original-context-repair/ASTRA-CURRENT.md)
 - [Local model and product configuration](docs/product-profile.md)
 - [Installation design and current prerequisites](docs/native-installer.md)
 - [Web research and administration requirements](docs/mandatory-web-admin.md)
@@ -86,7 +90,7 @@ Deployment currently depends on the selected upstream revisions, reviewed patche
 
 The detailed logs include unsuccessful attempts and checks that have not run. A passing component test is evidence for that component, rather than a claim that the entire assistant is ready. Each dated record should be read within its stated scope.
 
-The [README before this rewrite](https://github.com/alinescafs3mp-afk/friday_rework/blob/0ad7e023536dd544397011519f8173bb706e88bd/README.md) preserves the earlier checkpoint index.
+The [README before this rewrite](https://github.com/Dest1k/Friday/blob/0ad7e023536dd544397011519f8173bb706e88bd/README.md) preserves the earlier checkpoint index.
 
 ## Credits and licenses
 
