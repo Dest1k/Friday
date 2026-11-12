@@ -1,0 +1,98 @@
+{
+  "assignment": "ASTRA-NATIVE-F06-INBOUND-PREVIEW-SOURCEFLOW-REVIEW-20261112#1",
+  "completed_at_moscow": "2026-11-12T23:14:36.431673+03:00",
+  "curation": "Static code dataflow only; criterion/private selected-request section omitted.",
+  "findings": [
+    {
+      "facts": "At handler entry before session resolution or prepare, INFO inbound message copies event.text[:80] and reply_to_text[:80], newline-normalized and repr-formatted. This is a direct original-caption copy into diagnostics; truncation does not redact secrets. Replied-to content is a separate textual exposure at the same producer.",
+      "id": "gateway_raw_preview",
+      "refs": [
+        "gateway/run_turn.py:2193-2203"
+      ]
+    },
+    {
+      "facts": "conversation turn INFO receives summarize_user_message_for_log(user_message)[:80] plus optional ellipsis. Summarizer returns scalar text or joins list text parts; images become count marker. It does no secret filtering. Thus the prepared user/model content, including any retained caption, reaches a second diagnostic logger.",
+      "id": "agent_raw_preview",
+      "refs": [
+        "agent/turn_context.py:1117-1132",
+        "agent/codex_responses_adapter.py:269-281"
+      ]
+    },
+    {
+      "facts": "Inbound preparation yields message_text plus persist_user_message; timestamp handling retains clean original user content separately from render metadata. The run path forwards message and persist override plus display metadata; stage builds role=user content from user_message and preserves display metadata. History/model input and logger output are distinct flows. A logging-only fix must leave event.text, message_text, persist_user_message, history, staged user row and its metadata unchanged.",
+      "id": "original_user_dataflow",
+      "refs": [
+        "gateway/run_turn.py:2151-2164",
+        "gateway/run_turn.py:1452-1481",
+        "gateway/run_turn.py:2249-2266",
+        "gateway/run_turn_runner.py:1699-1716",
+        "agent/conversation_loop.py:1616-1628",
+        "agent/turn_context.py:699-738",
+        "agent/turn_context.py:1134-1155"
+      ]
+    },
+    {
+      "facts": "message_type is available at gateway but not a build_turn_context argument. Attachment presentations are conditional on ordinary_file_scope and current metadata; presentation availability does not classify every secret-bearing user turn. A same-upload plain sendMessage continuation may carry a secret without attachment. No attachment classifier or metadata API is needed for unconditional safe producer logging.",
+      "id": "attachment_gate_incomplete",
+      "refs": [
+        "gateway/run_attachment_presentation.py:112-138",
+        "gateway/run_attachment_presentation.py:141-171",
+        "gateway/run_turn.py:2260-2265",
+        "agent/turn_context.py:1063-1067"
+      ]
+    },
+    {
+      "facts": "The existing _preview_text is also used by the starting-conversation user-facing print when quiet_mode is false. Gateway fresh agents set quiet_mode=True, suppressing that print. Changing only logger args can leave this variable/print behavior unchanged. This source review is not a blanket claim that all non-gateway stdout paths are metadata-only.",
+      "id": "stdout_boundary",
+      "refs": [
+        "agent/turn_context.py:1158-1162",
+        "gateway/run_turn_runner.py:1117-1119",
+        "agent/status_output.py:20-30"
+      ]
+    }
+  ],
+  "limitations": [
+    "Actual carrier bodies and credential values were not read. Runtime reachability and prior observations are supplied by parent, not independently replayed.",
+    "No candidate diff was reviewed under this result; Root will arrange independent review of exact candidate bytes.",
+    "This finite review does not audit all logging, memory, hook or DB producers."
+  ],
+  "minimal_fix": {
+    "agent": "Log fixed input kind (e.g. str/list/none/other), content-part count and textual character count from already-supported input shapes. Do not stringify arbitrary content or log part payloads. Keep summarize helper and _preview_text for existing non-logger consumers unless the exact candidate deliberately narrows further.",
+    "coverage": "Apply at both producers unconditionally for str, multimodal and plain continuation, independent of attachment metadata availability.",
+    "excluded_changes": "No model/history/persistence argument mutation; no new signature/metadata/classifier/API; no global structured-tool projector or summarizer change.",
+    "gateway": "Replace both text preview logger operands/fields with fixed metadata: input kind, attachment count when directly available, inbound text character count, reply-to character count/presence; retain existing useful correlation metadata. Never log content, repr of event, names/paths from attachments, or secret hashes."
+  },
+  "mode": "readonly installed207 source review; no runtime/candidate acceptance",
+  "original_metadata_ref": {
+    "bytes": 8336,
+    "path": "/home/jericho/.cache/FRW-ASTRA-NATIVE-F06-INBOUND-PREVIEW-SOURCE-20261112/review/SOURCEFLOW.json",
+    "sha256": "e825249208861fe527648d94509ee3145e87c23286c124f6cc576ee298bdd35e"
+  },
+  "recommended_checks": [
+    "Capture both INFO producers with synthetic distinctive sentinels in inbound text, reply-to text, plain continuation, and multimodal text; assert no full sentinel, prefix or text payload appears and assert intended counts/kind.",
+    "Cover empty/None values and non-text multimodal parts without stringify/repr fallback; malformed unsupported shapes should produce fixed metadata rather than content.",
+    "Compare staged user/model/history/persist payload identity/content before and after logger execution; ordinary original input must remain intact.",
+    "Parse/import only affected source scope, plus exact-diff review; no live models/Telegram/closed effect replay is needed for producer regression tests.",
+    "Treat source/logging regression success as source evidence only. Installed version/restart and future user behavior require separate Root integration facts."
+  ],
+  "schema": "frw.native.f06.inbound-preview.sourceflow-review.v1",
+  "scope": {
+    "modified_product_sources": false,
+    "ran_models_services_or_telegram": false,
+    "read_actual_caption_password_chat_log_or_db_bodies": false,
+    "read_source_only": true
+  },
+  "snapshot": {
+    "files": {
+      "agent/codex_responses_adapter.py": "bb26bc4ea2da448cfe784a0235671c4d42c2b9ed42198414d8cb3826679c2916",
+      "agent/conversation_loop.py": "015f47a8d624eb7b07c3eba0d83cd3047fffc2cc414343b424c7d76ee96dd53d",
+      "agent/status_output.py": "e40bf8f9df29ef3b66c5832851a87d15dec7cb1cb09013eaa799d165108d1928",
+      "agent/turn_context.py": "9bfb5c11c1555bcff33de007e8baa2793fdc8d0afc38eeae06dc520ae14d7a7d",
+      "gateway/run_attachment_presentation.py": "51439ea9a9d2986865b213e2417292de9c2d3971f79f60bccbfa7756d8f52843",
+      "gateway/run_turn.py": "a2d166316f286b540281b8b87c850d3765bc0a780d14d745f6ccef7ba4ec086b",
+      "gateway/run_turn_runner.py": "40fc843da61391cfede0ad08d08a32bf8b53f051ca15369694afab57c73d92ed"
+    },
+    "root": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent"
+  },
+  "verdict": "CONFIRMED: two direct raw inbound diagnostic producers; unconditional metadata-only logging is the minimal compatible fix for attachment and plain continuation paths."
+}

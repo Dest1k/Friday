@@ -1,0 +1,47 @@
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -2194,12 +2194,16 @@
+         """Inner handler that runs under the _running_agents sentinel guard."""
+         _msg_start_time = time.time()
+         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
++        # Captions and ordinary follow-ups may carry private values. Keep the
++        # actual event/model/history inputs intact; log only their shape here.
+         logger.info(
+-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
++            "inbound message: platform=%s user=%s chat=%s kind=%s attachments=%d "
++            "msg_chars=%d reply_to_id=%s reply_to_chars=%d",
+             _platform_name, source.user_name or source.user_id or "unknown",
+-            source.chat_id or "unknown", (event.text or "")[:80].replace("\n", " "),
++            source.chat_id or "unknown", getattr(getattr(event, "message_type", None), "value", "unknown"),
++            len(getattr(event, "media_urls", None) or []), len(event.text or ""),
+             getattr(event, "reply_to_message_id", None),
+-            (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
++            len(getattr(event, "reply_to_text", None) or ""),
+         )
+ 
+         resolved = await self._hmwa_resolve_session(event, source)
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -1114,15 +1114,19 @@
+     )
+     _reset_per_turn_agent_state(agent)
+ 
++    # This diagnostic must not copy raw text/captions from either string or
++    # multimodal turns. The real user message remains unchanged below.
+     _preview_text = summarize_user_message_for_log(user_message)
+-    _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")
++    _msg_chars = len(_preview_text)
++    _content_parts = len(user_message) if isinstance(user_message, list) else int(user_message is not None)
+     _turn_fmt = (
+-        "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r"
++        "conversation turn: session=%s model=%s provider=%s platform=%s history=%d "
++        "input_type=%s content_parts=%d msg_chars=%d"
+     )
+     _turn_args = [
+         agent.session_id or "none", agent.model, agent.provider or "unknown",
+         agent.platform or "unknown", len(conversation_history or []),
+-        _msg_preview.replace("\n", " "),
++        type(user_message).__name__, _content_parts, _msg_chars,
+     ]
+     # Fork turns (background review, side questions) reuse the parent's session_id and
+     # model; tag their turn-start line so logs can tell them apart (#118693).
