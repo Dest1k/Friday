@@ -1,0 +1,22 @@
+from pathlib import Path
+import os,sys,json,hashlib,time,datetime,types,importlib,dataclasses
+sys.dont_write_bytecode=True;os.umask(0o077);B=Path(__file__).resolve().parent;H=Path('/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032');N=H/'hermes-agent'
+for key,n in [('HERMES_HOME','readonly-unit-observer-home'),('TMPDIR','readonly-unit-observer-tmp'),('XDG_CACHE_HOME','readonly-unit-observer-cache')]:
+ p=B/n;p.mkdir(mode=0o700,exist_ok=True);os.environ[key]=str(p)
+sys.path.insert(0,str(N));pkg=types.ModuleType('root_actual_readonly_validation');pkg.__path__=[str(H/'plugins/friday_rework')];sys.modules[pkg.__name__]=pkg;assoc=importlib.import_module(pkg.__name__+'.associations')
+from hermes_cli.friday_native_supervision import NativeSupervisor
+receipt=json.loads((H/'hermes-agent.source.json').read_bytes());sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+for name in ('hermes_cli/friday_native_supervision.py','hermes_cli/friday_native_control.py'):assert sha(N/name)==receipt['files'][name]['sha256']
+assert not (B/'READONLY-RETAINED-UNITS-INTENT.json').exists();start=time.monotonic();deadline=start+120
+intent={'schema':'friday.Root.readonly-retained-unit-snapshot.v1','at_moscow':datetime.datetime.now().astimezone().isoformat(),'started_mono':start,'deadline_mono':deadline,'seconds':120,'commands':'Only genuine NativeSupervisor.observe -> systemctl show. No stop/start/run/reset/cleanup/model/Tg/worker execution.','meaning':'Current native unit snapshot only, not stopped admission or A0 server/remote inference or user effects acceptance.'};(B/'READONLY-RETAINED-UNITS-INTENT.json').write_text(json.dumps(intent,indent=2)+'\n')
+observed=[];pins=[];supervisor=NativeSupervisor();errors=[]
+for home in (H,H/'profiles/telegram-bot-8812646969'):
+ p=home/'plugin-data/agent-plugin-friday_rework-877e6505/state.json';raw=p.read_bytes();pins.append((p,hashlib.sha256(raw).hexdigest()));store=json.loads(raw)[assoc.KEY];assoc._validate_store(store)
+ for row in store['jobs'].values():
+  assert time.monotonic()<deadline
+  try:
+   v=supervisor.observe(row,deadline=deadline);observed.append({'task_id_sha256':hashlib.sha256(row['existing_task_id'].encode()).hexdigest(),'worker_kind':row['worker_kind'],'observation':dataclasses.asdict(v),'quiescent':v.quiescent})
+  except BaseException as e:
+   errors.append({'task_id_sha256':hashlib.sha256(row['existing_task_id'].encode()).hexdigest(),'error_class':type(e).__name__,'code':'details_retained_as_typed_class_only'});break
+ if errors:break
+same=all(sha(p)==expected for p,expected in pins);children=[{'pid':c.pid,'raw_wait':c.raw_wait,'closed':c.closed,'state':c.state,'errors':len(c.errors)}for c in supervisor.commands.records];out={'state':'READONLY_UNIT_SNAPSHOT_COMPLETE'if not errors and same else'READONLY_UNIT_SNAPSHOT_REFUSED','at_moscow':datetime.datetime.now().astimezone().isoformat(),'elapsed_seconds':time.monotonic()-start,'observations':observed,'errors':errors,'count':len(observed),'quiescent':sum(v['quiescent']for v in observed),'actual_store_hashes_unchanged':same,'native_command_custody':children,'all_control_children_reaped_closed':all(c['raw_wait']is not None and c['closed']for c in children),'no_stop_or_worker_model_Tg_or_user_state_writes':True,'meaning':intent['meaning']};(B/'ROOT-ACTUAL-RETAINED-UNIT-OBSERVATIONS.json').write_text(json.dumps(out,indent=2)+'\n');print(json.dumps({k:v for k,v in out.items()if k not in('observations','native_command_custody')}))

@@ -29,28 +29,35 @@ default branch — **main**. Публикация сюда разрешена в
 постоянный Сол — co-architect на Standard. Native goal Астры active в прежнем thread
 `01a1c688-e36d-7021-8df4-9c5644a4d75b`; UUID, история и накопленный учёт не переносились вручную.
 
-На VM установлен **205 / project491 / native17891 / plugins52 / base17730**. Штатный publisher0,
-свежий DEFAULT0, полный native readback и данные проверены; gateway/Dashboard постоянные,
-Telegramconnected/3routes, все принадлежащие операции процессы закрыты. Историческая первая
-попытка204 остаётся consumed/UNKNOWN. [Установленные205 и futureF06source](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/native205-installed-and-f06-source-connected.json).
+На VM установлен **206 / project493 / native17891 / plugins52 / base17730**. Нормальный205→206
+завершён за134.77s: publisher0/freshDEFAULT0/fullnative/dataPASS; gateway/Dashboard постоянные,
+Telegramconnected/3routes, actors/boundary/publisher закрыты. [Итог установки](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/native206-installed-and-operation-closed.json),
+[текущий readback](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/native206-publication-observation.json),
+[точный исходный frame/review](../checkpoints/2026-11-07-v3-original-context-repair/drafts/core206-installed-root-source-20261112/README.md).
+Provenance localcommittedmain8d392 независим от публикации; первоначальная204 UNKNOWN не переписана.
 
-Ближайшая техническая зависимость core — **нормальный205→206** для F06. Новый coherent206frame/boundary
-готовится с genuineCP205 и свежими Root-предпосылками; старые consumed callers исполнять нельзя.
-Task23 Сола завершил четыре
-полных source gates success/rollback для operational/public и независимое execution review,
-после genuine205 подключены точные future206public5/собственный493stand/actualderivedinput.
-Source fixtures не являются установленной206; Root пока не открывал её live-допуск.
+Следующий ordinaryF06 singleton — ещё NOT_RUN: firstwrongread retainedStandard3.2DOCX,
+normalindependentadmission/fullv42, max0docs/full180. R3freeze0a18e6b9 принят после stop/path/deadline
+и reentrantsecond-signal fixes и независимой проверки reviewerdelta; свежие runtime/privacy/допуск впереди.
+Старый installedtester неизменён; первой отправки ещё не было.
 
-Установленный RTF-helper прочитал те же10723B с16body/3stories и восстановленной сноской,
-сохраняя partial/layout/numbering ограничения; ordinaryauthority из этого не следует.
-F06 readonly template evaluation выполнен:12typedpasswordrefusals и6correctopen+семантика,
-но6getRequest SystemError до классификации. Rawall_passfalse/client1/полныйзахват18 сохранены,
-итог **PARTIAL**, фактическийpayload/causeUNKNOWN; originalOTTrawreceipt gap не исправлен.
-Сол в прежней Standard TUI завершил Task24 dormant diagnostic source/review без Office/документных
-эффектов; Task25 выполняется после одного completed native pre-task compact для минимального нового Rootframe
-одной недостающей class-only OTT-пробы. Это не повтор18 и не готовая Office-правка.
-Отдельный modernODTcodec Argon2id19/AES256GCM имеет85+12sourcecontrols/review, но не интегрирован/не установлен:
-он следует после206, historicalmodern7FAIL не закрыт. Астра интегрирует продукт; AppPARTIAL локален.
+Отдельный normal206→207 modernODT codec прошёл source/gateprep review; четыре полных synthetic
+gates исполняются последовательно, operational-success0/291 иrollback0/209assertions уже сохранены. Это не installed207,
+не повторgenuine7 и не ordinary/App/formalF06PASS. Argon2id19/AES256GCM границы приведены
+в [source codec](../checkpoints/2026-11-07-v3-original-context-repair/drafts/f06-modern-odt-source-20261112/README.md); в206 modernODF boundedunsupported.
+Standard3.2 не даёт authenticatedMAC/data_integrity_verified.
+
+Установленный RTF-helper прочитал теже10723B с16body/3stories/restoredfootnote; partial/layout/numbering
+границы сохраняются. AppF06 template18 остаётся PARTIAL:12typedrefusals/6correctopen+семантика,
+6getRequestSystemError доclassification/rawall_passfalse/client1. Actualpayload/causeUNKNOWN.
+СолTask25 завершил [минимальный source-only frame](../checkpoints/2026-11-07-v3-original-context-repair/drafts/f06-one-template-diagnostic-frame-source-20261112/README.md)
+для одной недостающей class-only readonlyOTT-пробы; Rootruntimegrant/новое наблюдение ещё впереди, не replay18.
+
+[RuntimeWARN consumer](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/runtime-warn-standalone-not-run.json) — NOT_RUN:
+standaloneRoot import отказал штатным nativeoperatorentryguard доWARNcalls0, собственные процессы/PMlease закрыты.
+Это не наблюдённыйbotfailure. СолTask26 в своей Standard TUI готовит минимальный puredependency cleanup
+без ослабления productionadmission и без нового искусственного prerequisite для обычной Friday.
+Астра сохраняет live-интеграцию; source readiness и пользовательская приёмка разделены.
 
 ## Что можно проверить из репозитория
 
@@ -64,7 +71,7 @@ F06 readonly template evaluation выполнен:12typedpasswordrefusals и6cor
 Исходники, установка, исполненный пользовательский путь, семантическая оценка и формальная
 приёмка — разные факты. Приватные native receipts, БД/WAL/SHM, Telegram runs/downloads/closures,
 оригиналы и Office-наблюдения остаются на VM; веб-чат не может независимо вывести их свежесть
-из одного source PASS. Установленный205, подключённыйsource206, dormantcallback и futuremodernODT
+из одного source PASS. Установленный206, source-onlycallbackframe и futuremodernODT207
 имеют разные статусы; часть материалов остаётся только в приватных копиях.
 Не запускать повторно producer/model/send ради удобного PASS. R83 UNKNOWN_SEND, исчерпанные
 три C10 journey и остальные consumed/UNKNOWN ограничения приведены в ASTRA-CURRENT.

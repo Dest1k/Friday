@@ -1,0 +1,1419 @@
+--- /dev/null
++++ b/diagnostic_client.py
+@@ -0,0 +1,340 @@
++"""Dormant one-load caller; imports no UNO, opens nothing on import.
++
++The embedded entry passes its already connected, empty Desktop. This module
++never reconnects, retries, launches Office, stores or interprets diagnostic
++success as acceptance. Root alone supplies a future admission and private inputs.
++"""
++import json
++import re
++from pathlib import Path
++
++import f06_contract as c
++from conversion_probe import exception_metadata
++from readonly_diagnostic import observe_one_readonly
++from request_args_compat_v2 import install_request_args_compat, restore_request_args_compat
++
++MODE = 'one-template-diagnostic'
++IDS = ['template-ott-source']
++SELECTED_SHA = '61c72a4b14ce2a83677acce3b267fb00aeb773e7dc74ffd448a449bd5dfb4650'
++SELECTED_URL = 'file:///inputs/native-outputs/retained-source.ott'
++MAX_BYTES = 32768
++QUALIFIED = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,16}\Z')
++PHASES = frozenset(('entered', 'request_type_before', 'get_request_before',
++    'get_request_after', 'classify_before', 'error_code_before', 'error_code_after',
++    'classify_after', 'get_continuations_before', 'get_continuations_after',
++    'query_abort_type_before', 'query_interface_before', 'query_interface_after',
++    'select_before', 'select_after', 'no_abort_continuation', 'callback_exception_reraised'))
++KNOWN_PAYLOADS = frozenset(('com.sun.star.task.DocumentPasswordRequest',
++    'com.sun.star.task.DocumentMSPasswordRequest', 'com.sun.star.task.DocumentPasswordRequest2',
++    'com.sun.star.task.DocumentMSPasswordRequest2', 'com.sun.star.task.ErrorCodeRequest2'))
++REASONS = frozenset(('MISSING_CONVERSION_OBSERVATION', 'EXTRA_CALLBACK',
++    'UNKNOWN_CLASS_IDENTITY', 'CALLBACK_FAULT', 'HOOK_CAS_OR_RESTORATION_DRIFT',
++    'METADATA_FAILURE', 'INPUT_CAS_DRIFT', 'COMPAT_RESTORATION_DRIFT',
++    'LOAD_OR_SEMANTIC_FAULT', 'DOCUMENT_CLOSE_FAULT', 'CLIENT_SCOPE_INCOMPLETE'))
++
++
++def need(value, code):
++    if not value:
++        raise ValueError(code)
++
++
++def class_identity(value):
++    need(type(value) is str and len(value) <= 240 and QUALIFIED.fullmatch(value), 'CLASS_ONLY')
++
++
++def exception_projection(value, *, chain=False):
++    """Validate known metadata shapes BEFORE any JSON traversal or output."""
++    need(type(value) is dict, 'EXCEPTION_OBJECT')
++    if chain:
++        need(set(value) == {'chain', 'chain_truncated_or_cycle'}
++             and type(value['chain']) is list and 1 <= len(value['chain']) <= 4
++             and type(value['chain_truncated_or_cycle']) is bool, 'EXCEPTION_CHAIN')
++        for row in value['chain']:
++            need(type(row) is dict and set(row) == {'edge', 'exception_class', 'source_frames', 'frames_truncated'}
++                 and row['edge'] in ('top', 'cause', 'context')
++                 and type(row['frames_truncated']) is bool, 'EXCEPTION_CHAIN_ROW')
++            exception_projection({'exception_class': row['exception_class'], 'source_frames': row['source_frames']})
++        return
++    need(set(value) == {'exception_class', 'source_frames'}, 'EXCEPTION_FIELDS')
++    class_identity(value['exception_class'])
++    frames = value['source_frames']
++    need(type(frames) is list and len(frames) <= 12, 'EXCEPTION_FRAMES')
++    for frame in frames:
++        need(type(frame) is dict and set(frame) in ({'source', 'line'}, {'source', 'function', 'line'}), 'FRAME_FIELDS')
++        need(frame['source'] in ('conversion_probe.py', 'callback_observer_v2.py', 'readonly_diagnostic.py',
++             'callback_observer.py', 'office_fixture_driver.py', 'uno.py', 'unohelper.py', 'OTHER_SOURCE')
++             and type(frame['line']) is int and frame['line'] > 0, 'FRAME_TYPES')
++        if 'function' in frame:
++            need(type(frame['function']) is str and len(frame['function']) <= 100 and QUALIFIED.fullmatch(frame['function']), 'FRAME_FUNCTION')
++
++
++def probe_projection(probe):
++    # An early probe refusal may leave the initially empty metadata dictionary.
++    need(type(probe) is dict, 'PROBE_OBJECT')
++    if not probe:
++        return
++    required = {'schema', 'get_request_calls', 'purpose', 'setter_events', 'setter_events_overflow',
++                'metadata_incomplete', 'restored', 'origin'}
++    optional = {'cached_exception_setters_planned', 'get_request_error', 'setters_restored', 'cleanup_failures'}
++    need(required <= set(probe) <= required | optional, 'PROBE_FIELDS')
++    need(probe['schema'] == 'friday.pyuno.conversion-metadata.v1'
++         and probe['purpose'] == 'DIAGNOSTIC_NOT_ACCEPTANCE'
++         and probe['origin'] == 'RETURN_OR_ERROR_CONVERSION_UNKNOWN'
++         and type(probe['get_request_calls']) is int and 0 <= probe['get_request_calls'] <= 1, 'PROBE_FIXED')
++    for key in ('setter_events_overflow', 'metadata_incomplete', 'restored'):
++        need(type(probe[key]) is bool, 'PROBE_BOOLEAN')
++    for key in ('cached_exception_setters_planned', 'setters_restored'):
++        if key in probe:
++            need(type(probe[key]) is int and 0 <= probe[key] <= 8192, 'PROBE_COUNT')
++    if 'get_request_error' in probe:
++        exception_projection(probe['get_request_error'], chain=True)
++    if 'cleanup_failures' in probe:
++        known = {'POSTSCAN_FAILED', 'GENERATED_CLASS_IDENTITY_DRIFT', 'SETTER_RESTORE_FAILED',
++                 'SETTER_RESTORE_CAS_DRIFT', 'HELPER_RESTORE_CAS_DRIFT', 'HELPER_RESTORE_FAILED', 'COMPAT_SETTER_DRIFT'}
++        need(type(probe['cleanup_failures']) is list and len(probe['cleanup_failures']) <= 16390
++             and all(type(item) is str and item in known for item in probe['cleanup_failures']), 'PROBE_CLEANUP')
++    need(type(probe['setter_events']) is list and len(probe['setter_events']) <= 16, 'SETTER_EVENTS')
++    for row in probe['setter_events']:
++        need(type(row) is dict and {'generated_exception_class_during_conversion', 'attribute', 'phase'} <= set(row)
++             <= {'generated_exception_class_during_conversion', 'attribute', 'phase', 'error'}, 'SETTER_FIELDS')
++        class_identity(row['generated_exception_class_during_conversion'])
++        need(row['generated_exception_class_during_conversion'].startswith('com.sun.star.')
++             and row['attribute'] == 'args'
++             and row['phase'] in ('delegate_before', 'delegate_exception_reraised', 'delegate_returned'), 'SETTER_FIXED')
++        if 'error' in row:
++            exception_projection(row['error'], chain=True)
++
++
++def adapter_projection(value):
++    required = {'schema', 'state', 'load_calls', 'opened', 'semantic_match', 'close_attempted',
++                'closed_or_disposed', 'planned_stores', 'store_count_instrumented',
++                'original_strict_all_pass', 'acceptance_granted', 'actual_payload_type',
++                'interaction_events', 'get_request_window_consumed'}
++    optional = {'load_or_semantic_error', 'close_error', 'dispose_error'}
++    need(type(value) is dict and required <= set(value) <= required | optional, 'ADAPTER_FIELDS')
++    need(value['schema'] == 'friday.f06.one-bridge-observation.v1'
++         and value['state'] == 'DIAGNOSTIC_NOT_QUALIFICATION'
++         and type(value['load_calls']) is int and value['load_calls'] == 1
++         and type(value['planned_stores']) is int and value['planned_stores'] == 0
++         and value['store_count_instrumented'] is False
++         and value['original_strict_all_pass'] is False and value['acceptance_granted'] is False
++         and value['actual_payload_type'] == 'UNKNOWN', 'ADAPTER_FIXED')
++    for key in ('opened', 'semantic_match', 'close_attempted', 'closed_or_disposed', 'get_request_window_consumed'):
++        need(type(value[key]) is bool, 'ADAPTER_BOOLEAN')
++    need(not value['semantic_match'] or value['opened'], 'SEMANTICS_REQUIRES_OPEN')
++    need(value['opened'] == value['close_attempted'], 'CLOSE_REQUIRED_IF_OPENED')
++    for key in optional:
++        if key in value:
++            exception_projection(value[key], chain=True)
++    events = value['interaction_events']
++    # The adapter itself can append an extra rejected callback. Keep bounded
++    # evidence; its OneShotConversionProbe prevents a second native getRequest.
++    need(type(events) is list and len(events) <= 16, 'EVENT_BOUND')
++    for event in events:
++        required_event = {'phase', 'phases', 'request_kind', 'abort_selected'}
++        optional_event = {'request_class', 'payload_class', 'is_document_password', 'is_document_ms_password',
++            'is_error_code_request2', 'error_code', 'continuation_attempts', 'callback_error_phase',
++            'callback_error', 'conversion_probe'}
++        need(type(event) is dict and required_event <= set(event) <= required_event | optional_event, 'EVENT_FIELDS')
++        seq = event['phases']
++        need(event['phase'] in PHASES and type(seq) is list and 1 <= len(seq) <= 128
++             and all(type(item) is str and item in PHASES for item in seq)
++             and seq[0] == 'entered' and seq[-1] == event['phase'], 'EVENT_PHASES')
++        need(event['request_kind'] in ('UNCLASSIFIED', 'DocumentPasswordRequest', 'DocumentMSPasswordRequest', 'ErrorCodeRequest2', 'OTHER')
++             and type(event['abort_selected']) is bool, 'EVENT_FIXED')
++        for key in ('request_class', 'payload_class'):
++            if key in event:
++                class_identity(event[key])
++        for key in ('is_document_password', 'is_document_ms_password', 'is_error_code_request2'):
++            if key in event:
++                need(type(event[key]) is bool, 'EVENT_BOOLEAN')
++        if 'error_code' in event:
++            need(type(event['error_code']) is int and -(2**31) <= event['error_code'] < 2**31, 'EVENT_CODE')
++        if 'continuation_attempts' in event:
++            attempts = event['continuation_attempts']
++            need(type(attempts) is list and len(attempts) <= 16, 'CONTINUATION_BOUND')
++            for attempt in attempts:
++                need(type(attempt) is dict and {'phase'} <= set(attempt) <= {'phase', 'abort_available'}
++                     and attempt['phase'] in ('query_abort_type_before', 'query_interface_before', 'query_interface_after', 'select_before', 'select_after')
++                     and ('abort_available' not in attempt or type(attempt['abort_available']) is bool), 'CONTINUATION_FIELDS')
++        need(('callback_error' in event) == ('callback_error_phase' in event), 'CALLBACK_FAULT_JOIN')
++        if 'callback_error' in event:
++            need(event['callback_error_phase'] in PHASES and event['phase'] == 'callback_exception_reraised', 'CALLBACK_FAULT_PHASE')
++            exception_projection(event['callback_error'])
++        if 'conversion_probe' in event:
++            probe_projection(event['conversion_probe'])
++    return value
++
++
++def terminal_reasons(diagnostic):
++    """Pure stop policy; named conversion classes are observations, never shims."""
++    adapter_projection(diagnostic)
++    reasons = []
++    events = diagnostic['interaction_events']
++    if not events:
++        reasons.append('MISSING_CONVERSION_OBSERVATION')
++    if len(events) > 1:
++        reasons.append('EXTRA_CALLBACK')
++    for event in events:
++        probe = event.get('conversion_probe', {})
++        if event.get('request_kind') == 'OTHER' or event.get('payload_class') not in KNOWN_PAYLOADS:
++            reasons.append('UNKNOWN_CLASS_IDENTITY')
++        if 'callback_error' in event:
++            reasons.append('CALLBACK_FAULT')
++        if not probe or probe.get('get_request_calls') != 1 or probe.get('metadata_incomplete') or probe.get('setter_events_overflow'):
++            reasons.append('METADATA_FAILURE')
++        if not probe.get('restored') or probe.get('cleanup_failures'):
++            reasons.append('HOOK_CAS_OR_RESTORATION_DRIFT')
++    if not diagnostic['get_request_window_consumed']:
++        reasons.append('MISSING_CONVERSION_OBSERVATION')
++    if 'load_or_semantic_error' in diagnostic:
++        reasons.append('LOAD_OR_SEMANTIC_FAULT')
++    if diagnostic['opened'] and not diagnostic['closed_or_disposed'] or 'close_error' in diagnostic or 'dispose_error' in diagnostic:
++        reasons.append('DOCUMENT_CLOSE_FAULT')
++    return sorted(set(reasons))
++
++
++def ott_source_semantic(doc):
++    # Exact narrow branch from the existing driver; values never enter output.
++    return (doc.supportsService('com.sun.star.text.TextDocument')
++            and doc.getText().getString().splitlines() == ['OTT-UNIQUE-BEFORE', 'RETAINED-TEXT-PARAGRAPH'])
++
++
++def input_snapshot(expected_digest):
++    c.need(type(expected_digest) is str and re.fullmatch('[0-9a-f]{64}', expected_digest), 'INPUT_DIGEST')
++    raw, manifestpin = c.private('/inputs/NATIVE-OUTPUTS.json', '/inputs')
++    c.need(manifestpin['sha256'] == expected_digest, 'MANIFEST_CAS')
++    manifest = c.decode(raw)
++    c.manifest_contract(manifest)
++    raw, stagedpin = c.private('/inputs/STAGED.json', '/inputs')
++    staged = c.decode(raw)
++    c.need(staged.get('selected_count') == 1 and type(staged.get('selected_count')) is int
++           and staged.get('selected_fixture_ids') == IDS and staged.get('input_sha256') == expected_digest
++           and type(staged.get('expected_probes')) is int and staged['expected_probes'] == 1
++           and type(staged.get('expected_stores')) is int and staged['expected_stores'] == 0, 'STAGED_SELECTION')
++    row = manifest['fixtures'][0]
++    c.need(row['sha256'] == SELECTED_SHA, 'EXACT_SELECTED_CIPHERTEXT')
++    _, cipherpin = c.private('/inputs/native-outputs/retained-source.ott', '/inputs')
++    c.need(all(cipherpin[key] == row[key] for key in ('bytes', 'sha256')), 'STAGED_CIPHER_CAS')
++    c.need({path.name for path in c.safe_dir('/inputs/native-outputs').iterdir()} == {'retained-source.ott'}, 'SELECTED_DIRECTORY')
++    credential_raw, credentialpin = c.private('/inputs/credential.private.json', '/inputs')
++    credential = manifest['credential']
++    c.need(all(credentialpin[key] == credential[key] for key in ('bytes', 'sha256')), 'STAGED_CREDENTIAL_CAS')
++    pins = staged.get('source_pins')
++    expected = {key: row[key] for key in ('path', 'bytes', 'sha256', 'identity')}
++    c.need(staged.get('credential_source') == credential
++           and type(pins) is list and len(pins) == 1 and type(pins[0]) is dict
++           and pins[0].get('fixture_id') == row['fixture_id']
++           and all(pins[0].get(key) == value for key, value in expected.items())
++           and pins[0].get('native_source_ciphertext') == expected, 'STAGED_ORIGINAL_PINS')
++    return dict(manifest=manifestpin, staged=stagedpin, cipher=cipherpin, credential=credentialpin), credential_raw
++
++
++def result_contract(value, expected_digest, client_exit=None):
++    required = {'schema', 'state', 'mode', 'selected_count', 'selected_fixture_ids', 'input_manifest_sha256',
++                'input_cas_before', 'input_cas_after', 'original_strict_all_pass', 'acceptance_granted',
++                'diagnostic', 'terminal_reasons', 'client_errors'}
++    need(type(value) is dict and set(value) == required, 'RESULT_FIELDS')
++    need(value['schema'] == 'friday.f06.one-template-diagnostic-client.v1'
++         and value['mode'] == MODE and type(value['selected_count']) is int and value['selected_count'] == 1
++         and value['selected_fixture_ids'] == IDS and value['input_manifest_sha256'] == expected_digest
++         and value['original_strict_all_pass'] is False and value['acceptance_granted'] is False, 'RESULT_FIXED')
++    need(type(value['input_cas_before']) is bool and type(value['input_cas_after']) is bool, 'RESULT_CAS_TYPES')
++    need(type(value['client_errors']) is list and len(value['client_errors']) <= 3, 'CLIENT_ERROR_BOUND')
++    for row in value['client_errors']:
++        need(type(row) is dict and set(row) == {'phase', 'exception'}
++             and row['phase'] in ('before_inputs', 'correct_credential', 'compat_install',
++                 'one_observation', 'metadata_projection', 'compat_restore', 'after_inputs'), 'CLIENT_ERROR_FIELDS')
++        exception_projection(row['exception'], chain=True)
++    reasons = value['terminal_reasons']
++    need(type(reasons) is list and reasons == sorted(set(reasons)) and all(type(item) is str and item in REASONS for item in reasons), 'RESULT_REASONS')
++    if value['diagnostic'] is None:
++        need('METADATA_FAILURE' in reasons or 'CLIENT_SCOPE_INCOMPLETE' in reasons, 'RESULT_MISSING_METADATA')
++    else:
++        need(set(terminal_reasons(value['diagnostic'])) <= set(reasons), 'RESULT_STOP_JOIN')
++    need(value['input_cas_before'] or 'CLIENT_SCOPE_INCOMPLETE' in reasons, 'RESULT_BEFORE_JOIN')
++    need(value['input_cas_after'] or 'INPUT_CAS_DRIFT' in reasons, 'RESULT_AFTER_JOIN')
++    state = 'TERMINAL_STOP' if reasons else 'COMPLETE_METADATA_DIAGNOSTIC_ONLY'
++    need(value['state'] == state, 'RESULT_STATE_JOIN')
++    if client_exit is not None:
++        need(type(client_exit) is int and client_exit == (1 if reasons else 0), 'RESULT_EXIT_JOIN')
++    raw = (json.dumps(value, ensure_ascii=True, indent=2) + '\n').encode()
++    need(len(raw) <= MAX_BYTES, 'RESULT_32K_BOUND')
++    return value
++
++
++def run_once(*, uno, unohelper, desktop, property_value, interaction_handler_type,
++             password_request_type, ms_password_request_type, error_code_request_type,
++             input_manifest_sha256):
++    # No file/document effects before the explicit fixed mode and digest checks.
++    c.need(c.MODE == MODE and c.limits(MODE)['max_metadata_bytes'] == MAX_BYTES, 'MODE_AND_METADATA_BOUND')
++    c.need(type(input_manifest_sha256) is str and re.fullmatch('[0-9a-f]{64}', input_manifest_sha256), 'INPUT_DIGEST')
++    c.within()
++    result = dict(schema='friday.f06.one-template-diagnostic-client.v1', state='TERMINAL_STOP',
++        mode=MODE, selected_count=1, selected_fixture_ids=list(IDS), input_manifest_sha256=input_manifest_sha256,
++        input_cas_before=False, input_cas_after=False, original_strict_all_pass=False,
++        acceptance_granted=False, diagnostic=None, terminal_reasons=[], client_errors=[])
++    out = c.safe_dir('/work') / 'one-template-diagnostic'
++    out.mkdir(mode=0o700, exist_ok=False)  # durable document-phase boundary; never reused
++    before = None
++    token = None
++    phase = 'before_inputs'
++    def record_error(error, where):
++        try:
++            metadata = exception_metadata(error)
++            exception_projection(metadata, chain=True)
++            result['client_errors'].append(dict(phase=where, exception=metadata))
++        except BaseException:
++            result['terminal_reasons'].append('METADATA_FAILURE')
++    try:
++        before, raw = input_snapshot(input_manifest_sha256)
++        result['input_cas_before'] = True
++        phase = 'correct_credential'
++        secret = c.decode(raw)
++        password = secret['password']
++        c.need(type(password) is str and bool(password), 'IN_MEMORY_CORRECT_PASSWORD')
++        phase = 'compat_install'
++        token = install_request_args_compat(uno)
++        c.within()
++        phase = 'one_observation'
++        diagnostic = observe_one_readonly(uno=uno, unohelper=unohelper, desktop=desktop,
++            property_value=property_value, interaction_handler_type=interaction_handler_type,
++            password_request_type=password_request_type, ms_password_request_type=ms_password_request_type,
++            error_code_request_type=error_code_request_type, compat_token=token,
++            selected_file_url=SELECTED_URL, correct_password=password, semantic_check=ott_source_semantic)
++        # No serialization can reach arbitrary adapter/object values.
++        phase = 'metadata_projection'
++        adapter_projection(diagnostic)
++        result['diagnostic'] = diagnostic
++        result['terminal_reasons'].extend(terminal_reasons(diagnostic))
++    except BaseException as error:
++        # Exception bodies, args, repr, str, locals and arbitrary objects are absent.
++        result['terminal_reasons'].append('CLIENT_SCOPE_INCOMPLETE' if before is None else 'METADATA_FAILURE')
++        record_error(error, phase)
++    finally:
++        if token is not None:
++            try:
++                restore_request_args_compat(token)
++            except BaseException as error:
++                result['terminal_reasons'].append('COMPAT_RESTORATION_DRIFT')
++                record_error(error, 'compat_restore')
++        # Always try full staged-input/credential CAS, including adapter failures.
++        try:
++            after, _ = input_snapshot(input_manifest_sha256)
++            result['input_cas_after'] = before is not None and after == before
++        except BaseException as error:
++            record_error(error, 'after_inputs')
++        if not result['input_cas_after']:
++            result['terminal_reasons'].append('INPUT_CAS_DRIFT')
++    result['terminal_reasons'] = sorted(set(result['terminal_reasons']))
++    result['state'] = 'TERMINAL_STOP' if result['terminal_reasons'] else 'COMPLETE_METADATA_DIAGNOSTIC_ONLY'
++    try:
++        result_contract(result, input_manifest_sha256)
++    except BaseException:
++        # Preserve only fixed stop facts if metadata is malformed or over budget.
++        result['diagnostic'] = None
++        result['terminal_reasons'] = sorted(set(result['terminal_reasons']) | {'METADATA_FAILURE'})
++        result['state'] = 'TERMINAL_STOP'
++        result_contract(result, input_manifest_sha256)
++    c.save(out / 'RESULT.json', result)
++    return 1 if result['terminal_reasons'] else 0
+--- a/embedded_entry.py
++++ b/embedded_entry.py
+@@ -1,4 +1,4 @@
+-"""Dormant pinned embedded client for the fixed readonly native-edit oracle.
++"""Dormant pinned embedded client for one metadata-only template diagnostic.
+ Import is inert. The script keeps the original initialized pyuno __main__ and
+ loads the reviewed driver in a separate library namespace before one main call.
+ """
+@@ -9,20 +9,21 @@
+ CORE=P+'/python-core-3.12.13'
+ 
+ def native_mode(mode):
+- if mode!='verify-native-edits':raise ValueError('MODE')
++ if mode!='one-template-diagnostic':raise ValueError('MODE')
+  return mode
+ 
+ def driver_argv(pipe,digest):
+  if type(pipe) is not str or re.fullmatch('f06_[0-9a-f]{32}_a[1-3]',pipe) is None:raise ValueError('EXACT_PIPE')
+  if type(digest) is not str or re.fullmatch('[0-9a-f]{64}',digest) is None:raise ValueError('EXACT_INPUT_SHA')
+- return ['/recipe/office_fixture_driver.py','--root','/work','--input-root','/inputs','--credential-ref','/inputs/credential.private.json','--uno-pipe',pipe,'--mode','verify-native-edits','--input-manifest-sha256',digest]
++ return ['/recipe/diagnostic_client.py','--input-manifest-sha256',digest]
++
+ 
+ def failure_metadata(error,phase):
+  # Frames only. Never format the exception or read source text or locals.
+  frames=[];tb=error.__traceback__;seen=0
+  while tb is not None and seen<64:
+   seen+=1;code=tb.tb_frame.f_code
+-  if code.co_filename in ('/recipe/office_fixture_driver.py','/recipe/embedded_entry.py','/recipe/f06_contract.py'):
++  if code.co_filename in ('/recipe/diagnostic_client.py','/recipe/embedded_entry.py','/recipe/f06_contract.py'):
+    name=code.co_name
+    frames.append(dict(file=code.co_filename,line=tb.tb_lineno,function=name if len(name)<=128 and (name.isidentifier() or name=='<module>') else 'REDACTED'))
+   tb=tb.tb_next
+@@ -74,10 +75,10 @@
+    time.sleep(.02)
+   # The parent has now checked actual owned listener/socket fds/PID/birth/argv.
+   # Preserve this original __main__: pyuno stores its initialized Runtime here.
+-  contract.within();contract.save(attempt/'ORACLE-ENTERED.json',dict(state='ONE_READONLY_ORACLE_ENTERED_AFTER_EMPTY_COMPONENTS_AND_PARENT_ACCEPT',mode=mode,pipe=pipe,pid=os.getpid(),credential_read_yet=False,document_loads_yet=0,types=['PropertyValue','XInteractionHandler','DocumentPasswordRequest','DocumentMSPasswordRequest'],macro_NEVER_EXECUTE=0,update_NO_UPDATE=0))
++  contract.within();contract.save(attempt/'ORACLE-ENTERED.json',dict(state='ONE_METADATA_DIAGNOSTIC_ENTERED_AFTER_EMPTY_COMPONENTS_AND_PARENT_ACCEPT',mode=mode,pipe=pipe,pid=os.getpid(),credential_read_yet=False,document_loads_yet=0,types=['PropertyValue','XInteractionHandler','DocumentPasswordRequest','DocumentMSPasswordRequest'],macro_NEVER_EXECUTE=0,update_NO_UPDATE=0))
+   sys.argv=argv;phase='oracle_library_load'
+-  oracle=runpy.run_path('/recipe/office_fixture_driver.py',run_name='f06_oracle_library')
+-  phase='oracle_main';exitcode=oracle['main']()
++  oracle=runpy.run_path('/recipe/diagnostic_client.py',run_name='f06_diagnostic_library')
++  phase='one_diagnostic_call';exitcode=oracle['run_once'](uno=uno,unohelper=unohelper,desktop=desktop,property_value=PropertyValue,interaction_handler_type=XInteractionHandler,password_request_type=DocumentPasswordRequest,ms_password_request_type=DocumentMSPasswordRequest,error_code_request_type=uno.getClass('com.sun.star.task.ErrorCodeRequest2'),input_manifest_sha256=os.environ['FRW_F06_INPUT_SHA'])
+   contract.need(type(exitcode) is int and exitcode in (0,1),'ORACLE_MAIN_RETURN')
+   return exitcode
+  except BaseException as error:
+--- a/f06_contract.py
++++ b/f06_contract.py
+@@ -2,7 +2,7 @@
+ import datetime, hashlib, json, os, re, stat, time, types
+ from pathlib import Path
+ B=Path(__file__).resolve().parent
+-ASSIGNMENT='ASTRA-CHILD-F06-TEMPLATES-OFFICE-SOURCE-PREPARE-20261112#1'
++ASSIGNMENT='ASTRA-SOL-V3-F06-ONE-TEMPLATE-DIAGNOSTIC-FRAME-20261112#1'
+ BASE=Path('/home/jericho/.jericho/toolchains/libreofficedev-26.2.5.2-frw-b711-c459-direct-20261111')
+ MANIFEST=Path('/home/jericho/.cache/FRW-ASTRA-V3-CORE-FILE-INTEGRATION-20261111/presentation-bank-direct/EXPECTED-BANK-MANIFEST.json')
+ MANIFEST_SHA='cf6db77f2448acfeb77f0a7fa7081e5cc26acd9cd08e7aee039d62b6ef1ac776'
+@@ -15,24 +15,23 @@
+ IDENTITY_FIELDS=('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
+ DEADLINE=None
+ CPU_GUARD=None
+-FORMATS=('ott','ots','otp')
+-PROFILES=('own_synthetic_odf13_aes256cbc_pbkdf2sha1_4096',)*6
+-NAMES=tuple('retained-'+role+'.'+fmt for fmt in FORMATS for role in ('source','output'))
+-LIMITS=dict(whole_wall_seconds=300,aggregate_CPU_seconds=180,memory_bytes=2147483648,swap_bytes=0,affinity_cpus=2,pids_max=128,namespace_tmpfs_bytes=16777216,own_cap_bytes=100663296,cleanup_reserve_seconds=15,per_process_AS_bytes=2147483648,per_process_FSIZE_bytes=8388608,max_Office_starts=3,max_stores=0,max_password_probes=18)
++FORMATS=('ott',)
++PROFILES=('own_synthetic_odf13_aes256cbc_pbkdf2sha1_4096',)
++NAMES=('retained-source.ott',)
++LIMITS=dict(whole_wall_seconds=300,aggregate_CPU_seconds=180,memory_bytes=2147483648,swap_bytes=0,affinity_cpus=2,pids_max=128,namespace_tmpfs_bytes=16777216,own_cap_bytes=100663296,cleanup_reserve_seconds=15,per_process_AS_bytes=2147483648,per_process_FSIZE_bytes=8388608,max_Office_starts=3,max_stores=0,max_password_probes=1,max_document_loads=1,max_getRequest_calls=1,max_metadata_bytes=32768)
+ MOSCOW=datetime.timezone(datetime.timedelta(hours=3))
+ 
+ 
+-MODE='verify-native-edits'
+-TASK=Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-TEMPLATES-OFFICE-SOURCE-PREPARE-20261112')
++MODE='one-template-diagnostic'
++TASK=Path(__file__).resolve().parent.parent
+ CACHE=Path('/home/jericho/.cache')
+-TASK_CAP=192*1024**2
+-CODEC_ACCEPTANCE_PATH=Path('/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-PASSWORD-ORACLE-CODEC-FINAL-SNAPSHOT-ACCEPTANCE.json')
+-CODEC_ACCEPTANCE_SHA='84db6c10fcd5ae8d44ea9b4770cdbef5d918ab92790edf4bd5a56ab1474af457'
+-CODEC_OLD_ACCEPTANCE_PATH=CODEC_ACCEPTANCE_PATH.parent/'F06-PASSWORD-ORACLE-CODEC-ROOT-ACCEPTANCE.json'
+-CODEC_OLD_ACCEPTANCE_SHA='5b17faa03abbfb21ecca16b4b244de38bd0b497df3fced805fcf98d8130894ff'
+-CODEC_SNAPSHOT_ROOT=CODEC_ACCEPTANCE_PATH.parent/'F06-CODEC-FINAL-PRIVATE-SNAPSHOTS'
+-CODEC_REFUSAL_SHA='894c805582acc4e959f7315b20e0439818b4c404f6c3beec7bc87c91f10a7783'
+-MANDATORY_SOURCES={'template_adapter.py','TEMPLATE-MANIFEST.json','f06_contract.py','root_frame.py','run_once.py','inside_once.py','embedded_entry.py','office_fixture_driver.py','SOURCE-REQUEST.json','REFERENCES.json','verify-native-edits.ADMISSION.TEMPLATE.json','request_args_compat_v2.py','callback_observer_v2.py'}
++TASK_CAP=128*1024**2
++MANDATORY_SOURCES={'f06_contract.py','root_frame.py','run_once.py','inside_once.py','embedded_entry.py','diagnostic_client.py','root_entry.py','readonly_diagnostic.py','conversion_probe.py','request_args_compat_v2.py','callback_observer_v2.py','ROOT-BINDINGS.TEMPLATE.json'}
++SELECTED_ID='template-ott-source'
++SELECTED_SHA='61c72a4b14ce2a83677acce3b267fb00aeb773e7dc74ffd448a449bd5dfb4650'
++ORIGINAL18_PATH=Path('/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-TEMPLATE-RETAINED-OFFICE-EXECUTION-20261112/ROOT-FINAL-PARTIAL-AND-CLOSURE.json')
++ORIGINAL18_SHA='adfafd005b85e57b00d60f3fd9d82fea595b31cf8812cac3bbd9ba6d9e898f6e'
++TASK24_FREEZE_SHA='d68090a8d60879e948ffb2cf105f80f520ff1a1a07f30d29f988346bea671971'
+ PRE_STAGE_CREDENTIAL_PATHS=set()
+ REF_KEYS={'path','sha256','bytes','identity','uid','gid','mode','dev','ino','nlink','mtime_ns','ctime_ns'}
+ FLAT_KEYS={'uid':'st_uid','gid':'st_gid','dev':'st_dev','ino':'st_ino','nlink':'st_nlink','mtime_ns':'st_mtime_ns','ctime_ns':'st_ctime_ns'}
+@@ -42,12 +41,12 @@
+ 
+ def operation(key,mode):
+  limits(mode)
+- need(type(key)is str and re.fullmatch('verify-native-edits-templates-[a-z0-9]{1,24}',key)is not None,'OPERATION_KEY')
++ need(type(key)is str and re.fullmatch('one-template-diag-[a-z0-9]{1,24}',key)is not None,'OPERATION_KEY')
+  return B/'operations'/key
+ 
+ def unit_name(key):
+  operation(key,MODE)
+- return 'frw-astra-f06-'+key+'-20261111.service'
++ return 'frw-astra-f06-'+key+'-20261112.service'
+ 
+ def decode(raw):
+  def pairs(items):
+@@ -81,13 +80,15 @@
+  if 'mode'in ref:need(ref['mode']=='0600','REFERENCE_MODE')
+ 
+ def credential_metadata(ref):
+- # Frozen metadata only: no digest was read during source preparation.
+- # Copy digest is computed only by the future admitted unit after full CAS.
+- need(type(ref)is dict and set(ref)=={'path','bytes','sha256','identity'} and ref['sha256']is None and ref['bytes']==115,'TEMPLATE_CREDENTIAL_METADATA_SHAPE')
++ # Root supplies this frozen digest after independent protected custody. No
++ # secret body read by preparation or entry; only admitted unit stages it.
++ full_pin_shape(ref)
++ need(0<ref['bytes']<=4096,'CREDENTIAL_METADATA_SIZE')
+  path=canonical(ref['path']);protected_parents(path);info=path.lstat()
+- need(stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o600 and info.st_nlink==1 and info.st_size==115,'CREDENTIAL_METADATA_CUSTODY')
+- declared_metadata(ref,info)
++ need(stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o600 and info.st_nlink==1,'CREDENTIAL_METADATA_CUSTODY')
++ declared_metadata(ref,info);need(info.st_size==ref['bytes'],'CREDENTIAL_METADATA_BYTES')
+  return dict(ref),identity(info)
++
+ 
+ def reference_read(ref,forbidden=(),limit=8*1024**2):
+  reference_shape(ref);path=canonical(ref['path']);need(str(path)not in set(forbidden)|PRE_STAGE_CREDENTIAL_PATHS,'CREDENTIAL_CONTENT_READ_FORBIDDEN')
+@@ -100,7 +101,7 @@
+ 
+ def recipe_check():
+  raw,pin=private(B/'SOURCE-PINS.json',B);obj=decode(raw)
+- need(obj.get('schema')=='friday.f06.template-readonly-root-source.v1' and obj.get('state')=='SOURCE_ONLY_DORMANT','SOURCE_SCHEMA')
++ need(obj.get('schema')=='friday.f06.one-template-diagnostic-source.v1' and obj.get('state')=='SOURCE_ONLY_DORMANT','SOURCE_SCHEMA')
+  source_set=obj.get('source_set');need(type(source_set)is list and source_set==sorted(set(source_set)) and MANDATORY_SOURCES<=set(source_set),'SOURCE_SET')
+  rows=obj.get('files');need(type(rows)is list and [r.get('name')for r in rows]==source_set,'SOURCE_ROWS')
+  need({p.name for p in B.glob('*.py')}=={name for name in source_set if name.endswith('.py')},'SOURCE_PYTHON_INVENTORY')
+@@ -115,104 +116,56 @@
+ def runtime_pin_check(row):
+  raw,p=reference_read(row);return decode(raw),p
+ 
+-def codec_pin_shape(ref):
+- # Full stable pins are mandatory here, including all nine identity fields.
++def full_pin_shape(ref):
+  reference_shape(ref)
+- need(set(ref)=={'path','bytes','sha256','identity'},'CODEC_FULL_PIN_REQUIRED')
++ need(set(ref)=={'path','bytes','sha256','identity'},'FULL_PIN_REQUIRED')
+  ident=ref['identity']
+- need(type(ident)is list and len(ident)==len(IDENTITY_FIELDS) and all(type(v)is int for v in ident),'CODEC_IDENTITY_SHAPE')
+- need(stat.S_ISREG(ident[2]) and stat.S_IMODE(ident[2])==0o600 and ident[3]==os.getuid() and ident[5]==1 and ident[6]==ref['bytes'],'CODEC_PIN_CUSTODY')
+-
+-def codec_proof_read(ref):
+- codec_pin_shape(ref);raw,pin=reference_read(ref)
+- need(exact_json(pin,ref),'CODEC_LINKED_PROOF_CAS')
+- return raw,pin
+-
+-def codec_acceptance(row):
+- """Exact Root successor and immutable provenance; no original Q/cipher reads."""
+- need(type(row)is dict and row.get('path')==str(CODEC_ACCEPTANCE_PATH) and row.get('sha256')==CODEC_ACCEPTANCE_SHA,'CODEC_EXACT_ROOT_ACCEPTANCE')
+- raw,_=codec_proof_read(row);accepted=decode(raw)
+- need(accepted.get('schema')=='friday.f06.Root-password-oracle-codec-acceptance.v1' and accepted.get('state')=='ROOT_ACCEPTED_TYPED_PASSWORD_ABORT_CODEC_SOURCE_AND_REPRESENTATIVE_CONTRAST','CODEC_ROOT_ACCEPTANCE_STATE')
+- need(all(accepted.get(k)is False for k in ('all_seven_profiles_qualified','raw_G6_false_promoted','original_effects_replayed','native_grant_issued','stores_or_generation_authorized')),'CODEC_REPRESENTATIVE_SCOPE_ONLY')
+- need(type(accepted.get('typed_negative_sequences_observed'))is int and accepted['typed_negative_sequences_observed']==4 and type(accepted.get('correct_samebyte_semantics_observed'))is int and accepted['correct_samebyte_semantics_observed']==2 and accepted.get('actual_representatives')==['docx','odt-compatible'],'CODEC_REPRESENTATIVE_OBSERVATIONS')
+- helpers=accepted.get('helpers');need(type(helpers)is dict and set(helpers)=={'request_args_compat_v2.py','callback_observer_v2.py'},'CODEC_HELPER_SET')
+- snapshots={**helpers,'independent_review':accepted['independent_review']}
+- for name,ref in snapshots.items():
+-  filename='CANDIDATE-DELTA-REVIEW.json' if name=='independent_review' else name
+-  need(ref.get('path')==str(CODEC_SNAPSHOT_ROOT/filename),'CODEC_SNAPSHOT_EXACT_PATH')
+-  codec_proof_read(ref)
+-  if name in helpers:
+-   _,local=private(B/name,B)
+-   need(all(local[k]==ref[k]for k in ('bytes','sha256')),'CODEC_LOCAL_HELPER_BYTES')
+- oldref=accepted['supersedes_old_acceptance']
+- need(oldref.get('path')==str(CODEC_OLD_ACCEPTANCE_PATH) and oldref.get('sha256')==CODEC_OLD_ACCEPTANCE_SHA,'CODEC_OLD_ACCEPTANCE_LINEAGE')
+- old=decode(codec_proof_read(oldref)[0])
+- # Apart from time and the three stabilized proof refs, scope/policy/results
+- # must be exactly the immutable old acceptance. No old Q file is opened.
+- projection=dict(accepted)
+- for key in ('supersedes_old_acceptance','preintent_refusal','proof_snapshot_origins'):projection.pop(key)
+- for key in ('at_moscow','helpers','independent_review'):projection[key]=old[key]
+- need(exact_json(projection,old),'CODEC_UNCHANGED_ACCEPTED_POLICY_AND_SCOPE')
+- refusalref=accepted['preintent_refusal']
+- need(refusalref.get('path')==str(CODEC_ACCEPTANCE_PATH.parent/'F06-FULL7-PREINTENT-CODEC-CAS-REFUSAL.json') and refusalref.get('sha256')==CODEC_REFUSAL_SHA,'CODEC_PREINTENT_REFUSAL_PIN')
+- refusal=decode(codec_proof_read(refusalref)[0])
+- need(refusal.get('schema')=='friday.f06.preintent-proof-cas-refusal.v1' and refusal.get('state')=='REFUSED_BEFORE_SLOT_UNIT_NAMESPACE_COPIES_DOCUMENTS' and refusal.get('reason')=='CODEC_LINKED_PROOF_CAS','CODEC_PREINTENT_REFUSAL_PRESERVED')
+- originref=accepted['proof_snapshot_origins']
+- need(originref.get('path')==str(CODEC_SNAPSHOT_ROOT/'ORIGIN-CUSTODY.json'),'CODEC_ORIGIN_EXACT_PATH')
+- origin=decode(codec_proof_read(originref)[0])
+- need(origin.get('schema')=='friday.f06.Root-final-codec-source-snapshot-origin.v1' and origin.get('state')=='EXACT_REVIEWED_NONSECRET_BYTES_ROOT_PRIVATE_SNAPSHOTS' and origin.get('native_GRANT')is False,'CODEC_ORIGIN_STATE')
+- need(exact_json(origin.get('old_acceptance'),oldref) and exact_json(origin.get('failed_preintent'),refusalref),'CODEC_ORIGIN_ACCEPTANCE_REFUSAL_JOIN')
+- sources=origin.get('sources');need(type(sources)is dict and set(sources)==set(snapshots),'CODEC_ORIGIN_SOURCE_SET')
+- observations=refusal.get('linked_proof_observations');need(type(observations)is list,'CODEC_REFUSAL_OBSERVATIONS')
+- oldsources={**old['helpers'],'independent_review':old['independent_review']}
+- for name,ref in snapshots.items():
+-  item=sources[name];before=item['original_pin_at_acceptance'];now=item['original_pin_now']
+-  codec_pin_shape(before);codec_pin_shape(now)
+-  need(exact_json(before,oldsources[name]) and exact_json(item.get('snapshot'),ref),'CODEC_ORIGIN_SNAPSHOT_JOIN')
+-  need(all(now[k]==before[k]for k in ('path','bytes','sha256')) and now['identity'][:8]==before['identity'][:8] and now['identity'][8]!=before['identity'][8],'CODEC_ORIGIN_ONLY_CTIME_DELTA')
+-  need(all(ref[k]==before[k]for k in ('bytes','sha256')) and item.get('only_identity_metadata_changed')is True and item.get('source_bytes_changed')is False and item.get('original_chmod_or_write')is False,'CODEC_ORIGIN_UNCHANGED_BYTES')
+-  anchor=Path(old['source_root']);expected_parent_mode='0o775' if name=='independent_review' else '0o700'
+-  need(item.get('protected_original_anchor')==str(anchor) and Path(before['path']).is_relative_to(anchor) and item.get('original_parent_mode')==expected_parent_mode,'CODEC_ORIGIN_PROTECTED_HISTORY')
+-  matches=[o for o in observations if o.get('path')==before['path']]
+-  need(len(matches)==1 and matches[0].get('same_bytes_sha')is True and matches[0].get('same_identity')is False and exact_json(matches[0].get('old_identity'),before['identity']) and exact_json(matches[0].get('actual_pin'),now) and matches[0].get('parent_mode')==expected_parent_mode,'CODEC_ORIGIN_REFUSAL_OBSERVATION_JOIN')
+- codec_proof_read(accepted['Root_source_delta_acceptance'])
+- contrast=accepted.get('actual_contrast');need(type(contrast)is dict and set(contrast)=={'source','result','closure'},'CODEC_ACTUAL_CONTRAST_SET')
+- actual={key:decode(codec_proof_read(ref)[0])for key,ref in contrast.items()}
+- closure=actual['closure']
+- need(closure.get('state')=='SECONDARY_ABORT_COMPAT_CONTRAST_KNOWN_CLOSED_OBSERVATIONS_ONLY' and closure.get('source_pins_sha256')==contrast['source']['sha256'] and exact_json(closure.get('diagnostic_ref'),contrast['result']) and closure.get('original_generation_replayed')is False and closure.get('stores')==0 and closure.get('child_reaped')is True and closure.get('owned_children_closed')is True and closure.get('owned_pipes_closed')is True and closure.get('slot_reacquired_and_released')is True,'CODEC_ACTUAL_CONTRAST_CLOSED_JOIN')
+- return accepted
++ need(type(ident)is list and len(ident)==9 and all(type(v)is int for v in ident),'FULL_IDENTITY_SHAPE')
++ need(stat.S_ISREG(ident[2]) and stat.S_IMODE(ident[2])==0o600 and ident[3]==os.getuid() and ident[5]==1 and ident[6]==ref['bytes'],'FULL_PIN_CUSTODY')
++
++
++def manifest_contract(manifest):
++ need(type(manifest)is dict and set(manifest)=={'schema','state','assignment','selected_count','selected_fixture_ids','expected_Office_stores','expected_Office_password_probes','whole_F06_accepted','as_template','credential','fixtures'},'SELECTED_MANIFEST_FIELDS')
++ need(manifest['schema']=='friday.f06.one-template-selected.v1' and manifest['state']=='ROOT_BOUND_RETAINED_METADATA_NOT_EXECUTION_AUTHORITY' and manifest['assignment']==ASSIGNMENT,'SELECTED_MANIFEST_SCHEMA')
++ need(type(manifest['selected_count'])is int and manifest['selected_count']==1 and manifest['selected_fixture_ids']==[SELECTED_ID],'SELECTED_SINGLE_ID')
++ need(type(manifest['expected_Office_stores'])is int and manifest['expected_Office_stores']==0 and type(manifest['expected_Office_password_probes'])is int and manifest['expected_Office_password_probes']==1 and manifest['whole_F06_accepted']is False and manifest['as_template']is False,'SELECTED_EFFECT_SCOPE')
++ full_pin_shape(manifest['credential'])
++ rows=manifest['fixtures'];need(type(rows)is list and len(rows)==1 and type(rows[0])is dict,'SELECTED_ONE_ROW')
++ row=rows[0]
++ need(set(row)=={'path','bytes','sha256','identity','fixture_id','format','role','fixture_profile','semantic','mime','service','filter','staged_name','native_source_ciphertext'},'SELECTED_ROW_FIELDS')
++ full_pin_shape({k:row[k]for k in ('path','bytes','sha256','identity')})
++ need(row['fixture_id']==SELECTED_ID and row['format']=='ott' and row['role']=='source' and row['fixture_profile']==PROFILES[0] and row['semantic']=='BEFORE' and row['mime']=='application/vnd.oasis.opendocument.text-template' and row['service']=='com.sun.star.text.TextDocument' and row['filter']=='writer8_template' and row['staged_name']==NAMES[0],'SELECTED_TYPED_ROW')
++ need(row['sha256']==SELECTED_SHA and row['bytes']<=1000000 and exact_json(row['native_source_ciphertext'],{k:row[k]for k in ('path','bytes','sha256','identity')}),'SELECTED_ORIGINAL_CIPHER_PIN')
++ need(row['path']!=manifest['credential']['path'],'SECRET_CIPHER_PATH_ALIAS')
++ return row
++
++
++def diagnostic_acceptance(a):
++ # Immutable original18 closure remains PARTIAL, source review is not authority.
++ for name in ('original18_closure','source_review','runtime_authority','fresh_boundary'):full_pin_shape(a[name])
++ original,pin=runtime_pin_check(a['original18_closure'])
++ need(pin['path']==str(ORIGINAL18_PATH) and pin['sha256']==ORIGINAL18_SHA,'ORIGINAL18_EXACT_CLOSURE')
++ review,_=runtime_pin_check(a['source_review'])
++ need(review.get('state')=='ROOT_ACCEPTED_ONE_TEMPLATE_DIAGNOSTIC_SOURCE' and review.get('execution_authority')is False and review.get('source_pins_sha256')==a['source_pins_sha256'] and review.get('task24_freeze_sha256')==TASK24_FREEZE_SHA and review.get('findings_remaining')==[],'ROOT_SOURCE_REVIEW')
++ authority,_=runtime_pin_check(a['runtime_authority'])
++ need(authority.get('state')=='ROOT_GRANTED_ONE_MISSING_CONVERSION_OBSERVATION' and authority.get('operation_key')==a['operation_key'] and authority.get('source_pins_sha256')==a['source_pins_sha256'] and authority.get('selected_manifest')==a['output_manifest'] and authority.get('source_review')==a['source_review'] and authority.get('original18_closure')==a['original18_closure'] and authority.get('fresh_boundary')==a['fresh_boundary'],'ROOT_RUNTIME_EXACT_JOINS')
++ need(authority.get('original18_replayed')is False and authority.get('original_strict_all_pass')is False and authority.get('whole_F06_accepted')is False and type(authority.get('max_document_loads'))is int and authority['max_document_loads']==1 and type(authority.get('max_getRequest_calls'))is int and authority['max_getRequest_calls']==1 and type(authority.get('stores'))is int and authority['stores']==0 and authority.get('correct_password_only')is True and authority.get('limits')==limits(MODE),'ROOT_SINGLE_OBSERVATION_AUTHORITY')
++ need(authority.get('boot_id')==a['boot_id'] and authority.get('nonce')==a['nonce'] and authority.get('original_operation_start_monotonic')==a['original_operation_start_monotonic'],'ROOT_AUTHORITY_CURRENT_CLOCK_SCOPE')
++ return review,authority
++
+ 
+ def output_inputs(a):
+- """Exact six retained template rows; historical native facts confer no authority."""
+- import template_adapter as t
+- need(a.get('mode')==MODE,'OUTPUT_INPUT_MODE')
+- credential,credential_id=credential_metadata(a['credential_source']);forbidden={credential['path']};PRE_STAGE_CREDENTIAL_PATHS.update(forbidden)
+- need(a.get('credential_source_identity')==credential_id,'CREDENTIAL_ADMISSION_IDENTITY')
+- # recipe_check pins this code and the adapter before any module execution.
+- _,source_rows=recipe_check();adapter_pin=next(p for p in source_rows if Path(p['path']).name=='template_adapter.py')
+- need(exact_json(a['metadata_adapter_source'],adapter_pin),'TEMPLATE_ADAPTER_FULL_PIN')
+- request_pin=next(p for p in source_rows if Path(p['path']).name=='SOURCE-REQUEST.json')
+- manifest_source_pin=next(p for p in source_rows if Path(p['path']).name=='TEMPLATE-MANIFEST.json')
+- need(exact_json(a['metadata_request'],request_pin) and exact_json(a['output_manifest'],manifest_source_pin),'TEMPLATE_EXACT_LOCAL_SOURCE_BINDINGS')
+- request=decode(reference_read(a['metadata_request'],forbidden)[0])
+- need(exact_json(request.get('manifest'),manifest_source_pin),'TEMPLATE_REQUEST_MANIFEST_FULL_PIN')
+- need(request.get('schema')=='friday.f06.template-readonly-source-request.v1' and request.get('assignment')==ASSIGNMENT and request.get('execution_authority')is False,'TEMPLATE_METADATA_REQUEST')
+- raw,manifest_pin=reference_read(a['output_manifest'],forbidden);manifest=decode(raw)
+- t.validate(manifest)
+- need(manifest.get('assignment')==ASSIGNMENT and a.get('selected_fixture_ids')==list(t.IDS) and a.get('selected_count')==6,'TEMPLATE_ADMISSION_SELECTION')
+- need(a.get('expected_stores')==0 and type(a.get('expected_stores'))is int and a.get('expected_probes')==18 and type(a.get('expected_probes'))is int,'TEMPLATE_ADMISSION_EXPECTED_EFFECTS')
+- need(exact_json(manifest['credential'],credential),'TEMPLATE_CREDENTIAL_JOIN')
+- need(exact_json(a.get('native_evidence'),manifest['proofs']),'TEMPLATE_NATIVE_EVIDENCE_JOIN')
+- need(exact_json(a.get('native_root_acceptance'),manifest['proofs']['native_root_acceptance']),'TEMPLATE_ROOT_NATIVE_ACCEPTANCE_JOIN')
+- original=[]
+- for row in manifest['fixtures']:
+-  ref={k:row[k]for k in ('path','bytes','sha256','identity')}
+-  _,pin=reference_read(ref,forbidden,1000000)
+-  source_ref=row['native_source_ciphertext'];_,source_pin=reference_read(source_ref,forbidden,1000000)
+-  need((row['role']=='source' and exact_json(pin,source_pin)) or (row['role']=='output' and pin['path']!=source_pin['path'] and pin['sha256']!=source_pin['sha256']),'TEMPLATE_SOURCE_OUTPUT_CUSTODY')
+-  original.append({**pin,'fixture_id':row['fixture_id'],'native_source_ciphertext':source_pin})
++ need(a.get('mode')==MODE and a.get('selected_fixture_ids')==[SELECTED_ID] and type(a.get('selected_count'))is int and a['selected_count']==1 and type(a.get('expected_probes'))is int and a['expected_probes']==1 and type(a.get('expected_stores'))is int and a['expected_stores']==0,'SINGLE_DIAGNOSTIC_SELECTION')
++ credential,credential_id=credential_metadata(a['credential_source']);PRE_STAGE_CREDENTIAL_PATHS.add(credential['path'])
++ need(a['credential_source_identity']==credential_id,'CREDENTIAL_ADMISSION_IDENTITY')
++ full_pin_shape(a['output_manifest'])
++ raw,manifest_pin=reference_read(a['output_manifest'],{credential['path']});manifest=decode(raw)
++ row=manifest_contract(manifest);need(manifest['credential']==credential,'SELECTED_CREDENTIAL_JOIN')
++ pinref={k:row[k]for k in ('path','bytes','sha256','identity')}
++ _,pin=reference_read(pinref,{credential['path']},1000000)
+  need(credential_metadata(credential)[1]==credential_id,'CREDENTIAL_METADATA_AFTER_CAS')
+- return manifest,manifest_pin,original,credential
++ return manifest,manifest_pin,[{**pin,'fixture_id':SELECTED_ID,'native_source_ciphertext':dict(pin)}],credential
++
+ 
+ def retention_snapshot(root,operation_path=None):
+  root=Path(root);need(root==TASK,'TASK_RETENTION_EXACT_ROOT');safe_dir(root)
+--- a/inside_once.py
++++ b/inside_once.py
+@@ -1,4 +1,4 @@
+-"""Dormant readonly native-edit oracle in the existing finite Root namespace.
++"""Dormant one-template metadata-only diagnostic in the existing finite Root namespace.
+ Only actual document-free wait81 may continue bootstrap, on one original clock.
+ """
+ import hashlib,json,math,os,re,resource,signal,stat,subprocess,sys,time
+@@ -44,7 +44,7 @@
+  c.within()
+ 
+ def native_mode(mode):
+- c.need(mode=='verify-native-edits','MODE')
++ c.need(mode=='one-template-diagnostic','MODE')
+  return mode
+ 
+ def decode(raw):
+@@ -56,23 +56,16 @@
+  return json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _:c.need(False,'JSON_CONSTANT'))
+ 
+ def selection_contract(staged,manifest,digest,lim):
+- # Six exact sourceBEFORE/outputAFTER template rows, no payload reads.
+- import template_adapter as t
+- c.need(type(staged)is dict and type(manifest)is dict,'STAGED_OBJECT')
+- ids=staged.get('selected_fixture_ids');count=staged.get('selected_count')
+- c.need(type(count)is int and count==6 and ids==list(t.IDS),'STAGED_SELECTION')
+- c.need(type(digest)is str and re.fullmatch('[0-9a-f]{64}',digest)is not None and staged.get('input_sha256')==digest,'STAGED_MANIFEST_DIGEST')
+- c.need(type(staged.get('expected_stores'))is int and staged['expected_stores']==0 and type(staged.get('expected_probes'))is int and staged['expected_probes']==18 and staged['expected_stores']<=lim['max_stores'] and staged['expected_probes']<=lim['max_password_probes'],'STAGED_EXPECTED_EFFECTS')
+- c.need(manifest.get('schema')==t.SCHEMA and manifest.get('state')=='FROZEN_RETAINED_METADATA_NOT_EXECUTION_AUTHORITY' and manifest.get('semantic')==t.SEMANTIC and manifest.get('assignment')==t.ASSIGNMENT and manifest.get('native_assignment')==t.NATIVE_ASSIGNMENT,'STAGED_MANIFEST_SCHEMA')
+- c.need(type(manifest.get('selected_count'))is int and manifest['selected_count']==6 and manifest.get('selected_fixture_ids')==ids and type(manifest.get('fixtures'))is list and len(manifest['fixtures'])==6,'STAGED_MANIFEST_SELECTION')
+- c.need(type(manifest.get('expected_Office_stores'))is int and manifest['expected_Office_stores']==0 and type(manifest.get('expected_Office_password_probes'))is int and manifest['expected_Office_password_probes']==18 and manifest.get('whole_F06_accepted')is False and manifest.get('as_template')is False,'STAGED_MANIFEST_EXPECTED_EFFECTS')
+- pins=staged.get('source_pins');credential=staged.get('credential_source');declared=manifest.get('credential')
+- c.need(type(pins)is list and len(pins)==6 and type(credential)is dict and type(declared)is dict and declared.get('sha256')is None and all(credential.get(k)==declared.get(k)for k in ('path','bytes','identity')) and type(credential.get('sha256'))is str and re.fullmatch('[0-9a-f]{64}',credential['sha256'])is not None,'STAGED_SOURCE_CREDENTIAL_METADATA')
+- for ident,row,pin in zip(ids,manifest['fixtures'],pins):
+-  fmt,role=ident.split('-')[1:];name='retained-'+role+'.'+fmt
+-  c.need(type(row)is dict and type(pin)is dict and row.get('fixture_id')==pin.get('fixture_id')==ident and row.get('format')==fmt and row.get('role')==role and row.get('fixture_profile')==t.PROFILE and row.get('semantic')==('BEFORE'if role=='source'else'AFTER') and row.get('mime')==t.MIMES[fmt] and row.get('service')==t.SERVICES[fmt] and row.get('filter')==t.FILTERS[fmt] and row.get('staged_name')==name,'STAGED_TYPED_SELECTED_ROW')
+-  c.need(type(row.get('bytes'))is int and 0<row['bytes']<=1000000 and type(row.get('sha256'))is str and re.fullmatch('[0-9a-f]{64}',row['sha256'])is not None and all(pin.get(k)==row.get(k)for k in ('path','bytes','sha256','identity')),'STAGED_ORIGINAL_SOURCE_PIN')
+- return dict(selected_count=6,selected_fixture_ids=list(ids),expected_stores=0,expected_probes=18,input_sha256=digest)
++ # Exactly one Root-bound retained-source OTT; no old18 qualification branch.
++ c.manifest_contract(manifest)
++ c.need(type(staged)is dict and type(digest)is str and re.fullmatch('[0-9a-f]{64}',digest)is not None,'STAGED_OBJECT_AND_DIGEST')
++ ids=['template-ott-source']
++ c.need(type(staged.get('selected_count'))is int and staged['selected_count']==1 and staged.get('selected_fixture_ids')==ids and staged.get('input_sha256')==digest,'STAGED_SELECTION')
++ c.need(type(staged.get('expected_stores'))is int and staged['expected_stores']==0 and type(staged.get('expected_probes'))is int and staged['expected_probes']==1 and lim['max_stores']==0 and lim['max_password_probes']==lim['max_document_loads']==lim['max_getRequest_calls']==1,'STAGED_EXPECTED_EFFECTS')
++ pins=staged.get('source_pins');credential=staged.get('credential_source');row=manifest['fixtures'][0]
++ c.need(type(pins)is list and len(pins)==1 and type(pins[0])is dict and pins[0].get('fixture_id')==ids[0] and all(pins[0].get(k)==row[k]for k in ('path','bytes','sha256','identity')),'STAGED_SOURCE_PIN')
++ c.need(credential==manifest['credential'],'STAGED_SOURCE_CREDENTIAL_METADATA')
++ return dict(selected_count=1,selected_fixture_ids=ids,expected_stores=0,expected_probes=1,max_document_loads=1,max_getRequest_calls=1,input_sha256=digest)
+ 
+ def staged_inputs(lim):
+  staged=decode(c.private('/inputs/STAGED.json','/inputs')[0])
+@@ -90,7 +83,7 @@
+  return [c.PROGRAM+'/soffice.bin','-env:UserInstallation='+profile.as_uri(),'--headless','--nologo','--norestore','--nodefault','--nofirststartwizard','--accept=pipe,name='+pipe+';urp;StarOffice.ComponentContext']
+ 
+ def phase_observation(attempt,work):
+- phase=work/'native-edit-oracle'
++ phase=work/'one-template-diagnostic'
+  return dict(client_ready=(attempt/'CLIENT-READY.json').exists(),pipe_accepted=(attempt/'PIPE-OWNERSHIP-ACCEPTED.json').exists(),oracle_entered=(attempt/'ORACLE-ENTERED.json').exists(),oracle_result_exists=(phase/'RESULT.json').exists(),document_phase_exists=phase.exists())
+ 
+ def failure_metadata(error,phase):
+@@ -98,96 +91,18 @@
+  frames=[];tb=error.__traceback__;seen=0
+  while tb is not None and seen<64:
+   seen+=1;code=tb.tb_frame.f_code
+-  if code.co_filename in ('/recipe/inside_once.py','/recipe/embedded_entry.py','/recipe/office_fixture_driver.py','/recipe/f06_contract.py'):
++  if code.co_filename in ('/recipe/inside_once.py','/recipe/embedded_entry.py','/recipe/diagnostic_client.py','/recipe/f06_contract.py'):
+    name=code.co_name;frames.append(dict(file=code.co_filename,line=tb.tb_lineno,function=name if len(name)<=128 and (name.isidentifier() or name=='<module>') else 'REDACTED'))
+   tb=tb.tb_next
+  kind=type(error).__name__
+  return dict(exception_class=kind if len(kind)<=128 and kind.isidentifier() else 'REDACTED',phase=phase,source_frames=frames,traceback_truncated=tb is not None,exception_messages_or_locals_saved=False)
+ 
+-def result_exception(value):
+- # Validate only the safe codec's class/frame projection, never exception data.
+- qualified=r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,16}'
+- c.need(type(value) is dict and set(value)=={'exception_class','source_frames'},'ORACLE_EXCEPTION_SHAPE')
+- kind=value['exception_class'];frames=value['source_frames']
+- c.need(type(kind) is str and len(kind)<=240 and re.fullmatch(qualified,kind) is not None and type(frames) is list and len(frames)<=12,'ORACLE_EXCEPTION_TYPES')
+- for frame in frames:
+-  c.need(type(frame) is dict and set(frame)=={'source','function','line'},'ORACLE_EXCEPTION_FRAME_SHAPE')
+-  c.need(frame['source'] in ('callback_observer.py','callback_observer_v2.py','office_fixture_driver.py','uno.py','unohelper.py','OTHER_SOURCE') and type(frame['function']) is str and len(frame['function'])<=100 and re.fullmatch(qualified,frame['function']) is not None and type(frame['line']) is int and frame['line']>0,'ORACLE_EXCEPTION_FRAME_TYPES')
+-
+-def result_events(events):
+- # Early callback faults legitimately have only the initial fields. Later fields
+- # remain conditional; every emitted value still has a bounded exact safe shape.
+- phases={'entered','request_type_before','get_request_before','get_request_after','classify_before','error_code_before','error_code_after','classify_after','get_continuations_before','get_continuations_after','query_abort_type_before','query_interface_before','query_interface_after','select_before','select_after','no_abort_continuation','callback_exception_reraised'}
+- required={'phase','phases','request_kind','abort_selected'}
+- optional={'request_class','payload_class','is_document_password','is_document_ms_password','is_error_code_request2','error_code','continuation_attempts','callback_error_phase','callback_error'}
+- c.need(type(events) is list and len(events)<=128,'ORACLE_EVENT_LIST')
+- for event in events:
+-  c.need(type(event) is dict and required<=set(event)<=required|optional,'ORACLE_EVENT_SHAPE')
+-  sequence=event['phases']
+-  c.need(type(event['phase']) is str and event['phase'] in phases and type(sequence) is list and 1<=len(sequence)<=1024 and all(type(p) is str and p in phases for p in sequence) and sequence[0]=='entered' and sequence[-1]==event['phase'],'ORACLE_EVENT_PHASES')
+-  c.need(event['request_kind'] in ('UNCLASSIFIED','DocumentPasswordRequest','DocumentMSPasswordRequest','ErrorCodeRequest2','OTHER') and type(event['abort_selected']) is bool,'ORACLE_EVENT_KIND_ABORT')
+-  for key in ('request_class','payload_class'):
+-   if key in event:result_exception(dict(exception_class=event[key],source_frames=[]))
+-  for key in ('is_document_password','is_document_ms_password','is_error_code_request2'):
+-   if key in event:c.need(type(event[key]) is bool,'ORACLE_EVENT_BOOLEAN')
+-  if 'error_code' in event:c.need(type(event['error_code']) is int and -(2**31)<=event['error_code']<2**31,'ORACLE_EVENT_ERROR_CODE')
+-  if 'continuation_attempts' in event:
+-   attempts=event['continuation_attempts'];c.need(type(attempts) is list and len(attempts)<=128,'ORACLE_CONTINUATION_LIST')
+-   for attempt in attempts:
+-    c.need(type(attempt) is dict and {'phase'}<=set(attempt)<={'phase','abort_available'} and attempt['phase'] in ('query_abort_type_before','query_interface_before','query_interface_after','select_before','select_after') and ('abort_available' not in attempt or type(attempt['abort_available']) is bool),'ORACLE_CONTINUATION_SHAPE')
+-  if event['phase'] in ('select_after','no_abort_continuation'):
+-   c.need({'request_class','payload_class','is_document_password','is_document_ms_password','is_error_code_request2','continuation_attempts'}<=set(event),'ORACLE_COMPLETED_EVENT_FIELDS')
+-   if event['request_kind']=='ErrorCodeRequest2':c.need('error_code' in event,'ORACLE_COMPLETED_ERROR_CODE_FIELD')
+-   if event['phase']=='select_after':c.need(event['abort_selected'] is True and event['continuation_attempts'] and event['continuation_attempts'][-1]=={'phase':'select_after','abort_available':True},'ORACLE_COMPLETED_ABORT_FIELDS')
+-  c.need(('callback_error' in event)==('callback_error_phase' in event),'ORACLE_CALLBACK_ERROR_JOIN')
+-  if 'callback_error' in event:
+-   result_exception(event['callback_error']);c.need(event['callback_error_phase'] in phases and event['phase']=='callback_exception_reraised' and len(sequence)>=2 and sequence[-2]==event['callback_error_phase'],'ORACLE_CALLBACK_ERROR_PHASE')
+-
+-def result_probe(probe,fmt):
+- from callback_observer_v2 import observed_password_refusal_sequence
+- required={'opened','semantic_match','expected_password_refusal','interaction_events'}
+- optional={'load_exception','semantic_exception','load_argument_position'}
+- c.need(type(probe) is dict and required<=set(probe)<=required|optional and all(type(probe[key]) is bool for key in ('opened','semantic_match','expected_password_refusal')),'ORACLE_RESULT_TYPED_PROBE')
+- result_events(probe['interaction_events'])
+- for key in ('load_exception','semantic_exception'):
+-  if key in probe:result_exception(probe[key])
+- c.need(not probe['semantic_match'] or probe['opened'],'ORACLE_SEMANTIC_REQUIRES_OPEN')
+- c.need('load_exception' not in probe or not probe['opened'],'ORACLE_LOAD_EXCEPTION_OPEN_JOIN')
+- c.need('semantic_exception' not in probe or probe['opened'] and not probe['semantic_match'],'ORACLE_SEMANTIC_EXCEPTION_JOIN')
+- if 'load_argument_position' in probe:
+-  position=probe['load_argument_position']
+-  c.need('load_exception' in probe and fmt in ('docx','xlsx','pptx') and probe['load_exception']['exception_class']=='com.sun.star.lang.IllegalArgumentException' and (position is None or type(position) is str and position=='UNOBSERVED' or type(position) is int and -32768<=position<32768),'ORACLE_LOAD_ARGUMENT_POSITION')
+- allowed_exception='load_exception' not in probe or fmt in ('docx','xlsx','pptx') and probe['load_exception']['exception_class']=='com.sun.star.lang.IllegalArgumentException' and type(probe.get('load_argument_position')) is int and probe['load_argument_position']==1
+- from template_adapter import BASE_FORMAT
+- refusal=not probe['opened'] and observed_password_refusal_sequence(probe['interaction_events'],BASE_FORMAT[fmt]) and allowed_exception
+- c.need(probe['expected_password_refusal'] is refusal,'ORACLE_REFUSAL_OBSERVATIONS_JOIN')
+-
+ def result_contract(result,manifest,selected,client_exit):
+- # Complete saved observations can prove a count of observations, never an
+- # instrumented runtime call count. A partial result cannot become complete.
+- c.need(type(result) is dict and type(client_exit) is int and client_exit in (0,1),'ORACLE_COMPLETE_CLIENT_EXIT')
+- c.need(set(result)<={'mode','input_manifest','input_manifest_sha256','rows','planned_rows','whole_seven_covered','all_pass','oracle','visual_fidelity','F06_formal_or_delivery','all_pass_scope','selected_fixture_ids','selected_count','full_six_covered','all_seven_pass','whole_F06_accepted'},'ORACLE_RESULT_FIELDS')
+- count=selected['selected_count'];ids=selected['selected_fixture_ids'];rows=result.get('rows')
+- c.need(result.get('mode')=='verify-native-edits' and result.get('input_manifest')=='/inputs/NATIVE-OUTPUTS.json' and result.get('input_manifest_sha256')==selected['input_sha256'],'ORACLE_RESULT_SOURCE')
+- c.need(type(result.get('planned_rows')) is int and result['planned_rows']==count and type(result.get('selected_count')) is int and result['selected_count']==count and result.get('selected_fixture_ids')==ids and result.get('all_pass_scope')=='SELECTED_ONLY' and result.get('whole_F06_accepted') is False,'ORACLE_RESULT_SELECTED_SCOPE')
+- c.need(type(rows) is list and len(rows)==count,'ORACLE_RESULT_NOT_COMPLETE')
+- passed_ids=set()
+- for ident,row,source in zip(ids,rows,manifest['fixtures']):
+-  c.need(type(row) is dict and row.get('fixture_id')==ident and row.get('format')==source['format'] and row.get('fixture_profile')==source['fixture_profile'],'ORACLE_RESULT_TYPED_ROW')
+-  c.need(set(row)<={'fixture_id','format','fixture_profile','filter','source_path','source_sha256','path','sha256','bytes','independent_office_password_and_semantics_pass','tests','envelope','envelope_exception_class','same_input_bytes_preserved','credential_ref','new_bytes','recovered_old_bytes','native_protected_result'},'ORACLE_RESULT_ROW_FIELDS')
+-  target='/inputs/native-outputs/'+source['staged_name']
+-  c.need(row.get('source_path')==target and row.get('path')==target and row.get('source_sha256')==source['sha256'] and row.get('sha256')==source['sha256'] and type(row.get('bytes')) is int and row['bytes']==source['bytes'] and row.get('new_bytes') is False and row.get('recovered_old_bytes') is False and row.get('credential_ref')=='/inputs/credential.private.json','ORACLE_RESULT_RETAINED_BYTES')
+-  tests=row.get('tests');c.need(type(tests) is dict and set(tests)=={'missing','wrong','correct'} and all(type(tests[key]) is dict for key in tests),'ORACLE_RESULT_PROBE_OBSERVATIONS')
+-  for probe in tests.values():result_probe(probe,source['format'])
+-  c.need(type(row.get('same_input_bytes_preserved')) is bool and type(row.get('independent_office_password_and_semantics_pass')) is bool,'ORACLE_RESULT_TYPED_VERDICT')
+-  c.need('envelope_exception_class' in row and (row['envelope_exception_class'] is None or type(row['envelope_exception_class']) is str and len(row['envelope_exception_class'])<=240 and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){0,16}',row['envelope_exception_class']) is not None),'ORACLE_ENVELOPE_EXCEPTION_CLASS')
+-  passed=row['same_input_bytes_preserved'] and row['envelope_exception_class'] is None and tests['missing']['expected_password_refusal'] and tests['wrong']['expected_password_refusal'] and tests['correct']['opened'] and tests['correct']['semantic_match'] and not tests['correct']['interaction_events']
+-  c.need(row['independent_office_password_and_semantics_pass'] is passed,'ORACLE_ROW_VERDICT_OBSERVATIONS_JOIN')
+-  if row['independent_office_password_and_semantics_pass']:passed_ids.add(ident)
+- all_pass=len(passed_ids)==count
+- c.need(type(result.get('all_pass')) is bool and result['all_pass']==all_pass and client_exit==(0 if all_pass else 1),'ORACLE_RESULT_CLIENT_VERDICT_JOIN')
+- c.need(result.get('whole_seven_covered') is (count==7) and result.get('full_six_covered') is (set('f06-'+str(i) for i in range(1,7))<=passed_ids) and result.get('all_seven_pass') is (set('f06-'+str(i) for i in range(1,8))<=passed_ids),'ORACLE_RESULT_COVERAGE_FLAGS')
+- return dict(state='COMPLETE_SELECTED_OBSERVATIONS_SEMANTIC_RESULT_SEPARATE',complete_selected_result=True,selected_count=count,selected_fixture_ids=list(ids),client_exit=client_exit,all_pass=all_pass,whole_F06_accepted=False,completed_probe_observations=3*len(rows),probe_count_basis='DERIVED_FROM_SAVED_COMPLETE_MISSING_WRONG_CORRECT_DICTS_NOT_INSTRUMENTED_CALLS',expected_stores=0,store_count_basis='PLANNED_STATIC_VERIFY_NATIVE_EDITS_BRANCH_AND_READONLY_INPUT_MOUNT_NOT_INSTRUMENTED_COUNT')
++ # Validate the fixed metadata codec without importing UNO or running a client.
++ from diagnostic_client import result_contract as validate
++ c.manifest_contract(manifest)
++ validate(result,selected['input_sha256'],client_exit)
++ return dict(state=result['state'],selected_count=1,selected_fixture_ids=['template-ott-source'],client_exit=client_exit,original_strict_all_pass=False,acceptance_granted=False,input_cas_before=result['input_cas_before'],input_cas_after=result['input_cas_after'],terminal_reasons=result['terminal_reasons'],expected_stores=0,max_document_loads=1,max_getRequest_calls=1,store_count_basis='PLANNED_STATIC_NO_STORE_BRANCH_READONLY_INPUT_MOUNT_NOT_INSTRUMENTED')
+ 
+ def close_attempt(office,client,oref,cref,record,pipe):
+  # Preserve the first cleanup failure even if a final bounded reap succeeds.
+@@ -289,7 +204,7 @@
+   elif (row['flags'],row['socket_state'])==('00000000','03'):connected.append(row)
+   else:c.need(False,'OWN_PIPE_UNEXPECTED_FLAGS_STATE')
+  c.need(len(paths)==1,'OWN_PIPE_ONE_STABLE_PATH')
+- c.need(len(listeners)==1,'OWN_PIPE_EXACT_ONE_LISTENER')
++ c.need(len(listeners)==1 and len(connected)>=1,'OWN_PIPE_EXACT_ONE_LISTENER_AND_ACCEPTED_CONNECTION')
+  return dict(state='OWNED_PIPE_PROCESS_PROFILE_OBSERVED',pid=p.pid,starttime=ref['starttime'],uid=os.getuid(),pipe=pipe,profile=str(profile),executable_identity=c.identity(exe),sockets=rows,listening_socket_inode=listeners[0]['socket_inode'],connected_socket_inodes=[r['socket_inode'] for r in connected],observation_path=str(observation_path),argv_sha256=observation['argv_sha256'],observed_accepted_socket_count=len(connected))
+ 
+ def main():
+@@ -316,15 +231,13 @@
+    record=dict(attempt=number,pipe=pipe,Office_exit=None,client_exit=None,Office_exit_observed_by_wait=False,client_exit_observed_by_wait=False,Office_terminal_before_cleanup=False,client_ready=False,pipe_accepted=False,oracle_entered=False,oracle_result_exists=False,document_phase_exists=False,owned_children_closed=False,owned_pipe_closed=False)
+    report['attempts'].append(record)
+    common=office_argv(pipe,work/'profile')
+-   streams += [(attempt/'Office.stdout.private').open('xb'),(attempt/'Office.stderr.private').open('xb')]
+    report['Office_launch_attempts']+=1;record['Office_launch_attempted']=True;phase='owned_Office_launch'
+    # Assign the direct Popen before pidfd/identity/proof work can fail.
+-   office=subprocess.Popen(common,stdin=subprocess.DEVNULL,stdout=streams[-2],stderr=streams[-1],env=env,close_fds=True)
++   office=subprocess.Popen(common,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env,close_fds=True)
+    report['Office_starts']+=1;phase='owned_Office_birth'
+    oref=birth(office);record['Office_birth']={k:v for k,v in oref.items() if k!='pidfd'}
+-   streams += [(attempt/'client.stdout.private').open('xb'),(attempt/'client.stderr.private').open('xb')]
+    report['client_launch_attempts']+=1;record['client_launch_attempted']=True;phase='owned_client_launch'
+-   client=subprocess.Popen([c.PROGRAM+'/python','-B','-s','-S','/recipe/embedded_entry.py'],stdin=subprocess.DEVNULL,stdout=streams[-2],stderr=streams[-1],env=env,close_fds=True)
++   client=subprocess.Popen([c.PROGRAM+'/python','-B','-s','-S','/recipe/embedded_entry.py'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env,close_fds=True)
+    report['client_starts']+=1;phase='owned_client_birth'
+    cref=birth(client);record['client_birth']={k:v for k,v in cref.items() if k!='pidfd'}
+    accepted=False;startup_exit=False;phase='owned_connection'
+@@ -356,12 +269,13 @@
+    c.need(record['owned_children_closed'] and record['owned_pipe_closed'],'OWNED_FINAL_CLOSURE')
+    c.need(accepted and record['oracle_entered'],'READONLY_ORACLE_NOT_ENTERED')
+    phase='oracle_saved_result_contract'
+-   raw,resultpin=c.private(work/'native-edit-oracle'/'RESULT.json',work)
++   raw,resultpin=c.private(work/'one-template-diagnostic'/'RESULT.json',work)
++   c.need(len(raw)<=32768,'DIAGNOSTIC_32K_BOUND')
+    summary=result_contract(decode(raw),manifest,selected,record['client_exit'])
+    summary['original_result']=resultpin;summary['original_result_bytes_preserved']=True
+    c.save(work/'ORACLE-RESULT-CONTRACT.json',summary);report['oracle_result_contract']=summary
+-   report['semantic_all_pass']=summary['all_pass'];report['oracle_client_exit']=record['client_exit']
+-   report['state']='READONLY_ORACLE_CLIENT_COMPLETED_SEPARATE_SEMANTIC_RESULT'
++   report['diagnostic_state']=summary['state'];report['original_strict_all_pass']=False;report['acceptance_granted']=False;report['oracle_client_exit']=record['client_exit']
++   report['state']='ONE_DIAGNOSTIC_CLIENT_COMPLETED_TERMINAL_RESULT'
+    break
+  except BaseException as error:
+   report['error_metadata']=failure_metadata(error,phase)
+@@ -379,5 +293,5 @@
+   usage=resource.getrusage(resource.RUSAGE_CHILDREN);report['children_CPU_seconds']=usage.ru_utime+usage.ru_stime;report['children_maxrss_kib']=usage.ru_maxrss;report['elapsed_whole_operation_seconds']=time.monotonic()-origin
+   if not report['owned_children_closed'] or not report['owned_pipes_closed']:report['state']='STOP_UNCONFIRMED'
+   report['completed_at_moscow']=c.utcmoscow();c.save(work/'INSIDE-RESULT.json',report)
+- return 0 if report['state']=='READONLY_ORACLE_CLIENT_COMPLETED_SEPARATE_SEMANTIC_RESULT' else 1
++ return 0 if report['state']=='ONE_DIAGNOSTIC_CLIENT_COMPLETED_TERMINAL_RESULT' else 1
+ if __name__=='__main__':raise SystemExit(main())
+--- a/root_entry.py
++++ b/root_entry.py
+@@ -1,27 +1,15 @@
+-"""Future Root-only admission glue; never creates Root proof/acceptance claims.
++"""Dormant Root-only entry for one missing conversion observation.
+ 
+-All bound proofs must already exist from Root's actual observations and decision.
+-The unchanged candidate is the only admission validator, slot owner and executor.
+-Do not run during source preparation. There is intentionally no auto-observe mode.
++Consumes independently created fresh Root proofs. Does not create observations,
++accept its own source, infer permission from history or fall back to old frames.
+ """
+ import argparse
+ import hashlib
+ import json
+ import os
+ from pathlib import Path
+-import runpy
+ import sys
+ import time
+-
+-CAND = Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-TEMPLATES-OFFICE-SOURCE-PREPARE-20261112/candidate')
+-PINS_SHA = '25ea2134b23b256493a6222c3e0aeda06c94badde530018285299ec99d53c724'
+-ROOT_ACCEPT = Path('/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-TEMPLATE-OFFICE-ROOT-SOURCE-ACCEPTANCE-20261112.json')
+-ROOT_ACCEPT_SHA = '0ef8952cf40d6ae01f773dcea8155c95c8349656fc02d959dba42b3ffa7f3696'
+-REVIEW = Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-TEMPLATE-OFFICE-FINAL-REVIEW-20261112/RESULT.json')
+-REVIEW_SHA = '331a9c5d934609a081892163b2e635d813f812d25c6cbbd59c1db30418a58542'
+-IDS = ['template-'+fmt+'-'+role for fmt in ('ott','ots','otp') for role in ('source','output')]
+-FULL_PIN = {'path', 'bytes', 'sha256', 'identity'}
+-PROOF_NAMES = ('negative_observer_review', 'retained_support', 'native_actors_closed', 'readonly_effect_basis', 'codec_acceptance', 'native_root_acceptance')
+ 
+ 
+ def require(value, code):
+@@ -29,103 +17,72 @@
+         raise ValueError(code)
+ 
+ 
+-def assemble(prepared, source_review_pin, fresh_pin, review, fresh, closed, basis, *, now, origin_now, uid, boot, nonce):
+-    """Pure joins only; never makes a proof, grants a slot, or starts a clock."""
+-    require(review.get('state') == 'ROOT_ACCEPTED_F06_TEMPLATE_SOURCE_OUTPUT_SOURCE', 'ROOT_BOUND_SOURCE_REVIEW_REQUIRED')
+-    require(review.get('source_pins_sha256') == PINS_SHA and review.get('findings_remaining') == [] and review.get('new_readonly_route_reviewed') is True, 'ROOT_SOURCE_SCOPE')
+-    require(fresh.get('state') == 'ROOT_FRESH_F06_KERNEL_CUSTODY' and fresh.get('uid') == uid and fresh.get('boot_id') == boot, 'ROOT_CURRENT_BOUNDARY_REQUIRED')
+-    require(closed.get('state') == 'ROOT_FRESH_TEMPLATE_NATIVE_ACTORS_ABSENT' and closed.get('actual_native_actors') == [] and closed.get('actual_native_requests') == [] and closed.get('actual_closed') is True, 'ROOT_ACTUAL_NATIVE_CLOSURE_REQUIRED')
+-    require(basis.get('state') == 'ROOT_ACCEPTED_DISTINCT_TEMPLATE_SOURCE_OUTPUT_READONLY_ORACLE_ONLY' and basis.get('new_source_pins_sha256') == PINS_SHA, 'ROOT_DISTINCT_EFFECT_REQUIRED')
+-    require(basis.get('readonly_affected_unknowns_resolved') is True and basis.get('remaining_readonly_affected_unknowns') == [], 'ROOT_AFFECTED_UNKNOWNS_DECISION_REQUIRED')
+-    require(basis.get('selected_fixture_ids') == IDS and basis.get('expected_probes') == 18 and basis.get('expected_stores') == 0, 'ROOT_SIX_ROWS_18_PROBES_ZERO_STORES')
+-    require(basis.get('native_effects_repeated') is False and basis.get('original_clocks_or_consumed_effects_reset') is False and basis.get('original_native_statuses_preserved') is True and basis.get('whole_F06_accepted') is False, 'NO_REPLAY_OR_PROMOTION')
+-    origin = basis.get('original_operation_start_monotonic')
+-    require(type(origin) in (int, float) and 0 <= origin_now-origin <= 120, 'ROOT_EXISTING_ORIGIN_REQUIRED')
+-    require(closed.get('historical_ott_raw_edit_receipt') == basis.get('historical_ott_raw_edit_receipt') == 'NOT_RETAINED_DO_NOT_RECONSTRUCT_OR_REPLAY', 'HISTORICAL_OTT_GAP')
+-    require(basis.get('output_manifest') == prepared['output_manifest'] and basis.get('native_actors_closed') == review['native_actors_closed'], 'ROOT_EFFECT_FULL_PIN_JOINS')
+-    require(closed.get('native_evidence') == prepared['native_evidence'], 'ROOT_NATIVE_FULL_PIN_JOINS')
+-    require(type(fresh.get('affinity_cpu_ids')) is list and len(fresh['affinity_cpu_ids']) >= 2, 'ROOT_AFFINITY_REQUIRED')
+-    require(type(fresh.get('slot_identity')) is list and len(fresh['slot_identity']) == 9, 'ROOT_SLOT_METADATA_REQUIRED')
+-    admission = dict(prepared, schema='friday.f06.root-template-once-admission.v1', state='ROOT_FRESH_ONCE_ADMITTED', operation_key=basis['new_operation_key'], uid=uid, boot_id=boot, nonce=nonce, admitted_at_moscow=now, original_operation_start_monotonic=origin, actual_two_cpu_ids=fresh['affinity_cpu_ids'][:2], slot_identity=fresh['slot_identity'], limits=basis['limits'], source_review=source_review_pin, fresh_boundary=fresh_pin)
+-    for name in PROOF_NAMES:
+-        admission[name] = review[name]
+-    return admission
++def assemble(bindings, source_sha, *, uid, boot, now, monotonic_now):
++    """Pure field assembly; its inputs must be authenticated by main first."""
++    require(type(bindings) is dict and bindings.get('schema') == 'friday.f06.one-template-root-bindings.v1' and bindings.get('state') == 'ROOT_BOUND_NO_EFFECT_YET', 'BOUND_ROOT_PROOFS_REQUIRED')
++    fields = {'schema', 'state', 'assignment', 'operation_key', 'nonce', 'uid', 'boot_id', 'source_pins_sha256', 'limits', 'original_operation_start_monotonic', 'actual_two_cpu_ids', 'slot_path', 'slot_identity', 'source_review', 'runtime_authority', 'fresh_boundary', 'original18_closure', 'output_manifest', 'credential_source', 'task_retention_root'}
++    require(set(bindings) == fields, 'ROOT_BINDINGS_FIELDS')
++    require(bindings['uid'] == uid and type(bindings['uid']) is int and bindings['boot_id'] == boot, 'ROOT_CURRENT_UID_BOOT')
++    origin = bindings['original_operation_start_monotonic']
++    require(type(origin) in (int, float) and 0 <= monotonic_now-origin <= 120, 'ROOT_ORIGINAL_CLOCK_REQUIRED')
++    require(bindings['source_pins_sha256'] == source_sha, 'ROOT_EXACT_SOURCE')
++    require(all(type(bindings[k]) is dict for k in ('source_review', 'runtime_authority', 'fresh_boundary', 'original18_closure', 'output_manifest', 'credential_source')), 'ROOT_UNBOUND_REFERENCE')
++    from f06_contract import ASSIGNMENT, MODE, SELECTED_ID, LIMITS
++    require(bindings['assignment'] == ASSIGNMENT and bindings['limits'] == LIMITS, 'ROOT_ASSIGNMENT_LIMITS')
++    return dict(bindings, schema='friday.f06.one-template-admission.v1', state='ROOT_FRESH_ONCE_ADMITTED', mode=MODE, admitted_at_moscow=now, credential_source_identity=bindings['credential_source']['identity'], selected_count=1, selected_fixture_ids=[SELECTED_ID], expected_probes=1, expected_stores=0)
+ 
+ 
+ def main():
+-    require(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode, 'ISOLATED_ROOT_INTERPRETER_REQUIRED')
++    require(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode, 'ISOLATED_ROOT_FLAGS')
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('--root-reviewed-bind-admit-and-exec', action='store_true', required=True)
+-    parser.add_argument('--source-review', required=True, type=Path)
+-    parser.add_argument('--source-review-sha256', required=True)
+-    parser.add_argument('--fresh-boundary', required=True, type=Path)
+-    parser.add_argument('--fresh-boundary-sha256', required=True)
++    parser.add_argument('--source-pins-sha256', required=True)
++    parser.add_argument('--bindings', required=True)
++    parser.add_argument('--bindings-sha256', required=True)
+     args = parser.parse_args()
+     os.umask(0o077)
+-    # Hash every accepted source before importing any candidate Python.
+-    raw = (CAND/'SOURCE-PINS.json').read_bytes()
+-    require(hashlib.sha256(raw).hexdigest() == PINS_SHA, 'ACCEPTED_PINS_CHANGED')
++    candidate = Path(__file__).resolve().parent
++    # The Root invokes this accepted entry by its separately reviewed exact SHA;
++    # no candidate Python imports before every source hash is checked.
++    raw = (candidate/'SOURCE-PINS.json').read_bytes()
++    require(hashlib.sha256(raw).hexdigest() == args.source_pins_sha256, 'SOURCE_PINS_CAS')
+     pins = json.loads(raw)
++    require(pins.get('schema') == 'friday.f06.one-template-diagnostic-source.v1' and pins.get('state') == 'SOURCE_ONLY_DORMANT', 'SOURCE_SCHEMA')
+     for row in pins['files']:
+-        require(Path(row['name']).name == row['name'], 'SOURCE_LOCAL_NAME')
+-        raw = (CAND/row['name']).read_bytes()
+-        require(len(raw) == row['bytes'] and hashlib.sha256(raw).hexdigest() == row['sha256'], 'ACCEPTED_SOURCE_CHANGED')
+-    sys.path.insert(0, str(CAND))
++        name = row['name']
++        require(type(name) is str and Path(name).name == name and name != 'SOURCE-PINS.json', 'SOURCE_LOCAL_NAME')
++        body = (candidate/name).read_bytes()
++        require(len(body) == row['bytes'] and hashlib.sha256(body).hexdigest() == row['sha256'], 'SOURCE_BODY_CAS')
++    sys.path.insert(0, str(candidate))
+     import f06_contract as c
+-    c.recipe_check()  # Source + exact nonsecret reference metadata only.
+-    manifest, manifest_pin = c.runtime_pin_check(c.private(CAND/'TEMPLATE-MANIFEST.json', CAND)[1])
+-    forbidden = {manifest['credential']['path']} | {r['path'] for r in manifest['fixtures']}
+-    c.PRE_STAGE_CREDENTIAL_PATHS.add(manifest['credential']['path'])
+-
+-    def proof(path, expected):
+-        path = c.canonical(str(path))
+-        require(str(path) not in forbidden and path.suffix == '.json', 'PROOF_CANNOT_BE_PAYLOAD')
+-        raw, pin = c.private(path, path.parent)
+-        require(pin['sha256'] == expected, 'ROOT_PROOF_PIN')
+-        return c.decode(raw), pin
+-
+-    def ref(row):
+-        require(type(row) is dict and set(row) == FULL_PIN, 'ROOT_FULL_NINE_FIELD_PIN_REQUIRED')
+-        obj, pin = proof(Path(row['path']), row['sha256'])
+-        require(row == pin, 'ROOT_FULL_PROOF_CAS')
+-        return obj, pin
+-
+-    accepted, root_accept_pin = proof(ROOT_ACCEPT, ROOT_ACCEPT_SHA)
+-    independent, independent_pin = proof(REVIEW, REVIEW_SHA)
+-    require(accepted.get('execution_authority') is False and accepted.get('source_pins', {}).get('sha256') == PINS_SHA, 'SOURCE_ACCEPTANCE_ONLY')
+-    require(independent.get('source_approval') is True and independent.get('runtime_execution_authority') is False, 'INDEPENDENT_SOURCE_ONLY')
+-    review, source_review_pin = proof(args.source_review, args.source_review_sha256)
+-    fresh, fresh_pin = proof(args.fresh_boundary, args.fresh_boundary_sha256)
+-    require(review.get('Root_source_acceptance') == root_accept_pin and review.get('actual_independent_source_review') == independent_pin, 'ROOT_CURRENT_SOURCE_ACCEPTANCE_JOIN')
+-    linked = {name: ref(review[name])[0] for name in PROOF_NAMES}
+-    request, request_pin = c.runtime_pin_check(c.private(CAND/'SOURCE-REQUEST.json', CAND)[1])
+-    require(review['codec_acceptance'] == request['codec_acceptance'] and review['native_root_acceptance'] == manifest['proofs']['native_root_acceptance'], 'SOURCE_REQUEST_NATIVE_CODEC_JOINS')
+-    require(request['manifest'] == manifest_pin, 'EXACT_REQUEST_MANIFEST_JOIN')
+-    prepared = dict(mode=c.MODE, assignment=c.ASSIGNMENT, source_pins_sha256=PINS_SHA, credential_source=manifest['credential'], credential_source_identity=manifest['credential']['identity'], output_manifest=manifest_pin, metadata_request=request_pin, metadata_adapter_source=c.private(CAND/'template_adapter.py', CAND)[1], selected_fixture_ids=IDS, selected_count=6, expected_stores=0, expected_probes=18, native_evidence=manifest['proofs'], slot_path=str(c.SLOT), task_retention_root=str(c.TASK))
+-    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+-    admission = assemble(prepared, source_review_pin, fresh_pin, review, fresh, linked['native_actors_closed'], linked['readonly_effect_basis'], now=c.utcmoscow(), origin_now=time.monotonic(), uid=os.getuid(), boot=boot, nonce=os.urandom(16).hex())
+-    require(admission['limits'] == c.limits(c.MODE), 'UNCHANGED_EXACT_CANDIDATE_LIMITS')
+-    key = admission['operation_key']
+-    op = c.operation(key, c.MODE)
+-    require(not os.path.lexists(op), 'OPERATION_ALREADY_EXISTS_RECONCILE_NO_REPLAY')
+-    apath = CAND/(key+'.ADMISSION.json')
+-    # Exclusive write consumes this admission name. Refusal is not replay consent.
+-    c.save(apath, admission)
+-    apin = c.private(apath, CAND)[1]
+-    # Actual Root stage: this real consumer reads ciphertext, never credentials.
+-    # It validates historical9/codec/current bank/CAS/freshness/clock/all joins.
+-    frame = runpy.run_path(str(CAND/'root_frame.py'), run_name='root_template_admission')
+-    frame['validate_admission'](apath, apin['sha256'])
+-    intent = dict(state='ROOT_REAL_CONSUMER_READBACK_PASSED_EXEC_SAME_ADMISSION', admission=apin, operation_key=key, original_operation_start_monotonic=admission['original_operation_start_monotonic'], planned_probes=18, planned_stores=0)
+-    c.save(CAND/(key+'.ENTRY-INTENT.json'), intent)
+-    # Same process becomes accepted Root frame. No second clock, wrapper loop,
+-    # outer kill timeout, separate actor, auto retry, or second slot authority.
+-    os.execv('/usr/bin/python3', ['/usr/bin/python3', '-I', '-B', '-S', str(CAND/'root_frame.py'), '--execute-once-root-accepted', '--admission', str(apath), '--admission-sha256', apin['sha256']])
++    c.recipe_check()
++    # Lexical spelling before private predicate prevents alias/root namespace
++    # confusion; .json proof is not a payload/credential selector.
++    bpath = c.canonical(str(args.bindings))
++    require(bpath == candidate/'root-proofs'/'ROOT-BINDINGS.json', 'EXACT_ROOT_METADATA_BINDINGS_PATH')
++    raw, bpin = c.private(bpath, bpath.parent)
++    require(bpin['sha256'] == args.bindings_sha256 and bpath.suffix == '.json', 'BINDINGS_CAS')
++    bindings = c.decode(raw)
++    admission = assemble(bindings, args.source_pins_sha256, uid=os.getuid(), boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip(), now=c.utcmoscow(), monotonic_now=time.monotonic())
++    c.operation(admission['operation_key'], c.MODE)
++    c.credential_metadata(admission['credential_source'])
++    # All nonsecret full-pin proof/CAS/type/identity joins and resources are
++    # validated before any once admission file or unit intent is created.
++    from root_frame import validate_fields
++    validate_fields(admission)
++    path = candidate/(admission['operation_key']+'.ADMISSION.json')
++    require(not os.path.lexists(c.operation(admission['operation_key'], c.MODE)), 'OPERATION_EXISTS_NO_REPLAY')
++    c.save(path, admission)  # O_EXCL, consumed on publication; no overwrite/reset.
++    apin = c.private(path, candidate)[1]
++    from root_frame import validate_admission
++    validate_admission(path, apin['sha256'])
++    c.save(candidate/(admission['operation_key']+'.ENTRY-INTENT.json'), dict(state='ROOT_BOUND_EXACT_SOURCE_CONSUMER_READBACK_EXEC_SAME_ADMISSION', bindings=bpin, admission=apin, original_operation_start_monotonic=admission['original_operation_start_monotonic'], planned_document_loads=1, planned_getRequest_calls=1, planned_stores=0))
++    os.execv('/usr/bin/python3', ['/usr/bin/python3', '-I', '-B', '-S', str(candidate/'root_frame.py'), '--execute-once-root-accepted', '--admission', str(path), '--admission-sha256', apin['sha256']])
+ 
+ 
+ if __name__ == '__main__':
+     try:
+         main()
+-    except Exception as error:
+-        print(json.dumps(dict(state='ROOT_ENTRY_REFUSED_RECONCILE_EXISTING_EFFECT_BEFORE_ANY_NEW_OPERATION', exception_class=type(error).__name__)), flush=True)
++    except BaseException as error:
++        print(json.dumps({'state':'ROOT_ENTRY_REFUSED_PRESERVE_NO_REPLAY', 'exception_class':type(error).__name__}), flush=True)
+         raise SystemExit(2)
+--- a/root_frame.py
++++ b/root_frame.py
+@@ -191,86 +191,14 @@
+ 
+ def proof(row):return c.runtime_pin_check(row)
+ 
+-RETAINED_PREFLIGHT_ROOT=Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-ROOT-OFFICE-GENERATION-20261111')
+-RETAINED_PREFLIGHT_PINS='4242f4ea8bfe6110e53103b88696058a4a286cbf78a4d0591846672574b27a66'
+-RETAINED_PREFLIGHT_FILES={
+- 'source_pins':('SOURCE-PINS.json',RETAINED_PREFLIGHT_PINS),
+- 'admission':('preflight-g1.ADMISSION.json','1437c5b118f18f1be13ab92b51f17da7d2ddc8831301d10a56fdbd1ba61a8c37'),
+- 'root_result':('operations/preflight-g1/ROOT-RESULT.json','a7ceafc81b42a871cdfc79edb09d492f71923eb618534df3b7bfb6d8a8729bac'),
+- 'unit_result':('operations/preflight-g1/UNIT-RESULT.json','f8a925f172a1b22f83e0daef068d6d720caaef508911181143e6eed7a5cb7a8d'),
+- 'inside_result':('operations/preflight-g1/work/INSIDE-RESULT.json','05420c3e831ead14003fab6a5d11d1eb08cde53132642ac1b0e4389c2d282897'),
+- 'typed_proof':('operations/preflight-g1/work/UNO-PREFLIGHT.json','a86b1d9d28a690dce483fde632209455d411aa9d2aeb601902930257b544d260'),
+- 'parent_binding':('operations/preflight-g1/PARENT-BINDING.json','45107cd9e5f1f4b917e3b70c50460a0317f23770cf3b387aae1c5996f888705a'),
+- 'unit_closure':('operations/preflight-g1/ROOT-RECONCILIATION-UNIT-CLOSED.json','b7fc6bbb7d528803db49d7a9aa6779a85ffc04202ac2972826a23333f70ef8c8'),
+- 'parent_closure':('operations/preflight-g1/ROOT-RECONCILIATION-FINAL-CLOSURE.json','d0036f50863963a1148a1efa412395f02403008518d4d495ed4536e3b83f92a5')}
+-
+-
+-def pin_join(left,right):
+- need(type(left)is dict and type(right)is dict and all(left.get(k)==right.get(k)for k in ('path','bytes','sha256')),'PROOF_REFERENCE_JOIN')
+-
+ def fresh_time(value,code,max_age=120):
+- at=datetime.datetime.fromisoformat(value)
+- need(at.utcoffset()==datetime.timedelta(hours=3),'PROOF_MOSCOW_TIMEZONE')
+- age=(datetime.datetime.now(datetime.timezone.utc)-at).total_seconds();need(0<=age<=max_age,code)
+-
+-def retained_support(a,review):
+- # History proves exact typed-bank support, never current admission, boot,
+- # replay permission, original-window PASS, or application/password semantics.
+- row=a['retained_support'];pin_join(row,review['retained_support'])
+- mapping,_=proof(row)
+- need(mapping.get('schema')=='friday.f06.root-retained-typed-support.v1' and mapping.get('state')=='ROOT_ACCEPTED_RETAINED_TYPED_SUPPORT_MAPPING','RETAINED_SUPPORT_MAPPING')
+- need(mapping.get('assignment')==c.ASSIGNMENT and mapping.get('source_pins_sha256')==a['source_pins_sha256'] and mapping.get('prior_source_pins_sha256')==RETAINED_PREFLIGHT_PINS,'RETAINED_SUPPORT_SOURCE_BINDING')
+- need(mapping.get('bank_manifest_sha256')==c.MANIFEST_SHA and mapping.get('bank_root')==str(c.BASE),'RETAINED_SUPPORT_BANK')
+- need(mapping.get('historical_only')is True and mapping.get('preflight_reexecuted')is False and mapping.get('original_window_PASS')is False and mapping.get('current_boot_claim')is False and mapping.get('application_or_password_PASS')is False,'RETAINED_SUPPORT_HONEST_SCOPE')
+- need(mapping.get('actual_new_actor_imports_required')is True and mapping.get('unknown_support_differences')==[],'RETAINED_SUPPORT_APPLICABILITY')
+- evidence=mapping.get('evidence');need(type(evidence)is dict and set(evidence)==set(RETAINED_PREFLIGHT_FILES),'RETAINED_SUPPORT_EXACT_NINE')
+- observed={}
+- for name,(relative,sha)in RETAINED_PREFLIGHT_FILES.items():
+-  ref=evidence[name];need(ref.get('path')==str(RETAINED_PREFLIGHT_ROOT/relative) and ref.get('sha256')==sha,'RETAINED_SUPPORT_HISTORICAL_PIN')
+-  observed[name]=proof(ref)[0]
+- typed=observed['typed_proof'];inside=observed['inside_result'];closure=observed['unit_closure'];final=observed['parent_closure']
+- need(typed.get('state')=='ISOLATED_EMBEDDED_UNO_TYPES_IMPORT_PASS_NO_OFFICE' and typed.get('Office_starts')==typed.get('document_loads')==typed.get('secret_reads')==0,'RETAINED_TYPED_HISTORICAL_STATE')
+- expected_typed=dict(types=['PropertyValue','XInteractionHandler','DocumentPasswordRequest','DocumentMSPasswordRequest'],macro_NEVER_EXECUTE=0,update_NO_UPDATE=0)
+- need(all(typed.get(k)==v for k,v in expected_typed.items()) and mapping.get('historical_typed_support')==expected_typed,'RETAINED_TYPED_SUPPORT_VALUES')
+- need(inside.get('state')=='ISOLATED_UNO_PREFLIGHT_NO_OFFICE_PASS' and inside.get('owned_children_closed')is True,'RETAINED_INSIDE_HISTORICAL_STATE')
+- need(closure.get('state')=='ROOT_EXACT_EXISTING_PREFLIGHT_UNIT_CLOSED_AFTER_CHECKER_FALSE_REFUSAL' and closure.get('preflight_reexecuted')is False and closure.get('late_closure_readback_not_original_window_PASS')is True,'RETAINED_CLOSURE_HISTORICAL_STATE')
+- need(final.get('state')=='EXACT_PREFLIGHT_PARENT_REAPED_AND_SHARED_SLOT_FREE' and final.get('parent_absent')is True and final.get('operation_reexecuted')is False,'RETAINED_PARENT_HISTORICAL_STATE')
+- return mapping
+-
+-def native_closure(a,manifest,review):
+- # This own synthetic native run had no native567 Root grant/once contract.
+- # Require genuine fresh Root closure facts, never fabricate those aliases.
+- row=a['native_actors_closed'];pin_join(row,review['native_actors_closed']);closed,_=proof(row)
+- need(closed.get('schema')=='friday.f06.root-template-native-actors-closed.v1' and closed.get('state')=='ROOT_FRESH_TEMPLATE_NATIVE_ACTORS_ABSENT','TEMPLATE_NATIVE_CLOSURE_SCHEMA')
+- need(closed.get('assignment')==c.ASSIGNMENT and closed.get('native_assignment')==manifest['native_assignment'] and closed.get('uid')==a['uid'] and closed.get('boot_id')==a['boot_id'],'TEMPLATE_NATIVE_CLOSURE_LINEAGE')
+- fresh_time(closed['observed_at_moscow'],'TEMPLATE_NATIVE_CLOSURE_FRESH_TIME')
+- need(closed.get('actual_native_actors')==[] and closed.get('actual_native_requests')==[] and closed.get('actual_closed')is True and closed.get('reexecuted')is False and closed.get('native567_grant_or_once_reused')is False,'TEMPLATE_NATIVE_ACTORS_CLOSED')
+- need(c.exact_json(closed.get('native_evidence'),a['native_evidence']),'TEMPLATE_NATIVE_CLOSURE_EVIDENCE_JOIN')
+- need(closed.get('historical_actor_pids')==[573457,574999] and closed.get('actor_pid_basis')=='exact original synthetic LAUNCH/CONTINUATION-LAUNCH receipts; birth not recorded','TEMPLATE_ORIGINAL_PID_BASIS')
+- for pid in closed['historical_actor_pids']:need(not (Path('/proc')/str(pid)).exists(),'TEMPLATE_HISTORICAL_PID_PRESENT')
+- need(closed.get('historical_ott_raw_edit_receipt')=='NOT_RETAINED_DO_NOT_RECONSTRUCT_OR_REPLAY','TEMPLATE_NATIVE_GAP_PRESERVED')
+- return closed
+-
+-def readonly_effect_basis(a,manifest,review):
+- row=a['readonly_effect_basis'];pin_join(row,review['readonly_effect_basis']);basis,_=proof(row)
+- need(basis.get('schema')=='friday.f06.root-template-readonly-effect-basis.v1' and basis.get('state')=='ROOT_ACCEPTED_DISTINCT_TEMPLATE_SOURCE_OUTPUT_READONLY_ORACLE_ONLY','READONLY_EFFECT_BASIS')
+- need(basis.get('assignment')==c.ASSIGNMENT and basis.get('native_assignment')==manifest['native_assignment'] and basis.get('new_operation_key')==a['operation_key'] and basis.get('new_source_pins_sha256')==a['source_pins_sha256'],'READONLY_EFFECT_LINEAGE')
+- pin_join(basis['output_manifest'],a['output_manifest']);pin_join(basis['native_actors_closed'],a['native_actors_closed'])
+- need(basis.get('selected_fixture_ids')==a['selected_fixture_ids'] and basis.get('expected_stores')==0 and basis.get('expected_probes')==3*a['selected_count'] and basis.get('native_effects_repeated')is False and basis.get('original_native_statuses_preserved')is True and basis.get('original_clocks_or_consumed_effects_reset')is False and basis.get('whole_F06_accepted')is False,'READONLY_DISTINCT_EFFECT_ONLY')
+- need(basis.get('readonly_affected_unknowns_resolved')is True and basis.get('remaining_readonly_affected_unknowns')==[] and basis.get('historical_ott_raw_edit_receipt')=='NOT_RETAINED_DO_NOT_RECONSTRUCT_OR_REPLAY','TEMPLATE_READONLY_UNKNOWN_SCOPE_AND_NATIVE_GAP')
+- need(c.exact_json(basis.get('limits'),a['limits']) and basis.get('original_operation_start_monotonic')==a['original_operation_start_monotonic'],'READONLY_EFFECT_CLOCK_LIMITS')
+- return basis
+-
+-def codec_review_bindings(a,review,observer):
+- for joined in (review,observer):
+-  need(c.exact_json(joined.get('codec_acceptance'),a['codec_acceptance']),'CODEC_REVIEW_FULL_PIN_JOIN')
+- return c.codec_acceptance(a['codec_acceptance'])
+-
+-def validate_admission(path,sha):
+- raw,pin=c.private(path,B);need(pin['sha256']==sha,'ADMISSION_SHA');a=c.decode(raw)
++ observed=datetime.datetime.fromisoformat(value)
++ need(observed.tzinfo is not None and 0<=(datetime.datetime.now(datetime.timezone.utc)-observed).total_seconds()<=max_age,code)
++
++def validate_fields(a):
+  mode=a['mode'];key=a['operation_key'];c.operation(key,mode);lim=c.limits(mode)
+  credential,credential_identity=c.credential_metadata(a['credential_source']);c.PRE_STAGE_CREDENTIAL_PATHS.add(credential['path'])
+- need(path==B/(key+'.ADMISSION.json') and a.get('schema')=='friday.f06.root-template-once-admission.v1' and a.get('state')=='ROOT_FRESH_ONCE_ADMITTED' and a.get('assignment')==c.ASSIGNMENT,'ADMISSION_STATE_PATH')
++ need(a.get('schema')=='friday.f06.one-template-admission.v1' and a.get('state')=='ROOT_FRESH_ONCE_ADMITTED' and a.get('assignment')==c.ASSIGNMENT,'ADMISSION_STATE_PATH')
+  need(type(a.get('uid'))is int and a['uid']==os.getuid() and a['boot_id']==Path('/proc/sys/kernel/random/boot_id').read_text().strip() and type(a.get('nonce'))is str and re.fullmatch('[0-9a-f]{32}',a['nonce'])is not None,'ADMISSION_UID_BOOT_NONCE')
+  fresh_time(a['admitted_at_moscow'],'ADMISSION_FRESH_TIME')
+  origin=a.get('original_operation_start_monotonic')
+@@ -278,26 +206,26 @@
+  c.DEADLINE=origin+lim['whole_wall_seconds'];c.within(lim['cleanup_reserve_seconds'])
+  need(a.get('source_pins_sha256')==c.recipe_check()[0]['sha256'] and c.exact_json(a.get('limits'),lim),'ADMISSION_SOURCE_LIMITS')
+  cpus=a['actual_two_cpu_ids'];need(type(cpus)is list and len(cpus)==2 and len(set(cpus))==2 and all(type(x)is int for x in cpus) and set(cpus)<=os.sched_getaffinity(0),'ACTUAL_CPU_AFFINITY')
+- review,_=proof(a['source_review'])
+- need(review.get('state')=='ROOT_ACCEPTED_F06_TEMPLATE_SOURCE_OUTPUT_SOURCE' and review.get('source_pins_sha256')==a['source_pins_sha256'] and review.get('findings_remaining')==[] and review.get('new_readonly_route_reviewed')is True,'SOURCE_REVIEW')
+- pin_join(review['native_root_acceptance'],a['native_root_acceptance'])
+- pin_join(review['negative_observer_review'],a['negative_observer_review'])
+- observer,_=proof(a['negative_observer_review'])
+- _,source_rows=c.recipe_check();driver=next(p for p in source_rows if Path(p['path']).name=='office_fixture_driver.py')
+- need(observer.get('state')=='ROOT_ACCEPTED_EXACT_PASSWORD_NEGATIVE_OBSERVER_SOURCE' and observer.get('source_pins_sha256')==a['source_pins_sha256'] and observer.get('driver_sha256')==driver['sha256'] and observer.get('generic_exception_is_expected_password_refusal')is False and observer.get('typed_password_refusal_required')is True and observer.get('same_retained_bytes_no_regeneration')is True and observer.get('findings_remaining')==[],'PASSWORD_NEGATIVE_OBSERVER_REVIEW_REQUIRED')
+- codec_review_bindings(a,review,observer)
++ c.diagnostic_acceptance(a)
+  fresh,_=proof(a['fresh_boundary'])
+- need(fresh.get('state')=='ROOT_FRESH_F06_KERNEL_CUSTODY' and fresh.get('boot_id')==a['boot_id'] and fresh.get('uid')==os.getuid() and fresh.get('slot_identity')==a['slot_identity'],'ROOT_FRESH_PROOF')
++ need(fresh.get('state')=='ROOT_FRESH_ONE_TEMPLATE_KERNEL_CUSTODY' and fresh.get('boot_id')==a['boot_id'] and fresh.get('uid')==os.getuid() and fresh.get('nonce')==a['nonce'] and fresh.get('slot_identity')==a['slot_identity'] and fresh.get('original_operation_start_monotonic')==origin,'ROOT_FRESH_PROOF')
+  fresh_time(fresh['observed_at_moscow'],'BOUNDARY_FRESH_TIME')
+  need(fresh['bank']==c.bank_snapshot(),'FRESH_BANK_METADATA_CAS_CRITICAL4')
+  need(fresh.get('affinity_cpu_ids')==sorted(os.sched_getaffinity(0)) and fresh.get('memory_available_kib',0)>=3*1024*1024 and fresh.get('CPU_pressure_raw') and fresh.get('IO_pressure_raw'),'ROOT_RESOURCE_OBSERVATIONS')
++ need(fresh.get('prior_operation_closed')is True and fresh.get('shared_slot_free_observed')is True and fresh.get('original18_closure')==a['original18_closure'],'FRESH_DISTINCT_BOUNDARY_REQUIRED')
+  mem=dict((x.split(':',1)[0],x.split(':',1)[1].strip())for x in Path('/proc/meminfo').read_text().splitlines());need(int(mem['MemAvailable'].split()[0])>=3*1024*1024,'CURRENT_MEMORY_AVAILABLE')
+- need('identity'in a['output_manifest'],'OUTPUT_MANIFEST_IDENTITY_REQUIRED')
+- manifest,_,_,credential=c.output_inputs(a)
+- need(c.credential_metadata(credential)[1]==a['credential_source_identity'],'CREDENTIAL_ADMISSION_IDENTITY')
+- retained_support(a,review);native_closure(a,manifest,review);readonly_effect_basis(a,manifest,review)
++ manifest,_,rows,credential=c.output_inputs(a)
++ need(fresh.get('selected_ciphertext')=={k:rows[0][k]for k in ('path','bytes','sha256','identity')} and fresh.get('credential_metadata')==credential,'FRESH_SELECTED_PHYSICAL_CUSTODY_JOIN')
+  c.retention_snapshot(a['task_retention_root']);c.within(lim['cleanup_reserve_seconds'])
++ return a
++
++
++def validate_admission(path,sha):
++ path=c.canonical(str(path));raw,pin=c.private(path,B);need(pin['sha256']==sha,'ADMISSION_SHA');a=c.decode(raw)
++ need(path==B/(a['operation_key']+'.ADMISSION.json'),'ADMISSION_EXACT_PATH')
++ validate_fields(a)
+  return a,pin
++
+ 
+ def acquire_slot(a):
+  need(str(c.SLOT)==a['slot_path'],'SLOT_EXACT_PATH')
+@@ -311,8 +239,64 @@
+  except BaseException:os.close(fd);raise
+ 
+ 
++def final_dependency_audit(a,ap,op,known,bank_before,custody_pin,closed):
++ # Root retains the shared slot throughout these independent observations.
++ # A refused/crashed unit may have no result journal: observe every planned
++ # target anyway, but never invent its before-identity or claim full CAS.
++ audit=dict(after_strict_closure=closed,complete=False,checks=[],staged=[])
++ def attempt(label,check):
++  row=dict(check=label,attempted=True,passed=False);audit['checks'].append(row)
++  try:
++   need(closed,'ROOT_AUDIT_REQUIRES_ACTUAL_CLOSURE');c.within();value=check();row['passed']=True
++   return value
++  except BaseException as error:row['error_class']=type(error).__name__
++ def same(path,expected):
++  _,pin=c.stable(path);need(pin==expected,'ROOT_FINAL_FULL_INPUT_CAS');return pin
++ attempt('source',c.recipe_check)
++ attempt('admission',lambda:need(c.private(Path(ap['path']),B)[1]==ap,'ROOT_FINAL_ADMISSION_CAS'))
++ attempt('bank',lambda:need(bank_before is not None and c.bank_snapshot()==bank_before,'ROOT_FINAL_BANK_CAS'))
++ attempt('durable_input_custody',lambda:need(custody_pin is not None and c.private(op/'ROOT-INPUT-CUSTODY.json',op)[1]==custody_pin,'ROOT_INPUT_CUSTODY_JOURNAL_CAS'))
++ for index,item in enumerate(known):
++  attempt('original_'+str(index)+'_'+item['role'],lambda item=item:same(item['original']['path'],item['original']))
++ progress=None
++ def unit_progress():
++  raw,_=c.private(op/'UNIT-RESULT.json',op);unit=c.decode(raw)
++  need(unit.get('unit')==c.unit_name(a['operation_key']) and unit.get('operation_key')==a['operation_key'] and unit.get('mode')==a['mode'] and unit.get('original_operation_start_monotonic')==a['original_operation_start_monotonic'] and unit.get('namespace_closed')is True,'ROOT_UNIT_JOURNAL_SCOPE')
++  value=unit.get('stage_progress');need(type(value)is dict,'ROOT_STAGE_PROGRESS_REQUIRED');return value
++ progress=attempt('unit_stage_journal',unit_progress)
++ planned={item['staged_path']:item for item in known}
++ copies={}
++ if progress is not None:
++  def copy_journal():
++   need(progress.get('stage_completed')is True and progress.get('selected_fixture_ids')==[c.SELECTED_ID] and progress.get('selected_count')==1,'ROOT_STAGE_NOT_COMPLETE')
++   rows=progress.get('copy_attempts');need(type(rows)is list and len(rows)==len(planned),'ROOT_STAGE_ATTEMPTS_COUNT')
++   for row in rows:
++    path=row.get('staged_host_path');need(path in planned and path not in copies and row.get('role')==planned[path]['copy_role'] and row.get('original_host_pin')==planned[path]['original'] and row.get('copy_completed')is True,'ROOT_STAGE_ATTEMPT_JOIN')
++    pin=row.get('staged_host_pin');c.full_pin_shape(pin);need(pin['path']==path and pin['identity'][:2]!=row['original_host_pin']['identity'][:2],'ROOT_STAGE_DISTINCT_FULL_PIN');copies[path]=pin
++   need(set(copies)==set(planned),'ROOT_STAGE_ATTEMPTS_SCOPE')
++  attempt('stage_copy_journal',copy_journal)
++ for path,item in planned.items():
++  row=dict(role=item['role'],path=path,observed=False,content_matches_original=False,full_stage_cas_verified=False);audit['staged'].append(row)
++  def stage_target(path=path,item=item,row=row):
++   _,pin=c.private(Path(path),op);row['observed']=True;row['observed_pin']=pin
++   need(pin['bytes']==item['original']['bytes'] and pin['sha256']==item['original']['sha256'] and pin['identity'][:2]!=item['original']['identity'][:2],'ROOT_STAGE_CONTENT_OR_CUSTODY')
++   row['content_matches_original']=True
++   need(path in copies and pin==copies[path],'ROOT_STAGE_BEFORE_IDENTITY_UNKNOWN_OR_CHANGED');row['full_stage_cas_verified']=True
++  attempt('staged_'+item['role'],stage_target)
++ def stage_metadata():
++  _,pin=c.private(op/'inputs'/'STAGED.json',op)
++  need(progress is not None,'ROOT_STAGE_METADATA_JOURNAL_UNKNOWN');row=progress.get('stage_metadata_attempt')
++  need(type(row)is dict and row.get('path')==str(op/'inputs'/'STAGED.json') and row.get('write_completed')is True and row.get('pin')==pin,'ROOT_STAGE_METADATA_AFTER_CAS')
++ attempt('staged_metadata',stage_metadata)
++ audit['complete']=bool(known and closed and all(row['passed']for row in audit['checks']) and len(known)==3 and len(audit['staged'])==3 and all(row['full_stage_cas_verified']for row in audit['staged']))
++ return audit
++
++
+ def execute(args):
+- entry_cpu=time.process_time();entry_children_cpu=children_cpu()
++ # This is a fresh Root command process; exec preserves its CPU accounting.
++ # Include entry source/proof validation and interpreter startup, not just the
++ # post-exec frame interval. No separate CPU allowance or reset at exec.
++ entry_cpu=0.0;entry_children_cpu=0.0
+  c.CPU_GUARD=lambda:need(time.process_time()-entry_cpu+children_cpu()-entry_children_cpu<c.LIMITS['aggregate_CPU_seconds'],'ROOT_AGGREGATE_CPU_BUDGET')
+  need(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode,'ROOT_INTERPRETER_FLAGS')
+  # This is a future Root-only entry; source checks never execute it.
+@@ -320,7 +304,7 @@
+  c.safe_dir(B);need(not os.path.lexists(op),'OPERATION_NO_REPLAY')
+  ops=B/'operations'
+  if not ops.exists():ops.mkdir(mode=0o700)
+- c.safe_dir(ops);lockfd=acquire_slot(a);bus=None;launch=None;bound=None;cg=None;closed=False;pending=[]
++ c.safe_dir(ops);lockfd=acquire_slot(a);bus=None;launch=None;bound=None;cg=None;closed=False;pending=[];known=[];bank_before=None;custody_pin=None
+  report=dict(state='PRELAUNCH_REFUSAL',mode=mode,operation_key=key,unit=unit,boot_id=a['boot_id'],source_pins_sha256=a['source_pins_sha256'],admission=ap,started_at_moscow=c.utcmoscow(),actual_closure_observed=False,launch_attempts=0)
+  old={}
+  def defer(sig,_):pending.append(sig)
+@@ -330,6 +314,14 @@
+   slice_observation=slice_context();expected_cgroup='/sys/fs/cgroup'+slice_observation['ControlGroup']+'/'+unit;report['actual_existing_app_slice']=slice_observation;report['expected_kernel_cgroup']=expected_cgroup
+   initial=unit_props(unit,True);need(initial['LoadState']=='not-found' and initial['MainPID']=='0' and initial['ControlPID']=='0' and not initial['ControlGroup'],'UNIT_ALREADY_EXISTS')
+   op.mkdir(mode=0o700);c.save(op/'ROOT-INTENT.json',report)
++  # Durable expected originals exist before any unit may stage a private copy.
++  # Credential content is not read here; its independently admitted full pin is
++  # checked by Root only after this granted operation has actually closed.
++  manifest,manifest_pin,selected,credential=c.output_inputs(a)
++  known=[dict(role='manifest',copy_role='manifest',original=manifest_pin,staged_path=str(op/'inputs'/'NATIVE-OUTPUTS.json')),dict(role='retained_native_output',copy_role='retained_native_output',original={k:selected[0][k]for k in ('path','bytes','sha256','identity')},staged_path=str(op/'inputs'/'native-outputs'/c.NAMES[0])),dict(role='credential_source',copy_role='credential_private_copy',original=credential,staged_path=str(op/'inputs'/'credential.private.json'))]
++  bank_before=c.bank_snapshot()
++  c.save(op/'ROOT-INPUT-CUSTODY.json',dict(state='ROOT_EXPECTED_FULL_PINS_BEFORE_UNIT_LAUNCH',admission=ap,original_operation_start_monotonic=a['original_operation_start_monotonic'],inputs=known))
++  custody_pin=c.private(op/'ROOT-INPUT-CUSTODY.json',op)[1]
+   c.save(op/'PARENT-BINDING.json',dict(root_pid=os.getpid(),root_starttime=Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19],root_uid=os.getuid(),boot_id=a['boot_id'],admission_sha256=args.admission_sha256,slot_fd=lockfd,slot_identity=c.identity(os.fstat(lockfd)),unit=unit,nonce=a['nonce']))
+   bus=Bus(unit)
+   # Both actor creation and post-Popen binding are in this same finally scope.
+@@ -364,7 +356,7 @@
+   report['unit_result_exit']=int(current['ExecMainStatus']);report['actual_exit_properties']=current
+   report['state']='ROOT_FINITE_UNIT_CLOSED'
+  except BaseException as error:
+-  report['state']='FAILED_OR_UNKNOWN_PRESERVED_NO_REPLAY';report['error_class']=type(error).__name__;report['reason_code']=str(error) if isinstance(error,ValueError) and re.fullmatch('[A-Z][A-Z0-9_]{0,120}',str(error)) else None
++  report['state']='FAILED_OR_UNKNOWN_PRESERVED_NO_REPLAY';report['error_class']=type(error).__name__;report['reason_code']=None
+  finally:
+   # Never let delivery/log/proof/BaseException bypass reconciliation of the
+   # same actual launch and unit. Signals remain deferred until this is known.
+@@ -405,17 +397,32 @@
+   finalprops=report.get('strict_closed_properties',{})
+   if str(finalprops.get('CPUUsageNSec','')).isdecimal():
+    report['whole_unit_accounted_CPU_seconds']=int(finalprops['CPUUsageNSec'])/1e9
++   # Audits consume the original aggregate budget together with the now-closed
++   # unit; they do not acquire an independent Root CPU allowance.
++   c.CPU_GUARD=lambda:need(report['whole_unit_accounted_CPU_seconds']+time.process_time()-parent_cpu+children_cpu()-parent_children_cpu<lim['aggregate_CPU_seconds'],'ROOT_FINAL_AGGREGATE_CPU_BUDGET')
+    report['aggregate_unit_plus_parent_CPU_seconds']=report['whole_unit_accounted_CPU_seconds']+report['Root_parent_CPU_seconds']+report['Root_owned_helpers_CPU_seconds']
+    if report['aggregate_unit_plus_parent_CPU_seconds']>lim['aggregate_CPU_seconds']:report['state']='AGGREGATE_CPU_EXCEEDED_PRESERVED'
+   elif report['launch_attempts'] and closed:
+    report['state']='FINAL_CPU_ACCOUNTING_INCONCLUSIVE_PRESERVED'
++  try:
++   report['root_final_dependency_audit']=final_dependency_audit(a,ap,op,known,bank_before,custody_pin,closed)
++   if closed and not report['root_final_dependency_audit']['complete']:report['state']='FINAL_DEPENDENCY_CAS_INCOMPLETE_PRESERVED'
++  except BaseException as error:
++   report['root_final_dependency_audit']=dict(complete=False,error_class=type(error).__name__)
++   if closed:report['state']='FINAL_DEPENDENCY_CAS_INCOMPLETE_PRESERVED'
+   try:report['final_retention']=c.retention_snapshot(a['task_retention_root'],op)
+   except BaseException as error:report['retention_error_class']=type(error).__name__;report['state']='RETENTION_UNCONFIRMED_PRESERVED'
++  report['Root_parent_CPU_seconds']=time.process_time()-parent_cpu;report['Root_owned_helpers_CPU_seconds']=children_cpu()-parent_children_cpu
++  if 'whole_unit_accounted_CPU_seconds'in report:
++   report['aggregate_unit_plus_parent_CPU_seconds']=report['whole_unit_accounted_CPU_seconds']+report['Root_parent_CPU_seconds']+report['Root_owned_helpers_CPU_seconds']
++   if report['aggregate_unit_plus_parent_CPU_seconds']>lim['aggregate_CPU_seconds']:report['state']='AGGREGATE_CPU_EXCEEDED_PRESERVED'
+   report['original_operation_start_monotonic']=a['original_operation_start_monotonic'];report['original_whole_operation_deadline_monotonic']=a['original_operation_start_monotonic']+lim['whole_wall_seconds']
+   report['completed_at_moscow']=c.utcmoscow();report['deferred_signals']=pending
+   if op.exists():
+    try:c.save(op/'ROOT-RESULT.json',report)
+-   except BaseException as error:report['result_save_error_class']=type(error).__name__
++   except BaseException as error:
++    report['result_save_error_class']=type(error).__name__
++    if closed:report['state']='ROOT_RESULT_SAVE_FAILED_PRESERVED'
+   if not closed:
+    # No safe finite program can force an uninterruptible kernel actor or
+    # unavailable manager to confirm closure. Keep this same visible parent and
+@@ -435,16 +442,13 @@
+ def offline_check():
+  c.safe_dir(B);pin,_=c.recipe_check()
+  for path in B.glob('*.py'):compile(path.read_bytes(),str(path),'exec')
+- template=c.decode(c.private(B/'verify-native-edits.ADMISSION.TEMPLATE.json',B)[0])
+- need(template['state']=='UNBOUND_NOT_ADMITTED' and template['admitted_at_moscow']is None and template['slot_identity']is None and template['original_operation_start_monotonic']is None,'TEMPLATE_NOT_INERT')
+- need(template['mode']==c.MODE and template['operation_key']is None and template['source_pins_sha256']is None,'TEMPLATE_NO_AUTHORITY')
+- refs=c.decode(c.private(B/'REFERENCES.json',B)[0])
+- codec_rows=[row for row in refs['files']if row.get('path')==str(c.CODEC_ACCEPTANCE_PATH)]
+- need(len(codec_rows)==1,'CODEC_SOURCE_REFERENCE_REQUIRED');c.codec_acceptance(codec_rows[0])
+- return dict(state='TEMPLATE_SOURCE_ONLY_NO_RUNTIME_AUTHORITY',source_pins_sha256=pin['sha256'],Office_starts=0,unit_starts=0,namespace_starts=0,secret_reads=0,codec_acceptance_sha256=c.CODEC_ACCEPTANCE_SHA,negative_observer_review='REQUIRED_FOR_FUTURE_EXECUTION_NOT_GRANTED_HERE')
++ template=c.decode(c.private(B/'ROOT-BINDINGS.TEMPLATE.json',B)[0])
++ need(template['state']=='UNBOUND_NOT_ADMITTED' and template['runtime_authority']is None and template['fresh_boundary']is None and template['source_review']is None and template['output_manifest']is None,'TEMPLATE_NOT_INERT')
++ return dict(state='DIAGNOSTIC_SOURCE_ONLY_NO_RUNTIME_AUTHORITY',source_pins_sha256=pin['sha256'],Office_starts=0,unit_starts=0,namespace_starts=0,secret_reads=0)
++
+ 
+ def main():
+- os.umask(0o077);p=argparse.ArgumentParser();p.add_argument('--check',action='store_true');p.add_argument('--execute-once-root-accepted',action='store_true');p.add_argument('--admission',type=Path);p.add_argument('--admission-sha256');a=p.parse_args()
++ os.umask(0o077);p=argparse.ArgumentParser();p.add_argument('--check',action='store_true');p.add_argument('--execute-once-root-accepted',action='store_true');p.add_argument('--admission');p.add_argument('--admission-sha256');a=p.parse_args()
+  need(a.check!=a.execute_once_root_accepted,'EXPLICIT_MODE')
+  if a.check:print(json.dumps(offline_check()));return 0
+  need(re.fullmatch('[0-9a-f]{64}',a.admission_sha256 or '') is not None,'ADMISSION_HASH_REQUIRED');return execute(a)
+--- a/run_once.py
++++ b/run_once.py
+@@ -61,7 +61,7 @@
+  # must not erase the known originals or a partially written target.
+  if custody is None:custody={}
+  inputs=op/'inputs';custody.update(inputs_path=str(inputs),inputs_created=False,original_expected_pins=[],original_inputs_before=[],copy_attempts=[],stage_completed=False)
+- c.need(mode=='verify-native-edits','READONLY_ORACLE_MODE_ONLY')
++ c.need(mode==c.MODE,'READONLY_ORACLE_MODE_ONLY')
+  obj,mp,rows,ref=c.output_inputs(a)
+  c.need(obj['selected_count']==len(rows)==a['selected_count'] and obj['selected_fixture_ids']==a['selected_fixture_ids'],'STAGE_SELECTED_SCOPE')
+  def known(role,pin,fixture_id=None):
+@@ -71,11 +71,11 @@
+  known('manifest',mp)
+  for row in rows:
+   known('retained_native_output',row,row['fixture_id']);known('native_source_ciphertext',row['native_source_ciphertext'],row['fixture_id'])
+- credential_pin=dict(path=ref['path'],bytes=ref['bytes'],identity=a['credential_source_identity'])
++ credential_pin=dict(ref)
+  known('credential_source',credential_pin)
+  custody['original_inputs_before']=[item['pin'] for item in custody['original_expected_pins']]
+  custody['selected_fixture_ids']=list(obj['selected_fixture_ids']);custody['selected_count']=len(rows)
+- c.codec_acceptance(a['codec_acceptance'])
++ c.diagnostic_acceptance(a)
+  inputs.mkdir(mode=0o700);custody['inputs_created']=True;(inputs/'native-outputs').mkdir(mode=0o700)
+  pins=[];copies=[]
+  def tracked_copy(role,source,target,expected,fixture_id=None):
+@@ -112,7 +112,7 @@
+  c.need(c.credential_metadata(ref)[1]==identity,'CREDENTIAL_POSTCOPY_IDENTITY')
+  pins.append(original)
+  custody['stage_metadata_attempt']=dict(path=str(inputs/'STAGED.json'),write_completed=False)
+- c.save(inputs/'STAGED.json',dict(input_sha256=mp['sha256'],selected_count=len(rows),selected_fixture_ids=obj['selected_fixture_ids'],expected_stores=0,expected_probes=3*len(rows),source_pins=rows,credential_source=original,copy_custody=copies,staged_ciphertext_inodes_are_new_copies=True,metadata_is_not_execution_authority=True))
++ c.save(inputs/'STAGED.json',dict(input_sha256=mp['sha256'],selected_count=len(rows),selected_fixture_ids=obj['selected_fixture_ids'],expected_stores=0,expected_probes=1,source_pins=rows,credential_source=original,copy_custody=copies,staged_ciphertext_inodes_are_new_copies=True,metadata_is_not_execution_authority=True))
+  custody['stage_metadata_attempt']['pin']=c.private(inputs/'STAGED.json',inputs)[1]
+  custody['stage_metadata_attempt']['write_completed']=True;custody['stage_completed']=True
+  return inputs,pins
+@@ -160,14 +160,14 @@
+    _,now=c.private(row['path'],inputs);row['observed_pin']=now
+    c.need(attempt['write_completed'] and now==attempt.get('pin'),'STAGED_METADATA_AFTER_CAS');row['cas_verified']=True;stage_metadata_ok=True
+   except BaseException as error:row['error_class']=type(error).__name__
+- codec_ok=False
+- try:c.codec_acceptance(a['codec_acceptance']);codec_ok=True
+- except BaseException as error:errors.append(dict(check='codec_acceptance',error_class=type(error).__name__))
++ diagnostic_proof_ok=False
++ try:c.diagnostic_acceptance(a);diagnostic_proof_ok=True
++ except BaseException as error:errors.append(dict(check='diagnostic_acceptance',error_class=type(error).__name__))
+  report['original_inputs_after']=originals;report['original_inputs_after_observations']=original_observations
+  report['staged_copies_before']=[dict(role=r['role'],original=r['original_host_pin'],staged=r['staged_host_pin'],copy_is_original=False) for r in custody.get('copy_attempts',[]) if 'staged_host_pin' in r]
+  report['staged_copies_after']=copies;report['staged_copies_after_observations']=copy_observations;report['custody_check_errors']=errors
+  count=custody.get('selected_count',0)
+- report['readonly_custody_after_cas']=bool(namespace_closed and custody.get('stage_completed') and metadata_ok and codec_ok and stage_metadata_ok and count==6 and len(original_observations)==2*count+2 and all(r['cas_verified'] and r['content_preservation_verified'] for r in original_observations) and len(copy_observations)==count+2 and all(r['cas_verified'] for r in copy_observations))
++ report['readonly_custody_after_cas']=bool(namespace_closed and custody.get('stage_completed') and metadata_ok and diagnostic_proof_ok and stage_metadata_ok and count==1 and len(original_observations)==2*count+2 and all(r['cas_verified'] and r['content_preservation_verified'] for r in original_observations) and len(copy_observations)==count+2 and all(r['cas_verified'] for r in copy_observations))
+  if not report['readonly_custody_after_cas'] and report['state']!='STOP_UNCONFIRMED':report['state']='FAILED_OR_PARTIAL_PRESERVED_NO_REPLAY'
+ 
+ def root_parent(op,admission_sha,a,unit):
+@@ -180,7 +180,8 @@
+  return v
+ 
+ def main():
+- os.umask(0o077);resource.setrlimit(resource.RLIMIT_CORE,(0,0));p=argparse.ArgumentParser();p.add_argument('--admission',type=Path,required=True);p.add_argument('--admission-sha256',required=True);a=p.parse_args()
++ os.umask(0o077);resource.setrlimit(resource.RLIMIT_CORE,(0,0));p=argparse.ArgumentParser();p.add_argument('--admission',required=True);p.add_argument('--admission-sha256',required=True);a=p.parse_args()
++ a.admission=c.canonical(a.admission)
+  raw,ap=c.private(a.admission,c.B);c.need(ap['sha256']==a.admission_sha256,'ADMISSION_SHA');ad=json.loads(raw)
+  mode=ad['mode'];lim=c.limits(mode);key=ad['operation_key'];op=c.operation(key,mode);unit=c.unit_name(key)
+  c.need(a.admission==c.B/(key+'.ADMISSION.json'),'ADMISSION_EXACT_PATH')
+@@ -207,14 +208,14 @@
+   while process.poll() is None:
+    c.within(lim['cleanup_reserve_seconds']);root_parent(op,a.admission_sha256,ad,unit);c.need(cpu(cg)<lim['aggregate_CPU_seconds']-.25,'AGGREGATE_CGROUP_CPU')
+    c.need(tree_bytes(op)+lim['namespace_tmpfs_bytes']<=lim['own_cap_bytes'],'OWN_OPERATION_DISK_DECLARED_CAP_MONITOR')
+-   c.need(tree_bytes(Path(ad['task_retention_root']))+lim['namespace_tmpfs_bytes']<=192*1024**2,'WHOLE_TASK_DECLARED_CAP_MONITOR')
++   c.need(tree_bytes(Path(ad['task_retention_root']))+lim['namespace_tmpfs_bytes']<=c.TASK_CAP,'WHOLE_TASK_DECLARED_CAP_MONITOR')
+    time.sleep(.025)
+   report['namespace_exit']=process.wait();c.need(report['namespace_exit']==0,'NAMESPACE_TERMINAL_NONZERO')
+   c.need(c.bank_snapshot()==before,'BANK_AFTER_CAS')
+   c.recipe_check();c.need(c.private(a.admission,c.B)[1]==ap,'ADMISSION_AFTER_CAS')
+   report['state']='FINITE_UNIT_CONSUMER_FINISHED_ORACLE_RESULT_SEPARATE'
+  except BaseException as error:
+-  report['error_class']=type(error).__name__;report['reason_code']=str(error) if isinstance(error,ValueError) and re.fullmatch('[A-Z][A-Z0-9_]{0,100}',str(error)) else None
++  report['error_class']=type(error).__name__;report['reason_code']=None
+  finally:
+   for sig in (signal.SIGINT,signal.SIGTERM):signal.signal(sig,lambda *_:None)
+   try:
+@@ -234,6 +235,11 @@
+   except BaseException as error:
+    report['custody_audit_error_class']=type(error).__name__;report['readonly_custody_after_cas']=False
+    if report['state']!='STOP_UNCONFIRMED':report['state']='FAILED_OR_PARTIAL_PRESERVED_NO_REPLAY'
++  report['final_dependency_cas']={}
++  for label,check in (('bank',lambda:c.need(before is not None and c.bank_snapshot()==before,'BANK_AFTER_CAS')),('source',c.recipe_check),('admission',lambda:c.need(c.private(a.admission,c.B)[1]==ap,'ADMISSION_AFTER_CAS'))):
++   try:check();report['final_dependency_cas'][label]=True
++   except BaseException as error:report['final_dependency_cas'][label]=False;report.setdefault('dependency_errors',[]).append(dict(check=label,error_class=type(error).__name__))
++  if not all(report['final_dependency_cas'].values()) and report['state']!='STOP_UNCONFIRMED':report['state']='FAILED_OR_PARTIAL_PRESERVED_NO_REPLAY'
+   report['whole_cgroup_CPU_seconds']=cpu(cg);report['elapsed_whole_unit_seconds']=time.monotonic()-origin
+   report['CPU_monitor_is_aggregate_sampled_not_atomic']=True;report['elapsed_from_actual_unit_start_seconds']=time.monotonic()-unit_origin;report['stores_planned']=0;report['expected_probes']=ad['expected_probes'];report['disk_cap_is_declared_plus_sampled_not_atomic_quota']=True
+   report['completed_at_moscow']=c.utcmoscow();c.save(op/'UNIT-RESULT.json',report)
