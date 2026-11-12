@@ -1,0 +1,206 @@
+--- a/tools/scoped_odf_password.py
++++ b/tools/scoped_odf_password.py
+@@ -3,6 +3,8 @@
+ ODF 1.3 package encryption (part 2, 3.4 and 4.16): raw DEFLATE then
+ AES-CBC or legacy Blowfish-CFB8, PBKDF2-HMAC-SHA1, per-member checksum.
+ The checksum confirms a password; it is not a signature/authenticity claim.
++The bounded LO wholesome profile additionally supports SHA256-start Argon2id
++v19 and AES256-GCM, authenticating the complete compressed inner package.
+ No passwords, keys or unencrypted package bytes are written by this codec.
+ """
+ import base64
+@@ -65,6 +67,8 @@
+     try:
+         value = password.encode('utf-8')
+     except UnicodeError:
++        value = None
++    if value is None:
+         fail('odf_password_invalid')
+     if len(value) > 1024:
+         fail('odf_password_invalid')
+@@ -100,7 +104,7 @@
+ 
+ 
+ def _modern_plan(entry,enc,nodes):
+-    # Recognize only this bounded LO descriptor; never derive a key or decrypt.
++    # Only the exact bounded LO descriptor; no alternate KDF or cipher fallback.
+     # AEAD has no legacy /1K checksum and Argon2id has no PBKDF2 iteration-count.
+     if set(nodes)!={q(M,'algorithm'),q(M,'key-derivation'),q(M,'start-key-generation')}:
+         fail('odf_encryption_parameters_invalid')
+@@ -120,16 +124,16 @@
+             or kd.get(q(M,'key-size'))!='32' or start.get(q(M,'key-size'))!='32'
+             or start.get(q(M,'start-key-generation-name'))!='http://www.w3.org/2001/04/xmlenc#sha256'):
+         fail('odf_encryption_parameters_invalid')
+-    binary(algorithm.get(q(M,'initialisation-vector')),12,12)
+-    binary(kd.get(q(M,'salt')),16,16)
+-    # Diagnostic recognition ceilings cover the known LO defaults. No Argon2
+-    # allocation occurs, and none of these numbers authorizes KDF execution.
+-    number(kd.get(q(LOEXT,'argon2-iterations')),3,1)
++    iv=binary(algorithm.get(q(M,'initialisation-vector')),12,12)
++    salt=binary(kd.get(q(M,'salt')),16,16)
++    iterations=number(kd.get(q(LOEXT,'argon2-iterations')),3,1)
+     memory=number(kd.get(q(LOEXT,'argon2-memory')),65536,8)
+     lanes=number(kd.get(q(LOEXT,'argon2-lanes')),4,1)
+     if memory<8*lanes:fail('odf_encryption_parameters_invalid')
+-    number(entry.get(q(M,'size')),MAX_MEMBER,1)
+-    return dict(unsupported_modern=True,rounds=0,key_size=32,entry=entry)
++    size=number(entry.get(q(M,'size')),MAX_MEMBER,1)
++    return dict(modern=True,name=AES_GCM,rounds=0,key_size=32,entry=entry,
++                enc=enc,algorithm=algorithm,kd=kd,iv=iv,salt=salt,size=size,
++                iterations=iterations,memory=memory,lanes=lanes)
+ 
+ 
+ def _plan(entry):
+@@ -270,10 +274,10 @@
+         if len(entry):
+             plan=_plan(entry);plans[name]=plan;work+=plan['rounds']*((plan['key_size']+19)//20)
+             if infos[name].compress_type!=zipfile.ZIP_STORED:fail('odf_encrypted_member_not_stored')
+-    modern=any(p.get('unsupported_modern')for p in plans.values())
++    modern=any(p.get('modern')for p in plans.values())
+     if modern:
+         # A wholesome encrypted package omits the outer '/' and content.xml
+-        # entries. Validate its entire admitted outer inventory before refusal,
++        # entries. Validate its entire admitted outer inventory before crypto,
+         # so a later duplicate/malformed entry cannot masquerade as this profile.
+         _attrs(root,('version',),('version',))
+         if (root.get(q(M,'version'))not in('1.3','1.4','1.5')
+@@ -282,8 +286,15 @@
+                 or set(infos)!=set(parts)
+                 or plans['encrypted-package']['entry'].get(q(M,'media-type'))!=MIMES[format]):
+             fail('odf_encryption_parameters_invalid')
+-        if len(parts['encrypted-package'])<16:fail('odf_ciphertext_invalid')
+-        fail('odf_encryption_algorithm_unsupported')
++        encrypted=parts['encrypted-package'];plan=plans['encrypted-package']
++        if format!='odt':
++            # Preserve the existing diagnostic envelope for other families.
++            if len(encrypted)<16:fail('odf_ciphertext_invalid')
++            fail('odf_encryption_algorithm_unsupported')
++        number(plan['entry'].get(q(M,'size')),MAX_BYTES,1)
++        # XMLENC GCM stores IV || ciphertext || 16-byte tag, without padding.
++        if len(encrypted)<=28 or encrypted[:12]!=plan['iv']:fail('odf_ciphertext_invalid')
++        return parts,infos,root,plans
+     if len(roots)!=1 or roots[0].get(q(M,'media-type'))!=MIMES[format]or'content.xml'not in seen:
+         fail('odf_manifest_type_mismatch')
+     # ODF exempts mimetype and META-INF files from the manifest inventory.
+@@ -301,6 +312,87 @@
+     except ImportError:fail('odf_crypto_unavailable')
+     if plan['name']in AES_NAMES:return AES.new(key,AES.MODE_CBC,iv=iv)
+     return Blowfish.new(key,Blowfish.MODE_CFB,iv=iv,segment_size=8)
++
++
++def _modern_crypto(plan,password,checkpoint):
++    tick(checkpoint)
++    error_code=None
++    try:
++        from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
++        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
++        from cryptography.exceptions import UnsupportedAlgorithm
++    except ImportError:error_code='odf_crypto_unavailable'
++    if error_code:fail(error_code)
++    try:
++        key=Argon2id(salt=plan['salt'],length=32,iterations=plan['iterations'],
++            memory_cost=plan['memory'],lanes=plan['lanes']).derive(hashlib.sha256(password).digest())
++        cipher=AESGCM(key)
++    except UnsupportedAlgorithm:error_code='odf_crypto_unavailable'
++    except MemoryError:error_code='odf_encryption_resource_limit'
++    except ValueError:error_code='odf_encryption_parameters_invalid'
++    # Raise outside the backend exception handler: no backend message/context
++    # can become a technical traceback containing key material or input data.
++    if error_code:fail(error_code)
++    tick(checkpoint)
++    return cipher
++
++
++def _modern_read(parts,plan,format,password,checkpoint):
++    cipher=_modern_crypto(plan,password_bytes(password),checkpoint)
++    error_code=None
++    try:
++        from cryptography.exceptions import InvalidTag
++        compressed=cipher.decrypt(plan['iv'],parts['encrypted-package'][12:],None)
++    except InvalidTag:error_code='odf_password_rejected_or_corrupt'
++    except MemoryError:error_code='odf_encryption_resource_limit'
++    except ValueError:error_code='odf_ciphertext_invalid'
++    if error_code:fail(error_code)
++    tick(checkpoint)
++    # No inflate, XML parse, editor or plaintext result before the complete tag.
++    clear=_inflate(compressed,plan)
++    inner,_,_,inner_plans=_package(clear,format,checkpoint)
++    if inner_plans or 'encrypted-package'in inner:fail('odf_nested_encryption_unsupported')
++    _inert_xml(inner,checkpoint);tick(checkpoint)
++    return clear,dict(encrypted=True,decrypted_for_read_only=True,encrypted_members=1,
++        algorithms=[AES_GCM],modern_profile='LO_ARGON2ID19_AES256GCM',
++        password_verification='AEAD_TAG_MATCHED',data_integrity_verified=True,
++        encryption_authenticity='AEAD_PAYLOAD_AUTHENTICATED_NOT_ORIGIN_IDENTITY')
++
++
++def _modern_encrypt(original,parts,infos,root,plan,clear,format,password,checkpoint):
++    source_clear,_=prepare_read(original,format,password,checkpoint=checkpoint)
++    source_parts,_,_,_=_package(source_clear,format,checkpoint)
++    clear_parts,_,_,clear_plans=_package(clear,format,checkpoint)
++    if clear_plans or set(source_parts)!=set(clear_parts):fail('odf_edit_member_set_changed')
++    _inert_xml(clear_parts,checkpoint)
++    # Same parameters and envelope; fresh salt and nonce for the new ciphertext.
++    plan['salt']=secrets.token_bytes(16);plan['iv']=secrets.token_bytes(12)
++    plan['entry'].set(q(M,'size'),str(len(clear)))
++    plan['kd'].set(q(M,'salt'),base64.b64encode(plan['salt']).decode())
++    plan['algorithm'].set(q(M,'initialisation-vector'),base64.b64encode(plan['iv']).decode())
++    compressor=zlib.compressobj(6,zlib.DEFLATED,-15)
++    compressed=compressor.compress(clear)+compressor.flush()
++    cipher=_modern_crypto(plan,password_bytes(password),checkpoint)
++    error_code=None
++    try:
++        encrypted=plan['iv']+cipher.encrypt(plan['iv'],compressed,None)
++    except MemoryError:error_code='odf_encryption_resource_limit'
++    except ValueError:error_code='odf_crypto_failed'
++    if error_code:fail(error_code)
++    tick(checkpoint)
++    parts=dict(parts);parts['encrypted-package']=encrypted
++    parts['META-INF/manifest.xml']=ET.tostring(root,encoding='utf-8',xml_declaration=True)
++    buffer=io.BytesIO()
++    with zipfile.ZipFile(buffer,'w')as archive:
++        for name in ['mimetype']+[n for n in infos if n!='mimetype']:
++            info=copy.copy(infos[name]);info.extra=b'';info.comment=b''
++            info.compress_type=zipfile.ZIP_DEFLATED if name=='META-INF/manifest.xml'else zipfile.ZIP_STORED
++            archive.writestr(info,parts[name])
++    result=buffer.getvalue()
++    if len(result)>MAX_BYTES:fail('odf_output_limit')
++    verified,_=prepare_read(result,format,password,checkpoint=checkpoint)
++    if verified!=clear:fail('odf_encrypted_output_verification_failed')
++    return result
+ 
+ 
+ def _key(plan,password):
+@@ -331,6 +423,8 @@
+ 
+ def prepare_read(data,format,password=None,*,checkpoint=None):
+     parts,infos,root,plans=_package(data,format,checkpoint)
++    if plans.get('encrypted-package',{}).get('modern'):
++        return _modern_read(parts,plans['encrypted-package'],format,password,checkpoint)
+     if not plans:
+         if password is not None:password_bytes(password)
+         return data,dict(encrypted=False)
+@@ -356,6 +450,9 @@
+ 
+ def _encrypt_to_original(original,clear,format,password,checkpoint):
+     original_parts,original_infos,root,plans=_package(original,format,checkpoint)
++    if plans.get('encrypted-package',{}).get('modern'):
++        return _modern_encrypt(original,original_parts,original_infos,root,
++                               plans['encrypted-package'],clear,format,password,checkpoint)
+     parts,infos,_,clear_plans=_package(clear,format,checkpoint)
+     if clear_plans or not plans:fail('odf_encrypted_edit_contract')
+     if set(parts)!=set(original_parts):fail('odf_edit_member_set_changed')
+@@ -414,7 +511,13 @@
+         # Public error text is a fixed code; never serialize operation/password.
+         fail('odf_native_edit_refused')
+     tick(checkpoint)
+-    return _encrypt_to_original(data,edited,format,password,checkpoint),dict(
++    result=_encrypt_to_original(data,edited,format,password,checkpoint)
++    result_metadata=dict(
+         encrypted=True,source_unchanged=True,password_preserved=True,
+         new_member_salts_and_ivs=True,plaintext_published=False,
+         encryption_authenticity='NOT_VERIFIED',native_edit_profile=format)
++    if metadata.get('modern_profile'):
++        result_metadata.update(modern_profile=metadata['modern_profile'],
++            data_integrity_verified=True,password_verification='AEAD_TAG_MATCHED',
++            encryption_authenticity=metadata['encryption_authenticity'])
++    return result,result_metadata

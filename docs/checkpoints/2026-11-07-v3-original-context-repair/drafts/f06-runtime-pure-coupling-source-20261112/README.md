@@ -1,0 +1,7 @@
+# Pure runtime coupling repair source archive, 2026-11-12
+
+The five exact frozen candidate Python files, real patch, source pins, pure/source controls, composition report and [independent review](review/RESULT.json) with [parent acceptance](REVIEW-PARENT-ACCEPTANCE.json) are archived byte for byte. [RESULT.json](RESULT.json), [SOURCE-FREEZE-FINAL.json](SOURCE-FREEZE-FINAL.json) and [ARCHIVE-MANIFEST.json](ARCHIVE-MANIFEST.json) retain source-approved, **not installed207** status. This is optional future cleanup, not a global prerequisite for independent F06 work.
+
+Direct pure callers must use the `agent.message_sanitization` leaf. Full runtime-helper import remains application/config/auth coupled; other leaf functions may retain lazy dependencies and optional jiter preload. Function `__module__`/globals and out-of-tree monkeypatch reflection are limited as stated by the original result. Existing aliases/signatures/marker values are preserved; no runtime admission guard was weakened. Source checks used an isolated stdlib stand, not the installed PM/native-extension graph.
+
+The genuine Root read-only leaf206 qualification and the old runtime-wrapper WARN **NOT_RUN** are separate facts; source WARNING does not establish installed/gateway/App/live acceptance. Current installed207 closure belongs to separate [Root evidence](../../evidence/astra-20261112/native207-installed-and-operation-closed.json). No effects or old consumed clocks were repeated. Omitted absolute VM refs are dependencies/provenance; this is not a standalone installer or runtime grant.

@@ -1,0 +1,375 @@
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -18,7 +18,8 @@
+ from hermes_cli.timeouts import get_provider_request_timeout
+ from agent.message_sanitization import (
+     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants,
+-    redact_protected_file_message_for_persistence, _file_tool_arguments_for_diagnostic_log
++    redact_protected_file_message_for_persistence, _file_tool_arguments_for_diagnostic_log,
++    sanitize_tool_call_arguments, _prepend_corruption_marker, _find_tool_result, _cursor_skip_prefix
+ )
+ from agent.message_metadata import (
+     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
+@@ -193,121 +194,6 @@
+             trajectory.append({"from": "human", "value": msg["content"]})
+         i += 1
+     return trajectory
+-
+-
+-def _prepend_corruption_marker(tool_msg: dict, marker: str) -> None:
+-    existing = tool_msg.get("content")
+-    if isinstance(existing, str) and existing.startswith(marker):
+-        return
+-    if not isinstance(existing, (str, type(None))):
+-        try:
+-            existing = json.dumps(existing)
+-        except TypeError:
+-            existing = str(existing)
+-    tool_msg["content"] = f"{marker}\n{existing}" if existing else marker
+-    # The tool result was rewritten in place; a stamped dict's persisted row is now stale.
+-    from agent.context_compressor import _DB_PERSISTED_MARKER
+-    tool_msg.pop(_DB_PERSISTED_MARKER, None)
+-
+-
+-def _find_tool_result(messages: list, start: int, tool_call: dict) -> Optional[dict]:
+-    """The tool result answering ``tool_call`` in the run starting at ``start``, if any."""
+-    for candidate in messages[start:]:
+-        if not isinstance(candidate, dict) or candidate.get("role") != "tool":
+-            return None
+-        if tool_result_id_variants(candidate.get("tool_call_id")) & tool_call_id_variants(tool_call):
+-            return candidate
+-    return None
+-
+-
+-def _cursor_skip_prefix(messages: list, cursor: Optional[dict]) -> int:
+-    """Length of the ``is``-identical prefix already validated on the previous call."""
+-    prev_prefix = cursor.get("prefix") if cursor is not None else None
+-    start = 0
+-    if isinstance(prev_prefix, list):
+-        while start < min(len(prev_prefix), len(messages)) and messages[start] is prev_prefix[start]:
+-            start += 1
+-    return start
+-
+-
+-def sanitize_tool_call_arguments(
+-    messages: list, *, logger=None, session_id: str = None, cursor: Optional[dict] = None
+-) -> int:
+-    """Repair corrupted assistant tool-call argument JSON in-place.
+-    ``cursor["prefix"]`` holds strong refs (not ``id()``: address reuse aliases) to the
+-    messages validated last call; the ``is``-identical prefix is skipped. Safe because only
+-    the surrogate sanitizers mutate live dicts; every other path replaces dicts, breaking identity.
+-
+-    Safety argument for skipping: a message in the matched prefix was fully scanned before — every tool_call
+-    argument was either already valid JSON or was rewritten to ``"{}"`` (valid). The only code paths that
+-    mutate ``function["arguments"]`` on live history dicts between calls are the surrogate / non-ASCII
+-    sanitizers, which substitute characters *inside* JSON string values and cannot invalidate JSON syntax.
+-    Compression, repair, undo, and steer paths replace or reorder message dicts, which breaks the identity
+-    match and forces a re-scan. Holding strong references (the objects themselves, not ``id()``s) makes
+-    address reuse aliasing (#50372-style) impossible.
+-    """
+-    log = logger or logging.getLogger(__name__)
+-    if not isinstance(messages, list):
+-        return 0
+-    from agent.context_compressor import _DB_PERSISTED_MARKER
+-    repaired = 0
+-    marker = _ra().AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+-    message_index = _cursor_skip_prefix(messages, cursor)
+-    while message_index < len(messages):
+-        msg = messages[message_index]
+-        tool_calls = msg.get("tool_calls") if isinstance(msg, dict) and msg.get("role") == "assistant" else None
+-        if not isinstance(tool_calls, list) or not tool_calls:
+-            message_index += 1
+-            continue
+-        insert_at = message_index + 1
+-        for tool_call in tool_calls:
+-            function = tool_call.get("function") if isinstance(tool_call, dict) else None
+-            if not isinstance(function, dict):
+-                continue
+-            arguments = function.get("arguments")
+-            if arguments is None or (isinstance(arguments, str) and not arguments.strip()):
+-                function["arguments"] = "{}"
+-                msg.pop(_DB_PERSISTED_MARKER, None)
+-                continue
+-            if not isinstance(arguments, str):
+-                continue
+-            with contextlib.suppress(json.JSONDecodeError):
+-                json.loads(arguments)
+-                continue
+-            # Canonical ``call_id || id`` precedence so scan and stub share the id the pipeline
+-            # uses; bare ``id`` misses Codex call_id results and orphans a stub.
+-            # Keying on bare ``id`` here would fail to find a result built with ``call_id`` (Codex Responses
+-            # format) and insert a duplicate stub that itself becomes an orphan (#58168).
+-            tool_call_id = _ra().AIAgent._get_tool_call_id_static(tool_call) or None
+-            function_name = function.get("name", "?")
+-            # Log the FULL (bounded) argument string: we are about to overwrite the only copy, which
+-            # may hold real user content from a truncated write_file/patch.
+-            log.warning(
+-                "Corrupted tool_call arguments repaired before request "
+-                "(session=%s, message_index=%s, tool_call_id=%s, function=%s, "
+-                "original_arguments=%r)", session_id or "-", message_index, tool_call_id or "-",
+-                function_name, _file_tool_arguments_for_diagnostic_log(arguments[:_FULL_ARGS_LOG_BOUND], function_name),
+-            )
+-            function["arguments"] = "{}"
+-            # The persisted row for a stamped dict still holds the corrupted args; pop the
+-            # marker so the flush rewrites it (the repaired args are what the wire saw).
+-            msg.pop(_DB_PERSISTED_MARKER, None)
+-            existing_tool_msg = _find_tool_result(messages, message_index + 1, tool_call)
+-            if existing_tool_msg is None:
+-                messages.insert(
+-                    insert_at,
+-                    make_tool_result_message(function_name if function_name != "?" else "", marker, tool_call_id),
+-                )
+-                insert_at += 1
+-            else:
+-                _prepend_corruption_marker(existing_tool_msg, marker)
+-            repaired += 1
+-        message_index += 1
+-    if cursor is not None:
+-        # Strong refs to the objects validated this call; any divergence (compression, undo, repair,
+-        # steer) forces a re-scan from that index.
+-        cursor["prefix"] = messages[:]
+-    return repaired
+ 
+ 
+ # Session-scoped in-flight registry for note_turn_start: the gateway caches agents per routing key
+--- a/agent/message_sanitization.py
++++ b/agent/message_sanitization.py
+@@ -7,17 +7,30 @@
+ 
+ from __future__ import annotations
+ 
++import contextlib
+ import hashlib
+ import json
+ import logging
+ import re
+ from functools import partial
+-from typing import Any, Callable
+-
+-from agent.message_metadata import DB_ROW_SNAPSHOT
+-from agent.vision_message_prep import _provider_model_key
++from typing import Any, Callable, Optional
++
++from agent.message_metadata import DB_ROW_SNAPSHOT, _DB_PERSISTED_MARKER
++from agent.tool_dispatch_helpers import make_tool_result_message
+ 
+ logger = logging.getLogger(__name__)
++
++# Shared with the AIAgent facade; repair itself needs no agent instance or bootstrap.
++_TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = (
++    "[hermes-agent: tool call arguments were corrupted in this session and "
++    "have been dropped to keep the conversation alive. See issue #15236.]"
++)
++
++
++def _provider_model_key(agent):
++    # Vision preparation is unrelated to pure message repair; retain the helper alias lazily.
++    from agent.vision_message_prep import _provider_model_key as provider_model_key
++    return provider_model_key(agent)
+ 
+ # Lone surrogates are invalid UTF-8 and crash json.dumps in the OpenAI SDK; also used for
+ # CLI paste scrubbing.
+@@ -533,7 +546,7 @@
+ 
+ 
+ __all__ = [
+-    "_SURROGATE_RE", "close_interrupted_tool_sequence",
++    "_SURROGATE_RE", "close_interrupted_tool_sequence", "sanitize_tool_call_arguments",
+     "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
+     "coerce_tool_name",
+     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
+@@ -888,3 +901,119 @@
+ 
+ # Image / multimodal parts are deliberately NOT consolidated here: per-adapter handling is
+ # format-specific SYNTAX. The one shared image POLICY is ``_strip_images_from_messages``.
++
++
++# Corrupted tool-call recovery shared by the runtime facade and pure diagnostics.
++def _prepend_corruption_marker(tool_msg: dict, marker: str) -> None:
++    existing = tool_msg.get("content")
++    if isinstance(existing, str) and existing.startswith(marker):
++        return
++    if not isinstance(existing, (str, type(None))):
++        try:
++            existing = json.dumps(existing)
++        except TypeError:
++            existing = str(existing)
++    tool_msg["content"] = f"{marker}\n{existing}" if existing else marker
++    # The tool result was rewritten in place; a stamped dict's persisted row is now stale.
++    tool_msg.pop(_DB_PERSISTED_MARKER, None)
++
++
++def _find_tool_result(messages: list, start: int, tool_call: dict) -> Optional[dict]:
++    """The tool result answering ``tool_call`` in the run starting at ``start``, if any."""
++    for candidate in messages[start:]:
++        if not isinstance(candidate, dict) or candidate.get("role") != "tool":
++            return None
++        if tool_result_id_variants(candidate.get("tool_call_id")) & tool_call_id_variants(tool_call):
++            return candidate
++    return None
++
++
++def _cursor_skip_prefix(messages: list, cursor: Optional[dict]) -> int:
++    """Length of the ``is``-identical prefix already validated on the previous call."""
++    prev_prefix = cursor.get("prefix") if cursor is not None else None
++    start = 0
++    if isinstance(prev_prefix, list):
++        while start < min(len(prev_prefix), len(messages)) and messages[start] is prev_prefix[start]:
++            start += 1
++    return start
++
++
++def sanitize_tool_call_arguments(
++    messages: list, *, logger=None, session_id: str = None, cursor: Optional[dict] = None
++) -> int:
++    """Repair corrupted assistant tool-call argument JSON in-place.
++    ``cursor["prefix"]`` holds strong refs (not ``id()``: address reuse aliases) to the
++    messages validated last call; the ``is``-identical prefix is skipped. Safe because only
++    the surrogate sanitizers mutate live dicts; every other path replaces dicts, breaking identity.
++
++    Safety argument for skipping: a message in the matched prefix was fully scanned before — every tool_call
++    argument was either already valid JSON or was rewritten to ``"{}"`` (valid). The only code paths that
++    mutate ``function["arguments"]`` on live history dicts between calls are the surrogate / non-ASCII
++    sanitizers, which substitute characters *inside* JSON string values and cannot invalidate JSON syntax.
++    Compression, repair, undo, and steer paths replace or reorder message dicts, which breaks the identity
++    match and forces a re-scan. Holding strong references (the objects themselves, not ``id()``s) makes
++    address reuse aliasing (#50372-style) impossible.
++    """
++    log = logger or logging.getLogger("agent.agent_runtime_helpers")
++    if not isinstance(messages, list):
++        return 0
++    repaired = 0
++    marker = _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
++    message_index = _cursor_skip_prefix(messages, cursor)
++    while message_index < len(messages):
++        msg = messages[message_index]
++        tool_calls = msg.get("tool_calls") if isinstance(msg, dict) and msg.get("role") == "assistant" else None
++        if not isinstance(tool_calls, list) or not tool_calls:
++            message_index += 1
++            continue
++        insert_at = message_index + 1
++        for tool_call in tool_calls:
++            function = tool_call.get("function") if isinstance(tool_call, dict) else None
++            if not isinstance(function, dict):
++                continue
++            arguments = function.get("arguments")
++            if arguments is None or (isinstance(arguments, str) and not arguments.strip()):
++                function["arguments"] = "{}"
++                msg.pop(_DB_PERSISTED_MARKER, None)
++                continue
++            if not isinstance(arguments, str):
++                continue
++            with contextlib.suppress(json.JSONDecodeError):
++                json.loads(arguments)
++                continue
++            # Canonical ``call_id || id`` precedence so scan and stub share the id the pipeline
++            # uses; bare ``id`` misses Codex call_id results and orphans a stub.
++            # Keying on bare ``id`` here would fail to find a result built with ``call_id`` (Codex Responses
++            # format) and insert a duplicate stub that itself becomes an orphan (#58168).
++            tool_call_id = coalesce_tool_call_id(tool_call) or None
++            function_name = function.get("name", "?")
++            # Log the FULL (bounded) argument string: we are about to overwrite the only copy, which
++            # may hold real user content from a truncated write_file/patch.
++            log.warning(
++                "Corrupted tool_call arguments repaired before request "
++                "(session=%s, message_index=%s, tool_call_id=%s, function=%s, "
++                "original_arguments=%r)", session_id or "-", message_index, tool_call_id or "-",
++                function_name, _file_tool_arguments_for_diagnostic_log(arguments[:_FULL_ARGS_LOG_BOUND], function_name),
++            )
++            function["arguments"] = "{}"
++            # The persisted row for a stamped dict still holds the corrupted args; pop the
++            # marker so the flush rewrites it (the repaired args are what the wire saw).
++            msg.pop(_DB_PERSISTED_MARKER, None)
++            existing_tool_msg = _find_tool_result(messages, message_index + 1, tool_call)
++            if existing_tool_msg is None:
++                messages.insert(
++                    insert_at,
++                    make_tool_result_message(function_name if function_name != "?" else "", marker, tool_call_id),
++                )
++                insert_at += 1
++            else:
++                _prepend_corruption_marker(existing_tool_msg, marker)
++            repaired += 1
++        message_index += 1
++    if cursor is not None:
++        # Strong refs to the objects validated this call; any divergence (compression, undo, repair,
++        # steer) forces a re-scan from that index.
++        cursor["prefix"] = messages[:]
++    return repaired
++
++
+--- a/agent/message_metadata.py
++++ b/agent/message_metadata.py
+@@ -9,6 +9,23 @@
+ 
+ from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+ 
++
++# Intrinsic marker stamped on a message dict once it has been written to the SQLite session store. Used by
++# ``_flush_messages_to_session_db`` to decide what is already durable. An object-identity (``id(msg)``)
++# dedup set cannot be trusted across turns: once a flushed message dict is dropped from the live list (e.g.
++# by scaffolding rewind or in-place compaction) and garbage- collected, CPython is free to hand its address
++# to a brand-new assistant/tool message, whose ``id()`` then collides with the stale entry and the real turn
++# is silently never persisted. A marker bound to the dict itself cannot be aliased that way. The ``_``
++# prefix is mandatory: the wire sanitizers (agent/transports/chat_completions.py,
++# agent/chat_completion_helpers.py) strip every top-level ``_``-prefixed key before the request leaves the
++# process, so this never reaches a strict OpenAI-compatible gateway. CONTRACT (#92231): the marker asserts
++# "this dict's CONTENT is durable as written". Loaded rows are stamped at materialization time
++# (hermes_state._rows_to_conversation), so any code that mutates a loaded or flushed dict's content in place
++# and needs the change persisted MUST pop the marker (and invalidate _db_flush_scan_prefix if the dict may
++# sit inside the bounded-scan prefix) — see agent/turn_finalizer.py (fill-empty-tail) and
++# agent/context_compressor.py (micro-compaction defrag) for the two canonical pop sites. Mutating without
++# popping leaves the DB silently stale.
++_DB_PERSISTED_MARKER = "_db_persisted"
+ 
+ # These fields describe Hermes' durable record and timeline display, not
+ # provider-visible message content. The request builder strips them from every
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -334,22 +334,8 @@
+ # ``display_metadata`` flag on a row the model reads but nobody typed as one message (micro-compaction's
+ # merge of adjacent user turns). Its source rows stay in display history, so display projections skip it.
+ MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
+-# Intrinsic marker stamped on a message dict once it has been written to the SQLite session store. Used by
+-# ``_flush_messages_to_session_db`` to decide what is already durable. An object-identity (``id(msg)``)
+-# dedup set cannot be trusted across turns: once a flushed message dict is dropped from the live list (e.g.
+-# by scaffolding rewind or in-place compaction) and garbage- collected, CPython is free to hand its address
+-# to a brand-new assistant/tool message, whose ``id()`` then collides with the stale entry and the real turn
+-# is silently never persisted. A marker bound to the dict itself cannot be aliased that way. The ``_``
+-# prefix is mandatory: the wire sanitizers (agent/transports/chat_completions.py,
+-# agent/chat_completion_helpers.py) strip every top-level ``_``-prefixed key before the request leaves the
+-# process, so this never reaches a strict OpenAI-compatible gateway. CONTRACT (#92231): the marker asserts
+-# "this dict's CONTENT is durable as written". Loaded rows are stamped at materialization time
+-# (hermes_state._rows_to_conversation), so any code that mutates a loaded or flushed dict's content in place
+-# and needs the change persisted MUST pop the marker (and invalidate _db_flush_scan_prefix if the dict may
+-# sit inside the bounded-scan prefix) — see agent/turn_finalizer.py (fill-empty-tail) and
+-# agent/context_compressor.py (micro-compaction defrag) for the two canonical pop sites. Mutating without
+-# popping leaves the DB silently stale.
+-_DB_PERSISTED_MARKER = "_db_persisted"
++# Compatibility re-export; ownership is the lightweight message metadata module.
++from agent.message_metadata import _DB_PERSISTED_MARKER
+ # Carried-forward tail rows archive as rewind-style (active=0, compacted=0) so
+ # they don't duplicate live copies in recall; never persisted (unknown column).
+ _COMPACTION_TAIL_MARKER = "_compaction_tail"
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -153,6 +153,7 @@
+ from agent.session_activity import ActivityProvenance
+ from agent.model_metadata import is_local_endpoint
+ from agent.message_sanitization import (
++    _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER as _sanitize_tool_call_arguments_corruption_marker,
+     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
+     deterministic_call_id as _codex_deterministic_call_id,
+     uniquify_tool_call_ids as _sanitize_uniquify_tool_call_ids,
+@@ -251,10 +252,7 @@
+ ):
+     """AI Agent with tool calling capabilities."""
+ 
+-    _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = (
+-        "[hermes-agent: tool call arguments were corrupted in this session and "
+-        "have been dropped to keep the conversation alive. See issue #15236.]"
+-    )
++    _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = _sanitize_tool_call_arguments_corruption_marker
+ 
+     @property
+     def base_url(self) -> str:

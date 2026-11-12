@@ -13,3 +13,7 @@ RETURN_OR_ERROR_CONVERSION_UNKNOWN за установленную причин�
 
 Исходные абсолютные VM refs сохранены для происхождения. Здесь нет bank, пароля, исходных документов,
 реальной authority, admission или once. Старый App PARTIAL/rawall_passfalse/client1 остаётся прежним.
+
+Последующий Root class1 фактически выполнен: [отдельное наблюдение](../../evidence/astra-20261112/f06-ott-one-class-diagnostic-partial.json)
+локализовало generatedErrorCodeRequest.args setter failure; normalpayloadUNKNOWN/TERMINAL_STOP. Историческая source-only
+оценка этого исходного пакета неизменна; это не новая команда повторить class1/старые18 и не AppPASS.
