@@ -1,0 +1,195 @@
+--- a/hermes_cli/friday_workspace_revision.py
++++ b/hermes_cli/friday_workspace_revision.py
+@@ -35,7 +35,13 @@
+             cap.directory_identity, getattr(call, 'session_id', ''), task_id)
+ 
+ 
+-def snapshot(fd, leaf, *, durable=False):
++class NonTextSnapshotError(ValueError):
++    """Authenticated file bytes failed UTF-8 decoding; no content is exposed."""
++
++
++def snapshot(fd, leaf, *, durable=False, require_utf8=True):
++    if type(require_utf8) is not bool:
++        raise ScopeDenied()
+     item = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+     try:
+         before = os.fstat(item)
+@@ -55,7 +61,11 @@
+                 or version != tuple(getattr(named,k) for k in _FIELDS)):
+             raise ScopeDenied()
+         data=b''.join(chunks)
+-        data.decode('utf-8')
++        if require_utf8:
++            try:
++                data.decode('utf-8')
++            except UnicodeDecodeError:
++                raise NonTextSnapshotError() from None
+         return data, (*version,hashlib.sha256(data).digest())
+     finally:
+         os.close(item)
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -937,6 +937,34 @@
+             extraction_metadata = None
+             encryption_metadata = None
+             source_sha256 = None
++            def misnamed_docx(data, claimed_format, checkpoint):
++                from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
++                checkpoint()
++                try:
++                    text = extract_scoped_document_bytes(data, 'docx',
++                                                         checkpoint=lambda: revision.check(cap))
++                except ScopedExtractionError as exc:
++                    checkpoint()
++                    return None, json.dumps({'success': False,
++                        'error': 'document_extraction_failed', 'claimed_format': claimed_format,
++                        'actual_format': 'UNDETERMINED', 'container_signature': 'zip',
++                        'reason': exc.code, 'structure_validation': 'DOCX_PROFILE_NOT_VALIDATED',
++                        'effect_disposition': 'none',
++                        'hint': 'The ZIP signature is not proof of a DOCX or PDF document. '
++                        'The bounded native DOCX validator refused these bytes; other ZIP profiles '
++                        'are not identified by this probe. The source is unchanged.'})
++                checkpoint()
++                metadata = dict(text.extraction_metadata)
++                metadata['format_validation'] = {
++                    'claimed_format': claimed_format, 'actual_format': 'docx',
++                    'filename_extension': path.suffix.lower(), 'filename_mismatch': True,
++                    'structure_validation': 'SUPPORTED_DOCX_PROFILE_VALIDATED',
++                    'scope': 'bounded_native_package_and_inert_stored_text_only',
++                    'source_unchanged': True,
++                    'notice': 'The stored filename does not match the validated DOCX structure. '
++                    'No source rename or repair was performed; images, layout and application '
++                    'rendering remain unverified.'}
++                return (text, metadata), None
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+                 identity_required = document_format in OOXML_PASSWORD_FORMATS or document_format in ('mpp','mpt','mdb','accdb','djvu','djv','wpd','wps','pages','numbers','key','xps','oxps','dbf','dif','slk','sxw','stw','sxc','stc','sxi','sti','fb2','abw','odm','odf','pdf','odt','ott','ods','ots','odp','otp','odb','msg','pub','eml','ics','vcf')
+@@ -953,49 +981,89 @@
+                 if document_format in ('mdb', 'accdb', 'wpd', 'wps', 'pages', 'numbers', 'key', 'fb2', 'abw', 'docx', 'dotx', 'odm','odf','pdf', 'odt', 'ott', 'fodt', 'odb'):
+                     source_sha256 = hashlib.sha256(data).hexdigest()
+                 revision.check(cap)
+-                try:
+-                    extraction_data = data
+-                    if document_format == 'pdf':
+-                        from tools.scoped_pdf_password import prepare_read, PDFReadError
+-                        try:
+-                            extraction_data, encryption_metadata = prepare_read(cap, data, args.get('password'))
+-                        except PDFReadError as error:
+-                            revision.check(cap)
+-                            return json.dumps({'success': False, 'error': 'document_extraction_failed',
+-                                               'format': 'pdf', 'reason': str(error)})
+-                        check_document()
+-                    if document_format in ('odt','ott','ods','ots','odp','otp'):
+-                        from tools.scoped_odf_password import prepare_read as prepare_odf, ODFPasswordError
+-                        try:
+-                            extraction_data, encryption_metadata = prepare_odf(data, document_format, args.get('password'), checkpoint=lambda: revision.check(cap))
+-                        except ODFPasswordError as error:
+-                            revision.check(cap)
+-                            return json.dumps({'success': False, 'error': 'document_extraction_failed', 'format': document_format, 'reason': str(error)})
+-                        check_document()
+-                    elif document_format in OOXML_PASSWORD_FORMATS:
+-                        from tools.scoped_ooxml_password import prepare_read, OOXMLPasswordError
+-                        try:
+-                            extraction_data, encryption_metadata = prepare_read(
+-                                data, document_format, args.get('password'), checkpoint=check_document)
+-                        except OOXMLPasswordError as error:
++                if document_format == 'pdf' and data.startswith(b'PK\x03\x04'):
++                    probed, refusal = misnamed_docx(data, 'pdf', check_document)
++                    if refusal is not None:
++                        return refusal
++                    text, extraction_metadata = probed
++                    document_format = 'docx'
++                else:
++                    try:
++                        extraction_data = data
++                        if document_format == 'pdf':
++                            from tools.scoped_pdf_password import prepare_read, PDFReadError
++                            try:
++                                extraction_data, encryption_metadata = prepare_read(cap, data, args.get('password'))
++                            except PDFReadError as error:
++                                revision.check(cap)
++                                return json.dumps({'success': False, 'error': 'document_extraction_failed',
++                                                   'format': 'pdf', 'reason': str(error)})
+                             check_document()
+-                            return json.dumps({'success': False, 'error': 'document_extraction_failed',
+-                                               'format': document_format, 'reason': error.code})
+-                        check_document()
+-                    text = extract_scoped_document_bytes(extraction_data, document_format,
+-                                                         checkpoint=check_document if document_format in ('mpp','mpt','djvu','djv') else lambda: revision.check(cap))
+-                    # Authored by the trusted extractor; preserve on every page.
+-                    extraction_metadata = getattr(text, 'extraction_metadata', None)
+-                except ScopedExtractionError as exc:
+-                    revision.check(cap)
+-                    return json.dumps({'success': False, 'error': 'document_extraction_failed',
+-                                       'format': document_format, 'reason': exc.code})
++                        if document_format in ('odt','ott','ods','ots','odp','otp'):
++                            from tools.scoped_odf_password import prepare_read as prepare_odf, ODFPasswordError
++                            try:
++                                extraction_data, encryption_metadata = prepare_odf(data, document_format, args.get('password'), checkpoint=lambda: revision.check(cap))
++                            except ODFPasswordError as error:
++                                revision.check(cap)
++                                return json.dumps({'success': False, 'error': 'document_extraction_failed', 'format': document_format, 'reason': str(error)})
++                            check_document()
++                        elif document_format in OOXML_PASSWORD_FORMATS:
++                            from tools.scoped_ooxml_password import prepare_read, OOXMLPasswordError
++                            try:
++                                extraction_data, encryption_metadata = prepare_read(
++                                    data, document_format, args.get('password'), checkpoint=check_document)
++                            except OOXMLPasswordError as error:
++                                check_document()
++                                return json.dumps({'success': False, 'error': 'document_extraction_failed',
++                                                   'format': document_format, 'reason': error.code})
++                            check_document()
++                        text = extract_scoped_document_bytes(extraction_data, document_format,
++                                                             checkpoint=check_document if document_format in ('mpp','mpt','djvu','djv') else lambda: revision.check(cap))
++                        # Authored by the trusted extractor; preserve on every page.
++                        extraction_metadata = getattr(text, 'extraction_metadata', None)
++                    except ScopedExtractionError as exc:
++                        revision.check(cap)
++                        return json.dumps({'success': False, 'error': 'document_extraction_failed',
++                                           'format': document_format, 'reason': exc.code})
+                 check_document()
+                 lines = text.splitlines()
+             else:
+-                data, version = revision.snapshot(fd, parts[-1])
++                data, version = revision.snapshot(fd, parts[-1], require_utf8=False)
+                 cap.check()
+-                lines = data.decode('utf-8').splitlines()
++                try:
++                    utf8_text = data.decode('utf-8')
++                except UnicodeDecodeError:
++                    utf8_text = None
++                # Every supported stored/deflated ZIP local header has a NUL
++                # compression-method high byte. A literal UTF-8 PK marker alone
++                # does not establish a container or justify rejecting text.
++                if (data.startswith(b'PK\x03\x04')
++                        and (utf8_text is None or '\x00' in utf8_text)):
++                    def check_document():
++                        revision.check(cap)
++                        observed = revision.snapshot(fd, parts[-1], require_utf8=False)
++                        if observed != (data, version):
++                            raise ScopeDenied()
++                    probed, refusal = misnamed_docx(data, path.suffix.lower().lstrip('.') or 'none',
++                                                     check_document)
++                    if refusal is not None:
++                        return refusal
++                    text, extraction_metadata = probed
++                    document_format = 'docx'
++                    source_sha256 = hashlib.sha256(data).hexdigest()
++                    check_document()
++                    lines = text.splitlines()
++                else:
++                    if utf8_text is None:
++                        revision.check(cap)
++                        return json.dumps({'success': False, 'error': 'file_content_not_text',
++                            'reason': 'binary_or_non_utf8', 'scope': 'own_user_workspace',
++                            'path': path.as_posix(), 'effect_disposition': 'none',
++                            'structure_validation': 'NOT_PARSED',
++                            'hint': 'The file bytes are not UTF-8 text and no supported DOCX '
++                            'profile was selected. Its structure is unverified. The source is '
++                            'unchanged; do not silently rename, repair or execute it.'})
++                    lines = utf8_text.splitlines()
+             starts=[]; cursor=1
+             for line in lines:
+                 starts.append(cursor); cursor += len(line)+1

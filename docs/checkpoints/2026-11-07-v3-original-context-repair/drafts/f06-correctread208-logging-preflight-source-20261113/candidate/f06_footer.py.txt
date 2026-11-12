@@ -1,0 +1,128 @@
+# Separate ordinary F06 correct-read SAME closed first upload. Original full consumer and refusal routing are preserved.
+F06_CONTRACT=__CONTRACT__
+_f06_phase=None
+
+def _f06_need(ok,reason):
+    if not ok:raise Refused(reason)
+
+def _f06_path(path):
+    text=path if type(path) is str else str(path) if isinstance(path,Path) else None
+    _f06_need(type(text) is str and text.startswith('/') and not text.startswith('//')
+          and not any(ord(ch)<32 or 127<=ord(ch)<=159 for ch in text), 'F06_CANONICAL_ABSOLUTE_PATH_REQUIRED')
+    try:text.encode('utf-8')
+    except UnicodeError:raise ValueError('F06_CANONICAL_UTF8_PATH_REQUIRED') from None
+    _f06_need((text=='/' or not any(part in ('','.','..') for part in text.split('/')[1:]))
+          and str(Path(text))==text, 'F06_LEXICAL_PATH_ALIAS_REFUSED')
+    return Path(text)
+
+# Preserve the path-reader ABI/default. Declared reference leaves explicitly
+# opt into the scoped callback; nested metadata is never searched recursively.
+def _f06_reference_read(path,*,private=True):
+    return safe_read(_f06_path(path),private=private)
+
+def _f06_bounded_reference_read(reference):
+    _f06_need(type(reference) is dict and set(reference)=={'path','bytes','sha256'} and type(reference['path']) is str and type(reference['bytes']) is int and 0<reference['bytes']<=24*1024**2 and type(reference['sha256']) is str and re.fullmatch('[a-f0-9]{64}',reference['sha256']) is not None,'F06_EXACT_BOUNDED_REFERENCE_REQUIRED')
+    _p=_f06_path(reference['path'])
+    _raw=safe_read(_p,limit=reference['bytes'],private=True)
+    _f06_need(type(_raw) is bytes and len(_raw)==reference['bytes'] and digest(_raw)==reference['sha256'],'F06_BOUNDED_REFERENCE_CHANGED')
+    return _raw
+
+_f06_reference_read.f06_read_reference=_f06_bounded_reference_read
+
+def _f06_adapter():
+    _r=F06_CONTRACT['adapter']
+    if not isinstance(_r,dict):raise Refused('F06_PREPARATION_UNBOUND_NO_AUTHORITY')
+    _raw=_f06_bounded_reference_read(_r)
+    if len(_raw)!=_r['bytes'] or digest(_raw)!=_r['sha256']:raise Refused('F06_ADAPTER_CHANGED')
+    import types as _types
+    _m=_types.ModuleType('_F06_exact_adapter');_m.__file__=_r['path'];exec(compile(_raw,_m.__file__,'exec'),_m.__dict__);return _m
+
+def _f06_current(state,state_raw,state_path):
+    try:return _f06_adapter().current_gate(F06_CONTRACT,_f06_phase,state,state_raw,state_path,_f06_reference_read)
+    except Exception as _exc:raise Refused('F06_FRESH_ROOT_B_BOUNDARY_REFUSED') from _exc
+
+# Enforce the bound operation disk allowance at the existing writer, including
+# each atomic temporary copy. No original files/index/history are reset or deleted.
+_F06FullStore=Store
+class Store(_F06FullStore):
+    def __init__(self,root):
+        super().__init__(root)
+        self._f06_initial_sizes={};self._f06_current_sizes={}
+    def write(self,path,data):
+        _p=no_symlinks(path)
+        if not _p.is_relative_to(self.root):raise Refused('F06_STORE_WRITE_OUTSIDE_CANONICAL_ROOT')
+        if _p not in self._f06_initial_sizes:
+            self._f06_initial_sizes[_p]=_p.stat().st_size if _p.exists() else 0
+            self._f06_current_sizes[_p]=self._f06_initial_sizes[_p]
+        _growth=sum(max(0,_size-self._f06_initial_sizes[_name]) for _name,_size in self._f06_current_sizes.items())
+        if _growth+len(data)>F06_CONTRACT['resources']['disk_bytes']:
+            raise Refused('F06_OPERATION_DISK_BOUND_BEFORE_WRITE')
+        super().write(_p,data)
+        self._f06_current_sizes[_p]=len(data)
+
+_F06FullRunner=Runner
+class Runner(_F06FullRunner):
+    def ordinary_independent_admission(self,name,scenario):
+        global _f06_phase
+        try:
+            _m=_f06_adapter();_m.shape(F06_CONTRACT,name,scenario,_f06_reference_read)
+            _m.admission(F06_CONTRACT,json.loads(_f06_bounded_reference_read(self.ORDINARY_INDEPENDENT_AUTHORITY),object_pairs_hook=unique_object))
+        except Exception as _exc:raise Refused('F06_EXACT_ORDINARY_ADMISSION_REFUSED') from _exc
+        if _f06_phase is not None:raise Refused('F06_NESTED_BOUNDARY_REFUSED')
+        _f06_phase='NEW' if getattr(self,'_f06_new_operation',False) else getattr(self,'_send_phase',None)
+        try:
+            _document=super().ordinary_independent_admission(name,scenario)
+            _m.admission(F06_CONTRACT,_document)
+            return _document
+        finally:_f06_phase=None
+    def new(self,name,scenario,continuation=None):
+        try:
+            _f06_adapter().shape(F06_CONTRACT,name,scenario,_f06_reference_read)
+            if continuation is not None:raise ValueError('F06_NO_CONTINUATION_OR_MEMORY_GRANT')
+        except Exception as _exc:raise Refused('F06_NEW_CURRENT_UNBOUND') from _exc
+        self._f06_new_operation=True
+        try:return super().new(name,scenario,continuation=None)
+        finally:del self._f06_new_operation
+    def _send(self,run,*,resume_prepared=False,consumer_fd=None,credential_fd=None):
+        try:
+            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),_f06_reference_read)
+            if resume_prepared or run.get('status')!='PREPARED' or run.get('send_state')!='none' or type(run.get('send_attempts')) is not int or run['send_attempts']!=0 or type(run.get('step')) is not int or run['step']!=0 or run.get('scenario_sha256')!=F06_CONTRACT['scenario_sha256'] or 'continuation_reference' in run:raise ValueError('F06_PRISTINE_ONE_ATTEMPT_ONLY')
+        except Exception as _exc:raise Refused('F06_ONCE_BOUNDARY_REFUSED') from _exc
+        return super()._send(run,resume_prepared=False,consumer_fd=consumer_fd,credential_fd=credential_fd)
+    def verify_capture_context(self,run):
+        # Immutable admitted contract only: no fresh/quiescent pre-intent checker
+        # while the product is working. Tighten ordinary ACK to exact tester/text and zero upload.
+        try:
+            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),_f06_reference_read)
+            if 'continuation_reference' in run:raise ValueError('F06_ORDINARY_CONTEXT_ONLY')
+        except Exception as _exc:raise Refused('F06_CAPTURE_CONTRACT_CHANGED') from _exc
+        super().verify_capture_context(run)
+        _r=run['sent_api_ack_reference'];_raw=safe_read(self.store.root/_r['basename'])
+        _ack=json.loads(_raw,object_pairs_hook=unique_object)
+        if _r.get('representation')=='botapi-wire-envelope-json':_ack=_ack['result']
+        _sender=_ack.get('from',{})
+        if (type(_sender.get('id')) is not int or _sender['id']!=TESTER or _sender.get('is_bot') is not True
+                or _ack.get('text')!=run['scenario']['steps'][0]['request']
+                or 'document' in _ack or 'reply_to_message' in _ack
+                or _ack.get('message_thread_id') is not None):
+            raise Refused('F06_EXACT_TESTER_CAPTION_ACK_REQUIRED')
+    def process(self,run,update):
+        # Raw capture/processing outer path remains original. A correlated threaded
+        # private reply cannot become evidence for this explicitly threadless task.
+        _message=update.get('message',{}) if isinstance(update,dict) else {}
+        if (isinstance(_message,dict) and _message.get('chat',{}).get('id')==PEER
+                and _message.get('from',{}).get('id')==PEER
+                and _message.get('reply_to_message',{}).get('message_id')==run.get('sent_message_id')
+                and _message.get('message_thread_id') is not None):
+            raise Refused('F06_THREADLESS_REPLY_REQUIRED_RAW_RETAINED')
+        return super().process(run,update)
+
+_f06_full_main=main
+def main(argv=None):
+    _args=sys.argv[1:] if argv is None else argv
+    try:
+        _f06_adapter().contract_shape(F06_CONTRACT)
+        _expected=['--state-dir',str(CANONICAL_STATE),'run','--run-id',F06_CONTRACT['run_id'],'--scenario',F06_CONTRACT['scenario_ref']['path']]
+        if _args!=_expected:raise ValueError('F06_EXACT_SINGLETON_COMMAND_REQUIRED')
+    except Exception as _exc:raise Refused('F06_CLI_UNBOUND_OR_COMMAND_REFUSED_BEFORE_STORE_TOKEN') from _exc
+    return _f06_full_main(_args)
