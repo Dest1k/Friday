@@ -1,31 +1,35 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 02:57 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
-[Актуальный native/runtime readback](evidence/astra-20261111/f06-source-checkpoint-services-modes-20261112.json):
+Обновлено **12.11.2026, 03:14 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
+[Последний native/mode readback](evidence/astra-20261111/local204-reconciled-native-modes-task23-20261112.json):
 тот же goal/thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**, история/учёт сохранены, общего cap нет.
 [Редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json), [Fast resume](ASTRA-FAST-RESUME-2026-11-12.json).
 Астра — sole lead/live-интегратор Fast; постоянный Сол — Standard в прежней TUI `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`.
-Оба gpt-6.1-sol/ultra; старый leadership goal Сола paused, его текущая Task22 active под координацией Астры.
+Оба gpt-6.1-sol/ultra; старый leadership goal Сола paused. Task22 завершён/принят; Task23 normalF06successor вреальном nativeходе после одного completedprecompact.
 Owner pause завершён новой явной командой; новую цель/UUID/счётчики не создавали.
 
-Baseline этого среза — локальный `01f1705b66f72afde04cf7be2155397a8f6d66dc`; итоговый SHA — содержащий сводку коммит.
+Baseline этого среза — локальный `5b747e548ba60d4f5fb5f542ea337477b13f0685`; итоговый SHA — содержащий сводку коммит.
 `origin/main(tracking)=48de25314b76528b8525674097947a45750c46d3` — последняя проверенная публикация, **не свежий remoteSHA**.
 **GitHub недоступен по сообщению владельца. Только локальные коммиты; fetch/ls-remote/API/push не делать до его сообщения о восстановлении.**
 [Owner12.11: работа/локальная установка/проверки независимы отGitHub](ASTRA-LOCAL-WORK-2026-11-12.json).
 Нативный goal обновлён/readback active с прежней identity/учётом. Явный local-committed-main route для обоих Root204/205 frames
 [принят и внедрён в canonical frames](evidence/astra-20261111/core204-205-explicit-local-origin-integrated-20261112.json): remote=None/deferred,
-exactHEAD/main/Gitobjects/source/CAS/predecessor/rollback остаются; actual203→204 установка — следующийшаг. Не подменять remote.
+exactHEAD/main/Gitobjects/source/CAS/predecessor/rollback остаются; допустимый nextstage204 — после observerfix/малогоrealunitcontrol, безreplayстарогоonce. Не подменять remote.
 Чужие3 byteexact сохранены/исключены: `docs/foundation-status.md`, v2
 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, `FORMAT-COVERAGE-MAP.json`. Секреты/БД/private runs не коммитить.
 
 **[Установлен203/project487/native17891/plugins52/base17730](evidence/astra-20261111/native203-installed-and-same-odp-consumer.json).**
 H=`.runtime/friday-normal-both-workers-frw032`; canonical receipt9d8d1d95…2a83c2/input31178b28…6f513ad.
-Четыре canonicalSHA/identity проверены до/после native567; переустановок/миграций не было.02:52 full9identity+SHA всех4 вновь совпали.
-Свежий02:52 readback: gateway174854/start1454011 и Dashboard175894/start1460381,
-прежниеInvocationID/active/running/NRestarts0/RuntimeMax infinity. Постоянные сервисы не останавливались.
-Root Office4/native567/Office5–6 завершены, owned actors/pipes/namespace закрыты, slot свободен; живых операций сейчас нет.
-Данные/WAL/SHM/история/private runs/downloads/closures сохранены. [Telegram/3DB quick_checkOK/leases0 снимок19:40](evidence/astra-20261111/post-m14-current203-services.json)
-— история, не новый допуск. DB-проверок/модельных запросов/Telegram-отправок в этом срезе не было.
+[Первая локальная204 попытка и возврат203](evidence/astra-20261111/core204-first-local-attempt-old203-services-reconciled-20261112.json):
+localproof/builder/binder/admission прошли; publisher launch consumed, observer Assert/exitUNKNOWN, не повторялся.
+204 не установлен, intent source-транзакции нет; весь17891native/project487/4canonical pins/defaultconsumer203 проверены.
+Сервисы штатно восстановлены в исходных1800/180coldчасах: gateway596353/start5123937, Dashboard597098/start5130246,
+обаactive/running/RuntimeMaxinfinity/NRestarts0; Telegramconnected/3routes. Оба start запрошены поодномуразу, повторовнебыло.
+ТриDB quickcheckOK/leases0/counts30+196+5510 прежние; DB/WAL/SHM exact доstart. Послеstart данные проверены логически,
+без ложного утверждения byteexactWAL послеработы. Publisher unit/cgroup/ownedactors закрыты, slot свободен.
+Recovery helper status безHERMES_HOME дал observerFAIL; rawstatus/codeне сохранены. SamePID explicitH nativequery0/VERIFIED
+и финальный readonlyclosure выполнены доисходного Dashboarddeadline; первоначальныеошибки/журналы immutable.
+Новых model/Office/Telegram/user задач не было; постоянным сервисам новыйтаймержизни не назначен.
 DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
 
 **Порядок всей команды: основной функционал Friday → DSH → A0. Полный170/120/B00 сохраняется.**
@@ -38,7 +42,7 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
 
    | Сохранённый профиль | Реальный результат | Следующий недостающий результат |
    | --- | --- | --- |
-   | 1–3 DOCX/XLSX/PPTX | Original native R3 `cfb_header` FAIL/effectnone; входные App-пробы приняты; coherent source принят | Task22 композиция205/privacy → штатная локальная установка → обоснованное недостающее исполнение |
+   | 1–3 DOCX/XLSX/PPTX | Original native R3 `cfb_header` FAIL/effectnone; входные App-пробы приняты; coherent source принят | штатный F06successor205→206 → штатная локальная установка → обоснованное недостающее исполнение |
    | 4 ODT compatible | Native UNKNOWN_AFTER_CREATE/missing correct_edit receipt; тот же10821B output App3PASS | Native-пробелы остаются; output не пересоздавать |
    | 5 ODS /6 ODP compatible | Distinct native567 allchecks PASS и samebytes App6PASS/0stores | Независимо приняты54/54; ordinaryLIVE_BOT после privacy/deployment |
    | 7 ODT modern | Native FAIL `odf_encryption_parameters_invalid`, edit effectnone/выхода нет; входные App3PASS | точная диагностика/граница поддержки, без переписывания FAIL/повтора7 |
@@ -62,18 +66,19 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
    data_integrity_verified=false. Root41pins/условие+независимые code/consumer/boundary reviews; source НЕ установлен.
    Genuine3 ninepassword observations — boundedsourcecompatibility; rawSOURCE_CHECKS_FAILED/неверный общийALPHA17checker сохранён.
    Ни producer/NativeR3/send, ни настоящий edit3 не повторялись; новые genuine3 derivatives не создавались.
-   **Сол Task22** — [совместный11file source205/privacy/Standard/ODF пакет M1](evidence/astra-20261111/f06-coherent205-m1-20261112.json),
-   independentconsumer/review ещё идут.10acceptedafterimages byteexact+только2prompt_scope205hunks, F04контракт сохранён.
-   Один nativeprecompact181.086s завершён перед новымTASK; прежняяStandardTUI сохраняется, общегоgoalСола не возобновляли.
+   **Сол Task22** — [совместный11file компонент принят](evidence/astra-20261111/f06-coherent205-component-source-accepted-20261112.json):
+   Root42pins/условия, independentintegrationreview,54source/9uniqueconsumerseams;10byteexact+2prompt_scope205hunks/F04сохранён.
+   **Task23** — самостоятельный normal205→206source пакет active послеодного completed nativeprecompact; код толькоowncacheдоactual205.
+   ПрежняяStandardTUI/oldpausedgoal сохраняются; actualTask23turn `01a1cd1a-9a67-7eb1-9037-eacb639e988d` inProgress/Standard, [readback](evidence/astra-20261111/local204-reconciled-native-modes-task23-20261112.json).
    **Астра** — [actual privacy consumers приняты](evidence/astra-20261111/f06-privacy-native205-consumers-accepted-20261112.json):
    ownSQLite append/batch/reflush/CAS/lineage/timestamps, trajectory/display/JSONrepair/JSONL; originalchat/doc/liveargs сохранены.
    RuntimehelperWARN **NOT_RUN**: run_agent import требует настоящего installedadmission; marker/guard не подменять.
    [OTT/OTS/OTP native](evidence/astra-20261111/f06-odf-template-native-accepted-20261112.json): OTS/OTPboundedPASS,
    OTTretainededit+readonly/oracle; firstrawreceipt/negativesNOT_RETAINED, не выдуманы/не повторены. Synthetic trueMIME/XML,
-   App/ordinarybot/formalNOTRUN. Nativechild отдельно готовит readonlyApp-кандидат на те же6source/output, без liveправ.
+   App/ordinarybot/formalNOTRUN. [ReadonlyApp-кандидат готов](evidence/astra-20261111/f06-next-source-packages-pending-root-review-20261112.json),39purecontrols; RootreviewNOTRUN/nativechildreview отказcapacity, Appне запускался.
    [OrdinaryF06 protocol source-gap](evidence/astra-20261111/f06-ordinary-bot-protocol-source-gap-20261112.json): multipart upload есть,
    private scenario убирает пароль изargv, но сохраняется в разрешённомprivateevidence/chat. Expectedwrong-password refusal
-   сейчас прерываетcapture доfullwindow/source_reference; нужен узкий reviewed factualcapture, пока толькоdesign/неliveFAIL.
+   сейчас прерываетcapture доfullwindow/source_reference; [узкий capturecandidate готов](evidence/astra-20261111/f06-next-source-packages-pending-root-review-20261112.json),65sourcecontrols; Rootreview/установка/допускNOTRUN, bindingNone.
    [ModernODT taxonomy](evidence/astra-20261111/f06-modern-odt-taxonomy-source-accepted-20261112.json) acceptedsourceonly:
    строгийknownboundeddescriptor→algorithmunsupported, безGCM/Argon2decrypt; original7FAIL сохранён. Task20headerdraft dormant.
    B=`/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111`; завершённые nativechild/review terminal.
@@ -82,9 +87,10 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
    [Прежний originrepair](evidence/astra-20261111/core204-origin-policy-source-integrated.json) остаётся историей: immutablepublished48,
    public489/private28/currentreviewed5 сохраняются; прежняя freshremote зависимость superseded новой ownerдирективой.
    [Explicit localmode обоих Rootframes внедрён](evidence/astra-20261111/core204-205-explicit-local-origin-integrated-20261112.json):15canonicalfiles/92refs,
-   39realGit+13independentcontrols/Root60conditions; actualcanonical204/205proofs наdcdf096 прошли, remoteNone. H203не менялся.
+   39realGit+13independentcontrols/Root60conditions; actualcanonical204/205proofs наdcdf096 прошли, remoteNone. составH остался203.
    Source/gates204/205 и public205five локально приняты; оба **НЕ УСТАНОВЛЕНЫ**. Далее: verifiedlocalcommittedHEAD → current203/CAS/realCP203
-   → explicitone-layer204 → same10723B RTFconsumer(безmodel/Office/send) → genuineCP204 →205 → coherentF06 successor.
+   → [исправить observer](evidence/astra-20261111/core204-205-publisher-terminal-race-source-accepted-20261112.json) (sourceпринят/Root27conditions; harmlessrealunitNOTRUN)
+   → exactclosure/freshadmission действительнонедостающегостадия204 безreplayстарогоonce → same10723B RTFconsumer → genuineCP204 →205 →F06.
    Не203→205; builder только явный `--layer`; безad-hocHpatch и новых мнимыхreceipt. Полныеaffectedgates/consumer/rollback доlive.
 4. **M09/CASE88:** [Root delta accepted](evidence/astra-20261111/m09-reviewer-fix-root-delta-accepted-20261112.json), [source](drafts/m09-reviewer-fix/README.md).
    Пять дефектов исправлены source-only; actual manualA/ingress/summary/provider/once/admission UNBOUND, nativeopt-in не установлен.

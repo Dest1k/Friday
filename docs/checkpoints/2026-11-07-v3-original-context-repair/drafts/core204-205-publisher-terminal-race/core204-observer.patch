@@ -1,0 +1,54 @@
+--- before/run_native204_once.py
++++ candidate/run_native204_once.py
+@@ -417,7 +417,9 @@
+     result = closed(PUB, deadline=deadline)
+     if result['LoadState'] != 'not-found':
+         assert result['Description'] == j['publisher_owned_description']
+-        assert result['InvocationID'] == j['publisher_invocation_id']
++        # A collected inactive unit may already have cleared its invocation.
++        # Prior exact binding plus both cessation proofs below remain mandatory.
++        assert result['InvocationID'] in [j['publisher_invocation_id'], ''], 'publisher_invocation_changed'
+     assert publisher_cgroup_empty() and publisher_process_closed(), 'owned_publisher_scope_not_closed'
+     return result
+ 
+@@ -467,6 +469,8 @@
+         save()
+         raise
+     try:
++        # None means UNKNOWN; closure/ExecMainStatus never supplies this code.
++        j['publisher_client_returncode'] = None
+         j['publisher_client_identity'] = {'pid':child.pid,
+             'birth_ticks':int((Path('/proc') / str(child.pid) / 'stat').read_text().rsplit(')',1)[1].split()[19])}
+         save()
+@@ -474,15 +478,29 @@
+             remaining(client_deadline)
+             current = service(PUB, deadline=client_deadline)
+             if current['LoadState'] != 'not-found':
+-                remember_publisher_identity(current)
++                if current['InvocationID']:
++                    remember_publisher_identity(current)
++                else:
++                    # Never acquire identity from a terminal name-only snapshot.
++                    publisher_terminal_proven(deadline=client_deadline)
+             if j.get('publisher_process_identity') and j.get('publisher_cgroup'):
+                 break
+             time.sleep(min(.05, remaining(client_deadline)))
+         child.wait(timeout=remaining(client_deadline))
++        j['publisher_client_returncode'] = child.returncode
++        save()
+         assert j.get('publisher_process_identity') and j.get('publisher_cgroup') and j.get('publisher_invocation_id'), 'publisher_finished_without_exact_binding'
+         return subprocess.CompletedProcess(args, child.returncode)
+     except BaseException:
+-        reap_exact_owned_local_group(child, 'publisher_client_identity', 'publisher_client_cleanup_unconfirmed')
++        try:
++            # Capture an exit already observed before our own cleanup; a client
++            # killed during cleanup cannot turn the publisher's UNKNOWN into -9.
++            client_returncode = child.poll()
++            if client_returncode is not None:
++                j['publisher_client_returncode'] = client_returncode
++                save()
++        finally:
++            reap_exact_owned_local_group(child, 'publisher_client_identity', 'publisher_client_cleanup_unconfirmed')
+         raise
+     finally:
+         if child.returncode is not None and not local_group_absent(child):
