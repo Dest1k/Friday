@@ -1,0 +1,242 @@
+--- a/conversion_probe.py
++++ b/conversion_probe.py
+@@ -17,6 +17,7 @@
+     "com.sun.star.task.DocumentPasswordRequest2",
+     "com.sun.star.task.DocumentMSPasswordRequest2",
+     "com.sun.star.task.ErrorCodeRequest2",
++    "com.sun.star.task.ErrorCodeRequest",
+ )
+ 
+ 
+@@ -108,7 +109,7 @@
+ class OneShotConversionProbe:
+     """One getRequest call total, with temporary, CAS-restored setter hooks.
+ 
+-    The accepted five-class compatibility token is checked, never replaced or
++    The accepted six-class compatibility token is checked, never replaced or
+     broadened. Its class setters stay unchanged. The global helper only supplies
+     instrumentation to newly generated classes. Unknown request remains unknown
+     unless the probe actually observes a named class at the args setter seam.
+--- a/f06_contract.py
++++ b/f06_contract.py
+@@ -2,7 +2,7 @@
+ import datetime, hashlib, json, os, re, stat, time, types
+ from pathlib import Path
+ B=Path(__file__).resolve().parent
+-ASSIGNMENT='ASTRA-SOL-V3-F06-ONE-TEMPLATE-DIAGNOSTIC-FRAME-20261112#1'
++ASSIGNMENT='ASTRA-NATIVE-F06-POST-ARGS-COMPAT-OFFICE-FRAME-SOURCE-20261112#1'
+ BASE=Path('/home/jericho/.jericho/toolchains/libreofficedev-26.2.5.2-frw-b711-c459-direct-20261111')
+ MANIFEST=Path('/home/jericho/.cache/FRW-ASTRA-V3-CORE-FILE-INTEGRATION-20261111/presentation-bank-direct/EXPECTED-BANK-MANIFEST.json')
+ MANIFEST_SHA='cf6db77f2448acfeb77f0a7fa7081e5cc26acd9cd08e7aee039d62b6ef1ac776'
+@@ -32,6 +32,12 @@
+ ORIGINAL18_PATH=Path('/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-TEMPLATE-RETAINED-OFFICE-EXECUTION-20261112/ROOT-FINAL-PARTIAL-AND-CLOSURE.json')
+ ORIGINAL18_SHA='adfafd005b85e57b00d60f3fd9d82fea595b31cf8812cac3bbd9ba6d9e898f6e'
+ TASK24_FREEZE_SHA='d68090a8d60879e948ffb2cf105f80f520ff1a1a07f30d29f988346bea671971'
++TASK25_FREEZE_SHA='dc7eaf4385616ec5d4a6bd6b13e97a5795e34ccfbdc254943a1621b694db14b1'
++TASK27_FREEZE_SHA='305d16593f582bcce419f13efb9bd97c2524c2c4c893aaf4437bca5e0dbb3e28'
++PREVIOUS_CLASS1_SUMMARY_SHA='176f65237a6416f0950bd18a5f366a5e3cc1262842058f18e5b2cbc7b3614f9b'
++OPERATION_KEY='one-template-post-args-compat1'
++POSTCHANGE_PURPOSE='ONE_MISSING_POST_ARGS_NORMAL_PAYLOAD_AND_READONLY_LOAD'
++LIBRARY_SHA256={'callback_observer_v2.py': '746846c1ab7c8e19585ed9d51a303b88ebbd41ce31ebee98614e056efc34e967', 'conversion_probe.py': 'bb556abab6aecde55d61e8f7372fdba980303daabeaae322b40f7e152d3ab1f5', 'diagnostic_client.py': '5c8de29ece89b5f57435f3a40746223dea49c5582be50c9f3fcf8b376d218a9d', 'readonly_diagnostic.py': 'de112168cc22f635e08eb43b97a62b6b5d14add24a2e755f9a515010162656cf', 'request_args_compat_v2.py': '23a2d996d7ee940b4a8a07140867e8e50e57b24859b18884872781ac40e1fc18'}
+ PRE_STAGE_CREDENTIAL_PATHS=set()
+ REF_KEYS={'path','sha256','bytes','identity','uid','gid','mode','dev','ino','nlink','mtime_ns','ctime_ns'}
+ FLAT_KEYS={'uid':'st_uid','gid':'st_gid','dev':'st_dev','ino':'st_ino','nlink':'st_nlink','mtime_ns':'st_mtime_ns','ctime_ns':'st_ctime_ns'}
+@@ -41,7 +47,7 @@
+ 
+ def operation(key,mode):
+  limits(mode)
+- need(type(key)is str and re.fullmatch('one-template-diag-[a-z0-9]{1,24}',key)is not None,'OPERATION_KEY')
++ need(type(key)is str and key==OPERATION_KEY,'OPERATION_KEY')
+  return B/'operations'/key
+ 
+ def unit_name(key):
+@@ -101,9 +107,10 @@
+ 
+ def recipe_check():
+  raw,pin=private(B/'SOURCE-PINS.json',B);obj=decode(raw)
+- need(obj.get('schema')=='friday.f06.one-template-diagnostic-source.v1' and obj.get('state')=='SOURCE_ONLY_DORMANT','SOURCE_SCHEMA')
++ need(obj.get('schema')=='friday.f06.one-template-post-args-compat-source.v1' and obj.get('state')=='SOURCE_ONLY_DORMANT' and obj.get('assignment')==ASSIGNMENT and obj.get('task27_sourcefreeze_sha256')==TASK27_FREEZE_SHA,'SOURCE_SCHEMA')
+  source_set=obj.get('source_set');need(type(source_set)is list and source_set==sorted(set(source_set)) and MANDATORY_SOURCES<=set(source_set),'SOURCE_SET')
+  rows=obj.get('files');need(type(rows)is list and [r.get('name')for r in rows]==source_set,'SOURCE_ROWS')
++ need({row['name']:row['sha256'] for row in rows if row.get('name') in LIBRARY_SHA256}==LIBRARY_SHA256,'EXACT_TASK27_LIBRARY_PAIR_AND_CARRIES')
+  need({p.name for p in B.glob('*.py')}=={name for name in source_set if name.endswith('.py')},'SOURCE_PYTHON_INVENTORY')
+  actual=[]
+  for row in rows:
+@@ -135,7 +142,7 @@
+  need(set(row)=={'path','bytes','sha256','identity','fixture_id','format','role','fixture_profile','semantic','mime','service','filter','staged_name','native_source_ciphertext'},'SELECTED_ROW_FIELDS')
+  full_pin_shape({k:row[k]for k in ('path','bytes','sha256','identity')})
+  need(row['fixture_id']==SELECTED_ID and row['format']=='ott' and row['role']=='source' and row['fixture_profile']==PROFILES[0] and row['semantic']=='BEFORE' and row['mime']=='application/vnd.oasis.opendocument.text-template' and row['service']=='com.sun.star.text.TextDocument' and row['filter']=='writer8_template' and row['staged_name']==NAMES[0],'SELECTED_TYPED_ROW')
+- need(row['sha256']==SELECTED_SHA and row['bytes']<=1000000 and exact_json(row['native_source_ciphertext'],{k:row[k]for k in ('path','bytes','sha256','identity')}),'SELECTED_ORIGINAL_CIPHER_PIN')
++ need(row['sha256']==SELECTED_SHA and row['bytes']==4624 and exact_json(row['native_source_ciphertext'],{k:row[k]for k in ('path','bytes','sha256','identity')}),'SELECTED_ORIGINAL_CIPHER_PIN')
+  need(row['path']!=manifest['credential']['path'],'SECRET_CIPHER_PATH_ALIAS')
+  return row
+ 
+@@ -146,10 +153,10 @@
+  original,pin=runtime_pin_check(a['original18_closure'])
+  need(pin['path']==str(ORIGINAL18_PATH) and pin['sha256']==ORIGINAL18_SHA,'ORIGINAL18_EXACT_CLOSURE')
+  review,_=runtime_pin_check(a['source_review'])
+- need(review.get('state')=='ROOT_ACCEPTED_ONE_TEMPLATE_DIAGNOSTIC_SOURCE' and review.get('execution_authority')is False and review.get('source_pins_sha256')==a['source_pins_sha256'] and review.get('task24_freeze_sha256')==TASK24_FREEZE_SHA and review.get('findings_remaining')==[],'ROOT_SOURCE_REVIEW')
++ need(review.get('state')=='ROOT_ACCEPTED_POST_ARGS_COMPAT_ONE_TEMPLATE_SOURCE' and review.get('execution_authority')is False and review.get('source_pins_sha256')==a['source_pins_sha256'] and review.get('task24_freeze_sha256')==TASK24_FREEZE_SHA and review.get('task25_sourcefreeze_sha256')==TASK25_FREEZE_SHA and review.get('task27_sourcefreeze_sha256')==TASK27_FREEZE_SHA and review.get('previous_class1_summary_sha256')==PREVIOUS_CLASS1_SUMMARY_SHA and review.get('postchange_purpose')==POSTCHANGE_PURPOSE and review.get('findings_remaining')==[],'ROOT_SOURCE_REVIEW')
+  authority,_=runtime_pin_check(a['runtime_authority'])
+- need(authority.get('state')=='ROOT_GRANTED_ONE_MISSING_CONVERSION_OBSERVATION' and authority.get('operation_key')==a['operation_key'] and authority.get('source_pins_sha256')==a['source_pins_sha256'] and authority.get('selected_manifest')==a['output_manifest'] and authority.get('source_review')==a['source_review'] and authority.get('original18_closure')==a['original18_closure'] and authority.get('fresh_boundary')==a['fresh_boundary'],'ROOT_RUNTIME_EXACT_JOINS')
+- need(authority.get('original18_replayed')is False and authority.get('original_strict_all_pass')is False and authority.get('whole_F06_accepted')is False and type(authority.get('max_document_loads'))is int and authority['max_document_loads']==1 and type(authority.get('max_getRequest_calls'))is int and authority['max_getRequest_calls']==1 and type(authority.get('stores'))is int and authority['stores']==0 and authority.get('correct_password_only')is True and authority.get('limits')==limits(MODE),'ROOT_SINGLE_OBSERVATION_AUTHORITY')
++ need(authority.get('state')=='ROOT_GRANTED_ONE_POST_ARGS_COMPAT_QUALIFICATION' and authority.get('assignment')==ASSIGNMENT and authority.get('task27_sourcefreeze_sha256')==TASK27_FREEZE_SHA and authority.get('previous_class1_summary_sha256')==PREVIOUS_CLASS1_SUMMARY_SHA and authority.get('postchange_purpose')==POSTCHANGE_PURPOSE and authority.get('operation_key')==a['operation_key'] and authority.get('source_pins_sha256')==a['source_pins_sha256'] and authority.get('selected_manifest')==a['output_manifest'] and authority.get('source_review')==a['source_review'] and authority.get('original18_closure')==a['original18_closure'] and authority.get('fresh_boundary')==a['fresh_boundary'],'ROOT_RUNTIME_EXACT_JOINS')
++ need(authority.get('original18_replayed')is False and authority.get('previous_class1_replayed')is False and authority.get('actual_normal_payload_type_before')=='UNKNOWN' and authority.get('original_strict_all_pass')is False and authority.get('whole_F06_accepted')is False and type(authority.get('max_document_loads'))is int and authority['max_document_loads']==1 and type(authority.get('max_getRequest_calls'))is int and authority['max_getRequest_calls']==1 and type(authority.get('stores'))is int and authority['stores']==0 and authority.get('correct_password_only')is True and authority.get('limits')==limits(MODE),'ROOT_SINGLE_OBSERVATION_AUTHORITY')
+  need(authority.get('boot_id')==a['boot_id'] and authority.get('nonce')==a['nonce'] and authority.get('original_operation_start_monotonic')==a['original_operation_start_monotonic'],'ROOT_AUTHORITY_CURRENT_CLOCK_SCOPE')
+  return review,authority
+ 
+--- a/request_args_compat_v2.py
++++ b/request_args_compat_v2.py
+@@ -1,4 +1,4 @@
+-"""DORMANT, process-local compatibility for exactly four password exceptions and source-identified ErrorCodeRequest2.
++"""DORMANT, process-local compatibility for exactly four password exceptions and ErrorCodeRequest2/ErrorCodeRequest.
+ 
+ No UNO imports, Office connection, global helper changes or acceptance rule.
+ Root may call install_request_args_compat(uno) in an admitted fresh client after
+@@ -12,45 +12,73 @@
+     "com.sun.star.task.DocumentPasswordRequest2",
+     "com.sun.star.task.DocumentMSPasswordRequest2",
+     "com.sun.star.task.ErrorCodeRequest2",
++    "com.sun.star.task.ErrorCodeRequest",
+ )
+ 
+ 
+-def _args_setter(original):
++def _args_setter(original, expected_class):
+     def set_request_attribute(self, name, value):
+-        if name == "args":
++        if type(self) is expected_class and type(name) is str and name == "args":
+             if type(value) is not tuple:
+                 raise TypeError("password_request_args_tuple_required")
+-            return BaseException.__setattr__(self, name, value)
++            return BaseException.args.__set__(self, value)
+         return original(self, name, value)
+     return set_request_attribute
+ 
+ 
+ def install_request_args_compat(uno):
+-    """Validate all five exact generated classes before changing any one.
++    """Validate all six exact generated classes before changing any one.
+ 
+     Returned tuple is an in-memory restore token, never a JSON artifact. A fresh
+     client exits after the bounded probe. Repeated installation is rejected.
+     """
+     original = uno._uno_struct__setattr__
+-    classes = tuple(uno.getClass(name) for name in REQUEST_NAMES)
++    factory = uno.getClass
++    factory_function = getattr(factory, "__func__", factory)
++    factory_owner = getattr(factory, "__self__", None)
++    classes = tuple(factory(name) for name in REQUEST_NAMES)
+     if len(set(classes)) != len(REQUEST_NAMES):
+         raise ValueError("password_request_class_identity")
+     for name, cls in zip(REQUEST_NAMES, classes):
+         if type(cls) is not type or not issubclass(cls, Exception):
+             raise ValueError("password_request_exception_class_required")
+-        if cls.__dict__.get("__pyunostruct__") != name:
++        marker = cls.__dict__.get("__pyunostruct__")
++        if type(marker) is not str or marker != name:
+             raise ValueError("password_request_exact_type_required")
+         if cls.__dict__.get("__setattr__") is not original:
+             raise ValueError("password_request_original_setter_required")
+-    token = tuple((cls, original, _args_setter(original)) for cls in classes)
++    token = tuple((cls, original, _args_setter(original, cls)) for cls in classes)
+     changed = []
+     try:
+-        for cls, old_setter, replacement in token:
++        for name, (cls, old_setter, replacement) in zip(REQUEST_NAMES, token):
++            current_factory = uno.getClass
++            marker = cls.__dict__.get("__pyunostruct__")
++            if (uno._uno_struct__setattr__ is not original
++                    or getattr(current_factory, "__func__", current_factory) is not factory_function
++                    or getattr(current_factory, "__self__", None) is not factory_owner
++                    or type(marker) is not str or marker != name
++                    or cls.__dict__.get("__setattr__") is not old_setter):
++                raise ValueError("password_request_install_cas")
+             cls.__setattr__ = replacement
+-            changed.append((cls, old_setter))
+-    except Exception:
+-        for cls, old_setter in reversed(changed):
+-            cls.__setattr__ = old_setter
++            changed.append((cls, old_setter, replacement))
++        current_factory = uno.getClass
++        if (uno._uno_struct__setattr__ is not original
++                or getattr(current_factory, "__func__", current_factory) is not factory_function
++                or getattr(current_factory, "__self__", None) is not factory_owner):
++            raise ValueError("password_request_install_cas")
++        for name, (cls, old_setter, replacement) in zip(REQUEST_NAMES, token):
++            marker = cls.__dict__.get("__pyunostruct__")
++            if (type(marker) is not str or marker != name
++                    or cls.__dict__.get("__setattr__") is not replacement):
++                raise ValueError("password_request_install_cas")
++    except BaseException:
++        for cls, old_setter, replacement in reversed(changed):
++            try:
++                if cls.__dict__.get("__setattr__") is replacement:
++                    cls.__setattr__ = old_setter
++            except BaseException:
++                # Preserve the primary error; the failed private client exits.
++                pass
+         raise
+     return token
+ 
+@@ -63,7 +91,10 @@
+         if type(row) is not tuple or len(row) != 3:
+             raise ValueError("password_request_restore_row")
+         cls, original, replacement = row
+-        if type(cls) is not type or cls.__dict__.get("__pyunostruct__") != name:
++        if type(cls) is not type:
++            raise ValueError("password_request_restore_class")
++        marker = cls.__dict__.get("__pyunostruct__")
++        if type(marker) is not str or marker != name:
+             raise ValueError("password_request_restore_class")
+         if cls.__dict__.get("__setattr__") is not replacement:
+             raise ValueError("password_request_restore_cas")
+--- a/root_entry.py
++++ b/root_entry.py
+@@ -19,7 +19,7 @@
+ 
+ def assemble(bindings, source_sha, *, uid, boot, now, monotonic_now):
+     """Pure field assembly; its inputs must be authenticated by main first."""
+-    require(type(bindings) is dict and bindings.get('schema') == 'friday.f06.one-template-root-bindings.v1' and bindings.get('state') == 'ROOT_BOUND_NO_EFFECT_YET', 'BOUND_ROOT_PROOFS_REQUIRED')
++    require(type(bindings) is dict and bindings.get('schema') == 'friday.f06.one-template-post-args-root-bindings.v1' and bindings.get('state') == 'ROOT_BOUND_NO_EFFECT_YET', 'BOUND_ROOT_PROOFS_REQUIRED')
+     fields = {'schema', 'state', 'assignment', 'operation_key', 'nonce', 'uid', 'boot_id', 'source_pins_sha256', 'limits', 'original_operation_start_monotonic', 'actual_two_cpu_ids', 'slot_path', 'slot_identity', 'source_review', 'runtime_authority', 'fresh_boundary', 'original18_closure', 'output_manifest', 'credential_source', 'task_retention_root'}
+     require(set(bindings) == fields, 'ROOT_BINDINGS_FIELDS')
+     require(bindings['uid'] == uid and type(bindings['uid']) is int and bindings['boot_id'] == boot, 'ROOT_CURRENT_UID_BOOT')
+@@ -29,7 +29,7 @@
+     require(all(type(bindings[k]) is dict for k in ('source_review', 'runtime_authority', 'fresh_boundary', 'original18_closure', 'output_manifest', 'credential_source')), 'ROOT_UNBOUND_REFERENCE')
+     from f06_contract import ASSIGNMENT, MODE, SELECTED_ID, LIMITS
+     require(bindings['assignment'] == ASSIGNMENT and bindings['limits'] == LIMITS, 'ROOT_ASSIGNMENT_LIMITS')
+-    return dict(bindings, schema='friday.f06.one-template-admission.v1', state='ROOT_FRESH_ONCE_ADMITTED', mode=MODE, admitted_at_moscow=now, credential_source_identity=bindings['credential_source']['identity'], selected_count=1, selected_fixture_ids=[SELECTED_ID], expected_probes=1, expected_stores=0)
++    return dict(bindings, schema='friday.f06.one-template-post-args-admission.v1', state='ROOT_FRESH_ONCE_ADMITTED', mode=MODE, admitted_at_moscow=now, credential_source_identity=bindings['credential_source']['identity'], selected_count=1, selected_fixture_ids=[SELECTED_ID], expected_probes=1, expected_stores=0)
+ 
+ 
+ def main():
+@@ -47,7 +47,7 @@
+     raw = (candidate/'SOURCE-PINS.json').read_bytes()
+     require(hashlib.sha256(raw).hexdigest() == args.source_pins_sha256, 'SOURCE_PINS_CAS')
+     pins = json.loads(raw)
+-    require(pins.get('schema') == 'friday.f06.one-template-diagnostic-source.v1' and pins.get('state') == 'SOURCE_ONLY_DORMANT', 'SOURCE_SCHEMA')
++    require(pins.get('schema') == 'friday.f06.one-template-post-args-compat-source.v1' and pins.get('state') == 'SOURCE_ONLY_DORMANT', 'SOURCE_SCHEMA')
+     for row in pins['files']:
+         name = row['name']
+         require(type(name) is str and Path(name).name == name and name != 'SOURCE-PINS.json', 'SOURCE_LOCAL_NAME')
+--- a/root_frame.py
++++ b/root_frame.py
+@@ -198,7 +198,7 @@
+ def validate_fields(a):
+  mode=a['mode'];key=a['operation_key'];c.operation(key,mode);lim=c.limits(mode)
+  credential,credential_identity=c.credential_metadata(a['credential_source']);c.PRE_STAGE_CREDENTIAL_PATHS.add(credential['path'])
+- need(a.get('schema')=='friday.f06.one-template-admission.v1' and a.get('state')=='ROOT_FRESH_ONCE_ADMITTED' and a.get('assignment')==c.ASSIGNMENT,'ADMISSION_STATE_PATH')
++ need(a.get('schema')=='friday.f06.one-template-post-args-admission.v1' and a.get('state')=='ROOT_FRESH_ONCE_ADMITTED' and a.get('assignment')==c.ASSIGNMENT,'ADMISSION_STATE_PATH')
+  need(type(a.get('uid'))is int and a['uid']==os.getuid() and a['boot_id']==Path('/proc/sys/kernel/random/boot_id').read_text().strip() and type(a.get('nonce'))is str and re.fullmatch('[0-9a-f]{32}',a['nonce'])is not None,'ADMISSION_UID_BOOT_NONCE')
+  fresh_time(a['admitted_at_moscow'],'ADMISSION_FRESH_TIME')
+  origin=a.get('original_operation_start_monotonic')
+@@ -208,7 +208,7 @@
+  cpus=a['actual_two_cpu_ids'];need(type(cpus)is list and len(cpus)==2 and len(set(cpus))==2 and all(type(x)is int for x in cpus) and set(cpus)<=os.sched_getaffinity(0),'ACTUAL_CPU_AFFINITY')
+  c.diagnostic_acceptance(a)
+  fresh,_=proof(a['fresh_boundary'])
+- need(fresh.get('state')=='ROOT_FRESH_ONE_TEMPLATE_KERNEL_CUSTODY' and fresh.get('boot_id')==a['boot_id'] and fresh.get('uid')==os.getuid() and fresh.get('nonce')==a['nonce'] and fresh.get('slot_identity')==a['slot_identity'] and fresh.get('original_operation_start_monotonic')==origin,'ROOT_FRESH_PROOF')
++ need(fresh.get('state')=='ROOT_FRESH_POST_ARGS_COMPAT_ONE_TEMPLATE_KERNEL_CUSTODY' and fresh.get('boot_id')==a['boot_id'] and fresh.get('uid')==os.getuid() and fresh.get('nonce')==a['nonce'] and fresh.get('slot_identity')==a['slot_identity'] and fresh.get('original_operation_start_monotonic')==origin,'ROOT_FRESH_PROOF')
+  fresh_time(fresh['observed_at_moscow'],'BOUNDARY_FRESH_TIME')
+  need(fresh['bank']==c.bank_snapshot(),'FRESH_BANK_METADATA_CAS_CRITICAL4')
+  need(fresh.get('affinity_cpu_ids')==sorted(os.sched_getaffinity(0)) and fresh.get('memory_available_kib',0)>=3*1024*1024 and fresh.get('CPU_pressure_raw') and fresh.get('IO_pressure_raw'),'ROOT_RESOURCE_OBSERVATIONS')

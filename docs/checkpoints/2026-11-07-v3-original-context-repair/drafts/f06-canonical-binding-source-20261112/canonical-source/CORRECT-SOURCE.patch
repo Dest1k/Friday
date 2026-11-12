@@ -1,0 +1,69 @@
+--- a/f06_source.py
++++ b/f06_source.py
+@@ -2,7 +2,7 @@
+ Import is inert. Actual private scenario/authority/product/current proof are UNBOUND.
+ No document, credential, Store, API, model or product state is opened on import.
+ """
+-import ast, hashlib, json, re, types
++import ast, hashlib, json, math, re, types
+ from pathlib import Path
+ BASE=Path('/home/jericho/jericho/Friday_rework/docs/checkpoints/2026-11-07-v3-original-context-repair/evidence/tester/bot_tester.v42.py')
+ BASE_SHA='f0caba28ba9e823574a5149b55989aea7f4e5c893c3a89a7b4eb0ed0cf5e7ad3'
+@@ -23,6 +23,29 @@
+ def need(v,why):
+     if not v:raise ValueError(why)
+ def encoded(v):return (json.dumps(v,ensure_ascii=True,sort_keys=True,allow_nan=False)+'\n').encode()
++def canonical_contract(value):
++    """Pure, type-preserving JSON tree with deterministic whole-tree dict order.
++    Reject Python-only values instead of letting JSON coerce keys or containers.
++    Finite floats, including -0.0, retain their type and value for repr/readback.
++    """
++    active=set()
++    def visit(v):
++        t=type(v)
++        if v is None or t in (bool,int):return v
++        if t is str:
++            try:v.encode('utf-8')
++            except UnicodeError:raise ValueError('F06_JSON_UTF8_STRING_REQUIRED') from None
++            return v
++        if t is float:
++            need(math.isfinite(v),'F06_JSON_FINITE_FLOAT_REQUIRED');return v
++        need(t in (dict,list),'F06_JSON_CANONICAL_TYPE_REQUIRED')
++        identity=id(v);need(identity not in active,'F06_JSON_CYCLE_REFUSED');active.add(identity)
++        try:
++            if t is list:return [visit(item) for item in v]
++            need(all(type(key) is str for key in v),'F06_JSON_STRING_KEYS_REQUIRED')
++            return {visit(key):visit(v[key]) for key in sorted(v)}
++        finally:active.remove(identity)
++    canonical=visit(value);encoded(canonical);return canonical
+ def digest(v):return hashlib.sha256(v).hexdigest()
+ def sha(v):return type(v) is str and re.fullmatch('[a-f0-9]{64}',v) is not None
+ def canonical_path(path):
+@@ -111,6 +134,7 @@
+     """Same original fullv42; three existing AST pins, currentRoot callsite/footer.
+     Core refusal capture, ingress, once, sender, stop, custody/window are unchanged.
+     """
++    c=canonical_contract(c)
+     need(type(base_raw) is bytes and digest(base_raw)==BASE_SHA,'F06_EXACT_FULL_V42_REQUIRED');contract_shape(c,bound=False)
+     text=base_raw.decode();tree=ast.parse(text);runner=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Runner');lines=text.splitlines(keepends=True);changes=[]
+     for name,value in [('ORDINARY_INDEPENDENT_SCENARIOS',{c['run_id']:c['scenario_sha256']}),('ORDINARY_INDEPENDENT_AUTHORITY',c['authority'])]:
+--- a/root_bind_dispatch_once.py
++++ b/root_bind_dispatch_once.py
+@@ -91,7 +91,7 @@
+ 
+ def execute(v,*,binding_ref):
+     validate_inputs(v)
+-    c=json.loads(encoded(v['contract']),object_pairs_hook=unique)
++    c=v['contract']
+     own=Path(__file__).resolve().parent
+     freeze_raw=readref(v['source_freeze']);freeze=json.loads(freeze_raw,object_pairs_hook=unique)
+     need(freeze.get('schema')=='frw.F06.ordinary-singleton.source-freeze.v1'
+@@ -105,7 +105,7 @@
+          (('adapter','f06_source.py'),('first_validator','first_ingress.py'),
+           ('actual_root_B_checker','current_root.py'),('footer','f06_footer.py.txt'))),
+          'F06_EXACT_LOCAL_REVIEWED_SOURCE_REFERENCES_REQUIRED')
+-    a=load(c['adapter'],'Root_same_upload_correctread_adapter');a.contract_shape(c,bound=False)
++    a=load(c['adapter'],'Root_same_upload_correctread_adapter');c=a.canonical_contract(c);a.contract_shape(c,bound=False)
+     need(v['independent_review']==c['root_proofs']['source_review'],'F06_DRIVER_SOURCE_REVIEW_REFERENCE_MISMATCH')
+     first=a.validate_first(c,read)
+     need(type(first) is dict and first.get('source_reference')==c['source_reference'],'F06_EXACT_FIRST_UPLOAD_DEPENDENCY_REQUIRED')

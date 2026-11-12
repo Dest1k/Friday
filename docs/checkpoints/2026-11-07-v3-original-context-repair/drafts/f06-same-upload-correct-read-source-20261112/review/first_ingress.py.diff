@@ -1,0 +1,192 @@
+--- candidate/first_ingress.py
++++ review/fixed-source/first_ingress.py
+@@ -7,9 +7,11 @@
+ """
+ import hashlib
+ import json
++import math
+ import re
+ from pathlib import Path
+ 
++BASE_SHA='f0caba28ba9e823574a5149b55989aea7f4e5c893c3a89a7b4eb0ed0cf5e7ad3'
+ SOURCE_SHA='22b0dcb3fed3d979b37ff701af42b00d3756d76a863e8f8c736405acc9c33fd5'
+ STATE=Path('/home/jericho/.local/share/friday-telegram-bot-test')
+ PEER=8751854128
+@@ -88,23 +90,47 @@
+     need(raw==encoded(run) and run.get('id')==sr['run_id']
+          and run.get('status') in ('EVIDENCE_READY','STOPPED','FAILED')
+          and run.get('send_state')=='sent' and type(run.get('send_attempts')) is int
+-         and run['send_attempts']==1 and 'continuation_reference' not in run,
++         and run['send_attempts']==1 and 'continuation_reference' not in run
++         and type(run.get('step')) is int and run['step']==0
++         and type(run.get('sent_message_id')) is int and run['sent_message_id']>0
++         and run.get('sent_ids')==[run['sent_message_id']]
++         and all(type(run.get(k)) in (int,float) and math.isfinite(run[k])
++                 for k in ('sent_at','send_intent_at','send_dispatch_at','deadline'))
++         and run['send_intent_at']<=run['send_dispatch_at']<=run['sent_at']
++         and run['send_dispatch_at']<=run['sent_at']<=run['send_dispatch_at']+10
++         and type(run.get('send_timeout_seconds')) is int and run['send_timeout_seconds']==10
++         and 'new_ack_timeout_seconds' not in run
++         and run['send_dispatch_at']+10+180+5<=run['deadline'],
+          'F06_FIRST_UNCLOSED_OR_UNKNOWN_SEND_REFUSED')
+     scenario=run.get('scenario',{});steps=scenario.get('steps',[])
+     need(scenario.get('tester_id')==TESTER and scenario.get('peer_id')==PEER
+          and scenario.get('peer_username')=='@jerichodevbot'
++         and set(scenario)=={'tester_id','peer_id','peer_username','deadline_seconds','max_updates','pace_seconds','steps'}
++         and all(type(scenario.get(k)) is int and scenario[k]==v for k,v in
++                 {'tester_id':TESTER,'peer_id':PEER,'deadline_seconds':300,'max_updates':65,'pace_seconds':1}.items())
+          and type(steps) is list and len(steps)==1 and set(steps[0])=={'input','observe'}
+          and run.get('scenario_sha256')==digest(encoded(scenario)),
+          'F06_FIRST_EXACT_UPLOADED_SCENARIO_REQUIRED')
++    need(steps[0]['observe']=={'mode':'bounded_reply_capture','window_seconds':180,
++          'max_messages':64,'max_text_chars':8000,'max_documents':0,'document_max_bytes':8*1024**2}
++          and all(type(steps[0]['observe'][k]) is int for k in steps[0]['observe'] if k!='mode'),
++          'F06_FIRST_ORIGINAL_CAPTURE_BOUNDS_REQUIRED')
+     upload=steps[0]['input']
+     need(type(upload) is dict and upload.get('kind')=='document'
+          and upload.get('sha256')==SOURCE_SHA and upload.get('filename')=='f06-new-encrypted.docx'
+          and upload.get('mime_type')==MIME and upload.get('path')==first['source']['path']
+          and upload.get('stat')==first['source_identity']
+-         and upload.get('stat',{}).get('size_bytes')==23040,
++         and set(upload)=={'kind','path','sha256','stat','filename','mime_type','caption'}
++         and type(upload.get('caption')) is str and bool(upload['caption'])
++         and type(upload.get('stat')) is dict
++         and set(upload['stat'])=={'device','inode','size_bytes','uid','mtime_ns','ctime_ns'}
++         and all(type(v) is int and v>=0 for v in upload['stat'].values())
++         and upload['stat']['size_bytes']==23040,
+          'F06_FIRST_DOCUMENT_IDENTITY_REQUIRED')
+     binding=doc(first['first_binding'],read);old=binding.get('contract',{})
+-    need(old.get('schema')=='frw.F06.original-docx-ordinary-first-wrongread.v2'
++    need(binding.get('schema')=='frw.Root.F06.exact-first-wrongread-binding.v1'
++          and reference(binding.get('source')) and sha(binding.get('whole_effect_sha256'))
++          and old.get('schema')=='frw.F06.original-docx-ordinary-first-wrongread.v2'
+          and old.get('phase')=='DOCX-WRONG-READ-INGRESS'
+          and old.get('status')=='ROOT_BOUND_EXACT_F06_FIRST_WRONGREAD'
+          and old.get('run_id')==sr['run_id'] and old.get('scenario_sha256')==run['scenario_sha256']
+@@ -115,7 +141,9 @@
+     # Original exact ACK/task/window hashes are read, never reconstructed from IDs.
+     for k,recorded in [('ack','sent_api_ack_reference'),('task','sent_task_reference'),
+                        ('window','sent_window_reference')]:
+-        need(stored_ref(first[k],run.get(recorded)), 'F06_FIRST_ARTIFACT_CUSTODY_REQUIRED')
++        name='send-'+k+'-'+run['id']+'-0-1.json'
++        need(stored_ref(first[k],run.get(recorded))
++             and run[recorded]['basename']==name, 'F06_FIRST_ARTIFACT_CUSTODY_REQUIRED')
+     ack=doc(first['ack'],read);ar=run['sent_api_ack_reference']
+     if ar.get('representation')=='botapi-wire-envelope-json':
+         need(ack.get('ok') is True,'F06_FIRST_ACK_OK_REQUIRED');ack=ack.get('result')
+@@ -123,8 +151,8 @@
+     need(type(ack) is dict and type(ack.get('message_id')) is int
+          and ack['message_id']==run.get('sent_message_id') and ack['message_id']>0
+          and ack.get('date')==run.get('sent_date') and type(ack.get('date')) is int
+-         and ack.get('chat',{}).get('id')==PEER and ack['chat'].get('type')=='private'
+-         and ack.get('from',{}).get('id')==TESTER and ack['from'].get('is_bot') is True
++         and type(ack.get('chat',{}).get('id')) is int and ack['chat']['id']==PEER and ack['chat'].get('type')=='private'
++         and type(ack.get('from',{}).get('id')) is int and ack['from']['id']==TESTER and ack['from'].get('is_bot') is True
+          and ack.get('message_thread_id') is None and ack.get('caption')==upload.get('caption'),
+          'F06_FIRST_REAL_ACK_CONTEXT_REQUIRED')
+     d=ack.get('document',{})
+@@ -133,14 +161,27 @@
+          and d.get('file_size')==23040 and d.get('file_name')=='f06-new-encrypted.docx'
+          and d.get('mime_type')==MIME,'F06_FIRST_DOCUMENT_ACK_REQUIRED')
+     task=doc(first['task'],read)
+-    need(task==run.get('request_metadata') and task.get('method')=='sendDocument'
++    need(set(task)=={'method','chat_id','input_sha256','input_bytes','input_stat','filename',
++          'mime_type','caption','content_type','body_sha256','body_bytes','scenario_sha256'}
++          and task==run.get('request_metadata') and task.get('method')=='sendDocument'
+          and task.get('chat_id')=='@jerichodevbot' and task.get('input_sha256')==SOURCE_SHA
+          and task.get('input_bytes')==23040 and task.get('input_stat')==upload['stat']
++         and task.get('filename')==upload['filename'] and task.get('mime_type')==upload['mime_type']
++         and type(task.get('body_bytes')) is int and 23040<=task['body_bytes']<=23040+8192
++         and sha(task.get('body_sha256')) and type(task.get('content_type')) is str
++         and re.fullmatch(r'multipart/form-data; boundary=frw-[a-f0-9]{64}',task['content_type']) is not None
+          and task.get('caption')==upload.get('caption')
+          and task.get('scenario_sha256')==run['scenario_sha256'],
+          'F06_FIRST_UPLOAD_TASK_BINDING_REQUIRED')
+     w=doc(first['window'],read)
+     need(w.get('run_id')==run['id'] and w.get('scenario_sha256')==run['scenario_sha256']
++         and type(w.get('step')) is int and w['step']==run['step']
++         and type(w.get('send_attempts')) is int and w['send_attempts']==run['send_attempts']
++         and w.get('send_intent_at')==run['send_intent_at']
++         and w.get('send_dispatch_at')==run['send_dispatch_at']
++         and w.get('send_timeout_seconds')==10 and type(w.get('send_timeout_seconds')) is int
++         and w.get('deadline')==run['deadline'] and w.get('continuation') is None
++         and w.get('sent_at')==run['sent_at']
+          and w.get('sent_message_id')==ack['message_id'] and w.get('ack')==ar
+          and w.get('task')==run['sent_task_reference'] and w.get('window_seconds')==180
+          and w.get('capture_until')==run.get('capture_until')
+@@ -153,6 +194,7 @@
+          and close.get('original_clock_preserved') is True
+          and close.get('raw_outcome_preserved') is True,
+          'F06_FIRST_CLOSURE_NOT_ESTABLISHED')
++    original_custody(close,first,run,binding,read)
+     rec=judgement(first['root_reconciliation'],read,'frw.Root.F06.first-effect-reconciliation.v1',first)
+     need(c['root_proofs']['first_upload_reconciliation']==first['root_reconciliation'],
+          'F06_FIRST_ROOT_PROOF_REF_MISMATCH')
+@@ -181,6 +223,67 @@
+     # Root alone makes the actual semantic/privacy and next-operation decisions.
+     return first
+ 
++def original_custody(close,first,run,binding,read):
++    """Root verifies the original consumer's custody; do not execute old admission.
++
++    The original runtime records may be complete or genuinely partial. Their raw
++    status and missing fields remain explicit and cannot become full180 or PASS.
++    Root assesses the listed original read-only custody methods on the saved run.
++    Existing heads require their original custody verification. A missing-head
++    failure stays explicitly failed, never replayed/sent/processed or graded.
++    """
++    d=judgement(close.get('original_consumer_custody'),read,
++                'frw.Root.F06.first-original-consumer-custody.v1',first)
++    need(all(d.get(k)==first[k] for k in ('canonical_run','first_binding','ack','task','window'))
++          and d.get('bound_source')==binding['source']
++          and d.get('base_consumer_sha256')==BASE_SHA
++          and d.get('assessed_methods')==['verify_capture_context','verify_window','verify_reply_custody','receive_inventory']
++          and d.get('first_status')==run['status']
++          and d.get('capture_window_complete_present')==('capture_window_complete' in run)
++          and type(d.get('capture_window_complete_present')) is bool
++          and d.get('capture_window_complete')==run.get('capture_window_complete')
++          and (type(run.get('capture_window_complete')) is bool or run.get('capture_window_complete') is None)
++          and (run['status']!='EVIDENCE_READY' or run.get('capture_window_complete') is True)
++          and d.get('original_clock_and_window_preserved') is True
++          and d.get('all_existing_raw_and_receipts_verified') is True
++          and d.get('known_partial_not_upgraded') is True
++          and d.get('late_arrivals_raw_only') is True
++          and d.get('first_semantic_PASS_required') is False
++          and d.get('acceptance')=='NOT_ESTABLISHED',
++          'F06_FIRST_ORIGINAL_CONSUMER_CUSTODY_REQUIRED')
++    readref(binding['source'],read)
++    head=run.get('receive_head');sequence=run.get('receive_sequence')
++    need(d.get('receive_head')==head and d.get('receive_sequence')==sequence,
++          'F06_FIRST_RAW_RECEIVE_STATE_CHANGED')
++    if head is None:
++        need(sequence is None and run['status'] in ('STOPPED','FAILED')
++              and run.get('capture_window_complete') is not True
++              and run.get('seen')==run.get('message_ids')==run.get('observations')==[]
++              and d.get('receive_custody')=='MISSING_ORIGINAL_RECEIVE_HEAD_FAILURE_PRESERVED'
++              and d.get('method_assessment')=='ORIGINAL_MISSING_HEAD_FAILURE_PRESERVED'
++              and type(d.get('missing_receive_failure_code')) is str
++              and re.fullmatch('[A-Z0-9_]{1,96}',d['missing_receive_failure_code']) is not None,
++              'F06_FIRST_MISSING_ORIGINAL_RECEIVE_CUSTODY_REFUSED')
++    else:
++        need(type(sequence) is int and 0<=sequence<=3*(65+1)
++              and d.get('receive_custody')=='VERIFIED_EXISTING_FULL_OR_PARTIAL'
++              and d.get('method_assessment')=='VERIFIED_ORIGINAL_EXISTING_CUSTODY'
++              and stored_ref(d.get('terminal_receive'),head)
++              and head['basename']=='receive-'+run['id']+'-0-1-'+str(sequence)+'.json',
++              'F06_FIRST_ORIGINAL_RECEIVE_HEAD_REQUIRED')
++        terminal=doc(d['terminal_receive'],read)
++        need(terminal.get('sequence')==sequence and terminal.get('context',{}).get('run_id')==run['id']
++              and terminal['context'].get('scenario_sha256')==run['scenario_sha256']
++              and terminal['context'].get('window')==run['sent_window_reference']
++              and terminal['context'].get('sent_message_id')==run['sent_message_id']
++              and terminal['context'].get('deadline')==run['deadline']
++              and (run.get('capture_window_complete') is not True or terminal.get('kind')=='terminal_complete'),
++              'F06_FIRST_ORIGINAL_TERMINAL_RECEIVE_BINDING_REQUIRED')
++    basis=d.get('retained_basis')
++    need(type(basis) is list and bool(basis),'F06_FIRST_ORIGINAL_CUSTODY_BASIS_REQUIRED')
++    for r in basis:readref(r,read)
++    return d
++
+ def private_oracle(c,read):
+     """Require a genuine Root private criterion judgment, never inspect plaintext.
+ 

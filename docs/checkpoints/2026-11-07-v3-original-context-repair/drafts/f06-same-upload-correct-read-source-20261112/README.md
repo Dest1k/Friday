@@ -1,0 +1,15 @@
+# Same-upload correct-read source archive — 2026-11-12
+
+Current scope: **source-only correct-first-paragraph continuation; runtime UNBOUND; not ready to run**. The first actual ACK/source_ref remains UNBOUND and there is no second upload. This archive preserves Task28's immutable final source and review records; those reviews are source observations, not an actual correct-read user result.
+
+Root subsequently inferred the shared integration defect in this final revision3 source: `candidate/f06_source.py` line 123 uses `repr(c)`, and `candidate/root_bind_dispatch_once.py` lines 163–165 compare reconstructed source that can differ after canonical JSON changes nested dictionary order. The first-consumer branch encountered this defect at integration; the correct-read branch was not executed and has no actual correct-read user FAIL. Task29 repairs both branches separately and is not included here. The historical final source acceptance remains archived without silently upgrading its present applicability.
+
+The archive contains final five code files, four frozen baseline code files, the final source patch/pins/freeze and UNBOUND templates/recipe/proof map, checker errata, selected final controls, independent review results and their focused source tests. Small failed checker result records are retained where the errata names them. Full old revisions/M1 candidates, duplicate generated 1.14 MB testers, old generation helpers, native/precompact/API deliveries, raw actual operational logs, actual first-consumer/authority/clock/once/grant data and all actual operation directories are excluded. `revision2/synthetic_fixture.py` is the focused synthetic fixture used by the final controls, not a copy of that older candidate revision.
+
+Records retain exact original VM pins and references, including excluded intermediate review candidates and prior source evidence. They remain evidence of their named snapshot; this bounded archive does not claim to close every historical reference or supply a live proof collector. Root must separately reconcile preserved first ingress/custody and apply the repaired reviewed branch before any distinct admitted continuation. No source PASS is an install, native/App, formal F06 or semantic PASS.
+
+Existing public context: [original ordinary207 source](../f06-ordinary207-source-20261112/README.md), [Root preparation](../f06-first-ordinary-root-preparation-20261112/README.md), [checkpoint status](../../ASTRA-CURRENT.md).
+
+The [archive manifest](ARCHIVE-MANIFEST.json) maps exact source bytes to this archive. Original records, verdicts and pins are unchanged. Absolute VM paths remain historical references; missing private counterparts are not replaced with public files bearing the same hash. This is a partial source publication, not a portable execution bundle.
+
+Staging validation parses Python AST and JSON and checks source/staging identity and common credential patterns. It does not import or execute this code, rerun the controls, or grant runtime authority. Root separately owns private exact-value screening, publication and current operational evidence.

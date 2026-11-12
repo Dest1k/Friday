@@ -44,8 +44,12 @@ correct/wrong-password checks, plaintext толькоRAM, исходники/can
 Одна недостающая readonlyOTT callback проба завершена отдельно от старых18: документоткрылся/семантика совпала,
 но args setter дляgeneratedErrorCodeRequest далAttributeError→getRequestSystemError. ActualnormalpayloadUNKNOWN,
 rawTERMINAL_STOP/client1, данные/банк/сервисы сохранены. [Metadata](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/f06-ott-one-class-diagnostic-partial.json).
-СолTask27 завершил проверенный sourcecompatibility в прежнейStandardTUI; globalOffice не заменялся/новаяпробаNOT_RUN.
-Следующий его пакет — только source futurecorrect-read с реальнымfirst-upload dependency; firstwrong-read ещёNOT_RUN.
+СолTask27 завершил проверенный sourcecompatibility в прежнейStandardTUI; globalOffice не заменялся.
+Следующая отдельная [post-args readonlyOTT проверка](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/f06-post-args-ott-root-assessment.json)
+реально выполнена и закрыта: opened/semantic/closed=true, нормальный возврат getter и Pythonclass-name ErrorCodeRequest наблюдены.
+ExactUNOidentity/code/cause не установлены; primaryUNKNOWN/OTHER/client1/TERMINAL_STOP и strictfalse сохранены.
+Независимая оценка принимает узкий факт чтения/содержимого, без fullF06credit или повторной пробы ради PASS.
+Все actors/unit/namespace закрыты, сохранённые документы и постоянные сервисы не изменялись.
 
 [Ordinary207 source](../checkpoints/2026-11-07-v3-original-context-repair/drafts/f06-ordinary207-source-20261112/README.md) принят, перваяwrong-read upload/model/sendNOT_RUN:
 normalindependentfullv42/max0docs/full180, freshRootproofs/семантическиепредпосылки/once ещё впереди.
@@ -54,9 +58,15 @@ RuntimewrapperWARNNOT_RUN сохраняется; [pureleaf текущего206s
 даёт отдельноеузкое доказательство, первичный7/8FAIL не переписан. [Task26sourcecleanup](../checkpoints/2026-11-07-v3-original-context-repair/drafts/f06-runtime-pure-coupling-source-20261112/README.md)
 принят source-only, не установлен и не искусственнаяобщаязависимость обычнойFriday.
 
-Последний F06 driver остановился [послеissuer доconsumer/upload](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/f06-first-driver-issuer-only-prebirth-refusal.json):
-адаптер ошибочно ограничил префикс authorityID. ВыданнаяR106/once/oldclock сохранены; обычнаяwrong-read ещёNOT_RUN,
-не productFAIL. Исправляется отдельный sourcecaller для ещё не начатого consumer-stage безreissue/старогоdriver replay.
+Первый F06 ordinary READ ещё NOT_RUN: закрыты [issuer-only](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/f06-first-driver-issuer-only-prebirth-refusal.json)
+и [binding-only](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/f06-consumer-binding-reconstruction-prebirth-refusal.json)
+локальные отказы до dispatch/Popen/API-client/upload/model. Причины — неверный prefix и недетерминированный repr(dict) послеJSON;
+проверки не ослаблены, R106/обаonce/обаclock/source/bindings сохранены. СолTask29 исправил producer обеихветок;
+полный isolated caller-protocol и восстановление actualsavedcontract проверены, Root принял source отдельно от исполнения.
+[Точные source/review/контроли обеих веток](../checkpoints/2026-11-07-v3-original-context-repair/drafts/f06-canonical-binding-source-20261112/README.md)
+сохраняют UNBOUND/NOT_RUN и обе прежние причины отказа.
+Новый userconsumer требует отдельной свежей проверки Root, не повторного старогоcaller/issuer.
+СолTask30 на Standard готовит будущий same-upload wrong-edit только в исходниках; actualfirstupload/correctread ещё не выполнены.
 
 ## Что можно проверить из репозитория
 

@@ -1,0 +1,226 @@
+--- a/correct/f06_source.py
++++ b/correct/f06_source.py
+@@ -2,7 +2,7 @@
+ Import is inert. Actual private scenario/authority/product/current proof are UNBOUND.
+ No document, credential, Store, API, model or product state is opened on import.
+ """
+-import ast, hashlib, json, re, types
++import ast, hashlib, json, math, re, types
+ from pathlib import Path
+ BASE=Path('/home/jericho/jericho/Friday_rework/docs/checkpoints/2026-11-07-v3-original-context-repair/evidence/tester/bot_tester.v42.py')
+ BASE_SHA='f0caba28ba9e823574a5149b55989aea7f4e5c893c3a89a7b4eb0ed0cf5e7ad3'
+@@ -23,6 +23,29 @@
+ def need(v,why):
+     if not v:raise ValueError(why)
+ def encoded(v):return (json.dumps(v,ensure_ascii=True,sort_keys=True,allow_nan=False)+'\n').encode()
++def canonical_contract(value):
++    """Pure, type-preserving JSON tree with deterministic whole-tree dict order.
++    Reject Python-only values instead of letting JSON coerce keys or containers.
++    Finite floats, including -0.0, retain their type and value for repr/readback.
++    """
++    active=set()
++    def visit(v):
++        t=type(v)
++        if v is None or t in (bool,int):return v
++        if t is str:
++            try:v.encode('utf-8')
++            except UnicodeError:raise ValueError('F06_JSON_UTF8_STRING_REQUIRED') from None
++            return v
++        if t is float:
++            need(math.isfinite(v),'F06_JSON_FINITE_FLOAT_REQUIRED');return v
++        need(t in (dict,list),'F06_JSON_CANONICAL_TYPE_REQUIRED')
++        identity=id(v);need(identity not in active,'F06_JSON_CYCLE_REFUSED');active.add(identity)
++        try:
++            if t is list:return [visit(item) for item in v]
++            need(all(type(key) is str for key in v),'F06_JSON_STRING_KEYS_REQUIRED')
++            return {visit(key):visit(v[key]) for key in sorted(v)}
++        finally:active.remove(identity)
++    canonical=visit(value);encoded(canonical);return canonical
+ def digest(v):return hashlib.sha256(v).hexdigest()
+ def sha(v):return type(v) is str and re.fullmatch('[a-f0-9]{64}',v) is not None
+ def canonical_path(path):
+@@ -111,6 +134,7 @@
+     """Same original fullv42; three existing AST pins, currentRoot callsite/footer.
+     Core refusal capture, ingress, once, sender, stop, custody/window are unchanged.
+     """
++    c=canonical_contract(c)
+     need(type(base_raw) is bytes and digest(base_raw)==BASE_SHA,'F06_EXACT_FULL_V42_REQUIRED');contract_shape(c,bound=False)
+     text=base_raw.decode();tree=ast.parse(text);runner=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Runner');lines=text.splitlines(keepends=True);changes=[]
+     for name,value in [('ORDINARY_INDEPENDENT_SCENARIOS',{c['run_id']:c['scenario_sha256']}),('ORDINARY_INDEPENDENT_AUTHORITY',c['authority'])]:
+--- a/correct/root_bind_dispatch_once.py
++++ b/correct/root_bind_dispatch_once.py
+@@ -91,7 +91,7 @@
+ 
+ def execute(v,*,binding_ref):
+     validate_inputs(v)
+-    c=json.loads(encoded(v['contract']),object_pairs_hook=unique)
++    c=v['contract']
+     own=Path(__file__).resolve().parent
+     freeze_raw=readref(v['source_freeze']);freeze=json.loads(freeze_raw,object_pairs_hook=unique)
+     need(freeze.get('schema')=='frw.F06.ordinary-singleton.source-freeze.v1'
+@@ -105,7 +105,7 @@
+          (('adapter','f06_source.py'),('first_validator','first_ingress.py'),
+           ('actual_root_B_checker','current_root.py'),('footer','f06_footer.py.txt'))),
+          'F06_EXACT_LOCAL_REVIEWED_SOURCE_REFERENCES_REQUIRED')
+-    a=load(c['adapter'],'Root_same_upload_correctread_adapter');a.contract_shape(c,bound=False)
++    a=load(c['adapter'],'Root_same_upload_correctread_adapter');c=a.canonical_contract(c);a.contract_shape(c,bound=False)
+     need(v['independent_review']==c['root_proofs']['source_review'],'F06_DRIVER_SOURCE_REVIEW_REFERENCE_MISMATCH')
+     first=a.validate_first(c,read)
+     need(type(first) is dict and first.get('source_reference')==c['source_reference'],'F06_EXACT_FIRST_UPLOAD_DEPENDENCY_REQUIRED')
+--- a/first/f06_source.py
++++ b/first/f06_source.py
+@@ -22,6 +22,29 @@
+ def need(v,why):
+     if not v:raise ValueError(why)
+ def encoded(v):return (json.dumps(v,ensure_ascii=True,sort_keys=True,allow_nan=False)+'\n').encode()
++def canonical_contract(value):
++    """Pure, type-preserving JSON tree with deterministic whole-tree dict order.
++    Reject Python-only values instead of letting JSON coerce keys or containers.
++    Finite floats, including -0.0, retain their type and value for repr/readback.
++    """
++    active=set()
++    def visit(v):
++        t=type(v)
++        if v is None or t in (bool,int):return v
++        if t is str:
++            try:v.encode('utf-8')
++            except UnicodeError:raise ValueError('F06_JSON_UTF8_STRING_REQUIRED') from None
++            return v
++        if t is float:
++            need(math.isfinite(v),'F06_JSON_FINITE_FLOAT_REQUIRED');return v
++        need(t in (dict,list),'F06_JSON_CANONICAL_TYPE_REQUIRED')
++        identity=id(v);need(identity not in active,'F06_JSON_CYCLE_REFUSED');active.add(identity)
++        try:
++            if t is list:return [visit(item) for item in v]
++            need(all(type(key) is str for key in v),'F06_JSON_STRING_KEYS_REQUIRED')
++            return {visit(key):visit(v[key]) for key in sorted(v)}
++        finally:active.remove(identity)
++    canonical=visit(value);encoded(canonical);return canonical
+ def digest(v):return hashlib.sha256(v).hexdigest()
+ def sha(v):return type(v) is str and re.fullmatch('[a-f0-9]{64}',v) is not None
+ def canonical_path(path):
+@@ -114,6 +137,7 @@
+     """Same original fullv42; three existing AST pins, currentRoot callsite/footer.
+     Core refusal capture, ingress, once, sender, stop, custody/window are unchanged.
+     """
++    c=canonical_contract(c)
+     need(type(base_raw) is bytes and digest(base_raw)==BASE_SHA,'F06_EXACT_FULL_V42_REQUIRED');contract_shape(c,bound=False)
+     text=base_raw.decode();tree=ast.parse(text);runner=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Runner');lines=text.splitlines(keepends=True);changes=[]
+     for name,value in [('ORDINARY_INDEPENDENT_SCENARIOS',{c['run_id']:c['scenario_sha256']}),('ORDINARY_INDEPENDENT_AUTHORITY',c['authority'])]:
+--- a/first/root_bind_existing_consumer_once.py
++++ b/first/root_bind_existing_consumer_once.py
+@@ -1,4 +1,4 @@
+-"""Root-owned first-consumer-only caller for an already issued R106. Import is inert.
++"""Root-owned canonical first-consumer caller after two closed prebirth failures, existing R106 only. Import is inert.
+ SOURCE ONLY: default UNBOUND. Root must separately supply and accept exact facts.
+ No credential appears in argv/env/reports. The PRIVATE scenario is an input file.
+ """
+@@ -14,6 +14,8 @@
+ EXISTING_EXPIRES=1794479034.732844
+ ORIGINAL_RUN='f06-first-docx-wrong-read-20261112-r1'
+ ORIGINAL_SCENARIO_SHA='91e3c83b52337b7b62349533354cab88486f2ba3a7f946f58059b52bcecb75b3'
++BINDING_DIR=Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-FIRST-CONSUMER-EXISTING-R106-20261112')
++BINDING_PREBIRTH_CLOSURE={'path':str(BINDING_DIR/'PREBIRTH-BINDING-RECONSTRUCTION-REFUSAL-CLOSURE.json'),'bytes':2787,'sha256':'88d9d8ca60a732597935602af1af54d730b7c3887f41c3c11a701aa72afc5cc0'}
+ PYTHON='/home/jericho/jericho/.venv/bin/python'
+ def need(v,msg):
+     if not v:raise ValueError(msg)
+@@ -52,13 +54,13 @@
+     with os.fdopen(os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600),'wb') as f:f.write(raw);f.flush();os.fsync(f.fileno())
+ 
+ def validate_inputs(v):
+-    need(type(v) is dict and set(v)=={'schema','status','contract','source_freeze','independent_review','workdir','slot_identity','expected_binding_sha256','prebirth_closure','prebirth_reconciliation'} and v['schema']=='frw.Root.F06.existing-R106-first-consumer.v1' and v['status']=='ROOT_BOUND_SEPARATE_UNSTARTED_CONSUMER','F06_CONSUMER_STAGE_UNBOUND_NO_EFFECT')
++    need(type(v) is dict and set(v)=={'schema','status','contract','source_freeze','independent_review','workdir','slot_identity','expected_binding_sha256','prebirth_closure','binding_prebirth_closure','prebirth_reconciliation'} and v['schema']=='frw.Root.F06.canonical-existing-R106-first-consumer.v1' and v['status']=='ROOT_BOUND_SEPARATE_UNSTARTED_CONSUMER','F06_CONSUMER_STAGE_UNBOUND_NO_EFFECT')
+     c=v['contract']
+     need(type(c) is dict and c.get('authority')==EXISTING_AUTHORITY and c.get('authority_id')==EXISTING_AUTHORITY_ID and c.get('status')=='ROOT_BOUND_EXACT_F06_FIRST_WRONGREAD' and c.get('run_id')==ORIGINAL_RUN and c.get('scenario_sha256')==ORIGINAL_SCENARIO_SHA and c.get('scenario_ref',{}).get('sha256')==ORIGINAL_SCENARIO_SHA,'F06_ONLY_ORIGINAL_RUN_AND_EXISTING_R106')
+-    need(c.get('authority_chain',{}).get('created_at')==EXISTING_CREATED and c['authority_chain'].get('expires_at')==EXISTING_EXPIRES and v['prebirth_closure']==PREBIRTH_CLOSURE,'F06_EXISTING_ISSUANCE_OR_CLOSURE_CHANGED')
++    need(c.get('authority_chain',{}).get('created_at')==EXISTING_CREATED and c['authority_chain'].get('expires_at')==EXISTING_EXPIRES and v['prebirth_closure']==PREBIRTH_CLOSURE and v['binding_prebirth_closure']==BINDING_PREBIRTH_CLOSURE,'F06_EXISTING_ISSUANCE_OR_CLOSURE_CHANGED')
+     need(type(v['workdir']) is str and canonical_path(v['workdir']).is_absolute() and v['expected_binding_sha256'] is None,'F06_FRESH_CONSUMER_BINDING_REQUIRED')
+     work=canonical_path(v['workdir'])
+-    need(not work.is_relative_to(ORIGINAL_DIR) and not ORIGINAL_DIR.is_relative_to(work),'F06_OLD_DRIVER_WORKDIR_MUST_REMAIN_UNTOUCHED')
++    need(all(not work.is_relative_to(old) and not old.is_relative_to(work) for old in (ORIGINAL_DIR,BINDING_DIR)),'F06_OLD_DRIVER_WORKDIR_MUST_REMAIN_UNTOUCHED')
+     return True
+ 
+ def prebirth_reconciled(v):
+@@ -75,12 +77,33 @@
+     for name in ('ROOT-ACTUAL-BINDING.json','bot_tester.f06.root-bound.py','ROOT-DISPATCH-INVOCATION.json','ROOT-CONSUMER-ACTOR.json','ROOT-STOP-UNCONFIRMED.json','ROOT-DISPATCH-ENDED.json','CONSUMER.stdout','CONSUMER.stderr'):
+         need(not os.path.lexists(ORIGINAL_DIR/'work'/name),'F06_PRIOR_CONSUMER_BIND_DISPATCH_BIRTH_OR_UNKNOWN')
+     need(not os.path.lexists(STATE/'runs'/(ORIGINAL_RUN+'.json')),'F06_PRIOR_CANONICAL_RUN_REFUSE')
++    # The second failed caller wrote source/binding, then exact reconstruction
++    # refused before dispatch. Preserve those bytes rather than demanding absence.
++    x=json.loads(readref(v['binding_prebirth_closure']),object_pairs_hook=unique)
++    need(x.get('schema')=='friday.root.F06.firstconsumer-binding-prebirth-refusal-closure.v1' and x.get('state')=='FIRST_CONSUMER_BINDING_CREATED_RECONSTRUCTION_REFUSED_BEFORE_DISPATCH_NO_SEND' and x.get('driver_exit_code')==1 and x.get('actual_root_driver_absent') is True and x.get('consumer_born') is False and x.get('dispatch_created') is False and x.get('canonical_run_created') is False and x.get('failure')=='F06_SERIALIZED_BINDING_NOT_RECONSTRUCTIBLE' and x.get('source_reconstruction_guard_preserved') is True and x.get('no_API_client_or_upload_or_model_based_on_actual_control_flow') is True and x.get('existing_R106_not_reissued') is True and x.get('old_issuer_only_once_clock_preserved') is True and x.get('no_old_driver_or_issuer_retry') is True,'F06_GENUINE_CLOSED_BINDING_ONLY_REFUSAL_REQUIRED')
++    need(type(x.get('actual_root_driver_pid')) is int and x['actual_root_driver_pid']>0 and not (Path('/proc')/str(x['actual_root_driver_pid'])).exists(),'F06_BINDING_DRIVER_STILL_PRESENT_OR_UNKNOWN')
++    oldx={'once':x['consumer_stage_once_preserved'],'clock':x['original_consumer_clock_preserved'],'source':x['source_file'],'binding':x['actual_binding']}
++    leaves={'once':'ROOT-FIRST-CONSUMER-ONCE.json','source':'bot_tester.f06.root-bound.py','binding':'ROOT-ACTUAL-BINDING.json'}
++    need(all(oldx[k]['path']==str(BINDING_DIR/'work'/leaf) for k,leaf in leaves.items()) and oldx['clock']['path']==str(BINDING_DIR/'CONSUMER-CLOCK.json'),'F06_BINDING_HISTORY_PATH_RENAMED')
++    xo=json.loads(readref(oldx['once']),object_pairs_hook=unique)
++    xc=json.loads(readref(oldx['clock']),object_pairs_hook=unique)
++    xb=json.loads(readref(oldx['binding']),object_pairs_hook=unique)
++    readref(oldx['source'])
++    need(xo.get('schema')=='frw.Root.F06.first-consumer-invocation.v1' and xo.get('run_id')==ORIGINAL_RUN and xo.get('existing_authority')==EXISTING_AUTHORITY and xo.get('prebirth_closure')==PREBIRTH_CLOSURE and xo.get('old_driver_resume') is False and xo.get('issuer_invoked') is False and xo.get('no_retry') is True,'F06_BINDING_OLD_ONCE_CHANGED')
++    need(xc.get('schema')=='frw.Root.F06.unstarted-consumer-finite-clock.v1' and set(xc)=={'schema','started_at','deadline_at','started_monotonic','deadline_monotonic','boot_id'} and all(type(xc[k]) in (int,float) and math.isfinite(xc[k]) for k in ('started_at','deadline_at','started_monotonic','deadline_monotonic')) and 0<xc['deadline_at']-xc['started_at']<=600 and 0<xc['deadline_monotonic']-xc['started_monotonic']<=600,'F06_BINDING_OLD_CLOCK_CHANGED')
++    bc=xb.get('contract',{})
++    need(xb.get('schema')=='frw.Root.F06.exact-first-wrongread-binding.v1' and xb.get('source')==oldx['source'] and xb.get('authority')==EXISTING_AUTHORITY and bc.get('authority')==EXISTING_AUTHORITY and bc.get('authority_id')==EXISTING_AUTHORITY_ID and bc.get('run_id')==ORIGINAL_RUN and bc.get('scenario_sha256')==ORIGINAL_SCENARIO_SHA and bc.get('scope')==v['contract'].get('scope') and bc.get('resources',{}).get('clock')==oldx['clock'],'F06_BINDING_HISTORY_CONTRACT_OR_SOURCE_CHANGED')
++    for name in ('ROOT-DISPATCH-INVOCATION.json','ROOT-CONSUMER-ACTOR.json','ROOT-STOP-UNCONFIRMED.json','ROOT-DISPATCH-ENDED.json','CONSUMER.stdout','CONSUMER.stderr'):
++        need(not os.path.lexists(BINDING_DIR/'work'/name),'F06_BINDING_PRIOR_DISPATCH_BIRTH_OR_UNKNOWN')
+     r=json.loads(readref(v['prebirth_reconciliation']),object_pairs_hook=unique)
+-    need(r.get('schema')=='frw.Root.F06.issuer-only-prebirth-reconciliation.v1' and r.get('operator')=='Root' and r.get('status')=='ROOT_BOUND_SEPARATELY_ADMITTED_UNSTARTED_CONSUMER' and r.get('prebirth_closure')==v['prebirth_closure'] and r.get('original_run_id')==ORIGINAL_RUN and r.get('scenario_sha256')==ORIGINAL_SCENARIO_SHA and r.get('existing_authority')==EXISTING_AUTHORITY and r.get('old_once')==oldonce and r.get('old_clock')==oldclock,'F06_ROOT_RECONCILIATION_EXACT_REFS_REQUIRED')
+-    for key in ('first_consumer_stage_never_started','old_driver_closed_and_absent','old_once_and_clock_preserved','no_prior_bind_dispatch_canonicalrun_or_unknown','existing_issuance_scope_run_hash_chain_accepted','separate_missing_segment_authorized','no_old_driver_or_issuer_retry'):
++    need(r.get('schema')=='frw.Root.F06.two-closed-prebirth-reconciliation.v1' and r.get('operator')=='Root' and r.get('status')=='ROOT_BOUND_SEPARATELY_ADMITTED_UNSTARTED_CONSUMER' and r.get('prebirth_closure')==v['prebirth_closure'] and r.get('original_run_id')==ORIGINAL_RUN and r.get('scenario_sha256')==ORIGINAL_SCENARIO_SHA and r.get('existing_authority')==EXISTING_AUTHORITY and r.get('old_once')==oldonce and r.get('old_clock')==oldclock and r.get('binding_prebirth_closure')==v['binding_prebirth_closure'] and all(r.get('binding_old_'+k)==oldx[k] for k in ('once','clock','source','binding')),'F06_ROOT_RECONCILIATION_EXACT_REFS_REQUIRED')
++    for key in ('user_consumer_never_started','old_driver_closed_and_absent','old_once_and_clock_preserved','no_prior_user_dispatch_canonicalrun_or_unknown','existing_issuance_scope_run_hash_chain_accepted','separate_missing_user_consumer_authorized','no_old_driver_or_issuer_retry','binding_failure_closed_before_dispatch','binding_once_clock_source_preserved','no_unknown_consumer_effect'):
+         need(r.get(key) is True,'F06_ROOT_PREBIRTH_RECONCILIATION_REQUIRED')
+     need(type(r.get('created_at')) in (int,float) and type(r.get('expires_at')) in (int,float) and math.isfinite(r['created_at']) and math.isfinite(r['expires_at']) and r['created_at']<=time.time()<r['expires_at']<=r['created_at']+120,'F06_ROOT_PREBIRTH_RECONCILIATION_STALE')
+-    need(v['contract']['resources']['clock']!=oldclock and v['contract']['resources']['clock']['path']!=oldclock['path'],'F06_OLD_CLOCK_REUSE_OR_EXTENSION_REFUSED')
++    fresh=v['contract']['resources']['clock']
++    need(all(fresh!=old and fresh['path']!=old['path'] for old in (oldclock,oldx['clock'])),'F06_OLD_CLOCK_REUSE_OR_EXTENSION_REFUSED')
++    future=json.loads(readref(fresh),object_pairs_hook=unique)
++    need(future.get('started_at',-1)>=max(dt.datetime.fromisoformat(item['at_moscow']).timestamp() for item in (closure,x)),'F06_FRESH_CLOCK_MUST_FOLLOW_BOTH_CLOSED_BOUNDARIES')
+     return closure
+ 
+ def clock_remaining(clock):
+@@ -122,17 +145,20 @@
+ 
+ def execute(v,*,binding_ref):
+     validate_inputs(v)
+-    c=json.loads(encoded(v['contract']),object_pairs_hook=unique)
+-    prebirth_reconciled(v)
+-    a=load(c['adapter'],'Root_first_F06_adapter');a.contract_shape(c)
+-    a.admission(c,json.loads(readref(c['authority']),object_pairs_hook=unique),read=read)
+-    footer=readref(c['footer']);checker=load(c['actual_root_B_checker'],'Root_first_F06_current207')
++    # Authenticate the complete local source set before any executable module load.
++    own=Path(__file__).resolve().parent
+     freeze_raw=readref(v['source_freeze']);freeze=json.loads(freeze_raw,object_pairs_hook=unique)
+-    need(freeze.get('schema')=='frw.F06.existing-R106-first-consumer.source-freeze.v1','F06_SOURCE_FREEZE_REQUIRED')
+-    own=Path(__file__).resolve().parent
++    need(freeze.get('schema')=='frw.F06.canonical-existing-R106-first-consumer.source-freeze.v1' and type(freeze.get('files')) is dict and set(freeze['files'])=={'f06_source.py','f06_footer.py.txt','current207.py','root_bind_existing_consumer_once.py'},'F06_COMPLETE_REVIEWED_SOURCE_FREEZE_REQUIRED')
+     for leaf,want in freeze['files'].items():need('/' not in leaf and digest(read(own/leaf))==want['sha256'] and len(read(own/leaf))==want['bytes'],'F06_REVIEWED_SOURCE_DRIFT')
+     review=json.loads(readref(v['independent_review']),object_pairs_hook=unique)
+     need(review.get('decision')=='SOURCE_ONLY_READY_UNBOUND' and review.get('source_freeze_sha256')==digest(freeze_raw) and review.get('open_critical_defects')==[],'F06_EXACT_INDEPENDENT_SOURCE_ACCEPTANCE_REQUIRED')
++    need(all(v['contract'].get(field)==ref(own/leaf) for field,leaf in (('adapter','f06_source.py'),('actual_root_B_checker','current207.py'),('footer','f06_footer.py.txt'))),'F06_EXACT_LOCAL_REVIEWED_SOURCE_REFERENCES_REQUIRED')
++    need(v['independent_review']==v['contract'].get('root_proofs',{}).get('source_review'),'F06_DRIVER_SOURCE_REVIEW_REFERENCE_MISMATCH')
++    a=load(v['contract']['adapter'],'Root_first_F06_adapter')
++    c=a.canonical_contract(v['contract']);a.contract_shape(c)
++    prebirth_reconciled(v)
++    a.admission(c,json.loads(readref(c['authority']),object_pairs_hook=unique),read=read)
++    footer=readref(c['footer']);checker=load(c['actual_root_B_checker'],'Root_first_F06_current207')
+     need(digest(read(a.BASE,private=False))==a.BASE_SHA and digest(read(a.INSTALLED_TESTER,private=False))==a.INSTALLED_TESTER_SHA,'F06_BASE_OR_INSTALLED_TESTER_CHANGED')
+     scenario_raw=readref(c['scenario_ref']);s=json.loads(scenario_raw,object_pairs_hook=unique)
+     a.scenario_shape(s);need(scenario_raw==a.encoded(s) and digest(scenario_raw)==c['scenario_sha256'],'F06_PRIVATE_SCENARIO_CANONICAL_DRIFT')
+@@ -157,7 +183,7 @@
+             finally:os.close(q)
+         # Separate never-started consumer claim. Old once/issuance remain untouched.
+         prebirth_reconciled(v)
+-        new(work/'ROOT-FIRST-CONSUMER-ONCE.json',encoded({'schema':'frw.Root.F06.first-consumer-invocation.v1','at':time.time(),'binding':binding_ref,'run_id':c['run_id'],'source_freeze':v['source_freeze'],'existing_authority':c['authority'],'prebirth_closure':v['prebirth_closure'],'old_driver_resume':False,'issuer_invoked':False,'no_retry':True}))
++        new(work/'ROOT-FIRST-CONSUMER-ONCE.json',encoded({'schema':'frw.Root.F06.canonical-first-consumer-invocation.v1','at':time.time(),'binding':binding_ref,'run_id':c['run_id'],'source_freeze':v['source_freeze'],'existing_authority':c['authority'],'prebirth_closure':v['prebirth_closure'],'binding_prebirth_closure':v['binding_prebirth_closure'],'old_driver_resume':False,'issuer_invoked':False,'no_retry':True}))
+         # Fresh Root proof belongs to THIS slot holder. The reviewed template's
+         # exact observed/semantic basis is reobserved, never silently updated.
+         prepared=json.loads(readref(c['root_current_proof']),object_pairs_hook=unique)
+@@ -176,7 +202,7 @@
+         new(work/'ROOT-ACTUAL-BINDING.json',encoded({'schema':'frw.Root.F06.exact-first-wrongread-binding.v1','contract':c,'source':ref(bound),'whole_effect_sha256':a.digest(a.encoded(a.effect(c))),'authority':c['authority'],'independent_review':v['independent_review']}))
+         need(a.successor(read(a.BASE,private=False),json.loads(read(work/'ROOT-ACTUAL-BINDING.json'))['contract'],footer)==read(bound),'F06_SERIALIZED_BINDING_NOT_RECONSTRUCTIBLE')
+         argv=[PYTHON,'-I','-B','-S',str(bound),'--state-dir',str(STATE),'run','--run-id',c['run_id'],'--scenario',c['scenario_ref']['path']]
+-        new(work/'ROOT-DISPATCH-INVOCATION.json',encoded({'state':'ONE_PREVIOUSLY_UNSTARTED_FULL_CONSUMER_EXISTING_R106_NO_RETRY','argv':argv,'source':ref(bound),'whole_effect_sha256':a.digest(a.encoded(a.effect(c))),'clock':c['resources']['clock']}))
++        new(work/'ROOT-DISPATCH-INVOCATION.json',encoded({'state':'ONE_UNSTARTED_USER_CONSUMER_AFTER_TWO_CLOSED_PREBIRTH_FAILURES_NO_RETRY','argv':argv,'source':ref(bound),'whole_effect_sha256':a.digest(a.encoded(a.effect(c))),'clock':c['resources']['clock']}))
+         need(clock_remaining(clock)>=c['resources']['operation_seconds']+c['resources']['reserve_seconds'],'F06_CLOCK_INSUFFICIENT_BEFORE_BIRTH')
+         r=c['resources'];cpus=sorted(os.sched_getaffinity(0))[:2];need(cpus,'F06_NO_AVAILABLE_CPU')
+         def child_limits():
