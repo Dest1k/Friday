@@ -29,24 +29,28 @@ default branch — **main**. Публикация сюда разрешена в
 постоянный Сол — co-architect на Standard. Native goal Астры active в прежнем thread
 `01a1c688-e36d-7021-8df4-9c5644a4d75b`; UUID, история и накопленный учёт не переносились вручную.
 
-На VM установлен **204 / project489 / native17891 / plugins52 / base17730**. Новый publisher0,
+На VM установлен **205 / project491 / native17891 / plugins52 / base17730**. Штатный publisher0,
 свежий DEFAULT0, полный native readback и данные проверены; gateway/Dashboard постоянные,
 Telegramconnected/3routes, все принадлежащие операции процессы закрыты. Историческая первая
-попытка204 остаётся consumed/UNKNOWN. [Установленные факты и AppPARTIAL](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/native204-installed-same-rtf-and-f06-template-partial.json).
+попытка204 остаётся consumed/UNKNOWN. [Установленные205 и futureF06source](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/native205-installed-and-f06-source-connected.json).
 
-Ближайшая техническая зависимость core — **настоящий204→205**, затем F06 normal205→206.
-Новый coherent205frame/boundary готовится с actualCP204 и свежими all-profile предпосылками;
-старый caller с прежним журналом/процессами исполнять нельзя. Task23 Сола завершил четыре
+Ближайшая техническая зависимость core — **нормальный205→206** для F06. Новый coherent206frame/boundary
+готовится с genuineCP205 и свежими Root-предпосылками; старые consumed callers исполнять нельзя.
+Task23 Сола завершил четыре
 полных source gates success/rollback для operational/public и независимое execution review,
-но future206public5 не подключены до genuine205. Source fixtures не являются installed205/206.
+после genuine205 подключены точные future206public5/собственный493stand/actualderivedinput.
+Source fixtures не являются установленной206; Root пока не открывал её live-допуск.
 
 Установленный RTF-helper прочитал те же10723B с16body/3stories и восстановленной сноской,
 сохраняя partial/layout/numbering ограничения; ordinaryauthority из этого не следует.
 F06 readonly template evaluation выполнен:12typedpasswordrefusals и6correctopen+семантика,
 но6getRequest SystemError до классификации. Rawall_passfalse/client1/полныйзахват18 сохранены,
 итог **PARTIAL**, фактическийpayload/causeUNKNOWN; originalOTTrawreceipt gap не исправлен.
-Сол в прежней Standard TUI выполняет Task24 source/bridge analysis без новыхOffice/документных
-эффектов. Астра интегрирует продукт; локальный AppPARTIAL не блокирует независимую установку205.
+Сол в прежней Standard TUI завершил Task24 dormant diagnostic source/review без Office/документных
+эффектов; Task25 выполняется после одного completed native pre-task compact для минимального нового Rootframe
+одной недостающей class-only OTT-пробы. Это не повтор18 и не готовая Office-правка.
+Отдельный modernODTcodec Argon2id19/AES256GCM имеет85+12sourcecontrols/review, но не интегрирован/не установлен:
+он следует после206, historicalmodern7FAIL не закрыт. Астра интегрирует продукт; AppPARTIAL локален.
 
 ## Что можно проверить из репозитория
 
@@ -60,7 +64,8 @@ F06 readonly template evaluation выполнен:12typedpasswordrefusals и6cor
 Исходники, установка, исполненный пользовательский путь, семантическая оценка и формальная
 приёмка — разные факты. Приватные native receipts, БД/WAL/SHM, Telegram runs/downloads/closures,
 оригиналы и Office-наблюдения остаются на VM; веб-чат не может независимо вывести их свежесть
-из одного source PASS. Текущие205/206 и callback исходники имеют отдельные source-only статусы; часть материалов остаётся только в приватных копиях.
+из одного source PASS. Установленный205, подключённыйsource206, dormantcallback и futuremodernODT
+имеют разные статусы; часть материалов остаётся только в приватных копиях.
 Не запускать повторно producer/model/send ради удобного PASS. R83 UNKNOWN_SEND, исчерпанные
 три C10 journey и остальные consumed/UNKNOWN ограничения приведены в ASTRA-CURRENT.
 

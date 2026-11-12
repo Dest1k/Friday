@@ -1,0 +1,48 @@
+--- a/core205-first-actual-root.py
++++ b/core205-first-actual-root.py
+@@ -166,16 +166,6 @@
+     for name, digest in marker['plugin_files'].items(): require(sha(H/name) == digest, 'plugin_pin_drift:'+name)
+     full_native=full_native_readback(receipt)
+     services, environments = collect_services(boot, anchor, contract)
+-    raw = (H/'gateway_state.json').read_bytes(); state = json.loads(raw); tg = state['platforms']['telegram']
+-    require(state['pid'] == services['gateway']['pid'] and state['start_time'] == services['gateway']['birth_ticks'] and
+-            state['hermes_home'] == str(H) and state['served_profiles'] == ['default','dest_telegram','telegram-bot-8812646969'] and
+-            state['gateway_state'] == 'running' and state['active_agents'] == 0 and state['active_work'] is None and
+-            state['restart_requested'] is False and state['session_store']['status'] == 'ok' and tg['state'] == 'connected' and
+-            tg['needs_attention'] is False and tg['writer_pid'] == state['pid'] and tg['writer_start_time'] == state['start_time'], 'gateway_routing_or_work_not_clear')
+-    native = transport.fresh_native(state)  # Never transport.check()/whole historic202 gate.
+-    require(native['quiescent'] and (H/'gateway_state.json').read_bytes() == raw, 'native_boundary_changed')
+-    dbs = readonly_databases()
+-    contract.validate_global_quiescence(native['global_work'],dbs,services['gateway'],current_monotonic=time.monotonic())
+     tester = Path('/home/jericho/.local/share/friday-telegram-bot-test')
+     require(not os.path.lexists(tester/'observer-stop.json'), 'observer_stop_present')
+     cooldown = load(tester/'cooldown.json') if (tester/'cooldown.json').exists() else {}
+@@ -205,6 +195,19 @@
+     resources = dict(memory_available_kib=mem, disk_available_bytes=fs.f_bavail*fs.f_frsize, affinity_cpus=cpus,
+                      load_average=list(os.getloadavg()), pressure={k:(Path('/proc/pressure')/k).read_text() for k in ('cpu','io','memory')})
+     require(collect_services(boot,anchor,contract)==(services,environments),'service_changed_across_boundary')
++    # Bank/resource work precedes the final narrow current-work collection.
++    raw = (H/'gateway_state.json').read_bytes(); state = json.loads(raw); tg = state['platforms']['telegram']
++    require(state['pid'] == services['gateway']['pid'] and state['start_time'] == services['gateway']['birth_ticks'] and
++            state['hermes_home'] == str(H) and state['served_profiles'] == ['default','dest_telegram','telegram-bot-8812646969'] and
++            state['gateway_state'] == 'running' and state['active_agents'] == 0 and state['active_work'] is None and
++            state['restart_requested'] is False and state['session_store']['status'] == 'ok' and tg['state'] == 'connected' and
++            tg['needs_attention'] is False and tg['writer_pid'] == state['pid'] and tg['writer_start_time'] == state['start_time'], 'gateway_routing_or_work_not_clear')
++    native = transport.fresh_native(state)  # Never transport.check()/whole historic202 gate.
++    require(native['quiescent'] and (H/'gateway_state.json').read_bytes() == raw, 'native_boundary_changed')
++    dbs = readonly_databases()
++    require(collect_services(boot,anchor,contract)==(services,environments),'service_changed_across_global_refresh')
++    require((H/'gateway_state.json').read_bytes()==raw,'gateway_state_changed_across_global_refresh')
++    contract.validate_global_quiescence(native['global_work'],dbs,services['gateway'],current_monotonic=time.monotonic())
+     return dict(at_moscow=now(), full_native_readback=full_native, global_work=native['global_work'], current_anchor=ref(B/'ROOT-205-CURRENT-SERVICE-ANCHOR.json'), boot_id=boot, head=head, origin_main=origin, source_origin=origin_proof, provenance_mode=mode, services=services,
+                 process_environment=environments, native_readonly=native, databases=dbs, cooldown=cooldown,
+                 publisher_unit_absent=uv, resources=resources, gateway_routing=dict(served_profiles=state['served_profiles'],
+@@ -321,6 +324,8 @@
+         require(ref(B/'ROOT-205-CURRENT-SERVICE-ANCHOR.json')==authority['current_service_anchor'] and ref(B/'ROOT-205-RUNTIME-AUTHORITY.json')==intent['authority'],'Root_authority_changed_before_actor')
+         require(not os.path.lexists(H/'preparation'/('ordinary-source-update-v45-'+sha(F/'ROOT-FRESH-REQUEST.json')[:16])),'whole_transaction_consumed_before_actor')
+         require(m.load_actor_binding(F)==pure, 'last_exact_binding_changed')
++        # Binding/source reads cannot carry a stale global observation into launch.
++        contract.validate_global_quiescence(final['global_work'],final['databases'],final['services']['gateway'],current_monotonic=time.monotonic())
+         result = launch_once(commands['once_actor'], fd, latest['boot_id'])
+         result.update(state='ROOT_ONCE205_ACTOR_RETURN_RECONCILE_ACTUAL_RESULT', at_moscow=now(),
+                       journal=ref(F/'ROOT-NATIVE205-LIVE-OPERATION.json') if (F/'ROOT-NATIVE205-LIVE-OPERATION.json').exists() else None)

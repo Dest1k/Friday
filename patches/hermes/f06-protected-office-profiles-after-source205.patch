@@ -1,0 +1,847 @@
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -17,7 +17,8 @@
+ from typing import Any, Dict, List, Optional, Tuple
+ from hermes_cli.timeouts import get_provider_request_timeout
+ from agent.message_sanitization import (
+-    _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
++    _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants,
++    redact_protected_file_message_for_persistence, _file_tool_arguments_for_diagnostic_log
+ )
+ from agent.message_metadata import (
+     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
+@@ -169,7 +170,7 @@
+     """Convert internal message history to trajectory format for saving."""
+     # Trajectories are text-only: swap image-bearing tool messages for their text_summary so ~1MB
+     # base64 blobs are not embedded.
+-    messages = [_trajectory_normalize_msg(m) for m in messages]
++    messages = [_trajectory_normalize_msg(redact_protected_file_message_for_persistence(m)) for m in messages]
+     trajectory = [
+         {"from": "system", "value": _TRAJECTORY_SYSTEM_PROMPT.format(tools=agent._format_tools_for_system_message())},
+         {"from": "human", "value": user_query},
+@@ -285,7 +286,7 @@
+                 "Corrupted tool_call arguments repaired before request "
+                 "(session=%s, message_index=%s, tool_call_id=%s, function=%s, "
+                 "original_arguments=%r)", session_id or "-", message_index, tool_call_id or "-",
+-                function_name, arguments[:_FULL_ARGS_LOG_BOUND],
++                function_name, _file_tool_arguments_for_diagnostic_log(arguments[:_FULL_ARGS_LOG_BOUND], function_name),
+             )
+             function["arguments"] = "{}"
+             # The persisted row for a stamped dict still holds the corrupted args; pop the
+--- a/agent/display.py
++++ b/agent/display.py
+@@ -334,20 +334,24 @@
+     if tool_name == "browser_type" and isinstance(args.get("text"), str):
+         return {**args, "text": redact_sensitive_text(args["text"], force=True)}
+     if tool_name in ("read_file", "write_file"):
+-        # Archive passwords must never enter progress/verbose logging, including
+-        # write_file's JSON-string content. Keep execution arguments untouched.
++        # File passwords must never enter progress/verbose logging, including
++        # protected write_file JSON options. Keep execution arguments untouched.
+         import json
+         result = dict(args)
+         secrets = []
+         content_is_json = False
+-        if isinstance(result.get("password"), str) and result["password"]:
+-            secrets.append(result["password"])
+-        if "password" in result:
+-            result["password"] = "[redacted]"
++        for key in result:
++            if isinstance(key, str) and key.casefold() == "password":
++                if isinstance(result[key], str) and result[key]:
++                    secrets.append(result[key])
++                result[key] = "[redacted]"
+         content = result.get("content")
+-        archive_options = (tool_name == "write_file"
++        protected_options = (tool_name == "write_file"
+             and isinstance(result.get("format"), str)
+-            and result["format"].lower() in ("7z", "7z_extract", "zip", "zip_extract"))
++            and result["format"].strip().lower() in (
++                "7z", "7z_extract", "zip", "zip_extract", "ooxml_password_edit", "odf_password_edit"))
++        if protected_options and not isinstance(content, str):
++            return {"format": result["format"], "content": "[redacted archive options]"}
+         if isinstance(content, str):
+             duplicate_keys = False
+             def pairs(items):
+@@ -364,7 +368,7 @@
+             except (ValueError, RecursionError):
+                 # Malformed JSON may spell the password key with JSON escapes;
+                 # previewing it before validation must not expose its value.
+-                if archive_options:
++                if protected_options:
+                     # A failed parse cannot identify every credential to scrub
+                     # from filenames or echoed metadata. Hide that preview too.
+                     return {"format": result["format"],
+@@ -372,12 +376,18 @@
+                 if duplicate_keys or "password" in content.casefold():
+                     result["content"] = "[redacted archive options]"
+             else:
+-                if isinstance(parsed, dict) and "password" in parsed:
+-                    if isinstance(parsed["password"], str) and parsed["password"]:
+-                        secrets.append(parsed["password"])
+-                    parsed["password"] = "[redacted]"
+-                    result["content"] = parsed
+-                    content_is_json = True
++                if protected_options and not isinstance(parsed, dict):
++                    return {"format": result["format"], "content": "[redacted archive options]"}
++                if isinstance(parsed, dict):
++                    for key in parsed:
++                        if key == "password" or (protected_options and isinstance(key, str)
++                                                 and key.casefold() == "password"):
++                            if isinstance(parsed[key], str) and parsed[key]:
++                                secrets.append(parsed[key])
++                            parsed[key] = "[redacted]"
++                            content_is_json = True
++                    if content_is_json:
++                        result["content"] = parsed
+         def scrub(value):
+             if isinstance(value, str):
+                 for secret in sorted(secrets, key=len, reverse=True):
+--- a/agent/message_sanitization.py
++++ b/agent/message_sanitization.py
+@@ -27,6 +27,84 @@
+ # The durable snapshot is an immutable compare-and-swap version, not message payload.
+ _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_SNAPSHOT})
+ 
++
++
++_PROTECTED_FILE_PASSWORD_FORMATS = frozenset({
++    "ooxml_password_edit", "odf_password_edit", "zip", "zip_extract", "7z", "7z_extract",
++})
++
++
++def redact_protected_file_tool_calls_for_persistence(tool_calls: Any) -> Any:
++    """Copy durable tool calls, removing only recognized file-tool credential fields.
++
++    Execution arguments, user/document text, tool results and call IDs are untouched.
++    Known file calls with malformed arguments/options keep their envelope but mask
++    that unparseable credential-bearing field; no raw invalid JSON is logged. This
++    is not a promise to erase passwords intentionally supplied in user chat.
++    """
++    if not isinstance(tool_calls, list):
++        return tool_calls
++    import copy
++    result = copy.deepcopy(tool_calls)
++
++    def pairs(items):
++        parsed = {}
++        for key, value in items:
++            if key in parsed:
++                raise ValueError("duplicate protected-file argument key")
++            parsed[key] = value
++        return parsed
++
++    def parsed_object(value):
++        parsed = json.loads(value, object_pairs_hook=pairs) if isinstance(value, str) else value
++        if not isinstance(parsed, dict):
++            raise ValueError("protected-file arguments must be an object")
++        return parsed
++
++    for call in result:
++        if not isinstance(call, dict):
++            continue
++        function = call.get("function")
++        if not isinstance(function, dict) or function.get("name") not in ("read_file", "write_file"):
++            continue
++        raw = function.get("arguments")
++        try:
++            args = parsed_object(raw)
++        except (ValueError, TypeError, RecursionError):
++            function["arguments"] = json.dumps({"_protected_file_arguments": "[redacted invalid arguments]"})
++            continue
++        changed = False
++        if function["name"] == "read_file":
++            for key in args:
++                if isinstance(key, str) and key.casefold() == "password" and args[key] is not None:
++                    args[key] = "[redacted]"
++                    changed = True
++        elif isinstance(args.get("format"), str) and args["format"].strip().lower() in _PROTECTED_FILE_PASSWORD_FORMATS:
++            content = args.get("content")
++            try:
++                options = parsed_object(content)
++            except (ValueError, TypeError, RecursionError):
++                args["content"] = "[redacted invalid protected options]"
++                changed = True
++            else:
++                options_changed = False
++                for key in options:
++                    if isinstance(key, str) and key.casefold() == "password" and options[key] is not None:
++                        options[key] = "[redacted]"
++                        options_changed = True
++                if options_changed:
++                    args["content"] = json.dumps(options, ensure_ascii=False) if isinstance(content, str) else options
++                    changed = True
++        if changed:
++            function["arguments"] = json.dumps(args, ensure_ascii=False) if isinstance(raw, str) else args
++    return result
++
++
++def redact_protected_file_message_for_persistence(message: Any) -> Any:
++    """Persistence projection only: preserve raw chat/result/content and live dict."""
++    if not isinstance(message, dict) or not isinstance(message.get("tool_calls"), list):
++        return message
++    return {**message, "tool_calls": redact_protected_file_tool_calls_for_persistence(message["tool_calls"])}
+ 
+ def _sanitize_surrogates(text: str) -> str:
+     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
+@@ -176,6 +254,13 @@
+ # When a repair rewrites arguments to "{}", the WARNING log is the last surviving copy of
+ # content that can hold real user data (a truncated write_file), so bound it generously.
+ _FULL_ARGS_LOG_BOUND = 100_000
++
++
++def _file_tool_arguments_for_diagnostic_log(arguments: str, tool_name: str) -> str:
++    """Keep recognized file-tool arguments out of diagnostics, without changing execution."""
++    if tool_name in ("read_file", "write_file"):
++        return "[redacted file-tool arguments]"
++    return arguments
+ 
+ 
+ def _loads_ok(text: str) -> bool:
+@@ -265,7 +350,8 @@
+         fixed = fixed[:-1]
+ 
+     if _loads_ok(fixed):
+-        logger.warning("Repaired malformed tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], fixed[:80])
++        logger.warning("Repaired malformed tool_call arguments for %s: %s → %s", tool_name, _file_tool_arguments_for_diagnostic_log(raw_stripped[:80], tool_name),
++                       _file_tool_arguments_for_diagnostic_log(fixed[:80], tool_name))
+         return fixed
+ 
+     # Pass 5: escape control chars inside strings (strict=False alone fails when other
+@@ -273,13 +359,14 @@
+     escaped = _escape_invalid_chars_in_json_strings(fixed)
+     if escaped != fixed and _loads_ok(escaped):
+         logger.warning(
+-            "Repaired control-char-laced tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], escaped[:80],
++            "Repaired control-char-laced tool_call arguments for %s: %s → %s", tool_name, _file_tool_arguments_for_diagnostic_log(raw_stripped[:80], tool_name),
++            _file_tool_arguments_for_diagnostic_log(escaped[:80], tool_name),
+         )
+         return escaped
+ 
+     logger.warning(
+         "Unrepairable tool_call arguments for %s — replaced with empty object (was: %s)",
+-        tool_name, raw_stripped[:_FULL_ARGS_LOG_BOUND],
++        tool_name, _file_tool_arguments_for_diagnostic_log(raw_stripped[:_FULL_ARGS_LOG_BOUND], tool_name),
+     )
+     return "{}"
+ 
+--- a/agent/session_persistence.py
++++ b/agent/session_persistence.py
+@@ -28,6 +28,7 @@
+     DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS, TOOL_CALL_UID, copy_identity_fields,
+     tool_call_uid_from_history)
+ from agent.transcript_repair import sync_flushed_message_markers
++from agent.message_sanitization import redact_protected_file_tool_calls_for_persistence
+ 
+ 
+ logger = logging.getLogger("run_agent")  # origin module's name: log records / caplog filters unchanged
+@@ -270,7 +271,7 @@
+     row = {
+         "role": role, "content": _durable_content(content),
+         "tool_name": msg.get("tool_name") or (msg.get("name") if role == "tool" else None),
+-        "tool_calls": msg["tool_calls"] if isinstance(msg.get("tool_calls"), list) else None,
++        "tool_calls": redact_protected_file_tool_calls_for_persistence(msg["tool_calls"]) if isinstance(msg.get("tool_calls"), list) else None,
+         "tool_call_id": msg.get("tool_call_id"), "effect_disposition": msg.get("effect_disposition"),
+         "token_count": msg.get("token_count"), "finish_reason": msg.get("finish_reason"),
+         **{k: msg.get(k) for k in _ROW_REASONING_KEYS},
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -225,7 +225,7 @@
+ 
+ 
+ ORDINARY_IDENTITY = 'Ты — Пятница (Friday), ИИ-помощник с высокой, но управляемой инициативой.'
+-ODF_PASSWORD_GUIDANCE = 'Protected ODF: read_file accepts the supplied password for bounded ODT/OTT/ODS/OTS/ODP/OTP package decryption in memory. Missing/wrong passwords, unsupported encryption and active/signed packages refuse; never guess, echo or store passwords in files. AES-CBC and legacy Blowfish-CFB8 PBKDF2 profiles only. For an explicitly requested preserving edit use write_file format=odf_password_edit to a NEW name with the SAME extension, content JSON {"source":"private.odt","source_sha256":"<read_file hash>","password":"<supplied password>","edit":{"old_text":"Old","new_text":"New"}}. ODT/OTT edit is exact unique text; ODS/OTS edit is {"sheet":"Sheet1","cell":"A1","expected":"1","value":"2"}; ODP/OTP edit is {"slide":1,"role":"slide","old_text":"Old","new_text":"New"}. The output keeps encryption with the same password and fresh member salts/IVs; no plaintext file is published, original remains unchanged. Do not put the password in the output name, prose or receipt. Worksheet protection is not removed; existing native edit restrictions still apply. A password checksum does not verify authenticity. Encrypted OOXML uses a separate authenticated profile; same-profile edits use ooxml_password_edit, while conversion remains unsupported. '
++ODF_PASSWORD_GUIDANCE = 'Protected ODF: read_file accepts the supplied password for bounded ODT/OTT/ODS/OTS/ODP/OTP package decryption in memory. Missing/wrong passwords, unsupported encryption and active/signed packages refuse; never guess, echo or store passwords in files. AES-CBC and legacy Blowfish-CFB8 PBKDF2 profiles only. For an explicitly requested preserving edit use write_file format=odf_password_edit to a NEW name with the SAME extension, content JSON {"source":"private.odt","source_sha256":"<read_file hash>","password":"<supplied password>","edit":{"old_text":"Old","new_text":"New"}}. ODT/OTT edit is exact unique text; ODS/OTS edit is {"sheet":"Sheet1","cell":"A1","expected":"1","value":"2"}; ODP/OTP edit is {"slide":1,"role":"slide","old_text":"Old","new_text":"New"}. The output keeps encryption with the same password and fresh member salts/IVs; no plaintext file is published, original remains unchanged. Do not put the password in the output name, prose or receipt. Worksheet protection is not removed; existing native edit restrictions still apply. A password checksum does not verify authenticity. Encrypted OOXML uses separate Agile (authenticated) and Standard 3.2 AES-128/ECB SHA-1 (password and package-structure checks only, without authenticated integrity) profiles; same-profile edits use ooxml_password_edit, while conversion remains unsupported. '
+ 
+ PDF_SIGNATURE_GUIDANCE = (
+     'For a signed PDF, read_file pdf_signatures=true gives a bounded structural inventory and exact source_sha256, always NOT_CRYPTOGRAPHICALLY_VERIFIED. '
+@@ -492,7 +492,7 @@
+             'MSG email files: read_file returns paginated JSON of partial, untrusted stored properties only: subject, distinct sender/sent-representing claims, recipients, dates, plain body and attachment metadata/hashes. Continue all next_offset/next_char_offset pages and check source_sha256. No sending/import, header authentication, rendering, attachment extraction or whole-format acceptance. Use explicit msg_create/msg_edit for bounded new-file native creation/plain-body editing; no raw overwrite. HTML/RTF are not rendered, attachments and links are not opened. '
+             'Other binary formats are unsupported. For encrypted ZIP or 7z, pass password to read_file. ZIP supports bounded single-volume non-ZIP64 WinZip AES-256 AE-1/AE-2 stored/deflate data; member names stay visible. 7z supports the bounded AES/LZMA2 profile with optional private headers. Missing passwords, wrong passwords or damaged data and unsupported encrypted profiles refuse. Never repeat passwords in names or replies. '
+             'Raw split 7z needs path=NAME.7z.001 and explicit archive_parts=["NAME.7z.001","NAME.7z.002",...], same directory/base and exact order; 2..128 fixed-size parts (last may be shorter), 1 MB combined. No discovery; missing or inconsistent sets refuse. Only read and create-only 7z_extract support split sets. '
+-            'Protected OOXML DOCX/DOTX/DOCM/DOTM, XLSX/XLTX/XLSM/XLTM/XLSB and PPTX/POTX/PPSX/PPTM/POTM/PPSM support bounded Agile AES/CBC password reading. Use only the supplied password; authentication and source hash bind the encrypted original. Unsupported encryption, wrong password or damage refuses; plaintext export is unsupported. For same-format encrypted editing use the separate ooxml_password_edit profile. Native format limits still apply. '
++            'Protected OOXML DOCX/DOTX/DOCM/DOTM, XLSX/XLTX/XLSM/XLTM/XLSB and PPTX/POTX/PPSX/PPTM/POTM/PPSM support bounded Agile AES/CBC and Standard 3.2 AES-128/ECB SHA-1 password reading. Use only the supplied password. Agile requires HMAC authentication; Standard verifies only the password and ZIP structure, without authenticated data integrity. The source hash binds the encrypted original. Unsupported encryption, wrong password or failed checks refuse; plaintext export is unsupported. For same-format encrypted editing use the separate ooxml_password_edit profile. Native format limits still apply. '
+             'Encrypted or unsupported RAR refuses. '
+             'Before replacing an existing text file, read its complete current content in this task.')
+         function['description'] += LEGACY_OPENOFFICE_GUIDANCE + LEGACY_WORD_GUIDANCE
+--- a/hermes_cli/friday_workspace_ooxml_password.py
++++ b/hermes_cli/friday_workspace_ooxml_password.py
+@@ -30,6 +30,8 @@
+     'Only the existing bounded native editor profiles are supported. '
+     'The original remains unchanged; the derivative is encrypted with the same supplied '
+     'password and fresh keys/salts. Never put passwords in names, prose, or receipts. '
++    'Agile requires authenticated integrity; Standard 3.2 AES-128/ECB SHA-1 verifies '
++    'only the password and package structure, without authenticated integrity. '
+     'An opening password does not authorize removing native edit restrictions: '
+     'locked, restricted, unsupported encryption, missing/wrong password and XLSB edits refuse. '
+     'No plaintext export, conversion, macro execution or visual/application validation is implied. '
+@@ -158,7 +160,8 @@
+         raise OOXMLPasswordError(str(error)) from None
+ 
+ 
+-def render_edit(data, profile, password, edit, *, checkpoint=None):
++def _render_edit_verified(data, profile, password, edit, *, checkpoint=None):
++    """Return encrypted bytes and source checks preserved by same-suite output."""
+     check = checkpoint if checkpoint is not None else lambda: None
+     check()
+     if type(edit) is not dict:
+@@ -174,7 +177,29 @@
+     from tools.scoped_ooxml_password_edit import protect_like
+     protected = protect_like(data, rendered, password, format=profile, checkpoint=check)
+     check()
++    return protected, metadata
++
++
++def render_edit(data, profile, password, edit, *, checkpoint=None):
++    """Keep the public pure-editor API: encrypted bytes only."""
++    protected, _ = _render_edit_verified(data, profile, password, edit, checkpoint=checkpoint)
+     return protected
++
++
++def _edit_metadata(metadata):
++    """Publish only content-free checks returned after successful verification.
++
++    Standard 3.2 has a password verifier but no authenticated data integrity.
++    A successful preserving edit cannot strengthen that original profile.
++    """
++    fields = ('encrypted', 'encryption', 'password_verified', 'data_integrity_verified',
++              'decrypted_output_published', 'encryption_profile', 'cryptographic_integrity',
++              'package_structure_verified')
++    result = {key: metadata[key] for key in fields if key in metadata}
++    if metadata.get('encryption_profile') == 'standard3.2-aes128-sha1':
++        result['integrity_notice'] = (
++            'Password verification and package structure checks do not authenticate document contents.')
++    return result
+ 
+ 
+ def create_edit(cap, fd, leaf, path, content):
+@@ -201,13 +226,13 @@
+             raise ScopeDenied()
+         if hashlib.sha256(data).hexdigest() != spec['source_sha256']:
+             _refuse('source_hash_mismatch')
+-        result = render_edit(data, profile, spec['password'], spec['edit'], checkpoint=lambda: check(cap))
++        result, metadata = _render_edit_verified(
++            data, profile, spec['password'], spec['edit'], checkpoint=lambda: check(cap))
+         check(cap)
+         return _publish(cap, fd, leaf, path, result, 'ooxml_password_edit', (source, data, identity),
+             {'source': relative, 'source_sha256': spec['source_sha256'], 'source_unchanged': True,
+-             'output_profile': profile, 'encrypted': True, 'password_verified': True,
++             'output_profile': profile, **_edit_metadata(metadata),
+              'same_password': True, 'encryption_parameters_preserved': True,
+-             'data_integrity_verified': True, 'decrypted_output_published': False,
+              'preserving_edit': True, 'macros_executed': False, 'macro_security_verified': False})
+     except ScopeDenied:
+         raise
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -17,7 +17,8 @@
+ from agent.message_metadata import (
+     CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
+     index_tool_call_uids, message_uid_or_none, resolve_tool_call_uid, mint_uid, stamp_message_uid)
+-from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_id
++from agent.message_sanitization import (
++    _sanitize_surrogates, coalesce_tool_call_id, redact_protected_file_tool_calls_for_persistence)
+ from hermes_cli.timefmt import coerce_epoch
+ from hermes_state_common import (
+     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
+@@ -95,6 +96,12 @@
+     except (json.JSONDecodeError, TypeError):
+         return []
+ 
++
++
++def _persisted_tool_calls_json(tool_calls: Any) -> Any:
++    """Same credential-safe projection for writes and durable identity comparisons."""
++    tool_calls = redact_protected_file_tool_calls_for_persistence(_parse_tool_calls(tool_calls))
++    return json.dumps(tool_calls) if tool_calls else None
+ 
+ def _tool_calls_count(tool_calls: Any) -> int:
+     return 0 if tool_calls is None else (len(tool_calls) if isinstance(tool_calls, list) else 1)
+@@ -263,7 +270,7 @@
+         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None  # noqa: E731
+         _reasoning = lambda key: msg.get(key) if keep_reasoning else None  # noqa: E731
+         encoded_content = self._encode_content(msg.get("content"))
+-        encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
++        encoded_tool_calls = _persisted_tool_calls_json(tool_calls)
+         encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
+         display_metadata = self._encode_display_metadata(msg.get("display_metadata"))
+         identity_row = {
+@@ -736,13 +743,13 @@
+             for row in conn.execute(
+                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name FROM messages "
+                     "WHERE session_id = ? AND active = 1 ORDER BY id", (parent_session_id,)).fetchall():
+-                donors.setdefault((row["role"], row["content"], row["tool_call_id"], row["tool_calls"],
++                donors.setdefault((row["role"], row["content"], row["tool_call_id"], _persisted_tool_calls_json(row["tool_calls"]),
+                     row["tool_name"]), []).append(row["timestamp"])
+             for i in candidates:
+                 msg = messages[i]
+                 tool_calls = _parse_tool_calls(msg.get("tool_calls"))
+                 key = (msg.get("role", "unknown"), self._encode_content(msg.get("content")),
+-                    msg.get("tool_call_id"), json.dumps(tool_calls) if tool_calls else None,
++                    msg.get("tool_call_id"), _persisted_tool_calls_json(tool_calls),
+                     _scrub_surrogates(msg.get("tool_name")))
+                 queue = donors.get(key)
+                 if queue:
+@@ -862,7 +869,7 @@
+         kept-prefix match compares. *content* is passed through the loader's lens first so a message
+         read back from the DB matches the row it came from."""
+         return (role, cls._encode_content(cls._loaded_view_content(role, content)), tool_call_id,
+-                json.dumps(tool_calls) if tool_calls else None)
++                _persisted_tool_calls_json(tool_calls))
+ 
+     def _stamp_kept_live_prefix(self, live: list, messages: List[Dict[str, Any]]) -> int:
+         """Length of the in-order prefix of *messages* already present as the leading live rows; each
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1901,8 +1901,8 @@
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] += _ZIP_ENCRYPTION_GUIDANCE
+ READ_FILE_SCHEMA["parameters"]["properties"]["password"]["description"] += " Also supports protected inert PDFs for read-only extraction when the document permits it; no decrypted output is published."
+ READ_FILE_SCHEMA["description"] += " For a protected PDF, pass the supplied password to read_file. Missing or wrong passwords and restricted extraction refuse explicitly. Original encrypted source hash is retained. pdf_form_fields and writes do not accept a PDF password."
+-READ_FILE_SCHEMA["parameters"]["properties"]["password"]["description"] += " Also supports read-only Agile AES/CBC encrypted OOXML in the own-user workspace; the supplied password and package HMAC are verified before extraction. No decrypted file is published."
+-READ_FILE_SCHEMA["description"] += " Protected DOCX/DOTX/DOCM/DOTM, XLSX/XLTX/XLSM/XLTM/XLSB and PPTX/POTX/PPSX/PPTM/POTM/PPSM support bounded Agile AES/CBC password reads. Pass only the user's supplied password. Wrong or missing password, unsupported encryption or damaged data refuse without partial content. Existing native format limits still apply; legacy binary Office encryption is unsupported. Use the separate ooxml_password_edit profile for bounded same-format encrypted edits."
++READ_FILE_SCHEMA["parameters"]["properties"]["password"]["description"] += " Also supports read-only Agile AES/CBC and Standard 3.2 AES-128/ECB SHA-1 encrypted OOXML in the own-user workspace. Agile verifies the supplied password and package HMAC; Standard verifies only the password and ZIP structure, without authenticated data integrity. No decrypted file is published."
++READ_FILE_SCHEMA["description"] += " Protected DOCX/DOTX/DOCM/DOTM, XLSX/XLTX/XLSM/XLTM/XLSB and PPTX/POTX/PPSX/PPTM/POTM/PPSM support bounded Agile AES/CBC and Standard 3.2 AES-128/ECB SHA-1 password reads. Pass only the user's supplied password. Agile requires HMAC authentication; Standard verifies only the password and ZIP structure, without authenticated data integrity. Wrong or missing password, unsupported encryption or failed checks refuse without partial content. Existing native format limits still apply; legacy binary Office encryption is unsupported. Use the separate ooxml_password_edit profile for bounded same-format encrypted edits."
+ _PDF_REDACT_GUIDANCE = (
+     'Genuine bounded PDF redaction: format=pdf_redact, NEW .pdf, exact JSON '
+     '{"source":"input.pdf","source_sha256":"<current read_file SHA256>","removals":[{"page":1,"text":"Secret code"}]}. '
+@@ -1951,7 +1951,7 @@
+ WRITE_FILE_SCHEMA['description'] += ' ' + _PDF_REPORT_GUIDANCE
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] += ' ' + _PDF_REPORT_GUIDANCE
+ 
+-_ODF_PASSWORD_GUIDANCE = 'Protected ODF: read_file accepts the supplied password for bounded ODT/OTT/ODS/OTS/ODP/OTP package decryption in memory. Missing/wrong passwords, unsupported encryption and active/signed packages refuse; never guess, echo or store passwords in files. AES-CBC and legacy Blowfish-CFB8 PBKDF2 profiles only. For an explicitly requested preserving edit use write_file format=odf_password_edit to a NEW name with the SAME extension, content JSON {"source":"private.odt","source_sha256":"<read_file hash>","password":"<supplied password>","edit":{"old_text":"Old","new_text":"New"}}. ODT/OTT edit is exact unique text; ODS/OTS edit is {"sheet":"Sheet1","cell":"A1","expected":"1","value":"2"}; ODP/OTP edit is {"slide":1,"role":"slide","old_text":"Old","new_text":"New"}. The output keeps encryption with the same password and fresh member salts/IVs; no plaintext file is published, original remains unchanged. Do not put the password in the output name, prose or receipt. Worksheet protection is not removed; existing native edit restrictions still apply. A password checksum does not verify authenticity. Encrypted OOXML uses a separate authenticated profile; same-profile edits use ooxml_password_edit, while conversion remains unsupported. '
++_ODF_PASSWORD_GUIDANCE = 'Protected ODF: read_file accepts the supplied password for bounded ODT/OTT/ODS/OTS/ODP/OTP package decryption in memory. Missing/wrong passwords, unsupported encryption and active/signed packages refuse; never guess, echo or store passwords in files. AES-CBC and legacy Blowfish-CFB8 PBKDF2 profiles only. For an explicitly requested preserving edit use write_file format=odf_password_edit to a NEW name with the SAME extension, content JSON {"source":"private.odt","source_sha256":"<read_file hash>","password":"<supplied password>","edit":{"old_text":"Old","new_text":"New"}}. ODT/OTT edit is exact unique text; ODS/OTS edit is {"sheet":"Sheet1","cell":"A1","expected":"1","value":"2"}; ODP/OTP edit is {"slide":1,"role":"slide","old_text":"Old","new_text":"New"}. The output keeps encryption with the same password and fresh member salts/IVs; no plaintext file is published, original remains unchanged. Do not put the password in the output name, prose or receipt. Worksheet protection is not removed; existing native edit restrictions still apply. A password checksum does not verify authenticity. Encrypted OOXML uses separate Agile (authenticated) and Standard 3.2 AES-128/ECB SHA-1 (password and package-structure checks only, without authenticated integrity) profiles; same-profile edits use ooxml_password_edit, while conversion remains unsupported. '
+ READ_FILE_SCHEMA["description"] += _ODF_PASSWORD_GUIDANCE
+ READ_FILE_SCHEMA["parameters"]["properties"]["password"]["description"] += _ODF_PASSWORD_GUIDANCE
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("odf_password_edit")
+--- a/tools/scoped_odf_password.py
++++ b/tools/scoped_odf_password.py
+@@ -39,6 +39,9 @@
+               'http://www.w3.org/2000/09/xmldsig#sha256':'sha256',
+               'http://www.w3.org/2001/04/xmlenc#sha256':'sha256'}
+ CHECKSUM_NAMES = {'SHA1/1K':'sha1', M+'#sha1-1k':'sha1', M+'#sha256-1k':'sha256'}
++AES_GCM = 'http://www.w3.org/2009/xmlenc11#aes256-gcm'
++ARGON2ID_LO = 'urn:org:documentfoundation:names:experimental:office:manifest:argon2id'
++LOEXT = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
+ 
+ 
+ class ODFPasswordError(ValueError):
+@@ -96,15 +99,56 @@
+         fail('odf_encryption_parameters_invalid')
+ 
+ 
++def _modern_plan(entry,enc,nodes):
++    # Recognize only this bounded LO descriptor; never derive a key or decrypt.
++    # AEAD has no legacy /1K checksum and Argon2id has no PBKDF2 iteration-count.
++    if set(nodes)!={q(M,'algorithm'),q(M,'key-derivation'),q(M,'start-key-generation')}:
++        fail('odf_encryption_parameters_invalid')
++    algorithm=nodes[q(M,'algorithm')];kd=nodes[q(M,'key-derivation')]
++    start=nodes.get(q(M,'start-key-generation'))
++    required={q(M,'key-derivation-name'),q(M,'key-size'),q(M,'salt'),
++              q(LOEXT,'argon2-iterations'),q(LOEXT,'argon2-memory'),q(LOEXT,'argon2-lanes')}
++    _attrs(entry,('full-path','media-type','size'),('full-path','media-type','size'))
++    _attrs(enc,())
++    _attrs(algorithm,('algorithm-name','initialisation-vector'),('algorithm-name','initialisation-vector'))
++    if (set(kd.attrib)!=required or (kd.text or '').strip() or (kd.tail or '').strip()
++            or start is None):fail('odf_encryption_parameters_invalid')
++    _attrs(start,('start-key-generation-name','key-size'),('start-key-generation-name','key-size'))
++    if (entry.get(q(M,'full-path'))!='encrypted-package'
++            or algorithm.get(q(M,'algorithm-name'))!=AES_GCM
++            or kd.get(q(M,'key-derivation-name'))!=ARGON2ID_LO
++            or kd.get(q(M,'key-size'))!='32' or start.get(q(M,'key-size'))!='32'
++            or start.get(q(M,'start-key-generation-name'))!='http://www.w3.org/2001/04/xmlenc#sha256'):
++        fail('odf_encryption_parameters_invalid')
++    binary(algorithm.get(q(M,'initialisation-vector')),12,12)
++    binary(kd.get(q(M,'salt')),16,16)
++    # Diagnostic recognition ceilings cover the known LO defaults. No Argon2
++    # allocation occurs, and none of these numbers authorizes KDF execution.
++    number(kd.get(q(LOEXT,'argon2-iterations')),3,1)
++    memory=number(kd.get(q(LOEXT,'argon2-memory')),65536,8)
++    lanes=number(kd.get(q(LOEXT,'argon2-lanes')),4,1)
++    if memory<8*lanes:fail('odf_encryption_parameters_invalid')
++    number(entry.get(q(M,'size')),MAX_MEMBER,1)
++    return dict(unsupported_modern=True,rounds=0,key_size=32,entry=entry)
++
++
+ def _plan(entry):
+     children=list(entry)
+     if len(children)!=1 or children[0].tag!=q(M,'encryption-data'):
+         fail('odf_encryption_structure_unsupported')
+-    enc=children[0];_attrs(enc,('checksum','checksum-type'),('checksum','checksum-type'))
++    enc=children[0]
++    modern_candidate=any(
++        child.tag==q(M,'algorithm')and child.get(q(M,'algorithm-name'))==AES_GCM
++        or child.tag==q(M,'key-derivation')and child.get(q(M,'key-derivation-name'))==ARGON2ID_LO
++        for child in enc)
++    if not modern_candidate:
++        _attrs(enc,('checksum','checksum-type'),('checksum','checksum-type'))
+     nodes={}
+     for child in enc:
+         if child.tag in nodes or len(child):fail('odf_encryption_parameters_invalid')
+         nodes[child.tag]=child
++    if modern_candidate:
++        return _modern_plan(entry,enc,nodes)
+     if set(nodes) not in ({q(M,'algorithm'),q(M,'key-derivation')},
+                          {q(M,'algorithm'),q(M,'key-derivation'),q(M,'start-key-generation')}):
+         fail('odf_encryption_structure_unsupported')
+@@ -226,6 +270,20 @@
+         if len(entry):
+             plan=_plan(entry);plans[name]=plan;work+=plan['rounds']*((plan['key_size']+19)//20)
+             if infos[name].compress_type!=zipfile.ZIP_STORED:fail('odf_encrypted_member_not_stored')
++    modern=any(p.get('unsupported_modern')for p in plans.values())
++    if modern:
++        # A wholesome encrypted package omits the outer '/' and content.xml
++        # entries. Validate its entire admitted outer inventory before refusal,
++        # so a later duplicate/malformed entry cannot masquerade as this profile.
++        _attrs(root,('version',),('version',))
++        if (root.get(q(M,'version'))not in('1.3','1.4','1.5')
++                or roots or set(plans)!={'encrypted-package'} or seen!={'encrypted-package'}
++                or set(parts)!={'mimetype','META-INF/manifest.xml','encrypted-package'}
++                or set(infos)!=set(parts)
++                or plans['encrypted-package']['entry'].get(q(M,'media-type'))!=MIMES[format]):
++            fail('odf_encryption_parameters_invalid')
++        if len(parts['encrypted-package'])<16:fail('odf_ciphertext_invalid')
++        fail('odf_encryption_algorithm_unsupported')
+     if len(roots)!=1 or roots[0].get(q(M,'media-type'))!=MIMES[format]or'content.xml'not in seen:
+         fail('odf_manifest_type_mismatch')
+     # ODF exempts mimetype and META-INF files from the manifest inventory.
+--- a/tools/scoped_ooxml_password.py
++++ b/tools/scoped_ooxml_password.py
+@@ -1,7 +1,7 @@
+-"""Bounded read-only ECMA-376 Agile AES/CBC OOXML password envelope.
++"""Bounded ECMA-376 Agile4.4 and Standard3.2 OOXML password envelopes.
+ 
+ CFB allocation parser specialized from tools.scoped_doc (Source129); no
+-legacy Office profiles are changed. Crypto follows MS-OFFCRYPTO 2.3.4.10-15
++legacy Office binary profiles are changed. Crypto follows MS-OFFCRYPTO 2.3.4.5-15
+ using installed Cryptodome AES and stdlib hashlib/hmac. No crypto algorithm
+ implementation or third-party source is vendored. See OOXML-PASSWORD-NOTES.md.
+ This module has no filesystem, subprocess, network or package installation.
+@@ -84,7 +84,7 @@
+         self.data = data
+         version = _u16(data, 26)
+         shift = _u16(data, 30)
+-        if (data[8:24] != b'\0' * 16 or _u16(data, 24) != 0x003E or version not in (3, 4)
++        if (data[8:24] != b'\0' * 16 or (_u16(data, 24), version) not in ((0x003B, 3), (0x003E, 3), (0x003E, 4))
+                 or _u16(data, 28) != 0xFFFE or shift != (9 if version == 3 else 12)
+                 or _u16(data, 32) != 6 or data[34:40] != b'\0' * 6
+                 or _u32(data, 56) != 4096):
+@@ -175,6 +175,10 @@
+             _fail('ooxml_cfb_clsid')
+         # Each storage has its own CFB red-black sibling tree. Every active
+         # entry must be reachable exactly once; storage cycles are forbidden.
++        # Allocation/name/order/reachability checks remain common. A narrowly
++        # admitted Standard3.2 two-stream legacy profile below may have the
++        # exact noncanonical sibling colors emitted by the retained producer.
++        tree_colors_invalid = False
+         forests = [(root[4], ())]
+         seen = {0}
+         streams = []
+@@ -195,9 +199,10 @@
+                 row = entries[idx]
+                 name, kind, left, right, child, clsid, start, size, color = row
+                 key = (len(name), name.upper())
+-                if ((low is not None and key <= low) or (high is not None and key >= high)
+-                        or (parent_red and color == 0) or (idx == first and color != 1)):
++                if (low is not None and key <= low) or (high is not None and key >= high):
+                     _fail('cfb_directory_tree')
++                if (parent_red and color == 0) or (idx == first and color != 1):
++                    tree_colors_invalid = True
+                 if name.casefold() in names or clsid != bytes(16):
+                     _fail('cfb_duplicate_or_clsid')
+                 names.add(name.casefold())
+@@ -217,7 +222,7 @@
+                 stack.extend(((left, low, key, color == 0, depth),
+                               (right, key, high, color == 0, depth)))
+             if len(leaf_depths) > 1:
+-                _fail('cfb_directory_tree')
++                tree_colors_invalid = True
+         if seen != {i for i, row in enumerate(entries) if row is not None}:
+             _fail('cfb_directory_orphan')
+         mini_table = self._chain(_u32(data, 60), self.fat, self.sector_size,
+@@ -249,7 +254,28 @@
+             _fail('cfb_unowned_minisector')
+         if not all((name,) in self.streams for name in ('EncryptionInfo', 'EncryptedPackage')):
+             _fail('ooxml_encryption_stream_missing')
+-        _dataspaces(self.streams, storages)
++        self.profile = 'agile4.4'
++        standard_shape = (version == 3 and not storages
++                          and set(self.streams) == {('EncryptionInfo',), ('EncryptedPackage',)})
++        if standard_shape and self.streams[('EncryptionInfo',)][:4] == struct.pack('<HH', 3, 2):
++            _standard_descriptor(self.streams[('EncryptionInfo',)])
++            # Compatibility is an explicit nonconforming color profile, not
++            # a claim that red siblings satisfy the strict CFB tree rules.
++            # Only this exact bounded flat topology may omit those color rules.
++            active = [i for i, row in enumerate(entries) if row is not None]
++            legacy_colors = (
++                _u16(data, 24) == 0x003B and active == [0, 1, 2]
++                and root[4] == 1 and root[8] == 0
++                and entries[1][0:5] == ('EncryptionInfo', 2, FREE, 2, FREE)
++                and entries[2][0:5] == ('EncryptedPackage', 2, FREE, FREE, FREE)
++                and entries[1][8] == entries[2][8] == 0)
++            if tree_colors_invalid and not legacy_colors:
++                _fail('cfb_directory_tree')
++            self.profile = 'standard3.2-aes128-sha1'
++        else:
++            if tree_colors_invalid:
++                _fail('cfb_directory_tree')
++            _dataspaces(self.streams, storages)
+ 
+     def _sector(self, sid):
+         if not 0 <= sid < self.sectors:
+@@ -457,6 +483,126 @@
+         _fail('ooxml_decrypted_package_invalid')
+ 
+ 
++# Source fragment for tools.scoped_ooxml_password. Existing imports/constants,
++# _fail, _round_block and _zip_preflight are used; no I/O is introduced.
++# Deliberately narrow support: Standard v3.2, Flags 0x24, AES-128, SHA-1,
++# CryptoAPI provider 24. Other Standard/CryptoAPI/RC4 profiles remain refused.
++
++
++def _standard_descriptor(data):
++    """Parse only the bounded Standard3.2 AES128/SHA1 descriptor.
++
++    header_bytes preserves the complete nonsecret prefix through the end of
++    EncryptionHeader, including the ignored Reserved1 and original CSP name.
++    This parser's exact flags/provider restrictions are support policy, not a
++    claim that MS-OFFCRYPTO disallows every other flag/provider combination.
++    """
++    if not isinstance(data, bytes) or not 118 <= len(data) <= MAX_DESCRIPTOR:
++        _fail('ooxml_encryption_descriptor_limit')
++    if data[:4] != struct.pack('<HH', 3, 2):
++        _fail('ooxml_encryption_version_unsupported')
++    outer_flags, header_size = struct.unpack_from('<II', data, 4)
++    # Eight DWORDs and one complete UTF-16 terminator; exactly one verifier.
++    if (header_size < 34 or header_size % 2
++            or header_size > MAX_DESCRIPTOR - 84
++            or len(data) != 12 + header_size + 72):
++        _fail('ooxml_encryption_descriptor')
++    flags, extra, alg, hash_alg, bits, provider, _reserved1, reserved2 = (
++        struct.unpack_from('<8I', data, 12))
++    if (outer_flags != 0x24 or flags != 0x24 or extra != 0
++            or alg != 0x660E or hash_alg != 0x8004
++            or bits != 128 or provider != 24 or reserved2 != 0):
++        _fail('ooxml_encryption_suite_unsupported')
++    csp = data[44:12 + header_size]
++    if not csp.endswith(b'\0\0'):
++        _fail('ooxml_encryption_descriptor')
++    try:
++        csp_name = csp[:-2].decode('utf-16le')
++    except UnicodeError:
++        _fail('ooxml_encryption_descriptor')
++    if not csp_name or '\0' in csp_name:
++        _fail('ooxml_encryption_descriptor')
++    at = 12 + header_size
++    salt_size = struct.unpack_from('<I', data, at)[0]
++    hash_size = struct.unpack_from('<I', data, at + 36)[0]
++    if salt_size != 16 or hash_size != 20:
++        _fail('ooxml_encryption_descriptor')
++    return {'profile': 'standard3.2-aes128-sha1',
++            'header_bytes': data[:at], 'salt': data[at + 4:at + 20],
++            'input': data[at + 20:at + 36], 'value': data[at + 40:at + 72]}
++
++
++def _standard_key(password, salt, check):
++    """MS-OFFCRYPTO 2.3.4.7: 50,000 SHA1 rounds and block number zero."""
++    if password is None:
++        _fail('ooxml_password_required')
++    # Supported Standard limit is255 Unicode code points (Agile unchanged).
++    if not isinstance(password, str) or len(password) > 255:
++        _fail('ooxml_password_invalid')
++    try:
++        encoded = password.encode('utf-16le')
++    except UnicodeError:
++        _fail('ooxml_password_invalid')
++    check()
++    value = hashlib.sha1(salt + encoded).digest()
++    for iteration in range(50000):
++        if iteration % 1024 == 0:
++            check()
++        value = hashlib.sha1(struct.pack('<I', iteration) + value).digest()
++    value = hashlib.sha1(value + struct.pack('<I', 0)).digest()
++    # For AES128 the required16 bytes come entirely from X1. X2 contributes
++    # only when more than20 bytes are required, outside this exact profile.
++    padded = bytes(byte ^ 0x36 for byte in value) + b'\x36' * (64 - len(value))
++    key = hashlib.sha1(padded).digest()[:16]
++    check()
++    return key
++
++
++def _standard_ecb_decrypt(data, key):
++    try:
++        from Cryptodome.Cipher import AES
++    except ImportError:
++        _fail('ooxml_encryption_crypto_unavailable')
++    return AES.new(key, AES.MODE_ECB).decrypt(data)
++
++
++def _standard_read(encrypted, params, password, check):
++    """Verify a supplied password and ZIP structure; Standard has no MAC.
++
++    Caller parsed params with _standard_descriptor and confines CFB topology.
++    StreamSize is the clear length. Padding bytes carry no authenticated
++    meaning and are ignored; PKCS#7 and zero padding are not required on read.
++    """
++    check()
++    if (not isinstance(encrypted, bytes) or len(encrypted) < 24
++            or (len(encrypted) - 8) % 16):
++        _fail('ooxml_encrypted_package_invalid')
++    size = struct.unpack_from('<Q', encrypted)[0]
++    if (not 1 <= size <= MAX_INPUT or len(encrypted) > MAX_INPUT
++            or len(encrypted) - 8 != _round_block(size)):
++        _fail('ooxml_encrypted_package_limit')
++    key = _standard_key(password, params['salt'], check)
++    verifier = _standard_ecb_decrypt(params['input'], key)
++    expected = _standard_ecb_decrypt(params['value'], key)[:20]
++    if not hmac.compare_digest(expected, hashlib.sha1(verifier).digest()):
++        _fail('ooxml_password_incorrect')
++    check()
++    clear = bytearray()
++    for at in range(8, len(encrypted), 4096):
++        check()
++        clear.extend(_standard_ecb_decrypt(encrypted[at:at + 4096], key))
++    output = bytes(clear[:size])
++    _zip_preflight(output, check)
++    check()
++    return output, {'encrypted': True,
++        'encryption': 'ECMA-376-Standard3.2-AES-ECB',
++        'encryption_profile': 'standard3.2-aes128-sha1',
++        'password_verified': True, 'data_integrity_verified': False,
++        'cryptographic_integrity': 'unavailable-in-profile',
++        'package_structure_verified': True,
++        'decrypted_output_published': False, 'read_only': True}
++
++
+ def prepare_read(data, format, password=None, *, checkpoint=None):
+     """Return immutable ZIP bytes and safe metadata, or refuse without text.
+ 
+@@ -474,7 +620,11 @@
+         _fail('ooxml_password_invalid')
+     if not data.startswith(CFB_SIGNATURE):
+         return data, None
+-    streams = _CFB(data).streams
++    envelope = _CFB(data)
++    streams = envelope.streams
++    if envelope.profile == 'standard3.2-aes128-sha1':
++        params = _standard_descriptor(streams[('EncryptionInfo',)])
++        return _standard_read(streams[('EncryptedPackage',)], params, password, check)
+     params, pwd = _descriptor(streams[('EncryptionInfo',)])
+     encrypted = streams[('EncryptedPackage',)]
+     if len(encrypted) < 24 or (len(encrypted) - 8) % 16:
+--- a/tools/scoped_ooxml_password_edit.py
++++ b/tools/scoped_ooxml_password_edit.py
+@@ -1,7 +1,7 @@
+-"""Memory-only re-protection for the bounded OOXML Agile reader profile.
++"""Memory-only re-protection for bounded Agile4.4 and Standard3.2 profiles.
+ 
+ AES is provided by installed Cryptodome. CFB writing is limited to the exact
+-six streams and four storages accepted by scoped_ooxml_password; no generic
++Agile six-stream/four-storage or Standard two-stream envelope; no generic
+ container or cryptographic implementation is included. Secrets and clear ZIP
+ bytes never leave this function except inside the returned encrypted envelope.
+ """
+@@ -26,10 +26,17 @@
+     return AES.new(key, AES.MODE_CBC, iv).encrypt(value)
+ 
+ 
+-def _cfb(streams, check):
++def _cfb(streams, check, *, standard=False):
+     """Write only the reader's fixed envelope, with canonical v3 geometry."""
+-    _read._dataspaces(streams, _read._STORAGES)
+-    paths = [()] + sorted(_read._STORAGES | set(streams), key=lambda p: (len(p), p))
++    storages = _read._STORAGES
++    if standard:
++        if set(streams) != {('EncryptionInfo',), ('EncryptedPackage',)}:
++            _read._fail('ooxml_standard_container_unsupported')
++        _read._standard_descriptor(streams[('EncryptionInfo',)])
++        storages = frozenset()
++    else:
++        _read._dataspaces(streams, storages)
++    paths = [()] + sorted(storages | set(streams), key=lambda p: (len(p), p))
+     ids = {p: i for i, p in enumerate(paths)}
+     rows = [bytearray(128) for _ in paths]
+     sectors, fat, mini, mini_fat = [], [], bytearray(), []
+@@ -70,7 +77,7 @@
+ 
+     # Fixed sibling forests, sorted by the CFB name ordering. The deepest
+     # incomplete level is red, giving equal black depth for every nil leaf.
+-    for parent in [()] + sorted(_read._STORAGES):
++    for parent in [()] + sorted(storages):
+         children = sorted((p for p in paths[1:] if p[:-1] == parent),
+                           key=lambda p: (len(p[-1]), p[-1].upper()))
+         red_level, remainder = 0, len(children) - 1
+@@ -179,13 +186,55 @@
+     return _cfb(replacement, check)
+ 
+ 
++# Source fragment for tools.scoped_ooxml_password_edit. Existing imports
++# hashlib, secrets, struct and _read are used. Parent owns canonical CFB output.
++
++
++def _reprotect_standard_streams(streams, clear, password, check):
++    """Return two Standard streams with the original suite and fresh randomness.
++
++    Caller verified original/password, preflighted replacement ZIP, and will
++    encrypt-only publish after a complete readback/byte comparison. Standard
++    protects confidentiality with AES128-ECB and verifies a password; neither
++    the verifier nor the ZIP CRC is cryptographic integrity of the package.
++    """
++    check()
++    if set(streams) != {('EncryptionInfo',), ('EncryptedPackage',)}:
++        _read._fail('ooxml_encryption_streams_unsupported')
++    if not isinstance(clear, bytes) or not 1 <= len(clear) <= _read.MAX_INPUT:
++        _read._fail('input_limit')
++    params = _read._standard_descriptor(streams[('EncryptionInfo',)])
++    salt, verifier = secrets.token_bytes(16), secrets.token_bytes(16)
++    # MS-OFFCRYPTO2.3.3 requires these independent values to be different.
++    if salt == verifier:
++        _read._fail('ooxml_reprotected_random_invalid')
++    key = _read._standard_key(password, salt, check)
++    try:
++        from Cryptodome.Cipher import AES
++    except ImportError:
++        _read._fail('ooxml_encryption_crypto_unavailable')
++    cipher = AES.new(key, AES.MODE_ECB)
++    descriptor = (params['header_bytes'] + struct.pack('<I', 16) + salt
++        + cipher.encrypt(verifier) + struct.pack('<I', 20)
++        + cipher.encrypt(hashlib.sha1(verifier).digest().ljust(32, b'\0')))
++    encrypted = bytearray(struct.pack('<Q', len(clear)))
++    for at in range(0, len(clear), 4096):
++        check()
++        block = clear[at:at + 4096]
++        encrypted.extend(cipher.encrypt(block.ljust(_read._round_block(len(block)), b'\0')))
++    if len(encrypted) > _read.MAX_INPUT:
++        _read._fail('ooxml_reprotected_package_limit')
++    check()
++    return {('EncryptionInfo',): descriptor, ('EncryptedPackage',): bytes(encrypted)}
++
++
+ def protect_like(original, clear, password, *, format, checkpoint=None):
+-    """Authenticate original; encrypt replacement ZIP with its exact suite.
++    """Verify original password/profile; encrypt replacement ZIP with its exact suite.
+ 
+     Returns encrypted bytes only. Uses the supplied password once per bounded
+     derivation, fresh random salts/verifier/package key/HMAC key, and the
+-    original independent keyData/password AES bit sizes, hashes and spin count.
+-    The existing reader authenticates and compares the final clear bytes before
++    original independent Agile keyData/password parameters or Standard AES128/SHA1.
++    The reader verifies the applicable integrity/structure and compares final bytes before
+     output is returned. No I/O, callbacks other than checkpoint, or metadata.
+     """
+     check = checkpoint if checkpoint is not None else lambda: None
+@@ -198,8 +247,13 @@
+         _read._fail('ooxml_password_required')
+     _read.prepare_read(original, format, password, checkpoint=check)
+     _read._zip_preflight(clear, check)
+-    streams = _read._CFB(original).streams
+-    output = _reprotect(streams, clear, password, check)
++    envelope = _read._CFB(original)
++    streams = envelope.streams
++    if envelope.profile == 'standard3.2-aes128-sha1':
++        replacement = _reprotect_standard_streams(streams, clear, password, check)
++        output = _cfb(replacement, check, standard=True)
++    else:
++        output = _reprotect(streams, clear, password, check)
+     check()
+     verified, metadata = _read.prepare_read(output, format, password, checkpoint=check)
+     if not metadata or not hmac.compare_digest(verified, clear):
