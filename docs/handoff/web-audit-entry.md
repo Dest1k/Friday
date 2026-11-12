@@ -29,27 +29,24 @@ default branch — **main**. Публикация сюда разрешена в
 постоянный Сол — co-architect на Standard. Native goal Астры active в прежнем thread
 `01a1c688-e36d-7021-8df4-9c5644a4d75b`; UUID, история и накопленный учёт не переносились вручную.
 
-На VM установлен **203 / project487 / native17891 / plugins52 / base17730**. На миграционной
-границе gateway и Dashboard active/running, прежние PID/birth/InvocationID сохранены; миграция
-не запускала продуктовые тесты и не перезапускала сервисы. Полный V3 не принят.
+На VM установлен **204 / project489 / native17891 / plugins52 / base17730**. Новый publisher0,
+свежий DEFAULT0, полный native readback и данные проверены; gateway/Dashboard постоянные,
+Telegramconnected/3routes, все принадлежащие операции процессы закрыты. Историческая первая
+попытка204 остаётся consumed/UNKNOWN. [Установленные факты и AppPARTIAL](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/native204-installed-same-rtf-and-f06-template-partial.json).
 
-Ближайшая техническая зависимость core — настоящий переход 203→204→205 перед F06 successor.
-Первая локальная попытка 204: publisher launch consumed, observer assertion, фактический exit
-UNKNOWN; source-транзакция не началась, 203 полностью сохранён и проверен. Повтор старого once
-запрещён. Отдельная безвредная real-unit проба обнаружила ещё один startup race observer;
-R2 исправление принято по 74 детерминированным и 8 независимым source controls; две новые
-реальные harmless units дали exit0/2 с проверенной closure. Первые live snapshots уже имели полный
-InvocationID, поэтому emptyID wait ветка live не наблюдалась. Будущий source frame принят,
-но перед установкой нужен новый caller/current-service anchor: старый привязан к прежним PID.
-Затем — свежая подготовка действительно недостающей установки, тот же сохранённый RTF consumer
-и настоящий checkpoint 204. [Код и точные границы](../checkpoints/2026-11-07-v3-original-context-repair/drafts/core204-r2-qualified-source/README.md).
+Ближайшая техническая зависимость core — **настоящий204→205**, затем F06 normal205→206.
+Новый coherent205frame/boundary готовится с actualCP204 и свежими all-profile предпосылками;
+старый caller с прежним журналом/процессами исполнять нельзя. Task23 Сола завершил четыре
+полных source gates success/rollback для operational/public и независимое execution review,
+но future206public5 не подключены до genuine205. Source fixtures не являются installed205/206.
 
-
-Текущий функциональный срез — F06 защищённые Office-файлы. Standard3.2, privacy и ODF изменения
-приняты на уровне исходников, не установлены. Task23 Сола подготовил prospective normal205→206
-и независимое source review; RootREADY на четыре полных source gates выдан; первый operational-success
-PASS, проверка rollback идёт. Шаблонный Office harness и узкий capture expected-refusal приняты Root после независимых
-source reviews; реальные App/ordinary admission и формальная приёмка из этого не следуют.
+Установленный RTF-helper прочитал те же10723B с16body/3stories и восстановленной сноской,
+сохраняя partial/layout/numbering ограничения; ordinaryauthority из этого не следует.
+F06 readonly template evaluation выполнен:12typedpasswordrefusals и6correctopen+семантика,
+но6getRequest SystemError до классификации. Rawall_passfalse/client1/полныйзахват18 сохранены,
+итог **PARTIAL**, фактическийpayload/causeUNKNOWN; originalOTTrawreceipt gap не исправлен.
+Сол в прежней Standard TUI выполняет Task24 source/bridge analysis без новыхOffice/документных
+эффектов. Астра интегрирует продукт; локальный AppPARTIAL не блокирует независимую установку205.
 
 ## Что можно проверить из репозитория
 
@@ -63,7 +60,7 @@ source reviews; реальные App/ordinary admission и формальная 
 Исходники, установка, исполненный пользовательский путь, семантическая оценка и формальная
 приёмка — разные факты. Приватные native receipts, БД/WAL/SHM, Telegram runs/downloads/closures,
 оригиналы и Office-наблюдения остаются на VM; веб-чат не может независимо вывести их свежесть
-из одного source PASS. Часть новых R2/F06 пакетов ещё только в приватных source-копиях.
+из одного source PASS. Текущие205/206 и callback исходники имеют отдельные source-only статусы; часть материалов остаётся только в приватных копиях.
 Не запускать повторно producer/model/send ради удобного PASS. R83 UNKNOWN_SEND, исчерпанные
 три C10 journey и остальные consumed/UNKNOWN ограничения приведены в ASTRA-CURRENT.
 
