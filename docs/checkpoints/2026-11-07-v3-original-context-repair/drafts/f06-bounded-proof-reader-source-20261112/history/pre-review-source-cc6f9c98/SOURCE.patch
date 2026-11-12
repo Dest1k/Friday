@@ -1,0 +1,294 @@
+--- a/first/f06_footer.py.txt
++++ b/first/f06_footer.py.txt
+@@ -15,16 +15,30 @@
+           and str(Path(text))==text, 'F06_LEXICAL_PATH_ALIAS_REFUSED')
+     return Path(text)
+ 
++# Preserve the path-reader ABI/default. Declared reference leaves explicitly
++# opt into the scoped callback; nested metadata is never searched recursively.
++def _f06_reference_read(path,*,private=True):
++    return safe_read(_f06_path(path),private=private)
++
++def _f06_bounded_reference_read(reference):
++    _f06_need(type(reference) is dict and set(reference)=={'path','bytes','sha256'} and type(reference['bytes']) is int and 0<reference['bytes']<=24*1024**2 and type(reference['sha256']) is str and re.fullmatch('[a-f0-9]{64}',reference['sha256']) is not None,'F06_EXACT_BOUNDED_REFERENCE_REQUIRED')
++    _p=_f06_path(reference['path'])
++    _raw=safe_read(_p,limit=reference['bytes'],private=True)
++    _f06_need(type(_raw) is bytes and len(_raw)==reference['bytes'] and digest(_raw)==reference['sha256'],'F06_BOUNDED_REFERENCE_CHANGED')
++    return _raw
++
++_f06_reference_read.f06_read_reference=_f06_bounded_reference_read
++
+ def _f06_adapter():
+     _r=F06_CONTRACT['adapter']
+     if not isinstance(_r,dict):raise Refused('F06_PREPARATION_UNBOUND_NO_AUTHORITY')
+-    _raw=safe_read(_f06_path(_r['path']))
++    _raw=_f06_bounded_reference_read(_r)
+     if len(_raw)!=_r['bytes'] or digest(_raw)!=_r['sha256']:raise Refused('F06_ADAPTER_CHANGED')
+     import types as _types
+     _m=_types.ModuleType('_F06_exact_adapter');_m.__file__=_r['path'];exec(compile(_raw,_m.__file__,'exec'),_m.__dict__);return _m
+ 
+ def _f06_current(state,state_raw,state_path):
+-    try:return _f06_adapter().current_gate(F06_CONTRACT,_f06_phase,state,state_raw,state_path,safe_read)
++    try:return _f06_adapter().current_gate(F06_CONTRACT,_f06_phase,state,state_raw,state_path,_f06_reference_read)
+     except Exception as _exc:raise Refused('F06_FRESH_ROOT_B_BOUNDARY_REFUSED') from _exc
+ 
+ # Enforce the bound operation disk allowance at the existing writer, including
+@@ -51,19 +65,19 @@
+     def ordinary_independent_admission(self,name,scenario):
+         global _f06_phase
+         try:
+-            _m=_f06_adapter();_m.shape(F06_CONTRACT,name,scenario,safe_read)
+-            _m.admission(F06_CONTRACT,json.loads(safe_read(_f06_path(self.ORDINARY_INDEPENDENT_AUTHORITY['path'])),object_pairs_hook=unique_object),read=safe_read)
++            _m=_f06_adapter();_m.shape(F06_CONTRACT,name,scenario,_f06_reference_read)
++            _m.admission(F06_CONTRACT,json.loads(_f06_bounded_reference_read(self.ORDINARY_INDEPENDENT_AUTHORITY),object_pairs_hook=unique_object),read=_f06_reference_read)
+         except Exception as _exc:raise Refused('F06_EXACT_ORDINARY_ADMISSION_REFUSED') from _exc
+         if _f06_phase is not None:raise Refused('F06_NESTED_BOUNDARY_REFUSED')
+         _f06_phase='NEW' if getattr(self,'_f06_new_operation',False) else getattr(self,'_send_phase',None)
+         try:
+             _document=super().ordinary_independent_admission(name,scenario)
+-            _m.admission(F06_CONTRACT,_document,read=safe_read)
++            _m.admission(F06_CONTRACT,_document,read=_f06_reference_read)
+             return _document
+         finally:_f06_phase=None
+     def new(self,name,scenario,continuation=None):
+         try:
+-            _f06_adapter().shape(F06_CONTRACT,name,scenario,safe_read)
++            _f06_adapter().shape(F06_CONTRACT,name,scenario,_f06_reference_read)
+             if continuation is not None:raise ValueError('F06_NO_CONTINUATION_OR_MEMORY_GRANT')
+         except Exception as _exc:raise Refused('F06_NEW_CURRENT_UNBOUND') from _exc
+         self._f06_new_operation=True
+@@ -71,7 +85,7 @@
+         finally:del self._f06_new_operation
+     def _send(self,run,*,resume_prepared=False,consumer_fd=None,credential_fd=None):
+         try:
+-            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),safe_read)
++            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),_f06_reference_read)
+             if resume_prepared or run.get('status')!='PREPARED' or run.get('send_state')!='none' or type(run.get('send_attempts')) is not int or run['send_attempts']!=0 or type(run.get('step')) is not int or run['step']!=0 or run.get('scenario_sha256')!=F06_CONTRACT['scenario_sha256'] or 'continuation_reference' in run:raise ValueError('F06_PRISTINE_ONE_ATTEMPT_ONLY')
+         except Exception as _exc:raise Refused('F06_ONCE_BOUNDARY_REFUSED') from _exc
+         return super()._send(run,resume_prepared=False,consumer_fd=consumer_fd,credential_fd=credential_fd)
+@@ -79,7 +93,7 @@
+         # Immutable admitted contract only: no fresh/quiescent pre-intent checker
+         # while the product is working. Tighten ordinary ACK to exact tester/caption.
+         try:
+-            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),safe_read)
++            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),_f06_reference_read)
+             if 'continuation_reference' in run:raise ValueError('F06_ORDINARY_CONTEXT_ONLY')
+         except Exception as _exc:raise Refused('F06_CAPTURE_CONTRACT_CHANGED') from _exc
+         super().verify_capture_context(run)
+--- a/first/f06_source.py
++++ b/first/f06_source.py
+@@ -59,7 +59,11 @@
+ 
+ def ref(v):return type(v) is dict and set(v)=={'path','bytes','sha256'} and type(v['path']) is str and canonical_path(v['path']).is_absolute() and type(v['bytes']) is int and 0<v['bytes']<=24*1024**2 and sha(v['sha256'])
+ def readref(v,read):
+-    need(ref(v),'F06_EXACT_PROTECTED_REFERENCE_REQUIRED');raw=read(canonical_path(v['path']));need(type(raw) is bytes and len(raw)==v['bytes'] and digest(raw)==v['sha256'],'F06_REFERENCE_CHANGED');return raw
++    need(ref(v),'F06_EXACT_PROTECTED_REFERENCE_REQUIRED')
++    missing=object();bounded=getattr(read,'f06_read_reference',missing)
++    need(bounded is missing or callable(bounded),'F06_BOUNDED_REFERENCE_CALLBACK_REQUIRED')
++    raw=read(canonical_path(v['path'])) if bounded is missing else bounded(v)
++    need(type(raw) is bytes and len(raw)==v['bytes'] and digest(raw)==v['sha256'],'F06_REFERENCE_CHANGED');return raw
+ 
+ def scope():
+     return ('Original F-06/P0/LIVE_BOT first protected DOCX wrong-password READ only. One new ordinary independent B operation; one initial fresh upload of retained g6 Standard3.2 CFB23040B SHA22b0dcb3fed3d979b37ff701af42b00d3756d76a863e8f8c736405acc9c33fd5. No edit, decrypted output, brute force, producer, restart, scope reset, automatic followup or old effect replay. Exact300/full180/ACK10/reserve5/outer600 requires genuine Root authoritative budget proof. Expected refusal is RECEIVED_UNGRADED/NOT_ESTABLISHED; no rights or semantic PASS. Standard3.2 password verifier/ZIP CRC/readback is not MAC; data_integrity_verified=false. Correct read is a separate future operation derived from this actual closed upload, no second upload or fabricated source reference. NOT a B00 acceptance; NOT a product acceptance; whole F06/170/120/B00 remain open.')
+--- a/correct/f06_footer.py.txt
++++ b/correct/f06_footer.py.txt
+@@ -15,16 +15,30 @@
+           and str(Path(text))==text, 'F06_LEXICAL_PATH_ALIAS_REFUSED')
+     return Path(text)
+ 
++# Preserve the path-reader ABI/default. Declared reference leaves explicitly
++# opt into the scoped callback; nested metadata is never searched recursively.
++def _f06_reference_read(path,*,private=True):
++    return safe_read(_f06_path(path),private=private)
++
++def _f06_bounded_reference_read(reference):
++    _f06_need(type(reference) is dict and set(reference)=={'path','bytes','sha256'} and type(reference['bytes']) is int and 0<reference['bytes']<=24*1024**2 and type(reference['sha256']) is str and re.fullmatch('[a-f0-9]{64}',reference['sha256']) is not None,'F06_EXACT_BOUNDED_REFERENCE_REQUIRED')
++    _p=_f06_path(reference['path'])
++    _raw=safe_read(_p,limit=reference['bytes'],private=True)
++    _f06_need(type(_raw) is bytes and len(_raw)==reference['bytes'] and digest(_raw)==reference['sha256'],'F06_BOUNDED_REFERENCE_CHANGED')
++    return _raw
++
++_f06_reference_read.f06_read_reference=_f06_bounded_reference_read
++
+ def _f06_adapter():
+     _r=F06_CONTRACT['adapter']
+     if not isinstance(_r,dict):raise Refused('F06_PREPARATION_UNBOUND_NO_AUTHORITY')
+-    _raw=safe_read(_f06_path(_r['path']))
++    _raw=_f06_bounded_reference_read(_r)
+     if len(_raw)!=_r['bytes'] or digest(_raw)!=_r['sha256']:raise Refused('F06_ADAPTER_CHANGED')
+     import types as _types
+     _m=_types.ModuleType('_F06_exact_adapter');_m.__file__=_r['path'];exec(compile(_raw,_m.__file__,'exec'),_m.__dict__);return _m
+ 
+ def _f06_current(state,state_raw,state_path):
+-    try:return _f06_adapter().current_gate(F06_CONTRACT,_f06_phase,state,state_raw,state_path,safe_read)
++    try:return _f06_adapter().current_gate(F06_CONTRACT,_f06_phase,state,state_raw,state_path,_f06_reference_read)
+     except Exception as _exc:raise Refused('F06_FRESH_ROOT_B_BOUNDARY_REFUSED') from _exc
+ 
+ # Enforce the bound operation disk allowance at the existing writer, including
+@@ -51,8 +65,8 @@
+     def ordinary_independent_admission(self,name,scenario):
+         global _f06_phase
+         try:
+-            _m=_f06_adapter();_m.shape(F06_CONTRACT,name,scenario,safe_read)
+-            _m.admission(F06_CONTRACT,json.loads(safe_read(_f06_path(self.ORDINARY_INDEPENDENT_AUTHORITY['path'])),object_pairs_hook=unique_object))
++            _m=_f06_adapter();_m.shape(F06_CONTRACT,name,scenario,_f06_reference_read)
++            _m.admission(F06_CONTRACT,json.loads(_f06_bounded_reference_read(self.ORDINARY_INDEPENDENT_AUTHORITY),object_pairs_hook=unique_object))
+         except Exception as _exc:raise Refused('F06_EXACT_ORDINARY_ADMISSION_REFUSED') from _exc
+         if _f06_phase is not None:raise Refused('F06_NESTED_BOUNDARY_REFUSED')
+         _f06_phase='NEW' if getattr(self,'_f06_new_operation',False) else getattr(self,'_send_phase',None)
+@@ -63,7 +77,7 @@
+         finally:_f06_phase=None
+     def new(self,name,scenario,continuation=None):
+         try:
+-            _f06_adapter().shape(F06_CONTRACT,name,scenario,safe_read)
++            _f06_adapter().shape(F06_CONTRACT,name,scenario,_f06_reference_read)
+             if continuation is not None:raise ValueError('F06_NO_CONTINUATION_OR_MEMORY_GRANT')
+         except Exception as _exc:raise Refused('F06_NEW_CURRENT_UNBOUND') from _exc
+         self._f06_new_operation=True
+@@ -71,7 +85,7 @@
+         finally:del self._f06_new_operation
+     def _send(self,run,*,resume_prepared=False,consumer_fd=None,credential_fd=None):
+         try:
+-            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),safe_read)
++            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),_f06_reference_read)
+             if resume_prepared or run.get('status')!='PREPARED' or run.get('send_state')!='none' or type(run.get('send_attempts')) is not int or run['send_attempts']!=0 or type(run.get('step')) is not int or run['step']!=0 or run.get('scenario_sha256')!=F06_CONTRACT['scenario_sha256'] or 'continuation_reference' in run:raise ValueError('F06_PRISTINE_ONE_ATTEMPT_ONLY')
+         except Exception as _exc:raise Refused('F06_ONCE_BOUNDARY_REFUSED') from _exc
+         return super()._send(run,resume_prepared=False,consumer_fd=consumer_fd,credential_fd=credential_fd)
+@@ -79,7 +93,7 @@
+         # Immutable admitted contract only: no fresh/quiescent pre-intent checker
+         # while the product is working. Tighten ordinary ACK to exact tester/text and zero upload.
+         try:
+-            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),safe_read)
++            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),_f06_reference_read)
+             if 'continuation_reference' in run:raise ValueError('F06_ORDINARY_CONTEXT_ONLY')
+         except Exception as _exc:raise Refused('F06_CAPTURE_CONTRACT_CHANGED') from _exc
+         super().verify_capture_context(run)
+--- a/correct/f06_source.py
++++ b/correct/f06_source.py
+@@ -60,7 +60,11 @@
+ 
+ def ref(v):return type(v) is dict and set(v)=={'path','bytes','sha256'} and type(v['path']) is str and canonical_path(v['path']).is_absolute() and type(v['bytes']) is int and 0<v['bytes']<=24*1024**2 and sha(v['sha256'])
+ def readref(v,read):
+-    need(ref(v),'F06_EXACT_PROTECTED_REFERENCE_REQUIRED');raw=read(canonical_path(v['path']));need(type(raw) is bytes and len(raw)==v['bytes'] and digest(raw)==v['sha256'],'F06_REFERENCE_CHANGED');return raw
++    need(ref(v),'F06_EXACT_PROTECTED_REFERENCE_REQUIRED')
++    missing=object();bounded=getattr(read,'f06_read_reference',missing)
++    need(bounded is missing or callable(bounded),'F06_BOUNDED_REFERENCE_CALLBACK_REQUIRED')
++    raw=read(canonical_path(v['path'])) if bounded is missing else bounded(v)
++    need(type(raw) is bytes and len(raw)==v['bytes'] and digest(raw)==v['sha256'],'F06_REFERENCE_CHANGED');return raw
+ 
+ def scope():
+     return ('Original F-06/P0/LIVE_BOT one separate correct-password READ of SAME actual closed first protected DOCX upload. Text-only ordinary independent operation; max0 uploads/outbound documents, no edits/decrypted copy/new files/password echo/new memory/brute force/producer/restart or old effect replay. First paragraph only, privately assessed against retained independent actual plaintext/structure oracle; generic/refusal/unsupported is not success. Actual first ACK/source_reference/native-ingress/custody/closed reconciliation and fresh Root decision required. No fabricated reply_to/inlinepath, worker continuation, quarantine or second sendDocument. Exact300/full180/ACK10/reserve5/outer600; RECEIVED_UNGRADED/NOT_ESTABLISHED until independent Root grading. Standard3.2 data_integrity_verified=false; password verification/ZIP CRC/readback are not authenticated MAC. Whole F06/170/120/B00 remains open.')
+--- a/correct/first_ingress.py
++++ b/correct/first_ingress.py
+@@ -44,7 +44,9 @@
+             and 0<r['bytes']<=24*1024**2 and sha(r['sha256']))
+ def readref(r,read):
+     need(reference(r),'F06_FIRST_EXACT_REF_REQUIRED')
+-    raw=read(path(r['path']))
++    missing=object();bounded=getattr(read,'f06_read_reference',missing)
++    need(bounded is missing or callable(bounded),'F06_FIRST_BOUNDED_REFERENCE_CALLBACK_REQUIRED')
++    raw=read(path(r['path'])) if bounded is missing else bounded(r)
+     need(type(raw) is bytes and len(raw)==r['bytes'] and digest(raw)==r['sha256'],
+          'F06_FIRST_REF_CHANGED')
+     return raw
+--- a/wrong-edit/f06_footer.py.txt
++++ b/wrong-edit/f06_footer.py.txt
+@@ -15,16 +15,30 @@
+           and str(Path(text))==text, 'F06_LEXICAL_PATH_ALIAS_REFUSED')
+     return Path(text)
+ 
++# Preserve the path-reader ABI/default. Declared reference leaves explicitly
++# opt into the scoped callback; nested metadata is never searched recursively.
++def _f06_reference_read(path,*,private=True):
++    return safe_read(_f06_path(path),private=private)
++
++def _f06_bounded_reference_read(reference):
++    _f06_need(type(reference) is dict and set(reference)=={'path','bytes','sha256'} and type(reference['bytes']) is int and 0<reference['bytes']<=24*1024**2 and type(reference['sha256']) is str and re.fullmatch('[a-f0-9]{64}',reference['sha256']) is not None,'F06_EXACT_BOUNDED_REFERENCE_REQUIRED')
++    _p=_f06_path(reference['path'])
++    _raw=safe_read(_p,limit=reference['bytes'],private=True)
++    _f06_need(type(_raw) is bytes and len(_raw)==reference['bytes'] and digest(_raw)==reference['sha256'],'F06_BOUNDED_REFERENCE_CHANGED')
++    return _raw
++
++_f06_reference_read.f06_read_reference=_f06_bounded_reference_read
++
+ def _f06_adapter():
+     _r=F06_CONTRACT['adapter']
+     if not isinstance(_r,dict):raise Refused('F06_PREPARATION_UNBOUND_NO_AUTHORITY')
+-    _raw=safe_read(_f06_path(_r['path']))
++    _raw=_f06_bounded_reference_read(_r)
+     if len(_raw)!=_r['bytes'] or digest(_raw)!=_r['sha256']:raise Refused('F06_ADAPTER_CHANGED')
+     import types as _types
+     _m=_types.ModuleType('_F06_exact_adapter');_m.__file__=_r['path'];exec(compile(_raw,_m.__file__,'exec'),_m.__dict__);return _m
+ 
+ def _f06_current(state,state_raw,state_path):
+-    try:return _f06_adapter().current_gate(F06_CONTRACT,_f06_phase,state,state_raw,state_path,safe_read)
++    try:return _f06_adapter().current_gate(F06_CONTRACT,_f06_phase,state,state_raw,state_path,_f06_reference_read)
+     except Exception as _exc:raise Refused('F06_FRESH_ROOT_B_BOUNDARY_REFUSED') from _exc
+ 
+ # Enforce the bound operation disk allowance at the existing writer, including
+@@ -51,8 +65,8 @@
+     def ordinary_independent_admission(self,name,scenario):
+         global _f06_phase
+         try:
+-            _m=_f06_adapter();_m.shape(F06_CONTRACT,name,scenario,safe_read)
+-            _m.admission(F06_CONTRACT,json.loads(safe_read(_f06_path(self.ORDINARY_INDEPENDENT_AUTHORITY['path'])),object_pairs_hook=unique_object))
++            _m=_f06_adapter();_m.shape(F06_CONTRACT,name,scenario,_f06_reference_read)
++            _m.admission(F06_CONTRACT,json.loads(_f06_bounded_reference_read(self.ORDINARY_INDEPENDENT_AUTHORITY),object_pairs_hook=unique_object))
+         except Exception as _exc:raise Refused('F06_EXACT_ORDINARY_ADMISSION_REFUSED') from _exc
+         if _f06_phase is not None:raise Refused('F06_NESTED_BOUNDARY_REFUSED')
+         _f06_phase='NEW' if getattr(self,'_f06_new_operation',False) else getattr(self,'_send_phase',None)
+@@ -63,7 +77,7 @@
+         finally:_f06_phase=None
+     def new(self,name,scenario,continuation=None):
+         try:
+-            _f06_adapter().shape(F06_CONTRACT,name,scenario,safe_read)
++            _f06_adapter().shape(F06_CONTRACT,name,scenario,_f06_reference_read)
+             if continuation is not None:raise ValueError('F06_NO_CONTINUATION_OR_MEMORY_GRANT')
+         except Exception as _exc:raise Refused('F06_NEW_CURRENT_UNBOUND') from _exc
+         self._f06_new_operation=True
+@@ -71,7 +85,7 @@
+         finally:del self._f06_new_operation
+     def _send(self,run,*,resume_prepared=False,consumer_fd=None,credential_fd=None):
+         try:
+-            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),safe_read)
++            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),_f06_reference_read)
+             if resume_prepared or run.get('status')!='PREPARED' or run.get('send_state')!='none' or type(run.get('send_attempts')) is not int or run['send_attempts']!=0 or type(run.get('step')) is not int or run['step']!=0 or run.get('scenario_sha256')!=F06_CONTRACT['scenario_sha256'] or 'continuation_reference' in run:raise ValueError('F06_PRISTINE_ONE_ATTEMPT_ONLY')
+         except Exception as _exc:raise Refused('F06_ONCE_BOUNDARY_REFUSED') from _exc
+         return super()._send(run,resume_prepared=False,consumer_fd=consumer_fd,credential_fd=credential_fd)
+@@ -79,7 +93,7 @@
+         # Immutable admitted contract only: no fresh/quiescent pre-intent checker
+         # while the product is working. Tighten ordinary ACK to exact tester/text and zero upload.
+         try:
+-            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),safe_read)
++            _f06_adapter().shape(F06_CONTRACT,run.get('id'),run.get('scenario'),_f06_reference_read)
+             if 'continuation_reference' in run:raise ValueError('F06_ORDINARY_CONTEXT_ONLY')
+         except Exception as _exc:raise Refused('F06_CAPTURE_CONTRACT_CHANGED') from _exc
+         super().verify_capture_context(run)
+--- a/wrong-edit/f06_source.py
++++ b/wrong-edit/f06_source.py
+@@ -60,7 +60,11 @@
+ 
+ def ref(v):return type(v) is dict and set(v)=={'path','bytes','sha256'} and type(v['path']) is str and canonical_path(v['path']).is_absolute() and type(v['bytes']) is int and 0<v['bytes']<=24*1024**2 and sha(v['sha256'])
+ def readref(v,read):
+-    need(ref(v),'F06_EXACT_PROTECTED_REFERENCE_REQUIRED');raw=read(canonical_path(v['path']));need(type(raw) is bytes and len(raw)==v['bytes'] and digest(raw)==v['sha256'],'F06_REFERENCE_CHANGED');return raw
++    need(ref(v),'F06_EXACT_PROTECTED_REFERENCE_REQUIRED')
++    missing=object();bounded=getattr(read,'f06_read_reference',missing)
++    need(bounded is missing or callable(bounded),'F06_BOUNDED_REFERENCE_CALLBACK_REQUIRED')
++    raw=read(canonical_path(v['path'])) if bounded is missing else bounded(v)
++    need(type(raw) is bytes and len(raw)==v['bytes'] and digest(raw)==v['sha256'],'F06_REFERENCE_CHANGED');return raw
+ 
+ def scope():
+     return ('Original F-06/P0/LIVE_BOT one separate wrong-password EDIT of SAME actual closed protected DOCX upload, only after actual correct-read closed, semantically assessed and accepted. One legitimate exact Root-authorized literal replacement; use ONLY the deliberately wrong password supplied for this operation, never previous correct password or history/guessing. Text-only ordinary independent request, max0 uploads/outbound documents. Expected honest password refusal with no source change, plaintext/new/encrypted output, delivery or automatic followup. Actual refusal remains RECEIVED_UNGRADED/NOT_ESTABLISHED until independent Root semantic/privacy/nochange assessment. Exact actual first ACK/source_reference/native ingress/custody plus correct-read linkage/assessment and fresh Root decision required. No producer/native edit/Office/restart, second sendDocument, fake reply_to/inlinepath, correct-edit authorization, old effect replay or clock reset. Exact300/full180/ACK10/reserve5/outer600. Standard3.2 data_integrity_verified=false; password verification/ZIP CRC/readback are not authenticated MAC. Correct-edit/other families/full F06/170/120/B00 remain open.')
+--- a/wrong-edit/first_ingress.py
++++ b/wrong-edit/first_ingress.py
+@@ -44,7 +44,9 @@
+             and 0<r['bytes']<=24*1024**2 and sha(r['sha256']))
+ def readref(r,read):
+     need(reference(r),'F06_FIRST_EXACT_REF_REQUIRED')
+-    raw=read(path(r['path']))
++    missing=object();bounded=getattr(read,'f06_read_reference',missing)
++    need(bounded is missing or callable(bounded),'F06_FIRST_BOUNDED_REFERENCE_CALLBACK_REQUIRED')
++    raw=read(path(r['path'])) if bounded is missing else bounded(r)
+     need(type(raw) is bytes and len(raw)==r['bytes'] and digest(raw)==r['sha256'],
+          'F06_FIRST_REF_CHANGED')
+     return raw

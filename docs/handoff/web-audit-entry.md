@@ -66,7 +66,30 @@ RuntimewrapperWARNNOT_RUN сохраняется; [pureleaf текущего206s
 [Точные source/review/контроли обеих веток](../checkpoints/2026-11-07-v3-original-context-repair/drafts/f06-canonical-binding-source-20261112/README.md)
 сохраняют UNBOUND/NOT_RUN и обе прежние причины отказа.
 Новый userconsumer требует отдельной свежей проверки Root, не повторного старогоcaller/issuer.
-СолTask30 на Standard готовит будущий same-upload wrong-edit только в исходниках; actualfirstupload/correctread ещё не выполнены.
+СолTask30 завершил source-only same-upload wrong-edit; Root принял смысловые компоненты с hold на общий proof-reader ABI.
+СолTask31 на Standard готовит frame для ещё не начатого первого API-участка после закрытого consumer Y.
+
+**Актуальная граница F06:** consumer Y реально запущен и закрыт08:55:37, child2/wrapper0,1.6245s,
+full180 не началось. [Сохранённый отказ](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/f06-first-consumer-preintent-size-refusal.json)
+и [независимое review](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/f06-first-consumer-preintent-size-refusal-review.json)
+подтверждают current-gate отказ в runner.new до save/send: BotAPI object создан, запроса не было.
+Raw REFUSED_OR_UNKNOWN сохранён; вложенная причина не удержана. На тех же metadata воспроизведён предел:
+Rootproof2496998B при consumer default1048576B. Это source-derived объяснение, не выдуманная original exception trace.
+Actor+parent закрыты/slotfree/canonicalrun нет; [custody delta](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/f06-first-consumer-preintent-custody-delta.json)
+содержит только точный diagnostic, все3DBmetadata прежние. Пустота сама по себе не доказательство no-send.
+Исправляется bounded reader для прямых и вложенных exactrefs; старые O/X/Y source/once/clock/binding/diagnostic сохраняются.
+Следующая операция требует отдельной фактической Root reconciliation/lineage/CAS и review; старый caller не повторять.
+User upload/model/reply, correct-read/wrong-edit, full180 и формальная F06-приёмка остаются NOT_RUN.
+
+**После отключения питания12.11,21:42–21:47 МСК** [установка и данные проверены заново](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/postpower-installed207-runtime-recovery.json):
+canonical4/native17891/plugin52 совпали,3DBquickcheckOK/fullmetadata/history/cursor/config/source identity сохранились.
+Gateway2763/Dashboard2762 работают постоянно, Telegramconnected3profiles, readonly sameB routing quiescent;
+Qwen+compressor health/models200/configuredmodel present. Это endpoint/read-only проверки, не новый model/user test.
+Сменились boot/process/service identities; старый diagnostic — единственная добавленная custody-запись.
+R106 истёк13:23 и относится к старомуboot: прежний допуск/clock не продлевались и не переиспользуются.
+Сол продолжает прежний Task31 в своей восстановленной StandardTUI; SourceR2 callback принят Root,
+а postboot transition и отдельный current-admission для не начатого API требуют явных оснований.
+Новая отправка/переустановка/Office-цикл при восстановлении не выполнялись. Полный V3 остаётся открыт.
 
 ## Что можно проверить из репозитория
 

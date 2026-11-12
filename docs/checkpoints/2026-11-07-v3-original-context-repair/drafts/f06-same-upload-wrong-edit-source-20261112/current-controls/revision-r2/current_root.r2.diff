@@ -1,0 +1,54 @@
+--- current_root.r1.py
++++ candidate/current_root.py
+@@ -640,21 +640,44 @@
+             'F06 first-upload private custody evidence ref required')
+     materials.append(str(canonical_path(first_custody['path']).parent))
+     correct = correct_dependency(c,first)
+-    # Correct-read ACK/task/window/canonical row can retain the previous correct
+-    # credential. Cover every exact metadata reference, never serialize its body.
+-    def dependency_dirs(value):
++    # Only inspect already-validated binding/closure/custody/assessment metadata.
++    # Declared scenario/source/oracle/raw references contribute directories only;
++    # their contents and the previous correct credential are never opened here.
++    traversal = dict(nodes=0,refs=0)
++    def dependency_dirs(value,depth=0):
++        traversal['nodes'] += 1
++        require(depth<=32 and traversal['nodes']<=8192,
++                'F06 bounded correct-read private metadata exceeded')
+         if type(value) is dict:
+             if set(value)=={'path','bytes','sha256'}:
+-                require(type(value['bytes']) is int and value['bytes']>0 and sha(value['sha256']),
+-                        'F06 exact correct-read private-material ref required')
++                traversal['refs'] += 1
++                require(traversal['refs']<=2048 and type(value['bytes']) is int
++                        and 0<value['bytes']<=24*1024**2 and sha(value['sha256']),
++                        'F06 exact bounded correct-read private-material ref required')
+                 materials.append(str(canonical_path(value['path']).parent))
+             else:
+                 for nested in value.values():
+-                    dependency_dirs(nested)
++                    dependency_dirs(nested,depth+1)
+         elif type(value) is list:
+             for nested in value:
+-                dependency_dirs(nested)
++                dependency_dirs(nested,depth+1)
++    def dependency_metadata(r):
++        require(type(r) is dict and set(r)=={'path','bytes','sha256'}
++                and type(r['bytes']) is int and 0<r['bytes']<=1024**2
++                and sha(r['sha256']), 'F06 bounded pinned correct-read metadata required')
++        raw = read(canonical_path(r['path']),limit=1024**2)
++        require(len(raw)==r['bytes'] and digest(raw)==r['sha256'],
++                'F06 correct-read private metadata pin drift')
++        value = parse(raw)
++        require(type(value) is dict, 'F06 exact correct-read metadata object required')
++        return value
+     dependency_dirs(correct)
++    binding = dependency_metadata(correct['correct_binding'])
++    closure = dependency_metadata(correct['closure'])
++    custody_metadata = dependency_metadata(closure.get('original_consumer_custody'))
++    assessment = dependency_metadata(correct['assessment'])
++    for metadata in (binding,closure,custody_metadata,assessment):
++        dependency_dirs(metadata)
+     protected = privacy.get('private_roots')
+     require(type(protected) is list and protected==sorted(set(protected))
+             and all(type(p) is str and canonical_path(p).is_absolute() for p in protected)

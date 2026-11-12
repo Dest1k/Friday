@@ -1,0 +1,22 @@
+--- a/first_ingress.py
++++ b/first_ingress.py
+@@ -319,6 +319,19 @@
+     need(w.get('run_id')==rid and w.get('scenario_sha256')==run['scenario_sha256'] and type(w.get('step')) is int and w['step']==0 and type(w.get('send_attempts')) is int and w['send_attempts']==1 and w.get('send_intent_at')==run['send_intent_at'] and w.get('send_dispatch_at')==run['send_dispatch_at'] and w.get('send_timeout_seconds')==10 and type(w.get('send_timeout_seconds')) is int and w.get('deadline')==run['deadline'] and w.get('continuation') is None and w.get('sent_at')==run['sent_at'] and w.get('sent_message_id')==ack['message_id'] and w.get('ack')==run['sent_api_ack_reference'] and w.get('task')==run['sent_task_reference'] and w.get('window_seconds')==180 and w.get('capture_until')==run.get('capture_until')==run['sent_at']+180,'F06_CORRECT_READ_FULL_ORIGINAL_WINDOW_REQUIRED')
+     close=judgement(d['closure'],read,'frw.Root.F06.correct-read-closed.v1',first)
+     need(close.get('canonical_run')==d['canonical_run'] and close.get('correct_binding')==d['correct_binding'] and close.get('actor_tree_closed') is True and close.get('slot_released') is True and close.get('no_pending_effect') is True and close.get('original_clock_preserved') is True and close.get('raw_outcome_preserved') is True and type(close.get('completed_at')) in (int,float) and math.isfinite(close['completed_at']) and close['completed_at']>=run['sent_at']+180,'F06_CORRECT_READ_ACTUAL_CLOSURE_REQUIRED')
++    # A closed prior operation's still-unexpired 600s clock is not a budget
++    # for this new phase. Bind only old ref metadata; never reopen old clocks.
++    old_clock=old.get('resources',{}).get('clock')
++    first_clock=doc(first['first_binding'],read).get('contract',{}).get('resources',{}).get('clock')
++    new_clock_ref=c.get('resources',{}).get('clock')
++    need(reference(old_clock) and reference(first_clock) and reference(new_clock_ref)
++         and close.get('clock')==old_clock
++         and path(new_clock_ref['path']) not in (path(old_clock['path']),path(first_clock['path'])),
++         'F06_NEW_WRONGEDIT_CLOCK_DISTINCT_FROM_CLOSED_OPERATIONS')
++    new_clock=doc(new_clock_ref,read)
++    need(type(new_clock.get('started_at')) in (int,float) and math.isfinite(new_clock['started_at'])
++         and new_clock['started_at']>=close['completed_at'],
++         'F06_NEW_CLOCK_MUST_START_AFTER_CORRECT_READ_CLOSURE')
+     custody=doc(close.get('original_consumer_custody'),read)
+     need(custody.get('schema')=='frw.Root.F06.correct-original-consumer-custody.v1' and custody.get('operator')=='Root' and custody.get('status')=='ROOT_BOUND' and custody.get('canonical_run')==d['canonical_run'] and custody.get('correct_binding')==d['correct_binding'] and custody.get('source_reference')==c['source_reference'] and custody.get('source')==c['source'] and custody.get('B')==first['B'] and custody.get('bound_source')==binding['source'] and custody.get('base_consumer_sha256')==BASE_SHA and custody.get('assessed_methods')==['verify_capture_context','verify_window','verify_reply_custody','receive_inventory'] and custody.get('capture_window_complete') is True and custody.get('terminal_complete') is True and custody.get('all_existing_raw_and_receipts_verified') is True and custody.get('late_arrivals_raw_only') is True and custody.get('original_clock_and_window_preserved') is True,'F06_CORRECT_ORIGINAL_FULL_CONSUMER_CUSTODY_REQUIRED')
+     for key in ('ack','task','window'):need(custody.get(key)==d[key],'F06_CORRECT_CUSTODY_ARTIFACT_JOIN_REQUIRED')
