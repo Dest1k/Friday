@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 07:06 МСК**. **Астра Fast, Сол Standard**, оба gpt-6.1-sol/ultra; sole live/main-интегратор — Астра.
+Обновлено **12.11.2026, 07:30 МСК**. **Астра Fast, Сол Standard**, оба gpt-6.1-sol/ultra; sole live/main-интегратор — Астра.
 Тот же native goal/thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**, история/учёт без переноса UUID/общего cap.
 Постоянный Сол — прежняя TUI `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`, leadership goal paused.
 Task26/27 завершены/source приняты; Task28 **active** на Standard: source futurecorrect-read поactualsameupload, безsecondsendDocument.
@@ -9,7 +9,7 @@ Task26/27 завершены/source приняты; Task28 **active** на Stand
 Canonical **[Dest1k/Friday](https://github.com/Dest1k/Friday), main**; штатные origin/auth/push проверены.
 [Миграция](evidence/astra-20261112/repository-migration.json):118branches/0tags/историяobjectIDs сохранены,
 Actions disabled/0runs/LFS0/submodules0. Старое ограниченное назначение не опрашивать.
-Baseline кода/установки этого среза `fddb0abc70ea9d1caed3dbd5186a0a0b52166e46`; origin передcheckpoint68e0ecf.
+Baseline установки `fddb0abc70ea9d1caed3dbd5186a0a0b52166e46`; опубликованный207-checkpoint `aef7541d558b9072370c748412b11757d7b8000c`.
 Итоговый SHA — содержащий сводку коммит. Публикация отдельно от [локальной установки/проверок](ASTRA-LOCAL-WORK-2026-11-12.json):
 explicit localcommittedHEAD/rawGit/private28/реальныйpredecessor/CAS/rollback, remoteNone/deferred без GitHub-зависимости.
 [Веб-вход](../../handoff/web-audit-entry.md). Чужие3 byteexact вне коммитов: `docs/foundation-status.md`, v2
@@ -31,13 +31,18 @@ DB/WAL/SHM exact доstart, послеstart logical, не byteexactliveWAL. Но
 [Исходный scope/immutable ledgers](DSH-RESUME-2026-11-10.md#7-объём-v3); подробнаяистория [RESUME](DSH-RESUME-2026-11-10.md).
 Нового параллельного реестра нет; source/install/nativecodec/App/ordinary/semantic/formal — разные факты.
 
-1. **Следующий Root шаг — первая ordinary F06 wrong-read, ещё NOT_RUN.** [Source207](drafts/f06-ordinary207-source-20261112/README.md)
-   принят: freeze228ff8f2/reviewe1b2719d/Root55261edd;42bounded+61staticcontrols, R3core190methods/drain/path/clock неизменны.
-   Sameg6DOCX23040B22b0, один новый initialupload+wrongpasswordREAD, max0docs/full180/overall300/ACK10/reserve5/outer600.
-   Нужны actual Rootprivate scenario/семантическиеhistory+lineage+privacy+roots/managermode judgments/current207/native/cursor/once,
-   затем финальныеclock/proofs/binding и один driver под своим slot-owningPID/atomicissuer. Шаблоны не допуск.
-   Installedtestercc36…0905b неизменён; source не заменяет выполнение/приёмку. Latercorrectread отдельно поactualsameuploadsource_ref,
-   без второгоupload. M14 не continuationbasis; все старыеUNKNOWN/consumed эффекты сохранены.
+1. **F06 первая ordinary wrong-read: [issuer-only отказ до consumer](evidence/astra-20261112/f06-first-driver-issuer-only-prebirth-refusal.json).**
+   Root driver exit1 после выдачиR106, доbinding/dispatch/Popen/API-client. Consumer/upload/model/reply **NOT_RUN**;
+   canonical512/DB30+196+5510/leasespending0 неизменны, Rootactor absent/slotfree. Это дефект адаптера, не productFAIL.
+   U требовал `ordinary-independent-`; настоящий issuer унаследовал ID `ordinary-f04-postfix-diagnostic-20261112-r106`,
+   при верных F06scope/run/hash. R106/once/старый600clock сохранены; старыйdriver/issuer не повторять и run не переименовывать.
+   Native child `f06_first_consumer_issued_authority_source` готовит **source-only** точный отдельный ещё не начатый consumer-stage
+   с той же R106 пока она действительна, безreissue. Затем independentreview→Rootcurrent207/eligibility/binding→одинfirstupload,
+   прежние300/full180/ACK10/reserve5/outer600. Нового consumerclock/допуска этотcheckpoint не создаёт; oldclock не сбрасывается.
+   Sameg6DOCX23040B22b0 и installedtestercc36 неизменны. Позднийcorrectread отдельно поactualsameuploadsource_ref безsecondsendDocument;
+   у Сола Task28 M1sourceготов/финальноеreviewпродолжается, actualfirstACK ещё нет. M14 и все consumed/UNKNOWN не переоткрыты.
+   [Первичная подготовка/independentreview](drafts/f06-first-ordinary-root-preparation-20261112/README.md) сохранены после actualотказа;
+   [старый source207](drafts/f06-ordinary207-source-20261112/README.md) не переписан. Полныйv42 —191methods/190unchanged after admissionseam.
 2. **Установленные codecREAD квалифицированы на сохранённых артефактах.** [Modern7 ODT](evidence/astra-20261112/native207-modern-odt-readonly.json):
    same6855B2950/correct AEAD_TAG_MATCHED/innerZIP+XML; wrongpassword fixedrejection; plaintext толькоRAM,0stores.
    [G6 DOCX](evidence/astra-20261112/native207-standard32-docx-readonly.json):same23040B22b0/Standard3.2 verifier+ZIP,
@@ -53,15 +58,20 @@ DB/WAL/SHM exact доstart, послеstart logical, не byteexactliveWAL. Но
    originRETURN_OR_ERROR_CONVERSION_UNKNOWN/client1. Sixsettersrestored/всёзакрыто/fullCAS/slotfree; старые18неповторены.
    [СолTask27 source](drafts/f06-errorcode-args-compat-source-20261112/README.md)305d1659/review9abefe7d/Root28cb0863 принят:
    operation-local exact6classes/BaseException.args descriptor,2librarychanges/3carries; actualnewOfficequalificationNOT_RUN.
+   Native child `f06_post_args_compat_office_frame_source` готовит отдельный sourceframe для одного post-change readonlyOTT;
+   bank/source207/old18/class1/grants/clocks не меняются. Это частный Office-компонент, не globalOffice install.
 4. **Приватность — квалификация по нужному пути.** [Установленный206 pureleaf](evidence/astra-20261112/runtime206-pure-leaf-qualified-scoped.json)
    выполнялся безoverlay/run_agent/guardbypass:14exactnativeimports/actualread_filerepairWARNINGredaction/persistencecopy/liveargs unchanged.
    Первичный7/8FAIL сохранён: zero-warning expectation у lowlevelcanonicalizer ошибочен; saveddata оценены без повторабатареи.
    RuntimewrapperWARN остаётся [NOT_RUN](evidence/astra-20261112/runtime-warn-standalone-not-run.json), не botfailure/globalblock.
    [Исходный критерий](evidence/astra-20261112/f06-first-wrongread-privacy-criterion.json): actualnewreply/technicalcopies/rows/logs
    проверитьprivately against suppliedpassword, исключая intentionaloriginaluserrequest; не сканировать/скрабитьвсюисторию.
-   Все3memory.provider core/empty поmetadata; обычныйconstructor/managerhandoff/effective-root sourceinference Root ещё доводит.
+   Все3memory.provider core/empty поmetadata; normalconstructor/managerhandoff/effective-root sourceinference Root принял в указанной узкой области.
    [СолTask26 source](drafts/f06-runtime-pure-coupling-source-20261112/README.md) принят, НЕустановлен207, optionalfuturecleanup;
-   его реализация не prerequisiteordinaryF06. Outbound/search/summary/LTM/wholeprivacy не объявлятьPASS.
+   его реализация не prerequisiteordinaryF06. [Обычныйconstructor/core-mode/roots](drafts/f06-first-ordinary-root-preparation-20261112/files/constructor-roots/RESULT.json)
+   приняты как source/config inference, не liveobject: managed scopedproxy отсутствует/empty, normalfactory manager не передаёт,
+   externalcaption sync по этому пути не выбирается. Typedhistory/privacy/lineage/private-root checks реально прошли доclock;
+   actualnewreply/technicalcarriers остаютсяNOT_RUN. Outbound/search/summary/LTM/wholeprivacy не объявлятьPASS.
 5. **Остальные F06/RTF факты сохранены.** [Genuine7/native567/ODT4](evidence/astra-20261111/f06-seven-input-oracle-native-partial-20261112.json):
    ODT4outputApp3PASS/nativecorrecteditreceiptNOT_RETAINED; ODS5/ODP6 nativePASS+samebytesApp6PASS; OTTinitialrawreceiptgap остаётся.
    Template18 AppPARTIAL/rawfalse/client1 и нынешнийclass1 разные этапы. [InstalledRTFhelper](evidence/astra-20261112/native204-installed-same-rtf-and-f06-template-partial.json)

@@ -54,6 +54,10 @@ RuntimewrapperWARNNOT_RUN сохраняется; [pureleaf текущего206s
 даёт отдельноеузкое доказательство, первичный7/8FAIL не переписан. [Task26sourcecleanup](../checkpoints/2026-11-07-v3-original-context-repair/drafts/f06-runtime-pure-coupling-source-20261112/README.md)
 принят source-only, не установлен и не искусственнаяобщаязависимость обычнойFriday.
 
+Последний F06 driver остановился [послеissuer доconsumer/upload](../checkpoints/2026-11-07-v3-original-context-repair/evidence/astra-20261112/f06-first-driver-issuer-only-prebirth-refusal.json):
+адаптер ошибочно ограничил префикс authorityID. ВыданнаяR106/once/oldclock сохранены; обычнаяwrong-read ещёNOT_RUN,
+не productFAIL. Исправляется отдельный sourcecaller для ещё не начатого consumer-stage безreissue/старогоdriver replay.
+
 ## Что можно проверить из репозитория
 
 - [plugins](../../plugins/), [patches](../../patches/), [scripts](../../scripts/),

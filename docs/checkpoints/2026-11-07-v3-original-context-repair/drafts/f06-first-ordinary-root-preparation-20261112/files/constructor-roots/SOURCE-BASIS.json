@@ -1,0 +1,1165 @@
+{
+  "schema": "frw.Astra.F06.ordinary-constructor-root-source-basis.v1",
+  "collected_at_moscow": "2026-11-12T07:17:09.995154+03:00",
+  "collection_started_at_moscow": "2026-11-12T07:17:08.122439+03:00",
+  "method": "Static AST/text/hash, safe YAML projections, path metadata and selected /proc metadata only; no installed module execution/import, database open, credentials or document bodies",
+  "repo_head_observed": "aef7541d558b9072370c748412b11757d7b8000c",
+  "repo_head_requested": "aef7541d558b9072370c748412b11757d7b8000c",
+  "installed_source_root": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent",
+  "source_files": {
+    "gateway/run_turn.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/gateway/run_turn.py",
+        "sha256": "a2d166316f286b540281b8b87c850d3765bc0a780d14d745f6ccef7ba4ec086b",
+        "bytes": 269734
+      },
+      "ranges": [
+        {
+          "start": 285,
+          "end": 322,
+          "text": "285:     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:\n286:         \"\"\"Effective model/runtime config for one turn. With `/fast` priority on, fast-mode\n287:         ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model.\"\"\"\n288:         from gateway.run import _deep_merge_request_overrides\n289:         from agent.fast_mode import STATIC_TIERS\n290:         from hermes_cli.models import resolve_fast_mode_overrides\n291:         # Tests bind this method onto bare namespaces, so no class-level tables here.\n292:         runtime = {\n293:             k: runtime_kwargs.get(k) for k in (\n294:                 \"api_key\", \"base_url\", \"provider\", \"requested_provider\", \"api_mode\", \"command\", \"args\",\n295:                 \"credential_pool\", \"max_tokens\", \"capabilities\",\n296:             )\n297:         }\n298:         runtime[\"args\"] = list(runtime[\"args\"] or [])\n299:         runtime[\"capabilities\"] = dict(runtime[\"capabilities\"] or {})\n300:         base_request_overrides = dict(runtime_kwargs.get(\"request_overrides\") or {})\n301:         route = {\n302:             \"model\": model,\n303:             \"runtime\": runtime,\n304:             \"signature\": (\n305:                 model, runtime[\"provider\"], runtime[\"requested_provider\"], runtime[\"base_url\"],\n306:                 runtime[\"api_mode\"], runtime[\"command\"], tuple(runtime[\"args\"]),\n307:             ),\n308:         }\n309:         tier = getattr(self, \"_service_tier\", None)\n310:         if tier not in STATIC_TIERS:\n311:             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.\n312:             route[\"request_overrides\"] = base_request_overrides\n313:             return route\n314:         try:\n315:             overrides = resolve_fast_mode_overrides(\n316:                 route[\"model\"], provider=runtime[\"provider\"], base_url=runtime[\"base_url\"], tier=tier,\n317:             )\n318:         except Exception:\n319:             overrides = None\n320:         # Fast-mode keys (service_tier / speed) are top-level and don't collide with extra_body.\n321:         route[\"request_overrides\"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})\n322:         return route"
+        },
+        {
+          "start": 2328,
+          "end": 2348,
+          "text": "2328:     def _profile_scope_for_source(self, source: SessionSource):\n2329:         \"\"\"``_profile_runtime_scope`` for ``source``'s profile when a secret scope is required.\n2330: \n2331:         Under multiplexing config/skills/memory resolve to the source profile's home AND credentials\n2332:         come from its secret scope (never process-global ``os.environ``). A standalone gateway\n2333:         (``multiplex_profiles`` off) still binds once a hosted room has flipped the process-wide\n2334:         credential guard — see ``_standalone_launch_scope``.\"\"\"\n2335:         from gateway.run import _profile_runtime_scope\n2336:         home = self._profile_scope_key_for_source(source)\n2337:         native = _profile_runtime_scope(home) if home is not None else self._standalone_launch_scope()\n2338:         from hermes_cli.friday_user_scope import native_source_scope\n2339:         return native_source_scope(source, native)\n2340: \n2341:     def _profile_scope_key_for_source(self, source: SessionSource) -> Optional[Path]:\n2342:         \"\"\"Profile home ``_profile_scope_for_source`` binds for ``source``, or ``None`` when it falls\n2343:         back to the standalone launch scope. The single owner of that branch condition: callers that\n2344:         group work per scope (heartbeat restore) key on this so they cannot drift from the scope\n2345:         actually entered.\"\"\"\n2346:         if getattr(getattr(self, \"config\", None), \"multiplex_profiles\", False):\n2347:             return self._resolve_profile_home_for_source(source)\n2348:         return None"
+        },
+        {
+          "start": 2713,
+          "end": 2726,
+          "text": "2713:     def _get_proxy_url(self) -> Optional[str]:\n2714:         \"\"\"Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``).\n2715:         Per-profile like GATEWAY_PROXY_KEY: under multiplex a raw environ read would ship a secondary's\n2716:         turns (authenticated with ITS scoped key) to the default profile's proxy. Same fallback shape as\n2717:         the key — only ``UnscopedSecretError`` (the unscoped default-profile path) reads the env.\"\"\"\n2718:         from gateway.run import _load_gateway_config\n2719:         from agent.secret_scope import UnscopedSecretError, get_secret\n2720:         try:\n2721:             url = (get_secret(\"GATEWAY_PROXY_URL\") or \"\").strip()\n2722:         except UnscopedSecretError:\n2723:             url = os.getenv(\"GATEWAY_PROXY_URL\", \"\").strip()\n2724:         if not url:\n2725:             url = ((_load_gateway_config().get(\"gateway\") or {}).get(\"proxy_url\") or \"\").strip()\n2726:         return url.rstrip(\"/\") if url else None"
+        },
+        {
+          "start": 2986,
+          "end": 2993,
+          "text": "2986:     async def _run_agent(\n2987:         self, message: str, context_prompt: str, history: List[Dict[str, Any]],\n2988:         source: SessionSource, session_id: str, **turn_kwargs,\n2989:     ) -> Dict[str, Any]:\n2990:         \"\"\"Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through\n2991:         when multiplexing is off).\"\"\"\n2992:         with self._profile_scope_for_source(source):\n2993:             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)"
+        },
+        {
+          "start": 3129,
+          "end": 3137,
+          "text": "3129:     def _run_agent_build_turn_context(\n3130:         self, disp: \"GatewayRunner._RunAgentDisplay\", AIAgent: Any, *, message: str, source: SessionSource,\n3131:         session_key: Optional[str], run_generation: Optional[int], **turn_params,\n3132:     ) -> Tuple[TurnContext, TurnRunner, Any]:\n3133:         \"\"\"Build the ``TurnContext`` and its ``TurnRunner``; ``turn_params`` (history, context_prompt,\n3134:         session_id, persist_user_*, …) are stored verbatim. Returns ``(turn_ctx, turn_runner,\n3135:         cleanup_adapter)``.\"\"\"\n3136:         from gateway.run_turn_runner import TurnRunner\n3137:         # Discord voice \"verbal ack\" on the FIRST tool call (discord.voice_fx.enabled): resolve the"
+        },
+        {
+          "start": 3161,
+          "end": 3171,
+          "text": "3161:         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.\n3162:         turn_ctx = TurnContext(\n3163:             source=source, message=message, AIAgent=AIAgent, session_key=session_key,\n3164:             run_generation=run_generation, _cleanup_progress=_cleanup_progress,\n3165:             _run_still_current=self._run_still_current_fn(session_key, run_generation),\n3166:             progress_queue=queue.Queue() if disp.needs_progress_queue else None,\n3167:             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),\n3168:             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,\n3169:         )\n3170:         turn_runner = TurnRunner(self, turn_ctx)\n3171:         turn_ctx.mute_notification_reply = diagnostic_turn_muted("
+        },
+        {
+          "start": 4412,
+          "end": 4435,
+          "text": "4412:     async def _run_agent_inner(\n4413:         self, message: str, context_prompt: str, history: List[Dict[str, Any]],\n4414:         source: SessionSource, session_id: str, session_key: str = None,\n4415:         run_generation: Optional[int] = None, _interrupt_depth: int = 0,\n4416:         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,\n4417:         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,\n4418:         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,\n4419:         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,\n4420:         persist_user_display_metadata: Optional[dict] = None,\n4421:         reply_expected: Optional[bool] = None,\n4422:         scheduled_heartbeat: bool = False,\n4423:         title_user_message: Optional[str] = None,\n4424:     ) -> Dict[str, Any]:\n4425:         \"\"\"Run the agent; returns the full run_conversation result dict.\n4426: \n4427:         Keys: \"final_response\", \"messages\", \"api_calls\", \"completed\".\"\"\"\n4428:         if self._get_proxy_url():\n4429:             return await self._run_agent_via_proxy(\n4430:                 message=message, context_prompt=context_prompt, history=history, source=source,\n4431:                 session_id=session_id, session_key=session_key, run_generation=run_generation,\n4432:                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,\n4433:             )\n4434: \n4435:         from run_agent import AIAgent"
+        },
+        {
+          "start": 4450,
+          "end": 4463,
+          "text": "4450:         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(\n4451:             disp, AIAgent, message=message, source=source, session_key=session_key,\n4452:             run_generation=run_generation, context_prompt=context_prompt, history=history,\n4453:             session_id=session_id, _interrupt_depth=_interrupt_depth,\n4454:             event_message_id=event_message_id, inbound_message_id=inbound_message_id,\n4455:             channel_prompt=channel_prompt, moa_config=moa_config,\n4456:             title_user_message=title_user_message,\n4457:             persist_user_message=persist_user_message,\n4458:             persist_user_timestamp=persist_user_timestamp,\n4459:             persist_user_display_kind=persist_user_display_kind,\n4460:             reply_expected=reply_expected,\n4461:             persist_user_display_metadata=persist_user_display_metadata,\n4462:             scheduled_heartbeat=scheduled_heartbeat,\n4463:         )"
+        },
+        {
+          "start": 4490,
+          "end": 4495,
+          "text": "4490:         try:\n4491:             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).\n4492:             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)\n4493:             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running\n4494:             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)\n4495:             if turn_ctx._telegram_status is not None:"
+        }
+      ]
+    },
+    "gateway/run_turn_runner.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/gateway/run_turn_runner.py",
+        "sha256": "40fc843da61391cfede0ad08d08a32bf8b53f051ca15369694afab57c73d92ed",
+        "bytes": 119220
+      },
+      "ranges": [
+        {
+          "start": 1111,
+          "end": 1178,
+          "text": "1111:     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,\n1112:                            reasoning_config, pr, skip_context_files):\n1113:         from gateway.run import _checkpoint_agent_kwargs\n1114:         ctx = self._ctx\n1115:         runner = self._runner\n1116:         src = ctx.source\n1117:         return ctx.AIAgent(\n1118:             model=turn_route[\"model\"], **turn_route[\"runtime\"], **_checkpoint_agent_kwargs(ctx.user_config),\n1119:             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,\n1120:             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,\n1121:             ephemeral_system_prompt=combined_ephemeral or None,\n1122:             prefill_messages=runner._prefill_messages or None,\n1123:             reasoning_config=reasoning_config, service_tier=runner._service_tier,\n1124:             request_overrides=turn_route.get(\"request_overrides\"),\n1125:             providers_allowed=pr.get(\"only\"), providers_ignored=pr.get(\"ignore\"), providers_order=pr.get(\"order\"),\n1126:             provider_sort=pr.get(\"sort\"), provider_require_parameters=pr.get(\"require_parameters\", False),\n1127:             provider_data_collection=pr.get(\"data_collection\"),\n1128:             session_id=ctx.session_id, platform=platform_key,\n1129:             user_id=src.user_id, user_id_alt=src.user_id_alt, user_name=src.user_name,\n1130:             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,\n1131:             gateway_session_key=ctx.session_key,\n1132:             session_db=getattr(runner._session_db, \"_db\", runner._session_db),\n1133:             # Reload from disk — do not reuse the startup snapshot.\n1134:             # See #60955.\n1135:             fallback_model=self._runner._refresh_fallback_model(),\n1136:             skip_context_files=skip_context_files,\n1137:             # Keep the persona even with minimal context: soul identity is one small file.\n1138:             load_soul_identity=True,\n1139:         )\n1140: \n1141:     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):\n1142:         \"\"\"Reuse this session's cached AIAgent (frozen system prompt + tool schemas → prompt cache\n1143:         hits) or build a fresh one. Returns (agent, reused_cached_agent).\"\"\"\n1144:         ctx = self._ctx\n1145:         runner = self._runner\n1146:         skip_context_files = self._skip_context_files(platform_key)\n1147:         sig = runner._agent_config_signature(\n1148:             turn_route[\"model\"], turn_route[\"runtime\"], ctx.enabled_toolsets, combined_ephemeral,\n1149:             cache_keys=runner._extract_cache_busting_config(ctx.user_config),\n1150:             user_id=getattr(ctx.source, \"user_id\", None),\n1151:             user_id_alt=getattr(ctx.source, \"user_id_alt\", None),\n1152:             skip_context_files=skip_context_files,\n1153:         )\n1154:         cache_lock = getattr(runner, \"_agent_cache_lock\", None)\n1155:         cache = getattr(runner, \"_agent_cache\", None)\n1156:         peek_sid, dead = self._cached_sid_is_dead(cache_lock, cache)\n1157:         msg_count = self._current_message_count()\n1158:         found = self._lookup_cached_agent(sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count)\n1159:         agent = found.agent\n1160:         # Lock released — refresh the reused agent's fallback chain from disk OUTSIDE the cache lock\n1161:         # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain\n1162:         # configured after caching must reach the next turn; per-session serialization keeps it safe.\n1163:         if found.reused and agent is not None:\n1164:             self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())\n1165:         if found.evicted is not None:\n1166:             self._release_evicted_agent(found.evicted)\n1167:         if agent is None:\n1168:             agent = self._build_fresh_agent(\n1169:                 turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,\n1170:             )\n1171:             if cache_lock and cache is not None:\n1172:                 with cache_lock:\n1173:                     # Record the snapshot's session_id with message_count so the cross-process guard\n1174:                     # can skip the meaningless count comparison if the active session_id switches.\n1175:                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)\n1176:                     runner._enforce_agent_cache_cap()\n1177:             logger.debug(\"Created new agent for session %s (sig=%s)\", ctx.session_key, sig)\n1178:         return agent, found.reused"
+        },
+        {
+          "start": 1687,
+          "end": 1727,
+          "text": "1687:     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,\n1688:                                         persist_user_message_override, persist_user_timestamp_override):\n1689:         \"\"\"Run the turn with the per-session gateway approval callback registered: dangerous-command\n1690:         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async.\"\"\"\n1691:         from gateway.run import _wrap_current_message_with_observed_context\n1692:         from tools.approval import register_gateway_notify, unregister_gateway_notify\n1693:         from tools.approval_context import reset_current_session_key, set_current_session_key\n1694:         ctx = self._ctx\n1695:         session_key = ctx.session_key or \"\"\n1696:         token = set_current_session_key(session_key)\n1697:         register_gateway_notify(session_key, self._approval_notify_sync)\n1698:         try:\n1699:             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)\n1700:             kwargs = {\"conversation_history\": agent_history, \"task_id\": ctx.session_id}\n1701:             if _accepts_keyword(agent.run_conversation, \"turn_author\"):\n1702:                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.\n1703:                 kwargs[\"turn_author\"] = {\"id\": ctx.source.user_id or None, \"name\": ctx.source.user_name or None,\n1704:                                          \"is_bot\": bool(getattr(ctx.source, \"is_bot\", False))}\n1705:             if ctx.title_user_message is not None:\n1706:                 kwargs[\"title_user_message\"] = ctx.title_user_message\n1707:             if persist_user_message_override is not None:\n1708:                 kwargs[\"persist_user_message\"] = persist_user_message_override\n1709:             elif observed_group_context:\n1710:                 kwargs[\"persist_user_message\"] = ctx.message\n1711:             if ctx.persist_user_display_kind:\n1712:                 # Internal self-injected turn: type the persisted user row so UIs render it as a\n1713:                 # timeline notice, not a user bubble (stripped from provider payloads downstream).\n1714:                 kwargs[\"persist_user_display_kind\"] = ctx.persist_user_display_kind\n1715:             if ctx.persist_user_display_metadata:\n1716:                 kwargs[\"persist_user_display_metadata\"] = ctx.persist_user_display_metadata\n1717:             if ctx.moa_config is not None:\n1718:                 kwargs[\"moa_config\"] = ctx.moa_config\n1719:             if persist_user_timestamp_override is not None:\n1720:                 kwargs[\"persist_user_timestamp\"] = persist_user_timestamp_override\n1721:             # The RAW inbound id (not event_message_id, the reply anchor) rides the persisted user\n1722:             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.\n1723:             if ctx.inbound_message_id is not None:\n1724:                 kwargs[\"persist_user_platform_id\"] = str(ctx.inbound_message_id)\n1725:             from agent.notification_presentation import notification_turn\n1726:             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or \"\"):\n1727:                 return agent.run_conversation(api_message, **kwargs)"
+        },
+        {
+          "start": 1946,
+          "end": 1962,
+          "text": "1946:         pr = runner._provider_routing\n1947:         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)\n1948:         runner._reasoning_config = reasoning_config\n1949:         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)\n1950:         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)\n1951:         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)\n1952:         agent, reused_cached_agent = self._resolve_turn_agent(\n1953:             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,\n1954:         )\n1955:         if pending_fallback_notice:\n1956:             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.\n1957:             agent._pending_fallback_notice = pending_fallback_notice\n1958:         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)\n1959:         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)\n1960:         persist_msg, persist_ts = self._prepare_turn_message(agent_history)\n1961:         result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)\n1962:         self._finish_stream_consumer(result, agent_history, stream_consumer)"
+        }
+      ]
+    },
+    "run_agent.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/run_agent.py",
+        "sha256": "10755c47aecb357f383fec12a560c0178adad0a59d7527927c59c37aee6cc6d2",
+        "bytes": 91427
+      },
+      "ranges": [
+        {
+          "start": 295,
+          "end": 318,
+          "text": "295:         max_tokens: int = None, reasoning_config: Dict[str, Any] = None, service_tier: str = None,\n296:         request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,\n297:         platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,\n298:         chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,\n299:         gateway_session_key: str = None,\n300:         skip_context_files: bool = False, load_soul_identity: bool = False,\n301:         skip_memory: bool = False, skip_background_review: bool = False,\n302:         session_db=None, parent_session_id: str = None,\n303:         iteration_budget: \"IterationBudget\" = None, run_budget_seconds: Optional[float] = None,\n304:         fallback_model: Dict[str, Any] = None, credential_pool=None,\n305:         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,\n306:         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,\n307:         pass_session_id: bool = False, requested_provider: str = None,\n308:         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,\n309:         side_agent: bool = False, memory_manager=None,\n310:         tool_result_metadata_callback: Optional[Callable[..., dict]] = None,\n311:     ):\n312:         \"\"\"Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``).\"\"\"\n313:         init_kwargs = {k: v for k, v in locals().items() if k not in (\"self\", \"tool_delay\")}\n314:         if tool_delay is not None:\n315:             warnings.warn(\"tool_delay is deprecated and ignored; sequential tool calls \"\n316:                           \"no longer sleep between executions.\", DeprecationWarning, stacklevel=2)\n317:         from agent.agent_init import init_agent\n318:         init_agent(self, **init_kwargs)"
+        },
+        {
+          "start": 934,
+          "end": 965,
+          "text": "934:     def _sync_external_memory_for_turn(self, *, original_user_message: Any, final_response: Any, interrupted: bool,\n935:                                        messages: list | None = None) -> None:\n936:         \"\"\"Mirror a completed turn into external memory providers (``sync_all`` + ``queue_prefetch_all``).\n937: \n938:         Uses ``original_user_message`` (``user_message`` may carry injected skill content). Interrupted turns\n939:         are skipped: partial output is not durable truth. Best-effort — an offline backend never blocks.\n940: \n941:         A partial assistant output, an aborted tool chain, or a mid-stream reset is not durable\n942:         conversational truth — mirroring it into an external memory backend pollutes future recall with\n943:         state the user never saw completed. The prefetch is gated on the same flag: the user's next message\n944:         is almost certainly a retry of the same intent, and a prefetch keyed on the interrupted turn would\n945:         fire against stale context. See #15218.\n946:         \"\"\"\n947:         if interrupted or not (self._memory_manager and final_response and original_user_message):\n948:             return\n949:         # Flatten multimodal parts to text (newline-joined for memory).\n950:         user_text = _summarize_user_message_for_log(original_user_message, sep=\"\\n\")\n951:         response_text = _summarize_user_message_for_log(final_response, sep=\"\\n\")\n952:         if not (user_text and response_text):\n953:             return\n954:         try:\n955:             sync_kwargs = {\"session_id\": self.session_id or \"\", **({\"messages\": messages} if messages is not None else {})}\n956:             # Stashed by build_turn_context() for this turn, None on a human turn.\n957:             turn_author = getattr(self, \"_turn_author\", None)\n958:             if turn_author is not None:\n959:                 sync_kwargs[\"turn_author\"] = turn_author\n960:             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)\n961:             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.\n962:             if not is_trivial_prompt(user_text):\n963:                 self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or \"\")\n964:         except Exception:\n965:             pass"
+        }
+      ]
+    },
+    "agent/agent_init.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/agent_init.py",
+        "sha256": "6d75deb2a4cd271756c467424504559e5c22959591d734a9941a5d48fb3346f4",
+        "bytes": 131993
+      },
+      "ranges": [
+        {
+          "start": 711,
+          "end": 720,
+          "text": "711: def _setup_logging(agent):\n712:     # agent.log (INFO+) + errors.log (WARNING+); idempotent so per-message gateway agents\n713:     # don't duplicate handlers.\n714:     from hermes_logging import setup_logging, setup_verbose_logging\n715:     # The ACTIVE home, not run_agent's import-time freeze: a Desktop serve backend builds agents\n716:     # for several profiles inside set_hermes_home_override(), and the frozen launch home made\n717:     # setup_logging() see a home it already served, so it never adopted the profile and every\n718:     # profile's records landed in the launch profile's agent.log (#125974).\n719:     setup_logging(hermes_home=get_hermes_home())\n720: "
+        },
+        {
+          "start": 1230,
+          "end": 1250,
+          "text": "1230: def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,\n1231:     checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb):\n1232:     agent.session_start = datetime.now()\n1233:     agent.session_id = session_id or new_session_id(agent.session_start)\n1234:     _publish_session_id(agent.session_id)\n1235: \n1236:     # ~/.hermes/sessions/ — kept unconditionally for request_dump_*.json debug breadcrumbs.\n1237:     agent.logs_dir = get_hermes_home() / \"sessions\"\n1238:     agent.logs_dir.mkdir(parents=True, exist_ok=True)\n1239:     _set_defaults(agent, _SESSION_STATE)\n1240: \n1241:     # Filesystem checkpoint manager (transparent — not a tool)\n1242:     from tools.checkpoint_manager import CheckpointManager\n1243:     agent._checkpoint_mgr = CheckpointManager(\n1244:         enabled=checkpoints_enabled, max_snapshots=checkpoint_max_snapshots,\n1245:         max_total_size_mb=checkpoint_max_total_size_mb,\n1246:         max_file_size_mb=checkpoint_max_file_size_mb,\n1247:     )\n1248: \n1249:     agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)\n1250:     agent._parent_session_id = parent_session_id"
+        },
+        {
+          "start": 1344,
+          "end": 1423,
+          "text": "1344: def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):\n1345:     # Persistent memory (MEMORY.md + USER.md) — loaded from disk\n1346:     agent._memory_store = None\n1347:     agent._memory_enabled = False\n1348:     agent._user_profile_enabled = False\n1349:     agent._memory_nudge_interval = 10\n1350:     agent._turns_since_memory = 0\n1351:     agent._iters_since_skill = 0\n1352:     # skip_memory skips the external *provider*; enabled_toolsets=[\"memory\"] still gets the\n1353:     # built-in store so the memory tool never sees store=None.\n1354:     # Flush/background agents can still pass enabled_toolsets=[\"memory\"] so the built-in file store exists\n1355:     # and the memory tool does not fail with store=None (#65429). A toolset on disabled_toolsets is not a\n1356:     # request: a caller that denylists memory while its default toolset still names it must not get\n1357:     # MEMORY.md loaded by an enabled-only check. (Cron agents now run with skip_memory=False and take the\n1358:     # normal path here.)\n1359:     _memory_toolset_requested = (\n1360:         \"memory\" in (agent.enabled_toolsets or [])\n1361:         and \"memory\" not in (agent.disabled_toolsets or [])\n1362:     )\n1363:     if not skip_memory or _memory_toolset_requested:\n1364:         # Memory is optional — don't break agent init\n1365:         with suppress(Exception):\n1366:             from tools.memory_tool import (\n1367:                 MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,\n1368:             )\n1369:             mem_config = get_builtin_memory_config(_agent_cfg)\n1370:             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(\n1371:                 _agent_cfg\n1372:             )\n1373:             agent._memory_nudge_interval = int(mem_config.get(\"nudge_interval\", 10))\n1374:             if agent._memory_enabled or agent._user_profile_enabled:\n1375:                 agent._memory_store = MemoryStore(\n1376:                     memory_char_limit=mem_config.get(\"memory_char_limit\", 2200),\n1377:                     user_char_limit=mem_config.get(\"user_char_limit\", 1375),\n1378:                     memory_enabled=agent._memory_enabled,\n1379:                     user_profile_enabled=agent._user_profile_enabled,\n1380:                 )\n1381:                 agent._memory_store.load_from_disk()\n1382: \n1383:     # External memory provider plugin (one at a time, alongside built-in): memory.provider.\n1384:     agent._memory_manager = None\n1385:     if memory_manager is not None and not skip_memory:\n1386:         # A caller that rebuilds the agent per turn (gateway api_server) hands back the session's\n1387:         # already-initialized manager: providers keep their prefetch/retain state across turns instead\n1388:         # of being re-initialized (#120116). No initialize_all — the providers are already bound.\n1389:         agent._memory_manager = memory_manager\n1390:     elif not skip_memory:\n1391:         try:\n1392:             _mem_provider_name = mem_config.get(\"provider\", \"\") if mem_config else \"\"\n1393:             if not is_core_memory_provider(_mem_provider_name):\n1394:                 from agent.memory_manager import MemoryManager as _MemoryManager\n1395:                 from plugins.memory import load_memory_provider as _load_mem\n1396:                 agent._memory_manager = _MemoryManager()\n1397:                 _mp = _load_mem(_mem_provider_name)\n1398:                 if _mp is None:\n1399:                     # The provider left core for the catalog (or was never installed): fetch it once.\n1400:                     from hermes_cli.memory_provider_migration import recover_at_startup\n1401:                     if recover_at_startup(_mem_provider_name, say=agent._emit_startup_warning):\n1402:                         _mp = _load_mem(_mem_provider_name)\n1403:                 if _mp and _mp.is_available():\n1404:                     agent._memory_manager.add_provider(_mp)\n1405:                 elif _mp is not None and _unavailable_warning_key(_mem_provider_name) not in _warned_unavailable_providers:\n1406:                     # unavailable_reason() reads config/probes importlib — skip it once warned.\n1407:                     _unavailable_reason = \"\"\n1408:                     with suppress(Exception):\n1409:                         _unavailable_reason = _mp.unavailable_reason()\n1410:                     _warn_memory_provider_unavailable(\n1411:                         _mem_provider_name, _unavailable_reason, say=agent._emit_startup_warning)\n1412:                 if agent._memory_manager.providers:\n1413:                     agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))\n1414:                     _ra().logger.info(\"Memory provider '%s' activated\", _mem_provider_name)\n1415:                 else:\n1416:                     _ra().logger.debug(\"Memory provider '%s' not found or not available\", _mem_provider_name)\n1417:                     agent._memory_manager = None\n1418:         except Exception as _mpe:\n1419:             _ra().logger.warning(\"Memory provider plugin init failed: %s\", _mpe)\n1420:             agent._memory_manager = None\n1421: \n1422:     from agent.memory_manager import inject_memory_provider_tools\n1423:     inject_memory_provider_tools(agent)"
+        },
+        {
+          "start": 2482,
+          "end": 2491,
+          "text": "2482:     # Load config once for memory, skills, and compression sections\n2483:     try:\n2484:         from hermes_cli.config import load_config_readonly as _load_agent_config\n2485:         _agent_cfg = _load_agent_config()\n2486:     except Exception:\n2487:         _agent_cfg = {}\n2488: \n2489:     _apply_display_config(agent, _agent_cfg, platform)\n2490:     _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)\n2491:     _apply_agent_section(agent, _agent_cfg)"
+        }
+      ]
+    },
+    "agent/memory_provider.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/memory_provider.py",
+        "sha256": "a4e44a293013fff831ac136ab77c556541cd18817f53bd662e97090cd80bd5a6",
+        "bytes": 10503
+      },
+      "ranges": [
+        {
+          "start": 42,
+          "end": 49,
+          "text": "42: # ``memory.provider`` values that mean \"the built-in store, no external plugin\". The built-in\n43: # store is core: doctor, migration and dependency refresh must never look these up as plugins.\n44: CORE_MEMORY_PROVIDER_SENTINELS = frozenset({\"\", \"default\", \"builtin\", \"built-in\", \"none\"})\n45: \n46: \n47: def is_core_memory_provider(name: Optional[str]) -> bool:\n48:     \"\"\"True when ``memory.provider`` selects the built-in store rather than an external plugin.\"\"\"\n49:     return str(name or \"\").strip().lower() in CORE_MEMORY_PROVIDER_SENTINELS"
+        }
+      ]
+    },
+    "tools/memory_tool.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/tools/memory_tool.py",
+        "sha256": "55cf9544f0b906af7244f4f7656d65aa811ae1591c4577edf92d9bff01051643",
+        "bytes": 26425
+      },
+      "ranges": [
+        {
+          "start": 38,
+          "end": 44,
+          "text": "38: def get_memory_dir() -> Path:\n39:     \"\"\"Profile-scoped memories dir, resolved per call (HERMES_HOME may switch after import).\"\"\"\n40:     return get_hermes_home() / \"memories\"\n41: \n42: \n43: from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)\n44:     ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)"
+        },
+        {
+          "start": 295,
+          "end": 312,
+          "text": "295: def get_builtin_memory_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:\n296:     \"\"\"Normalized ``memory`` config section ({} when missing/malformed → flags default to\n297:     enabled). ``agent_init`` reads the same section so availability and store cannot diverge.\"\"\"\n298:     if config is None:\n299:         try:\n300:             from hermes_cli.config import load_config_readonly\n301:             config = load_config_readonly()\n302:         except Exception:\n303:             logger.debug(\"Could not read memory config for availability\", exc_info=True)\n304:             return {}\n305:     section = config.get(\"memory\") if isinstance(config, dict) else None\n306:     return section if isinstance(section, dict) else {}\n307: \n308: \n309: def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> Tuple[bool, bool]:\n310:     \"\"\"Return ``(memory_enabled, user_profile_enabled)`` from resolved config.\"\"\"\n311:     section = get_builtin_memory_config(config)\n312:     return tuple(is_truthy_value(section.get(k), default=True) for k in (\"memory_enabled\", \"user_profile_enabled\"))"
+        }
+      ]
+    },
+    "tools/memory_tool_store.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/tools/memory_tool_store.py",
+        "sha256": "2fbae3f1be4dd2c96cd9e7ef423fd3f6e699b3f7ed7caa55128c55b988fb6371",
+        "bytes": 36350
+      },
+      "ranges": [
+        {
+          "start": 141,
+          "end": 160,
+          "text": "141: class MemoryStore:\n142:     \"\"\"Bounded curated memory with file persistence; one instance per AIAgent.\n143:     ``_system_prompt_snapshot`` is frozen at load time (prefix-cache stable);\n144:     ``memory_entries`` / ``user_entries`` are live state persisted to disk.\"\"\"\n145: \n146:     # Failed consolidation attempts (overflow / zero-match) allowed per turn before\n147:     # a TERMINAL \"save skipped\" result, so a fragile replace/add can't loop the turn\n148:     # to budget exhaustion and suppress the user's reply.\n149:     # See #42405.\n150:     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3\n151: \n152:     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,\n153:                  memory_enabled: bool = True, user_profile_enabled: bool = True):\n154:         from hermes_cli.friday_user_scope import current\n155:         self._friday_user_scope = current()\n156:         self.memory_entries: List[str] = []\n157:         self.user_entries: List[str] = []\n158:         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit\n159:         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled\n160:         self._system_prompt_snapshot: Dict[str, str] = {\"memory\": \"\", \"user\": \"\"}"
+        },
+        {
+          "start": 267,
+          "end": 270,
+          "text": "267:     @staticmethod\n268:     def _path_for(target: str) -> Path:\n269:         from tools import memory_tool  # get_memory_dir is monkeypatched there\n270:         return memory_tool.get_memory_dir() / (\"USER.md\" if target == \"user\" else \"MEMORY.md\")"
+        }
+      ]
+    },
+    "agent/turn_finalizer.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/turn_finalizer.py",
+        "sha256": "10a7eeb5d13d515096d300e4cd8e7801e9eaac7207c6beb9aeb46b3f3d365dcc",
+        "bytes": 50951
+      },
+      "ranges": [
+        {
+          "start": 682,
+          "end": 694,
+          "text": "682: \n683:     _cleanup_errors: List[str] = []\n684:     # The model has answered (or the loop gave up): a title upgrade held back because it shares a\n685:     # self-hosted endpoint with the main request (#117296) may go out now.\n686:     from agent.turn_context import start_deferred_title_upgrade\n687:     _guarded_cleanup(\"start_deferred_title_upgrade\", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)\n688:     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.\n689:     _guarded_cleanup(\n690:         \"save_trajectory\",\n691:         lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),\n692:         _cleanup_errors, logger,\n693:     )\n694:     _guarded_cleanup("
+        },
+        {
+          "start": 880,
+          "end": 889,
+          "text": "880:     # External memory provider: sync the completed turn + queue next prefetch.\n881:     agent._sync_external_memory_for_turn(\n882:         original_user_message=original_user_message, final_response=final_response,\n883:         interrupted=interrupted, messages=messages,\n884:     )\n885: \n886:     # Background memory/skill review runs AFTER delivery so it never competes with the\n887:     # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs\n888:     # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review\n889:     # clones the snapshot structurally so its sanitizers can't reach the live transcript."
+        }
+      ]
+    },
+    "agent/codex_runtime.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/codex_runtime.py",
+        "sha256": "ad526708006ac876946681d3bc836e27aac28f0ce0806a48fc9ae94f9d1d41ab",
+        "bytes": 82983
+      },
+      "ranges": [
+        {
+          "start": 708,
+          "end": 717,
+          "text": "708:     # External memory sync skipped on interrupt/error (no partial transcripts).\n709:     if not turn.interrupted and turn.error is None:\n710:         _call_guarded(getattr(agent, \"_sync_external_memory_for_turn\", None), \"external memory sync raised\", kwargs=dict(\n711:             original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,\n712:         ))\n713:     # Background review fork: only when a trigger tripped AND a real final response exists.\n714:     if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):\n715:         _call_guarded(getattr(agent, \"_spawn_background_review\", None), \"background review spawn raised\", kwargs=dict(\n716:             messages_snapshot=list(messages), review_memory=should_review_memory, review_skills=should_review_skills,\n717:         ))"
+        }
+      ]
+    },
+    "hermes_constants.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_constants.py",
+        "sha256": "1bef6b1066658264d513ad6e1a34ab2a29465eb0fdda6e2359166f42c48fb2f5",
+        "bytes": 63553
+      },
+      "ranges": [
+        {
+          "start": 26,
+          "end": 48,
+          "text": "26: def set_hermes_home_override(path: str | Path | None) -> Token:\n27:     \"\"\"Set a context-local Hermes home override and return its reset token.\n28: \n29:     Deliberately does not mutate ``os.environ`` (shared by every thread in the process).\n30:     \"\"\"\n31:     value: str | object = _UNSET if path is None else str(path)\n32:     return _HERMES_HOME_OVERRIDE.set(value)\n33: \n34: \n35: def reset_hermes_home_override(token: Token) -> None:\n36:     \"\"\"Restore the previous context-local Hermes home override.\"\"\"\n37:     _HERMES_HOME_OVERRIDE.reset(token)\n38: \n39: \n40: def get_hermes_home_override() -> str | None:\n41:     \"\"\"Return the active context-local Hermes home override, if any.\"\"\"\n42:     override = _HERMES_HOME_OVERRIDE.get()\n43:     return str(override) if override is not _UNSET and override else None\n44: \n45: \n46: def _expand_hermes_home(path: str) -> Path:\n47:     \"\"\"Expand environment and user-home syntax in a Hermes home path.\"\"\"\n48:     return Path(os.path.expanduser(os.path.expandvars(path)))"
+        },
+        {
+          "start": 111,
+          "end": 118,
+          "text": "111: def get_hermes_home() -> Path:\n112:     \"\"\"Hermes home: context-local override → ``HERMES_HOME`` env var → platform default.\"\"\"\n113:     override = get_hermes_home_override()\n114:     if override:\n115:         return _expand_hermes_home(override)\n116:     if not os.environ.get(\"HERMES_HOME\", \"\").strip():\n117:         _warn_profile_fallback_once()\n118:     return get_process_hermes_home()"
+        },
+        {
+          "start": 1190,
+          "end": 1197,
+          "text": "1190: def get_config_path() -> Path:\n1191:     \"\"\"Return the path to ``config.yaml`` under HERMES_HOME.\"\"\"\n1192:     return get_hermes_home() / \"config.yaml\"\n1193: \n1194: \n1195: def get_skills_dir() -> Path:\n1196:     \"\"\"Return the path to the skills directory under HERMES_HOME.\"\"\"\n1197:     return get_hermes_home() / \"skills\""
+        }
+      ]
+    },
+    "hermes_cli/config.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_cli/config.py",
+        "sha256": "1b4d1f09b5c4c76e57bb92e6fc8d14f6c160a87ce586e1f5c9aa4ddc7448ca9b",
+        "bytes": 205346
+      },
+      "ranges": [
+        {
+          "start": 438,
+          "end": 440,
+          "text": "438: def get_config_path() -> Path:\n439:     \"\"\"Get the main config file path.\"\"\"\n440:     return get_hermes_home() / \"config.yaml\""
+        },
+        {
+          "start": 2100,
+          "end": 2120,
+          "text": "2100: def load_config() -> Dict[str, Any]:\n2101:     \"\"\"Load the merged configuration (DEFAULT_CONFIG + config.yaml + managed scope, env-expanded).\n2102:     Cached on the file signature; returns a deepcopy since most call sites mutate the result.\n2103:     Read-only hot paths should use ``load_config_readonly()`` to skip the deepcopy.\"\"\"\n2104:     return _load_config_impl(want_deepcopy=True)\n2105: \n2106: \n2107: def load_config_readonly() -> Dict[str, Any]:\n2108:     \"\"\"``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).\n2109:     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for\n2110:     every subsequent caller** — only for code paths that never write to the result.\"\"\"\n2111:     return _load_config_impl(want_deepcopy=False)\n2112: \n2113: \n2114: def load_config_storage_readonly() -> Dict[str, Any]:\n2115:     \"\"\"Read expanded config without home initialization or backup persistence.\n2116: \n2117:     The returned cached mapping is shared: callers must not mutate it. Current\n2118:     storage/parse failures propagate and are never cached as recovery defaults.\n2119:     \"\"\"\n2120:     return _load_config_impl(want_deepcopy=False, storage_readonly=True)"
+        },
+        {
+          "start": 2300,
+          "end": 2315,
+          "text": "2300: def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:\n2301:     \"\"\"Apply the managed-scope overlay; returns ``(merged, managed_config_or_falsy)``.\n2302:     Managed wins at the leaf and is applied AFTER user expansion so a user ``${VAR}`` cannot shadow\n2303:     a managed literal: managed values expand only against the process environment. This\n2304:     deliberately inverts the usual env-over-config precedence for the keys the managed layer pins\n2305:     (docs/design/managed-scope.md §4.1).\"\"\"\n2306:     managed_config = managed_scope.load_managed_config()\n2307:     if not managed_config:\n2308:         return expanded, managed_config\n2309:     # Same canonicalization as the user config BEFORE merging (parity with\n2310:     # managed_scope.apply_managed_overlay) so the merged result never exposes a nested dict.\n2311:     managed_normalized = _normalize_root_model_keys(managed_config)\n2312:     if isinstance(managed_normalized.get(\"model\"), str):\n2313:         managed_normalized = dict(managed_normalized)\n2314:         managed_normalized[\"model\"] = {\"default\": managed_normalized[\"model\"]}\n2315:     return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config"
+        },
+        {
+          "start": 2381,
+          "end": 2405,
+          "text": "2381:         config = copy.deepcopy(DEFAULT_CONFIG)\n2382: \n2383:         if user_sig is not None:\n2384:             try:\n2385:                 with open(config_path, encoding=\"utf-8-sig\") as f:\n2386:                     parsed_config = fast_safe_load(f)\n2387:                 if storage_readonly and parsed_config is not None and not isinstance(parsed_config, dict):\n2388:                     raise TypeError(\"top-level configuration must be a mapping\")\n2389:                 user_config = parsed_config or {}\n2390:                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)\n2391: \n2392:                 if \"max_turns\" in user_config:\n2393:                     agent_user_config = dict(user_config.get(\"agent\") or {})\n2394:                     if agent_user_config.get(\"max_turns\") is None:\n2395:                         agent_user_config[\"max_turns\"] = user_config[\"max_turns\"]\n2396:                     user_config[\"agent\"] = agent_user_config\n2397:                     user_config.pop(\"max_turns\", None)\n2398: \n2399:                 config = _deep_merge(config, user_config)\n2400:                 # A copy of the file that just parsed is what a FRESH process falls back to when the\n2401:                 # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips\n2402:                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.\n2403:                 if not storage_readonly:\n2404:                     from hermes_cli.config_backups import backup_config\n2405:                     backup_config(config_path, \"good\")"
+        },
+        {
+          "start": 2420,
+          "end": 2427,
+          "text": "2420:         normalized = _canonicalize_config(config)\n2421:         expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))\n2422:         if not storage_readonly:\n2423:             _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)\n2424:         if cache_sig is not None:\n2425:             # The cache stores its own deepcopy so load_config() callers can mutate freely while\n2426:             # load_config_readonly() callers all see the same stable object. The env snapshot\n2427:             # records the values this expansion was made against so later loads detect drift."
+        }
+      ]
+    },
+    "hermes_cli/managed_scope.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_cli/managed_scope.py",
+        "sha256": "cc110099a8f4f991faa70a1eefa0d8ef43b6f2083d0fb86a287731b15956fe86",
+        "bytes": 7081
+      },
+      "ranges": [
+        {
+          "start": 45,
+          "end": 62,
+          "text": "45: def get_managed_dir() -> Optional[Path]:\n46:     \"\"\"Resolve the managed-scope directory, or None when no scope is present.\n47: \n48:     Priority: ``$HERMES_MANAGED_DIR`` (IT-only bootstrap override; never persisted to any .env;\n49:     honored only when non-empty AND the directory exists), then ``/etc/hermes`` when it exists.\n50:     A missing directory resolves to None — the common case, so it must be cheap + side-effect-free.\n51:     \"\"\"\n52:     from hermes_cli.friday_credential_admission import managed\n53:     if managed():\n54:         return None\n55:     override = os.environ.get(\"HERMES_MANAGED_DIR\", \"\").strip()\n56:     if override:\n57:         p = Path(override)\n58:     elif _under_pytest():\n59:         return None\n60:     else:\n61:         p = _DEFAULT_MANAGED_DIR\n62:     return p if p.is_dir() else None"
+        },
+        {
+          "start": 102,
+          "end": 112,
+          "text": "102: def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:\n103:     managed_dir = get_managed_dir()\n104:     if managed_dir is None:\n105:         return {}\n106:     parsed = _cached_read(managed_dir / name, cache, parse)\n107:     return parsed if isinstance(parsed, dict) else {}\n108: \n109: \n110: def load_managed_config() -> dict:\n111:     \"\"\"Parsed managed config.yaml, or {} when absent/malformed (fail-open).\"\"\"\n112:     return _load_managed_file(\"config.yaml\", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding=\"utf-8-sig\")) or {})"
+        }
+      ]
+    },
+    "hermes_cli/friday_credential_admission.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_cli/friday_credential_admission.py",
+        "sha256": "19092225095b8e200a7e6ea124b89d09bc5685553a78101870b1d0eb50e21d25",
+        "bytes": 265797
+      },
+      "ranges": [
+        {
+          "start": 31,
+          "end": 36,
+          "text": "31: def managed(home=None):\n32:     from hermes_constants import get_hermes_home\n33:     home = Path(home) if home is not None else get_hermes_home()\n34:     return any((home / n).exists() or (home / n).is_symlink() for n in\n35:                ('FRIDAY-PROFILE.json', 'FRIDAY-INSTALL.json', '.friday-user-scope.json')) or (\n36:                    SOURCE.parent / 'hermes-agent.source.json').exists()"
+        },
+        {
+          "start": 3495,
+          "end": 3505,
+          "text": "3495: def channel_inputs():\n3496:     from hermes_constants import get_hermes_home\n3497:     from agent.secret_scope import current_secret_scope_home\n3498:     home = get_hermes_home(); cli_host_phase(home, full=True)\n3499:     cfg = configuration(home); contract = profile_policy(home, cfg)\n3500:     require(contract is not None, 'user_listener_refused')\n3501:     require(current_secret_scope_home() == str(home), 'channel_scope_home_mismatch')\n3502:     require(not (home / 'gateway.json').exists() and not (home / 'gateway.json').is_symlink(),\n3503:             'legacy_channel_config_refused')\n3504:     return contract, owned_values(home)\n3505: "
+        }
+      ]
+    },
+    "gateway/config_loader.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/gateway/config_loader.py",
+        "sha256": "dd3027d8f55b1871e5b80578538ce5a1cb9d78515cdfb1aa5b4c3c548bbaae43",
+        "bytes": 28869
+      },
+      "ranges": [
+        {
+          "start": 22,
+          "end": 34,
+          "text": "22: def load_legacy_gateway_json(home: Path) -> Any:\n23:     \"\"\"Legacy ``gateway.json`` base layer (config.yaml keys always win). Malformed → ``{}`` + warning.\"\"\"\n24:     path = home / \"gateway.json\"\n25:     if not path.exists():\n26:         return {}\n27:     try:\n28:         with open(path, \"r\", encoding=\"utf-8-sig\") as f:\n29:             data = json.load(f) or {}\n30:         logger.info(\"Loaded legacy %s — consider moving settings to config.yaml\", path)\n31:         return data\n32:     except Exception as e:\n33:         logger.warning(\"Failed to load %s: %s\", path, e)\n34:         return {}"
+        }
+      ]
+    },
+    "gateway/run.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/gateway/run.py",
+        "sha256": "648579c87769629589ecb170289ca05600cad64273fda410919c5d0e4e7029b1",
+        "bytes": 334500
+      },
+      "ranges": [
+        {
+          "start": 1821,
+          "end": 1854,
+          "text": "1821: @_contextmanager\n1822: def _profile_runtime_scope(\n1823:     profile_home: \"Path\", prepared_secret_scope: Optional[dict] = None, *,\n1824:     hydrate_secrets: bool = True):\n1825:     \"\"\"Scope config/skills/memory AND credentials to a profile for one turn (multiplexed path only).\n1826:     ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);\n1827:     ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating\n1828:     ``os.environ``, so subprocesses never inherit cross-profile secrets.\"\"\"\n1829:     from hermes_constants import set_hermes_home_override, reset_hermes_home_override\n1830:     from agent.secret_scope import set_secret_scope, reset_secret_scope\n1831: \n1832:     home_token = secret_token = None\n1833:     try:\n1834:         home_token = set_hermes_home_override(str(profile_home))\n1835:         if prepared_secret_scope is not None:\n1836:             secrets = prepared_secret_scope\n1837:         elif hydrate_secrets:\n1838:             secrets = _load_profile_secret_scope(Path(profile_home))\n1839:         else:\n1840:             from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop\n1841:             secrets = build_profile_secret_scope(Path(profile_home))\n1842:         secret_token = set_secret_scope(secrets, profile_home=str(profile_home))\n1843:         # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.\n1844:         # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have\n1845:         # pinned (first-writer-wins backend leak; #68559).\n1846:         from tools.terminal_scope import install_and_reset_profile_terminal_scope\n1847: \n1848:         with install_and_reset_profile_terminal_scope(Path(profile_home)):\n1849:             yield\n1850:     finally:\n1851:         if secret_token is not None:\n1852:             reset_secret_scope(secret_token)\n1853:         if home_token is not None:\n1854:             reset_hermes_home_override(home_token)"
+        },
+        {
+          "start": 2409,
+          "end": 2421,
+          "text": "2409: def _runtime_agent_kwargs(runtime: dict) -> dict:\n2410:     \"\"\"AIAgent constructor kwargs shared by every runtime-provider resolution.\n2411:     ``request_overrides`` passes through as resolved so the provider's request body reaches each turn.\"\"\"\n2412:     return {\n2413:         \"api_key\": runtime.get(\"api_key\"),\n2414:         \"base_url\": runtime.get(\"base_url\"),\n2415:         \"provider\": runtime.get(\"provider\"),\n2416:         \"requested_provider\": runtime.get(\"requested_provider\"),\n2417:         \"api_mode\": runtime.get(\"api_mode\"),\n2418:         \"command\": runtime.get(\"command\"),\n2419:         \"args\": list(runtime.get(\"args\") or []),\n2420:         \"credential_pool\": runtime.get(\"credential_pool\"),\n2421:         \"request_overrides\": runtime.get(\"request_overrides\")}"
+        },
+        {
+          "start": 2967,
+          "end": 2981,
+          "text": "2967: def _checkpoint_agent_kwargs(config: dict | None) -> dict:\n2968:     \"\"\"Translate gateway checkpoint config into ``AIAgent`` constructor args.\n2969:     Gateway bypasses ``load_config()``, so defaults are here; legacy ``checkpoints: true`` works.\"\"\"\n2970:     cp_cfg = config.get(\"checkpoints\", {}) if isinstance(config, dict) else {}\n2971:     if isinstance(cp_cfg, bool):\n2972:         cp_cfg = {\"enabled\": cp_cfg}\n2973:     elif not isinstance(cp_cfg, dict):\n2974:         cp_cfg = {}\n2975:     from hermes_cli.config import DEFAULT_CONFIG\n2976:     defaults = DEFAULT_CONFIG[\"checkpoints\"]\n2977:     return {\n2978:         \"checkpoints_enabled\": cp_cfg.get(\"enabled\", defaults[\"enabled\"]),\n2979:         \"checkpoint_max_snapshots\": cp_cfg.get(\"max_snapshots\", defaults[\"max_snapshots\"]),\n2980:         \"checkpoint_max_total_size_mb\": cp_cfg.get(\"max_total_size_mb\", defaults[\"max_total_size_mb\"]),\n2981:         \"checkpoint_max_file_size_mb\": cp_cfg.get(\"max_file_size_mb\", defaults[\"max_file_size_mb\"])}"
+        },
+        {
+          "start": 3602,
+          "end": 3610,
+          "text": "3602:     def _init_session_store(self) -> None:\n3603:         \"\"\"Build the SessionStore (with process-registry reset guard), its async facade and the router.\"\"\"\n3604:         from tools.process_registry import process_registry\n3605:         self.session_store = SessionStore(\n3606:             self.config.sessions_dir, self.config,\n3607:             has_active_processes_fn=lambda key: process_registry.has_active_for_session(\n3608:                 key))\n3609:         # Loop-side boundary: sync helpers use ``session_store`` directly; async handlers await this facade.\n3610:         self._async_session_store = AsyncSessionStore(self.session_store)"
+        },
+        {
+          "start": 4365,
+          "end": 4369,
+          "text": "4365:     async def _run_in_executor_with_context(self, func, *args):\n4366:         \"\"\"Run blocking work in the thread pool while preserving session contextvars.\"\"\"\n4367:         loop = asyncio.get_running_loop()\n4368:         ctx = copy_context()\n4369:         return await loop.run_in_executor(self._get_executor(), ctx.run, func, *args)"
+        },
+        {
+          "start": 4719,
+          "end": 4742,
+          "text": "4719: def _launch_sessions_dir(config) -> Optional[Tuple[Path, Path]]:\n4720:     \"\"\"``(launch home, its configured transcript dir)``, or ``None`` when the gateway carries none.\n4721: \n4722:     MUST be called outside any profile scope — ``get_hermes_home()`` is what identifies the launch\n4723:     home. Consumed by :func:`_profile_sessions_dir`.\n4724:     \"\"\"\n4725:     sessions_dir = getattr(config, \"sessions_dir\", None)\n4726:     if sessions_dir is None:\n4727:         return None\n4728:     return get_hermes_home(), Path(sessions_dir)\n4729: \n4730: \n4731: def _profile_sessions_dir(launch: Optional[Tuple[Path, Path]]) -> Path:\n4732:     \"\"\"Transcript dir of the profile currently in scope.\n4733: \n4734:     ``gateway.sessions_dir`` overrides the LAUNCH profile's transcript dir only; every other served\n4735:     profile keeps ``<home>/sessions``. Hardcoding ``<home>/sessions`` for the launch home too wrote\n4736:     transcripts to the configured dir while the prune unlinked under the default one, orphaning\n4737:     every pruned session's ``.json``/``.jsonl``/``request_dump_*`` forever.\n4738:     \"\"\"\n4739:     home = get_hermes_home()\n4740:     if launch is not None and Path(launch[0]) == home:\n4741:         return Path(launch[1])\n4742:     return home / \"sessions\""
+        }
+      ]
+    },
+    "gateway/run_config_loaders.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/gateway/run_config_loaders.py",
+        "sha256": "eaf48c1175a275c7e70e805590689374419734c14c7e012386b009a3c2bd45a5",
+        "bytes": 31755
+      },
+      "ranges": [
+        {
+          "start": 48,
+          "end": 82,
+          "text": "48:     def _resolve_profile_home_for_source(self, source: SessionSource) -> \"Path\":\n49:         \"\"\"Resolve which profile's HERMES_HOME serves this source: the pinned identity's runtime\n50:         home, else ``source.profile``, then ``_profile_name_for_source`` (sources bypassing\n51:         ``build_source``), then the active profile.\"\"\"\n52:         from gateway.profile_routing import ProfileRouteRejected\n53:         from gateway.session_identity import identity_of\n54:         from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists\n55:         from hermes_constants import get_hermes_home\n56:         identity = identity_of(source)\n57:         if identity is not None:\n58:             return identity.runtime_home\n59:         explicit_profile = None  # explicitly requested (source or routing) vs. default fallback\n60:         try:\n61:             name = (source.profile or \"\").strip() or self._profile_name_for_source(source)\n62:             explicit_profile = name or None\n63:             if not name:\n64:                 name = get_active_profile_name() or \"default\"\n65:             profile_dir = get_profile_dir(name)\n66:             if explicit_profile and not profile_exists(name):\n67:                 logger.warning(\n68:                     \"Profile %r does not exist for source %s/%s (guild_id=%s), \"\n69:                     \"falling back to global HERMES_HOME\",\n70:                     explicit_profile, source.platform.value, source.chat_id,\n71:                     getattr(source, \"guild_id\", None))\n72:                 return get_hermes_home()\n73:             return profile_dir\n74:         except ProfileRouteRejected:\n75:             raise\n76:         except Exception:\n77:             logger.warning(\n78:                 \"Failed to resolve profile directory for source %s/%s (guild_id=%s), \"\n79:                 \"falling back to global HERMES_HOME: %s\",\n80:                 source.platform.value, source.chat_id, getattr(source, \"guild_id\", None),\n81:                 explicit_profile or \"(no profile)\", exc_info=True)\n82:             return get_hermes_home()"
+        }
+      ]
+    },
+    "gateway/config.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/gateway/config.py",
+        "sha256": "d41cd4857a5f6cebf9f3aa771c2b48592260394e8f87b0a772981ec2676ba531",
+        "bytes": 47559
+      },
+      "ranges": [
+        {
+          "start": 583,
+          "end": 592,
+          "text": "583: \n584: @dataclass\n585: class GatewayConfig:\n586:     \"\"\"Main gateway configuration: platform connections, session policies, delivery settings.\"\"\"\n587:     platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)\n588:     reset_triggers: List[str] = field(default_factory=lambda: [\"/new\", \"/reset\"])\n589:     quick_commands: Dict[str, Any] = field(default_factory=dict)  # slash commands that bypass the agent loop\n590:     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / \"sessions\")\n591:     # Legacy sessions.json mirror of the routing index (primary: state.db) for external tooling / downgrades.\n592:     # The primary copy lives in state.db (gateway_routing table, #9006). Default True for backward"
+        },
+        {
+          "start": 793,
+          "end": 802,
+          "text": "793: \n794:         return cls(\n795:             platforms=by_platform(\"platforms\", PlatformConfig.from_dict, dicts_only=True),\n796:             reset_triggers=data.get(\"reset_triggers\", [\"/new\", \"/reset\"]),\n797:             quick_commands=_coerce_dict(data.get(\"quick_commands\", {})),\n798:             sessions_dir=Path(data[\"sessions_dir\"]) if \"sessions_dir\" in data else get_hermes_home() / \"sessions\",\n799:             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},\n800:             stt_enabled=_coerce_bool(stt_setting(\"stt_enabled\", \"enabled\"), True),\n801:             stt_echo_transcripts=_coerce_bool(stt_setting(\"stt_echo_transcripts\", \"echo_transcripts\"), True),\n802:             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),"
+        }
+      ]
+    },
+    "gateway/session.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/gateway/session.py",
+        "sha256": "bd8342408dcec29d65f4a0ef9508642809a85b79f6ead55c98af96b858d093dc",
+        "bytes": 68251
+      },
+      "ranges": [
+        {
+          "start": 820,
+          "end": 853,
+          "text": "820:         # SQLite handles are cached per path and resolved through ``_db`` per call, never bound\n821:         # once: a multiplexed gateway serves every profile from ONE process and a handle frozen to\n822:         # the root home would land every profile's rows in the root state.db.\n823:         # Initialize SQLite session database. A multiplexed gateway serves every profile from a SINGLE\n824:         # process, so a handle bound during __init__ is frozen to the process's own root home; every\n825:         # profile's rows then land in the root state.db even though ``_profile_runtime_scope`` has already\n826:         # redirected ``get_hermes_home()`` for the turn (its docstring lists \"sessions\" among what it\n827:         # scopes). The row still carries the right ``profile_name``, so the damage is invisible in the data\n828:         # and shows up only as the desktop listing a profile's session under the default bot --\n829:         # ``_open_session_db_for_profile`` reads ``profiles/<name>/state.db``, which never received the\n830:         # write. See #88532. Priming the handle for the current scope here keeps the startup diagnostics\n831:         # exactly where they were: the live-DB isolation guard still raises during construction, and the\n832:         # JSONL-fallback warning is still printed once at startup rather than on first use.\n833:         self._db_pinned = _DB_UNPINNED\n834:         self._db_handles: Dict[Path, Any] = {}\n835:         self._db_handles_lock = threading.Lock()\n836:         self._profile_home_cache: Dict[str, Optional[Path]] = {}  # profile -> HERMES_HOME (hits)\n837:         # session_id -> owning key for ids proven but not yet published in ``_entries`` (a\n838:         # compression child row is written before its reroute is published).\n839:         self._session_owner_hints: Dict[str, str] = {}\n840:         from gateway.session_db_recovery import RecoverableHandleCache\n841: \n842:         self._db_handle_cache = RecoverableHandleCache(\n843:             handles=self._db_handles, lock=self._db_handles_lock\n844:         )\n845:         # The routing index needs exactly one home for its lifetime: the gateway's own, captured\n846:         # before any profile scope exists (see ``_routing_db``).\n847:         try:\n848:             from hermes_constants import get_hermes_home\n849: \n850:             self._routing_home: Optional[Path] = Path(get_hermes_home())\n851:         except Exception:\n852:             self._routing_home = None\n853:         self._open_session_db_for_active_scope()"
+        }
+      ]
+    },
+    "hermes_state.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_state.py",
+        "sha256": "5e528d23cf1b08d4955e7ba8058062b12528265406a4ef5a74013cefefa6b281",
+        "bytes": 92640
+      },
+      "ranges": [
+        {
+          "start": 174,
+          "end": 176,
+          "text": "174: # Import-time snapshot lets _default_db_path() detect a re-pointed DEFAULT_DB_PATH\n175: # (tests monkeypatch the constant directly).\n176: DEFAULT_DB_PATH = _IMPORT_DEFAULT_DB_PATH = get_hermes_home() / \"state.db\""
+        },
+        {
+          "start": 196,
+          "end": 199,
+          "text": "196: def _default_db_path() -> Path:\n197:     \"\"\"Default state DB path at CALL time: a re-pointed ``DEFAULT_DB_PATH`` wins, else\n198:     ``get_hermes_home()`` is resolved fresh (a runtime HERMES_HOME redirect works regardless of import).\"\"\"\n199:     return DEFAULT_DB_PATH if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH else get_hermes_home() / \"state.db\""
+        },
+        {
+          "start": 429,
+          "end": 443,
+          "text": "429: def divert_session_transcript_jsonl(session_id: str, messages) -> \"Optional[Path]\":\n430:     \"\"\"Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a\n431:     live process). Returns the path, or None if nothing to write.\"\"\"\n432:     sid = str(session_id or \"\").strip()\n433:     if not sid or not messages:\n434:         return None\n435:     sessions_dir = get_hermes_home() / \"sessions\"\n436:     sessions_dir.mkdir(parents=True, exist_ok=True)\n437:     path = sessions_dir / f\"{sid}.jsonl\"\n438:     with path.open(\"a\", encoding=\"utf-8\") as handle:\n439:         for msg in messages:\n440:             if msg is not None:\n441:                 record = msg if isinstance(msg, dict) else {\"content\": str(msg)}\n442:                 handle.write(json.dumps(record, ensure_ascii=False, default=str) + \"\\n\")\n443:     return path"
+        }
+      ]
+    },
+    "hermes_logging.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_logging.py",
+        "sha256": "0c05185fe5c9d5c65c0eff75611c9e960b9eb8271a89dc6966022a3c590d2686",
+        "bytes": 43269
+      },
+      "ranges": [
+        {
+          "start": 326,
+          "end": 344,
+          "text": "326: def setup_logging(\n327:     *,\n328:     hermes_home: Optional[Path] = None,\n329:     log_level: Optional[str] = None,\n330:     max_size_mb: Optional[int] = None,\n331:     backup_count: Optional[int] = None,\n332:     mode: Optional[str] = None,\n333:     force: bool = False,\n334: ) -> Path:\n335:     \"\"\"Configure the Hermes logging subsystem; returns the ``logs/`` directory.\n336: \n337:     Safe to call multiple times; the second call is a no-op unless *force*. Level and\n338:     rotation defaults come from config.yaml ``logging.*``. ``mode=\"gateway\"`` adds\n339:     ``gateway.log`` and ``mode=\"gui\"`` adds ``gui.log``.\n340:     \"\"\"\n341:     global _logging_initialized\n342:     global _fallback_warned\n343:     home = hermes_home or get_hermes_home()\n344:     log_dir = mkdir_under_hermes_home(home / \"logs\")"
+        },
+        {
+          "start": 958,
+          "end": 979,
+          "text": "958:     \"\"\"Best-effort read of ``logging.*`` from config.yaml.\"\"\"\n959:     try:\n960:         # Prefer the shared effective-config cache (managed overlay included, so an administrator\n961:         # can pin logging.*) so this reuses hermes_cli.main's early parse (one config.yaml parse\n962:         # per process); fall back to a direct parse for bare hermes_logging consumers.\n963:         try:\n964:             from hermes_cli.config_effective import load_user_config_effective\n965:             cfg = load_user_config_effective(get_config_path())\n966:         except Exception:\n967:             from utils import fast_safe_load\n968:             config_path = get_config_path()\n969:             cfg = {}\n970:             if config_path.exists():\n971:                 with open(config_path, \"r\", encoding=\"utf-8-sig\") as f:\n972:                     cfg = fast_safe_load(f) or {}\n973:         if not cfg:\n974:             return (None, None, None)\n975:         log_cfg = cfg.get(\"logging\", {})\n976:         if isinstance(log_cfg, dict):\n977:             return (log_cfg.get(\"level\"), log_cfg.get(\"max_size_mb\"), log_cfg.get(\"backup_count\"))\n978:     except Exception:\n979:         pass"
+        }
+      ]
+    },
+    "agent/session_persistence.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/session_persistence.py",
+        "sha256": "de1049ed9adc152c38349e6942edf79f3ef1778e2353a9dc3a68f793716e5006",
+        "bytes": 35304
+      },
+      "ranges": [
+        {
+          "start": 590,
+          "end": 598,
+          "text": "590:     _format_tools_for_system_message = _forward(\"agent.system_prompt\", \"format_tools_for_system_message\")\n591:     _convert_to_trajectory_format = _forward(\"agent.agent_runtime_helpers\", \"convert_to_trajectory_format\")\n592: \n593:     def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):\n594:         \"\"\"Save conversation trajectory to JSONL file.\"\"\"\n595:         if not self.save_trajectories:\n596:             return\n597:         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)\n598:         _save_trajectory_to_file(trajectory, self.model, completed)"
+        }
+      ]
+    },
+    "agent/trajectory.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/trajectory.py",
+        "sha256": "209d8e5c723f19f425c7daf5fa10ba828a5b84fd17b2f577746f4a720b867c91",
+        "bytes": 2573
+      },
+      "ranges": [
+        {
+          "start": 37,
+          "end": 55,
+          "text": "37: def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: bool, filename: str = None):\n38:     \"\"\"Append a ShareGPT-format entry to a JSONL file (default trajectory_samples.jsonl / failed_trajectories.jsonl by ``completed``).\"\"\"\n39:     if filename is None:\n40:         filename = \"trajectory_samples.jsonl\" if completed else \"failed_trajectories.jsonl\"\n41:     entry = {\"conversations\": trajectory, \"timestamp\": datetime.now().isoformat(), \"model\": model, \"completed\": completed}\n42:     try:\n43:         line = json.dumps(entry, ensure_ascii=False) + \"\\n\"  # serialize before taking the lock\n44:         with open(filename, \"a\", encoding=\"utf-8\") as f:\n45:             # Gateway sessions and batch workers append to the SAME default file; without an\n46:             # exclusive lock around write+flush, entries larger than one write() interleave and the\n47:             # JSONL stops parsing (#12684).\n48:             _lock_append_handle(f, True)\n49:             try:\n50:                 f.write(line)\n51:                 f.flush()\n52:             finally:\n53:                 _lock_append_handle(f, False)\n54:         logger.info(\"Trajectory saved to %s\", filename)\n55:     except Exception as e:"
+        }
+      ]
+    },
+    "tools/file_tools.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/tools/file_tools.py",
+        "sha256": "b834615c95438c2f1cb725247cc2ea0b6e1d5e1566cc3498fec2a069bc21a40f",
+        "bytes": 184031
+      },
+      "ranges": [
+        {
+          "start": 780,
+          "end": 802,
+          "text": "780: def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = \"default\", char_offset: int = 0, pdf_form_fields: bool = False, password: str | None = None, pdf_signatures: bool = False, archive_parts: list[str] | None = None) -> str:\n781:     \"\"\"Read a file with pagination and line numbers.\n782: \n783:     Guard order: NT/device-namespace prefix (raw string, no resolution) →\n784:     device-path blocklist (no I/O) → stat-based special-file guard (host only)\n785:     → Hermes internal denylist → document extraction → binary-extension guard\n786:     → negative-result cache → dedup stub → real read.\n787:     \"\"\"\n788:     from hermes_cli.friday_user_scope import scoped_file, ScopeDenied, ordinary_tool_error_json\n789:     try:\n790:         scoped = scoped_file(\"read_file\", dict(path=path, offset=offset, limit=limit, char_offset=char_offset, pdf_form_fields=pdf_form_fields, password=password, pdf_signatures=pdf_signatures, archive_parts=archive_parts), task_id=task_id)\n791:         if scoped is not None:\n792:             return scoped\n793:     except ScopeDenied:\n794:         return ordinary_tool_error_json(\"product_user_scope_refused\") or json.dumps({\"success\": False, \"error\": \"product_user_scope_refused\"})\n795:     if archive_parts is not None:\n796:         return tool_error(\"archive_parts requires an own-workspace split 7z archive\")\n797:     if pdf_signatures:\n798:         return tool_error(\"pdf_signatures requires an own-workspace scoped PDF\")\n799:     if pdf_form_fields:\n800:         return tool_error(\"pdf_form_fields requires an own-workspace scoped PDF\")\n801:     if password is not None:\n802:         return tool_error(\"password requires an own-workspace supported encrypted archive, PDF, ODF or OOXML document\")"
+        }
+      ]
+    },
+    "hermes_cli/friday_user_scope.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_cli/friday_user_scope.py",
+        "sha256": "fb45b65f899a7c1561156b53fa167f309e48445b9ea00a14f8ed90d002b07dad",
+        "bytes": 143447
+      },
+      "ranges": [
+        {
+          "start": 189,
+          "end": 232,
+          "text": "189:     def check(self):\n190:         # Revocation is sticky for this retained capability; a later enable does\n191:         # not resume an old turn/job or reset any existing task budget.\n192:         try:\n193:             if self.revoked:\n194:                 raise ScopeDenied()\n195:             from hermes_constants import get_hermes_home\n196:             if get_hermes_home() != self.home:\n197:                 raise ScopeDenied()\n198:             current = policy(self.authorization_home)\n199:             rows = [] if current is None else [r for r in current['bindings']\n200:                 if principal_id(*(r[k] for k in ('platform', 'transport_profile', 'account_id', 'user_id'))) == self.key]\n201:             if len(rows) != 1 or rows[0] != self.binding:\n202:                 raise ScopeDenied()\n203:             from hermes_cli.friday_product_access import current_access, access_policy\n204:             with authority(self.authorization_home):\n205:                 access = current_access()['users'].get(self.key)\n206:                 accounts = access_policy()['accounts']\n207:             if (not access or access['enabled'] is not True\n208:                     or type(self.admission_generation) is not int or self.admission_generation < 1\n209:                     or access.get('generation') != self.admission_generation):\n210:                 raise ScopeDenied()\n211:             matches = [r for r in accounts if (r['platform'], r['transport_profile'], r['account_id']) == self.principal[:3]\n212:                        and self.profile in r['runtime_profiles']]\n213:             if len(matches) != 1:\n214:                 raise ScopeDenied()\n215:             st = _private(self.home, directory=True)\n216:             if (st.st_dev, st.st_ino) != self.directory_identity:\n217:                 raise ScopeDenied()\n218:             _private(self.home / MARKER)\n219:             marker = json.loads((self.home / MARKER).read_text(encoding=\"utf-8-sig\"))\n220:             expected = {'schema': 'friday.user-home.v1', 'principal': self.key,\n221:                         'profile': self.profile, 'binding_sha256': _fingerprint(self.binding)}\n222:             if 'onboarding_sha256' in marker:\n223:                 _private(self.home / ONBOARDING)\n224:                 expected['onboarding_sha256'] = hashlib.sha256((self.home / ONBOARDING).read_bytes()).hexdigest()\n225:             if marker != expected:\n226:                 raise ScopeDenied()\n227:             check_onboarding_home(self.authorization_home, self.home, self.binding)\n228:             for name in ('memories', 'workspace'):\n229:                 _private(self.home / name, directory=True)\n230:             for name in ('state.db', 'config.yaml', '.env', 'auth.json', 'SOUL.md'):\n231:                 if (self.home / name).exists() or (self.home / name).is_symlink():\n232:                     _private(self.home / name)"
+        },
+        {
+          "start": 300,
+          "end": 323,
+          "text": "300:     rows = [r for r in active['bindings'] if tuple(r[k] for k in\n301:         ('platform', 'transport_profile', 'account_id', 'user_id')) == principal]\n302:     if len(rows) != 1 or rows[0]['runtime_profile'] != identity.runtime_profile:\n303:         raise ScopeDenied()\n304:     # Caller-requested source.profile/home cannot grant a different native home.\n305:     from hermes_constants import get_default_hermes_root\n306:     root = get_default_hermes_root(home=identity.authorization_home)\n307:     home = root / 'profiles' / identity.runtime_profile\n308:     if identity.runtime_home != home or home.resolve() != home:\n309:         raise ScopeDenied()\n310:     previous = getattr(source, '_friday_user_scope', None)\n311:     if isinstance(previous, UserScope):\n312:         if (previous.principal != principal or previous.home != home\n313:                 or previous.binding != rows[0] or previous.authorization_home != identity.authorization_home):\n314:             previous.revoked = True\n315:             raise ScopeDenied()\n316:         with authority(home):\n317:             previous.check()\n318:         return\n319:     st = _private(home, directory=True)\n320:     capability = UserScope(identity.authorization_home, home, identity.runtime_profile,\n321:                            principal, dict(rows[0]), (st.st_dev, st.st_ino), access['generation'])\n322:     with authority(home):\n323:         capability.check()"
+        },
+        {
+          "start": 409,
+          "end": 420,
+          "text": "409: def check_context_path(path):\n410:     cap = current()\n411:     if cap is None:\n412:         return\n413:     check_database(cap)\n414:     path = Path(path)\n415:     if path != cap.home / 'SOUL.md' and not path.is_relative_to(cap.home / 'workspace'):\n416:         raise ScopeDenied()\n417:     if path.resolve() != path:\n418:         raise ScopeDenied()\n419:     if path.exists():\n420:         _private(path)"
+        },
+        {
+          "start": 487,
+          "end": 499,
+          "text": "487: def check_memory(store=None):\n488:     cap = current()\n489:     retained = getattr(store, '_friday_user_scope', None) if store is not None else None\n490:     if retained is not cap and (retained is not None or cap is not None):\n491:         if not _same_scope(retained, cap):\n492:             raise ScopeDenied()\n493:         retained.check()\n494:     if cap is not None:\n495:         check_database(cap)\n496:         for name in ('MEMORY.md', 'USER.md', 'MEMORY.md.lock', 'USER.md.lock'):\n497:             path = cap.home / 'memories' / name\n498:             if path.exists() or path.is_symlink():\n499:                 _private(path)"
+        },
+        {
+          "start": 824,
+          "end": 864,
+          "text": "824:     ShellFileOperations cannot confine arbitrary shell reads. Product text I/O\n825:     uses the same tool names but a descriptor-only local backend; complex native\n826:     file/shell operations stay explicitly unaccepted until sandbox composition.\n827:     \"\"\"\n828:     from hermes_cli.friday_credential_admission import session_artifact_file, ordinary_readonly_file, CredentialDenied\n829:     from tools.binary_extensions import UNSUPPORTED_CONTAINER_EXTENSIONS\n830:     try:\n831:         artifact = ordinary_readonly_file(name,args)\n832:         if artifact is None:\n833:             artifact = session_artifact_file(name,args) if current() is None else None\n834:     except (CredentialDenied,OSError,ValueError):\n835:         raise ScopeDenied() from None\n836:     if artifact is not None:\n837:         return artifact\n838:     cap = current()\n839:     if cap is None:\n840:         return None\n841:     guard_tool(name, args)\n842:     raw = args.get('path')\n843:     if not isinstance(raw, str) or not raw or '\\x00' in raw:\n844:         raise ScopeDenied()\n845:     root = cap.home / 'workspace'\n846:     path = Path(raw)\n847:     if path.is_absolute():\n848:         try:\n849:             path = path.relative_to(root)\n850:         except ValueError:\n851:             raise ScopeDenied() from None\n852:     parts = path.parts\n853:     if not parts or any(p in ('.', '..') or p.startswith('.') for p in parts):\n854:         raise ScopeDenied()\n855:     fd = _workspace_directory(cap)\n856:     try:\n857:         for component in parts[:-1]:\n858:             next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)\n859:             os.close(fd); fd = next_fd\n860:             st = os.fstat(fd)\n861:             if st.st_uid != _owner_uid() or st.st_mode & 0o077:\n862:                 raise ScopeDenied()\n863:         cap.check()\n864:         if name == 'read_file':"
+        },
+        {
+          "start": 940,
+          "end": 952,
+          "text": "940:             if document_format:\n941:                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError\n942:                 identity_required = document_format in OOXML_PASSWORD_FORMATS or document_format in ('mpp','mpt','mdb','accdb','djvu','djv','wpd','wps','pages','numbers','key','xps','oxps','dbf','dif','slk','sxw','stw','sxc','stc','sxi','sti','fb2','abw','odm','odf','pdf','odt','ott','ods','ots','odp','otp','odb','msg','pub','eml','ics','vcf')\n943:                 document_snapshot = workspace_document(str(root / path), max_bytes=1000000,\n944:                                                        with_identity=identity_required)\n945:                 data = document_snapshot[0]\n946:                 def check_document():\n947:                     revision.check(cap)\n948:                     if identity_required:\n949:                         observed = workspace_document(str(root / path), max_bytes=1000000,\n950:                                                       with_identity=True)\n951:                         if observed != document_snapshot:\n952:                             raise ScopeDenied()"
+        },
+        {
+          "start": 962,
+          "end": 995,
+          "text": "962:                         except PDFReadError as error:\n963:                             revision.check(cap)\n964:                             return json.dumps({'success': False, 'error': 'document_extraction_failed',\n965:                                                'format': 'pdf', 'reason': str(error)})\n966:                         check_document()\n967:                     if document_format in ('odt','ott','ods','ots','odp','otp'):\n968:                         from tools.scoped_odf_password import prepare_read as prepare_odf, ODFPasswordError\n969:                         try:\n970:                             extraction_data, encryption_metadata = prepare_odf(data, document_format, args.get('password'), checkpoint=lambda: revision.check(cap))\n971:                         except ODFPasswordError as error:\n972:                             revision.check(cap)\n973:                             return json.dumps({'success': False, 'error': 'document_extraction_failed', 'format': document_format, 'reason': str(error)})\n974:                         check_document()\n975:                     elif document_format in OOXML_PASSWORD_FORMATS:\n976:                         from tools.scoped_ooxml_password import prepare_read, OOXMLPasswordError\n977:                         try:\n978:                             extraction_data, encryption_metadata = prepare_read(\n979:                                 data, document_format, args.get('password'), checkpoint=check_document)\n980:                         except OOXMLPasswordError as error:\n981:                             check_document()\n982:                             return json.dumps({'success': False, 'error': 'document_extraction_failed',\n983:                                                'format': document_format, 'reason': error.code})\n984:                         check_document()\n985:                     text = extract_scoped_document_bytes(extraction_data, document_format,\n986:                                                          checkpoint=check_document if document_format in ('mpp','mpt','djvu','djv') else lambda: revision.check(cap))\n987:                     # Authored by the trusted extractor; preserve on every page.\n988:                     extraction_metadata = getattr(text, 'extraction_metadata', None)\n989:                 except ScopedExtractionError as exc:\n990:                     revision.check(cap)\n991:                     return json.dumps({'success': False, 'error': 'document_extraction_failed',\n992:                                        'format': document_format, 'reason': exc.code})\n993:                 check_document()\n994:                 lines = text.splitlines()\n995:             else:"
+        }
+      ]
+    },
+    "tools/scoped_ooxml_password.py": {
+      "ref": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/tools/scoped_ooxml_password.py",
+        "sha256": "59c65471582a30baf61ed8367925b477d00af70d6d1211e6044ecb2a3d35029c",
+        "bytes": 30958
+      },
+      "ranges": [
+        {
+          "start": 1,
+          "end": 19,
+          "text": "1: \"\"\"Bounded ECMA-376 Agile4.4 and Standard3.2 OOXML password envelopes.\n2: \n3: CFB allocation parser specialized from tools.scoped_doc (Source129); no\n4: legacy Office binary profiles are changed. Crypto follows MS-OFFCRYPTO 2.3.4.5-15\n5: using installed Cryptodome AES and stdlib hashlib/hmac. No crypto algorithm\n6: implementation or third-party source is vendored. See OOXML-PASSWORD-NOTES.md.\n7: This module has no filesystem, subprocess, network or package installation.\n8: \"\"\"\n9: from __future__ import annotations\n10: import base64\n11: import binascii\n12: import hashlib\n13: import hmac\n14: import io\n15: import re\n16: import struct\n17: import zipfile\n18: import zlib\n19: from xml.etree import ElementTree as ET"
+        },
+        {
+          "start": 580,
+          "end": 655,
+          "text": "580:     size = struct.unpack_from('<Q', encrypted)[0]\n581:     if (not 1 <= size <= MAX_INPUT or len(encrypted) > MAX_INPUT\n582:             or len(encrypted) - 8 != _round_block(size)):\n583:         _fail('ooxml_encrypted_package_limit')\n584:     key = _standard_key(password, params['salt'], check)\n585:     verifier = _standard_ecb_decrypt(params['input'], key)\n586:     expected = _standard_ecb_decrypt(params['value'], key)[:20]\n587:     if not hmac.compare_digest(expected, hashlib.sha1(verifier).digest()):\n588:         _fail('ooxml_password_incorrect')\n589:     check()\n590:     clear = bytearray()\n591:     for at in range(8, len(encrypted), 4096):\n592:         check()\n593:         clear.extend(_standard_ecb_decrypt(encrypted[at:at + 4096], key))\n594:     output = bytes(clear[:size])\n595:     _zip_preflight(output, check)\n596:     check()\n597:     return output, {'encrypted': True,\n598:         'encryption': 'ECMA-376-Standard3.2-AES-ECB',\n599:         'encryption_profile': 'standard3.2-aes128-sha1',\n600:         'password_verified': True, 'data_integrity_verified': False,\n601:         'cryptographic_integrity': 'unavailable-in-profile',\n602:         'package_structure_verified': True,\n603:         'decrypted_output_published': False, 'read_only': True}\n604: \n605: \n606: def prepare_read(data, format, password=None, *, checkpoint=None):\n607:     \"\"\"Return immutable ZIP bytes and safe metadata, or refuse without text.\n608: \n609:     Only a supplied password is attempted, once. An unencrypted ZIP passes\n610:     through; its ordinary format parser remains authoritative. No password,\n611:     derived key, verifier, plaintext or hash of plaintext is returned as metadata.\n612:     \"\"\"\n613:     check = checkpoint if checkpoint is not None else lambda: None\n614:     check()\n615:     if not isinstance(data, bytes) or len(data) > MAX_INPUT:\n616:         _fail('input_limit')\n617:     if format not in FORMATS:\n618:         _fail('ooxml_encryption_format_unsupported')\n619:     if password is not None and (not isinstance(password, str) or len(password) > 1024):\n620:         _fail('ooxml_password_invalid')\n621:     if not data.startswith(CFB_SIGNATURE):\n622:         return data, None\n623:     envelope = _CFB(data)\n624:     streams = envelope.streams\n625:     if envelope.profile == 'standard3.2-aes128-sha1':\n626:         params = _standard_descriptor(streams[('EncryptionInfo',)])\n627:         return _standard_read(streams[('EncryptedPackage',)], params, password, check)\n628:     params, pwd = _descriptor(streams[('EncryptionInfo',)])\n629:     encrypted = streams[('EncryptedPackage',)]\n630:     if len(encrypted) < 24 or (len(encrypted) - 8) % 16:\n631:         _fail('ooxml_encrypted_package_invalid')\n632:     size = struct.unpack_from('<Q', encrypted)[0]\n633:     if not 1 <= size <= MAX_INPUT or len(encrypted) - 8 != _round_block(size):\n634:         _fail('ooxml_encrypted_package_limit')\n635:     if password is None:\n636:         _fail('ooxml_password_required')\n637:     try:\n638:         encoded = password.encode('utf-16le')\n639:     except UnicodeError:\n640:         _fail('ooxml_password_invalid')\n641:     iterated = hashlib.new(pwd['hash'], pwd['salt'] + encoded).digest()\n642:     for iteration in range(pwd['spin']):\n643:         if iteration % 1024 == 0:\n644:             check()\n645:         iterated = hashlib.new(pwd['hash'], struct.pack('<I', iteration) + iterated).digest()\n646:     check()\n647:     verifier = _aes_decrypt(pwd['input'], _key(iterated, _VERIFIER_INPUT, pwd), pwd['salt'])\n648:     expected = _aes_decrypt(pwd['value'], _key(iterated, _VERIFIER_VALUE, pwd), pwd['salt'])\n649:     actual = hashlib.new(pwd['hash'], verifier).digest()\n650:     if not hmac.compare_digest(expected, actual.ljust(len(expected), b'\\x00')):\n651:         _fail('ooxml_password_incorrect')\n652:     secret = _aes_decrypt(pwd['key'], _key(iterated, _KEY_VALUE, pwd), pwd['salt'])\n653:     if any(secret[params['key_bytes']:]):\n654:         _fail('ooxml_encrypted_key_invalid')\n655:     secret = secret[:params['key_bytes']]"
+        }
+      ]
+    }
+  },
+  "source_privacy_runtime_hashes_all12_match_207_template": {
+    "agent/agent_runtime_helpers.py": {
+      "expected_sha256": "b3a71476ab48aecb4b4fe7058c2a7626c769b01a919c50c9f5935e96b67da39e",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/agent_runtime_helpers.py",
+        "sha256": "b3a71476ab48aecb4b4fe7058c2a7626c769b01a919c50c9f5935e96b67da39e",
+        "bytes": 214434
+      },
+      "matches": true
+    },
+    "agent/display.py": {
+      "expected_sha256": "9e0b8e2721260f513031194b04e86da3c57c118b3543850abe3658cf00126aec",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/display.py",
+        "sha256": "9e0b8e2721260f513031194b04e86da3c57c118b3543850abe3658cf00126aec",
+        "bytes": 59626
+      },
+      "matches": true
+    },
+    "agent/message_sanitization.py": {
+      "expected_sha256": "08823b1e54f6aa78f49ebf1f0f92092f9c558bd982c3961ef9ed8cd99642f5ec",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/message_sanitization.py",
+        "sha256": "08823b1e54f6aa78f49ebf1f0f92092f9c558bd982c3961ef9ed8cd99642f5ec",
+        "bytes": 45728
+      },
+      "matches": true
+    },
+    "agent/session_persistence.py": {
+      "expected_sha256": "de1049ed9adc152c38349e6942edf79f3ef1778e2353a9dc3a68f793716e5006",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/agent/session_persistence.py",
+        "sha256": "de1049ed9adc152c38349e6942edf79f3ef1778e2353a9dc3a68f793716e5006",
+        "bytes": 35304
+      },
+      "matches": true
+    },
+    "gateway/ordinary_turn_projection.py": {
+      "expected_sha256": "3a6b003622bc17ff5265e5c5117e0eb1f4572676d967763cb368e80947fc79b4",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/gateway/ordinary_turn_projection.py",
+        "sha256": "3a6b003622bc17ff5265e5c5117e0eb1f4572676d967763cb368e80947fc79b4",
+        "bytes": 23885
+      },
+      "matches": true
+    },
+    "hermes_cli/friday_prompt_scope.py": {
+      "expected_sha256": "c51ac7998ec909a67283fb0d164cac91ea3f28a7e819600c025d03ad3488d450",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_cli/friday_prompt_scope.py",
+        "sha256": "c51ac7998ec909a67283fb0d164cac91ea3f28a7e819600c025d03ad3488d450",
+        "bytes": 134183
+      },
+      "matches": true
+    },
+    "hermes_cli/friday_workspace_ooxml_password.py": {
+      "expected_sha256": "0be85ff3458cd47ffd9818a4f4791b0b9f67bfd4131e6fe9b688c23fe4619d86",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_cli/friday_workspace_ooxml_password.py",
+        "sha256": "0be85ff3458cd47ffd9818a4f4791b0b9f67bfd4131e6fe9b688c23fe4619d86",
+        "bytes": 12184
+      },
+      "matches": true
+    },
+    "hermes_state_messages.py": {
+      "expected_sha256": "a4ae3e55ffe47bc2029e816bd52c77f075319d0fd2eb05714fcdfc7b3dd0f529",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/hermes_state_messages.py",
+        "sha256": "a4ae3e55ffe47bc2029e816bd52c77f075319d0fd2eb05714fcdfc7b3dd0f529",
+        "bytes": 131465
+      },
+      "matches": true
+    },
+    "tools/file_tools.py": {
+      "expected_sha256": "b834615c95438c2f1cb725247cc2ea0b6e1d5e1566cc3498fec2a069bc21a40f",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/tools/file_tools.py",
+        "sha256": "b834615c95438c2f1cb725247cc2ea0b6e1d5e1566cc3498fec2a069bc21a40f",
+        "bytes": 184031
+      },
+      "matches": true
+    },
+    "tools/scoped_odf_password.py": {
+      "expected_sha256": "b66d95d1f2a4223ffcc9d54e28d13976b49e5e2f041e1c12456a8c7b85922d9d",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/tools/scoped_odf_password.py",
+        "sha256": "b66d95d1f2a4223ffcc9d54e28d13976b49e5e2f041e1c12456a8c7b85922d9d",
+        "bytes": 28189
+      },
+      "matches": true
+    },
+    "tools/scoped_ooxml_password.py": {
+      "expected_sha256": "59c65471582a30baf61ed8367925b477d00af70d6d1211e6044ecb2a3d35029c",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/tools/scoped_ooxml_password.py",
+        "sha256": "59c65471582a30baf61ed8367925b477d00af70d6d1211e6044ecb2a3d35029c",
+        "bytes": 30958
+      },
+      "matches": true
+    },
+    "tools/scoped_ooxml_password_edit.py": {
+      "expected_sha256": "e5c9588cd5e22590809cb1231affa72238435c98c43429041d6b37c5761f3ca4",
+      "actual": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent/tools/scoped_ooxml_password_edit.py",
+        "sha256": "e5c9588cd5e22590809cb1231affa72238435c98c43429041d6b37c5761f3ca4",
+        "bytes": 12308
+      },
+      "matches": true
+    }
+  },
+  "ordinary_constructor_ast": {
+    "line": 1117,
+    "end_line": 1139,
+    "explicit_keyword_names": [
+      "model",
+      "max_iterations",
+      "quiet_mode",
+      "verbose_logging",
+      "enabled_toolsets",
+      "disabled_toolsets",
+      "ephemeral_system_prompt",
+      "prefill_messages",
+      "reasoning_config",
+      "service_tier",
+      "request_overrides",
+      "providers_allowed",
+      "providers_ignored",
+      "providers_order",
+      "provider_sort",
+      "provider_require_parameters",
+      "provider_data_collection",
+      "session_id",
+      "platform",
+      "user_id",
+      "user_id_alt",
+      "user_name",
+      "chat_id",
+      "chat_name",
+      "chat_type",
+      "thread_id",
+      "gateway_session_key",
+      "session_db",
+      "fallback_model",
+      "skip_context_files",
+      "load_soul_identity"
+    ],
+    "spread_expressions": [
+      "turn_route['runtime']",
+      "_checkpoint_agent_kwargs(ctx.user_config)"
+    ],
+    "explicit_memory_manager_handoff": false,
+    "explicit_skip_memory_override": false,
+    "spread_keys_must_be_read_with_allowlists": "gateway/run_turn.py:292-300 and gateway/run.py:2977-2981"
+  },
+  "profile_configs": {
+    "default": {
+      "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/config.yaml",
+      "sha256": "2c5b126343f0071dfb0830414b7240ca1910563e9088fd3c414888c6f2c6d7ad",
+      "bytes": 3382001
+    },
+    "dest": {
+      "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/config.yaml",
+      "sha256": "a06d8cac7a4092eb212c7a015d1632755d7b720850cdcbfc1bbc354a0dedf916",
+      "bytes": 20782
+    },
+    "tester": {
+      "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/config.yaml",
+      "sha256": "a37343bb18af18589ccdb764663e893956630609fad400bab9ed745ceacf3ce9",
+      "bytes": 3176638
+    }
+  },
+  "profiles": {
+    "default": {
+      "config": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/config.yaml",
+        "sha256": "2c5b126343f0071dfb0830414b7240ca1910563e9088fd3c414888c6f2c6d7ad",
+        "bytes": 3382001
+      },
+      "selected_nonsecret_fields": {
+        "memory.provider": {
+          "present": true,
+          "value": ""
+        },
+        "memory.memory_enabled": {
+          "present": true,
+          "value": true
+        },
+        "memory.user_profile_enabled": {
+          "present": true,
+          "value": true
+        },
+        "gateway.multiplex_profiles": {
+          "present": true,
+          "value": true
+        },
+        "gateway.sessions_dir": {
+          "present": false
+        },
+        "terminal.cwd": {
+          "present": false
+        },
+        "compression.checkpoint_required": {
+          "present": true,
+          "value": false
+        },
+        "gateway.proxy_url": {
+          "present": false,
+          "nonempty": false
+        }
+      },
+      "config_stat": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/config.yaml",
+        "resolved": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/config.yaml",
+        "exists": true,
+        "symlink": false,
+        "mode": "0o600",
+        "uid": 1000,
+        "gid": 1000,
+        "dev": 2050,
+        "ino": 22185422,
+        "nlink": 1,
+        "directory": false
+      },
+      "unchanged_since_prior206_metadata": true,
+      "source_derived_memory_mode": "builtin/core, both curated stores enabled",
+      "external_provider_selected": false,
+      "source_derived_paths": {
+        "profile_home": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032",
+        "memory": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/memories/MEMORY.md",
+        "user_profile": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/memories/USER.md",
+        "state_database": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/state.db",
+        "transcripts_and_request_dumps": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/sessions",
+        "logs": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/logs",
+        "scoped_file_read_workspace": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/workspace"
+      }
+    },
+    "dest": {
+      "config": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/config.yaml",
+        "sha256": "a06d8cac7a4092eb212c7a015d1632755d7b720850cdcbfc1bbc354a0dedf916",
+        "bytes": 20782
+      },
+      "selected_nonsecret_fields": {
+        "memory.provider": {
+          "present": true,
+          "value": ""
+        },
+        "memory.memory_enabled": {
+          "present": true,
+          "value": true
+        },
+        "memory.user_profile_enabled": {
+          "present": true,
+          "value": true
+        },
+        "gateway.multiplex_profiles": {
+          "present": false
+        },
+        "gateway.sessions_dir": {
+          "present": false
+        },
+        "terminal.cwd": {
+          "present": true,
+          "value": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/workspace"
+        },
+        "compression.checkpoint_required": {
+          "present": true,
+          "value": false
+        },
+        "gateway.proxy_url": {
+          "present": false,
+          "nonempty": false
+        }
+      },
+      "config_stat": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/config.yaml",
+        "resolved": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/config.yaml",
+        "exists": true,
+        "symlink": false,
+        "mode": "0o600",
+        "uid": 1000,
+        "gid": 1000,
+        "dev": 2050,
+        "ino": 22181712,
+        "nlink": 1,
+        "directory": false
+      },
+      "unchanged_since_prior206_metadata": true,
+      "source_derived_memory_mode": "builtin/core, both curated stores enabled",
+      "external_provider_selected": false,
+      "source_derived_paths": {
+        "profile_home": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram",
+        "memory": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/memories/MEMORY.md",
+        "user_profile": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/memories/USER.md",
+        "state_database": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/state.db",
+        "transcripts_and_request_dumps": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/sessions",
+        "logs": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/logs",
+        "scoped_file_read_workspace": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/dest_telegram/workspace"
+      }
+    },
+    "tester": {
+      "config": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/config.yaml",
+        "sha256": "a37343bb18af18589ccdb764663e893956630609fad400bab9ed745ceacf3ce9",
+        "bytes": 3176638
+      },
+      "selected_nonsecret_fields": {
+        "memory.provider": {
+          "present": true,
+          "value": ""
+        },
+        "memory.memory_enabled": {
+          "present": true,
+          "value": true
+        },
+        "memory.user_profile_enabled": {
+          "present": true,
+          "value": true
+        },
+        "gateway.multiplex_profiles": {
+          "present": false
+        },
+        "gateway.sessions_dir": {
+          "present": false
+        },
+        "terminal.cwd": {
+          "present": true,
+          "value": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/workspace"
+        },
+        "compression.checkpoint_required": {
+          "present": true,
+          "value": false
+        },
+        "gateway.proxy_url": {
+          "present": false,
+          "nonempty": false
+        }
+      },
+      "config_stat": {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/config.yaml",
+        "resolved": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/config.yaml",
+        "exists": true,
+        "symlink": false,
+        "mode": "0o600",
+        "uid": 1000,
+        "gid": 1000,
+        "dev": 2050,
+        "ino": 22184412,
+        "nlink": 1,
+        "directory": false
+      },
+      "unchanged_since_prior206_metadata": true,
+      "source_derived_memory_mode": "builtin/core, both curated stores enabled",
+      "external_provider_selected": false,
+      "source_derived_paths": {
+        "profile_home": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969",
+        "memory": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/memories/MEMORY.md",
+        "user_profile": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/memories/USER.md",
+        "state_database": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/state.db",
+        "transcripts_and_request_dumps": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/sessions",
+        "logs": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/logs",
+        "scoped_file_read_workspace": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/profiles/telegram-bot-8812646969/workspace"
+      }
+    }
+  },
+  "same_profile_refs_as_root_bulk_observation": true,
+  "root_bulk_observation_ref": {
+    "path": "/home/jericho/.cache/FRW-ASTRA-V3-F06-FIRST-ORDINARY-WRONGREAD-20261112/OBSERVED-BULK-FACTS.json",
+    "sha256": "4f2a88f801089dd65572094e90afe61bae88e3a1b5348c540abfed52a37ff1b7",
+    "bytes": 2488561
+  },
+  "prior206_memory_metadata_ref": {
+    "path": "/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-CURRENT206-MEMORY-MODE-METADATA-20261112.json",
+    "sha256": "d798c7f478e8a49e813f996169dbbdd9ff117115f340e71bc6819000e066e2aa",
+    "bytes": 1229
+  },
+  "gateway_metadata": {
+    "pid": 744387,
+    "birth_start_ticks": 6344413,
+    "cwd": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032",
+    "selected_nonsecret_environment": {
+      "HOME": {
+        "present": true,
+        "value": "/home/jericho"
+      },
+      "HERMES_HOME": {
+        "present": true,
+        "value": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032"
+      },
+      "HERMES_MANAGED_DIR": {
+        "present": false
+      },
+      "HERMES_PROFILES_ROOT": {
+        "present": false
+      },
+      "HERMES_CONFIG_PATH": {
+        "present": false
+      },
+      "HERMES_LOG_DIR": {
+        "present": false
+      },
+      "HERMES_STATE_DIR": {
+        "present": false
+      },
+      "HERMES_MEMORY_DIR": {
+        "present": false
+      },
+      "HERMES_WORKSPACE_DIR": {
+        "present": false
+      },
+      "HERMES_SESSIONS_DIR": {
+        "present": false
+      },
+      "HERMES_CACHE_DIR": {
+        "present": false
+      },
+      "HERMES_DATA_DIR_SUFFIX": {
+        "present": false
+      },
+      "TERMINAL_CWD": {
+        "present": false
+      },
+      "TMPDIR": {
+        "present": false
+      },
+      "TMP": {
+        "present": false
+      },
+      "TEMP": {
+        "present": false
+      }
+    },
+    "process_GATEWAY_PROXY_URL_nonempty": false,
+    "stdout_stderr": {
+      "1": "socket:[1590376]",
+      "2": "socket:[1590376]"
+    }
+  },
+  "managed_overlay_observation": {
+    "etc_hermes_exists": false,
+    "etc_hermes_config_exists": false,
+    "managed_marker_metadata": [
+      {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/FRIDAY-INSTALL.json",
+        "resolved": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/FRIDAY-INSTALL.json",
+        "exists": true,
+        "symlink": false,
+        "mode": "0o600",
+        "uid": 1000,
+        "gid": 1000,
+        "dev": 2050,
+        "ino": 22151430,
+        "nlink": 1,
+        "directory": false
+      },
+      {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/FRIDAY-PROFILE.json",
+        "resolved": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/FRIDAY-PROFILE.json",
+        "exists": true,
+        "symlink": false,
+        "mode": "0o600",
+        "uid": 1000,
+        "gid": 1000,
+        "dev": 2050,
+        "ino": 22181486,
+        "nlink": 1,
+        "directory": false
+      },
+      {
+        "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent.source.json",
+        "resolved": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent.source.json",
+        "exists": true,
+        "symlink": false,
+        "mode": "0o600",
+        "uid": 1000,
+        "gid": 1000,
+        "dev": 2050,
+        "ino": 22151433,
+        "nlink": 1,
+        "directory": false
+      }
+    ]
+  },
+  "legacy_gateway_json_metadata": {
+    "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/gateway.json",
+    "resolved": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/gateway.json",
+    "exists": false,
+    "symlink": false
+  },
+  "effective_product_roots": [
+    "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032"
+  ],
+  "product_root_metadata": {
+    "path": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032",
+    "resolved": "/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032",
+    "exists": true,
+    "symlink": false,
+    "mode": "0o700",
+    "uid": 1000,
+    "gid": 1000,
+    "dev": 2050,
+    "ino": 22225452,
+    "nlink": 35,
+    "directory": true
+  },
+  "private_roots": [
+    "/home/jericho/.cache/FRW-ASTRA-F06-FIRST-WRONGREAD-PRIVACY-CRITERION-20261112",
+    "/home/jericho/.cache/FRW-ASTRA-F06-ORDINARY-CONSTRUCTOR-ROOTS-20261112",
+    "/home/jericho/.cache/FRW-ASTRA-V3-F06-FIRST-ORDINARY-WRONGREAD-20261112",
+    "/home/jericho/.cache/FRW-ASTRA-V3-F06-ORDINARY207-ROOT-BINDING-SOURCE-20261112",
+    "/home/jericho/.cache/FRW-ASTRA-V3-F06-TYPED-SETTER-FIX-20261112",
+    "/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111"
+  ],
+  "private_root_metadata": [
+    {
+      "path": "/home/jericho/.cache/FRW-ASTRA-F06-FIRST-WRONGREAD-PRIVACY-CRITERION-20261112",
+      "resolved": "/home/jericho/.cache/FRW-ASTRA-F06-FIRST-WRONGREAD-PRIVACY-CRITERION-20261112",
+      "exists": true,
+      "symlink": false,
+      "mode": "0o700",
+      "uid": 1000,
+      "gid": 1000,
+      "dev": 2050,
+      "ino": 15900828,
+      "nlink": 3,
+      "directory": true
+    },
+    {
+      "path": "/home/jericho/.cache/FRW-ASTRA-F06-ORDINARY-CONSTRUCTOR-ROOTS-20261112",
+      "resolved": "/home/jericho/.cache/FRW-ASTRA-F06-ORDINARY-CONSTRUCTOR-ROOTS-20261112",
+      "exists": true,
+      "symlink": false,
+      "mode": "0o700",
+      "uid": 1000,
+      "gid": 1000,
+      "dev": 2050,
+      "ino": 15898520,
+      "nlink": 2,
+      "directory": true
+    },
+    {
+      "path": "/home/jericho/.cache/FRW-ASTRA-V3-F06-FIRST-ORDINARY-WRONGREAD-20261112",
+      "resolved": "/home/jericho/.cache/FRW-ASTRA-V3-F06-FIRST-ORDINARY-WRONGREAD-20261112",
+      "exists": true,
+      "symlink": false,
+      "mode": "0o700",
+      "uid": 1000,
+      "gid": 1000,
+      "dev": 2050,
+      "ino": 15898472,
+      "nlink": 4,
+      "directory": true
+    },
+    {
+      "path": "/home/jericho/.cache/FRW-ASTRA-V3-F06-ORDINARY207-ROOT-BINDING-SOURCE-20261112",
+      "resolved": "/home/jericho/.cache/FRW-ASTRA-V3-F06-ORDINARY207-ROOT-BINDING-SOURCE-20261112",
+      "exists": true,
+      "symlink": false,
+      "mode": "0o700",
+      "uid": 1000,
+      "gid": 1000,
+      "dev": 2050,
+      "ino": 15897668,
+      "nlink": 4,
+      "directory": true
+    },
+    {
+      "path": "/home/jericho/.cache/FRW-ASTRA-V3-F06-TYPED-SETTER-FIX-20261112",
+      "resolved": "/home/jericho/.cache/FRW-ASTRA-V3-F06-TYPED-SETTER-FIX-20261112",
+      "exists": true,
+      "symlink": false,
+      "mode": "0o700",
+      "uid": 1000,
+      "gid": 1000,
+      "dev": 2050,
+      "ino": 12368605,
+      "nlink": 4,
+      "directory": true
+    },
+    {
+      "path": "/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111",
+      "resolved": "/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111",
+      "exists": true,
+      "symlink": false,
+      "mode": "0o700",
+      "uid": 1000,
+      "gid": 1000,
+      "dev": 2050,
+      "ino": 7340431,
+      "nlink": 35,
+      "directory": true
+    }
+  ],
+  "private_vs_product_paths_currently_canonical_disjoint": true,
+  "collector_ref": {
+    "path": "/home/jericho/.cache/FRW-ASTRA-F06-ORDINARY-CONSTRUCTOR-ROOTS-20261112/collect_readonly.py",
+    "sha256": "f96f25f6b426b6800121584ef36068c0364211b9df19a5ae3c33669280d49aac",
+    "bytes": 19962
+  }
+}
