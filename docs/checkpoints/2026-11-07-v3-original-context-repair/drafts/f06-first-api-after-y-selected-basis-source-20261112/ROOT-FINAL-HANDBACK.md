@@ -1,0 +1,7 @@
+# Final handback and Root integration delta
+
+Original Task31 source freeze0c1b/first4cac081 and its3282 frame remain exact archived parents. Final Sol handback is [RESULT](final-handback/RESULT.json), independently source-reviewed under declared synthetic host seams. It grants no ordinary/user/API or formal acceptance.
+
+Root actual input preparation selected an external independent review directory. Before any --prepare/operation clock/once/userAPI, Root found that original derive_reviews omitted this exact selected proof directory. The separate [Root variant](root-integration/root_first_api_after_y_reviewroots.py) adds only that exact parent to private_roots; disjoint/config/process/source guards remain. [Independent delta review](root-integration/DELTA-REVIEW.json) passed two full synthetic source positives, reproduced old omission before clock/once, and retained product-root overlap refusal. Original frame/source4 and all historical records remain unchanged.
+
+Actual prepared metadata/current admissions/private observations/scenarios/documents/credentials are deliberately absent. Actual Root bulk review, finite execution and user-result assessment are separate facts in ASTRA-CURRENT.md and linked evidence. Do not invoke these VM-specific dormant entrypoints as generic installers. Source-only archive statuses describe their creation snapshots; this appendix records later handback/delta without rewriting them.

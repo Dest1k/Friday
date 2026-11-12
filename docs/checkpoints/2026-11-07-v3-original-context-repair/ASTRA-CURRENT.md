@@ -1,11 +1,16 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 22:39 МСК**. **Астра Fast, Сол Standard**, оба gpt-6.1-sol/ultra; sole live/main-интегратор — Астра.
+Обновлено **12.11.2026, 23:15 МСК**. **Астра Fast, Сол Standard**, оба gpt-6.1-sol/ultra; sole live/main-интегратор — Астра.
 Тот же native goal/thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**, история/учёт без переноса UUID/общего cap.
 Постоянный Сол — прежняя TUI `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`, leadership goal paused.
 Task26/27 завершены/source приняты; Task29 canonicalserialization source принят, ordinary runtime из него не следует.
 **Сол Task30 завершён**: [wrong-edit source](drafts/f06-same-upload-wrong-edit-source-20261112/README.md) принят как компонент; live dependencies UNBOUND.
-**Сол Task31 active/Standard** в той же сессии после power: frame для первого ещё не начатого user API после закрытого Y.
+**Сол Task31 завершён/source-only**, exact RESULT02ef44dc получен/проверен. **Сол Task32/F07/CASE168 active/Standard**,
+та же TUI/turn01a1d15a: source/effect/input preparation4исходных фаз; один nativecompact01a1d151 завершён до TASK.
+**После Task32 — owner-директива пересоздания сессии Сола**: [порядок/память/ожидание](evidence/astra-20261112/owner-sol-recreation-after-f07.json).
+Новую продуктовую задачу до handoff/инструкций владельцу/проверенной новой сессии не выдавать; текущуюF07 не прерывать. Root goal active.
+Независимый native пакет Астры — две реальные inbound/turn logsites, metadata-only кандидат вместо raw preview;
+сами message/model/history inputs сохраняются, установки пока нет.
 После второго power действует [M4 selected-basis design](evidence/astra-20261112/f06-selected-boot-basis-architecture.json):
 Root явно выбирает exact recovery/delta/observation refs; default UNBOUND, без perboot literal/discovery/latest/fallback.
 **[R2 bounded-reader source принят](drafts/f06-bounded-proof-reader-source-20261112/README.md)**:8/14files,
@@ -17,7 +22,7 @@ Canonical **[Dest1k/Friday](https://github.com/Dest1k/Friday), main**; штат�
 [Миграция](evidence/astra-20261112/repository-migration.json):118branches/0tags/историяobjectIDs сохранены,
 Actions disabled/0runs/LFS0/submodules0. Старое ограниченное назначение не опрашивать.
 Baseline установки `fddb0abc70ea9d1caed3dbd5186a0a0b52166e46`; опубликованный207-checkpoint `aef7541d558b9072370c748412b11757d7b8000c`;
-baseline опубликованного main перед текущим checkpoint — `e743bb6334b174370d7270b0fd17843aa497d045` (R2 source/first power recovery).
+baseline опубликованного main перед текущим checkpoint — `6a34252660c0e2de9dc4af737ff584b9acdba2c9` (второе power/35savedODP review).
 Итоговый SHA — содержащий сводку коммит. Публикация отдельно от [локальной установки/проверок](ASTRA-LOCAL-WORK-2026-11-12.json):
 explicit localcommittedHEAD/rawGit/private28/реальныйpredecessor/CAS/rollback, remoteNone/deferred без GitHub-зависимости.
 [Веб-вход](../../handoff/web-audit-entry.md). Чужие3 byteexact вне коммитов: `docs/foundation-status.md`, v2
@@ -36,10 +41,14 @@ input495 count/joins (не повторное чтение495sources). Boot4d381
 Canonical4/исполняемыеruntime14/plugin52 перепроверены; full17891 из21:45 переиспользован при отсутствии source writes.
 Вся persistent metadata3DB/history/cursor/config/source/cipheridentity прежняя,quickcheckOK/leasespending0.
 Qwen после загрузки и компрессор health/models200/configuredmodels present22:21:57; inference/userAPI не выполнялись.
-Ранее4d38196f/2763/2762 — уже история. Root current admission/новыйclock пока UNBOUND, sourceTask31 продолжается.
+Ранее4d38196f/2763/2762 — уже история. Root текущий допуск отдельно выбран22:48 (до23:48МСК), прежнийR106 не продлён. Prepare22:55/0/1.618s и independent actualbulk8ddb
+завершены; один firstwrongREAD реально выполнен23:01–23:04 на тех же bytes/sameB. Этот допуск/clock теперь consumed для первогошага.
 [Проверка M4 на тех же сохранённых metadata](evidence/astra-20261112/f06-selected-basis-actual-saved-metadata-bridge.json):
 actualY→второйpostboot PASS/3negative controls, exact persistent/diagnostic transition; это source/saved-data bridge,
-не свежее observe/admission. Финальные source/protocol/reviewTask31 и текущий bulk остаются следующей границей.
+не свежее observe/admission. [Финальный Task31 source/protocol/review](drafts/f06-first-api-after-y-selected-basis-source-20261112/ROOT-FINAL-HANDBACK.md)
+принят: first4cac081/whole0c1b,2full synthetic positives/61negatives; actual Host/API из них не следует.
+Root variant97eb добавляет exact parent внешнего source-review в private_roots; отдельное review016f/2full positives/oldomission+overlaprefusal.
+Original3282/source4 и все выданные документы сохранены; REVIEWROOTS — отдельные selection/frame/plan без сдвига expiry, исполнены ровноодинраз.
 DB/WAL/SHM exact доstart, послеstart logical, не byteexactliveWAL. Новых model/create/send/Office эта установка не выполняла.
 [Точный207frame/source/review](drafts/core207-installed-root-source-20261112/README.md):1existingnative/0new/7CAS/17890untouched,
 полный206prefix/28counterparts; [modernODTsource+четыреactualsyntheticgates](drafts/f06-modern-odt-normal-successor-source-20261112/README.md)
@@ -49,36 +58,30 @@ DB/WAL/SHM exact доstart, послеstart logical, не byteexactliveWAL. Но
 [Исходный scope/immutable ledgers](DSH-RESUME-2026-11-10.md#7-объём-v3); подробнаяистория [RESUME](DSH-RESUME-2026-11-10.md).
 Нового параллельного реестра нет; source/install/nativecodec/App/ordinary/semantic/formal — разные факты.
 
-1. **F06 user upload/READ ещё NOT_RUN; consumer Y реально запускался и закрыт до API.**
-   [Y отказ](evidence/astra-20261112/f06-first-consumer-preintent-size-refusal.json):08:55:37,wrapper0/consumer2,
-   1.6245s, actor+parentabsent/slotfree/canonicalrun null. Protected diagnostic: MAIN_COMMAND_EXECUTION,
-   F06_FRESH_ROOT_B_BOUNDARY_REFUSED в runner.new до save/send. BotAPI object создан, запроса ещё не было:
-   это [независимая оценка точного control flow](evidence/astra-20261112/f06-first-consumer-preintent-size-refusal-review.json),
-   а не вывод из EMPTY. Raw REFUSED_OR_UNKNOWN сохранён; [Root assessment](evidence/astra-20261112/f06-first-consumer-preintent-root-assessment.json)
-   не даёт retry/followup и не принимает F06. Original nested exception не удержан; на том же сохранённом proof
-   воспроизведён reader отказ:2496998B против fullv42 default1048576B, хотя Root reader/ref cap24MiB.
-   [Custody delta](evidence/astra-20261112/f06-first-consumer-preintent-custody-delta.json):только новый точный main-exception diagnostic,
-   removed/changed=[], all3DBmetadata прежние. Старый bulk/lineage нельзя молча объявить новым baseline.
-   **R2 source готов/Root принят**: bounded-reference callback до3adapter+2ingress leafs/3footer, включая nested binding.source,
-   полный synthetic internalNEW/currentgate и actualsavedmetadata byteexact read; не actual ordinary/F06 PASS.
-   **Следующий результат** — Task31 Sol frame с Y-consumer-born/no-user-API и явным postboot transition;
-   новая Root source/lineage/current-admission/bulk review до любых новых часов. Старый boot нельзя молча подставить в новый.
-   R1 reader source исправлял direct refs, но nested gap не принят; все drafts/исторические FAIL сохранены.
-   Исходные [O issuer-only](evidence/astra-20261112/f06-first-driver-issuer-only-prebirth-refusal.json) и
-   [X binding-only](evidence/astra-20261112/f06-consumer-binding-reconstruction-prebirth-refusal.json) тоже закрыты.
-   O/X/Y once/clocks/source/bindings/diagnostic не менять; старые callers/issuer не запускать.
-   Same original R1/scenarioSHA91e3…75b3/g6DOCX23040B22b0/installedtestercc36 и300/full180/ACK10/reserve5/outer600;
-   originalR106 **истёк12.11,13:23:54.732844МСК и другогоboot**, не годится для нового допуска; старый issuer/once/clock не переиздавать/продлевать.
-   [M3 Root/Sol design](evidence/astra-20261112/f06-postboot-admission-architecture.json) принят только как архитектура:
-   exact postboot transition + отдельно выбранный Root current admission/selection, linked historicalR106/Y-noAPI;
-   default UNBOUND/не автоматический issuer. Actual новый допуск/clock ещё не создавался, actual Root/bulk review впереди.
-   [Task29 canonical обе ветки](drafts/f06-canonical-binding-source-20261112/README.md) остаются source-only accepted,
-   [первая подготовка](drafts/f06-first-ordinary-root-preparation-20261112/README.md),
-   [U](drafts/f06-ordinary207-source-20261112/README.md),[X](drafts/f06-issued-first-consumer-source-20261112/README.md),
-   [Task28 correct-read](drafts/f06-same-upload-correct-read-source-20261112/README.md) — история точных прежних срезов.
-   [Roothelper source, исполненный до отказа Y](drafts/f06-root-consumer-y-helper-source-20261112/README.md), закрыт/не перезапускать.
-   Future correct-read требует настоящий первый upload; Task30wrong-edit — ещё и настоящий принятый correct-read.
-   Ни first ACK, ни correct-read/wrong-edit, ни full180/semantic/privacy/formal сейчас не выполнены; secondsendDocument не разрешён.
+1. **F06 ordinary first wrongREAD выполнен и узко принят.** [Actual first operation](evidence/astra-20261112/f06-first-protected-docx-ordinary-wrongread.json):
+   originalR1/scenarioSHA91e3…75b3, один upload2756/reply2758,23040B/SHA22b0,send_attempts1/repeat0/documents0.
+   Native5511–5514 подтверждают один read_file именно received same-upload: document_extraction_failed/ooxml_password_incorrect;
+   password field persisted `[redacted]`, первого абзаца/дешифрованного файла/других попыток нет.2modelcalls — реальные, отдельны от source/tests.
+   Full180/ACK10/original300/reserve5/outer600 подтверждены; Root203.128s/consumer198.960s/exit0.
+   [Independent saved assessment16d395](evidence/astra-20261112/f06-first-wrongread-independent-actual-review.json)
+   [принят Root](evidence/astra-20261112/f06-first-wrongread-root-scoped-acceptance.json): wrongpassword rejection + enumerated exactvalue noecho;
+   formal EVIDENCE_READY/RECEIVED_UNGRADED/NOT_ESTABLISHED и fullF06/B00 не переписаны.
+   Два защищённых inbound previews сохраняют2символа исходного password prefix; полногозначения в новых derivedcarriers нет.
+   Mode0664/uid1000/nlink1 исторически сохранён под protectedhome, не chmod. Wholeprivacy не принят; отдельный source-only metadata-logfix идёт.
+   Own40750/40803 закрыты, slot/consumer/tokenfree, gateway2750/dashboard2749 без рестарта/infinity/sameBquiescent;
+   canonical4 и originalcipher сохранились,3DBcollectorOK/messages30/196/5514/leasespending0. Новых незакрытых liveопераций нет.
+   **Следующий пользовательский результат** — separate correctREAD по реальному native5511/platform4862/received source_ref из этого upload,
+   после разрешения конкретного technical-preview пути и свежего отдельного допуска/состава/once/budget. Второй upload/producer/model-повтор firstwrong не разрешён.
+   Task30wrongedit требует также настоящего принятого correctREAD. First SourceCase и его часы/receipt/binding остаются неизменными.
+   [Task31 source/Root integration](drafts/f06-first-api-after-y-selected-basis-source-20261112/ROOT-FINAL-HANDBACK.md): first4cac081/whole0c1b,
+   original3282→Root97eb exact-review-dir fix, R2 bounded nested callbacks,2fullsynthetic/61negatives; это не было ordinaryPASS.
+   [Actual preparation/bulk](evidence/astra-20261112/f06-selected-first-api-source-and-actual-preparation.json) отделены от исполнения.
+   Historical [O issuer-only](evidence/astra-20261112/f06-first-driver-issuer-only-prebirth-refusal.json),
+   [X binding-only](evidence/astra-20261112/f06-consumer-binding-reconstruction-prebirth-refusal.json),
+   [Y born/preintent](evidence/astra-20261112/f06-first-consumer-preintent-size-refusal.json) закрыты и не перезапускаются.
+   Y rawREFUSED_OR_UNKNOWN/nestedtraceNOT_RETAINED сохранены; noUserAPI основан на точном flow/review, не EMPTY.
+   OriginalR106 expired12.11,13:23:54.732844/oldboot; новый fixedcurrent document568b сохраняет45history/3UNKNOWN/sameR1/source/scope,
+   immediatepredecessorR106/expiry23:48:17 и consumedfirststep. Ни его обновление, ни новаясессия не дают retry/followup сами по себе.
 2. **Установленные codecREAD квалифицированы на сохранённых артефактах.** [Modern7 ODT](evidence/astra-20261112/native207-modern-odt-readonly.json):
    same6855B2950/correct AEAD_TAG_MATCHED/innerZIP+XML; wrongpassword fixedrejection; plaintext толькоRAM,0stores.
    [G6 DOCX](evidence/astra-20261112/native207-standard32-docx-readonly.json):same23040B22b0/Standard3.2 verifier+ZIP,
