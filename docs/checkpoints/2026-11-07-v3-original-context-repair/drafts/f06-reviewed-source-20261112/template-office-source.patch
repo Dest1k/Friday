@@ -1,0 +1,822 @@
+--- accepted-native567/f06_contract.py
++++ templates-candidate/f06_contract.py
+@@ -2,7 +2,7 @@
+ import datetime, hashlib, json, os, re, stat, time, types
+ from pathlib import Path
+ B=Path(__file__).resolve().parent
+-ASSIGNMENT='ASTRA-CHILD-F06-NATIVE567-RETAINED-ORACLE-HANDOFF-20261112#1'
++ASSIGNMENT='ASTRA-CHILD-F06-TEMPLATES-OFFICE-SOURCE-PREPARE-20261112#1'
+ BASE=Path('/home/jericho/.jericho/toolchains/libreofficedev-26.2.5.2-frw-b711-c459-direct-20261111')
+ MANIFEST=Path('/home/jericho/.cache/FRW-ASTRA-V3-CORE-FILE-INTEGRATION-20261111/presentation-bank-direct/EXPECTED-BANK-MANIFEST.json')
+ MANIFEST_SHA='cf6db77f2448acfeb77f0a7fa7081e5cc26acd9cd08e7aee039d62b6ef1ac776'
+@@ -15,28 +15,24 @@
+ IDENTITY_FIELDS=('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
+ DEADLINE=None
+ CPU_GUARD=None
+-FORMATS=('docx','xlsx','pptx','odt','ods','odp')
+-PROFILES=('compatible1.3_or_Agile',)*6+('current_default_latest_odt_negative',)
+-NAMES=tuple('f06-new-encrypted.'+f for f in FORMATS)+('f06-new-default-latest.odt',)
+-LIMITS=dict(whole_wall_seconds=300,aggregate_CPU_seconds=180,memory_bytes=2147483648,swap_bytes=0,affinity_cpus=2,pids_max=128,namespace_tmpfs_bytes=16777216,own_cap_bytes=100663296,cleanup_reserve_seconds=15,per_process_AS_bytes=2147483648,per_process_FSIZE_bytes=8388608,max_Office_starts=3,max_stores=0,max_password_probes=6)
++FORMATS=('ott','ots','otp')
++PROFILES=('own_synthetic_odf13_aes256cbc_pbkdf2sha1_4096',)*6
++NAMES=tuple('retained-'+role+'.'+fmt for fmt in FORMATS for role in ('source','output'))
++LIMITS=dict(whole_wall_seconds=300,aggregate_CPU_seconds=180,memory_bytes=2147483648,swap_bytes=0,affinity_cpus=2,pids_max=128,namespace_tmpfs_bytes=16777216,own_cap_bytes=100663296,cleanup_reserve_seconds=15,per_process_AS_bytes=2147483648,per_process_FSIZE_bytes=8388608,max_Office_starts=3,max_stores=0,max_password_probes=18)
+ MOSCOW=datetime.timezone(datetime.timedelta(hours=3))
+ 
+ 
+ MODE='verify-native-edits'
+-TASK=Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-NATIVE567-RETAINED-ORACLE-HANDOFF-20261112')
++TASK=Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-TEMPLATES-OFFICE-SOURCE-PREPARE-20261112')
+ CACHE=Path('/home/jericho/.cache')
+ TASK_CAP=192*1024**2
+-HANDOFF_PATH=Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-NATIVE567-RETAINED-ORACLE-HANDOFF-20261112/native567_handoff.py')
+-HANDOFF_SHA='e1e35eb9c90bbab75a16bae8519977f25a0c2d490c2e86358fbc795ea8527209'
+-CANONICAL_ACCEPTANCE_PATH=Path('/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-NATIVE567-RETAINED-ADAPTER-ROOT-ACCEPTANCE-20261112.json')
+-CANONICAL_ACCEPTANCE_SHA='a55c6dde29ad229d9bd085de5a1907741e6091e8a92b706b0faaa940091fa137' # Exact genuine Root source-only acceptance; no runtime admission.
+ CODEC_ACCEPTANCE_PATH=Path('/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-PASSWORD-ORACLE-CODEC-FINAL-SNAPSHOT-ACCEPTANCE.json')
+ CODEC_ACCEPTANCE_SHA='84db6c10fcd5ae8d44ea9b4770cdbef5d918ab92790edf4bd5a56ab1474af457'
+ CODEC_OLD_ACCEPTANCE_PATH=CODEC_ACCEPTANCE_PATH.parent/'F06-PASSWORD-ORACLE-CODEC-ROOT-ACCEPTANCE.json'
+ CODEC_OLD_ACCEPTANCE_SHA='5b17faa03abbfb21ecca16b4b244de38bd0b497df3fced805fcf98d8130894ff'
+ CODEC_SNAPSHOT_ROOT=CODEC_ACCEPTANCE_PATH.parent/'F06-CODEC-FINAL-PRIVATE-SNAPSHOTS'
+ CODEC_REFUSAL_SHA='894c805582acc4e959f7315b20e0439818b4c404f6c3beec7bc87c91f10a7783'
+-MANDATORY_SOURCES={'f06_contract.py','root_frame.py','run_once.py','inside_once.py','embedded_entry.py','office_fixture_driver.py','SOURCE-REQUEST.json','REFERENCES.json','verify-native-edits.ADMISSION.TEMPLATE.json','request_args_compat_v2.py','callback_observer_v2.py'}
++MANDATORY_SOURCES={'template_adapter.py','TEMPLATE-MANIFEST.json','f06_contract.py','root_frame.py','run_once.py','inside_once.py','embedded_entry.py','office_fixture_driver.py','SOURCE-REQUEST.json','REFERENCES.json','verify-native-edits.ADMISSION.TEMPLATE.json','request_args_compat_v2.py','callback_observer_v2.py'}
+ PRE_STAGE_CREDENTIAL_PATHS=set()
+ REF_KEYS={'path','sha256','bytes','identity','uid','gid','mode','dev','ino','nlink','mtime_ns','ctime_ns'}
+ FLAT_KEYS={'uid':'st_uid','gid':'st_gid','dev':'st_dev','ino':'st_ino','nlink':'st_nlink','mtime_ns':'st_mtime_ns','ctime_ns':'st_ctime_ns'}
+@@ -46,7 +42,7 @@
+ 
+ def operation(key,mode):
+  limits(mode)
+- need(type(key)is str and re.fullmatch('verify-native-edits-[a-z0-9]{1,32}',key)is not None,'OPERATION_KEY')
++ need(type(key)is str and re.fullmatch('verify-native-edits-templates-[a-z0-9]{1,24}',key)is not None,'OPERATION_KEY')
+  return B/'operations'/key
+ 
+ def unit_name(key):
+@@ -85,10 +81,11 @@
+  if 'mode'in ref:need(ref['mode']=='0600','REFERENCE_MODE')
+ 
+ def credential_metadata(ref):
+- # Deliberately metadata only. Never open/read/hash this path here.
+- reference_shape(ref);need(ref['bytes']<16384,'CREDENTIAL_METADATA_SIZE')
++ # Frozen metadata only: no digest was read during source preparation.
++ # Copy digest is computed only by the future admitted unit after full CAS.
++ need(type(ref)is dict and set(ref)=={'path','bytes','sha256','identity'} and ref['sha256']is None and ref['bytes']==115,'TEMPLATE_CREDENTIAL_METADATA_SHAPE')
+  path=canonical(ref['path']);protected_parents(path);info=path.lstat()
+- need(stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o600 and info.st_nlink==1 and info.st_size==ref['bytes'],'CREDENTIAL_METADATA_CUSTODY')
++ need(stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o600 and info.st_nlink==1 and info.st_size==115,'CREDENTIAL_METADATA_CUSTODY')
+  declared_metadata(ref,info)
+  return dict(ref),identity(info)
+ 
+@@ -103,7 +100,7 @@
+ 
+ def recipe_check():
+  raw,pin=private(B/'SOURCE-PINS.json',B);obj=decode(raw)
+- need(obj.get('schema')=='friday.f06.retained-output-root-source.v1' and obj.get('state')=='SOURCE_ONLY_DORMANT','SOURCE_SCHEMA')
++ need(obj.get('schema')=='friday.f06.template-readonly-root-source.v1' and obj.get('state')=='SOURCE_ONLY_DORMANT','SOURCE_SCHEMA')
+  source_set=obj.get('source_set');need(type(source_set)is list and source_set==sorted(set(source_set)) and MANDATORY_SOURCES<=set(source_set),'SOURCE_SET')
+  rows=obj.get('files');need(type(rows)is list and [r.get('name')for r in rows]==source_set,'SOURCE_ROWS')
+  need({p.name for p in B.glob('*.py')}=={name for name in source_set if name.endswith('.py')},'SOURCE_PYTHON_INVENTORY')
+@@ -186,50 +183,34 @@
+  return accepted
+ 
+ def output_inputs(a):
+- """Distinct native567 exact metadata/cipher custody; no credential bytes."""
++ """Exact six retained template rows; historical native facts confer no authority."""
++ import template_adapter as t
+  need(a.get('mode')==MODE,'OUTPUT_INPUT_MODE')
+  credential,credential_id=credential_metadata(a['credential_source']);forbidden={credential['path']};PRE_STAGE_CREDENTIAL_PATHS.update(forbidden)
+- need(type(a.get('credential_source_identity'))is list and len(a['credential_source_identity'])==len(IDENTITY_FIELDS) and all(type(v)is int for v in a['credential_source_identity']) and a['credential_source_identity']==credential_id,'CREDENTIAL_ADMISSION_IDENTITY')
+- adapter_ref=a['metadata_adapter_source']
+- need(adapter_ref.get('path')==str(HANDOFF_PATH) and adapter_ref.get('sha256')==HANDOFF_SHA,'M2_ADAPTER_SOURCE')
+- adapter_raw,_=reference_read(adapter_ref,forbidden)
+- need(CANONICAL_ACCEPTANCE_SHA is not None,'NATIVE567_ROOT_ACCEPTANCE_UNBOUND')
+- acceptance_ref=a['canonical_fix_acceptance']
+- need(acceptance_ref.get('path')==str(CANONICAL_ACCEPTANCE_PATH) and acceptance_ref.get('sha256')==CANONICAL_ACCEPTANCE_SHA,'M2_CANONICAL_ACCEPTANCE')
+- acceptance=decode(reference_read(acceptance_ref,forbidden)[0])
+- need(acceptance.get('schema')=='friday.f06.Root-native567-retained-adapter-acceptance.v1' and acceptance.get('state')=='ROOT_INDEPENDENT_EXACT_DELTA_ACCEPTED_SOURCE_ONLY' and acceptance.get('source',{}).get('path')==str(HANDOFF_PATH) and acceptance.get('source',{}).get('sha256')==HANDOFF_SHA,'NATIVE567_ACCEPTED_SOURCE')
+- need(acceptance.get('assignment')==ASSIGNMENT and acceptance.get('native_operation_id')=='ASTRA-F06-NATIVE203-UNSTARTED567-20261112#1' and acceptance.get('selected_fixture_ids')==['f06-5','f06-6'] and acceptance.get('findings_remaining')==[] and acceptance.get('execution_authorized')is False,'NATIVE567_ACCEPTANCE_SCOPE')
++ need(a.get('credential_source_identity')==credential_id,'CREDENTIAL_ADMISSION_IDENTITY')
++ # recipe_check pins this code and the adapter before any module execution.
++ _,source_rows=recipe_check();adapter_pin=next(p for p in source_rows if Path(p['path']).name=='template_adapter.py')
++ need(exact_json(a['metadata_adapter_source'],adapter_pin),'TEMPLATE_ADAPTER_FULL_PIN')
++ request_pin=next(p for p in source_rows if Path(p['path']).name=='SOURCE-REQUEST.json')
++ manifest_source_pin=next(p for p in source_rows if Path(p['path']).name=='TEMPLATE-MANIFEST.json')
++ need(exact_json(a['metadata_request'],request_pin) and exact_json(a['output_manifest'],manifest_source_pin),'TEMPLATE_EXACT_LOCAL_SOURCE_BINDINGS')
+  request=decode(reference_read(a['metadata_request'],forbidden)[0])
+- need(exact_json(request.get('credential'),credential),'M2_REQUEST_CREDENTIAL_JOIN')
+- manifest_raw,manifest_pin=reference_read(a['output_manifest'],forbidden)
+- manifest=decode(manifest_raw)
+- # Reuse accepted pure metadata mapping, native grant/once/receipt and source
+- # provenance joins instead of inventing another interpretation of handoff.
+- module=types.ModuleType('f06_retained_metadata_reference');module.__file__=str(HANDOFF_PATH)
+- exec(compile(adapter_raw,str(HANDOFF_PATH),'exec'),module.__dict__)
+- expected=module.build(request)
+- need(exact_json(expected,manifest),'M2_EXACT_MAPPED_MANIFEST')
+- need(manifest.get('lineage_mode')=='distinct_native567_retained' and manifest.get('native_assignment')=='ASTRA-CHILD-F06-UNSTARTED-ODF-NATIVE-SCOPE-20261112#1' and manifest.get('native_operation_id')=='ASTRA-F06-NATIVE203-UNSTARTED567-20261112#1' and manifest.get('selected_fixture_ids')==['f06-5','f06-6'],'NATIVE567_MANIFEST_LINEAGE_SELECTION')
+- ids=manifest.get('selected_fixture_ids');rows=manifest.get('fixtures');order=['f06-'+str(i)for i in range(1,8)]
+- need(manifest.get('schema')=='friday.f06.retained-native-edit-oracle.v1' and manifest.get('state')=='BOUND_RETAINED_BYTES_NOT_EXECUTION_AUTHORITY' and manifest.get('assignment')==ASSIGNMENT and manifest.get('semantic')=='BRAVO23','OUTPUT_MANIFEST_SCHEMA')
+- need(type(ids)is list and ids and ids==[i for i in order if i in ids] and type(rows)is list and len(rows)==len(ids) and type(manifest.get('selected_count'))is int and manifest['selected_count']==len(ids)<=7,'OUTPUT_SELECTION')
+- need(a.get('selected_fixture_ids')==ids and type(a.get('selected_count'))is int and a['selected_count']==len(ids),'ADMISSION_SELECTION_JOIN')
+- need(manifest.get('expected_Office_stores')==0 and type(manifest.get('expected_Office_stores'))is int and manifest.get('expected_Office_password_probes')==3*len(ids) and type(manifest.get('expected_Office_password_probes'))is int and manifest.get('whole_F06_accepted')is False,'OUTPUT_EXPECTED_EFFECTS')
+- need(a.get('expected_stores')==0 and type(a.get('expected_stores'))is int and a.get('expected_probes')==3*len(ids) and type(a.get('expected_probes'))is int,'ADMISSION_EXPECTED_EFFECTS')
+- need(exact_json(manifest.get('credential'),credential),'OUTPUT_CREDENTIAL_JOIN')
+- evidence=a.get('native_evidence');need(type(evidence)is dict and set(evidence)==set(manifest.get('proofs',{})),'NATIVE_EVIDENCE_SET')
+- for name,ref in evidence.items():
+-  need(exact_json(ref,manifest['proofs'][name]),'NATIVE_EVIDENCE_JOIN')
+-  reference_read(ref,forbidden)
++ need(exact_json(request.get('manifest'),manifest_source_pin),'TEMPLATE_REQUEST_MANIFEST_FULL_PIN')
++ need(request.get('schema')=='friday.f06.template-readonly-source-request.v1' and request.get('assignment')==ASSIGNMENT and request.get('execution_authority')is False,'TEMPLATE_METADATA_REQUEST')
++ raw,manifest_pin=reference_read(a['output_manifest'],forbidden);manifest=decode(raw)
++ t.validate(manifest)
++ need(manifest.get('assignment')==ASSIGNMENT and a.get('selected_fixture_ids')==list(t.IDS) and a.get('selected_count')==6,'TEMPLATE_ADMISSION_SELECTION')
++ need(a.get('expected_stores')==0 and type(a.get('expected_stores'))is int and a.get('expected_probes')==18 and type(a.get('expected_probes'))is int,'TEMPLATE_ADMISSION_EXPECTED_EFFECTS')
++ need(exact_json(manifest['credential'],credential),'TEMPLATE_CREDENTIAL_JOIN')
++ need(exact_json(a.get('native_evidence'),manifest['proofs']),'TEMPLATE_NATIVE_EVIDENCE_JOIN')
++ need(exact_json(a.get('native_root_acceptance'),manifest['proofs']['native_root_acceptance']),'TEMPLATE_ROOT_NATIVE_ACCEPTANCE_JOIN')
+  original=[]
+- for ident,row in zip(ids,rows):
+-  index=order.index(ident);fmt=FORMATS[index]if index<6 else 'odt';name='f06-native-edited.'+fmt if index<6 else 'f06-native-edited-default-latest.odt'
+-  need(row.get('fixture_id')==ident and row.get('format')==fmt and row.get('fixture_profile')==PROFILES[index] and row.get('staged_name')==name and row.get('semantic')=='BRAVO23','OUTPUT_TYPED_ROW')
+-  source_ref=row['native_source_ciphertext'];output_ref=row['native_output_custody']
+-  _,source_pin=reference_read(source_ref,forbidden,1000000);_,output_pin=reference_read(output_ref,forbidden,1000000)
+-  need(all(row[k]==output_pin[k]for k in ('path','sha256','bytes')) and source_pin['path']!=output_pin['path'] and source_pin['sha256']!=output_pin['sha256'],'OUTPUT_SOURCE_CUSTODY_JOIN')
+-  original.append({**output_pin,'fixture_id':ident,'native_source_ciphertext':source_pin})
+- # A credential replacement during proof/cipher validation must not pass.
++ for row in manifest['fixtures']:
++  ref={k:row[k]for k in ('path','bytes','sha256','identity')}
++  _,pin=reference_read(ref,forbidden,1000000)
++  source_ref=row['native_source_ciphertext'];_,source_pin=reference_read(source_ref,forbidden,1000000)
++  need((row['role']=='source' and exact_json(pin,source_pin)) or (row['role']=='output' and pin['path']!=source_pin['path'] and pin['sha256']!=source_pin['sha256']),'TEMPLATE_SOURCE_OUTPUT_CUSTODY')
++  original.append({**pin,'fixture_id':row['fixture_id'],'native_source_ciphertext':source_pin})
+  need(credential_metadata(credential)[1]==credential_id,'CREDENTIAL_METADATA_AFTER_CAS')
+  return manifest,manifest_pin,original,credential
+ 
+--- accepted-native567/inside_once.py
++++ templates-candidate/inside_once.py
+@@ -56,25 +56,23 @@
+  return json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _:c.need(False,'JSON_CONSTANT'))
+ 
+ def selection_contract(staged,manifest,digest,lim):
+- # Pure checks of planned effects and selected metadata; no credential reads.
+- c.need(type(staged) is dict and type(manifest) is dict,'STAGED_OBJECT')
+- count=staged.get('selected_count');ids=staged.get('selected_fixture_ids');order=['f06-'+str(i) for i in range(1,8)]
+- c.need(type(count) is int and 1<=count<=7 and type(ids) is list and len(ids)==count and ids==[ident for ident in order if ident in ids],'STAGED_SELECTION')
+- c.need(type(digest) is str and re.fullmatch('[0-9a-f]{64}',digest) is not None and staged.get('input_sha256')==digest,'STAGED_MANIFEST_DIGEST')
+- c.need(type(staged.get('expected_stores')) is int and staged['expected_stores']==0 and type(staged.get('expected_probes')) is int and staged['expected_probes']==3*count and staged['expected_stores']<=lim['max_stores'] and staged['expected_probes']<=lim['max_password_probes'],'STAGED_EXPECTED_EFFECTS')
+- c.need(manifest.get('schema')=='friday.f06.retained-native-edit-oracle.v1' and manifest.get('state')=='BOUND_RETAINED_BYTES_NOT_EXECUTION_AUTHORITY' and manifest.get('semantic')=='BRAVO23','STAGED_MANIFEST_SCHEMA')
+- c.need(type(manifest.get('selected_count')) is int and manifest['selected_count']==count and manifest.get('selected_fixture_ids')==ids and type(manifest.get('fixtures')) is list and len(manifest['fixtures'])==count,'STAGED_MANIFEST_SELECTION')
+- c.need(type(manifest.get('expected_Office_stores')) is int and manifest['expected_Office_stores']==0 and type(manifest.get('expected_Office_password_probes')) is int and manifest['expected_Office_password_probes']==3*count and manifest.get('whole_F06_accepted') is False,'STAGED_MANIFEST_EXPECTED_EFFECTS')
+- pins=staged.get('source_pins');credential=staged.get('credential_source')
+- declared_credential=manifest.get('credential')
+- c.need(type(pins) is list and len(pins)==count and type(credential) is dict and type(declared_credential) is dict and all(credential.get(key)==declared_credential.get(key) for key in ('path','bytes','sha256')) and ('identity' not in declared_credential or credential.get('identity')==declared_credential['identity']),'STAGED_SOURCE_CREDENTIAL_METADATA')
++ # Six exact sourceBEFORE/outputAFTER template rows, no payload reads.
++ import template_adapter as t
++ c.need(type(staged)is dict and type(manifest)is dict,'STAGED_OBJECT')
++ ids=staged.get('selected_fixture_ids');count=staged.get('selected_count')
++ c.need(type(count)is int and count==6 and ids==list(t.IDS),'STAGED_SELECTION')
++ c.need(type(digest)is str and re.fullmatch('[0-9a-f]{64}',digest)is not None and staged.get('input_sha256')==digest,'STAGED_MANIFEST_DIGEST')
++ c.need(type(staged.get('expected_stores'))is int and staged['expected_stores']==0 and type(staged.get('expected_probes'))is int and staged['expected_probes']==18 and staged['expected_stores']<=lim['max_stores'] and staged['expected_probes']<=lim['max_password_probes'],'STAGED_EXPECTED_EFFECTS')
++ c.need(manifest.get('schema')==t.SCHEMA and manifest.get('state')=='FROZEN_RETAINED_METADATA_NOT_EXECUTION_AUTHORITY' and manifest.get('semantic')==t.SEMANTIC and manifest.get('assignment')==t.ASSIGNMENT and manifest.get('native_assignment')==t.NATIVE_ASSIGNMENT,'STAGED_MANIFEST_SCHEMA')
++ c.need(type(manifest.get('selected_count'))is int and manifest['selected_count']==6 and manifest.get('selected_fixture_ids')==ids and type(manifest.get('fixtures'))is list and len(manifest['fixtures'])==6,'STAGED_MANIFEST_SELECTION')
++ c.need(type(manifest.get('expected_Office_stores'))is int and manifest['expected_Office_stores']==0 and type(manifest.get('expected_Office_password_probes'))is int and manifest['expected_Office_password_probes']==18 and manifest.get('whole_F06_accepted')is False and manifest.get('as_template')is False,'STAGED_MANIFEST_EXPECTED_EFFECTS')
++ pins=staged.get('source_pins');credential=staged.get('credential_source');declared=manifest.get('credential')
++ c.need(type(pins)is list and len(pins)==6 and type(credential)is dict and type(declared)is dict and declared.get('sha256')is None and all(credential.get(k)==declared.get(k)for k in ('path','bytes','identity')) and type(credential.get('sha256'))is str and re.fullmatch('[0-9a-f]{64}',credential['sha256'])is not None,'STAGED_SOURCE_CREDENTIAL_METADATA')
+  for ident,row,pin in zip(ids,manifest['fixtures'],pins):
+-  index=order.index(ident);fmt=('docx','xlsx','pptx','odt','ods','odp','odt')[index]
+-  profile='compatible1.3_or_Agile' if index<6 else 'current_default_latest_odt_negative'
+-  name='f06-native-edited.'+fmt if index<6 else 'f06-native-edited-default-latest.odt'
+-  c.need(type(row) is dict and type(pin) is dict and row.get('fixture_id')==ident and pin.get('fixture_id')==ident and row.get('format')==fmt and row.get('fixture_profile')==profile and row.get('staged_name')==name and row.get('semantic')=='BRAVO23','STAGED_TYPED_SELECTED_ROW')
+-  c.need(type(row.get('bytes')) is int and 0<row['bytes']<=1000000 and type(row.get('sha256')) is str and re.fullmatch('[0-9a-f]{64}',row['sha256']) is not None and all(pin.get(key)==row.get(key) for key in ('path','bytes','sha256')),'STAGED_ORIGINAL_SOURCE_PIN')
+- return dict(selected_count=count,selected_fixture_ids=list(ids),expected_stores=0,expected_probes=3*count,input_sha256=digest)
++  fmt,role=ident.split('-')[1:];name='retained-'+role+'.'+fmt
++  c.need(type(row)is dict and type(pin)is dict and row.get('fixture_id')==pin.get('fixture_id')==ident and row.get('format')==fmt and row.get('role')==role and row.get('fixture_profile')==t.PROFILE and row.get('semantic')==('BEFORE'if role=='source'else'AFTER') and row.get('mime')==t.MIMES[fmt] and row.get('service')==t.SERVICES[fmt] and row.get('filter')==t.FILTERS[fmt] and row.get('staged_name')==name,'STAGED_TYPED_SELECTED_ROW')
++  c.need(type(row.get('bytes'))is int and 0<row['bytes']<=1000000 and type(row.get('sha256'))is str and re.fullmatch('[0-9a-f]{64}',row['sha256'])is not None and all(pin.get(k)==row.get(k)for k in ('path','bytes','sha256','identity')),'STAGED_ORIGINAL_SOURCE_PIN')
++ return dict(selected_count=6,selected_fixture_ids=list(ids),expected_stores=0,expected_probes=18,input_sha256=digest)
+ 
+ def staged_inputs(lim):
+  staged=decode(c.private('/inputs/STAGED.json','/inputs')[0])
+@@ -160,7 +158,8 @@
+   position=probe['load_argument_position']
+   c.need('load_exception' in probe and fmt in ('docx','xlsx','pptx') and probe['load_exception']['exception_class']=='com.sun.star.lang.IllegalArgumentException' and (position is None or type(position) is str and position=='UNOBSERVED' or type(position) is int and -32768<=position<32768),'ORACLE_LOAD_ARGUMENT_POSITION')
+  allowed_exception='load_exception' not in probe or fmt in ('docx','xlsx','pptx') and probe['load_exception']['exception_class']=='com.sun.star.lang.IllegalArgumentException' and type(probe.get('load_argument_position')) is int and probe['load_argument_position']==1
+- refusal=not probe['opened'] and observed_password_refusal_sequence(probe['interaction_events'],fmt) and allowed_exception
++ from template_adapter import BASE_FORMAT
++ refusal=not probe['opened'] and observed_password_refusal_sequence(probe['interaction_events'],BASE_FORMAT[fmt]) and allowed_exception
+  c.need(probe['expected_password_refusal'] is refusal,'ORACLE_REFUSAL_OBSERVATIONS_JOIN')
+ 
+ def result_contract(result,manifest,selected,client_exit):
+--- accepted-native567/office_fixture_driver.py
++++ templates-candidate/office_fixture_driver.py
+@@ -1,23 +1,23 @@
+-#!/usr/bin/env python3
+-"""DORMANT independent Office producer/oracle; Root owns separate Office admission.
+-No launcher. Dedicated externally isolated UNO pipe/profile, total deadline and
+-cleanup are Root-owned. Secrets flow private0600 JSON -> memory/UNO props only.
++"""Dormant six-template readonly oracle; Root alone admits existing finite frame.
++No producer/store branch. Typed PyUNO/callback helpers are unchanged.
+ """
+-import argparse,hashlib,json,os,stat,zipfile
++import argparse,base64,hashlib,json,os,stat,zipfile
+ from pathlib import Path
+ from xml.etree import ElementTree as ET
+-FORMATS={'docx':'Office Open XML Text','xlsx':'Calc MS Excel 2007 XML','pptx':'Impress MS PowerPoint 2007 XML','odt':'writer8','ods':'calc8','odp':'impress8'}
++import template_adapter as t
++
+ def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
++
+ def private_root(raw):
+  p=Path(raw)
+- if not p.is_absolute() or '..' in p.parts or p!=p.resolve(strict=True):raise ValueError('root_not_canonical')
++ if not p.is_absolute() or '..'in p.parts or p!=p.resolve(strict=True):raise ValueError('root_not_canonical')
+  s=p.lstat()
+  if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o700:raise ValueError('private_root_required')
+  return p
+ 
+ def private_file(raw,root):
+  p=Path(raw)
+- if '..' in p.parts or not p.is_absolute() or not p.is_relative_to(root) or p!=p.resolve(strict=True):raise ValueError('file_not_canonical_within_root')
++ if '..'in p.parts or not p.is_absolute() or not p.is_relative_to(root) or p!=p.resolve(strict=True):raise ValueError('file_not_canonical_within_root')
+  for parent in [p.parent,*p.parent.parents]:
+   s=parent.lstat()
+   if not stat.S_ISDIR(s.st_mode) or s.st_uid!=os.getuid() or stat.S_IMODE(s.st_mode)!=0o700:raise ValueError('private_directory_required')
+@@ -26,234 +26,124 @@
+  if not stat.S_ISREG(s.st_mode) or s.st_uid!=os.getuid() or s.st_nlink!=1 or stat.S_IMODE(s.st_mode)!=0o600:raise ValueError('private_file_required')
+  return p
+ 
+-def manifest_inputs(root,mode,expected,manifest_name=None):
+- name=manifest_name or ('PLAIN-INPUTS.json' if mode=='produce' else 'NATIVE-OUTPUTS.json')
+- manifest=private_file(root/name,root)
+- if len(expected)!=64 or any(c not in '0123456789abcdef' for c in expected) or sha(manifest)!=expected:raise ValueError('input_manifest_pin')
+- obj=json.loads(manifest.read_text());items=obj['fixtures']
+- if len(items)!=6 or {r['format'] for r in items}!=set(FORMATS):raise ValueError('input_manifest_six_families')
+- rows={r['format']:r for r in items};paths={}
+- for fmt,row in rows.items():
+-  basename=('f06-new-plain.' if mode=='produce' else 'f06-native-edited.')+fmt
+-  # Manifest retains original host path; exact bytes are staged under /work.
+-  if Path(row['path']).name!=basename:raise ValueError('input_manifest_name')
+-  p=private_file(root/('plain-inputs' if mode=='produce' else 'native-outputs')/basename,root)
+-  if sha(p)!=row['sha256']:raise ValueError('input_source_pin')
+-  paths[fmt]=p
+- return manifest,rows,paths
+-
+-JOBS=[(fmt,filt,True) for fmt,filt in FORMATS.items()]+[('odt',FORMATS['odt'],False)]
+-PROFILES=('compatible1.3_or_Agile',)*6+('current_default_latest_odt_negative',)
+-def target_name(fmt,compatible):
+- return ('f06-new-encrypted.' if compatible else 'f06-new-default-latest.')+fmt
+-
+-def reconciled_inputs(root,expected):
+- manifest=private_file(root/'RECONCILED-INPUTS.json',root)
+- if len(expected)!=64 or any(c not in '0123456789abcdef' for c in expected) or sha(manifest)!=expected:raise ValueError('reconciled_manifest_pin')
+- obj=json.loads(manifest.read_text());rows=obj['fixtures']
+- if obj.get('schema')!='friday.f06.reconciled-existing-inputs.v1' or obj.get('semantic')!='ALPHA17' or type(obj.get('known_prefix_count')) is not int or obj['known_prefix_count']!=len(rows) or not 1<=len(rows)<=7:raise ValueError('reconciled_prefix_contract')
+- custody=Path(obj['custody_root'])
+- if not custody.is_absolute() or '..' in custody.parts:raise ValueError('reconciled_custody_path')
+- result=[]
+- for i,(row,(fmt,filt,compatible)) in enumerate(zip(rows,JOBS)):
+-  name=target_name(fmt,compatible)
+-  if row.get('format')!=fmt or row.get('fixture_profile')!=PROFILES[i] or row.get('name')!=name or row.get('path')!=str(custody/name):raise ValueError('reconciled_family_name_profile_path')
+-  p=private_file(root/'encrypted-inputs'/name,root)
+-  if type(row.get('bytes')) is not int or p.stat().st_size!=row['bytes'] or sha(p)!=row['sha256']:raise ValueError('reconciled_existing_bytes_pin')
+-  result.append((row,p,fmt,filt,compatible))
+- if set(q.name for q in (root/'encrypted-inputs').iterdir())!={r[1].name for r in result}:raise ValueError('reconciled_exact_prefix_directory')
+- return manifest,obj,result
+-
+ def retained_native_inputs(root,expected):
+- # A pinned manifest describes retained bytes; it never grants Office execution.
+  manifest=private_file(root/'NATIVE-OUTPUTS.json',root)
+- if len(expected)!=64 or any(c not in '0123456789abcdef' for c in expected) or sha(manifest)!=expected:raise ValueError('native_manifest_pin')
+- obj=json.loads(manifest.read_text());rows=obj.get('fixtures');ids=obj.get('selected_fixture_ids')
+- if obj.get('schema')!='friday.f06.retained-native-edit-oracle.v1' or obj.get('state')!='BOUND_RETAINED_BYTES_NOT_EXECUTION_AUTHORITY' or obj.get('semantic')!='BRAVO23':raise ValueError('native_manifest_unbound')
+- if type(rows)is not list or type(ids)is not list or type(obj.get('selected_count'))is not int or not 1<=len(rows)<=7 or obj['selected_count']!=len(rows) or len(ids)!=len(rows):raise ValueError('native_selected_count')
+- order=['f06-'+str(i) for i in range(1,8)]
+- if ids!=[ident for ident in order if ident in ids]:raise ValueError('native_selected_order_unique')
++ t.need(type(expected)is str and len(expected)==64 and all(c in '0123456789abcdef'for c in expected) and sha(manifest)==expected,'native_manifest_pin')
++ obj=t.decode(manifest.read_bytes());rows=obj.get('fixtures')
++ t.need(obj.get('schema')==t.SCHEMA and obj.get('state')=='FROZEN_RETAINED_METADATA_NOT_EXECUTION_AUTHORITY' and obj.get('assignment')==t.ASSIGNMENT and obj.get('semantic')==t.SEMANTIC and obj.get('as_template')is False,'template_manifest_schema')
++ t.need(obj.get('selected_fixture_ids')==list(t.IDS) and type(obj.get('selected_count'))is int and obj['selected_count']==6 and type(rows)is list and len(rows)==6,'template_six_pairs')
+  selected=[];names=[]
+- for ident,row in zip(ids,rows):
+-  if type(row)is not dict or row.get('fixture_id')!=ident:raise ValueError('native_fixture_identity')
+-  index=order.index(ident);fmt,filt,compatible=JOBS[index]
+-  name='f06-native-edited.'+fmt if compatible else 'f06-native-edited-default-latest.odt'
+-  if row.get('format')!=fmt or row.get('fixture_profile')!=PROFILES[index] or row.get('semantic')!='BRAVO23' or row.get('staged_name')!=name:raise ValueError('native_family_profile_semantic')
+-  host=row.get('path');p=Path(host) if type(host)is str else Path('.')
+-  if not p.is_absolute() or '..'in p.parts or str(p)!=host or p.suffix!='.'+fmt:raise ValueError('native_original_path')
++ for ident,row in zip(t.IDS,rows):
++  fmt,role=ident.split('-')[1:];name='retained-'+role+'.'+fmt
++  t.need(row.get('fixture_id')==ident and row.get('format')==fmt and row.get('role')==role and row.get('fixture_profile')==t.PROFILE and row.get('semantic')==('BEFORE'if role=='source'else'AFTER') and row.get('staged_name')==name and row.get('mime')==t.MIMES[fmt] and row.get('service')==t.SERVICES[fmt] and row.get('filter')==t.FILTERS[fmt],'template_typed_row')
+   p=private_file(root/'native-outputs'/name,root)
+-  digest=row.get('sha256');size=row.get('bytes')
+-  if type(digest)is not str or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest) or type(size)is not int or not 0<size<=1000000 or p.stat().st_size!=size or sha(p)!=digest:raise ValueError('native_existing_bytes_pin')
+-  selected.append((row,p,fmt,filt,compatible));names.append(name)
+- if set(p.name for p in (root/'native-outputs').iterdir())!=set(names):raise ValueError('native_exact_selected_directory')
++  t.need(type(row.get('bytes'))is int and 0<row['bytes']<=1000000 and p.stat().st_size==row['bytes'] and sha(p)==row.get('sha256'),'template_existing_bytes_pin')
++  selected.append((row,p,fmt));names.append(name)
++ t.need({p.name for p in (root/'native-outputs').iterdir()}==set(names),'template_exact_directory')
+  return manifest,obj,selected
+ 
++def envelope(path,row):
++ ns='{urn:oasis:names:tc:opendocument:xmlns:manifest:1.0}'
++ with zipfile.ZipFile(path)as z:
++  infos=z.infolist();names=z.namelist()
++  t.need(len(names)==len(set(names)) and sorted(names)==t.MEMBERS and infos[0].filename=='mimetype' and infos[0].compress_type==zipfile.ZIP_STORED and not infos[0].extra and all(not i.flag_bits&1 for i in infos),'template_zip_structure')
++  t.need(z.read('mimetype').decode('ascii')==row['mime'],'template_mime')
++  raw=z.read('META-INF/manifest.xml')
++  t.need(b'<!DOCTYPE'not in raw.upper() and b'<!ENTITY'not in raw.upper(),'manifest_dtd')
++  manifest=ET.fromstring(raw);entries=list(manifest);paths=[e.get(ns+'full-path')for e in entries]
++  t.need(len(paths)==len(set(paths)),'manifest_unique_paths')
++  roots=[e for e in entries if e.get(ns+'full-path')=='/']
++  t.need(len(roots)==1 and roots[0].get(ns+'media-type')==row['mime'],'template_manifest_mime')
++  encrypted=[];salts={};ivs={}
++  for entry in entries:
++   enc=entry.find(ns+'encryption-data')
++   if enc is None:continue
++   name=entry.get(ns+'full-path');alg=enc.find(ns+'algorithm');kd=enc.find(ns+'key-derivation');start=enc.find(ns+'start-key-generation')
++   t.need(name in t.ENCRYPTED and alg is not None and kd is not None and start is not None and z.getinfo(name).compress_type==zipfile.ZIP_STORED,'template_encryption_descriptor')
++   t.need(alg.get(ns+'algorithm-name')=='http://www.w3.org/2001/04/xmlenc#aes256-cbc' and kd.get(ns+'key-derivation-name')=='PBKDF2' and kd.get(ns+'key-size')=='32' and kd.get(ns+'iteration-count')=='4096' and start.get(ns+'start-key-generation-name')=='http://www.w3.org/2000/09/xmldsig#sha256' and start.get(ns+'key-size')=='32' and enc.get(ns+'checksum-type')==ns[1:-1]+'#sha256-1k','template_exact_synthetic4096_profile')
++   salt=base64.b64decode(kd.get(ns+'salt'),validate=True);iv=base64.b64decode(alg.get(ns+'initialisation-vector'),validate=True)
++   t.need(len(salt)==len(iv)==16,'template_salt_iv_size')
++   salts[name]=hashlib.sha256(salt).hexdigest();ivs[name]=hashlib.sha256(iv).hexdigest();encrypted.append(name)
++  t.need(sorted(encrypted)==t.ENCRYPTED and salts==row['native_structure']['salts_sha256'] and ivs==row['native_structure']['ivs_sha256'],'template_retained_encrypted_structure')
++ return dict(container='ODF_TEMPLATE',mime=row['mime'],fixture_profile=t.PROFILE,rounds=4096,encrypted_members=sorted(encrypted),salts_sha256=salts,ivs_sha256=ivs,DefaultVersion='NOT_CLAIMED',checksum_authenticity='NOT_A_SIGNATURE',source='independent descriptor only; same-byte Office correct semantics still required')
++
++def semantic(doc,row):
++ fmt=row['format'];after=row['role']=='output'
++ if not doc.supportsService(row['service']):return False
++ if fmt=='ott':return doc.getText().getString().splitlines()==['OTT-UNIQUE-AFTER'if after else'OTT-UNIQUE-BEFORE','RETAINED-TEXT-PARAGRAPH']
++ if fmt=='ots':
++  sheets=doc.getSheets()
++  if sheets.getCount()!=1 or not sheets.hasByName('TemplateSheet'):return False
++  sheet=sheets.getByName('TemplateSheet');a1=sheet.getCellRangeByName('A1');b1=sheet.getCellRangeByName('B1')
++  cursor=sheet.createCursor();cursor.gotoStartOfUsedArea(False);cursor.gotoEndOfUsedArea(True);used=cursor.getRangeAddress()
++  return a1.getString()==('OTS-AFTER'if after else'OTS-BEFORE') and b1.getValue()==17 and b1.getString()=='17' and a1.getType().value=='TEXT' and b1.getType().value=='VALUE' and (used.StartColumn,used.StartRow,used.EndColumn,used.EndRow)==(0,0,1,0)
++ pages=doc.getDrawPages()
++ if pages.getCount()!=2:return False
++ wanted=['OTP-UNIQUE-AFTER'if after else'OTP-UNIQUE-BEFORE','RETAINED-SECOND-SLIDE']
++ for index,text in enumerate(wanted):
++  page=pages.getByIndex(index)
++  if page.getCount()!=1 or page.getByIndex(0).getString()!=text:return False
++ return True
++
+ def atomic_result(path,value):
+- # Own result only, never any encrypted input. Preserve previous complete prefix.
+- tmp=path.with_name(path.name+'.next')
+- fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+- with os.fdopen(fd,'w') as f:
+-  json.dump(value,f,ensure_ascii=True,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
++ tmp=path.with_name(path.name+'.next');fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
++ with os.fdopen(fd,'w')as f:json.dump(value,f,ensure_ascii=True,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+  if os.path.lexists(path):private_file(path,path.parent)
+- os.replace(tmp,path)
+- d=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
++ os.replace(tmp,path);d=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+  try:os.fsync(d)
+  finally:os.close(d)
+ 
+ def main():
+- ap=argparse.ArgumentParser();ap.add_argument('--root',required=True);ap.add_argument('--input-root',required=True);ap.add_argument('--credential-ref',required=True);ap.add_argument('--uno-pipe',required=True);ap.add_argument('--mode',choices=['produce','verify-native-edits','verify-inputs'],default='produce');ap.add_argument('--input-manifest-sha256',required=True);a=ap.parse_args()
++ ap=argparse.ArgumentParser();ap.add_argument('--root',required=True);ap.add_argument('--input-root',required=True);ap.add_argument('--credential-ref',required=True);ap.add_argument('--uno-pipe',required=True);ap.add_argument('--mode',choices=['verify-native-edits'],required=True);ap.add_argument('--input-manifest-sha256',required=True);a=ap.parse_args()
+  os.umask(0o077);root=private_root(a.root);input_root=private_root(a.input_root)
+- if not a.uno_pipe.startswith('f06_') or not a.uno_pipe.replace('_','').isalnum():raise ValueError('dedicated_pipe_required')
+- if a.mode=='verify-inputs':
+-  manifest,reconciled,existing=reconciled_inputs(input_root,a.input_manifest_sha256);pinned={};paths={}
+- elif a.mode=='verify-native-edits':
+-  manifest,retained,existing_edits=retained_native_inputs(input_root,a.input_manifest_sha256);pinned={};paths={}
+- else:manifest,pinned,paths=manifest_inputs(input_root,a.mode,a.input_manifest_sha256)
+- cred=private_file(a.credential_ref,input_root);secret=json.loads(cred.read_text());password=secret['password'];wrong=secret['wrong_password']
+- if not isinstance(password,str) or not isinstance(wrong,str) or not password or not wrong or password==wrong:raise ValueError('credential_contract')
++ t.need(a.uno_pipe.startswith('f06_') and a.uno_pipe.replace('_','').isalnum(),'dedicated_pipe_required')
++ manifest,retained,selected=retained_native_inputs(input_root,a.input_manifest_sha256)
++ cred=private_file(a.credential_ref,input_root);secret=t.decode(cred.read_bytes());password=secret['password'];wrong=secret['wrong_password']
++ t.need(type(password)is str and type(wrong)is str and bool(password) and bool(wrong) and password!=wrong,'credential_contract')
+  import uno,unohelper
+- if a.mode=='verify-native-edits':
+-  from request_args_compat_v2 import install_request_args_compat
+-  from callback_observer_v2 import make_abort_handler,observed_password_refusal_sequence,safe_exception,safe_type
+-  request_args_compat_token=install_request_args_compat(uno)
+-  ErrorCodeRequest2=uno.getClass('com.sun.star.task.ErrorCodeRequest2')
+-  IllegalArgumentException=uno.getClass('com.sun.star.lang.IllegalArgumentException')
++ from request_args_compat_v2 import install_request_args_compat
++ from callback_observer_v2 import make_abort_handler,observed_password_refusal_sequence,safe_exception
++ install_request_args_compat(uno)
+  from com.sun.star.beans import PropertyValue
+  from com.sun.star.task import XInteractionHandler,DocumentPasswordRequest,DocumentMSPasswordRequest
+- class AbortInteractions(unohelper.Base,XInteractionHandler):
+-  def __init__(self):self.events=[]
+-  def handle(self,request):
+-   payload=request.getRequest()
+-   kind='DocumentPasswordRequest' if isinstance(payload,DocumentPasswordRequest) else 'DocumentMSPasswordRequest' if isinstance(payload,DocumentMSPasswordRequest) else 'OTHER'
+-   event={'request_kind':kind,'abort_selected':False};self.events.append(event)
+-   for continuation in request.getContinuations():
+-    abort=continuation.queryInterface(uno.getTypeByName('com.sun.star.task.XInteractionAbort'))
+-    if abort is not None:abort.select();event['abort_selected']=True;return
+- handler=make_abort_handler(uno,unohelper,XInteractionHandler,DocumentPasswordRequest,DocumentMSPasswordRequest,ErrorCodeRequest2) if a.mode=='verify-native-edits' else AbortInteractions()
+- def prop(name,value):
+-  p=PropertyValue();p.Name=name;p.Value=value;return p
++ handler=make_abort_handler(uno,unohelper,XInteractionHandler,DocumentPasswordRequest,DocumentMSPasswordRequest,uno.getClass('com.sun.star.task.ErrorCodeRequest2'))
++ def prop(name,value):p=PropertyValue();p.Name=name;p.Value=value;return p
+  local=uno.getComponentContext();resolver=local.ServiceManager.createInstanceWithContext('com.sun.star.bridge.UnoUrlResolver',local)
+- remote=resolver.resolve('uno:pipe,name='+a.uno_pipe+';urp;StarOffice.ComponentContext')
+- desktop=remote.ServiceManager.createInstanceWithContext('com.sun.star.frame.Desktop',remote)
+- config=None
+- if a.mode=='produce':
+-  provider=remote.ServiceManager.createInstanceWithContext('com.sun.star.configuration.ConfigurationProvider',remote)
+-  config=provider.createInstanceWithArguments('com.sun.star.configuration.ConfigurationUpdateAccess',(prop('nodepath','/org.openoffice.Office.Common/Save/ODF'),))
+- def profile(version):
+-  config.setPropertyValue('DefaultVersion',uno.Any('short',version));config.commitChanges()
+-  if config.getPropertyValue('DefaultVersion')!=version:raise ValueError('odf_profile_readback')
+- def envelope(path,fmt,compatible):
+-  if fmt in ('docx','xlsx','pptx'):
+-   if path.read_bytes()[:8]!=bytes.fromhex('d0cf11e0a1b11ae1'):raise ValueError('ooxml_not_compound_encrypted_container')
+-   return {'container':'CFB','independent_oracle':'Office missing/wrong/correct reopen; signature alone insufficient'}
+-  ns='{urn:oasis:names:tc:opendocument:xmlns:manifest:1.0}'
+-  with zipfile.ZipFile(path) as z:raw=z.read('META-INF/manifest.xml');names=set(z.namelist())
+-  if b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():raise ValueError('manifest_dtd')
+-  entries=[]
+-  for entry in ET.fromstring(raw):
+-   enc=entry.find(ns+'encryption-data')
+-   if enc is None:continue
+-   alg=enc.find(ns+'algorithm');kd=enc.find(ns+'key-derivation');start=enc.find(ns+'start-key-generation')
+-   if alg is None or kd is None:raise ValueError('odf_encryption_descriptor')
+-   params={'member':entry.get(ns+'full-path'),'algorithm':alg.get(ns+'algorithm-name'),'kdf':kd.get(ns+'key-derivation-name'),'rounds':kd.get(ns+'iteration-count'),'checksum':enc.get(ns+'checksum-type'),'algorithm_attributes':dict(alg.attrib),'kdf_attributes':dict(kd.attrib),'start_key_attributes':dict(start.attrib) if start is not None else None}
+-   if compatible and (params['algorithm']!='http://www.w3.org/2001/04/xmlenc#aes256-cbc' or params['kdf'] not in ('PBKDF2',ns[1:-1]+'#pbkdf2') or params['rounds']!='100000' or params['checksum']!=ns[1:-1]+'#sha256-1k'):raise ValueError('odf_profile_outside_compatible_fixture_bounds')
+-   entries.append(params)
+-  if not entries:raise ValueError('odf_no_encrypted_members')
+-  if compatible and (not any(e['member']=='content.xml' for e in entries) or 'encrypted-package' in names):raise ValueError('odf_member_profile_required')
+-  return {'container':'ODF','encrypted_members':entries,'profile_DefaultVersion':10 if compatible else 3,'encrypted_package_present':'encrypted-package' in names,'checksum_authenticity':'NOT_A_SIGNATURE','coverage':'bounded compatible1.3' if compatible else 'current default/latest qualification; actual native reason still required'}
+- def load(path,supplied=None):
+-  props=[prop('Hidden',True),prop('ReadOnly',True),prop('MacroExecutionMode',0),prop('UpdateDocMode',0),prop('InteractionHandler',handler)]
+-  if supplied is not None:props.append(prop('Password',supplied))
+-  return desktop.loadComponentFromURL(uno.systemPathToFileUrl(str(path)),'_blank',0,tuple(props))
+- def close(doc):
+-  try:doc.close(True)
+-  except Exception:doc.dispose()
+- def semantic(doc,fmt,edited=False):
+-  if fmt in ('xlsx','ods'):
+-   sheet=doc.getSheets().getByName('F06Data');return sheet.getCellRangeByName('A2').getString()=='keep-001' and sheet.getCellRangeByName('B2').getValue()==(23 if edited else 17)
+-  wanted='F06 SYNTHETIC '+('BRAVO' if edited else 'ALPHA')+' 11 NOV'
+-  if fmt in ('docx','odt'):return wanted in doc.getText().getString() and 'F06 synthetic invariant paragraph' in doc.getText().getString()
+-  page=doc.getDrawPages().getByIndex(0);texts=[]
+-  for i in range(page.getCount()):
+-   shape=page.getByIndex(i)
+-   if hasattr(shape,'getString'):texts.append(shape.getString())
+-  return any(wanted in t for t in texts) and any('F06 synthetic invariant body' in t for t in texts)
+- def probe(path,fmt,supplied,edited):
+-  doc=None;events_start=len(handler.events);answer={'opened':False,'semantic_match':False,'expected_password_refusal':False};allowed_ooxml_exception=False
++ remote=resolver.resolve('uno:pipe,name='+a.uno_pipe+';urp;StarOffice.ComponentContext');desktop=remote.ServiceManager.createInstanceWithContext('com.sun.star.frame.Desktop',remote)
++ def probe(path,row,supplied):
++  doc=None;start=len(handler.events);answer=dict(opened=False,semantic_match=False,expected_password_refusal=False)
+   try:
+-   doc=load(path,supplied)
++   props=[prop('Hidden',True),prop('ReadOnly',True),prop('AsTemplate',False),prop('MacroExecutionMode',0),prop('UpdateDocMode',0),prop('InteractionHandler',handler)]
++   if supplied is not None:props.append(prop('Password',supplied))
++   doc=desktop.loadComponentFromURL(uno.systemPathToFileUrl(str(path)),'_blank',0,tuple(props))
+    if doc is not None:
+     answer['opened']=True
+-    try:answer['semantic_match']=bool(semantic(doc,fmt,edited))
+-    except Exception as e:
+-     if edited:answer['semantic_exception']=safe_exception(e)
+-     else:answer['semantic_exception_class']=type(e).__name__
+-   else:
+-    events=handler.events[events_start:]
+-    answer['expected_password_refusal']=bool(events) and all(e['request_kind'] in ('DocumentPasswordRequest','DocumentMSPasswordRequest') and e['abort_selected'] for e in events)
+-  except Exception as e:
+-   if edited:
+-    answer['load_exception']=safe_exception(e)
+-    if fmt in ('docx','xlsx','pptx') and type(e) is IllegalArgumentException and safe_type(e)=='com.sun.star.lang.IllegalArgumentException':
+-     try:
+-      position=e.ArgumentPosition
+-      allowed_ooxml_exception=type(position) is int and position==1
+-      answer['load_argument_position']=position if type(position) is int and -32768<=position<32768 else None
+-     except Exception:answer['load_argument_position']='UNOBSERVED'
+-   else:answer['load_exception_class']=type(e).__name__
++    try:answer['semantic_match']=bool(semantic(doc,row))
++    except Exception as error:answer['semantic_exception']=safe_exception(error)
++  except Exception as error:answer['load_exception']=safe_exception(error)
+   finally:
+-   answer['interaction_events']=handler.events[events_start:]
+-   if doc is not None:close(doc)
+-  if edited:
+-   answer['expected_password_refusal']=not answer['opened'] and observed_password_refusal_sequence(answer['interaction_events'],fmt) and ('load_exception' not in answer or allowed_ooxml_exception)
++   answer['interaction_events']=handler.events[start:]
++   if doc is not None:
++    try:doc.close(True)
++    except Exception:doc.dispose()
++  answer['expected_password_refusal']=not answer['opened'] and 'load_exception'not in answer and observed_password_refusal_sequence(answer['interaction_events'],t.BASE_FORMAT[row['format']])
+   return answer
+- out=root/({'produce':'encrypted-inputs','verify-native-edits':'native-edit-oracle','verify-inputs':'existing-input-oracle'}[a.mode]);out.mkdir(mode=0o700,exist_ok=False)
+- jobs=JOBS if a.mode=='produce' else (JOBS[:len(existing)] if a.mode=='verify-inputs' else [(fmt,filt,compatible) for _,_,fmt,filt,compatible in existing_edits])
+- rows=[];custody=[]
+- for index,(fmt,filt,compatible) in enumerate(jobs):
+-  edited=a.mode=='verify-native-edits'
+-  fixture_id=existing_edits[index][0]['fixture_id'] if edited else 'f06-'+str(index+1)
+-  fixture_profile=existing_edits[index][0]['fixture_profile'] if edited else PROFILES[index]
+-  if a.mode=='verify-inputs':src=existing[index][1];before=sha(src);target=src
+-  elif edited:
+-   src=private_file(existing_edits[index][1],input_root);before=sha(src);target=src
+-   if before!=existing_edits[index][0]['sha256'] or src.stat().st_size!=existing_edits[index][0]['bytes']:raise ValueError('native_source_changed_before_operation')
+-  else:
+-   src=paths[fmt];before=sha(src)
+-   if before!=pinned[fmt]['sha256']:raise ValueError('source_changed_before_operation')
+-   if edited:target=src
+-   else:
+-    profile(10 if compatible else 3)
+-    target=out/target_name(fmt,compatible)
+-    if os.path.lexists(target):raise ValueError('output_exists')
+-    doc=load(src)
+-    if doc is None:raise ValueError('plain_input_not_opened')
+-    try:
+-     if not semantic(doc,fmt):raise ValueError('plain_input_semantics')
+-     doc.storeAsURL(uno.systemPathToFileUrl(str(target)),tuple([prop('FilterName',filt),prop('Password',password),prop('Overwrite',False)]))
+-    finally:close(doc)
+-    private_file(target,root)
+-  # Custody precedes optional envelope/oracle checking. Checker failure cannot
+-  # erase already created bytes or authorize producing them again.
+-  target_before=sha(target)
+-  custody.append({'fixture_id':fixture_id,'name':target.name,'format':fmt,'fixture_profile':fixture_profile,'path':str(target),'sha256':target_before,'bytes':target.stat().st_size})
+-  atomic_result(out/'CUSTODY.json',{'mode':a.mode,'known_prefix_count':len(custody),'planned_rows':len(jobs),'fixtures':custody,'oracle_status':'PENDING_OR_INCONCLUSIVE','never_regenerate_for_checker_failure':True})
++ out=root/'native-edit-oracle';out.mkdir(mode=0o700,exist_ok=False);rows=[]
++ for source,path,fmt in selected:
++  before=sha(path);t.need(before==source['sha256'],'template_source_before_pin')
+   descriptor=None;envelope_error=None
+-  try:descriptor=envelope(target,fmt,compatible)
++  try:descriptor=envelope(path,source)
+   except Exception as error:envelope_error=type(error).__name__
+-  tests={'missing':probe(target,fmt,None,edited),'wrong':probe(target,fmt,wrong,edited),'correct':probe(target,fmt,password,edited)}
+-  unchanged=sha(src)==before and sha(target)==target_before
++  tests=dict(missing=probe(path,source,None),wrong=probe(path,source,wrong),correct=probe(path,source,password))
++  unchanged=sha(path)==before
+   passed=unchanged and envelope_error is None and tests['missing']['expected_password_refusal'] and tests['wrong']['expected_password_refusal'] and tests['correct']['opened'] and tests['correct']['semantic_match'] and not tests['correct']['interaction_events']
+-  rows.append({'fixture_id':fixture_id,'format':fmt,'fixture_profile':fixture_profile,'filter':filt,'source_path':str(src),'source_sha256':before,'path':str(target),'sha256':target_before,'bytes':target.stat().st_size,'independent_office_password_and_semantics_pass':passed,'tests':tests,'envelope':descriptor,'envelope_exception_class':envelope_error,'same_input_bytes_preserved':unchanged,'credential_ref':str(cred),'new_bytes':a.mode=='produce','recovered_old_bytes':False,'native_protected_result':'NOT_TESTED; exact current consumer qualification required'})
+-  result={'mode':a.mode,'input_manifest':str(manifest),'input_manifest_sha256':a.input_manifest_sha256,'rows':rows,'planned_rows':len(jobs),'whole_seven_covered':len(jobs)==7 and len(rows)==7,'all_pass':len(rows)==len(jobs) and all(r['independent_office_password_and_semantics_pass'] for r in rows),'oracle':'independent existing LibreOffice through dedicated UNO pipe','visual_fidelity':'NOT_TESTED','F06_formal_or_delivery':'NOT_RUN'}
+-  if edited:
+-   passed_ids={r['fixture_id'] for r in rows if r['independent_office_password_and_semantics_pass']}
+-   result.update(all_pass_scope='SELECTED_ONLY',selected_fixture_ids=retained['selected_fixture_ids'],selected_count=retained['selected_count'],full_six_covered=set('f06-'+str(i) for i in range(1,7))<=passed_ids,all_seven_pass=set('f06-'+str(i) for i in range(1,8))<=passed_ids,whole_F06_accepted=False)
++  rows.append(dict(fixture_id=source['fixture_id'],format=fmt,fixture_profile=t.PROFILE,filter=source['filter'],source_path=str(path),source_sha256=before,path=str(path),sha256=before,bytes=path.stat().st_size,independent_office_password_and_semantics_pass=passed,tests=tests,envelope=descriptor,envelope_exception_class=envelope_error,same_input_bytes_preserved=unchanged,credential_ref=str(cred),new_bytes=False,recovered_old_bytes=False,native_protected_result='PRESERVED_SYNTHETIC_NATIVE_FACTS; OTT raw edit receipt NOT_RETAINED'))
++  result=dict(mode=a.mode,input_manifest=str(manifest),input_manifest_sha256=a.input_manifest_sha256,rows=rows,planned_rows=6,whole_seven_covered=False,all_pass=len(rows)==6 and all(r['independent_office_password_and_semantics_pass']for r in rows),oracle='same fixed private LibreOffice bank, dedicated readonly UNO pipe',visual_fidelity='NOT_TESTED',F06_formal_or_delivery='NOT_RUN',all_pass_scope='SELECTED_ONLY',selected_fixture_ids=list(t.IDS),selected_count=6,full_six_covered=False,all_seven_pass=False,whole_F06_accepted=False)
+   atomic_result(out/'RESULT.json',result)
+-  if not unchanged:raise ValueError('source_or_target_changed_after_operation')
+- print(json.dumps({'fixtures':len(rows),'passed':sum(r['independent_office_password_and_semantics_pass'] for r in rows)}))
+- return 0 if all(r['independent_office_password_and_semantics_pass'] for r in rows) else 1
++  t.need(unchanged,'template_source_changed')
++ print(json.dumps(dict(fixtures=len(rows),passed=sum(r['independent_office_password_and_semantics_pass']for r in rows))))
++ return 0 if all(r['independent_office_password_and_semantics_pass']for r in rows)else 1
++
+ if __name__=='__main__':
+  try:raise SystemExit(main())
+- except Exception as exc:
+-  print(json.dumps({'status':'ERROR','exception_class':type(exc).__name__}));raise SystemExit(2)
++ except Exception as error:print(json.dumps(dict(status='ERROR',exception_class=type(error).__name__)));raise SystemExit(2)
+--- accepted-native567/root_frame.py
++++ templates-candidate/root_frame.py
+@@ -238,31 +238,26 @@
+  return mapping
+ 
+ def native_closure(a,manifest,review):
++ # This own synthetic native run had no native567 Root grant/once contract.
++ # Require genuine fresh Root closure facts, never fabricate those aliases.
+  row=a['native_actors_closed'];pin_join(row,review['native_actors_closed']);closed,_=proof(row)
+- need(closed.get('schema')=='friday.f06.root-native-actors-closed.v1' and closed.get('state')=='ROOT_OBSERVED_ORIGINAL_NATIVE_ACTORS_CLOSED','NATIVE_CLOSURE_SCHEMA')
+- need(closed.get('assignment')==c.ASSIGNMENT and closed.get('native_operation_id')==manifest['native_operation_id'] and closed.get('uid')==a['uid'] and closed.get('boot_id')==a['boot_id'],'NATIVE_CLOSURE_LINEAGE')
+- fresh_time(closed['observed_at_moscow'],'NATIVE_CLOSURE_FRESH_TIME')
+- need(closed.get('actual_native_actors')==[] and closed.get('actual_native_requests')==[] and closed.get('actual_closed')is True and closed.get('reexecuted')is False,'NATIVE_ACTORS_ACTUALLY_CLOSED')
+- for name in ('native_binding','native_root_grant','native_once'):
+-  pin_join(closed['native_evidence'][name],a['native_evidence'][name])
+- births=closed.get('original_actor_births');need(type(births)is list and len(births)<=128,'NATIVE_ORIGINAL_ACTOR_BIRTHS')
+- for birth in births:
+-  need(type(birth)is dict and type(birth.get('pid'))is int and birth['pid']>0 and type(birth.get('starttime'))is str and birth['starttime'].isdecimal() and birth.get('uid')==a['uid'],'NATIVE_ACTOR_BIRTH')
+-  path=Path('/proc')/str(birth['pid'])
+-  try:
+-   if path.stat().st_uid==a['uid']:
+-    current=(path/'stat').read_text().rsplit(') ',1)[1].split()[19]
+-    need(current!=birth['starttime'],'NATIVE_ORIGINAL_ACTOR_STILL_PRESENT')
+-  except (FileNotFoundError,ProcessLookupError):pass
++ need(closed.get('schema')=='friday.f06.root-template-native-actors-closed.v1' and closed.get('state')=='ROOT_FRESH_TEMPLATE_NATIVE_ACTORS_ABSENT','TEMPLATE_NATIVE_CLOSURE_SCHEMA')
++ need(closed.get('assignment')==c.ASSIGNMENT and closed.get('native_assignment')==manifest['native_assignment'] and closed.get('uid')==a['uid'] and closed.get('boot_id')==a['boot_id'],'TEMPLATE_NATIVE_CLOSURE_LINEAGE')
++ fresh_time(closed['observed_at_moscow'],'TEMPLATE_NATIVE_CLOSURE_FRESH_TIME')
++ need(closed.get('actual_native_actors')==[] and closed.get('actual_native_requests')==[] and closed.get('actual_closed')is True and closed.get('reexecuted')is False and closed.get('native567_grant_or_once_reused')is False,'TEMPLATE_NATIVE_ACTORS_CLOSED')
++ need(c.exact_json(closed.get('native_evidence'),a['native_evidence']),'TEMPLATE_NATIVE_CLOSURE_EVIDENCE_JOIN')
++ need(closed.get('historical_actor_pids')==[573457,574999] and closed.get('actor_pid_basis')=='exact original synthetic LAUNCH/CONTINUATION-LAUNCH receipts; birth not recorded','TEMPLATE_ORIGINAL_PID_BASIS')
++ for pid in closed['historical_actor_pids']:need(not (Path('/proc')/str(pid)).exists(),'TEMPLATE_HISTORICAL_PID_PRESENT')
++ need(closed.get('historical_ott_raw_edit_receipt')=='NOT_RETAINED_DO_NOT_RECONSTRUCT_OR_REPLAY','TEMPLATE_NATIVE_GAP_PRESERVED')
+  return closed
+ 
+ def readonly_effect_basis(a,manifest,review):
+  row=a['readonly_effect_basis'];pin_join(row,review['readonly_effect_basis']);basis,_=proof(row)
+- need(basis.get('schema')=='friday.f06.root-readonly-retained-effect-basis.v1' and basis.get('state')=='ROOT_ACCEPTED_DISTINCT_READONLY_RETAINED_ORACLE_ONLY','READONLY_EFFECT_BASIS')
+- need(basis.get('assignment')==c.ASSIGNMENT and basis.get('native_operation_id')==manifest['native_operation_id'] and basis.get('new_operation_key')==a['operation_key'] and basis.get('new_source_pins_sha256')==a['source_pins_sha256'],'READONLY_EFFECT_LINEAGE')
++ need(basis.get('schema')=='friday.f06.root-template-readonly-effect-basis.v1' and basis.get('state')=='ROOT_ACCEPTED_DISTINCT_TEMPLATE_SOURCE_OUTPUT_READONLY_ORACLE_ONLY','READONLY_EFFECT_BASIS')
++ need(basis.get('assignment')==c.ASSIGNMENT and basis.get('native_assignment')==manifest['native_assignment'] and basis.get('new_operation_key')==a['operation_key'] and basis.get('new_source_pins_sha256')==a['source_pins_sha256'],'READONLY_EFFECT_LINEAGE')
+  pin_join(basis['output_manifest'],a['output_manifest']);pin_join(basis['native_actors_closed'],a['native_actors_closed'])
+  need(basis.get('selected_fixture_ids')==a['selected_fixture_ids'] and basis.get('expected_stores')==0 and basis.get('expected_probes')==3*a['selected_count'] and basis.get('native_effects_repeated')is False and basis.get('original_native_statuses_preserved')is True and basis.get('original_clocks_or_consumed_effects_reset')is False and basis.get('whole_F06_accepted')is False,'READONLY_DISTINCT_EFFECT_ONLY')
+- need(basis.get('resolved_affected_unknowns')is True and basis.get('remaining_affected_unknowns')==[],'READONLY_AFFECTED_UNKNOWN_UNRESOLVED')
++ need(basis.get('readonly_affected_unknowns_resolved')is True and basis.get('remaining_readonly_affected_unknowns')==[] and basis.get('historical_ott_raw_edit_receipt')=='NOT_RETAINED_DO_NOT_RECONSTRUCT_OR_REPLAY','TEMPLATE_READONLY_UNKNOWN_SCOPE_AND_NATIVE_GAP')
+  need(c.exact_json(basis.get('limits'),a['limits']) and basis.get('original_operation_start_monotonic')==a['original_operation_start_monotonic'],'READONLY_EFFECT_CLOCK_LIMITS')
+  return basis
+ 
+@@ -275,7 +270,7 @@
+  raw,pin=c.private(path,B);need(pin['sha256']==sha,'ADMISSION_SHA');a=c.decode(raw)
+  mode=a['mode'];key=a['operation_key'];c.operation(key,mode);lim=c.limits(mode)
+  credential,credential_identity=c.credential_metadata(a['credential_source']);c.PRE_STAGE_CREDENTIAL_PATHS.add(credential['path'])
+- need(path==B/(key+'.ADMISSION.json') and a.get('schema')=='friday.f06.root-retained-output-once-admission.v1' and a.get('state')=='ROOT_FRESH_ONCE_ADMITTED' and a.get('assignment')==c.ASSIGNMENT,'ADMISSION_STATE_PATH')
++ need(path==B/(key+'.ADMISSION.json') and a.get('schema')=='friday.f06.root-template-once-admission.v1' and a.get('state')=='ROOT_FRESH_ONCE_ADMITTED' and a.get('assignment')==c.ASSIGNMENT,'ADMISSION_STATE_PATH')
+  need(type(a.get('uid'))is int and a['uid']==os.getuid() and a['boot_id']==Path('/proc/sys/kernel/random/boot_id').read_text().strip() and type(a.get('nonce'))is str and re.fullmatch('[0-9a-f]{32}',a['nonce'])is not None,'ADMISSION_UID_BOOT_NONCE')
+  fresh_time(a['admitted_at_moscow'],'ADMISSION_FRESH_TIME')
+  origin=a.get('original_operation_start_monotonic')
+@@ -284,8 +279,8 @@
+  need(a.get('source_pins_sha256')==c.recipe_check()[0]['sha256'] and c.exact_json(a.get('limits'),lim),'ADMISSION_SOURCE_LIMITS')
+  cpus=a['actual_two_cpu_ids'];need(type(cpus)is list and len(cpus)==2 and len(set(cpus))==2 and all(type(x)is int for x in cpus) and set(cpus)<=os.sched_getaffinity(0),'ACTUAL_CPU_AFFINITY')
+  review,_=proof(a['source_review'])
+- need(review.get('state')=='ROOT_ACCEPTED_F06_RETAINED_OUTPUT_SOURCE' and review.get('source_pins_sha256')==a['source_pins_sha256'] and review.get('findings_remaining')==[] and review.get('new_readonly_route_reviewed')is True,'SOURCE_REVIEW')
+- pin_join(review['canonical_fix_acceptance'],a['canonical_fix_acceptance'])
++ need(review.get('state')=='ROOT_ACCEPTED_F06_TEMPLATE_SOURCE_OUTPUT_SOURCE' and review.get('source_pins_sha256')==a['source_pins_sha256'] and review.get('findings_remaining')==[] and review.get('new_readonly_route_reviewed')is True,'SOURCE_REVIEW')
++ pin_join(review['native_root_acceptance'],a['native_root_acceptance'])
+  pin_join(review['negative_observer_review'],a['negative_observer_review'])
+  observer,_=proof(a['negative_observer_review'])
+  _,source_rows=c.recipe_check();driver=next(p for p in source_rows if Path(p['path']).name=='office_fixture_driver.py')
+@@ -446,7 +441,7 @@
+  refs=c.decode(c.private(B/'REFERENCES.json',B)[0])
+  codec_rows=[row for row in refs['files']if row.get('path')==str(c.CODEC_ACCEPTANCE_PATH)]
+  need(len(codec_rows)==1,'CODEC_SOURCE_REFERENCE_REQUIRED');c.codec_acceptance(codec_rows[0])
+- return dict(state='SOURCE_ONLY_NO_RUNTIME_AUTHORITY',source_pins_sha256=pin['sha256'],Office_starts=0,unit_starts=0,namespace_starts=0,secret_reads=0,codec_acceptance_sha256=c.CODEC_ACCEPTANCE_SHA,negative_observer_review='REQUIRED_FOR_FUTURE_EXECUTION_NOT_GRANTED_HERE')
++ return dict(state='TEMPLATE_SOURCE_ONLY_NO_RUNTIME_AUTHORITY',source_pins_sha256=pin['sha256'],Office_starts=0,unit_starts=0,namespace_starts=0,secret_reads=0,codec_acceptance_sha256=c.CODEC_ACCEPTANCE_SHA,negative_observer_review='REQUIRED_FOR_FUTURE_EXECUTION_NOT_GRANTED_HERE')
+ 
+ def main():
+  os.umask(0o077);p=argparse.ArgumentParser();p.add_argument('--check',action='store_true');p.add_argument('--execute-once-root-accepted',action='store_true');p.add_argument('--admission',type=Path);p.add_argument('--admission-sha256');a=p.parse_args()
+--- accepted-native567/run_once.py
++++ templates-candidate/run_once.py
+@@ -65,13 +65,13 @@
+  obj,mp,rows,ref=c.output_inputs(a)
+  c.need(obj['selected_count']==len(rows)==a['selected_count'] and obj['selected_fixture_ids']==a['selected_fixture_ids'],'STAGE_SELECTED_SCOPE')
+  def known(role,pin,fixture_id=None):
+-  item=dict(role=role,pin={k:pin[k] for k in ('path','bytes','sha256','identity')},body_read_attempted=role!='credential_source')
++  item=dict(role=role,pin={k:pin[k] for k in ('path','bytes','sha256','identity') if k in pin},body_read_attempted=role!='credential_source')
+   if fixture_id is not None:item['fixture_id']=fixture_id
+   custody['original_expected_pins'].append(item)
+  known('manifest',mp)
+  for row in rows:
+   known('retained_native_output',row,row['fixture_id']);known('native_source_ciphertext',row['native_source_ciphertext'],row['fixture_id'])
+- credential_pin=dict(path=ref['path'],bytes=ref['bytes'],sha256=ref['sha256'],identity=a['credential_source_identity'])
++ credential_pin=dict(path=ref['path'],bytes=ref['bytes'],identity=a['credential_source_identity'])
+  known('credential_source',credential_pin)
+  custody['original_inputs_before']=[item['pin'] for item in custody['original_expected_pins']]
+  custody['selected_fixture_ids']=list(obj['selected_fixture_ids']);custody['selected_count']=len(rows)
+@@ -79,7 +79,7 @@
+  inputs.mkdir(mode=0o700);custody['inputs_created']=True;(inputs/'native-outputs').mkdir(mode=0o700)
+  pins=[];copies=[]
+  def tracked_copy(role,source,target,expected,fixture_id=None):
+-  attempt=dict(role=role,original_host_pin={k:expected[k] for k in ('path','bytes','sha256','identity')},staged_host_path=str(target),copy_is_original=False,copy_completed=False)
++  attempt=dict(role=role,original_host_pin={k:expected[k] for k in ('path','bytes','sha256','identity') if k in expected},staged_host_path=str(target),copy_is_original=False,copy_completed=False)
+   if fixture_id is not None:attempt['fixture_id']=fixture_id
+   custody['copy_attempts'].append(attempt)
+   original,staged=copy_private(source,target,expected)
+@@ -107,6 +107,8 @@
+  c.need(identity==a['credential_source_identity'],'CREDENTIAL_PRECOPY_IDENTITY')
+  custody['original_expected_pins'][-1]['body_read_attempted']=True
+  original,staged=tracked_copy('credential_private_copy',ref['path'],inputs/'credential.private.json',credential_pin)
++ custody['original_expected_pins'][-1]['pin'].update(sha256=original['sha256'])
++ custody['credential_digest_established_inside_admitted_unit_after_full_metadata_CAS']=True
+  c.need(c.credential_metadata(ref)[1]==identity,'CREDENTIAL_POSTCOPY_IDENTITY')
+  pins.append(original)
+  custody['stage_metadata_attempt']=dict(path=str(inputs/'STAGED.json'),write_completed=False)
+@@ -165,7 +167,7 @@
+  report['staged_copies_before']=[dict(role=r['role'],original=r['original_host_pin'],staged=r['staged_host_pin'],copy_is_original=False) for r in custody.get('copy_attempts',[]) if 'staged_host_pin' in r]
+  report['staged_copies_after']=copies;report['staged_copies_after_observations']=copy_observations;report['custody_check_errors']=errors
+  count=custody.get('selected_count',0)
+- report['readonly_custody_after_cas']=bool(namespace_closed and custody.get('stage_completed') and metadata_ok and codec_ok and stage_metadata_ok and 1<=count<=7 and len(original_observations)==2*count+2 and all(r['cas_verified'] and r['content_preservation_verified'] for r in original_observations) and len(copy_observations)==count+2 and all(r['cas_verified'] for r in copy_observations))
++ report['readonly_custody_after_cas']=bool(namespace_closed and custody.get('stage_completed') and metadata_ok and codec_ok and stage_metadata_ok and count==6 and len(original_observations)==2*count+2 and all(r['cas_verified'] and r['content_preservation_verified'] for r in original_observations) and len(copy_observations)==count+2 and all(r['cas_verified'] for r in copy_observations))
+  if not report['readonly_custody_after_cas'] and report['state']!='STOP_UNCONFIRMED':report['state']='FAILED_OR_PARTIAL_PRESERVED_NO_REPLAY'
+ 
+ def root_parent(op,admission_sha,a,unit):
+--- accepted-native567/template_adapter.py
++++ templates-candidate/template_adapter.py
+@@ -0,0 +1,128 @@
++"""Exact retained synthetic template metadata, no execution authority or payload I/O.
++
++Only build_from_safe_receipts opens files: a fixed nonsecret receipt allowlist.
++All six ciphertexts and the credential are lstat-only during source preparation.
++"""
++import hashlib
++import json
++import os
++import re
++import stat
++from pathlib import Path
++
++ASSIGNMENT = 'ASTRA-CHILD-F06-TEMPLATES-OFFICE-SOURCE-PREPARE-20261112#1'
++NATIVE_ASSIGNMENT = 'ASTRA-CHILD-F06-ODF-TEMPLATE-NATIVE-PATHS-20261112#1'
++NATIVE_ROOT = Path('/home/jericho/.cache/FRW-ASTRA-V3-F06-ODF-TEMPLATE-NATIVE-PATHS-20261112')
++RESULT_PATH = NATIVE_ROOT/'RESULT.json'
++RESULT_SHA = 'fc5d4a4de888b9c0aeb85deae92f376fced948edc3e1213bfc3f44c1975f18fa'
++ACCEPT_PATH = Path('/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111/F06-ODF-TEMPLATE-NATIVE-ROOT-ACCEPTANCE-20261112.json')
++ACCEPT_SHA = '5fdd4052242c651e7dec4029f28d43f6de096721cee5b6db56302680cb143362'
++SPEC_PATH = NATIVE_ROOT/'spec_fixture.py'
++SPEC_SHA = 'bcd07bc02816508ea05793b952c2a47962bfdbaf410ceb616bd246dd92828139'
++SCHEMA = 'friday.f06.retained-template-source-output-oracle.v1'
++SEMANTIC = 'SYNTHETIC_TEMPLATE_BEFORE_AFTER'
++FORMATS = ('ott','ots','otp')
++ROLES = ('source','output')
++IDS = tuple('template-'+fmt+'-'+role for fmt in FORMATS for role in ROLES)
++IDENTITY_FIELDS = ('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
++MIMES = dict(zip(FORMATS,('application/vnd.oasis.opendocument.text-template','application/vnd.oasis.opendocument.spreadsheet-template','application/vnd.oasis.opendocument.presentation-template')))
++SERVICES = dict(zip(FORMATS,('com.sun.star.text.TextDocument','com.sun.star.sheet.SpreadsheetDocument','com.sun.star.presentation.PresentationDocument')))
++FILTERS = dict(zip(FORMATS,('writer8_template','calc8_template','impress8_template')))
++BASE_FORMAT = dict(zip(FORMATS,('odt','ods','odp')))
++PROFILE = 'own_synthetic_odf13_aes256cbc_pbkdf2sha1_4096'
++MEMBERS = ['META-INF/manifest.xml','Pictures/retained.bin','content.xml','meta.xml','mimetype','settings.xml','styles.xml']
++ENCRYPTED = ['content.xml','meta.xml','settings.xml','styles.xml']
++MAPPING = {'dev':'st_dev','ino':'st_ino','mode':'st_mode','uid':'st_uid','nlink':'st_nlink','bytes':'st_size','mtime_ns':'st_mtime_ns','ctime_ns':'st_ctime_ns'}
++
++def need(value, code):
++    if not value: raise ValueError(code)
++
++def decode(raw):
++    def pairs(items):
++        result = {}
++        for key,value in items:
++            need(key not in result, 'DUPLICATE_JSON_KEY'); result[key] = value
++        return result
++    return json.loads(raw, object_pairs_hook=pairs, parse_constant=lambda _:need(False,'JSON_CONSTANT'))
++
++def same(a,b):
++    return json.dumps(a,sort_keys=True,separators=(',',':')) == json.dumps(b,sort_keys=True,separators=(',',':'))
++
++def metadata(path, recorded):
++    """No open/read/hash; compare every upstream field and add current gid."""
++    path = Path(path)
++    need(path.is_absolute() and path == path.resolve(strict=True) and '..' not in path.parts, 'CANONICAL_METADATA_PATH')
++    for parent in path.parents:
++        if parent == Path('/home/jericho/.cache'): break
++        s = parent.lstat()
++        need(stat.S_ISDIR(s.st_mode) and s.st_uid==os.getuid() and stat.S_IMODE(s.st_mode)==0o700,'PRIVATE_METADATA_PARENT')
++    info = path.lstat()
++    need(stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and info.st_nlink==1 and stat.S_IMODE(info.st_mode)==0o600, 'PRIVATE_METADATA_FILE')
++    need(set(recorded)==set(MAPPING), 'UPSTREAM_CUSTODY_FIELDS')
++    for key,field in MAPPING.items():
++        actual = oct(stat.S_IMODE(info.st_mode)) if key=='mode' else getattr(info,field)
++        need(type(actual) is type(recorded[key]) and actual==recorded[key], 'UPSTREAM_METADATA_CAS')
++    return [getattr(info,k) for k in IDENTITY_FIELDS]
++
++def safe_read(path, expected):
++    """Only three exact nonsecret files; credentials/ciphertext cannot enter."""
++    path = Path(path)
++    allowed = {str(RESULT_PATH):RESULT_SHA,str(ACCEPT_PATH):ACCEPT_SHA,str(SPEC_PATH):SPEC_SHA}
++    need(allowed.get(str(path))==expected, 'SAFE_RECEIPT_ALLOWLIST')
++    need(path==path.resolve(strict=True) and not any(p.is_symlink() for p in (path,*path.parents)), 'SAFE_RECEIPT_PATH')
++    fd = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
++    try:
++        before=os.fstat(fd)
++        need(stat.S_ISREG(before.st_mode) and before.st_uid==os.getuid() and before.st_nlink==1 and stat.S_IMODE(before.st_mode)==0o600 and 0<before.st_size<=1024**2, 'SAFE_RECEIPT_CUSTODY')
++        with os.fdopen(fd,'rb',closefd=False) as stream: raw=stream.read(1024**2+1)
++        ident=[getattr(before,k) for k in IDENTITY_FIELDS]
++        need(ident==[getattr(os.fstat(fd),k) for k in IDENTITY_FIELDS]==[getattr(path.lstat(),k) for k in IDENTITY_FIELDS] and len(raw)==before.st_size, 'SAFE_RECEIPT_CAS')
++    finally: os.close(fd)
++    need(hashlib.sha256(raw).hexdigest()==expected, 'SAFE_RECEIPT_SHA')
++    return raw,dict(path=str(path),bytes=len(raw),sha256=expected,identity=ident)
++
++def build(result, accepted, receipt_pins, identities):
++    """Pure mapping. Caller establishes exact safe-receipt SHA before calling."""
++    need(result.get('schema')=='friday.f06.odf-template-native-paths.v1' and result.get('assignment')==NATIVE_ASSIGNMENT and result.get('status')=='OTS_OTP_NATIVE_PASS_OTT_RETAINED_READ_ORACLE_PASS','NATIVE_RECEIPT_LINEAGE')
++    need(result.get('native_unmocked') is True and result.get('application_acceptance')=='NOT_RUN' and result.get('bot_acceptance')=='NOT_RUN' and result.get('formal_F06')=='NOT_CLAIMED','NATIVE_RECEIPT_SCOPE')
++    need(accepted.get('schema')=='friday.f06.odf-template.native.rootacceptance.v1' and accepted.get('state')=='BOUNDED_OTS_OTP_NATIVE_ACCEPTED_OTT_RETAINED_EFFECT_AND_READONLY_ORACLE_ACCEPTED' and accepted.get('all_checks_pass') is True,'NATIVE_ROOT_ACCEPTANCE')
++    need(accepted.get('source_result')=={'path':str(RESULT_PATH),'sha256':RESULT_SHA},'NATIVE_ROOT_RESULT_JOIN')
++    for name,path,digest in [('native_result',RESULT_PATH,RESULT_SHA),('native_root_acceptance',ACCEPT_PATH,ACCEPT_SHA),('fixture_spec',SPEC_PATH,SPEC_SHA)]:
++        pin=receipt_pins[name]
++        need(pin.get('path')==str(path) and pin.get('sha256')==digest and type(pin.get('bytes')) is int and pin['bytes']>0,'SAFE_PIN_JOIN')
++    need(set(receipt_pins)=={'native_result','native_root_acceptance','fixture_spec'},'SAFE_PIN_SET')
++    rows=result.get('rows');need(type(rows) is list and [r.get('format') for r in rows]==list(FORMATS),'NATIVE_THREE_ROWS')
++    need(result.get('first_attempt_reconciliation',{}).get('output_effect_repeat') is False and result.get('cleanup',{}).get('all_actor_processes_absent') is True,'NATIVE_EFFECT_AND_CLOSURE')
++    credential=result['credential'];expected_credential=str(NATIVE_ROOT/'SYNTHETIC-CREDENTIAL.json')
++    need(credential.get('path')==expected_credential and credential.get('custody',{}).get('bytes')==115 and credential.get('values_logged') is False and credential.get('argv_or_env') is False,'SYNTHETIC_CREDENTIAL_METADATA')
++    credential_ref=dict(path=expected_credential,bytes=115,identity=identities[expected_credential],sha256=None)
++    need(len(credential_ref['identity'])==9 and credential_ref['identity'][6]==115,'CREDENTIAL_FULL_METADATA')
++    fixtures=[]
++    for row in rows:
++        fmt=row['format'];need(row.get('all_checks_pass') is True,'NATIVE_ROW_RECORDED_CHECKS')
++        source=row['fixture'];output=row['output']
++        need(source['path']!=output['path'] and source['sha256']!=output['sha256'],'SOURCE_OUTPUT_DISTINCT')
++        for role,original in [('source',source),('output',output)]:
++            expected=NATIVE_ROOT/'authority/profiles/odf-template-a/workspace'/('own-source.'+fmt if role=='source' else 'own-edited.'+fmt)
++            need(original.get('path')==str(expected) and re.fullmatch('[0-9a-f]{64}',original.get('sha256','')) is not None,'EXACT_TEMPLATE_PATH_SHA')
++            structure=original['structure']
++            need(structure.get('format')==fmt and structure.get('mime')==MIMES[fmt] and structure.get('members')==MEMBERS and structure.get('encrypted_members')==ENCRYPTED and structure.get('rounds')==4096 and structure.get('algorithm')=='http://www.w3.org/2001/04/xmlenc#aes256-cbc','EXACT_TEMPLATE_STRUCTURE')
++            ident=identities[str(expected)];need(type(ident) is list and len(ident)==9 and ident[6]==original['identity']['bytes'],'TEMPLATE_FULL_METADATA')
++            fixtures.append(dict(fixture_id='template-'+fmt+'-'+role,format=fmt,fixture_profile=PROFILE,role=role,semantic='BEFORE' if role=='source' else 'AFTER',mime=MIMES[fmt],service=SERVICES[fmt],filter=FILTERS[fmt],staged_name='retained-'+role+'.'+fmt,path=str(expected),bytes=original['identity']['bytes'],sha256=original['sha256'],identity=ident,native_source_ciphertext=dict(path=source['path'],bytes=source['identity']['bytes'],sha256=source['sha256'],identity=identities[source['path']]),native_structure=structure))
++    need(tuple(r['fixture_id'] for r in fixtures)==IDS,'EXACT_SIX_SOURCE_OUTPUT_ROWS')
++    return dict(schema=SCHEMA,state='FROZEN_RETAINED_METADATA_NOT_EXECUTION_AUTHORITY',assignment=ASSIGNMENT,native_assignment=NATIVE_ASSIGNMENT,lineage_mode='own_synthetic_template_native_retained',semantic=SEMANTIC,selected_fixture_ids=list(IDS),selected_count=6,fixtures=fixtures,credential=credential_ref,proofs=receipt_pins,expected_Office_stores=0,expected_Office_password_probes=18,expected_Office_starts_maximum=3,as_template=False,installed_source_receipt_sha256=result['source_receipt_sha256'],installed_native_source=result['installed_source'],installed_version=result['actual'],historical_ott_raw_edit_receipt='NOT_RETAINED_DO_NOT_RECONSTRUCT_OR_REPLAY',native_effects_repeated=False,application_acceptance='NOT_RUN',bot_acceptance='NOT_RUN',whole_F06_accepted=False,credential_sha256_basis='UNBOUND_NOT_READ; future admitted unit computes copy digest after frozen full metadata CAS')
++
++def build_from_safe_receipts():
++    raw,rpin=safe_read(RESULT_PATH,RESULT_SHA);result=decode(raw)
++    raw,apin=safe_read(ACCEPT_PATH,ACCEPT_SHA);accepted=decode(raw)
++    _,spin=safe_read(SPEC_PATH,SPEC_SHA)
++    identities={}
++    for row in result['rows']:
++        for key in ('fixture','output'):
++            ref=row[key];identities[ref['path']]=metadata(ref['path'],ref['identity'])
++    ref=result['credential'];identities[ref['path']]=metadata(ref['path'],ref['custody'])
++    return build(result,accepted,dict(native_result=rpin,native_root_acceptance=apin,fixture_spec=spin),identities)
++
++def validate(manifest):
++    need(same(manifest,build_from_safe_receipts()),'EXACT_FROZEN_TEMPLATE_MANIFEST')
++    return manifest

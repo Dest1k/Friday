@@ -1,0 +1,82 @@
+--- bot_tester.py
++++ bot_tester.py
+@@ -1369,6 +1369,66 @@
+                       item.get('advertised_document', {}).get('file_name')) for item in documents),
+                     key=lambda item: (item[0] or '', item[1] or ''))
+     return [] if actual == expected else ['EXPECTED_DOCUMENT_METADATA_MISMATCH']
++
++
++# Root may bind only one independently admitted future F06 wrong-read plan.
++# None is closed; neither received words nor a request/caption can opt in.
++F06_WRONG_READ_PLAN_SHA256 = None
++
++
++def ordinary_f06_wrong_read_factual_capture(plan, run, message):
++    """Keep one exact admitted negative as facts, never grant rights or PASS.
++
++    Caller continuation_receipt and verify_capture_context authenticate admission,
++    source, once lineage and outbound custody before this predicate is reached.
++    The canonical whole-plan digest also pins request/input/scenario/current tuple
++    and original clock. Correct-read/edit and wrong-edit need separate admissions;
++    this fresh-upload, text-only exception grants none of them.
++    """
++    binding = F06_WRONG_READ_PLAN_SHA256
++    if (not isinstance(binding, str) or re.fullmatch('[a-f0-9]{64}', binding) is None
++            or not isinstance(plan, dict) or not isinstance(run, dict)
++            or not isinstance(message, dict)):
++        return False
++    try:
++        if digest(encoded(plan)) != binding:
++            return False
++    except (TypeError, ValueError, OverflowError):
++        return False
++    spec, scenario = plan.get('new_task'), plan.get('new_scenario')
++    if (not isinstance(spec, dict) or spec.get('kind') != 'ordinary-document-task'
++            or set(spec) != {'kind', 'nonce', 'request', 'source_reference', 'output'}
++            or spec['output'] is not None or spec['source_reference'] is not None
++            or not isinstance(spec['request'], str) or not spec['request'].strip()
++            or not isinstance(scenario, dict) or run.get('scenario') != scenario
++            or run.get('id') != plan.get('new_run_id')
++            or type(run.get('step')) is not int or run['step'] != 0):
++        return False
++    steps = scenario.get('steps')
++    if (not isinstance(steps, list) or len(steps) != 1
++            or not isinstance(steps[0], dict) or set(steps[0]) != {'input', 'observe'}):
++        return False
++    step = steps[0]; upload, expected = step['input'], step['observe']
++    if (not isinstance(upload, dict) or upload.get('kind') != 'document'
++            or upload.get('caption') != spec['request']
++            or not reply_capture(expected) or expected.get('window_seconds') != 180
++            or type(expected.get('max_documents')) is not int or expected['max_documents'] != 0):
++        return False
++    try:
++        validate_document_input(upload)
++        validate_reply_capture(expected)
++    except Refused:
++        return False
++    chat, sender, replied = (message.get(key) for key in ('chat', 'from', 'reply_to_message'))
++    text = message.get('text')
++    return (all(isinstance(value, dict) for value in (chat, sender, replied))
++            and type(chat.get('id')) is int and chat['id'] == PEER and chat.get('type') == 'private'
++            and type(sender.get('id')) is int and sender['id'] == PEER and sender.get('is_bot') is True
++            and type(run.get('sent_message_id')) is int and run['sent_message_id'] > 0
++            and type(replied.get('message_id')) is int and replied['message_id'] == run['sent_message_id']
++            and message.get('message_thread_id') is None and 'document' not in message
++            and isinstance(text, str) and bool(text.strip())
++            and explicit_task_refusal(text))
+ 
+ 
+ def ordinary_s03_factual_text_capture(spec, step, expected, message, text):
+@@ -13519,7 +13579,11 @@
+                 and run['step'] == 0 and len(run['scenario']['steps']) == 1
+                 and ordinary_s11_factual_text_capture(admitted[0]['new_task'],
+                     run['scenario']['steps'][run['step']], expected, message, text))
+-            if explicit_task_refusal(text) and not (settings_text or memory_text or unreadable_text or ambiguous_join_text or s03_factual_text or s10_factual_text or s11_factual_text):
++            f06_wrong_read_text = (reply and admitted is not None
++                and ordinary_f06_wrong_read_factual_capture(admitted[0], run, message))
++            if f06_wrong_read_text:
++                run['refusal_observed'] = True  # Exact bound actual refusal; still UNGRADED.
++            if explicit_task_refusal(text) and not (settings_text or memory_text or unreadable_text or ambiguous_join_text or s03_factual_text or s10_factual_text or s11_factual_text or f06_wrong_read_text):
+                 if not reply or admitted is not None:
+                     raise Refused('Explicit refusal received; no paraphrase/retry')
+                 # A bounded-capture observation keeps an honest product refusal as

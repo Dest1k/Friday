@@ -1,14 +1,14 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **12.11.2026, 03:44 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
+Обновлено **12.11.2026, 03:59 МСК**. **OWNER RESUME: Астра Fast, Сол Standard.**
 [Текущий migration/native/mode readback](evidence/astra-20261112/repository-migration.json):
 тот же goal/thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**, история/учёт сохранены, общего cap нет.
 [Редакция12.11](ASTRA-GOAL-REVISION-2026-11-12.json), [Fast resume](ASTRA-FAST-RESUME-2026-11-12.json).
 Астра — sole lead/live-интегратор Fast; постоянный Сол — Standard в прежней TUI `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`.
-Оба gpt-6.1-sol/ultra; старый leadership goal Сола paused. Task22 завершён/принят; Task23 normalF06successor сохранил M2 partial: source/review готовы, 4 fullsourcegates NOT_RUN. Один precompact выполнен; прежняя TUI сохранена.
+Оба gpt-6.1-sol/ultra; старый leadership goal Сола paused. Task22 завершён/принят; Task23 normalF06successor продолжен после M2: первый fullsourcegate PASS, rollback исполняется; два publicgates ещё впереди. Тот жеTask23/Standard без второгоcompact.
 Owner pause завершён новой явной командой; новую цель/UUID/счётчики не создавали.
 
-Baseline миграционного среза — `69dd9c3a68519fef96edb1993bcde95ed26ccd73`; итоговый SHA — содержащий сводку коммит.
+Baseline текущего среза — `99f10f54e5e2989a3ec9c88b002d1fb3cacf4e3a` (миграция опубликована/проверена); итоговый SHA — содержащий сводку коммит.
 **Canonical [Dest1k/Friday](https://github.com/Dest1k/Friday), main; штатный origin fetch/push настроен туда.**
 По новой ownerдирективе12.11 публикация в новый репозиторий разрешена; 118 branches уже переданы и сверены objectID-в-objectID.
 Actions отключён до первого push; tags/LFS/submodules0. История/авторство сохранены; старый ограниченный repo не опрашивался.
@@ -62,7 +62,7 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
    [Те же ODS/ODP App6PASS](evidence/astra-20261111/f06-native56-retained-office-six-pass-20261112.json): correct B2=23/keep-001 и BRAVO/invariantbody, typed missing/wrongAbort283;0stores/2.845s unit/3.069s Root+unitCPU/fullCAS/closed/slotfree.
    Независимое review финального пакета54/54 принято, findings0; native567/Officeпробы не переигрывать.
 
-2. **Текущий source/core-срез.**
+2. **Текущий source/core-срез.** [Новые принятые F06 исходники/границы](drafts/f06-reviewed-source-20261112/README.md).
    [Standard3.2 Task21 принят](evidence/astra-20261111/f06-standard32-legacy-cfb-source-accepted-20261112.json): точные5nativeфайлов,
    narrowAES128/ECB/SHA1/50000 и exactlegacyCFB; strictAgile/HMAC сохранены. Standard passwordverified/ZIPstructure неHMAC,
    data_integrity_verified=false. Root41pins/условие+независимые code/consumer/boundary reviews; source НЕ установлен.
@@ -71,10 +71,11 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
    **Сол Task22** — [совместный11file компонент принят](evidence/astra-20261111/f06-coherent205-component-source-accepted-20261112.json):
    Root42pins/условия, independentintegrationreview,54source/9uniqueconsumerseams;10byteexact+2prompt_scope205hunks/F04сохранён.
    **Task23** — normal205→206source + independentreview готовы; M2 partial `RESULT.json` f48670af…cf46b7a8
-   в `/home/jericho/.cache/FRW-SOL-V3-F06-NORMAL-SUCCESSOR-SOURCE-20261112`. 4 fullsourcegates NOT_RUN;
-   ждут Rootрешения по600wall/420CPU/2GiB/2CPU/512MiBown-disk. Не итоговая приёмка Task23/206.
+   в `/home/jericho/.cache/FRW-SOL-V3-F06-NORMAL-SUCCESSOR-SOURCE-20261112`. RootREADY выдан на4ещёне начатых fullsourcegates:
+  600wall/420CPU/2GiB/2CPU/512MiBown-disk, явноper-process CPU/AS, неaggregatecgroupclaim. Operational-success PASS289.031s;
+  operational-rollback запущен, public2 ещёвпереди. Не итоговая приёмка Task23/206.
    Код толькоowncacheдоactual205; actualCP205/receipt206/admission отсутствуют. ПрежняяStandardTUI/oldpausedgoal сохранены;
-   тот же turn завершён на осмысленной границе, continuation того жеTask23 без второгоcompact.
+   тот жеTask23 continuation active `01a1cd3b-cb16-7442-92d8-43316e6ac06c`, без второгоcompact; не ждать его внутри maintenance.
    **Астра** — [actual privacy consumers приняты](evidence/astra-20261111/f06-privacy-native205-consumers-accepted-20261112.json):
    ownSQLite append/batch/reflush/CAS/lineage/timestamps, trajectory/display/JSONrepair/JSONL; originalchat/doc/liveargs сохранены.
    RuntimehelperWARN **NOT_RUN**: run_agent import требует настоящего installedadmission; marker/guard не подменять.
@@ -82,11 +83,11 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
    OTTretainededit+readonly/oracle; firstrawreceipt/negativesNOT_RETAINED, не выдуманы/не повторены. Synthetic trueMIME/XML,
    App/ordinarybot/formalNOTRUN. [ReadonlyApp-кандидат](evidence/astra-20261111/f06-next-source-packages-pending-root-review-20261112.json),39purecontrols:
    независимое finalreview APPROVE_SOURCE_ONLY (331a9c5d…58542, private F06-TEMPLATE-OFFICE-FINAL-REVIEW-20261112).
-   Shape/text/pages проверяются, конкретный UNOTextShapeclass не наблюдён; реальные18Appпроб NOTRUN, Rootreview/admission ещё нужны.
+   Shape/text/pages проверяются, конкретный UNOTextShapeclass не наблюдён; реальные18Appпроб NOTRUN, Root source review принято; App admission/исполнение ещё нужны.
    [OrdinaryF06 protocol source-gap](evidence/astra-20261111/f06-ordinary-bot-protocol-source-gap-20261112.json): multipart upload есть,
    private scenario убирает пароль изargv, но сохраняется в разрешённомprivateevidence/chat. Expectedwrong-password refusal
    сейчас прерываетcapture доfullwindow/source_reference; [узкий capturecandidate готов](evidence/astra-20261111/f06-next-source-packages-pending-root-review-20261112.json),65sourcecontrols; независимое finalreview APPROVE_SOURCE_ONLY_UNBOUND (2f2dad03…f8cf,
-   private F06-CAPTURE-FINAL-REVIEW-20261112). Rootreview/установка/допускNOTRUN, bindingNone; установленныйtester не менялся.
+   private F06-CAPTURE-FINAL-REVIEW-20261112). Root source review принято; установка/допускNOTRUN, bindingNone; установленныйtester не менялся.
    [ModernODT taxonomy](evidence/astra-20261111/f06-modern-odt-taxonomy-source-accepted-20261112.json) acceptedsourceonly:
    строгийknownboundeddescriptor→algorithmunsupported, безGCM/Argon2decrypt; original7FAIL сохранён. Task20headerdraft dormant.
    B=`/home/jericho/.cache/FRW-ASTRA-V3-POSTPOWER-RECOVERY-20261111`; завершённые nativechild/review terminal.
@@ -99,10 +100,15 @@ DEFAULT effectsNONE/WORKERS_PENDING не приёмка workers.
    Source/gates204/205 и public205five локально приняты; оба **НЕ УСТАНОВЛЕНЫ**. Далее: verifiedlocalcommittedHEAD → current203/CAS/realCP203
    → [observer R1](evidence/astra-20261111/core204-205-publisher-terminal-race-source-accepted-20261112.json) sourceпринят, но
    отдельная harmlessunit проба выявила startupemptyID race/exitUNKNOWN и закрыта; её unit/once не повторять.
-   R2 в private `FRW-ASTRA-V3-CORE204-STARTUP-OBSERVER-R2-20261112` (RESULT3d917f6e…0aba91),74controls:
-   Rootreview+новая boundedrealunit квалификация ещё нужны. ПустойInvocationID сам по себе не доказывает collectedunit;
-   фаза исходного publisherUNKNOWN, старую оценку не переписывать.
-   → exactclosure/freshadmission действительнонедостающегостадия204 безreplayстарогоonce → same10723B RTFconsumer → genuineCP204 →205 →F06.
+   **[R2 source+реальная квалификация приняты](evidence/astra-20261112/core204-r2-qualified-f06-source-accepted.json)**:
+   74дет+8независимыхcontrols на204/205; новые exactAST harmlessunits дали0/2, scopesclosed/unboundterminalrefused.
+   Первые live snapshots ужеfullID: **emptyIDwait liveНЕнаблюдён**, его основаниеsourcecontrols/review; oldUNKNOWN не меняется.
+   [Source/patches и будущийframe](drafts/core204-r2-qualified-source/README.md): frozen26files/10puregroups/independentreview
+   Rootприняты. Recovery explicitH/statusrawcode/strictR2terminal. **Entireexecution покаNOTREADY**: старый caller содержит
+   PID174854/175894 и потреблённыеoutputs. Новый caller/current-service-anchor/hashfreeze готовится отдельным finitechild;
+   actual203/CAS/tx absence/новыеRootproofs и допуск толькопослеегоreview. Старые requestSHA не солить/UUID не выдумывать:
+   oldpublisherlaunchconsumedUNKNOWN отдельно от текущего отсутствияtx. Новаядата/unitname сами по себе повторнеразрешают.
+   Затем exactclosure/freshadmission действительнонедостающейстадии204 → same10723B RTFconsumer → genuineCP204 →205 →F06.
    Не203→205; builder только явный `--layer`; безad-hocHpatch и новых мнимыхreceipt. Полныеaffectedgates/consumer/rollback доlive.
 4. **M09/CASE88:** [Root delta accepted](evidence/astra-20261111/m09-reviewer-fix-root-delta-accepted-20261112.json), [source](drafts/m09-reviewer-fix/README.md).
    Пять дефектов исправлены source-only; actual manualA/ingress/summary/provider/once/admission UNBOUND, nativeopt-in не установлен.

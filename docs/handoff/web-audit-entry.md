@@ -37,14 +37,18 @@ default branch — **main**. Публикация сюда разрешена в
 Первая локальная попытка 204: publisher launch consumed, observer assertion, фактический exit
 UNKNOWN; source-транзакция не началась, 203 полностью сохранён и проверен. Повтор старого once
 запрещён. Отдельная безвредная real-unit проба обнаружила ещё один startup race observer;
-R2 исправление прошло 74 детерминированных контроля, но Root review и новая ограниченная
-real-unit квалификация ещё нужны. Затем — свежая подготовка действительно недостающей установки,
-тот же сохранённый RTF consumer и настоящий checkpoint 204, а не выдуманный predecessor 205.
+R2 исправление принято по 74 детерминированным и 8 независимым source controls; две новые
+реальные harmless units дали exit0/2 с проверенной closure. Первые live snapshots уже имели полный
+InvocationID, поэтому emptyID wait ветка live не наблюдалась. Будущий source frame принят,
+но перед установкой нужен новый caller/current-service anchor: старый привязан к прежним PID.
+Затем — свежая подготовка действительно недостающей установки, тот же сохранённый RTF consumer
+и настоящий checkpoint 204. [Код и точные границы](../checkpoints/2026-11-07-v3-original-context-repair/drafts/core204-r2-qualified-source/README.md).
+
 
 Текущий функциональный срез — F06 защищённые Office-файлы. Standard3.2, privacy и ODF изменения
 приняты на уровне исходников, не установлены. Task23 Сола подготовил prospective normal205→206
-и независимое source review; четыре полных source gates ещё NOT_RUN, ждут решения Астры по
-конечным ресурсам. Шаблонный Office harness и узкий capture expected-refusal имеют независимые
+и независимое source review; RootREADY на четыре полных source gates выдан; первый operational-success
+PASS, проверка rollback идёт. Шаблонный Office harness и узкий capture expected-refusal приняты Root после независимых
 source reviews; реальные App/ordinary admission и формальная приёмка из этого не следуют.
 
 ## Что можно проверить из репозитория
