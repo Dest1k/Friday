@@ -1,23 +1,25 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **13.11.2026, 00:40 МСК**. **Астра Fast, Сол Standard**, оба gpt-6.1-sol/ultra; sole live/main-интегратор — Астра.
+Обновлено **13.11.2026, 01:01 МСК**. **Астра Fast, Сол Standard**, оба gpt-6.1-sol/ultra; sole live/main-интегратор — Астра.
 Тот же native goal/thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**, история/учёт без переноса UUID/общего cap.
-Постоянный Сол — прежняя TUI `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18`, leadership goal paused.
+Постоянный Сол — новая persistent native-сессия `01a1d1c5-fa3c-7152-a978-bd887e12c441`, Standard/default/ultra.
+Создание/повторное открытие/перепривязка launcher проверены; **ожидается запуск видимой TUI владельцем и HELLO для полного LINK_READY**.
+Прежняя `01a1c407-7f0e-7273-9fd0-6bd9dc09ce18` и её leadershipgoal paused сохранены; новая goal не создавалась.
 Task26/27 завершены/source приняты; Task29 canonicalserialization source принят, ordinary runtime из него не следует.
 **Сол Task30 завершён**: [wrong-edit source](drafts/f06-same-upload-wrong-edit-source-20261112/README.md) принят как компонент; live dependencies UNBOUND.
 **Сол Task31 и Task32/F07 завершены/source-only.** [Final F07/owner handoff](evidence/astra-20261113/sol-f07-final-and-owner-session-preparation.json):
 RESULT5a3c34e9 проверен/received, exact FINAL consumed; connected40/patch11/independent21. Bounded actualDOCX validation
 дляnoext/falsePDF/truncated/healthy; source2 hermes_cli/friday_user_scope.py+friday_workspace_revision.py, НЕinstalled/live/formalPASS.
-**Сол готовит owner-переход в новую сессию**: CONTROL доставлен в реальнуюTUI/turn01a1d1b3; сохраняет необходимую память,
-проверяет операторские инструкции, сообщит их владельцу в своём чате и намеренно будет ждать переключения.
-Новую продуктовую задачу до handoff/инструкций/проверенной новой сессии не выдавать. СтаруюTUI/pausedgoal не уничтожать; Rootgoal active.
-[Исходная owner-директива](evidence/astra-20261112/owner-sol-recreation-after-f07.json) сохранена; extra productcompact не запускался.
+**[Owner-переход Сола выполнен до границы запуска TUI](evidence/astra-20261113/sol-new-persistent-session-retargeted.json).**
+Короткая память сохранена штатным native inject_items без модельного хода; persistent thread/resume в новойRPC-связи проверен.
+Владелец запускает прежний friday-sol и даёт прочитать handoff ENTRY/STATE/REFS; после actualoneTUI/writer/nativeHELLO — готовность.
+До этого новых продуктовых TASK/compact не выдавать. Rootgoal active; auth/model/tier/config и слотАстры не менялись.
 Metadata-only кандидат длядвухsource logsites принятsource/review75194e77; одинactualgatewayproducer/two sinks, secondsite sourceproof.
 Пакет обычного207→208/v10/497project: realbuilder+consumer preflight16/independentedge23/source pins подтверждены.
-Послеpower старыйsourcefixtureRUNNING не приняткакPASS; новые whole-source success260 и lateDEFAULTrollback245 завершены/закрыты.
-[Source208 archive](drafts/core208-logging-source-20261113/README.md) + [Root source acceptance](evidence/astra-20261113/core208-source-integration-accepted-not-installed.json):
-5public интеграционных файлов применены в рабочем main, но native/code208 НЕустановлен; historicaldefault4 неизменён, builder толькоexplicit--layer.
-Root208 maintenance/once frame готовится source-only; настоящее окно/допуск/request/clock208 ещё не открыты.
+Послеpower старыйsourcefixtureRUNNING не приняткакPASS; новые whole-source success260/lateDEFAULTrollback245 завершены.
+[Source208 archive](drafts/core208-logging-source-20261113/README.md), [независимое bulk74](evidence/astra-20261113/core208-actual-bulk-independent-review.json)
+и [Root frame42+29/review](drafts/core208-installed-root-source-20261113/README.md) приняты в своих source-only пределах;
+**208 уже установлен** отдельной Rootоперацией ниже. Historicaldefault4 неизменён, builder вызван с explicit--layer/realcanonical207/v10.
 После второго power действует [M4 selected-basis design](evidence/astra-20261112/f06-selected-boot-basis-architecture.json):
 Root явно выбирает exact recovery/delta/observation refs; default UNBOUND, без perboot literal/discovery/latest/fallback.
 **[R2 bounded-reader source принят](drafts/f06-bounded-proof-reader-source-20261112/README.md)**:8/14files,
@@ -29,30 +31,25 @@ Canonical **[Dest1k/Friday](https://github.com/Dest1k/Friday), main**; штат�
 [Миграция](evidence/astra-20261112/repository-migration.json):118branches/0tags/историяobjectIDs сохранены,
 Actions disabled/0runs/LFS0/submodules0. Старое ограниченное назначение не опрашивать.
 Baseline установки `fddb0abc70ea9d1caed3dbd5186a0a0b52166e46`; опубликованный207-checkpoint `aef7541d558b9072370c748412b11757d7b8000c`;
-baseline опубликованного main перед текущим checkpoint — `36459e940d4cef1fa621fd0459543fbfd5d28961` (actualfirstF06/source/ownerSolhandoff).
+baseline опубликованного main перед текущим checkpoint — `20ea483d147420791c7e31af21cb74bb69c734a5` (source208/recovery13/F07complete).
 Итоговый SHA — содержащий сводку коммит. Публикация отдельно от [локальной установки/проверок](ASTRA-LOCAL-WORK-2026-11-12.json):
 explicit localcommittedHEAD/rawGit/private28/реальныйpredecessor/CAS/rollback, remoteNone/deferred без GitHub-зависимости.
 [Веб-вход](../../handoff/web-audit-entry.md). Чужие3 byteexact вне коммитов: `docs/foundation-status.md`, v2
 `PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md`, текущий `FORMAT-COVERAGE-MAP.json`; БД/секреты/private runs остаютсяVM.
 
-**[Установлен207/project495/native17891/plugins52/base17730](evidence/astra-20261112/native207-installed-and-operation-closed.json).**
-H=`.runtime/friday-normal-both-workers-frw032`; receiptfaf5d6ad…8a4b/inputc7a01f63…f838/marker91e8f074…e7bb/stampe224d0ff…9ee0.
-НастоящийCP207: H/preparation/ordinary-source-update-v45-6320a882b34740a5/request.json (SHA6320a882…c89c).
-Publisher0/freshDEFAULT0/full17891/source/profilePASS;132.95s в исходных1800/source600/unit810/client840/cold180each,
-actor/boundary/publisher закрыты/slotfree; journaledrollback не powerlossatomicity.
-**Power13.11:** [actual readonly recovery](evidence/astra-20261113/postpower-installed207-source-data-recovery.json),
-boot356c43dd…33c3/Gateway2781/birth1843/inv4354037d…df2a,Dashboard2778/inv6a9ae416…4218,active/running/infinity/NRestarts0.
-Telegramconnected/sameBquiescent,3routes; full native17891/plugin52/canonical4 hashPASS/f8cc250c,17947unique hashedfiles.
-3DBmetadata буквально совпала сзакрытым firstwrongREAD:30/196/5514/leasespending0; canonical49b5 неизменен.
-Actual received23040B22b0 тоже сохранился по native5511/relative received path, только hostSHA custody check/не повтор READ.
-Обе configured primary/compression health/models200/modelpresent, inference не вызывался; прежние2750/2749/boot8a — история.
-Root goal ежедневно13.11 обновлёнтемжештатным объектом/active/историяучёт сохранены; fixed first-admission568b consumed и expired23:48Nov12, не продлевался.
-Ранние [21:42recovery](evidence/astra-20261112/postpower-installed207-runtime-recovery.json)/[22:11recovery](evidence/astra-20261112/second-postpower-installed207-runtime-recovery.json)
-и [fullintegrity12.11](evidence/astra-20261112/postpower-installed207-integrity.json) исторические; продуктовые эффекты не переигрывались.
-DB/WAL/SHM exact доstart, послеstart logical, не byteexactliveWAL. Новых model/create/send/Office эта установка не выполняла.
-[Точный207frame/source/review](drafts/core207-installed-root-source-20261112/README.md):1existingnative/0new/7CAS/17890untouched,
-полный206prefix/28counterparts; [modernODTsource+четыреactualsyntheticgates](drafts/f06-modern-odt-normal-successor-source-20261112/README.md)
-независимо приняты. У исходных sourceRESULT/review прежние UNBOUND-статусы: actualinstall — отдельный факт.
+**[Установлен208/project497/native17891/plugins52/base17730](evidence/astra-20261113/native208-installed-and-operation-closed.json).**
+H=`.runtime/friday-normal-both-workers-frw032`; actualreceipt7b69cfdf…d750/input37f63d76…5a24; canonicalCP208 указан в evidence.
+Sourcecommit20ea483d/local-committed-main, Rootonce actor133.112s/whole167.039s в исходных1800/source600/unit810/client840/cold180each;
+реальный predecessor207/полныйordered207prefix/8targets/2native modified/0added/17889unchanged/full17891/defaultfresh PASS.
+Сохранены3БД/остановленныеWAL-SHM точныебайты; послеstart сообщения30/196/5514, leases/alloriginpending0, sameB nativequiescent.
+Boot356c43dd…33c3, **Gateway40192/birth295149/inv3fc7f09f…f93a**, **Dashboard42469/birth301463/inv9f2fb279…2dfd**,
+active/running/infinity/NRestarts0, Telegramconnected. Actor/boundary/publisher закрыты; искусственный lifetime не назначался.
+Journaledrollback неpowerlossatomicity. **Фактическая квалификация двух логов/ordinarycorrectREAD ещё не выполнена**;
+существующий wrongREAD2756/reply2758 не повторялся. Локальная установка не зависела отGitHub; исходники20ea отдельно опубликованы.
+Предыдущие [installed207](evidence/astra-20261112/native207-installed-and-operation-closed.json), [power13 readonlyrecovery](evidence/astra-20261113/postpower-installed207-source-data-recovery.json)
+и их PID2781/2778 — история до штатной208установки; первичные доказательства/часы/receipt не переписаны.
+[207 frame](drafts/core207-installed-root-source-20261112/README.md)/[modernODTsource](drafts/f06-modern-odt-normal-successor-source-20261112/README.md)
+сохраняют прежние source/actual границы. Все170/120/B00 и следующие core/DSH/A0 обязательства остаются.
 
 **Ресурсы всей команды: основной функционал Friday → DSH → A0. Полный170/120/B00 не закрыт.**
 [Исходный scope/immutable ledgers](DSH-RESUME-2026-11-10.md#7-объём-v3); подробнаяистория [RESUME](DSH-RESUME-2026-11-10.md).
@@ -133,7 +130,7 @@ F02/F03/F04ordinary, originalV05 и B00 остаются; ближайший pre
 после точного effect-reconciliation, с reuse принятого savedpair; V04reverseFAIL не повторять.
 [Следующие исходные core-обязательства](evidence/astra-20261112/remaining-core-original-criteria-review.json):
 F07/CASE168 четыреисходныефазы: sourceTask32 завершён, boundedDOCX2files ещё не установлены/необычныйPASS.
-Дальнейшая интеграция после208 — Root; Сол сейчас поowner готовит новую сессию, продуктовыйTASK не выдавать. M09/CASE88 manualA/ingress/summary/provider/onceUNBOUND; R02/CASE147 write→ACK и
+Дальнейшая интеграция после208 — Root; Сол перепривязан к новой persistentсессии, ожидает ownerзапуск TUI/HELLO; продуктовыйTASK пока не выдавать. M09/CASE88 manualA/ingress/summary/provider/onceUNBOUND; R02/CASE147 write→ACK и
 A14/CASE107 exact remaining archive scope — более поздние обязательства. Это ссылки на прежние записи, не новый реестр.
 
 DSH/A0 standalone отложены; pairingarchiveonce/T1pretransactionFAIL/P/T2NOT_RUN. Не повторятьархив.
