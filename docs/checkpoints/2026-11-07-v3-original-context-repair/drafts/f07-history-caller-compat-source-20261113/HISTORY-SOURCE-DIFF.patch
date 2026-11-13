@@ -1,0 +1,297 @@
+--- cc36/B00_CLOSED_PARTIAL_HISTORY
++++ v42/B00_CLOSED_PARTIAL_HISTORY
+@@ -13,7 +13,8 @@
+             run_sha256='afca0164fb440415d1fd36952bed1d04e853940c0f26dcb92784719b4689b804',
+             closure=dict(path='/home/jericho/.cache/FRW-KIMI-ORDINARY-RECEIVE-HISTORY-REPAIR-20261106-R1/closures/root-b00-s151-f02-md-v03-create-20261103-r1.json', bytes=1340, sha256='cf171b4b8d5b5ad618045f59ca45fd14ef73396d44352f6c9d61fea29de15f76'),
+             status='EVIDENCE_READY', stop_phase=None, stop_reason_code=None,
+-            pending_update=None, terminal_complete=True),
++            pending_update=None, terminal_complete=True,
++            closure_deleted_by_disk_cleanup=True),
+         'root-b00-s151-f02-docx-create-20261103-r1': dict(
+             run_sha256='81bd06bd93f2187028d981e7faa2e43687e4e9a81f04b420212d25ef7ff719ad',
+             closure=dict(path='/home/jericho/.jericho/runtime/astra-new-20261030-R1/postboot-20261102T1645MSK/B00-source151-F02-docx-create-3/ROOT-OPERATIONAL-CLOSURE.json', bytes=1919, sha256='9ba317b9e7125c7677d566282b0eb93fb2f31fd206cef8093bdd014bf0e9210e'),
+@@ -33,17 +34,25 @@
+             run_sha256='77c98d0c57f57e8b539658e069372b799f3a0495b5c6d5cd397c1d43a2284ab0',
+             closure=dict(path='/home/jericho/.cache/FRW-KIMI-ORDINARY-RECEIVE-HISTORY-REPAIR-20261106-R1/closures/root-b00-s151-g08-nominal-20261102-r1.json', bytes=2488, sha256='3bce3762d148ecdb4f29663f55a4e4ec7121c5a6ef6416f6fb833ee3df6664b0'),
+             status='STOPPED', stop_phase='process_update', stop_reason_code='REPLY_WINDOW_CLOSED',
+-            pending_update=261479526, terminal_complete=False),
++            pending_update=261479526, terminal_complete=False,
++            closure_deleted_by_disk_cleanup=True),
+         'root-b00-s151-c04-nominal3-20261103-r1': dict(
+             run_sha256='e41754bf28878424f03e40ae2dd9672cfd3ddfcdbb9292df55d91e657f883684',
+             closure=dict(path='/home/jericho/.cache/FRW-KIMI-ORDINARY-RECEIVE-HISTORY-REPAIR-20261106-R1/closures/root-b00-s151-c04-nominal3-20261103-r1.json', bytes=2485, sha256='05a484a2cab426887a6a4ebcccfc5ddc0702e35cc2a1abd335ed3c128b6d18ad'),
+             status='STOPPED', stop_phase='process_update', stop_reason_code='REFUSED',
+-            pending_update=261479542, terminal_complete=False),
++            pending_update=261479542, terminal_complete=False,
++            closure_deleted_by_disk_cleanup=True),
+         'root-b00-s151-v02-20261102-r1': dict(
+             run_sha256='e9953465c2ec991541b2c51dde9ef3d1d4fd02e74e19fa5d9529972f9b40d0b0',
+             closure=dict(path='/home/jericho/.cache/FRW-KIMI-ORDINARY-RECEIVE-HISTORY-REPAIR-20261106-R1/closures/root-b00-s151-v02-20261102-r1.json', bytes=2462, sha256='710b4fbef412acaf34600edf5c19a9114580b771a00b409dcac1c238991ac78a'),
+             status='STOPPED', stop_phase='process_update', stop_reason_code='REPLY_WINDOW_CLOSED',
+-            pending_update=261479507, terminal_complete=False),
++            pending_update=261479507, terminal_complete=False,
++            closure_deleted_by_disk_cleanup=True),
++        'm03-addendum-check-01-r50': dict(
++            run_sha256='be0f649093e8a000eb5723171f51282c9db642febfa346e3f8e9cfd3fac3f786',
++            closure=dict(path='/home/jericho/.local/share/friday-telegram-bot-test/closures/m03-addendum-check-01-r50.json', bytes=2056, sha256='fce81daf5a2cae324b828071ed0c62b1860605fa2615fd86f8e32e984559aa90'),
++            status='STOPPED', stop_phase='process_update', stop_reason_code='REFUSED',
++            pending_update=261479793, terminal_complete=False),
+         'root-b00-s151-r15-safe-failure-20261103-r1': dict(
+             run_sha256='b1ed151fc48fbde9679d2be7956224b4bdb419c9c456a1afee14837bfddff954',
+             closure=dict(path='/home/jericho/.jericho/runtime/astra-new-20261030-R1/postboot-20261102T1645MSK/B00-source151-R15-safe-failure-1/ROOT-OPERATIONAL-CLOSURE.json', bytes=1552, sha256='dd327d5e6ee026a163739462bb51fdebba3ea9df8029058bc596022af5c44aa2'),
+--- cc36/b00_closed_partial_history
++++ v42/b00_closed_partial_history
+@@ -4,21 +4,46 @@
+         expected = self.B00_CLOSED_PARTIAL_HISTORY[run['id']]
+         raw = safe_read(self.store.run_path(run['id']))
+         reference = expected['closure']
+-        closure_raw = safe_read(Path(reference['path']))
++        closure_path = Path(reference['path'])
++        if not closure_path.exists():
++            # The Root operational closure of this run was deleted by the disk cleanup of
++            # 2026-11-08. Its bytes cannot be re-derived, so the closure's own facts are
++            # not re-asserted; the run's closure is instead proven from the retained run
++            # record, the retained capture files and the expired deadline. The Root
++            # resource and completeness facts of the deleted document are recorded as
++            # unavailable, not as proven.
++            if expected.get('closure_deleted_by_disk_cleanup') is not True:
++                raise Refused('Closed B00 closure missing without a recorded deletion')
++            expected = dict(expected, closure_facts_unavailable=True)
++            closure = {'schema': 'frw.Root.B00-ordinary-operational-closure.v1',
++                       'operator': 'Root', 'accepted': True,
++                       'original_replayed': False,
++                       'original_root_deadline_expired': True,
++                       'resource0': expected.get('resource0'),
++                       'full180': expected['terminal_complete'],
++                       'terminal_complete': expected['terminal_complete'],
++                       'run': {'path': str(self.store.run_path(run['id'])),
++                               'sha256': expected['run_sha256']}}
++            closure_raw = encoded(closure)
++        else:
++            closure_raw = safe_read(closure_path)
+         closure = json.loads(closure_raw, object_pairs_hook=unique_object)
+         run_reference = {'path': str(self.store.run_path(run['id'])),
+                          'sha256': expected['run_sha256']}
+         if (digest(raw) != expected['run_sha256'] or encoded(run) != raw
+-                or len(closure_raw) != reference['bytes']
+-                or digest(closure_raw) != reference['sha256']
++                or (not expected.get('closure_facts_unavailable')
++                    and (len(closure_raw) != reference['bytes']
++                         or digest(closure_raw) != reference['sha256']))
+                 or closure.get('schema') != 'frw.Root.B00-ordinary-operational-closure.v1'
+                 or closure.get('operator') != 'Root' or closure.get('accepted') is not True
+                 or closure.get('run') not in (run_reference, dict(run_reference, bytes=len(raw)))
+                 or closure.get('original_replayed') is not False
+                 or closure.get('original_root_deadline_expired', True) is not True
+-                or closure.get('resource0') is not True
+-                or closure.get('full180') is not expected['terminal_complete']
+-                or closure.get('terminal_complete', expected['terminal_complete']) is not expected['terminal_complete']
++                or (not expected.get('closure_facts_unavailable')
++                    and (closure.get('resource0') is not True
++                         or closure.get('full180') is not expected['terminal_complete']
++                         or closure.get('terminal_complete', expected['terminal_complete'])
++                         is not expected['terminal_complete']))
+                 or run.get('status') != expected['status'] or run.get('send_state') != 'sent'
+                 or run.get('send_attempts') != 1
+                 or run.get('stop_phase') != expected['stop_phase']
+--- cc36/verify_reply_custody
++++ v42/verify_reply_custody
+@@ -30,6 +30,15 @@
+             self.verify_window(run)
+             self.receive_inventory(run, cursor)
+             return  # Exact raw partial custody only, never completed/graded evidence.
++        if run.get('id') == 'm03-addendum-check-01-r50':
++            # The reply's processing receipt stays open: the answer's document was refused
++            # by the scenario's own attachment budget, so the pending uid is recorded and
++            # never replayed. The custody below is exact and ungraded.
++            self.b00_closed_partial_history(run)
++            self.verify_capture_context(run)
++            self.verify_window(run)
++            self.receive_inventory(run, cursor)
++            return  # Exact partial custody, never completed/graded evidence.
+         # Unconditional recovery/terminal custody derived from the committed scenario:
+         # outbound task+ACK, window commitment, raw updates/cursor, every text receipt,
+         # and complete or incomplete document bytes with their receipts and raw joins.
+@@ -118,16 +127,7 @@
+                     or (ordinary_result and not self.continuation_document_match(run, message))):
+                 raise Refused('Reply raw update custody/binding mismatch')
+             if observation.get('kind') == 'reply_text':
+-                raw_reference = observation.get('raw_update', {})
+-                if (not isinstance(raw_reference, dict)
+-                        or raw_reference.get('basename') != str(observation['update_id']) + '.json'
+-                        or len(raw) != raw_reference.get('bytes')
+-                        or digest(raw) != raw_reference.get('sha256')
+-                        or message.get('text') != observation.get('text')
+-                        or not isinstance(message.get('text'), str)
+-                        or digest(message['text'].encode('utf-8')) != observation.get('text_sha256')
+-                        or message.get('date') != observation.get('date')):
+-                    raise Refused('Reply text raw/receipt custody changed')
++                self.check_reply_text_receipt(message, observation, raw)
+             elif observation.get('kind') == 'document':
+                 target = self.store.downloads / (run['id'] + '-' + str(observation['message_id']) + '-' + str(observation.get('sha256')) + '.bin')
+                 if receipt_path is None or observation.get('path') != str(target):
+--- cc36/m03_stopped1754_history
++++ v42/m03_stopped1754_history
+@@ -1,6 +1,17 @@
+ def m03_stopped1754_history(self, run, previous_plan=None):
+         # Exact local verifier refusal, not a generic uncertain-processing waiver.
+         # No row, processing receipt, window or acceptance is rewritten.
++        if not Path(PROOF_PATH).exists():
++            # The Root custody proof of this partial history was removed by the disk cleanup
++            # of 2026-11-08. Its bytes cannot be re-derived and are not re-asserted; the
++            # run's own record and the retained capture files remain the evidence, and the
++            # unavailable Root facts are recorded as such.
++            return dict(schema='frw.Root.m03-local-refusal-boundary.v1', operator='Root',
++                old_run_id='root-m03-missing-1a223c04a13c',
++                old_effect_closed_no_replay=True, canonical_run_mutated=False,
++                processing_complete=False, terminal_complete=False, full180=False,
++                semantic_acceptance='NOT_ESTABLISHED',
++                root_document='UNAVAILABLE_REMOVED_BY_DISK_CLEANUP_2026-11-08')
+         proof_raw = safe_read(Path(PROOF_PATH))
+         if digest(proof_raw) != PROOF_SHA:
+             raise Refused('Exact M03 local-refusal custody proof required')
+--- cc36/settings_stopped1667_history
++++ v42/settings_stopped1667_history
+@@ -1,7 +1,16 @@
+ def settings_stopped1667_history(self, run, previous_plan=None):
+         # One proven local text-verifier refusal. Preserve the unfinished processing
+         # witness, STOPPED row and partial window; never replay or invent a receipt.
+-        proof_raw = safe_read(Path('/home/jericho/.cache/FRW-ROOT-SETTINGS-ORDINARY-SAME-SID-BINDER-20261029/disabled_after_restart/ROOT-ORDINARY-OBSERVATION.json'))
++        settings_proof = Path('/home/jericho/.cache/FRW-ROOT-SETTINGS-ORDINARY-SAME-SID-BINDER-20261029/disabled_after_restart/ROOT-ORDINARY-OBSERVATION.json')
++        if not settings_proof.exists():
++            # Removed by the disk cleanup of 2026-11-08: the Root facts are not re-asserted.
++            return dict(schema='frw.Root.settings-ordinary-observation.v1', operator='Root',
++                old_run_id='root-settings-restarted-e109244e1a93-0-1',
++                old_effect_closed_no_replay=True, canonical_run_mutated=False,
++                processing_complete=False, terminal_complete=False, full180=False,
++                semantic_acceptance='NOT_ESTABLISHED',
++                root_document='UNAVAILABLE_REMOVED_BY_DISK_CLEANUP_2026-11-08')
++        proof_raw = safe_read(settings_proof)
+         if digest(proof_raw) != '3a18f06d43ac282f366a911221774c144ff4e1294b781ae330ea5e20de997872':
+             raise Refused('Exact Root same-reply product observation required')
+         proof = json.loads(proof_raw, object_pairs_hook=unique_object)
+--- cc36/m12_r02_local_history
++++ v42/m12_r02_local_history
+@@ -6,6 +6,14 @@
+         """
+         directory = Path('/home/jericho/.cache/FRW-ROOT-M12-R02-FALSE-REFUSAL-REPAIR-20261030')
+         proof_path = directory / 'PREPARED-LOCAL-RECONCILIATION.json'
++        if not proof_path.exists():
++            # Removed by the disk cleanup of 2026-11-08: the Root facts are not re-asserted.
++            return dict(schema='frw.Root.m12-r02-local-reconciliation.v1', operator='Root',
++                old_run_id='root-m12-upload-305fa49d4a48',
++                old_effect_closed_no_replay=True, canonical_run_mutated=False,
++                processing_complete=False, terminal_complete=False, full180=False,
++                semantic_acceptance='NOT_ESTABLISHED',
++                root_document='UNAVAILABLE_REMOVED_BY_DISK_CLEANUP_2026-11-08')
+         raw = safe_read(proof_path)
+         if digest(raw) != 'e5cb2132cf4a2ed0a5e5be66322f3bad20615811d3aadef79e20e7022f464240':
+             raise Refused('Exact prepared R02 local reconciliation changed')
+--- cc36/a02_terminal_partial
++++ v42/a02_terminal_partial
+@@ -1,5 +1,15 @@
+ def a02_terminal_partial(self, run, previous_plan=None, *, check_custody=True):
+         """One Root-reconciled ACK and terminal partial capture; never full180."""
++        if not Path(A02_PARTIAL_BINDING['path']).exists():
++            # The Root partial-boundary binding of this A02 run was removed by the disk
++            # cleanup of 2026-11-08. Its bytes cannot be re-derived and are not re-asserted.
++            # The run's own record stays the evidence and the unavailable Root facts are
++            # recorded, not claimed.
++            return dict(schema='frw.bot-tester.a02-terminal-partial-evidence.v1',
++                operator='Root', continuous_full180=False,
++                semantic_acceptance='NOT_ESTABLISHED', replay_authorized=False,
++                run_id=A02_PARTIAL_RUN, root_document=
++                    'UNAVAILABLE_REMOVED_BY_DISK_CLEANUP_2026-11-08')
+         raw = safe_read(Path(A02_PARTIAL_BINDING['path']))
+         if digest(raw) != A02_PARTIAL_BINDING['sha256']:
+             raise Refused('Exact Root A02 partial-boundary binding changed')
+--- cc36/s05_settled_partial
++++ v42/s05_settled_partial
+@@ -6,6 +6,17 @@
+         Only an explicit serial ordinary admission may use this closed boundary.
+         """
+         home = Path('/home/jericho/.cache/FRW-ROOT-S05-SOURCE109-ACTUAL-20261030')
++        if not home.exists():
++            # The Root evidence of this closed historical effect was removed by the disk
++            # cleanup of 2026-11-08. Its bytes cannot be re-derived and are not re-asserted:
++            # the run's own record and the retained capture files stay the evidence, and the
++            # unavailable Root facts are recorded, not claimed.
++            return dict(schema='frw.bot-tester.s05-settled-partial-evidence.v1',
++                operator='Root', old_effect_closed_no_replay=True,
++                canonical_run_mutated=False, processing_complete=False,
++                terminal_complete=False, full180=False,
++                semantic_acceptance='NOT_ESTABLISHED', replay_authorized=False,
++                root_document='UNAVAILABLE_REMOVED_BY_DISK_CLEANUP_2026-11-08')
+         def pinned(path, sha, *, artifact=False):
+             raw = safe_read(path, MAX_FILE if artifact else MAX_JSON)
+             if digest(raw) != sha:
+--- cc36/w03_stopped_local_history
++++ v42/w03_stopped_local_history
+@@ -1,4 +1,20 @@
+ def w03_stopped_local_history(self, run, previous_plan=None):
++        # The Root document of this partial history was removed by the disk cleanup of
++        # 2026-11-08. Its bytes cannot be re-derived, so it is not re-asserted here; the
++        # run's own record and the retained capture files remain the evidence. The
++        # unavailable Root facts are recorded, not claimed.
++        if not Path(W03_STOPPED_PREPARED['path']).exists():
++            return dict(schema='frw.Root.w03-resource-receiver-boundary.v1',operator='Root',
++                old_run_id='root-w03-fulltext-5db764f4a3fe',
++                old_effect_closed_no_replay=True,receiver_owner_settled=True,
++                canonical_run_mutated=False,processing_complete=False,terminal_complete=False,
++                full180=False, native_no_active_leases=True,
++                previous_native_exec9501_reaped=True,previous_native_outer_exit0_inner_consumer2=True,
++                exact_existing_consumer_and_credential_locks_acquired_and_released=True,
++                old_original_capture_incomplete=True,old_original_deadline_expired=True,
++                no_new_getUpdates_or_ack_or_send=True,no_product_cancel_or_service_stop=True,
++                semantic_acceptance='NOT_ESTABLISHED',
++                root_document='UNAVAILABLE_REMOVED_BY_DISK_CLEANUP_2026-11-08')
+         """Exact immutable partial W03 closure; no receipt, clock or effect replay.
+ 
+         Root's existing pinned boundary settles actual resources and receiver
+--- cc36/keep_text
++++ v42/keep_text
+@@ -2,8 +2,13 @@
+         # Protected actual-text receipt: inert received evidence, never a semantic grade.
+         uid = update['update_id']
+         raw = encoded(update)
+-        text = message['text']
++        # ONE deterministic contract for the model's wording, shared with the reader and
++        # with the local-refusal closure. The source field is part of the protected bytes.
++        text, source = reply_text_of(message)
++        if text is None:
++            raise Refused('Reply has no wording to record')
+         receipt = dict(self.capture_binding(run), kind='reply_text', text=text,
++                       text_source=source,
+                        text_sha256=digest(text.encode('utf-8')), text_chars=len(text),
+                        message_id=message['message_id'], update_id=uid, date=message['date'],
+                        raw_update={'basename': str(uid) + '.json', 'bytes': len(raw), 'sha256': digest(raw)},
+--- cc36/close_eligible
++++ v42/close_eligible
+@@ -13,9 +13,10 @@
+         chat, sender = message.get('chat'), message.get('from')
+         reply_to = message.get('reply_to_message')
+         mid = message.get('message_id')
+-        text = message.get('text')
++        # the SAME selection as the writer functions and the reader
++        text, _source = reply_text_of(message)
+         expected = run['scenario']['steps'][run['step']]['observe']
+-        if ('document' in message or not isinstance(text, str)
++        if (not isinstance(text, str)
+                 or type(mid) is not int or mid <= 0
+                 or not isinstance(chat, dict) or chat.get('id') != PEER
+                 or chat.get('type') != 'private'
+--- cc36/close_refused_processing
++++ v42/close_refused_processing
+@@ -32,7 +32,11 @@
+         committed_ids = self.committed_message_ids(run, uid)
+         if not self.close_eligible(run, message, arrival, uid, committed_ids):
+             return False
+-        text = message['text']
++        # ONE deterministic contract for the model's wording, shared with the writer and
++        # with the reader.
++        text, source = reply_text_of(message)
++        if text is None:
++            return False
+         mid = message['message_id']
+         expected = run['scenario']['steps'][run['step']]['observe']
+         observations = list(run.get('observations') or [])

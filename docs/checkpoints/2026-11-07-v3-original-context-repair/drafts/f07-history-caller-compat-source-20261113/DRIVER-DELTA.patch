@@ -1,0 +1,72 @@
+--- /home/jericho/.cache/FRW-ASTRA-NATIVE-F07-FINITE-ROOT-ONCE-SOURCE-20261113/source/root_f07_once.py
++++ /home/jericho/.cache/FRW-ASTRA-NATIVE-F07-HISTORY-CALLER-COMPAT-DELTA-20261113/source/root_f07_once.py
+@@ -403,7 +403,8 @@
+             # The existing sender saves protected technical prewire diagnostics.
+             # Never serialize exception messages, HTTP URLs or user contents.
+             new(work/'CONSUMER-RAW-FAILURE.json',encoded(dict(status='REFUSED_INTERRUPTED_OR_UNKNOWN',phase=stage,
+-                exception_class=type(exc).__name__,no_retry=True,product_cancelled=False,semantic='NOT_ESTABLISHED')))
++                exception_class=type(exc).__name__,frames=enum_failure_frames(exc,stage),no_retry=True,
++                product_cancelled=False,semantic='NOT_ESTABLISHED')))
+             raise
+         finally:
+             path=STATE/'runs'/(v['run_id']+'.json')
+@@ -415,6 +416,45 @@
+                 acceptance='NOT_ESTABLISHED',semantic='NOT_ESTABLISHED',privacy='NOT_ESTABLISHED',
+                 custody='NOT_ESTABLISHED',native_host_close='NOT_ESTABLISHED',no_retry=True)))
+     return 0
++
++
++def qualify_before_clock(v,caller,checker,ordinary,phase):
++    """ROOT ONLY read-only actual history call. No file/claim/clock/API creation.
++
++    Caller holds the shared slot; take existing consumer+credential locks without
++    creating them. Store construction is allowed only for pre-existing checked
++    directories and must preserve their exact metadata. No child invokes this on
++    actual inputs. Refusal propagates before spending a new operation lifecycle.
++    """
++    genuine=load_raw(ordinary,v['selected_tester']['path'],'_Root_F07_preclock_ordinary')
++    paths=[STATE,STATE/'runs',STATE/'updates',STATE/'downloads']
++    before={str(p):protected_directory(p) for p in paths};store=genuine.Store(STATE)
++    need({str(p):protected_directory(p) for p in paths}==before,'F07_STORE_CONSTRUCTOR_MUTATED_DIRS')
++    with store.lock(create=False),store.lock(STATE/'tester-token',create=False):
++        me=kernel(os.getpid())
++        checker.lock_held(SLOT,me);checker.lock_held(STATE/'consumer.lock',me);checker.lock_held(STATE/'tester-token',me)
++        return caller.qualify_selected_ordinary_readonly(genuine.Runner(store,None),run_id=v['run_id'],phase=phase)
++
++
++DIAGNOSTIC_PHASES=('NEW','SEND','OBSERVE')
++DIAGNOSTIC_CALLS=('new','validate_scenario','cursor_offsets','receive_inventory','legacy_receive_inventory',
++    'b00_closed_partial_history','_f07_exact_history_row','ordinary_independent_admission',
++    'ordinary_independent_history_row','ordinary_independent_current_rows','ordinary_independent_predecessor_checked',
++    'verify_reply_custody','check_reply_text_receipt','verify_capture_context','verify_window',
++    'a02_terminal_partial','s05_settled_partial','m03_stopped1754_history','settings_stopped1667_history',
++    'm12_r02_local_history','w03_stopped_local_history','check','decisions','send','_send','observe')
++
++
++def enum_failure_frames(exc,stage):
++    """No paths, dynamic names, exception text, locals or user payloads."""
++    need(stage in DIAGNOSTIC_PHASES,'F07_ENUM_DIAGNOSTIC_PHASE_REQUIRED')
++    frames=[];tb=exc.__traceback__
++    while tb is not None:
++        name=tb.tb_frame.f_code.co_name
++        if name in DIAGNOSTIC_CALLS and len(frames)<24:
++            frames.append(dict(call=name,line=tb.tb_lineno))
++        tb=tb.tb_next
++    return frames
+ 
+ 
+ def execute(v,*,binding_ref):
+@@ -443,10 +483,12 @@
+         forward_stops()
+     try:
+         for sig in previous:signal.signal(sig,requested)
++        readonly_qualification=qualify_before_clock(v,caller,checker,ordinary,phase)
+         baseline=scan_scope(v['disk_scope'],deadline=time.monotonic()+30)
+         # One claim before the sole clock: any later refusal/UNKNOWN consumes it.
+         new(work/'ROOT-ONCE-DRIVER-INVOCATION.json',encoded(dict(schema='frw.Root.F07.one-finite-parent-invocation.v1',
+-            binding=binding_ref,run_id=v['run_id'],no_retry=True,parent=kernel(os.getpid()))))
++            binding=binding_ref,run_id=v['run_id'],no_retry=True,parent=kernel(os.getpid()),
++            readonly_preclock_qualification=readonly_qualification)))
+         need(not stops,'F07_OWNER_STOP_BEFORE_CLOCK')
+         start=time.monotonic()
+         clock=dict(schema='frw.Root.F07.finite-operation-clock.v1',status='ROOT_BOUND_FUTURE_OPERATION',
