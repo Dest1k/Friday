@@ -1,0 +1,220 @@
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -10,6 +10,10 @@
+ import asyncio
+ import dataclasses
+ import faulthandler
++import hashlib
++import json
++import threading
++import uuid
+ import logging
+ import os
+ import signal
+@@ -62,6 +66,53 @@
+ 
+ class GatewayStartupMixin:
+     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
++
++    def _delivery_boot_sweep_begin(self):
++        """Current-process evidence only; a new start invalidates every prior observation.
++
++        No disk success receipt is written or restored. The existing authenticated
++        loop projection binds this generation to its answering PID/birth/boot.
++        """
++        generation = uuid.uuid4().hex
++        self._delivery_boot_sweep_observation = dict(
++            schema="frw.gateway.delivery-boot-sweep.v1", scope="full_boot",
++            start_generation=generation, start_monotonic=time.monotonic(),
++            startup_outcome="running", claim_outcome="not_run", enabled=None,
++            sweep_outcome="not_run", returned_success=False,
++            sweep_started_monotonic=None, sweep_finished_monotonic=None,
++            target_scope_sha256=None, target_count=None,
++            resume_clear="not_run", failure_phase=None,
++            startup_finished_monotonic=None,
++        )
++        self._delivery_boot_sweep_entered = (generation, threading.Event())
++        return generation
++
++    def _delivery_boot_sweep_update(self, generation, **fields):
++        current = getattr(self, "_delivery_boot_sweep_observation", None)
++        if generation is not None and current is not None and current["start_generation"] == generation:
++            # Replace, never mutate: the readonly loop projection takes a coherent copy.
++            self._delivery_boot_sweep_observation = dict(current, **fields)
++
++    def _delivery_boot_sweep_readonly(self):
++        current = getattr(self, "_delivery_boot_sweep_observation", None)
++        if current is None:
++            return None
++        entered = getattr(self, "_delivery_boot_sweep_entered", None)
++        if entered is None or entered[0] != current["start_generation"]:
++            raise RuntimeError("delivery_boot_sweep_generation_unavailable")
++        result = dict(current, entered=entered[1].is_set(),
++                      failed_resume_latch=getattr(self, "_delivery_resume_recovery_failed", False))
++        if current is not self._delivery_boot_sweep_observation:
++            raise RuntimeError("delivery_boot_sweep_projection_racing")
++        return result
++
++    @staticmethod
++    def _delivery_boot_target_scope(targets):
++        # Only a domain-separated commitment to platform/profile labels is exposed;
++        # no chat IDs, paths, content, arguments or credential material.
++        rows = sorted([list(target) for target in targets], key=lambda row: (row[0], row[1] or ""))
++        raw = json.dumps(rows, ensure_ascii=True, separators=(",", ":")).encode("ascii")
++        return hashlib.sha256(b"frw.delivery-target-scope.v1\0" + raw).hexdigest()
+ 
+     @staticmethod
+     def _log_agent_budget() -> None:
+@@ -338,7 +389,9 @@
+         from gateway.run import _startup_restore_drain_timeout_secs
+         if self._startup_should_abort():
+             return
+-        claimed = await self._claim_pending_obligations()
++        observation = getattr(self, "_delivery_boot_sweep_observation", None)
++        boot_generation = observation["start_generation"] if observation is not None else None
++        claimed = await self._claim_pending_obligations(_boot_generation=boot_generation)
+ 
+         async def _boot_sends() -> None:
+             redelivery_started = False
+@@ -417,7 +470,7 @@
+             sendable.append(row)
+         return sendable
+ 
+-    async def _claim_pending_obligations(self) -> list:
++    async def _claim_pending_obligations(self, *, _boot_generation=None) -> list:
+         """Claim recoverable delivery-ledger rows and clear their ``resume_pending`` flags (pure DB
+         work, no sends). Must run INLINE BEFORE ``_schedule_resume_pending_sessions`` and the
+         abandonable boot-send task: these sessions already produced their answer, so the resume path
+@@ -430,10 +483,16 @@
+         take (#91969). Flood-refused rows adopted inside their wait come back flagged ``adopted``: their
+         flags are cleared here too, and ``_redeliver_claimed_obligations`` leaves them to the timer.
+         """
++        self._delivery_boot_sweep_update(_boot_generation, claim_outcome="running", sweep_outcome="checking")
++        phase = "gate"
+         try:
+             from gateway.delivery_ledger import ledger_enabled, sweep_recoverable
+             if not await asyncio.to_thread(ledger_enabled):
++                self._delivery_boot_sweep_update(_boot_generation, enabled=False,
++                    sweep_outcome="disabled", claim_outcome="returned")
+                 return []
++            self._delivery_boot_sweep_update(_boot_generation, enabled=True)
++            phase = "target_scope"
+             # Claim only rows whose exact transport owner is connected: platform-only filtering would spend
+             # a disconnected bot's retry budget because another bot on that platform is online.
+             _profile_adapters = getattr(self, "_profile_adapters", None) or {}
+@@ -444,23 +503,61 @@
+                 _deliverable_targets.update((_pval(p), None) for p in self.adapters)
+             for _profile, _adapters in _profile_adapters.items():
+                 _deliverable_targets.update((_pval(p), _profile) for p in _adapters)
+-            claimed = await asyncio.to_thread(
+-                sweep_recoverable, None,
+-                deliverable_platforms={platform for platform, _ in _deliverable_targets},
+-                deliverable_targets=_deliverable_targets,
+-            )
++            # Observation commits to the EXACT existing target set passed below.
++            # Generic/manual claims and scoped reconnect do not certify a full boot.
++            target_scope = None
++            if _boot_generation is not None:
++                try:
++                    target_scope = self._delivery_boot_target_scope(_deliverable_targets)
++                except Exception:
++                    pass  # Observation failure cannot change the delivery policy.
++            self._delivery_boot_sweep_update(_boot_generation,
++                target_scope_sha256=target_scope,
++                target_count=len(_deliverable_targets), sweep_outcome="running",
++                sweep_started_monotonic=time.monotonic())
++            entered = getattr(self, "_delivery_boot_sweep_entered", None)
++            def _sweep():
++                if _boot_generation is not None and entered is not None and entered[0] == _boot_generation:
++                    # Synchronous invocation boundary; this is not a commit receipt.
++                    entered[1].set()
++                return sweep_recoverable(None,
++                    deliverable_platforms={platform for platform, _ in _deliverable_targets},
++                    deliverable_targets=_deliverable_targets)
++            phase = "sweep"
++            claimed = await asyncio.to_thread(_sweep)
+         except Exception:
++            self._delivery_boot_sweep_update(_boot_generation, sweep_outcome="exception",
++                claim_outcome="exception", failure_phase=phase,
++                sweep_finished_monotonic=time.monotonic())
+             # An unavailable ledger is not an empty ledger. Without its answered-turn
+             # snapshot, Telegram auto-resume could regenerate and send a second answer.
+             self._delivery_resume_recovery_failed = True
+             logger.warning("delivery ledger sweep failed; withholding Telegram auto-resume", exc_info=True)
+             return []
+-        if claimed:
+-            # Clear resume_pending for EVERY claimed row before any send: the answer is in the ledger.
+-            # Claiming already spent one of the row's redelivery attempts — the answer is in the ledger, so the
+-            # resume path must never re-run these turns (#91969).
+-            await self._clear_resume_pending_for_claimed_obligations(claimed)
++        except BaseException:
++            # Cancellation may leave the executor call running. Never turn it into
++            # a successful return; its later outcome is not observed here.
++            self._delivery_boot_sweep_update(_boot_generation, sweep_outcome="interrupted",
++                claim_outcome="interrupted", failure_phase=phase,
++                sweep_finished_monotonic=time.monotonic())
++            raise
++        self._delivery_boot_sweep_update(_boot_generation, sweep_outcome="returned_success",
++            returned_success=True, sweep_finished_monotonic=time.monotonic(),
++            resume_clear="not_needed" if not claimed else "running")
++        try:
++            if claimed:
++                # Clear resume_pending for EVERY claimed row before any send: the answer is in the ledger.
++                # Claiming already spent one of the row's redelivery attempts — the answer is in the ledger, so the
++                # resume path must never re-run these turns (#91969).
++                await self._clear_resume_pending_for_claimed_obligations(claimed)
++        except BaseException as error:
++            self._delivery_boot_sweep_update(_boot_generation,
++                resume_clear="exception" if isinstance(error, Exception) else "interrupted",
++                claim_outcome="exception" if isinstance(error, Exception) else "interrupted")
++            raise
+         self._delivery_resume_recovery_failed = False
++        self._delivery_boot_sweep_update(_boot_generation, claim_outcome="returned",
++            resume_clear="best_effort_returned" if claimed else "not_needed")
+         return claimed
+ 
+     @staticmethod
+@@ -1885,6 +1982,7 @@
+         """Start the gateway; bounded code-position samples never imply readiness."""
+         # Observe only this startup owner and its existing owned cleanup tasks. A sample
+         # witnesses loop dispatch at that instant; missing samples remain UNKNOWN.
++        boot_generation = self._delivery_boot_sweep_begin()
+         observer_handle = None
+         observer_stopped = False
+         observer_count = 0
+@@ -1996,13 +2094,25 @@
+         try:
+             result = await self._start_impl()
+             observer_impl = "TRUE" if result is True else "FALSE" if result is False else "OTHER"
++            self._delivery_boot_sweep_update(boot_generation, startup_outcome=(
++                "aborted" if self._startup_should_abort() else
++                "returned_true" if result is True else "returned_false" if result is False else "returned_other"))
+             return result
++        except BaseException as error:
++            self._delivery_boot_sweep_update(boot_generation, startup_outcome=(
++                "exception" if isinstance(error, Exception) else "interrupted"))
++            raise
+         finally:
+             try:
+                 # Preserve the original Source95 final flush and all cancellation behavior.
+                 await self._start_flush_runtime_status()
+                 observer_flush = "RETURNED"
++            except BaseException as error:
++                self._delivery_boot_sweep_update(boot_generation, startup_outcome=(
++                    "exception" if isinstance(error, Exception) else "interrupted"))
++                raise
+             finally:
++                self._delivery_boot_sweep_update(boot_generation, startup_finished_monotonic=time.monotonic())
+                 observer_stopped = True
+                 if observer_handle is not None:
+                     observer_handle.cancel()
+--- a/gateway/ordinary_turn_projection.py
++++ b/gateway/ordinary_turn_projection.py
+@@ -197,6 +197,7 @@
+         answering_pid=os.getpid(), birth_ticks=int(fields[19]),
+         boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+         observed_monotonic=time.monotonic(), implementation_sha256=CODE_SHA,
++        delivery_boot_sweep=runner._delivery_boot_sweep_readonly(),
+         session_id=SID, session_key=KEY, generation=generation,
+         active=turn is not None and turn.agent is not None,
+         active_session_keys=sorted(active_keys), turn_tokens=tokens,
