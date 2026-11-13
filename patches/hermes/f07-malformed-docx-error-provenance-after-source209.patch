@@ -1,0 +1,31 @@
+diff --git a/hermes_cli/friday_user_scope.py b/hermes_cli/friday_user_scope.py
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -1021,12 +1021,25 @@
+                                                              checkpoint=check_document if document_format in ('mpp','mpt','djvu','djv') else lambda: revision.check(cap))
+                         # Authored by the trusted extractor; preserve on every page.
+                         extraction_metadata = getattr(text, 'extraction_metadata', None)
+                     except ScopedExtractionError as exc:
+                         revision.check(cap)
+-                        return json.dumps({'success': False, 'error': 'document_extraction_failed',
+-                                           'format': document_format, 'reason': exc.code})
++                        failure = {'success': False, 'error': 'document_extraction_failed',
++                                   'format': document_format, 'reason': exc.code}
++                        if document_format == 'docx' and exc.code == 'malformed_package':
++                            # The suffix selected this reader; its refusal is not
++                            # evidence that the bytes form a valid DOCX package.
++                            failure['format_validation'] = {
++                                'claimed_format': 'docx', 'actual_format': 'UNDETERMINED',
++                                'filename_extension': path.suffix.lower(),
++                                'format_selection': 'filename_extension',
++                                'structure_validation': 'DOCX_PROFILE_NOT_VALIDATED',
++                                'notice': 'The filename extension selected the DOCX reader. '
++                                'The bounded native reader refused the malformed package; '
++                                'its actual format was not established. No document text '
++                                'was returned.'}
++                        return json.dumps(failure)
+                 check_document()
+                 lines = text.splitlines()
+             else:
+                 data, version = revision.snapshot(fd, parts[-1], require_utf8=False)
+                 cap.check()
