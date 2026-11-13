@@ -1,0 +1,15 @@
+# R02: exact210 source base и startup fail-closed delta — 2026-11-13
+
+Сохранённый source-only пакет, не установленный211. Работающая версия —210.
+
+`base211/PUBLIC-INTEGRATION.patch` — проверенная исходная композиция v13/503/четыре S41-файла/10targets на настоящем210. Она намеренно сохраняет прежний S41 startup18c13264; Root удержал установку до разбора новой ветки отказа. Этот старый diff не является окончательным installcandidate. `startup/startup-sweep-fail-closed.patch` — отдельно проверенная дельта18c13264→d2c7047f. Их согласованное соединение, новые manifest/input/origin/receipt hashes и интеграционный review готовятся отдельно. Установка, актуальный допуск, реальная v13-транзакция и defaultpostconsumer ещё не выполнены.
+
+Связанный source-контрпример задаёт eligible stale resume-marker для уже отвеченного syntheticturn. После реального SQLite open/transaction fault actual startup→scheduler→normal Base final допускает второй синтетически принятый ответ под другим OID. Дельта удерживает Telegram automaticresume при неизвестном результате sweep, сохраняя marker; Slack и новые ordinaryTelegram работают. Установленный Base/event-handoff НЕ доказан как источник такого смешанного marker-состояния; production/liveFAIL не объявляется. Latch очищает только успешный fullsweep; ordinaryreconnect его не очищает, поэтому legitimate autoresume может задерживаться. Controlled-live/remoteACK/CASE147/formal остаются OPEN.
+
+12 before/after source-сценариев,22 проверки наблюдений и36 independentchecks относятся только к новой дельте. Фактический own journal — DELETE; исходная ложная фраза WAL сохранена с исправляющим sidecar. Нового WAL/powerloss credit нет. Пригодные старые S41-контроли переиспользуются только при неизменном scope/коде, без полного повтора117.
+
+Первый настоящий readonly current210 consumer прочитал H/.env/pairing bytes внутри helper RAM, превысив запрет делегирования на credential reads. Значения не выводились/не сохранялись, внешних эффектов не было. Это не credential-freePASS17. Один последующий адресный deny-control отказал ожидаемо; не productFAIL и не green17. Raw request/input/credential/runtime dump здесь не публикуется. Текущие credential/CAS-проверки принадлежат Root.
+
+Simple code rollback к210 допустим до candidate startup только при доказанной неизменности остановленных DB/WAL/SHM и связанного resume/once состояния. После возможного candidateexecution старые delivery/resume consumers не запускать лишь по нулевому числу новых state names; данные/история/fences сохраняются, нужен forward-safe путь либо отдельно проверенная конечная backward-процедура. Не восстанавливать старые DB поверх новых и не переигрывать эффекты.
+
+Первичный data-review790ccd не сохранён byteexact по прежнему пути; текущий5a261652 — явно supersededclarification, не тот же объект. Исходные S41/sourcebytes и самостоятельные новые наблюдения сохранены. Все включённые файлы — byteexact копии выбранных исходников/наблюдений; ARCHIVE-MANIFEST фиксирует их происхождение. Нет raw user bodies, токенов, конфигов, приватных503 counterparts/input/request/полных runtime копий. Прежние F04/F07/UNKNOWN и clocks не менялись.

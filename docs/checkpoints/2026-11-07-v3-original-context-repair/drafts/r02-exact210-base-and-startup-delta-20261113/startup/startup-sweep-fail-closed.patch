@@ -1,0 +1,37 @@
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -450,14 +450,17 @@
+                 deliverable_targets=_deliverable_targets,
+             )
+         except Exception:
+-            logger.debug("delivery ledger sweep failed", exc_info=True)
++            # An unavailable ledger is not an empty ledger. Without its answered-turn
++            # snapshot, Telegram auto-resume could regenerate and send a second answer.
++            self._delivery_resume_recovery_failed = True
++            logger.warning("delivery ledger sweep failed; withholding Telegram auto-resume", exc_info=True)
+             return []
+-        if not claimed:
+-            return []
+-        # Clear resume_pending for EVERY claimed row before any send: the answer is in the ledger.
+-        # Claiming already spent one of the row's redelivery attempts — the answer is in the ledger, so the
+-        # resume path must never re-run these turns (#91969).
+-        await self._clear_resume_pending_for_claimed_obligations(claimed)
++        if claimed:
++            # Clear resume_pending for EVERY claimed row before any send: the answer is in the ledger.
++            # Claiming already spent one of the row's redelivery attempts — the answer is in the ledger, so the
++            # resume path must never re-run these turns (#91969).
++            await self._clear_resume_pending_for_claimed_obligations(claimed)
++        self._delivery_resume_recovery_failed = False
+         return claimed
+ 
+     @staticmethod
+@@ -716,6 +719,9 @@
+             return 0
+         scheduled = 0
+         for entry in candidates:
++            if (getattr(self, "_delivery_resume_recovery_failed", False)
++                    and entry.origin.platform == Platform.TELEGRAM):
++                continue  # retain the marker until a successful ledger recovery
+             if self._delivery_resume_generation(entry) in getattr(self, "_delivery_resume_veto", ()):
+                 continue  # this exact answered generation is owned by the delivery ledger
+             # Epoch math: the marker was stamped naive-local by the previous process, possibly
