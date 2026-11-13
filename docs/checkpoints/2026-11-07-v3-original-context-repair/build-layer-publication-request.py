@@ -80,7 +80,7 @@ def parse_args(argv=None):
     parser.add_argument("--current-source-project-update", type=Path,
                         help="exact committed v6 root request for the bounded native continuation")
     parser.add_argument("--current-source-native-predecessor", type=Path,
-                        help="exact canonical committed CP199, CP200, CP201, CP202, CP203, CP204 CP205, CP206, CP207, CP208, CP209, CP210 or CP211 request for the bounded next edge")
+                        help="exact canonical committed CP199, CP200, CP201, CP202, CP203, CP204 CP205, CP206, CP207, CP208, CP209, CP210, CP211, CP212 or CP213 request for the bounded next edge")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--seconds", type=int, default=180)
     args = parser.parse_args(argv)
@@ -216,6 +216,7 @@ def build_request(args):
                 "friday.current-source-native-successor.v12": "friday.current-source-native-successor.v13",
                 "friday.current-source-native-successor.v13": "friday.current-source-native-successor.v14",
                 "friday.current-source-native-successor.v14": "friday.current-source-native-successor.v15",
+                "friday.current-source-native-successor.v15": "friday.current-source-native-successor.v16",
             }
             previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
             consumer.require(previous_schema in supported,
@@ -259,6 +260,9 @@ def build_request(args):
             consumer.require(previous_schema != "friday.current-source-native-successor.v14"
                              or args.layer_names == ("r02-managed-file-output-phase-after-source212",),
                              "transaction_current_source_exact_fifteenth_layer_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v15"
+                             or args.layer_names == ("m09-retained-projection-bridge-after-source213",),
+                             "transaction_current_source_exact_sixteenth_layer_required")
             request["current_source_successor"].update({
                 "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),

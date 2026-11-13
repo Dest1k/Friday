@@ -1,0 +1,281 @@
+--- a/gateway/ordinary_turn_projection.py
++++ b/gateway/ordinary_turn_projection.py
+@@ -216,6 +216,16 @@
+ 
+ def ordinary_turn_readonly_verb(runner, loop):
+     def handler(params):
++        if type(params) is dict and set(params) == {'mode', 'root_request'} and params['mode'] == 'm09-current':
++            async def read_m09_on_loop():
++                return m09_snapshot(runner, params['root_request'])
++            try:
++                future = asyncio.run_coroutine_threadsafe(read_m09_on_loop(), loop)
++                return {'accepted': True, 'snapshot': future.result(timeout=1.5)}
++            except concurrent.futures.TimeoutError:
++                return {'accepted': False, 'error': 'm09_projection_timeout'}
++            except Exception:
++                return {'accepted': False, 'error': 'm09_projection_unavailable'}
+         if params != {'session_key': KEY, 'session_id': SID}:
+             return {'accepted': False, 'error': 'exact_ordinary_scope_required'}
+         async def read_on_loop():
+@@ -388,3 +398,261 @@
+         except Exception:
+             return {'accepted':False,'error':'owned_cancel_unavailable','no_retry':True}
+     return handler
++
++# M09 opt-in on the existing ordinary-turn-readonly verb; legacy path unchanged.
++# This projection never constructs agents/providers, formats memory or calls tools.
++# Fixed private selector bytes are operator custody, outside installed HOME.
++# The opaque commitment limits selection; current native policy remains authority.
++_M09_SCOPE_BINDING_SHA256 = 'ef12a05953f80a6347e2722abd46c190638bc6fbbd93002bba119d62d89adcf2'
++
++def _m09_scopes(pin):
++    import re
++    import stat
++    if (type(pin) is not dict or set(pin) != {'path','sha256'}
++            or type(pin.get('path')) is not str
++            or pin.get('sha256') != _M09_SCOPE_BINDING_SHA256):
++        raise RuntimeError('m09_fixed_scope_reference')
++    path = Path(pin['path'])
++    if not path.is_absolute() or '..' in path.parts or path.is_relative_to(HOME):
++        raise RuntimeError('m09_scope_asset_outside_installed_home')
++    info = path.lstat()
++    if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 4096:
++        raise RuntimeError('m09_scope_asset_regular_bound')
++    binding = _checked_root_intent(pin)
++    if (type(binding) is not dict or set(binding) != {'schema','binding_nonce','scopes'}
++            or binding['schema'] != 'frw.Root.M09.scope-binding.v1'
++            or type(binding['binding_nonce']) is not str
++            or re.fullmatch('[a-f0-9]{64}', binding['binding_nonce']) is None
++            or type(binding['scopes']) is not list or len(binding['scopes']) != 2):
++        raise RuntimeError('m09_fixed_scope_binding_shape')
++    fields = {'slot','profile','user_id','principal_id','platform','transport_profile','account_id'}
++    rows = binding['scopes']
++    if (any(type(row) is not dict or set(row) != fields
++            or any(type(row[k]) is not str or not 0 < len(row[k]) <= 256 for k in fields)
++            or row['platform'] != 'telegram' for row in rows)
++            or [row['slot'] for row in rows] != ['A','B']
++            or len({row['principal_id'] for row in rows}) != 2
++            or len({row['profile'] for row in rows}) != 2
++            or any(Path(row['profile']).name != row['profile'] or row['profile'] in ('.','..') for row in rows)):
++        raise RuntimeError('m09_fixed_two_scope_binding')
++    return rows
++_M09_PROVIDER_IDS = {
++    ('plugins.memory.retaindb', 'RetainDBMemoryProvider'): 'retaindb',
++    ('plugins.memory.byterover', 'ByteRoverMemoryProvider'): 'byterover',
++    ('plugins.memory.holographic', 'HolographicMemoryProvider'): 'holographic',
++    ('plugins.memory.openviking', 'OpenVikingMemoryProvider'): 'openviking',
++}
++
++def _m09_fields(obj):
++    # Only concrete stored attributes; do not invoke plugin descriptors/getters.
++    return {} if obj is None else object.__getattribute__(obj, '__dict__')
++
++def _m09_type(obj):
++    if obj is None:
++        return None
++    cls = type(obj)
++    return [cls.__module__, cls.__name__]
++
++def _m09_cached(agent):
++    if agent is None:
++        return dict(state='ABSENT_COLD', manager='UNOBSERVED_NO_AGENT', engine=None,
++                    providers=None, multipass=None, builtin=None, summary_producer={'state':'UNOBSERVED_NO_AGENT'},
++                    embedding_observation={'state':'UNOBSERVED_NO_AGENT'}, summary_carrier={'present':False,'session_id':None,'sha256':None,'bytes':0})
++    d = _m09_fields(agent)
++    if '_memory_manager' not in d or 'context_compressor' not in d:
++        raise RuntimeError('m09_cached_agent_not_initialized')
++    manager, engine, store = d['_memory_manager'], d['context_compressor'], d.get('_memory_store')
++    providers = []
++    if manager is not None:
++        md = _m09_fields(manager)
++        if type(md.get('_providers')) is not list:
++            raise RuntimeError('m09_manager_provider_storage_unavailable')
++        for provider in md['_providers']:
++            cls = type(provider)
++            identifier = _M09_PROVIDER_IDS.get((cls.__module__, cls.__name__))
++            # No arbitrary plugin name/repr, namespace, endpoint, credentials or raw memory.
++            providers.append(dict(provider_id=identifier or 'UNKNOWN_PROVIDER_TYPE',
++                home_sha256=_m09_digest_scalar(_m09_fields(provider).get('_hermes_home'))))
++    ed = _m09_fields(engine)
++    options = ed.get('_bounded_multipass_options')
++    if options is not None and type(options) is not dict:
++        raise RuntimeError('m09_policy_storage_shape')
++    multipass = None if options is None else {key: options.get(key) for key in
++        ('enabled', 'max_calls', 'max_depth', 'max_attempt_seconds', 'max_call_seconds')}
++    if multipass is not None and any(type(value) not in (bool, int, type(None)) for value in multipass.values()):
++        raise RuntimeError('m09_policy_scalar_shape')
++    flags = {key: d.get(key) for key in ('_memory_enabled', '_user_profile_enabled')}
++    if any(value is not None and type(value) is not bool for value in flags.values()):
++        raise RuntimeError('m09_builtin_flag_scalar_shape')
++    sd = _m09_fields(store)
++    caps = {key: sd.get(key) for key in ('memory_char_limit', 'user_char_limit')}
++    if any(value is not None and type(value) is not int for value in caps.values()):
++        raise RuntimeError('m09_memory_cap_scalar_shape')
++    last=ed.get('_bounded_multipass_last_evidence')
++    counters=None if type(last) is not dict else {key:last.get(key) for key in
++        ('chunk_count','reduction_depth','summary_calls','checkpoint_cache_hits','physical_attempt_count','elapsed_ms')}
++    if counters is not None and any(value is not None and (type(value) is not int or value<0) for value in counters.values()):
++        raise RuntimeError('m09_summary_counter_shape')
++    previous=ed.get('_previous_summary')
++    if previous is not None and type(previous) is not str:
++        raise RuntimeError('m09_cached_summary_carrier_shape')
++    if len(previous or '')>4*1024**2:
++        raise RuntimeError('m09_cached_summary_carrier_bound')
++    previous_raw=(previous or '').encode()
++    carrier=dict(present=bool(previous_raw),session_id=ed.get('_session_id'),
++                 sha256=hashlib.sha256(previous_raw).hexdigest() if previous_raw else None,bytes=len(previous_raw))
++    if carrier['session_id'] is not None and type(carrier['session_id']) is not str:
++        raise RuntimeError('m09_cached_summary_session_shape')
++    summary=dict(state='UNOBSERVED_NO_RETAINED_PRODUCER' if last is None else 'UNBOUND_NATIVE_EVIDENCE_LACKS_SESSION_PRODUCER_TAG',
++                 counters=counters)
++    # Existing manager/provider fields show presence/capability, not a genuine ordinary
++    # ingestion/retrieval outcome or ACL namespace. Never turn presence into that proof.
++    embedding=dict(state='UNBOUND_NATIVE_HAS_NO_ORDINARY_INGRESS_RETRIEVAL_RECEIPT')
++    return dict(state='PRESENT_WARM', manager='NONE' if manager is None else 'RETAINED',
++        engine=_m09_type(engine), providers=providers, multipass=multipass,
++        summary_producer=summary, embedding_observation=embedding,summary_carrier=carrier,
++        builtin=dict(present=store is not None, caps=caps,
++            memory_enabled=flags['_memory_enabled'], user_profile_enabled=flags['_user_profile_enabled']))
++
++def _m09_digest_scalar(value):
++    if value is None:
++        return None
++    if type(value) is not str:
++        raise RuntimeError('m09_nonstring_home')
++    return hashlib.sha256(value.encode()).hexdigest()
++
++def m09_snapshot(runner, pin):
++    """Fresh exact two-scope snapshot; request only selects/limits, never supplies facts.
++
++    Runs on the existing gateway loop with no await. Cache lock guards the only
++    off-loop cache mutation. No cache lookup allocates state or causes I/O.
++    """
++    import re
++    from hermes_cli import friday_product_access as access
++    from hermes_constants import get_process_hermes_home
++    actual_home=Path(get_process_hermes_home())
++    if actual_home!=HOME:
++        raise RuntimeError('m09_exact_process_home_required')
++    request = _checked_root_intent(pin)
++    fields = {'schema','operator','query_id','boot_id','gateway','created_monotonic','expires_monotonic','scope_ref'}
++    now = time.monotonic()
++    birth = int(Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[19])
++    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
++    if (set(request) != fields or request['schema'] != 'frw.Root.M09.native-current-request.v2'
++            or request['operator'] != 'Root' or re.fullmatch('[a-f0-9]{32}', request['query_id'] or '') is None
++            or request['boot_id'] != boot or request['gateway'] != dict(pid=os.getpid(), start_time=birth)
++            or type(request['created_monotonic']) not in (float,int)
++            or type(request['expires_monotonic']) not in (float,int)
++            or not request['created_monotonic'] <= now < request['expires_monotonic'] <= request['created_monotonic'] + 120):
++        raise RuntimeError('m09_exact_fresh_root_request')
++    bindings = _m09_scopes(request['scope_ref'])
++    policy = access.current_access()  # Existing read-only native policy, not request JSON.
++    users = policy.get('users', {})
++    maps = [runner.adapters, *runner._profile_adapters.values()]
++    adapters = list({id(a): a for mapping in maps for a in mapping.values()}.values())
++    if not adapters or any(not hasattr(a, '_pending_messages') or not hasattr(a, '_active_sessions') for a in adapters):
++        raise RuntimeError('m09_adapter_projection_unavailable')
++    cache = runner._agent_cache
++    lock = runner._agent_cache_lock
++    if not lock.acquire(timeout=0.25):
++        raise RuntimeError('m09_cache_projection_racing')
++    try:
++        scopes = {}
++        for binding in bindings:
++            slot, profile, user, principal = (binding[k] for k in ('slot','profile','user_id','principal_id'))
++            selected = users.get(principal)
++            wanted = {k:binding[k] for k in ('platform','transport_profile','account_id','user_id')}
++            wanted.update(enabled=True, role='user')
++            if (type(selected) is not dict or {k:selected.get(k) for k in wanted} != wanted
++                    or type(selected.get('generation')) is not int):
++                raise RuntimeError('m09_actual_policy_scope_changed')
++            key = 'agent:' + profile + ':telegram:dm:' + user
++            entry = runner.session_store._entries.get(key)
++            state = runner._peek_session_state(key)
++            turn = None if state is None else state.turn
++            generation = 0 if state is None else state.persistent.run_generation
++            if type(generation) is not int or generation < 0:
++                raise RuntimeError('m09_native_generation_unavailable')
++            cached = cache.get(key)
++            if cached is not None and (type(cached) is not tuple or len(cached) != 2):
++                raise RuntimeError('m09_cache_initializing_or_unknown')
++            agent = None if cached is None else cached[0]
++            if cached is not None and agent is None:
++                raise RuntimeError('m09_cache_pending')
++            sid = None if entry is None else entry.session_id
++            if agent is not None and _m09_fields(agent).get('session_id') != sid:
++                raise RuntimeError('m09_cached_session_scope_changed')
++            active = turn is not None and turn.agent is not None
++            scopes[slot] = dict(principal_id=principal, profile=profile, session_key=key, session_id=sid,
++                access={k:selected[k] for k in (*wanted, 'generation')}, native_session_generation=generation,
++                active=active, pending_messages=sum(key in a._pending_messages for a in adapters),
++                active_adapters=sum(key in a._active_sessions for a in adapters),
++                queued_events=0 if state is None else len(state.conversation.queued_events),
++                pending_command=state is not None and state.persistent.pending_command_text is not None,
++                approvals=state is not None and state.persistent.approvals is not None,
++                lease_count=0 if turn is None else len(turn.lease_tokens), cached=_m09_cached(agent))
++            if runner.session_store._entries.get(key) is not entry or runner._peek_session_state(key) is not state:
++                raise RuntimeError('m09_scope_changed')
++        if access.current_access() != policy:
++            raise RuntimeError('m09_policy_CAS_changed')
++        work=_m09_existing_work(scopes)
++        return dict(schema='frw.gateway.M09-current-readonly.v1', read_only=True,
++            answering_pid=os.getpid(), birth_ticks=birth, boot_id=boot,
++            observed_monotonic=time.monotonic(), implementation_sha256=CODE_SHA,
++            query_id=request['query_id'], scope_binding_sha256=_M09_SCOPE_BINDING_SHA256, scopes=scopes,existing_work=work,process_home_sha256=hashlib.sha256(str(actual_home).encode()).hexdigest(),
++            active_session_keys=sorted(key for key,item in runner._sessions.items()
++                if item.turn.agent is not None or item.turn.lease_tokens))
++    finally:
++        lock.release()
++
++
++def _m09_existing_work(scopes):
++    """Reuse existing readonly custody and delegation stores; no registry creation."""
++    import sqlite3
++    from contextlib import closing
++    registry_module=sys.modules.get('tools.process_registry')
++    registry=None if registry_module is None else getattr(registry_module,'process_registry',None)
++    if registry is None:
++        raise RuntimeError('m09_existing_registry_unavailable')
++    if not registry._lock.acquire(timeout=.25):
++        raise RuntimeError('m09_existing_registry_racing')
++    try:
++        web=registry.web_custody_readonly()
++        terminal=registry.terminal_custody_receipt()
++    finally:
++        registry._lock.release()
++    if any(type(value) is not dict or type(value.get('sessions')) is not list for value in (web,terminal)):
++        raise RuntimeError('m09_existing_custody_shape')
++    keys={row['session_key'] for row in scopes.values()}
++    ids={row['session_id'] for row in scopes.values() if row['session_id'] is not None}
++    delegation_module=sys.modules.get('tools.async_delegation')
++    live=0
++    if delegation_module is not None:
++        if not delegation_module._records_lock.acquire(timeout=.25):
++            raise RuntimeError('m09_existing_delegation_racing')
++        try:
++            live=sum((row.get('session_key') in keys or row.get('parent_session_id') in ids)
++                and row.get('status') in delegation_module._LIVE_STATES for row in delegation_module._records.values())
++        finally:
++            delegation_module._records_lock.release()
++    durable=0;durable_leases=0
++    for path in (HOME/'state.db',*(HOME/'profiles'/row['profile']/'state.db' for row in scopes.values())):
++        if any(p.is_symlink() for p in (path,*path.parents)):
++            raise RuntimeError('m09_existing_delegation_store_link')
++        with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.2)) as db:
++            db.execute('PRAGMA query_only=ON')
++            query_deadline=time.monotonic()+.2
++            db.set_progress_handler(lambda:int(time.monotonic()>=query_deadline),1000)
++            rows=db.execute('SELECT origin_session,parent_session_id,state,delivery_state FROM async_delegations WHERE state IN (?,?,?) OR delivery_state IN (?,?,?) LIMIT 1025',
++                ('running','stalling','finalizing','pending','claimed','deferred')).fetchall()
++            if len(rows)>1024:
++                raise RuntimeError('m09_existing_delegation_bound')
++            durable+=sum(row[0] in keys or row[1] in ids for row in rows)
++            leases=db.execute('SELECT 1 FROM session_turn_leases LIMIT 1025').fetchall()
++            if len(leases)>1024:
++                raise RuntimeError('m09_existing_turn_lease_bound')
++            durable_leases+=len(leases)
++    return dict(registry_quiescent=all(value.get('status')=='QUIESCENT' and value['sessions']==[] for value in (web,terminal)),
++        registry_recovery_blocked=any(value.get('recovery_blocked') is not False for value in (web,terminal)),
++        web_sessions=len(web['sessions']),terminal_sessions=len(terminal['sessions']),
++        live_owned_delegations=live,durable_pending_delegations=durable,durable_turn_leases=durable_leases)
