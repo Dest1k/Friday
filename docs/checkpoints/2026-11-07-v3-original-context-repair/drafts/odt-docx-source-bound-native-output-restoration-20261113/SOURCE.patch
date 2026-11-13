@@ -1,0 +1,1877 @@
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -9,6 +9,10 @@
+ import hashlib
+ import json
+ import re
++from copy import copy, deepcopy
++from io import BytesIO
++from xml.parsers import expat
++from zipfile import ZipFile
+ 
+ from tools.scoped_word_profiles import _Package, WordProfileError, W, R
+ from tools.scoped_odf_profiles import _editable_package, ODFProfileError
+@@ -27,14 +31,18 @@
+ FORMATTING_LIMITS = (
+     'Fonts, run styling, colors, spacing, borders, page geometry, pagination and '
+     'document metadata may change; their visual fidelity is not verified. '
+-    'Only ordered body paragraphs, heading levels, rectangular unmerged tables, '
++    'Ordered paragraphs, heading levels, rectangular unmerged string tables, '
+     'cell paragraph boundaries, Unicode text, spaces, tabs and line breaks are verified. '
+-    'Unnumbered outline headings are supported; their visual layout is not verified. '
++    'The bounded structured profile also compares native single-level bullet lists, '
++    'automatic footnotes with exact text/anchor/class, single-section referenced '
++    'default header/footer stories and explicit page breaks before paragraphs. '
++    'Page-break intent does not establish rendered page count or last-page position. '
+     'Only native output may carry strictly empty-label heading wrappers and fixed passive metadata. '
+-    'Visible lists, fields, bookmarks, tracked changes, headers/footers, notes/comments, '
+-    'drawings/media, hyperlinks, embedded fonts/objects, protection, signatures, '
+-    'macros and external resources are refused. Ambiguous raw ODF whitespace is '
+-    'refused; explicit native ODF spaces, tabs and line breaks are supported.'
++    'Other numbering, fields, bookmarks, tracked changes, comments/endnotes, '
++    'alternate/multiple sections or page stories, drawings/media, hyperlinks, '
++    'embedded fonts/objects, protection, signatures, macros and external resources '
++    'are refused. Ambiguous raw ODF whitespace is refused; explicit native ODF '
++    'spaces, tabs and line breaks are supported.'
+ )
+ 
+ 
+@@ -78,7 +86,7 @@
+         self.checkpoint = checkpoint
+         self.paragraphs = self.cells = self.text_bytes = 0
+ 
+-    def paragraph(self, text, level=None):
++    def paragraph(self, text, level=None, *, notes=None, page_break_before=False):
+         _tick(self.checkpoint)
+         self.paragraphs += 1
+         self.text_bytes += len(text.encode('utf-8'))
+@@ -87,6 +95,10 @@
+         result = {'type': 'paragraph', 'text': text}
+         if level is not None:
+             result.update(type='heading', level=level)
++        if notes:
++            result['notes'] = notes
++        if page_break_before:
++            result['page_break_before'] = True
+         return result
+ 
+     def table(self, rows):
+@@ -170,29 +182,40 @@
+                    'word/numbering.xml', 'word/theme/theme1.xml', 'docProps/core.xml',
+                    'docProps/app.xml', 'docProps/custom.xml', 'docProps/thumbnail.jpeg',
+                    'customXml/item1.xml', 'customXml/itemProps1.xml', 'customXml/_rels/item1.xml.rels'}
++        allowed |= {'word/footnotes.xml'}
++        allowed |= {name for name in self.pkg.parts if re.fullmatch(r'word/(?:header|footer)[1-9][0-9]{0,2}\.xml', name) and int(re.search(r'[0-9]+', name).group()) <= 128}
+         if set(self.pkg.parts) - allowed:
+             _fail('unsupported_word_part')
+         root_types = {R + '/officeDocument', R + '/extended-properties', R + '/custom-properties',
+                       'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties',
+                       'http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail'}
+         doc_types = {R + '/' + name for name in ('styles', 'settings', 'webSettings', 'fontTable',
+-                                                'theme', 'numbering', 'customXml')}
++                                                'theme', 'numbering', 'customXml', 'footnotes', 'header', 'footer')}
+         doc_types.add('http://schemas.microsoft.com/office/2007/relationships/stylesWithEffects')
+         for owner, rows in self.pkg.relationships.items():
++            if len(rows) > 128 or any(len(identity) > 128 for identity in rows):
++                _fail('unsupported_word_relationship')
+             allowed_types = (root_types if owner == '' else doc_types if owner == 'word/document.xml'
+                              else {R + '/customXmlProps'} if owner == 'customXml/item1.xml' else set())
+             if any(kind not in allowed_types for kind, target in rows.values()):
+                 _fail('unsupported_word_relationship')
+         self.empty_numbering = None
++        self.numbering = None
++        self.note_records, self.note_refs = {}, []
++        self.story_parts, self.story_refs = {}, set()
++        self.list_items = self.story_paragraphs = 0
+         self._empty_bibliography()
++        semantic_names = {'word/footnotes.xml'} | {name for name in self.pkg.parts if re.fullmatch(r'word/(?:header|footer)[1-9][0-9]{0,2}\.xml', name)}
+         forbidden = {q(W, n) for n in ('documentProtection', 'writeProtection', 'mailMerge',
+                                       'attachedTemplate', 'saveThroughXslt', 'dataBinding',
+-                                      'hdr', 'ftr', 'footnote', 'endnote', 'comment')}
++                                      'endnote', 'endnotePr', 'comment', 'fldChar', 'instrText', 'fldSimple')}
+         for name, root in self.pkg.xml.items():
+             for node in root.iter():
++                if node.tag in {q(W, n) for n in ('basedOn', 'pStyle', 'rStyle', 'tblStyle')} and (not node.get(q(W, 'val')) or len(node.get(q(W, 'val'))) > 128):
++                    _fail('ambiguous_word_style')
+                 if node.tag in forbidden or q('http://www.w3.org/XML/1998/namespace', 'base') in node.attrib:
+                     _fail('unsupported_word_content')
+-                if name != 'word/document.xml' and node.tag in {q(W, 'p'), q(W, 'tbl'), q(W, 't')}:
++                if name != 'word/document.xml' and name not in semantic_names and node.tag in {q(W, 'p'), q(W, 'tbl'), q(W, 't')}:
+                     _fail('unsupported_word_content')
+         styles = self.pkg.xml.get('word/styles.xml')
+         self.styles = {}
+@@ -217,7 +240,7 @@
+                 if node.tag != q(W, 'style'):
+                     continue
+                 identity = node.get(q(W, 'styleId'))
+-                if not identity or identity in self.styles:
++                if not identity or len(identity) > 128 or identity in self.styles:
+                     _fail('ambiguous_word_style')
+                 self.styles[identity] = node
+                 if node.get(q(W, 'type')) == 'paragraph' and node.get(q(W, 'default')) in ('1', 'true', 'on'):
+@@ -246,6 +269,10 @@
+                 if canonical is None or signature(node) != signature(canonical):
+                     _fail('ambiguous_word_style')
+ 
++        if ('word/numbering.xml' in self.pkg.parts or any(kind == R + '/numbering' for kind, _ in self.pkg.relationships.get('word/document.xml', {}).values())):
++            self._numbering_graph()
++        self._semantic_parts()
++
+     def _empty_bibliography(self):
+         # python-docx's default template carries an empty bibliography store.
+         # Nonempty custom data has no preservation contract and is refused.
+@@ -271,117 +298,373 @@
+     def properties(self, node, allowed):
+         _word_properties(node, allowed, empty_numbering=self._empty_numbering_property)
+ 
++    @staticmethod
++    def _value(node, name, *, expected=None):
++        if node.tag != q(W, name) or len(node) or set(node.attrib) != {q(W, 'val')}:
++            _fail('unsupported_word_numbering')
++        _white(node)
++        result = node.get(q(W, 'val'))
++        if expected is not None and result != expected:
++            _fail('unsupported_word_numbering')
++        return result
++
++    @staticmethod
++    def _number(raw, maximum=999999, *, zero=False):
++        value = _integer(raw, maximum, 'unsupported_word_numbering', zero=zero)
++        if raw != str(value):
++            _fail('unsupported_word_numbering')
++        return value
++
++    @staticmethod
++    def _toggle(node):
++        _white(node)
++        if len(node) or set(node.attrib) - {q(W, 'val')}:
++            _fail('unsupported_word_property')
++        value = node.get(q(W, 'val'), 'true')
++        if value not in ('true', '1', 'on', 'false', '0', 'off'):
++            _fail('unsupported_word_property')
++        return value in ('true', '1', 'on')
++
++    @staticmethod
++    def _root_attributes(node):
++        # Namespace declarations do not enter ElementTree attributes. Only the
++        # known inert compatibility markers are accepted here. This parser
++        # never uses them to skip unknown elements or attributes.
++        if node.attrib not in ({}, {q('http://schemas.openxmlformats.org/markup-compatibility/2006', 'Ignorable'): 'w14'},
++                              {q('http://schemas.openxmlformats.org/markup-compatibility/2006', 'Ignorable'): 'w14 wp14 w15'}):
++            _fail('unsupported_word_content')
++        _white(node)
++
++    def _semantic_parts(self):
++        rows = self.pkg.relationships.get('word/document.xml', {})
++        for kind in ('footnotes', 'header', 'footer'):
++            links = [(identity, target) for identity, (relation, target) in rows.items()
++                     if relation == R + '/' + kind]
++            expected_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.' + kind + '+xml'
++            candidates = ({'word/footnotes.xml'} & self.pkg.parts.keys() if kind == 'footnotes'
++                          else {name for name in self.pkg.parts if re.fullmatch('word/' + kind + r'[1-9][0-9]{0,2}\.xml', name)})
++            if len(links) > 1 or {target for _, target in links} != candidates:
++                _fail('unsupported_word_relationship')
++            if links:
++                identity, target = links[0]
++                if self.pkg.types.get(target) != expected_type or self.pkg.relationships.get(target):
++                    _fail('unsupported_word_relationship')
++                root = self.pkg.xml.get(target)
++                if root is None or root.tag != q(W, kind if kind == 'footnotes' else {'header': 'hdr', 'footer': 'ftr'}[kind]):
++                    _fail('unsupported_word_content')
++                self._root_attributes(root)
++                if kind == 'footnotes':
++                    for note in root:
++                        if note.tag != q(W, 'footnote') or set(note.attrib) - {q(W, 'id'), q(W, 'type')}:
++                            _fail('unsupported_word_note')
++                        raw = note.get(q(W, 'id'))
++                        if raw == '-1':
++                            number = -1
++                        else:
++                            number = _integer(raw, 999999, 'unsupported_word_note', zero=True)
++                            if raw != str(number):
++                                _fail('unsupported_word_note')
++                        if number in self.note_records or len(self.note_records) >= 66:
++                            _fail('unsupported_word_note')
++                        category = note.get(q(W, 'type'), 'normal')
++                        if category in ('separator', 'continuationSeparator'):
++                            # These are part identities, not displayed note
++                            # citations. Both native reserved-ID conventions
++                            # retain the exact typed separator graph. A normal
++                            # note's citation still follows body anchor order.
++                            if number not in ({-1, 0} if category == 'separator' else {0, 1}):
++                                _fail('unsupported_word_note')
++                            self._separator(note, category)
++                        elif category != 'normal' or number < 1:
++                            _fail('unsupported_word_note')
++                        self.note_records[number] = (category, note)
++                    reserved = [category for category, _ in self.note_records.values() if category != 'normal']
++                    normal_count = sum(kind == 'normal' for kind, _ in self.note_records.values())
++                    if len(reserved) != len(set(reserved)) or not 1 <= normal_count <= 64:
++                        _fail('unsupported_word_note')
++                else:
++                    self.story_parts[identity] = (kind, target, root)
++        # Footnote number settings affect citation identity. Only the default
++        # automatic decimal, continuous sequence beginning at one is supported.
++        settings = self.pkg.xml.get('word/settings.xml')
++        if settings is not None:
++            seen = set()
++            for node in settings:
++                if node.tag in (q(W, 'footnotePr'), q(W, 'evenAndOddHeaders')):
++                    if node.tag in seen:
++                        _fail('ambiguous_word_properties')
++                    seen.add(node.tag)
++                    if node.tag == q(W, 'footnotePr'):
++                        self._note_properties(node)
++                    elif self._toggle(node):
++                        _fail('unsupported_word_section')
++        # Part roots/references in a foreign XML context must not be mistaken
++        # for supported stories or an inert settings declaration.
++        permitted = {'word/footnotes.xml'} | {row[1] for row in self.story_parts.values()}
++        for name, root in self.pkg.xml.items():
++            for node in root.iter():
++                if node.tag in {q(W, n) for n in ('hdr', 'ftr', 'footnote')}:
++                    if name in permitted:
++                        continue
++                    if name == 'word/settings.xml' and node.tag == q(W, 'footnote') and any(node is child for prop in root.findall(q(W, 'footnotePr')) for child in prop):
++                        continue
++                    _fail('unsupported_word_content')
++
++    def _separator(self, note, category):
++        _white(note)
++        if len(note) != 1 or note[0].tag != q(W, 'p') or note[0].attrib:
++            _fail('unsupported_word_note')
++        _white(note[0])
++        markers = []
++        if len(note[0].findall(q(W, 'pPr'))) > 1:
++            _fail('unsupported_word_note')
++        for run in note[0]:
++            if run.tag == q(W, 'pPr'):
++                self.properties(run, _PARAGRAPH_PROPERTIES)
++                if any(child.tag in {q(W, n) for n in ('numPr', 'pStyle', 'outlineLvl', 'pageBreakBefore')} for child in run):
++                    _fail('unsupported_word_note')
++                continue
++            if run.tag != q(W, 'r') or run.attrib:
++                _fail('unsupported_word_note')
++            _white(run)
++            if len(run.findall(q(W, 'rPr'))) > 1:
++                _fail('unsupported_word_note')
++            for part in run:
++                if part.tag == q(W, 'rPr'):
++                    self.properties(part, _RUN_PROPERTIES)
++                elif part.tag == q(W, category) and not part.attrib and not len(part):
++                    _white(part)
++                    markers.append(part)
++                else:
++                    _fail('unsupported_word_note')
++        if len(markers) != 1:
++            _fail('unsupported_word_note')
++
++    def _note_properties(self, node):
++        _white(node)
++        if node.attrib:
++            _fail('unsupported_word_note')
++        seen, ids = set(), set()
++        expected = {'pos': 'pageBottom', 'numFmt': 'decimal', 'numStart': '1', 'numRestart': 'continuous'}
++        for child in node:
++            local = child.tag.removeprefix(q(W, ''))
++            if local == 'footnote':
++                if len(child) or set(child.attrib) != {q(W, 'id')}:
++                    _fail('unsupported_word_note')
++                _white(child)
++                identity = child.get(q(W, 'id'))
++                number = (-1 if identity == '-1' else
++                          _integer(identity, 999999, 'unsupported_word_note', zero=True))
++                if identity != str(number) or identity in ids or self.note_records.get(number, ('normal',))[0] == 'normal':
++                    _fail('unsupported_word_note')
++                ids.add(identity)
++            elif local in expected and child.tag == q(W, local) and local not in seen:
++                seen.add(local)
++                if len(child) or child.attrib != {q(W, 'val'): expected[local]}:
++                    _fail('unsupported_word_note')
++                _white(child)
++            else:
++                _fail('unsupported_word_note')
++
++    def _numbering_graph(self):
++        if self.numbering is not None:
++            return
++        links = [target for kind, target in self.pkg.relationships.get('word/document.xml', {}).values()
++                 if kind == R + '/numbering']
++        if (links != ['word/numbering.xml'] or self.pkg.types.get('word/numbering.xml') !=
++                'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml'):
++            _fail('unsupported_word_numbering')
++        root = self.pkg.xml.get('word/numbering.xml')
++        if root is None or root.tag != q(W, 'numbering'):
++            _fail('unsupported_word_numbering')
++        self._root_attributes(root)
++        abstracts, references = {}, {}
++        for item in root:
++            _tick(self.state.checkpoint)
++            _white(item)
++            if item.tag == q(W, 'abstractNum'):
++                if set(item.attrib) != {q(W, 'abstractNumId')}:
++                    _fail('unsupported_word_numbering')
++                identity = self._number(item.get(q(W, 'abstractNumId')), zero=True)
++                if identity in abstracts or len(abstracts) >= 128:
++                    _fail('unsupported_word_numbering')
++                # Unused standard template declarations remain inert. Their
++                # identifiers and level graph are still checked, and every
++                # effective level is checked in full by _numbering_profile.
++                levels, metadata = {}, set()
++                for child in item:
++                    if child.tag == q(W, 'lvl'):
++                        if set(child.attrib) != {q(W, 'ilvl')}:
++                            _fail('unsupported_word_numbering')
++                        level = self._number(child.get(q(W, 'ilvl')), 8, zero=True)
++                        if level in levels:
++                            _fail('unsupported_word_numbering')
++                        _white(child)
++                        properties_seen = set()
++                        for part in child:
++                            local = part.tag.removeprefix(q(W, ''))
++                            if part.tag != q(W, local) or local in properties_seen or local not in {'start', 'numFmt', 'suff', 'lvlText', 'lvlJc', 'pPr', 'rPr', 'pStyle', 'lvlRestart', 'isLgl', 'legacy'}:
++                                _fail('unsupported_word_numbering')
++                            properties_seen.add(local)
++                            if local in ('pPr', 'rPr'):
++                                if part.attrib:
++                                    _fail('unsupported_word_numbering')
++                                _word_properties(part, _PARAGRAPH_PROPERTIES if local == 'pPr' else _RUN_PROPERTIES)
++                            elif local in ('isLgl', 'legacy'):
++                                if len(part):
++                                    _fail('unsupported_word_numbering')
++                                _white(part)
++                            else:
++                                self._value(part, local)
++                        levels[level] = child
++                    elif child.tag in {q(W, n) for n in ('nsid', 'multiLevelType', 'tmpl', 'name', 'styleLink', 'numStyleLink')}:
++                        if child.tag in metadata:
++                            _fail('unsupported_word_numbering')
++                        metadata.add(child.tag)
++                        self._value(child, child.tag.removeprefix(q(W, '')))
++                    else:
++                        _fail('unsupported_word_numbering')
++                if not levels:
++                    _fail('unsupported_word_numbering')
++                abstracts[identity] = (item, levels)
++            elif item.tag == q(W, 'num'):
++                if set(item.attrib) != {q(W, 'numId')} or len(item) != 1:
++                    _fail('unsupported_word_numbering')
++                identity = self._number(item.get(q(W, 'numId')))
++                if identity in references or len(references) >= 128:
++                    _fail('unsupported_word_numbering')
++                references[identity] = self._number(self._value(item[0], 'abstractNumId'), zero=True)
++            else:
++                _fail('unsupported_word_numbering')
++        if not abstracts or not references or any(identity not in abstracts for identity in references.values()):
++            _fail('unsupported_word_numbering')
++        self.numbering = abstracts, references
++        self.empty_numbering = {}
++
++    def _numbering_profile(self, identity, index):
++        self._numbering_graph()
++        abstracts, references = self.numbering
++        if identity not in references:
++            _fail('unsupported_word_numbering')
++        abstract, levels = abstracts[references[identity]]
++        if index not in levels:
++            _fail('unsupported_word_numbering')
++        key = (identity, index)
++        if key in self.empty_numbering:
++            return self.empty_numbering[key]
++        root_names = {child.tag for child in abstract if child.tag != q(W, 'lvl')}
++        if root_names - {q(W, n) for n in ('nsid', 'multiLevelType', 'tmpl')}:
++            _fail('unsupported_word_numbering')
++        for child in abstract:
++            if child.tag in (q(W, 'nsid'), q(W, 'tmpl')):
++                if not re.fullmatch(r'[0-9A-Fa-f]{8}', self._value(child, child.tag.removeprefix(q(W, '')))):
++                    _fail('unsupported_word_numbering')
++        selected_format = levels[index].find(q(W, 'numFmt'))
++        selected_bullet = (selected_format is not None and
++                           self._value(selected_format, 'numFmt') == 'bullet')
++        # Native Office may include unused decimal levels beside an effective
++        # level-zero bullet. They do not make any body paragraph a nested or
++        # ordered item. _numbering_graph validates every declaration, and any
++        # use of another level is checked anew. The existing full-definition
++        # contract for empty heading wrappers remains unchanged.
++        for current, level in levels.items():
++            if selected_bullet and current != index:
++                # A pStyle can select this nominally unused level despite an
++                # inherited ilvl. Such style-linked reachability is outside
++                # the finite single-level bullet profile.
++                if level.find(q(W, 'pStyle')) is not None:
++                    _fail('unsupported_word_numbering')
++                continue
++            _white(level)
++            parts = {}
++            for part in level:
++                local = part.tag.removeprefix(q(W, ''))
++                if part.tag != q(W, local) or local in parts or local not in {'start', 'numFmt', 'suff', 'lvlText', 'lvlJc', 'pPr', 'rPr', 'pStyle'}:
++                    _fail('unsupported_word_numbering')
++                parts[local] = part
++            if not {'numFmt', 'lvlText'} <= parts.keys():
++                _fail('unsupported_word_numbering')
++            category = self._value(parts['numFmt'], 'numFmt')
++            if category == 'none':
++                # Preserve the prior exact native empty-heading recipe.
++                if set(parts) not in ({'start', 'numFmt', 'suff', 'lvlText', 'lvlJc', 'pPr'},
++                                      {'start', 'numFmt', 'suff', 'lvlText', 'lvlJc', 'pPr', 'rPr'},
++                                      {'start', 'numFmt', 'suff', 'lvlText', 'lvlJc', 'pPr', 'pStyle'},
++                                      {'start', 'numFmt', 'suff', 'lvlText', 'lvlJc', 'pPr', 'rPr', 'pStyle'}):
++                    _fail('unsupported_word_numbering')
++                for name, expected in {'start': '1', 'suff': 'nothing', 'lvlText': '', 'lvlJc': 'start'}.items():
++                    self._value(parts[name], name, expected=expected)
++                ppr = parts['pPr']
++                _white(ppr)
++                if ppr.attrib or [n.tag for n in ppr] != [q(W, 'tabs'), q(W, 'ind')]:
++                    _fail('unsupported_word_numbering')
++                tabs, indent = ppr
++                if tabs.attrib or len(tabs) != 1 or tabs[0].tag != q(W, 'tab') or tabs[0].attrib != {q(W, 'val'): 'num', q(W, 'pos'): '0'} or len(tabs[0]) or len(indent) or indent.attrib != {q(W, 'start'): '0', q(W, 'hanging'): '0'}:
++                    _fail('unsupported_word_numbering')
++                for part in (tabs, tabs[0], indent):
++                    _white(part)
++                if 'rPr' in parts and (parts['rPr'].attrib or len(parts['rPr'])):
++                    _fail('unsupported_word_numbering')
++                if 'rPr' in parts:
++                    _white(parts['rPr'])
++                if 'pStyle' in parts and not self._value(parts['pStyle'], 'pStyle'):
++                    _fail('unsupported_word_numbering')
++                profile = 'none'
++            elif category == 'bullet':
++                if current != 0 or 'pStyle' in parts:
++                    _fail('unsupported_word_numbering')
++                multi = abstract.find(q(W, 'multiLevelType'))
++                if multi is not None and self._value(multi, 'multiLevelType') != 'singleLevel':
++                    _fail('unsupported_word_numbering')
++                if 'start' in parts:
++                    self._value(parts['start'], 'start', expected='1')
++                if 'suff' in parts and self._value(parts['suff'], 'suff') not in ('tab', 'space', 'nothing'):
++                    _fail('unsupported_word_numbering')
++                if 'lvlJc' in parts and self._value(parts['lvlJc'], 'lvlJc') not in ('left', 'start'):
++                    _fail('unsupported_word_numbering')
++                if 'pPr' in parts:
++                    if parts['pPr'].attrib or any(child.tag not in (q(W, 'tabs'), q(W, 'ind')) for child in parts['pPr']):
++                        _fail('unsupported_word_numbering')
++                    self.properties(parts['pPr'], _PARAGRAPH_PROPERTIES)
++                if 'rPr' in parts:
++                    if parts['rPr'].attrib:
++                        _fail('unsupported_word_numbering')
++                    self.properties(parts['rPr'], _RUN_PROPERTIES)
++                    if parts['rPr'].find(q(W, 'rStyle')) is not None:
++                        _fail('unsupported_word_numbering')
++                glyph = self._value(parts['lvlText'], 'lvlText')
++                if glyph != '•':
++                    # This is the one exact Symbol private-use glyph mapping
++                    # emitted by native Office for an ordinary round bullet.
++                    fonts = parts.get('rPr')
++                    fonts = None if fonts is None else fonts.find(q(W, 'rFonts'))
++                    if glyph != '\uf0b7' or fonts is None or any(fonts.get(q(W, name)) != 'Symbol' for name in ('ascii', 'hAnsi')) or (q(W, 'cs') in fonts.attrib and fonts.get(q(W, 'cs')) != 'Symbol') or set(fonts.attrib) - {q(W, n) for n in ('ascii', 'hAnsi', 'cs', 'hint')}:
++                        _fail('unsupported_word_numbering')
++                profile = 'bullet'
++            else:
++                _fail('unsupported_word_numbering')
++            if current == index:
++                selected = profile
++        self.empty_numbering[key] = selected
++        return selected
++
++    def _numbering_property(self, node):
++        _white(node)
++        names = [part.tag for part in node]
++        if node.attrib or names not in ([q(W, 'ilvl'), q(W, 'numId')], [q(W, 'numId')], [q(W, 'ilvl')]):
++            _fail('unsupported_word_numbering')
++        identity = index = None
++        for part in node:
++            if part.tag == q(W, 'ilvl'):
++                index = self._number(self._value(part, 'ilvl'), 8, zero=True)
++            else:
++                identity = self._number(self._value(part, 'numId'), zero=True)
++        return identity, index
++
+     def _empty_numbering_property(self, node):
+-        # LibreOffice emits a numbering reference for unnumbered ODF headings.
+-        # Permit only a fully resolved graph with no label, suffix or overrides.
+-        # Ordinary lists, partial/ambiguous graphs and unknown properties remain
+-        # refused. Nothing is removed or rewritten in the native package.
+-        def fail():
+-            _fail('unsupported_word_numbering')
+-
+-        def value(element, name, expected=None):
+-            if (element.tag != q(W, name) or len(element)
+-                    or set(element.attrib) != {q(W, 'val')}):
+-                fail()
+-            _white(element)
+-            result = element.get(q(W, 'val'))
+-            if expected is not None and result != expected:
+-                fail()
+-            return result
+-
+-        def number(raw, maximum, zero=False):
+-            result = _integer(raw, maximum, 'unsupported_word_numbering', zero=zero)
+-            if raw != str(result):
+-                fail()
+-            return result
+-
+-        if self.empty_numbering is None:
+-            links = [target for kind, target in self.pkg.relationships.get('word/document.xml', {}).values()
+-                     if kind == R + '/numbering']
+-            if (links != ['word/numbering.xml'] or self.pkg.types.get('word/numbering.xml') !=
+-                    'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml'):
+-                fail()
+-            root = self.pkg.xml.get('word/numbering.xml')
+-            if (root is None or root.tag != q(W, 'numbering') or root.attrib not in
+-                    ({}, {q('http://schemas.openxmlformats.org/markup-compatibility/2006', 'Ignorable'): 'w14'})):
+-                fail()
+-            _white(root)
+-            abstracts, references = {}, {}
+-            for item in root:
+-                _tick(self.state.checkpoint)
+-                _white(item)
+-                if item.tag == q(W, 'abstractNum'):
+-                    if set(item.attrib) != {q(W, 'abstractNumId')}:
+-                        fail()
+-                    identity = number(item.get(q(W, 'abstractNumId')), 999999)
+-                    if identity in abstracts or not 1 <= len(item) <= 9:
+-                        fail()
+-                    levels = set()
+-                    for level in item:
+-                        _tick(self.state.checkpoint)
+-                        if level.tag != q(W, 'lvl') or set(level.attrib) != {q(W, 'ilvl')}:
+-                            fail()
+-                        index = number(level.get(q(W, 'ilvl')), 8, True)
+-                        if index in levels:
+-                            fail()
+-                        levels.add(index)
+-                        _white(level)
+-                        names = [part.tag for part in level]
+-                        expected = [q(W, n) for n in ('start', 'numFmt', 'suff', 'lvlText', 'lvlJc', 'pPr')]
+-                        if q(W, 'pStyle') in names:
+-                            expected.insert(2, q(W, 'pStyle'))
+-                        if q(W, 'rPr') in names:
+-                            expected.append(q(W, 'rPr'))
+-                        if names != expected:
+-                            fail()
+-                        for part in level:
+-                            local = part.tag.removeprefix(q(W, ''))
+-                            if local == 'pPr':
+-                                if part.attrib:
+-                                    fail()
+-                                _white(part)
+-                                if [item.tag for item in part] != [q(W, 'tabs'), q(W, 'ind')]:
+-                                    fail()
+-                                tabs, indent = part
+-                                _white(tabs)
+-                                if (tabs.attrib or len(tabs) != 1 or tabs[0].tag != q(W, 'tab')
+-                                        or tabs[0].attrib != {q(W, 'val'): 'num', q(W, 'pos'): '0'}
+-                                        or len(tabs[0]) or len(indent)
+-                                        or indent.attrib != {q(W, 'start'): '0', q(W, 'hanging'): '0'}):
+-                                    fail()
+-                                _white(tabs[0])
+-                                _white(indent)
+-                            elif local == 'rPr':
+-                                if part.attrib or len(part):
+-                                    fail()
+-                                _white(part)
+-                            elif local == 'pStyle':
+-                                if not value(part, local):
+-                                    fail()
+-                            else:
+-                                value(part, local, {'start': '1', 'numFmt': 'none',
+-                                                    'suff': 'nothing', 'lvlText': '',
+-                                                    'lvlJc': 'start'}[local])
+-                    abstracts[identity] = levels
+-                elif item.tag == q(W, 'num'):
+-                    if set(item.attrib) != {q(W, 'numId')} or len(item) != 1:
+-                        fail()
+-                    identity = number(item.get(q(W, 'numId')), 999999)
+-                    if identity in references:
+-                        fail()
+-                    references[identity] = number(value(item[0], 'abstractNumId'), 999999)
+-                else:
+-                    fail()
+-            if not abstracts or not references or any(ref not in abstracts for ref in references.values()):
+-                fail()
+-            self.empty_numbering = {identity: abstracts[ref] for identity, ref in references.items()}
+-        _white(node)
+-        if node.attrib or [part.tag for part in node] != [q(W, 'ilvl'), q(W, 'numId')]:
+-            fail()
+-        level = number(value(node[0], 'ilvl'), 8, True)
+-        identity = number(value(node[1], 'numId'), 999999)
+-        if level not in self.empty_numbering.get(identity, ()):
+-            fail()
++        # numId and ilvl can be inherited independently. Parse this source
++        # strictly here, then resolve the effective graph in the paragraph.
++        self._numbering_property(node)
+ 
+     def _style_properties(self, node, family):
+         # Office must not choose a different declaration from the one whose
+@@ -450,26 +733,50 @@
+                 _fail('ambiguous_word_style')
+         return list(reversed(chain))
+ 
+-    def paragraph(self, node):
++    def _paragraph_details(self, node, *, mode='body'):
+         _white(node)
+         properties = node.findall(q(W, 'pPr'))
+-        if len(properties) > 1:
++        if len(properties) > 1 or (properties and node[0] is not properties[0]):
+             _fail('ambiguous_word_properties')
+         prop = properties[0] if properties else None
+         style = prop.find(q(W, 'pStyle')) if prop is not None else None
+         chain = self.style_chain(style.get(q(W, 'val')) if style is not None else self.default_style, 'paragraph')
+-        level = None
++        level, numbering, page_break = None, None, False
++        num_identity, num_index, num_seen = None, 0, False
+         for source in [self.default_paragraph] + [n.find(q(W, 'pPr')) for n in chain] + [prop]:
+             if source is None:
+                 continue
+             self.properties(source, _PARAGRAPH_PROPERTIES)
+             outlines = source.findall(q(W, 'outlineLvl'))
+-            if len(outlines) > 1:
+-                _fail('ambiguous_heading')
+             if outlines:
+                 value = _integer(outlines[0].get(q(W, 'val')), 9, 'invalid_heading', zero=True)
+                 level = None if value == 9 else value + 1
+-        text = []
++            num = source.find(q(W, 'numPr'))
++            if num is not None:
++                num_seen = True
++                identity, index = self._numbering_property(num)
++                if identity is not None:
++                    num_identity = identity
++                if index is not None:
++                    num_index = index
++            before = source.find(q(W, 'pageBreakBefore'))
++            if before is not None:
++                page_break = self._toggle(before)
++        if num_identity not in (None, 0):
++            numbering = (num_identity, num_index, self._numbering_profile(num_identity, num_index))
++        elif num_identity is None and num_seen:
++            _fail('unsupported_word_numbering')
++        if numbering is not None and numbering[2] == 'none':
++            if level is None:
++                _fail('unsupported_word_numbering')
++            numbering = None
++        if numbering is not None and (level is not None or mode != 'body'):
++            _fail('unsupported_word_numbering')
++        if mode != 'body' and (level is not None or page_break):
++            _fail('unsupported_word_story')
++        text, notes = [], []
++        text_length = 0
++        marker = explicit_break = False
+         for run in node:
+             if run.tag == q(W, 'pPr'):
+                 continue
+@@ -480,7 +787,7 @@
+                 _fail('unsupported_word_inline')
+             _white(run)
+             run_properties = run.findall(q(W, 'rPr'))
+-            if len(run_properties) > 1:
++            if len(run_properties) > 1 or (run_properties and run[0] is not run_properties[0]):
+                 _fail('ambiguous_word_properties')
+             for rpr in run_properties:
+                 self.properties(rpr, _RUN_PROPERTIES)
+@@ -492,19 +799,120 @@
+                     continue
+                 if len(part):
+                     _fail('unsupported_word_inline')
++                value = None
+                 if part.tag == q(W, 't'):
+-                    text.append(part.text or '')
++                    if set(part.attrib) - {q('http://www.w3.org/XML/1998/namespace', 'space')} or part.get(q('http://www.w3.org/XML/1998/namespace', 'space'), 'default') not in ('preserve', 'default'):
++                        _fail('unsupported_word_inline')
++                    value = part.text or ''
+                 elif part.tag == q(W, 'tab'):
+-                    text.append('\t')
++                    if part.attrib or (part.text or '').strip():
++                        _fail('unsupported_word_inline')
++                    value = '\t'
+                 elif part.tag in (q(W, 'br'), q(W, 'cr')):
+-                    if part.tag == q(W, 'br') and part.get(q(W, 'type'), 'textWrapping') != 'textWrapping':
++                    if set(part.attrib) - ({q(W, 'type')} if part.tag == q(W, 'br') else set()) or (part.text or '').strip():
++                        _fail('unsupported_word_inline')
++                    category = part.get(q(W, 'type'), 'textWrapping')
++                    if category == 'page':
++                        if mode != 'body' or text_length or notes or explicit_break or page_break:
++                            _fail('unsupported_page_break')
++                        page_break = explicit_break = True
++                    elif category == 'textWrapping':
++                        value = '\n'
++                    else:
+                         _fail('unsupported_page_break')
+-                    text.append('\n')
++                elif part.tag == q(W, 'footnoteReference'):
++                    if mode != 'body' or set(part.attrib) != {q(W, 'id')} or (part.text or '').strip():
++                        _fail('unsupported_word_note')
++                    raw = part.get(q(W, 'id'))
++                    identity = _integer(raw, 999999, 'unsupported_word_note')
++                    if raw != str(identity) or identity in self.note_refs or identity not in self.note_records or self.note_records[identity][0] != 'normal' or len(self.note_refs) >= 64:
++                        _fail('unsupported_word_note')
++                    self.note_refs.append(identity)
++                    body = self._note_body(self.note_records[identity][1])
++                    notes.append({'offset': text_length, 'class': 'footnote', 'citation': str(len(self.note_refs)), 'body': body})
++                elif part.tag == q(W, 'footnoteRef'):
++                    if mode != 'note' or marker or text_length or part.attrib or (part.text or '').strip():
++                        _fail('unsupported_word_note')
++                    marker = True
+                 elif part.tag == q(W, 'lastRenderedPageBreak'):
+-                    pass
++                    if part.attrib or (part.text or '').strip():
++                        _fail('unsupported_word_inline')
+                 else:
+                     _fail('unsupported_word_inline')
+-        return self.state.paragraph(''.join(text), level)
++                if value is not None:
++                    text.append(value)
++                    text_length += len(value)
++        result = self.state.paragraph(''.join(text), level, notes=notes, page_break_before=page_break)
++        return result, numbering
++
++    def paragraph(self, node):
++        result, numbering = self._paragraph_details(node)
++        if numbering is not None:
++            # Table cells retain their own ordered paragraph boundaries; a
++            # nested visible list has no contract in this finite profile.
++            _fail('unsupported_word_numbering')
++        return result
++
++    def _note_body(self, node):
++        _white(node)
++        markers = list(node.iter(q(W, 'footnoteRef')))
++        if len(markers) != 1 or not len(node) or markers[0] not in list(node[0].iter()):
++            _fail('unsupported_word_note')
++        result = []
++        for child in node:
++            if child.tag != q(W, 'p'):
++                _fail('unsupported_word_note')
++            paragraph, _ = self._paragraph_details(child, mode='note')
++            result.append(paragraph)
++        if not result:
++            _fail('unsupported_word_note')
++        return result
++
++    def _story(self, root):
++        result = []
++        for child in root:
++            if child.tag != q(W, 'p'):
++                _fail('unsupported_word_story')
++            self.story_paragraphs += 1
++            if self.story_paragraphs > 128:
++                _fail('semantic_capacity')
++            paragraph, _ = self._paragraph_details(child, mode='story')
++            result.append(paragraph)
++        return result
++
++    def _section(self, node):
++        _white(node)
++        seen, stories = set(), {'header': [], 'footer': []}
++        for child in node:
++            if child.tag in seen:
++                _fail('ambiguous_word_properties')
++            seen.add(child.tag)
++            if child.tag in (q(W, 'headerReference'), q(W, 'footerReference')):
++                kind = 'header' if child.tag == q(W, 'headerReference') else 'footer'
++                _white(child)
++                if len(child) or set(child.attrib) != {q(W, 'type'), q(R, 'id')} or child.get(q(W, 'type')) != 'default':
++                    _fail('unsupported_word_section')
++                identity = child.get(q(R, 'id'))
++                if identity not in self.story_parts or identity in self.story_refs or self.story_parts[identity][0] != kind:
++                    _fail('unsupported_word_relationship')
++                self.story_refs.add(identity)
++                stories[kind] = self._story(self.story_parts[identity][2])
++            elif child.tag == q(W, 'footnotePr'):
++                self._note_properties(child)
++            else:
++                # Use a virtual property container rather than mutating XML.
++                # The shared verifier sees the original individual property.
++                class Properties:
++                    text = None
++                    tag = q(W, 'sectPr')
++                    def __iter__(self):
++                        return iter((child,))
++                self.properties(Properties(), _SECTION_PROPERTIES)
++                if child.tag == q(W, 'titlePg') and self._toggle(child):
++                    _fail('unsupported_word_section')
++                if child.tag == q(W, 'cols') and (len(child) or child.get(q(W, 'num'), '1') != '1'):
++                    _fail('unsupported_columns')
++        return stories
+ 
+     def table(self, node):
+         _white(node)
+@@ -560,27 +968,65 @@
+             _fail('unsupported_word_content')
+         body = self.pkg.body
+         _white(body)
+-        result = []
++        result, active_list, stories = [], None, None
+         for index, node in enumerate(body):
+             if node.tag == q(W, 'p'):
+-                result.append(self.paragraph(node))
++                paragraph, numbering = self._paragraph_details(node)
++                if numbering is not None:
++                    self.list_items += 1
++                    if self.list_items > 1024:
++                        _fail('semantic_capacity')
++                    key = numbering[:2]
++                    if active_list != key:
++                        result.append({'type': 'list', 'ordered': False, 'items': []})
++                        active_list = key
++                    result[-1]['items'].append([paragraph])
++                else:
++                    active_list = None
++                    result.append(paragraph)
+             elif node.tag == q(W, 'tbl'):
++                active_list = None
+                 result.append(self.table(node))
+             elif node.tag == q(W, 'sectPr') and index == len(body) - 1:
+-                self.properties(node, _SECTION_PROPERTIES)
+-                cols = node.find(q(W, 'cols'))
+-                if cols is not None and (len(cols) or cols.get(q(W, 'num'), '1') != '1'):
+-                    _fail('unsupported_columns')
++                active_list = None
++                stories = self._section(node)
+             else:
+                 _fail('unsupported_word_content')
++        if self.story_refs != set(self.story_parts):
++            _fail('unsupported_word_relationship')
++        if set(self.note_refs) != {identity for identity, (category, _) in self.note_records.items() if category == 'normal'}:
++            _fail('unsupported_word_note')
++        if stories is not None and (stories['header'] or stories['footer']):
++            result.append({'type': 'section_stories', 'start': 0, 'end': len(result), **stories})
+         return result
+ 
+ 
+ class _ODF:
++    # These are finite semantic bounds, in addition to package/XML/text limits.
++    _MAX_NOTES = 64
++    _MAX_LIST_ITEMS = 1024
++    _MAX_STORY_PARAGRAPHS = 128
++    _FO = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
++    _XML = 'http://www.w3.org/XML/1998/namespace'
++
+     def __init__(self, data, state, *, native_output=False):
+         self.state = state
+         self.native_output = native_output
+         self.pkg = _editable_package(data, 'odt', state.checkpoint)
++        # The shared bounded preflight discards processing instructions. Refuse
++        # those syntactic events before admitting any of their XML containers;
++        # escaped text, CDATA and comments containing '<?' remain ordinary data.
++        for name in self.pkg.xml:
++            parser = expat.ParserCreate(encoding='UTF-8')
++            parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
++            def refuse_instruction(*args):
++                _fail('xml_processing_instruction')
++            parser.ProcessingInstructionHandler = refuse_instruction
++            raw = self.pkg.parts[name]
++            for offset in range(0, len(raw), 16_384):
++                _tick(state.checkpoint)
++                parser.Parse(raw[offset:offset + 16_384], False)
++            parser.Parse(b'', True)
+         allowed = {'mimetype', 'META-INF/manifest.xml', 'content.xml', 'styles.xml',
+                    'meta.xml', 'settings.xml', 'Thumbnails/thumbnail.png'}
+         if native_output:
+@@ -591,8 +1037,79 @@
+             self.passive_metadata()
+             self.unprotected_output()
+         self.styles = {}
++        self.default_styles = {}
+         self.list_styles = {}
++        self.masters = {}
++        self.layouts = {}
++        self.note_ids = set()
++        self.note_nodes = set()
++        self.seen_note_nodes = set()
++        self.note_count = self.list_items = self.story_paragraphs = 0
++        self.master = None
++        self.body_paragraphs = 0
++        self.body_block_index = 0
++        self._style_cache = {}
+         body_nodes = set(self.pkg.body.iter())
++        parents = {child: parent for root in self.pkg.xml.values()
++                   for parent in root.iter() for child in parent}
++        story_nodes = set()
++        identifiers = set()
++        for name, root in self.pkg.xml.items():
++            sections = ({q(O, n) for n in ('scripts', 'font-face-decls', 'automatic-styles', 'body')}
++                        if name == 'content.xml' else
++                        {q(O, n) for n in ('font-face-decls', 'styles', 'automatic-styles', 'master-styles')}
++                        if name == 'styles.xml' else None)
++            if sections is not None:
++                if name == 'styles.xml' and root.tag != q(O, 'document-styles'):
++                    _fail('unsupported_odt_content')
++                _white(root)
++                seen_sections = set()
++                for section in root:
++                    if section.tag not in sections or section.tag in seen_sections:
++                        _fail('unsupported_odt_content')
++                    seen_sections.add(section.tag)
++                    _white(section)
++            for node in root.iter():
++                identity = node.get(q(self._XML, 'id'))
++                if node.tag == q(T, 'note'):
++                    if node not in body_nodes:
++                        _fail('unsupported_odt_note')
++                    self.note_nodes.add(node)
++                    identity = node.get(q(T, 'id'))
++                    if q(self._XML, 'id') in node.attrib:
++                        _fail('ambiguous_odt_id')
++                if identity is not None:
++                    self.identity(identity)
++                    if identity in identifiers:
++                        _fail('ambiguous_odt_id')
++                    identifiers.add(identity)
++                if node.tag in (q(T, 'note-citation'), q(T, 'note-body')):
++                    if parents.get(node) is None or parents[node].tag != q(T, 'note'):
++                        _fail('unsupported_odt_note')
++                if node.tag == q(T, 'note-ref'):
++                    _fail('unsupported_odt_note')
++                if node.tag == q(S, 'master-page'):
++                    if (name != 'styles.xml' or parents.get(node) is None
++                            or parents[node].tag != q(O, 'master-styles')
++                            or parents.get(parents[node]) is not root):
++                        _fail('unsupported_odt_master')
++                    identity = self.identity(node.get(q(S, 'name')))
++                    if identity in self.masters or self.masters:
++                        _fail('ambiguous_odt_master')
++                    self.masters[identity] = node
++                    for child in node:
++                        if child.tag in (q(S, 'header'), q(S, 'footer')):
++                            story_nodes.update(child.iter())
++                elif node.tag == q(S, 'page-layout'):
++                    if (name not in ('content.xml', 'styles.xml')
++                            or parents.get(node) is None
++                            or parents[node].tag != q(O, 'automatic-styles')
++                            or parents.get(parents[node]) is not root):
++                        _fail('unsupported_odt_master')
++                    identity = self.identity(node.get(q(S, 'name')))
++                    if identity in self.layouts or self.layouts:
++                        _fail('ambiguous_odt_master')
++                    self.layouts[identity] = node
+         # Writer preserves the DOCX Normal.dotm template label as passive
+         # metadata with an explicitly empty target. Admit only that exact
+         # direct-child form in native output; source links remain refused.
+@@ -617,14 +1134,19 @@
+                         empty_template = node
+         for name, root in self.pkg.xml.items():
+             for node in root.iter():
+-                if node.tag in (q(T, 'p'), q(T, 'h'), q(TB, 'table')) and node not in body_nodes:
++                if (node.tag in (q(T, 'p'), q(T, 'h'), q(TB, 'table'))
++                        and node not in body_nodes and node not in story_nodes):
+                     _fail('unsupported_odt_content')
+                 if (any(attr in (q(XL, 'href'), q('http://www.w3.org/XML/1998/namespace', 'base'))
+                         for attr in node.attrib)
+                         and not (name == 'meta.xml' and node is empty_template)):
+                     _fail('linked_content')
+-                if node.tag in (q(S, 'header'), q(S, 'footer'), q(S, 'header-left'), q(S, 'footer-left')):
+-                    if len(node) or (node.text or '').strip():
++                if node.tag in (q(S, 'header'), q(S, 'footer')) and node not in story_nodes:
++                    _fail('unsupported_headers_footers')
++                if node.tag in (q(S, 'header-left'), q(S, 'footer-left'),
++                                q(S, 'header-first'), q(S, 'footer-first')):
++                    # Historical native output may carry inert empty variants.
++                    if node.attrib or len(node) or (node.text or '').strip():
+                         _fail('unsupported_headers_footers')
+                 if node.tag == q(T, 'outline-level-style') and node.get(q(S, 'num-format'), ''):
+                     _fail('numbered_headings')
+@@ -632,21 +1154,203 @@
+                     _fail('hidden_text')
+                 if node.get(q(TB, 'display')) in ('false', '0'):
+                     _fail('hidden_text')
+-                if node.tag == q(T, 'list-style') and native_output:
+-                    identity = node.get(q(S, 'name'))
++                if node.tag == q(T, 'list-style'):
++                    self.style_scope(name, node, root, parents)
++                    identity = self.identity(node.get(q(S, 'name')))
+                     if not identity or identity in self.list_styles:
+                         _fail('ambiguous_odt_style')
+                     self.list_styles[identity] = node
+                 if node.tag == q(S, 'style'):
+-                    identity = (node.get(q(S, 'family')), node.get(q(S, 'name')))
++                    self.style_scope(name, node, root, parents)
++                    identity = (self.style_family(node.get(q(S, 'family'))), self.identity(node.get(q(S, 'name'))))
+                     if not identity[1] or identity in self.styles:
+                         _fail('ambiguous_odt_style')
+                     self.styles[identity] = node
++                if node.tag == q(S, 'default-style'):
++                    self.style_scope(name, node, root, parents)
++                    family = self.style_family(node.get(q(S, 'family')))
++                    if family in self.default_styles:
++                        _fail('ambiguous_odt_style')
++                    self.default_styles[family] = node
+         # Generic package validation precedes this explicit content profile.
+         for root in self.pkg.xml.values():
+             for node in root.iter():
+                 if node.tag == q(O, 'forms') and (len(node) or (node.text or '').strip()):
+                     _fail('active_or_signed_package')
++        # Resolve the complete graph once: an unused cycle/dangling definition
++        # cannot become a second interpretation of the same selected style.
++        for family, identity in self.styles:
++            self.style(identity, family, definition=True)
++        for family in self.default_styles:
++            self.style(None, family, definition=True)
++        self.validate_masters()
++
++    def identity(self, value):
++        if (not isinstance(value, str) or not 1 <= len(value) <= 128
++                or any(ord(c) < 33 for c in value)):
++            _fail('ambiguous_odt_id')
++        return value
++
++    def style_family(self, value):
++        if value not in ('paragraph', 'text', 'section', 'table', 'table-column', 'table-row',
++                         'table-cell', 'graphic', 'presentation', 'drawing-page', 'chart', 'ruby'):
++            _fail('ambiguous_odt_style')
++        return value
++
++    def style_scope(self, name, node, root, parents):
++        parent = parents.get(node)
++        if (name not in ('content.xml', 'styles.xml') or parent is None
++                or parent.tag not in (q(O, 'styles'), q(O, 'automatic-styles'))
++                or (name == 'content.xml' and parent.tag != q(O, 'automatic-styles'))
++                or parents.get(parent) is not root):
++            _fail('ambiguous_odt_style')
++
++    def visual_properties(self, node):
++        # Finite passive typography only. No visible descendants, URI targets,
++        # computed fields, conditions, background objects or foreign elements.
++        FO = self._FO
++        fo = set(('font-variant font-family font-size font-size-adjust font-stretch font-style '
++                  'font-weight color background-color country language hyphenate hyphenation-remain-char-count '
++                  'hyphenation-push-char-count hyphenation-ladder-count letter-spacing text-transform text-shadow text-align '
++                  'text-align-last text-indent line-height orphans widows keep-together keep-with-next '
++                  'margin margin-left margin-right margin-top margin-bottom padding padding-left padding-right '
++                  'padding-top padding-bottom border border-left border-right border-top border-bottom '
++                  'break-before break-after page-width page-height min-height height width direction '
++                  'wrap-option').split())
++        style = set(('font-name font-name-asian font-name-complex font-family-asian font-family-complex '
++                     'font-family-generic font-family-generic-asian font-family-generic-complex '
++                     'font-pitch font-pitch-asian font-pitch-complex font-style-name font-style-name-asian '
++                     'font-style-name-complex font-size-asian font-size-complex font-size-rel font-size-rel-asian '
++                     'font-size-rel-complex font-style-asian font-style-complex font-weight-asian font-weight-complex '
++                     'country-asian country-complex language-asian language-complex script-asian script-complex '
++                     'text-underline-style text-underline-width text-underline-color text-underline-mode '
++                     'text-overline-style text-overline-width text-overline-color text-overline-mode '
++                     'text-line-through-style text-line-through-type text-line-through-width text-line-through-color '
++                     'text-line-through-text text-line-through-text-style text-line-through-mode '
++                     'text-position text-combine text-combine-start-char text-combine-end-char text-rotation-angle '
++                     'text-rotation-scale text-scale text-blinking font-relief text-outline letter-kerning '
++                     'text-emphasize text-autospace punctuation-wrap line-break writing-mode writing-mode-automatic '
++                     'vertical-align line-height-at-least line-spacing font-independent-line-spacing '
++                     'justify-single-word auto-text-indent contextual-spacing snap-to-layout-grid register-true '
++                     'join-border tab-stop-distance line-number line-numbering border-line-width '
++                     'border-line-width-left border-line-width-right border-line-width-top border-line-width-bottom '
++                     'shadow print-orientation dynamic-spacing width rel-width column-width rel-column-width use-optimal-column-width '
++                     'row-height min-row-height use-optimal-row-height vertical-align glyph-orientation-vertical '
++                     'text-align-source diagonal-tl-br diagonal-bl-tr shrink-to-fit decimal-places '
++                     'footnote-max-height layout-grid-color layout-grid-lines layout-grid-base-height '
++                     'layout-grid-ruby-height layout-grid-mode layout-grid-ruby-below layout-grid-print '
++                     'layout-grid-display layout-grid-base-width layout-grid-snap-to-characters '
++                     'layout-grid-standard-mode may-break-between-rows use-window-font-color').split())
++        text = {'display', 'number-lines', 'line-number'}
++        # Semantic properties are consumed separately, never silently dropped.
++        allowed = {q(FO, n) for n in fo} | {q(S, n) for n in style} | {q(T, n) for n in text}
++        if node.tag == q(S, 'table-properties'):
++            allowed |= {q(TB, 'align'), q(TB, 'border-model')}
++        if set(node.attrib) - allowed:
++            _fail('unsupported_odt_style')
++        if node.get(q(T, 'display')) not in (None, 'true'):
++            _fail('hidden_text')
++        if node.get(q(S, 'text-blinking')) not in (None, 'false'):
++            _fail('unsupported_odt_style')
++        _white(node)
++        for child in node:
++            if child.tag == q(S, 'footnote-sep') and node.tag == q(S, 'page-layout-properties'):
++                if (len(child) or set(child.attrib) - {q(S, n) for n in (
++                        'width', 'line-style', 'adjustment', 'rel-width', 'color',
++                        'distance-before-sep', 'distance-after-sep')}):
++                    _fail('unsupported_odt_style')
++                _white(child)
++                continue
++            if child.tag != q(S, 'tab-stops') or node.tag != q(S, 'paragraph-properties') or child.attrib:
++                _fail('unsupported_odt_style')
++            _white(child)
++            for stop in child:
++                if (stop.tag != q(S, 'tab-stop') or len(stop)
++                        or set(stop.attrib) - {q(S, n) for n in (
++                            'position', 'type', 'char', 'leader-type', 'leader-style',
++                            'leader-width', 'leader-color', 'leader-text', 'leader-text-style')}):
++                    _fail('unsupported_odt_style')
++                _white(stop)
++
++    def validate_masters(self):
++        if self.layouts and not self.masters:
++            _fail('orphan_odt_master')
++        for identity, node in self.layouts.items():
++            if (set(node.attrib) - {q(S, 'name'), q(S, 'page-usage')}
++                    or node.get(q(S, 'page-usage')) not in (None, 'all')):
++                _fail('unsupported_odt_master')
++            _white(node)
++            seen = set()
++            for child in node:
++                if child.tag in seen:
++                    _fail('ambiguous_odt_master')
++                seen.add(child.tag)
++                if child.tag == q(S, 'page-layout-properties'):
++                    self.visual_properties(child)
++                    if (len(child) > 1 or q(self._FO, 'break-before') in child.attrib
++                            or q(self._FO, 'break-after') in child.attrib):
++                        _fail('unsupported_odt_master')
++                elif child.tag in (q(S, 'header-style'), q(S, 'footer-style')):
++                    if child.attrib or len(child) > 1 or (len(child) and child[0].tag != q(S, 'header-footer-properties')):
++                        _fail('unsupported_odt_master')
++                    _white(child)
++                    if not len(child):
++                        continue
++                    self.visual_properties(child[0])
++                    if (len(child[0]) or q(self._FO, 'break-before') in child[0].attrib
++                            or q(self._FO, 'break-after') in child[0].attrib):
++                        _fail('unsupported_odt_master')
++                else:
++                    _fail('unsupported_odt_master')
++        for identity, node in self.masters.items():
++            if set(node.attrib) - {q(S, 'name'), q(S, 'display-name'), q(S, 'page-layout-name')}:
++                _fail('unsupported_odt_master')
++            layout = node.get(q(S, 'page-layout-name'))
++            if layout not in self.layouts or set(self.layouts) != {layout}:
++                _fail('ambiguous_odt_master')
++            _white(node)
++            seen = set()
++            for child in node:
++                if child.tag in seen:
++                    _fail('ambiguous_odt_master')
++                seen.add(child.tag)
++                if child.tag in (q(S, 'header'), q(S, 'footer')):
++                    if set(child.attrib) - {q(S, 'display')} or child.get(q(S, 'display')) not in (None, 'true'):
++                        _fail('unsupported_headers_footers')
++                    _white(child)
++                    if any(p.tag != q(T, 'p') for p in child):
++                        _fail('unsupported_headers_footers')
++                elif child.tag in (q(S, 'header-left'), q(S, 'footer-left'),
++                                   q(S, 'header-first'), q(S, 'footer-first')):
++                    if child.attrib or len(child) or (child.text or '').strip():
++                        _fail('unsupported_headers_footers')
++                else:
++                    _fail('unsupported_odt_master')
++
++    def stories(self, block_count):
++        if not self.masters:
++            if self.master is not None:
++                _fail('ambiguous_odt_master')
++            return None
++        # ODF starts at its first master when there is no explicit first style.
++        # Exactly one master/layout makes that default binding unambiguous.
++        identity = self.master if self.master is not None else next(iter(self.masters))
++        master = self.masters.get(identity)
++        if master is None:
++            _fail('ambiguous_odt_master')
++        stories = {}
++        for name in ('header', 'footer'):
++            node = master.find(q(S, name))
++            paragraphs = []
++            for paragraph in (() if node is None else node):
++                self.story_paragraphs += 1
++                if self.story_paragraphs > self._MAX_STORY_PARAGRAPHS:
++                    _fail('semantic_capacity')
++                paragraphs.append(self.paragraph(paragraph, context='story'))
++            stories[name] = paragraphs
++        if not any(stories.values()):
++            return None
++        return {'type': 'section_stories', 'start': 0, 'end': block_count, **stories}
+ 
+     def passive_metadata(self):
+         # Only the exact native document-type RDF assertion is passive here.
+@@ -797,32 +1501,97 @@
+             _fail('unsupported_list')
+         return self.paragraph(heading, empty_list=identity)
+ 
+-    def style(self, identity, family, *, empty_list=None):
+-        seen = set()
+-        while identity:
+-            key = (family, identity)
+-            if key in seen or key not in self.styles or len(seen) >= 64:
++    def style(self, identity, family, *, empty_list=None, bullet_list=None, definition=False):
++        original = identity
++        cache_key = (family, identity)
++        if cache_key not in self._style_cache:
++            seen, chain = set(), []
++            while identity:
++                self.identity(identity)
++                key = (family, identity)
++                if key in seen or key not in self.styles or len(seen) >= 64:
++                    _fail('ambiguous_odt_style')
++                seen.add(key)
++                node = self.styles[key]
++                chain.append(node)
++                identity = node.get(q(S, 'parent-style-name'))
++            default = self.default_styles.get(family)
++            if default is not None:
++                chain.append(default)
++            effective = {}
++            for node in reversed(chain):
++                default_node = node.tag == q(S, 'default-style')
++                allowed = ({q(S, 'family')} if default_node else {q(S, name) for name in (
++                    'name', 'family', 'display-name', 'parent-style-name', 'next-style-name',
++                    'list-style-name', 'list-level', 'master-page-name', 'default-outline-level',
++                    'class', 'auto-update')})
++                if set(node.attrib) - allowed:
++                    _fail('unsupported_odt_style')
++                _white(node)
++                next_style = node.get(q(S, 'next-style-name'))
++                if next_style is not None and (family, self.identity(next_style)) not in self.styles:
++                    _fail('ambiguous_odt_style')
++                for name in ('list-style-name', 'list-level', 'master-page-name'):
++                    value = node.get(q(S, name))
++                    if value is not None:
++                        if family != 'paragraph':
++                            _fail('unsupported_odt_style')
++                        effective[name] = value
++                seen_properties = set()
++                for prop in node:
++                    if prop.tag == q(S, 'map'):
++                        _fail('conditional_style')
++                    if prop.tag in seen_properties:
++                        _fail('ambiguous_odt_style')
++                    seen_properties.add(prop.tag)
++                    expected = {q(S, 'text-properties')}
++                    if family != 'text':
++                        expected.add(q(S, family + '-properties'))
++                    if prop.tag not in expected:
++                        _fail('unsupported_odt_style')
++                    # Unused nontext families cannot supply visible content;
++                    # selected table styles are checked by table() too.
++                    if family in ('paragraph', 'text', 'table', 'table-cell', 'table-row', 'table-column'):
++                        self.visual_properties(prop)
++                    else:
++                        _white(prop)
++                        if len(prop):
++                            _fail('unsupported_odt_style')
++                    for name in ('break-before', 'break-after'):
++                        value = prop.get(q(self._FO, name))
++                        if value is not None:
++                            if prop.tag != q(S, 'paragraph-properties'):
++                                _fail('unsupported_odt_style')
++                            effective[name] = value
++            if effective.get('master-page-name') not in (None, ''):
++                if self.identity(effective['master-page-name']) not in self.masters:
++                    _fail('ambiguous_odt_master')
++            list_name = effective.get('list-style-name')
++            if list_name and self.identity(list_name) not in self.list_styles:
+                 _fail('ambiguous_odt_style')
+-            seen.add(key)
+-            node = self.styles[key]
+-            list_name = node.get(q(S, 'list-style-name'))
+-            if list_name and (empty_list is None or list_name != empty_list):
++            if effective.get('break-before') not in (None, 'auto', 'page'):
++                _fail('unsupported_page_break')
++            if effective.get('break-after') not in (None, 'auto'):
++                _fail('unsupported_page_break')
++            self._style_cache[cache_key] = effective
++        effective = self._style_cache[cache_key]
++        if not definition:
++            list_name = effective.get('list-style-name')
++            if list_name and list_name not in (empty_list, bullet_list):
+                 _fail('unsupported_list')
+-            if empty_list is not None and node.get(q(S, 'list-level')) not in (None, '1'):
++            if (empty_list is not None or bullet_list is not None) and effective.get('list-level') not in (None, '1'):
+                 _fail('unsupported_list')
+-            if node.find(q(S, 'map')) is not None:
+-                _fail('conditional_style')
+-            for prop in node:
+-                if prop.get(q(T, 'display')) == 'none':
+-                    _fail('hidden_text')
+-            identity = node.get(q(S, 'parent-style-name'))
+-
+-    def inline(self, node):
++            if original is not None:
++                self.identity(original)
++        return effective
++
++    def inline(self, node, *, notes_allowed=True):
+         # Raw XML whitespace and ODF's explicit whitespace are different.
+         # Preserve the finite exact-text profile by refusing raw forms whose
+         # native whitespace collapsing would differ from literal extraction.
+         pieces = []
+         length = 0
++        notes = []
+ 
+         def add(value, explicit=False):
+             nonlocal length
+@@ -856,6 +1625,8 @@
+                     if set(child.attrib) - ({q(T, 'tab-ref')} if child.tag == q(T, 'tab') else set()):
+                         _fail('unsupported_odt_inline')
+                     add({q(T, 'tab'): '\t', q(T, 'line-break'): '\n', q(T, 'soft-page-break'): ''}[child.tag], True)
++                elif child.tag == q(T, 'note') and notes_allowed:
++                    notes.append(self.note(child, length))
+                 else:
+                     _fail('unsupported_odt_inline')
+                 add(child.tail or '')
+@@ -864,15 +1635,44 @@
+         if pieces and ((not pieces[0][1] and pieces[0][0].startswith(' ')) or
+                        (not pieces[-1][1] and pieces[-1][0].endswith(' '))):
+             _fail('ambiguous_odt_whitespace')
+-        return ''.join(value for value, explicit in pieces)
+-
+-    def paragraph(self, node, *, empty_list=None):
++        return ''.join(value for value, explicit in pieces), notes
++
++    def note(self, node, offset):
++        if (set(node.attrib) != {q(T, 'id'), q(T, 'note-class')}
++                or node.get(q(T, 'note-class')) != 'footnote'):
++            _fail('unsupported_odt_note')
++        identity = self.identity(node.get(q(T, 'id')))
++        self.note_count += 1
++        if identity in self.note_ids:
++            _fail('ambiguous_odt_id')
++        self.note_ids.add(identity)
++        self.seen_note_nodes.add(node)
++        if self.note_count > self._MAX_NOTES:
++            _fail('semantic_capacity')
++        _white(node)
++        if (len(node) != 2 or node[0].tag != q(T, 'note-citation')
++                or node[1].tag != q(T, 'note-body')):
++            _fail('unsupported_odt_note')
++        citation, body = node
++        if (citation.attrib or len(citation) or (citation.text or '') != str(self.note_count)
++                or body.attrib or not len(body)):
++            _fail('unsupported_odt_note')
++        _white(body)
++        paragraphs = []
++        for paragraph in body:
++            if paragraph.tag != q(T, 'p'):
++                _fail('unsupported_odt_note')
++            paragraphs.append(self.paragraph(paragraph, context='note'))
++        return {'offset': offset, 'class': 'footnote', 'citation': str(self.note_count), 'body': paragraphs}
++
++    def paragraph(self, node, *, empty_list=None, bullet_list=None, context='body'):
+         allowed = {q(T, 'style-name'), q('http://www.w3.org/XML/1998/namespace', 'id')}
+         if node.tag == q(T, 'h'):
+             allowed |= {q(T, 'outline-level'), q(T, 'is-list-header')}
+         if set(node.attrib) - allowed:
+             _fail('unsupported_odt_paragraph')
+-        self.style(node.get(q(T, 'style-name')), 'paragraph', empty_list=empty_list)
++        effective = self.style(node.get(q(T, 'style-name')), 'paragraph',
++                               empty_list=empty_list, bullet_list=bullet_list)
+         if node.get(q(T, 'conditional-style-name')) is not None:
+             _fail('conditional_style')
+         level = None
+@@ -880,12 +1680,90 @@
+             level = _integer(node.get(q(T, 'outline-level')), 9, 'invalid_heading')
+             if node.get(q(T, 'is-list-header')) not in (None, 'false', '0'):
+                 _fail('unsupported_list')
+-        return self.state.paragraph(self.inline(node), level)
++        master = effective.get('master-page-name')
++        page_break = effective.get('break-before') == 'page'
++        if context != 'body' and (master or page_break):
++            _fail('unsupported_odt_scope')
++        if context == 'body':
++            if master:
++                if self.body_paragraphs or self.body_block_index:
++                    _fail('unsupported_odt_master_transition')
++                self.master = master
++            self.body_paragraphs += 1
++        text, notes = self.inline(node, notes_allowed=context in ('body', 'cell', 'list'))
++        return self.state.paragraph(text, level, notes=notes, page_break_before=page_break)
++
++    def bullet_list(self, node):
++        _white(node)
++        if set(node.attrib) - {q(T, 'style-name'), q(self._XML, 'id')}:
++            _fail('unsupported_list')
++        identity = node.get(q(T, 'style-name'))
++        style = self.list_styles.get(identity)
++        if style is None:
++            _fail('ambiguous_odt_style')
++        if set(style.attrib) - {q(S, 'name'), q(S, 'display-name')} or len(style) != 1:
++            _fail('unsupported_list')
++        _white(style)
++        level = style[0]
++        if (level.tag != q(T, 'list-level-style-bullet')
++                or set(level.attrib) - {q(T, 'level'), q(T, 'bullet-char'), q(T, 'style-name'), q(T, 'bullet-relative-size')}
++                or level.get(q(T, 'level')) != '1'
++                or level.get(q(T, 'bullet-char')) != '•'):
++            _fail('unsupported_list')
++        self.style(level.get(q(T, 'style-name')), 'text')
++        _white(level)
++        seen = set()
++        for child in level:
++            if child.tag in seen:
++                _fail('ambiguous_odt_style')
++            seen.add(child.tag)
++            if child.tag == q(S, 'text-properties'):
++                self.visual_properties(child)
++                if len(child):
++                    _fail('unsupported_list')
++            elif child.tag == q(S, 'list-level-properties'):
++                allowed = {q(T, 'list-level-position-and-space-mode'), q(T, 'space-before'),
++                           q(T, 'min-label-width'), q(T, 'min-label-distance'), q(S, 'font-name'),
++                           q(self._FO, 'text-align'), q(self._FO, 'width'), q(self._FO, 'height')}
++                if (set(child.attrib) - allowed
++                        or child.get(q(T, 'list-level-position-and-space-mode')) not in (None, 'label-width-and-position', 'label-alignment')):
++                    _fail('unsupported_list')
++                _white(child)
++                if len(child):
++                    if (len(child) != 1 or child[0].tag != q(S, 'list-level-label-alignment')
++                            or child.get(q(T, 'list-level-position-and-space-mode')) != 'label-alignment'):
++                        _fail('unsupported_list')
++                    alignment = child[0]
++                    if (len(alignment) or set(alignment.attrib) - {q(T, 'label-followed-by'),
++                            q(T, 'list-tab-stop-position'), q(self._FO, 'text-indent'), q(self._FO, 'margin-left')}
++                            or alignment.get(q(T, 'label-followed-by')) not in ('space', 'listtab', 'nothing')):
++                        _fail('unsupported_list')
++                    _white(alignment)
++            else:
++                _fail('unsupported_list')
++        items = []
++        for item in node:
++            if item.tag != q(T, 'list-item') or item.attrib or len(item) != 1:
++                _fail('unsupported_list')
++            _white(item)
++            self.list_items += 1
++            if self.list_items > self._MAX_LIST_ITEMS:
++                _fail('semantic_capacity')
++            paragraphs = []
++            for paragraph in item:
++                if paragraph.tag != q(T, 'p'):
++                    _fail('unsupported_list')
++                paragraphs.append(self.paragraph(paragraph, bullet_list=identity, context='list'))
++            items.append(paragraphs)
++        if not items:
++            _fail('unsupported_list')
++        return {'type': 'list', 'ordered': False, 'items': items}
+ 
+     def table(self, node):
+         _white(node)
+         if set(node.attrib) - {q(TB, 'name'), q(TB, 'style-name')}:
+             _fail('unsupported_table')
++        self.style(node.get(q(TB, 'style-name')), 'table')
+         rows, columns = [], 0
+         for child in node:
+             if child.tag == q(TB, 'table-column'):
+@@ -893,6 +1771,8 @@
+                     _fail('unsupported_table')
+                 if len(child):
+                     _fail('unsupported_table')
++                self.style(child.get(q(TB, 'style-name')), 'table-column')
++                self.style(child.get(q(TB, 'default-cell-style-name')), 'table-cell')
+                 columns += _integer(child.get(q(TB, 'number-columns-repeated'), '1'), MAX_COLUMNS, 'table_capacity')
+                 if columns > MAX_COLUMNS:
+                     _fail('table_capacity')
+@@ -902,6 +1782,10 @@
+             if set(child.attrib) - {q(TB, 'style-name'), q(TB, 'number-rows-repeated'), q(TB, 'default-cell-style-name')}:
+                 _fail('unsupported_table')
+             repeat = _integer(child.get(q(TB, 'number-rows-repeated'), '1'), MAX_CELLS, 'table_capacity')
++            self.style(child.get(q(TB, 'style-name')), 'table-row')
++            self.style(child.get(q(TB, 'default-cell-style-name')), 'table-cell')
++            if repeat > 1 and any(n.tag == q(T, 'note') for n in child.iter()):
++                _fail('unsupported_odt_note')
+             _white(child)
+             row = []
+             for cell in child:
+@@ -917,14 +1801,17 @@
+                 if any(key in cell.attrib for key in (q(TB, 'formula'), q(O, 'value'), q(O, 'date-value'), q(O, 'string-value'), q(O, 'boolean-value'), q(TB, 'content-validation-name'))):
+                     _fail('typed_table_cell')
+                 _white(cell)
++                self.style(cell.get(q(TB, 'style-name')), 'table-cell')
++                copies = _integer(cell.get(q(TB, 'number-columns-repeated'), '1'), MAX_COLUMNS, 'table_capacity')
++                if copies > 1 and any(n.tag == q(T, 'note') for n in cell.iter()):
++                    _fail('unsupported_odt_note')
+                 paragraphs = []
+                 for paragraph in cell:
+                     if paragraph.tag not in (q(T, 'p'), q(T, 'h')):
+                         _fail('unsupported_table')
+-                    paragraphs.append(self.paragraph(paragraph))
++                    paragraphs.append(self.paragraph(paragraph, context='cell'))
+                 if not paragraphs:
+                     _fail('unsupported_table')
+-                copies = _integer(cell.get(q(TB, 'number-columns-repeated'), '1'), MAX_COLUMNS, 'table_capacity')
+                 if len(row) + copies > MAX_COLUMNS:
+                     _fail('table_capacity')
+                 row.extend([paragraphs] * copies)
+@@ -937,21 +1824,61 @@
+ 
+     def blocks(self):
+         _white(self.pkg.body)
++        if (set(self.pkg.body.attrib) - {q(T, 'use-soft-page-breaks')}
++                or self.pkg.body.get(q(T, 'use-soft-page-breaks')) not in (None, 'true')):
++            _fail('unsupported_odt_content')
+         result = []
+         for node in self.pkg.body:
+             if node.tag in (q(T, 'p'), q(T, 'h')):
+                 result.append(self.paragraph(node))
+             elif node.tag == q(TB, 'table'):
+                 result.append(self.table(node))
+-            elif node.tag == q(T, 'list') and self.native_output:
+-                result.append(self.empty_heading_list(node))
++            elif node.tag == q(T, 'list'):
++                style = self.list_styles.get(node.get(q(T, 'style-name')))
++                if (self.native_output and style is not None and len(style)
++                        and style[0].tag == q(T, 'list-level-style-number')):
++                    result.append(self.empty_heading_list(node))
++                else:
++                    result.append(self.bullet_list(node))
+             elif node.tag == q(T, 'sequence-decls'):
+                 _white(node)
+                 if any(c.tag != q(T, 'sequence-decl') or len(c) or (c.text or '').strip() for c in node):
+                     _fail('unsupported_odt_content')
+             else:
+                 _fail('unsupported_odt_content')
++            self.body_block_index = len(result)
++        if self.seen_note_nodes != self.note_nodes:
++            _fail('unsupported_odt_note')
++        if self.note_count:
++            self.note_configuration()
++        stories = self.stories(len(result))
++        if stories is not None:
++            result.append(stories)
+         return result
++
++    def note_configuration(self):
++        # The implicit default is decimal, document-wide automatic numbering.
++        # Explicit configurations must express that same finite behavior.
++        configurations = [node for root in self.pkg.xml.values() for node in root.iter()
++                          if node.tag == q(T, 'notes-configuration')
++                          and node.get(q(T, 'note-class')) == 'footnote']
++        if len(configurations) > 1:
++            _fail('unsupported_odt_note')
++        for node in configurations:
++            allowed = {q(T, n) for n in ('note-class', 'citation-style-name', 'citation-body-style-name',
++                       'default-style-name', 'start-value', 'footnotes-position', 'start-numbering-at')}
++            allowed |= {q(S, n) for n in ('num-format', 'num-prefix', 'num-suffix')}
++            if (set(node.attrib) - allowed or len(node)
++                    or node.get(q(S, 'num-format'), '1') != '1'
++                    or node.get(q(S, 'num-prefix'), '') or node.get(q(S, 'num-suffix'), '')
++                    or node.get(q(T, 'start-value'), '0') != '0'
++                    or node.get(q(T, 'footnotes-position'), 'page') != 'page'
++                    or node.get(q(T, 'start-numbering-at'), 'document') != 'document'):
++                _fail('unsupported_odt_note')
++            _white(node)
++            self.style(node.get(q(T, 'default-style-name')), 'paragraph')
++            self.style(node.get(q(T, 'citation-style-name')), 'text')
++            self.style(node.get(q(T, 'citation-body-style-name')), 'text')
+ 
+ 
+ def _inventory(data, format, *, checkpoint=None, native_output=False):
+@@ -965,21 +1892,262 @@
+             _fail('unsupported_conversion_format')
+     except (WordProfileError, ODFProfileError, ODTError, PresentationError) as error:
+         raise WordConversionError(str(error)) from None
+-    if not blocks:
++    if not any(b['type'] != 'section_stories' for b in blocks):
+         _fail('empty_document')
+-    # Count expanded repeats too; physical XML counters alone are insufficient.
+-    paragraphs = [p for b in blocks for p in ([b] if b['type'] != 'table' else
+-                  [p for row in b['rows'] for cell in row for p in cell])]
++    # Count semantic expansion (including repeated cells) independently from XML
++    # traversal. Story and note paragraphs participate, rather than disappearing
++    # from equality/hash/capacity behind a source-only extraction shortcut.
++    paragraphs = list(_paragraphs(blocks))
+     total = sum(len(p['text'].encode('utf-8')) for p in paragraphs)
+-    if len(paragraphs) > MAX_PARAGRAPHS or total > MAX_TEXT:
++    lists = [b for b in blocks if b['type'] == 'list']
++    notes = [n for p in paragraphs for n in p.get('notes', ())]
++    stories = [b for b in blocks if b['type'] == 'section_stories']
++    if (len(paragraphs) > MAX_PARAGRAPHS or total > MAX_TEXT
++            or len(notes) > 64 or sum(len(b['items']) for b in lists) > 1024
++            or len(stories) > 1
++            or sum(len(b['header']) + len(b['footer']) for b in stories) > 128):
+         _fail('semantic_capacity')
+     _tick(checkpoint)
+     return blocks
+ 
+ 
++def _paragraphs(blocks):
++    """Bounded grammar emitted by the two independent native inventories."""
++    for block in blocks:
++        kind = block['type']
++        if kind in ('paragraph', 'heading'):
++            yield block
++            for note in block.get('notes', ()):
++                yield from _paragraphs(note['body'])
++        elif kind == 'table':
++            for row in block['rows']:
++                for cell in row:
++                    yield from _paragraphs(cell)
++        elif kind == 'list':
++            for item in block['items']:
++                yield from _paragraphs(item)
++        elif kind == 'section_stories':
++            yield from _paragraphs(block['header'])
++            yield from _paragraphs(block['footer'])
++        else:
++            _fail('unsupported_semantic_block')
++
++
+ def inventory(data, format, *, checkpoint=None):
+     """Return strict source blocks; native-output exceptions are not inherited."""
+     return _inventory(data, format, checkpoint=checkpoint)
++
++
++def _native_xml_ranges(raw, root, checkpoint):
++    """Locate admitted XML nodes without reserializing namespace bindings.
++
++    The package has already passed the bounded native parser. Match Expat's
++    element stream to that exact tree; comments and declarations never become
++    editable semantic nodes. Retain every unselected byte, including prefixes
++    used only in markup-compatibility attribute values.
++    """
++    parser = expat.ParserCreate(encoding='UTF-8', namespace_separator='}')
++    stack, ranges = [], {}
++
++    def tag_end(start):
++        quote = None
++        for index in range(start, len(raw)):
++            byte = raw[index]
++            if quote is not None:
++                if byte == quote:
++                    quote = None
++            elif byte in (34, 39):
++                quote = byte
++            elif byte == 62:
++                return index + 1
++        _fail('unsupported_output_restoration')
++
++    def start(name, attributes):
++        _tick(checkpoint)
++        if stack:
++            parent = stack[-1]
++            if parent[1] >= len(parent[0]):
++                _fail('unsupported_output_restoration')
++            node = parent[0][parent[1]]
++            parent[1] += 1
++        else:
++            if ranges:
++                _fail('unsupported_output_restoration')
++            node = root
++        if node.tag != ('{' + name if '}' in name else name):
++            _fail('unsupported_output_restoration')
++        begin = parser.CurrentByteIndex
++        opening_end = tag_end(begin)
++        empty = raw[begin:opening_end].endswith(b'/>')
++        ranges[id(node)] = [begin, opening_end, None, empty]
++        stack.append([node, 0])
++
++    def end(name):
++        node, consumed = stack.pop()
++        if consumed != len(node):
++            _fail('unsupported_output_restoration')
++        row = ranges[id(node)]
++        row[2] = row[1] if row[3] else tag_end(parser.CurrentByteIndex)
++
++    def refuse(*args):
++        _fail('unsupported_output_restoration')
++
++    parser.StartElementHandler = start
++    parser.EndElementHandler = end
++    parser.StartDoctypeDeclHandler = refuse
++    parser.EntityDeclHandler = refuse
++    parser.ExternalEntityRefHandler = refuse
++    parser.ProcessingInstructionHandler = refuse
++    for offset in range(0, len(raw), 16_384):
++        _tick(checkpoint)
++        parser.Parse(raw[offset:offset + 16_384], False)
++    parser.Parse(b'', True)
++    if stack or len(ranges) != sum(1 for node in root.iter()):
++        _fail('unsupported_output_restoration')
++    return ranges
++
++
++def _native_xml_edits(raw, edits, checkpoint):
++    result, end = [], 0
++    for start, stop, replacement in sorted(edits):
++        _tick(checkpoint)
++        if not end <= start <= stop <= len(raw):
++            _fail('unsupported_output_restoration')
++        result.extend((raw[end:start], replacement))
++        end = stop
++    result.append(raw[end:])
++    return b''.join(result)
++
++
++def restore_odt_docx_output(source, output, *, checkpoint=None):
++    """Derive a source-bound DOCX for two exact, fully observed Office extras.
++
++    Raw output keeps its strict semantic verdict. This edits native XML in a
++    separate package: an added first-paragraph page-break property and exactly
++    one marker-adjacent separator tab in each affected automatic footnote.
++    No loss, other text difference, reference ambiguity or unsupported content
++    can authorize an edit. Full independent inventory equality is mandatory
++    both for the proposed limited changes and for the resulting native bytes.
++    """
++    try:
++        before = inventory(source, 'odt', checkpoint=checkpoint)
++    except WordConversionError as error:
++        raise WordConversionError(error.code, 'source_inventory') from None
++    try:
++        after = _inventory(output, 'docx', checkpoint=checkpoint, native_output=True)
++    except WordConversionError as error:
++        raise WordConversionError(error.code, 'output_inventory') from None
++    if before == after:
++        return output, {}
++    proposed = deepcopy(after)
++    first_break = (before[0]['type'] in ('paragraph', 'heading')
++                   and proposed[0]['type'] == before[0]['type']
++                   and 'page_break_before' not in before[0]
++                   and proposed[0].get('page_break_before') is True)
++    if first_break:
++        del proposed[0]['page_break_before']
++    before_notes = [note for paragraph in _paragraphs(before) for note in paragraph.get('notes', ())]
++    proposed_notes = [note for paragraph in _paragraphs(proposed) for note in paragraph.get('notes', ())]
++    if len(before_notes) != len(proposed_notes):
++        raise WordConversionError('semantic_mismatch', 'semantic_comparison')
++    note_tabs = []
++    for index, (wanted, actual) in enumerate(zip(before_notes, proposed_notes)):
++        _tick(checkpoint)
++        if actual['body'][0]['text'] != wanted['body'][0]['text']:
++            if actual['body'][0]['text'] == '\t' + wanted['body'][0]['text']:
++                actual['body'][0]['text'] = wanted['body'][0]['text']
++                note_tabs.append(index)
++    if proposed != before or not (first_break or note_tabs):
++        raise WordConversionError('semantic_mismatch', 'semantic_comparison')
++
++    # The complete graph, native part ownership and anchor order are checked
++    # again while binding the proposed semantic edits to original XML nodes.
++    word = _Word(output, _Inventory(checkpoint))
++    if word.blocks() != after:
++        _fail('unsupported_output_restoration')
++    word._root_attributes(word.pkg.xml['word/document.xml'])
++    edits, ranges = {}, {}
++
++    def locate(part, node):
++        if part not in ranges:
++            ranges[part] = _native_xml_ranges(word.pkg.parts[part], word.pkg.xml[part], checkpoint)
++        if id(node) not in ranges[part]:
++            _fail('unsupported_output_restoration')
++        return ranges[part][id(node)]
++
++    if first_break:
++        paragraph = word.pkg.body[0]
++        if paragraph.tag != q(W, 'p') or any(node.tag == q(W, 'br') and node.get(q(W, 'type')) == 'page' for node in paragraph.iter()):
++            _fail('unsupported_output_restoration')
++        part = 'word/document.xml'
++        override = ('<frw:pageBreakBefore xmlns:frw="' + W + '" frw:val="false"/>').encode('ascii')
++        prop = paragraph.find(q(W, 'pPr'))
++        existing = None if prop is None else prop.find(q(W, 'pageBreakBefore'))
++        if existing is not None:
++            start, _, end, _ = locate(part, existing)
++            edits.setdefault(part, []).append((start, end, override))
++        elif prop is None:
++            _, start, _, empty = locate(part, paragraph)
++            if empty:
++                _fail('unsupported_output_restoration')
++            container = ('<frw:pPr xmlns:frw="' + W + '">').encode('ascii') + override + b'</frw:pPr>'
++            edits.setdefault(part, []).append((start, start, container))
++        else:
++            start, opening_end, end, empty = locate(part, prop)
++            if empty:
++                opening = word.pkg.parts[part][start:opening_end]
++                name = re.match(rb'<([A-Za-z_][A-Za-z0-9_.:-]*)', opening)
++                if name is None:
++                    _fail('unsupported_output_restoration')
++                replacement = opening[:-2] + b'>' + override + b'</' + name[1] + b'>'
++                edits.setdefault(part, []).append((start, end, replacement))
++            else:
++                # Schema order: pStyle/keepNext/keepLines precede this
++                # property. Preserve all inherited and direct formatting.
++                position = opening_end
++                for child in prop:
++                    if child.tag not in {q(W, n) for n in ('pStyle', 'keepNext', 'keepLines')}:
++                        position = locate(part, child)[0]
++                        break
++                    position = locate(part, child)[2]
++                edits.setdefault(part, []).append((position, position, override))
++
++    for index in note_tabs:
++        _tick(checkpoint)
++        identity = word.note_refs[index]
++        note = word.note_records[identity][1]
++        paragraph = note[0]
++        inlines = [part for run in paragraph if run.tag == q(W, 'r')
++                   for part in run if part.tag != q(W, 'rPr')]
++        if len(inlines) < 2 or inlines[0].tag != q(W, 'footnoteRef') or inlines[1].tag != q(W, 'tab'):
++            _fail('unsupported_output_restoration')
++        part = 'word/footnotes.xml'
++        start, _, end, _ = locate(part, inlines[1])
++        edits.setdefault(part, []).append((start, end, b''))
++
++    changed = {name: _native_xml_edits(word.pkg.parts[name], rows, checkpoint) for name, rows in edits.items()}
++    buffer = BytesIO()
++    with ZipFile(BytesIO(output)) as original, ZipFile(buffer, 'w') as derived:
++        derived.comment = original.comment
++        for info in original.infolist():
++            _tick(checkpoint)
++            record = copy(info)
++            derived.writestr(record, changed.get(info.filename, word.pkg.parts.get(info.filename, b'')))
++            # ZipFile supplies mode 0600 for a zero attribute word. Restore
++            # the admitted original central-directory metadata explicitly.
++            record.external_attr = info.external_attr
++            if buffer.tell() > 1_000_000:
++                _fail('output_limit')
++    candidate = buffer.getvalue()
++    if len(candidate) > 1_000_000:
++        _fail('output_limit')
++    validate_conversion(source, 'odt', candidate, 'docx', checkpoint=checkpoint)
++    return candidate, {'source_bound_output_repair': {
++        'profile': 'odt_docx_native_extras_v1',
++        'raw_office_output_sha256': hashlib.sha256(output).hexdigest(),
++        'derived_output_sha256': hashlib.sha256(candidate).hexdigest(),
++        'first_paragraph_break_overrides': int(first_break),
++        'footnote_separator_tabs_removed': len(note_tabs)}}
+ 
+ 
+ def validate_conversion(source, source_format, output, output_format, *, checkpoint=None):
+@@ -995,13 +2163,24 @@
+         raise WordConversionError(error.code, 'output_inventory') from None
+     if before != after:
+         raise WordConversionError('semantic_mismatch', 'semantic_comparison')
+-    paragraphs = [p for b in before for p in ([b] if b['type'] != 'table' else
+-                  [p for row in b['rows'] for cell in row for p in cell])]
++    paragraphs = list(_paragraphs(before))
++    notes = [n for p in paragraphs for n in p.get('notes', ())]
++    lists = [b for b in before if b['type'] == 'list']
++    stories = [b for b in before if b['type'] == 'section_stories']
++    page_breaks = sum(bool(p.get('page_break_before')) for p in paragraphs)
++    structured = bool(lists or notes or stories or page_breaks)
+     encoded = json.dumps(before, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+-    return {'semantic_profile': 'plain_word_blocks_v1', 'semantic_sha256': hashlib.sha256(encoded).hexdigest(),
+-            'body_blocks': len(before), 'paragraphs': len(paragraphs),
+-            'headings': sum(p['type'] == 'heading' for p in paragraphs),
+-            'tables': sum(b['type'] == 'table' for b in before),
+-            'cells': sum(len(row) for b in before if b['type'] == 'table' for row in b['rows']),
+-            'text_utf8_bytes': sum(len(p['text'].encode('utf-8')) for p in paragraphs),
+-            'formatting_limits': FORMATTING_LIMITS}
++    result = {'semantic_profile': 'structured_word_blocks_v2' if structured else 'plain_word_blocks_v1',
++              'semantic_sha256': hashlib.sha256(encoded).hexdigest(),
++              'body_blocks': len(before) - len(stories), 'paragraphs': len(paragraphs),
++              'headings': sum(p['type'] == 'heading' for p in paragraphs),
++              'tables': sum(b['type'] == 'table' for b in before),
++              'cells': sum(len(row) for b in before if b['type'] == 'table' for row in b['rows']),
++              'text_utf8_bytes': sum(len(p['text'].encode('utf-8')) for p in paragraphs),
++              'formatting_limits': FORMATTING_LIMITS}
++    if structured:
++        result.update(lists=len(lists), list_items=sum(len(b['items']) for b in lists),
++                      footnotes=len(notes), header_stories=sum(bool(b['header']) for b in stories),
++                      footer_stories=sum(bool(b['footer']) for b in stories),
++                      explicit_page_breaks=page_breaks)
++    return result
+--- a/hermes_cli/friday_workspace_word_conversion.py
++++ b/hermes_cli/friday_workspace_word_conversion.py
+@@ -109,7 +109,7 @@
+ def render(cap, data, operation):
+     from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
+     from hermes_cli.friday_workspace_revision import check
+-    from tools.scoped_word_conversion import inventory, validate_conversion, WordConversionError
++    from tools.scoped_word_conversion import inventory, validate_conversion, restore_odt_docx_output, WordConversionError
+     if operation not in OPERATIONS:
+         raise ValueError('unsupported_conversion')
+     spec = OPERATIONS[operation]
+@@ -132,8 +132,12 @@
+         child.chmod(0o600)
+         _run(cap, _argv(work, toolchain, operation), work)
+         output = _read_native(work, operation)
++        repair = {}
++        if operation == 'odt_docx':
++            output, repair = restore_odt_docx_output(data, output, checkpoint=lambda: check(cap))
+         details = validate_conversion(data, spec['source'][1:], output, spec['output'][1:],
+                                       checkpoint=lambda: check(cap))
++        details.update(repair)
+         check(cap)
+         return output, details
+     finally:
