@@ -1,0 +1,99 @@
+--- accepted/root_f07_once.py
++++ successors/root_f07_once.py
+@@ -1,4 +1,4 @@
+-"""Inert finite Root caller for the FIRST original F07 ordinary phase.
++"""Inert finite Root caller for one exact original F07 ordered successor (phases2..4).
+ 
+ SOURCE ONLY. Import, inspect and pure validation issue no authority or effects.
+ Only an explicit --execute-once command on a separately Root-bound input starts
+@@ -34,7 +34,7 @@
+ PRIVACY_ASSERTIONS = ('source_metadata_only_checked','raw_user_retention_separately_scoped')
+ INPUT_KEYS = {'schema','status','operator','run_id','workdir','driver','source_review','checker','root_caller',
+     'selected_tester','saved_phase_preflight','scenario','authority','installation_closure','source_acceptance',
+-    'Root_acceptance','resources','slot_identity','disk_scope'}
++    'Root_acceptance','resources','slot_identity','disk_scope','phase_ordinal','accepted_predecessor'}
+ 
+ 
+ def need(ok,code):
+@@ -146,10 +146,14 @@
+ 
+ def validate(v):
+     """Pure shape checks; defaults, absent Root judgment and other phases fail."""
+-    need(type(v) is dict and set(v)==INPUT_KEYS and v.get('schema')=='frw.Root.F07.first-phase-finite-driver.v1'
++    need(type(v) is dict and set(v)==INPUT_KEYS and v.get('schema')=='frw.Root.F07.ordered-successor-finite-driver.v1'
+         and v.get('status')=='ROOT_BOUND_ONE_FUTURE_OPERATION' and v.get('operator')=='Root','F07_DRIVER_UNBOUND_NO_EFFECT')
+     need(type(v['run_id']) is str and re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,63}',v['run_id'])
+          and v['run_id']!='UNBOUND','F07_EXPLICIT_NEW_RUN_REQUIRED')
++    need(type(v['phase_ordinal']) is int and 2<=v['phase_ordinal']<=4,'F07_EXPLICIT_SUCCESSOR_ORDINAL_REQUIRED')
++    need(type(v['accepted_predecessor']) is dict
++         and set(v['accepted_predecessor'])=={'canonical_run','review','effect_and_consumer','proof','assessment'}
++         and all(reference_shape(r) for r in v['accepted_predecessor'].values()),'F07_ACTUAL_PREDECESSOR_BUNDLE_REQUIRED')
+     canonical_path(v['workdir'])
+     for key in INPUT_KEYS & {'driver','source_review','checker','root_caller','selected_tester','saved_phase_preflight',
+                             'scenario','authority','installation_closure','source_acceptance','Root_acceptance'}:
+@@ -216,12 +220,13 @@
+     base=readref(v['selected_tester'],private=False)
+     need(digest(base)==SELECTED_SHA and v['selected_tester']['path']==checker.module(checker.PREP).SELECTED_TESTER,
+          'F07_GENUINE_SELECTED_CC36_REQUIRED')
+-    saved=doc(v['saved_phase_preflight']);phase=saved['result']['phases'][0]
+-    need(phase['ordinal']==1 and phase['phase']=='NO_EXTENSION'
+-         and phase==checker.module(checker.PREP).phase_preparation(1,phase['scenario']['steps'][0]['input'])
+-         and readref(v['scenario'])==checker.encoded(phase['scenario']),'F07_EXACT_SAVED_FIRST_PHASE_REQUIRED')
+-    authority=doc(v['authority']);ordinary=checker.module(checker.PREP).compose_source(base,phase,run_id=v['run_id'],
+-        authority_ref=v['authority'],authority=authority,previous_phase=None)
++    saved=doc(v['saved_phase_preflight']);prep=checker.module(checker.PREP)
++    phase,previous_phase=caller.select_ordered_successor(prep,saved,ordinal=v['phase_ordinal'],scenario_raw=readref(v['scenario']))
++    authority=doc(v['authority'])
++    caller.accepted_successor_predecessor(checker,phase=phase,previous_phase=previous_phase,run_id=v['run_id'],
++        authority=authority,bundle=v['accepted_predecessor'],original_phases=saved['result']['phases'])
++    ordinary=prep.compose_source(base,phase,run_id=v['run_id'],authority_ref=v['authority'],
++        authority=authority,previous_phase=previous_phase)
+     acceptance=doc(v['Root_acceptance']);validate_acceptance(v,acceptance,phase)
+     privacy=acceptance['privacy_preflight'];roots=privacy['effective_product_roots'];private=privacy['private_roots']
+     need(roots==sorted(set(roots)) and str(checker.H) in roots and private==sorted(set(private)),
+@@ -233,6 +238,9 @@
+     materials=[v[k]['path'] for k in ('driver','source_review','checker','root_caller','saved_phase_preflight','scenario',
+         'authority','installation_closure','source_acceptance','Root_acceptance')]
+     materials += [v['workdir'],phase['scenario']['steps'][0]['input']['path']]
++    # Canonical predecessor is protected by its existing STATE contract; every
++    # Root review/proof/assessment source material remains in declared private roots.
++    materials += [r['path'] for k,r in v['accepted_predecessor'].items() if k!='canonical_run']
+     need(all(any(canonical_path(p).is_relative_to(root) for root in protected) for p in materials),'F07_PRIVATE_DRIVER_MATERIAL_COVERAGE_REQUIRED')
+     # Scope comes from existing write-consumer evidence. Full product/source
+     # traversal would be an unrelated inventory and is explicitly refused.
+@@ -245,7 +253,7 @@
+                 + v['disk_scope']['scope_evidence']): readref(ref)
+     protected_directory(v['workdir'])
+     need(not (STATE/'runs'/(v['run_id']+'.json')).exists(),'F07_NO_EXISTING_RUN_REPLAY')
+-    return caller,checker,base,phase,authority,ordinary,acceptance
++    return caller,checker,base,phase,previous_phase,authority,ordinary,acceptance
+ 
+ 
+ def bind_decisions(v,acceptance,checker,effect,observed):
+@@ -349,7 +357,7 @@
+ def owned_consumer(v,binding_ref,clock_ref,cleanup_ref,slot_fd,parent_identity):
+     """One real locked consumer. Called only by its finite owning parent."""
+     child_limits(v['resources'])
+-    caller,checker,base,phase,authority,ordinary,acceptance=source_inputs(v)
++    caller,checker,base,phase,previous_phase,authority,ordinary,acceptance=source_inputs(v)
+     need(os.getppid()==parent_identity['pid'] and kernel(os.getppid())==parent_identity,'F07_OWNED_PARENT_CHANGED')
+     need(lock_identity(os.fstat(slot_fd))==v['slot_identity'],'F07_INHERITED_SLOT_CHANGED')
+     checker.lock_held(SLOT,parent_identity)
+@@ -386,7 +394,7 @@
+         proof_ref=new(work/'ROOT-FRESH-CURRENT209-PROOF.json',checker.encoded(proof))
+         # Execute privacy decisions BEFORE creating any run or reading the token.
+         checker.decisions(proof,observed,proof_ref);checker.fresh(proof)
+-        candidate=caller.compose_consumer(checker,base,effect=effect,authority=authority,proof_ref=proof_ref,previous_phase=None)
++        candidate=caller.compose_consumer(checker,base,effect=effect,authority=authority,proof_ref=proof_ref,previous_phase=previous_phase)
+         candidate_ref=new(work/'bot_tester.f07.current209.py',candidate)
+         module=load_raw(readref(candidate_ref),candidate_ref['path'],'_Root_F07_actual_consumer')
+         new(work/'ROOT-ACTUAL-EFFECT-AND-CONSUMER.json',checker.encoded(dict(effect=effect,proof=proof_ref,
+@@ -458,7 +466,7 @@
+ 
+ 
+ def execute(v,*,binding_ref):
+-    caller,checker,base,phase,authority,ordinary,acceptance=source_inputs(v)
++    caller,checker,base,phase,previous_phase,authority,ordinary,acceptance=source_inputs(v)
+     need(any(canonical_path(binding_ref['path']).is_relative_to(canonical_path(p))
+              for p in acceptance['privacy_preflight']['private_roots']),'F07_PRIVATE_ROOT_BINDING_COVERAGE_REQUIRED')
+     work=Path(v['workdir']);need(not list(work.iterdir()),'F07_FRESH_EMPTY_OPERATION_WORKDIR_REQUIRED')

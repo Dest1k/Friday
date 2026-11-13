@@ -1,0 +1,50 @@
+--- accepted/f07_phase_prepare.py
++++ successors/f07_phase_prepare.py
+@@ -10,6 +10,7 @@
+ import difflib
+ import hashlib
+ import json
++import math
+ import os
+ from pathlib import Path
+ import re
+@@ -178,7 +179,10 @@
+     need(type(run) is dict and encoded(run)==run_raw and sha(run.get('scenario_sha256'))
+          and run.get('status')=='EVIDENCE_READY' and run.get('send_state')=='sent'
+          and type(run.get('send_attempts')) is int and run['send_attempts']==1
+-         and run.get('capture_window_complete') is True,'F07_ACTUAL_COMPLETE_CAPTURE_REQUIRED')
++         and run.get('capture_window_complete') is True
++         and type(run.get('sent_at')) in (int,float) and math.isfinite(run['sent_at'])
++         and type(run.get('capture_until')) in (int,float) and math.isfinite(run['capture_until'])
++         and run['capture_until']==run['sent_at']+180,'F07_ACTUAL_COMPLETE_CAPTURE_REQUIRED')
+     need(reference_shape(review_ref) and type(review_schema) is str and bool(review_schema),
+          'F07_ROOT_ACTUAL_REVIEW_REFERENCE_REQUIRED')
+     return {'run_id':run['id'],'scenario_sha256':run['scenario_sha256'],
+@@ -194,8 +198,8 @@
+     proof at the future boundary. Returning bytes is source preparation, never
+     issuance, read-only current qualification, or permission to execute them.
+     No predecessor/capture/refusal/freshness/current/once logic is replaced.
+-    ACK30 is bound at the existing send_ack_budget method for this exact run and
+-    scenario only; historical and unrelated ordinary runs retain their original10.
++    ACK30 is bound at the earliest existing send_ack_budget method for this exact
++    current and genuine immediate-predecessor pair. Older/unrelated runs keep10.
+     """
+     need(type(base_raw) is bytes and digest(base_raw)==SELECTED_SHA,'F07_SELECTED_TESTER_CHANGED')
+     need(type(phase) is dict and phase.get('state')=='SOURCE_ONLY_UNBOUND_NOT_GRANTED'
+@@ -261,9 +265,13 @@
+              and isinstance(n.value,ast.Name) and n.value.id=='REPLY_ACK_RESERVE']
+     need(len(returns)==1,'F07_EXACT_ORDINARY_ACK_SEAM_REQUIRED')
+     node=returns[0]
+-    replacement=('    ' * 3 + "return (30 if run.get('id') == "+repr(run_id)
+-        +" and run.get('scenario_sha256') == "+repr(phase['scenario_sha256'])
+-        +" and 'continuation_reference' not in run else REPLY_ACK_RESERVE)\n")
++    # This method is consumed by the ordinary whole-prefix predecessor custody
++    # BEFORE the later current209 hook. Bind only this current/immediate pair.
++    bindings={run_id:phase['scenario_sha256']}
++    if ordinal>1:
++        bindings[pred['run_id']]=pred['scenario_sha256']
++    replacement=("            return (30 if "+repr(bindings)+".get(run.get('id')) == run.get('scenario_sha256')"
++        +" and run.get('id') in "+repr(bindings)+" and 'continuation_reference' not in run else REPLY_ACK_RESERVE)\n")
+     changes.append((node.lineno,node.end_lineno,replacement))
+     # Two same-line token changes are not expected in the exact saved selected source.
+     need(len({lo for lo,_,_ in changes})==len(changes),'F07_OVERLAPPING_SOURCE_SEAMS')
