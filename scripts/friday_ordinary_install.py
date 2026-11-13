@@ -2552,6 +2552,17 @@ CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.
 CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v4'
 CURRENT_SOURCE_FIFTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v5'
 CURRENT_SOURCE_SIXTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v6'
+CURRENT_SOURCE_FIFTEENTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v15'
+CURRENT_SOURCE_FIFTEENTH_LAYER = 'r02-managed-file-output-phase-after-source212'
+CURRENT_SOURCE_FIFTEENTH_MANIFEST = 'd1493fb9b3bbda66b4c530ea58bddc0e226cb531dd03eee3ee7c8e5e3cf06f57'
+CURRENT_SOURCE_FIFTEENTH_PATCH = '04dabd4c2f9533cf3edf0d0c25de1dc49c99306946d7083c01c09ccfbd6f9cd4'
+CURRENT_SOURCE_FIFTEENTH_NATIVE = {'gateway/run_plugin_delivery.py': ('747f75f4e0d3975264ff19841f2d398ac41af9bf1e8aabaf0a68b9c8b38f3b42', '264451c7ff2338ad8d7f0d2e6054af0668d2b8b9b11177a889471b3d075a2f9b', 30253, False), 'gateway/run_startup.py': ('9b196ee9d72de6dd8ace584df7868e25bf50e88117e829d0cf81929cfa0d065d', '20d85f2e8a99a635ab4dd7db692bef16ec0b3727bd7028d93a704da03f2c55a8', 138601, False), 'gateway/run_turn.py': ('c041af5cdfb0cca26b7ee31ae97651f72d4418950b942288a57857a260937699', '215d2410bc986a0f327afb3b2ad46bfee298a2b53a68021e9b9a6cd2110f83c8', 271189, False), 'gateway/session_lifecycle.py': ('a38fd4b17e204795fb3bb912d7a5b9ac17f7223779e14c977bab8de729907968', 'aa541351d555fb11708e2ff55fde72d5231018075c1f659de41d997c8f235025', 24752, False)}
+CURRENT_SOURCE_FIFTEENTH_PREVIOUS_REQUEST = 'c8354b3e9e42d8d241e41d185db33236a335b65e62f2e1259b20b169278c7fd3'
+CURRENT_SOURCE_FIFTEENTH_PREVIOUS_INPUT = 'ab3206bb9d5a50a5f6ed5d89e4587d02b758db35dc24df1eecb4f9e093516aa6'
+CURRENT_SOURCE_FIFTEENTH_PREVIOUS_RECEIPT = 'aac131f1e67200944574984c52369c65434b62e2e35ee16ae0f7f58cf0ba7872'
+CURRENT_SOURCE_FIFTEENTH_PREVIOUS_STAMP = 'd0bc6a0b81f725a35c1987960ef8059aa1da9e72923c4c0dc738aa6a09ca7608'
+CURRENT_SOURCE_FIFTEENTH_PREVIOUS_INTENT = 'b4ba19032954ae6e5a9ad204cde61235eb5d1cb97d0cb1637dfe42fc582ac917'
+CURRENT_SOURCE_FIFTEENTH_PREVIOUS_COMMITTED = '44d25d6d1d3076f2b4d3c6ade4f519d257b35db5db623bef47a45134cddc126e'
 CURRENT_SOURCE_FOURTEENTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v14'
 CURRENT_SOURCE_FOURTEENTH_LAYER = 'r02-boot-sweep-observation-after-source211'
 CURRENT_SOURCE_FOURTEENTH_MANIFEST = '043da4ed0422dae2b7acb0331607426e74fb17175c3e7b8b2d93ad96640b2958'
@@ -2843,6 +2854,24 @@ class _CurrentSourceSixthHistory:
         self.selected_context = encoded(selected_context)
 
 
+_CURRENT_SOURCE_FIFTEENTH_HISTORY_SEAL = object()
+
+
+class _CurrentSourceFifteenthHistory:
+    """Internal authenticated CP212 facts, scoped to one exact selected fifteenth edge."""
+    __slots__ = ('fourteenth_reference','thirteenth_reference','root_reference','selected_previous','selected_context','_seal')
+
+    def __init__(self, fourteenth_reference, thirteenth_reference, root_reference, selected_previous, selected_context, *, _seal):
+        api().require(_seal is _CURRENT_SOURCE_FIFTEENTH_HISTORY_SEAL,
+            'ordinary_current_successor_internal_fifteenth_history_required')
+        self._seal = _seal
+        self.fourteenth_reference = encoded(fourteenth_reference)
+        self.thirteenth_reference = encoded(thirteenth_reference)
+        self.root_reference = encoded(root_reference)
+        self.selected_previous = encoded(selected_previous)
+        self.selected_context = encoded(selected_context)
+
+
 _CURRENT_SOURCE_FOURTEENTH_HISTORY_SEAL = object()
 
 
@@ -2987,7 +3016,51 @@ class _CurrentSourceSeventhHistory:
         self.selected_context = encoded(selected_context)
 
 
-def _current_source_fourteenth_successor_checked(value, request, *, cli_only, source_update):
+def _current_source_fifteenth_successor_checked(value, request, *, cli_only, source_update):
+    """Fixed root198 through CP199..CP212, then selected CP213."""
+    f = api(); home = f.canonical(value['home']); context = request['current_source_successor']
+    f.require(set(context) == {'schema','root_project_update','previous_native_update'}
+        and context['schema'] == CURRENT_SOURCE_FIFTEENTH_SUCCESSOR_SCHEMA,
+        'ordinary_current_successor_context_required')
+    fourteenth_ref = context['previous_native_update']
+    fourteenth_request = _current_source_json(_current_source_reference(fourteenth_ref))
+    _current_source_request_metadata(fourteenth_request,home)
+    fourteenth_context = fourteenth_request['current_source_successor']
+    f.require(encoded(request['previous_input']) == encoded(fourteenth_request['current_input'])
+        and encoded(fourteenth_context) == encoded({'schema':CURRENT_SOURCE_FOURTEENTH_SUCCESSOR_SCHEMA,
+            'root_project_update':context['root_project_update'],
+            'previous_native_update':fourteenth_context.get('previous_native_update')}),
+        'ordinary_current_successor_fourteenth_edge_required')
+    fourteenth_tx = _current_source_cp_transactions(home,fourteenth_request['current_input'])
+    f.require(fourteenth_tx is not None and fourteenth_ref['path'] == str(fourteenth_tx/'request.json'),
+        'ordinary_current_successor_fourteenth_canonical_request_required')
+    f.require(fourteenth_ref['sha256'] == CURRENT_SOURCE_FIFTEENTH_PREVIOUS_REQUEST
+        and fourteenth_request['current_input']['sha256'] == CURRENT_SOURCE_FIFTEENTH_PREVIOUS_INPUT,
+        'ordinary_current_successor_exact_fifteenth_previous_required')
+    f.require(f.digest(f.owned_file(fourteenth_tx/'intent.json',private=True)) == CURRENT_SOURCE_FIFTEENTH_PREVIOUS_INTENT
+        and f.digest(f.owned_file(fourteenth_tx/'committed.json',private=True)) == CURRENT_SOURCE_FIFTEENTH_PREVIOUS_COMMITTED,
+        'ordinary_current_successor_exact_fifteenth_previous_proof_required')
+    _current_source_cp_proof(home,fourteenth_tx,fourteenth_request,committed=True)
+    marker = _current_source_json(home/f.MARKER)
+    if marker.get('input_sha256') == request['current_input']['sha256']:
+        selected_tx = _current_source_cp_transactions(home,request['current_input'])
+        f.require(selected_tx is not None,'ordinary_current_successor_leaf_journal_required')
+        marker = _current_source_json(selected_tx/'before'/f.MARKER)
+    # The fixed fourteenth reconstruction authenticates every earlier committed edge.
+    # Historical CP212 is admitted only by this exact sealed fifteenth join.
+    proof = _CurrentSourceFifteenthHistory(fourteenth_ref,fourteenth_context['previous_native_update'],
+        context['root_project_update'],request['previous_input'],context,
+        _seal=_CURRENT_SOURCE_FIFTEENTH_HISTORY_SEAL)
+    fourteenth = _current_source_fourteenth_successor_checked(
+        _current_source_json(_current_source_reference(fourteenth_request['current_input'])),
+        fourteenth_request,cli_only=cli_only,source_update=fourteenth_request,
+        historical_marker=marker,_fifteenth_history=proof)
+    return _current_native_source_edge_checked(value,cli_only=cli_only,
+        source_update=source_update,prior_edge=fourteenth)
+
+
+def _current_source_fourteenth_successor_checked(value, request, *, cli_only, source_update,
+        historical_marker=None, _fifteenth_history=None):
     """Fixed root198 through CP199..CP211, then selected CP212."""
     f = api(); home = f.canonical(value['home']); context = request['current_source_successor']
     f.require(set(context) == {'schema','root_project_update','previous_native_update'}
@@ -3012,7 +3085,10 @@ def _current_source_fourteenth_successor_checked(value, request, *, cli_only, so
         and f.digest(f.owned_file(thirteenth_tx/'committed.json',private=True)) == CURRENT_SOURCE_FOURTEENTH_PREVIOUS_COMMITTED,
         'ordinary_current_successor_exact_fourteenth_previous_proof_required')
     _current_source_cp_proof(home,thirteenth_tx,thirteenth_request,committed=True)
-    marker = _current_source_json(home/f.MARKER)
+    f.require(historical_marker is None or type(_fifteenth_history) is _CurrentSourceFifteenthHistory
+        and _fifteenth_history._seal is _CURRENT_SOURCE_FIFTEENTH_HISTORY_SEAL,
+        'ordinary_current_successor_internal_fifteenth_history_required')
+    marker = historical_marker if historical_marker is not None else _current_source_json(home/f.MARKER)
     if marker.get('input_sha256') == request['current_input']['sha256']:
         selected_tx = _current_source_cp_transactions(home,request['current_input'])
         f.require(selected_tx is not None,'ordinary_current_successor_leaf_journal_required')
@@ -3027,7 +3103,8 @@ def _current_source_fourteenth_successor_checked(value, request, *, cli_only, so
         thirteenth_request,cli_only=cli_only,source_update=thirteenth_request,
         historical_marker=marker,_fourteenth_history=proof)
     return _current_native_source_edge_checked(value,cli_only=cli_only,
-        source_update=source_update,prior_edge=thirteenth)
+        source_update=source_update,prior_edge=thirteenth,
+        historical_marker=historical_marker,_fifteenth_history=_fifteenth_history)
 
 
 def _current_source_thirteenth_successor_checked(value, request, *, cli_only, source_update,
@@ -3482,7 +3559,7 @@ def _current_source_fourth_successor_checked(value, request, *, cli_only, source
 
 
 def current_native_source_successor_checked(value, *, cli_only, source_update=None):
-    """The v6 root and fourteen fixed authenticated native CP edges."""
+    """The v6 root and fifteen fixed authenticated native CP edges."""
     f = api()
     if type(value) is not dict or type(value.get('home')) is not str:
         f.require(source_update is None,'ordinary_current_successor_value_required'); return None
@@ -3506,6 +3583,8 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
     context = request['current_source_successor']
     if context.get('schema') == CURRENT_SOURCE_SUCCESSOR_SCHEMA:
         return _current_native_source_edge_checked(value,cli_only=cli_only,source_update=source_update)
+    if context.get('schema') == CURRENT_SOURCE_FIFTEENTH_SUCCESSOR_SCHEMA:
+        return _current_source_fifteenth_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
     if context.get('schema') == CURRENT_SOURCE_FOURTEENTH_SUCCESSOR_SCHEMA:
         return _current_source_fourteenth_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
     if context.get('schema') == CURRENT_SOURCE_THIRTEENTH_SUCCESSOR_SCHEMA:
@@ -3592,7 +3671,7 @@ def _current_source_request_metadata(request,home):
 
 
 def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
-        historical_marker=None, prior_edge=None, _fourth_history=None, _fifth_history=None, _sixth_history=None, _seventh_history=None, _eighth_history=None, _ninth_history=None, _tenth_history=None, _eleventh_history=None, _twelfth_history=None, _thirteenth_history=None, _fourteenth_history=None):
+        historical_marker=None, prior_edge=None, _fourth_history=None, _fifth_history=None, _sixth_history=None, _seventh_history=None, _eighth_history=None, _ninth_history=None, _tenth_history=None, _eleventh_history=None, _twelfth_history=None, _thirteenth_history=None, _fourteenth_history=None, _fifteenth_history=None):
     """Validate one bounded edge; historical mode returns facts, never admission."""
     f = api()
     if type(value) is not dict or type(value.get('home')) is not str:
@@ -3621,6 +3700,7 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         and request['home'] == str(home),'ordinary_current_successor_explicit_request_required')
     context = request['current_source_successor']
     continuation = prior_edge is not None
+    fifteenth = continuation and context.get('schema') == CURRENT_SOURCE_FIFTEENTH_SUCCESSOR_SCHEMA
     fourteenth = continuation and context.get('schema') == CURRENT_SOURCE_FOURTEENTH_SUCCESSOR_SCHEMA
     thirteenth = continuation and context.get('schema') == CURRENT_SOURCE_THIRTEENTH_SUCCESSOR_SCHEMA
     twelfth = continuation and context.get('schema') == CURRENT_SOURCE_TWELFTH_SUCCESSOR_SCHEMA
@@ -3633,11 +3713,12 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     fifth = continuation and context.get('schema') == CURRENT_SOURCE_FIFTH_SUCCESSOR_SCHEMA
     fourth = continuation and context.get('schema') == CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA
     third = continuation and context.get('schema') == CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA
-    second = continuation and not third and not fourth and not fifth and not sixth and not seventh and not eighth and not ninth and not tenth and not eleventh and not twelfth and not thirteenth and not fourteenth
+    second = continuation and not third and not fourth and not fifth and not sixth and not seventh and not eighth and not ninth and not tenth and not eleventh and not twelfth and not thirteenth and not fourteenth and not fifteenth
     f.require(type(context) is dict
         and set(context) == ({'schema','root_project_update','previous_native_update'} if continuation
             else {'schema','root_project_update'})
-        and context['schema'] == (CURRENT_SOURCE_FOURTEENTH_SUCCESSOR_SCHEMA if fourteenth else
+        and context['schema'] == (CURRENT_SOURCE_FIFTEENTH_SUCCESSOR_SCHEMA if fifteenth else
+            CURRENT_SOURCE_FOURTEENTH_SUCCESSOR_SCHEMA if fourteenth else
             CURRENT_SOURCE_THIRTEENTH_SUCCESSOR_SCHEMA if thirteenth else
             CURRENT_SOURCE_TWELFTH_SUCCESSOR_SCHEMA if twelfth else
             CURRENT_SOURCE_ELEVENTH_SUCCESSOR_SCHEMA if eleventh else
@@ -3651,7 +3732,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
             CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA if third else
             CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA if second else CURRENT_SOURCE_SUCCESSOR_SCHEMA)
         and (not continuation or prior_edge['request']['current_source_successor']['schema'] ==
-            (CURRENT_SOURCE_THIRTEENTH_SUCCESSOR_SCHEMA if fourteenth else
+            (CURRENT_SOURCE_FOURTEENTH_SUCCESSOR_SCHEMA if fifteenth else
+                CURRENT_SOURCE_THIRTEENTH_SUCCESSOR_SCHEMA if fourteenth else
                 CURRENT_SOURCE_TWELFTH_SUCCESSOR_SCHEMA if thirteenth else
                 CURRENT_SOURCE_ELEVENTH_SUCCESSOR_SCHEMA if twelfth else
                 CURRENT_SOURCE_TENTH_SUCCESSOR_SCHEMA if eleventh else
@@ -3663,7 +3745,10 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
                 CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA if fifth else
                 CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA if fourth else
                 CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA if third else CURRENT_SOURCE_SUCCESSOR_SCHEMA))
-        and not (fourteenth and historical_marker is not None)
+        and not (fifteenth and historical_marker is not None)
+        and (not (fourteenth and historical_marker is not None) or
+            type(_fifteenth_history) is _CurrentSourceFifteenthHistory
+            and _fifteenth_history._seal is _CURRENT_SOURCE_FIFTEENTH_HISTORY_SEAL)
         and (not (thirteenth and historical_marker is not None) or
             type(_fourteenth_history) is _CurrentSourceFourteenthHistory
             and _fourteenth_history._seal is _CURRENT_SOURCE_FOURTEENTH_HISTORY_SEAL)
@@ -3885,6 +3970,23 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
             and encoded(prior_edge['request']['current_input']) == encoded(request['previous_input']),
             'ordinary_current_successor_authenticated_thirteenth_history_required')
         _current_source_cp_proof(home,thirteenth_tx,request,committed=True)
+    if fourteenth and historical_marker is not None:
+        # Bind CP212 history to its canonical request, CP211 predecessor, shared
+        # root and the selected fifteenth's exact before input and typed context.
+        fourteenth_tx = _current_source_cp_transactions(home,request['current_input'])
+        f.require(fourteenth_tx is not None
+            and _fifteenth_history.fourteenth_reference == encoded({'path':str(fourteenth_tx/'request.json'),
+                'sha256':f.digest(f.owned_file(fourteenth_tx/'request.json',private=True))})
+            and _fifteenth_history.thirteenth_reference == encoded(context['previous_native_update'])
+            and _fifteenth_history.root_reference == encoded(context['root_project_update'])
+            and _fifteenth_history.selected_previous == encoded(request['current_input'])
+            and _fifteenth_history.selected_context == encoded({'schema':CURRENT_SOURCE_FIFTEENTH_SUCCESSOR_SCHEMA,
+                'root_project_update':context['root_project_update'],
+                'previous_native_update':{'path':str(fourteenth_tx/'request.json'),
+                    'sha256':f.digest(f.owned_file(fourteenth_tx/'request.json',private=True))}})
+            and encoded(prior_edge['request']['current_input']) == encoded(request['previous_input']),
+            'ordinary_current_successor_authenticated_fourteenth_history_required')
+        _current_source_cp_proof(home,fourteenth_tx,request,committed=True)
     root_request,previous = _project_current_root_checked(home,context['root_project_update'])
     previous_ref = root_request['current_input']
     expected_before_receipt = PROJECT_DSH_CURRENT_RECEIPT
@@ -3896,12 +3998,15 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         previous = prior_edge['value']; previous_ref = prior_edge['request']['current_input']
         expected_before_receipt = prior_edge['receipt_sha256']
         expected_before_stamp = prior_edge['stamp_sha256']
-        before_layers = 211 if fourteenth else 210 if thirteenth else 209 if twelfth else 208 if eleventh else 207 if tenth else 206 if ninth else 205 if eighth else 204 if seventh else 203 if sixth else 202 if fifth else 201 if fourth else 200 if third else 199
-        before_native_count = 17891 if fourteenth or thirteenth or twelfth or eleventh or tenth or ninth or eighth or seventh or sixth else 17890 if fifth else 17888
-        before_project_count = 503 if fourteenth else 501 if thirteenth else 499 if twelfth else 497 if eleventh else 495 if tenth else 493 if ninth else 491 if eighth else 489 if seventh else 487 if sixth else 485 if fifth else 483 if fourth else 481 if third else 479
+        before_layers = 212 if fifteenth else 211 if fourteenth else 210 if thirteenth else 209 if twelfth else 208 if eleventh else 207 if tenth else 206 if ninth else 205 if eighth else 204 if seventh else 203 if sixth else 202 if fifth else 201 if fourth else 200 if third else 199
+        before_native_count = 17891 if fifteenth or fourteenth or thirteenth or twelfth or eleventh or tenth or ninth or eighth or seventh or sixth else 17890 if fifth else 17888
+        before_project_count = 505 if fifteenth else 503 if fourteenth else 501 if thirteenth else 499 if twelfth else 497 if eleventh else 495 if tenth else 493 if ninth else 491 if eighth else 489 if seventh else 487 if sixth else 485 if fifth else 483 if fourth else 481 if third else 479
     f.require(not fourteenth or (expected_before_receipt == CURRENT_SOURCE_FOURTEENTH_PREVIOUS_RECEIPT
         and expected_before_stamp == CURRENT_SOURCE_FOURTEENTH_PREVIOUS_STAMP),
         'ordinary_current_successor_exact_fourteenth_before_metadata_required')
+    f.require(not fifteenth or (expected_before_receipt == CURRENT_SOURCE_FIFTEENTH_PREVIOUS_RECEIPT
+        and expected_before_stamp == CURRENT_SOURCE_FIFTEENTH_PREVIOUS_STAMP),
+        'ordinary_current_successor_exact_fifteenth_before_metadata_required')
     _current_source_reference(request['previous_input']); _current_source_reference(request['current_input'])
     current = _current_source_json(Path(request['current_input']['path']))
     f.require(encoded(value) == encoded(current) and current.get('home') == str(home)
@@ -3971,6 +4076,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_thirteenth_layer_required')
     f.require(not fourteenth or names == [CURRENT_SOURCE_FOURTEENTH_LAYER],
         'ordinary_current_successor_exact_fourteenth_layer_required')
+    f.require(not fifteenth or names == [CURRENT_SOURCE_FIFTEENTH_LAYER],
+        'ordinary_current_successor_exact_fifteenth_layer_required')
     f.require(not twelfth or names == [CURRENT_SOURCE_TWELFTH_LAYER],
         'ordinary_current_successor_exact_twelfth_layer_required')
     f.require(not eleventh or names == [CURRENT_SOURCE_ELEVENTH_LAYER],
@@ -3991,6 +4098,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_thirteenth_helper_scope_required')
     f.require(not fourteenth or changes == {PROJECT_DSH_CURRENT_HELPER},
         'ordinary_current_successor_exact_fourteenth_helper_scope_required')
+    f.require(not fifteenth or changes == {PROJECT_DSH_CURRENT_HELPER},
+        'ordinary_current_successor_exact_fifteenth_helper_scope_required')
     f.require(not twelfth or changes == {PROJECT_DSH_CURRENT_HELPER},
         'ordinary_current_successor_exact_twelfth_helper_scope_required')
     f.require(not eleventh or changes == {PROJECT_DSH_CURRENT_HELPER},
@@ -4048,6 +4157,9 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     f.require(not fourteenth or (files.get(manifest_name) == CURRENT_SOURCE_FOURTEENTH_MANIFEST
         and files.get(patch_name) == CURRENT_SOURCE_FOURTEENTH_PATCH),
         'ordinary_current_successor_exact_fourteenth_layer_images_required')
+    f.require(not fifteenth or (files.get(manifest_name) == CURRENT_SOURCE_FIFTEENTH_MANIFEST
+        and files.get(patch_name) == CURRENT_SOURCE_FIFTEENTH_PATCH),
+        'ordinary_current_successor_exact_fifteenth_layer_images_required')
     for name,expected in files.items():
         path = Path(name)
         f.require(type(name) is str and not path.is_absolute() and name == path.as_posix()
@@ -4136,6 +4248,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_thirteenth_native_scope_required')
     f.require(not fourteenth or {row['path'] for row in rows} == set(CURRENT_SOURCE_FOURTEENTH_NATIVE),
         'ordinary_current_successor_exact_fourteenth_native_scope_required')
+    f.require(not fifteenth or {row['path'] for row in rows} == set(CURRENT_SOURCE_FIFTEENTH_NATIVE),
+        'ordinary_current_successor_exact_fifteenth_native_scope_required')
     for row in rows:
         name = row['path']; prior = expected_files.get(name)
         f.require(type(row.get('new_file')) is bool and row['new_file'] is (prior is None)
@@ -4185,6 +4299,9 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         if fourteenth:
             f.require((row['before_sha256'],row['sha256'],row['bytes'],row['new_file']) == CURRENT_SOURCE_FOURTEENTH_NATIVE[name],
                 'ordinary_current_successor_exact_fourteenth_native_images_required')
+        if fifteenth:
+            f.require((row['before_sha256'],row['sha256'],row['bytes'],row['new_file']) == CURRENT_SOURCE_FIFTEENTH_NATIVE[name],
+                'ordinary_current_successor_exact_fifteenth_native_images_required')
         after = dict(prior) if prior is not None else {}
         after.update({'sha256':row['sha256'],'bytes':row['bytes'],'mode':'100644'}); expected_files[name] = after
     f.require(not fourth or len(expected_files) == 17890,
@@ -4209,6 +4326,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_thirteenth_native_count_required')
     f.require(not fourteenth or len(expected_files) == 17891,
         'ordinary_current_successor_exact_fourteenth_native_count_required')
+    f.require(not fifteenth or len(expected_files) == 17891,
+        'ordinary_current_successor_exact_fifteenth_native_count_required')
     expected_receipt['layers'].append({'manifest':manifest_name,'manifest_sha256':files[manifest_name],
         'patch_sha256':files[patch_name]})
     expected_receipt['sources_lock_sha256'] = current['sources_lock']['sha256']

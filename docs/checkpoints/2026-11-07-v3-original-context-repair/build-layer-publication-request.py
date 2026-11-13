@@ -215,6 +215,7 @@ def build_request(args):
                 "friday.current-source-native-successor.v11": "friday.current-source-native-successor.v12",
                 "friday.current-source-native-successor.v12": "friday.current-source-native-successor.v13",
                 "friday.current-source-native-successor.v13": "friday.current-source-native-successor.v14",
+                "friday.current-source-native-successor.v14": "friday.current-source-native-successor.v15",
             }
             previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
             consumer.require(previous_schema in supported,
@@ -255,6 +256,9 @@ def build_request(args):
             consumer.require(previous_schema != "friday.current-source-native-successor.v13"
                              or args.layer_names == ("r02-boot-sweep-observation-after-source211",),
                              "transaction_current_source_exact_fourteenth_layer_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v14"
+                             or args.layer_names == ("r02-managed-file-output-phase-after-source212",),
+                             "transaction_current_source_exact_fifteenth_layer_required")
             request["current_source_successor"].update({
                 "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),

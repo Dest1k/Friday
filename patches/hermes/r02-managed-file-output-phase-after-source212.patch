@@ -1,0 +1,430 @@
+--- a/gateway/run_plugin_delivery.py
++++ b/gateway/run_plugin_delivery.py
+@@ -289,6 +289,8 @@
+         session_id = getattr(source, '_friday_document_session_id', None)
+         if not isinstance(session_id, str) or not session_id:
+             raise ValueError('original_session_required')
++        await _mark_ordinary_file_recovery(runner, source, cap, route,
++            [{'relative_path': relative, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}])
+         state, selection, reserved = _begin_ordinary_document(cap, relative, data, route, name)
+     except Exception:
+         return SendResult(success=False, error='gateway_document_preflight_rejected')
+@@ -472,3 +474,64 @@
+         'transport_profile': cap.principal[1], 'runtime_profile': cap.profile,
+         'bot_id': cap.principal[2], 'source': {'platform': source.platform.value,
+             **{k:getattr(source,k) for k in ('chat_id','chat_type','user_id','thread_id','message_id')}}})
++
++
++async def _mark_ordinary_file_recovery(runner, source, cap, route, artifacts):
++    """Persist only host final-output ownership, never an ACK or answered claim.
++
++    The exact event token is private and was bound after the turn lease. The
++    original native document journal alone retains transport UNKNOWN/DELIVERED.
++    """
++    from gateway.session_identity import identity_of
++    binding = getattr(source, '_friday_document_turn', None)
++    session_id = getattr(source, '_friday_document_session_id', None)
++    identity = identity_of(source)
++    if (type(binding) is not tuple or len(binding) != 2
++            or not all(isinstance(x, str) and x for x in binding)
++            or not isinstance(session_id, str) or not session_id
++            or identity is None or identity.transport_inferred
++            or identity.runtime_home != cap.home or identity.runtime_profile != cap.profile
++            or identity.transport_profile != cap.principal[1]
++            or source.user_id != cap.principal[3]):
++        raise ValueError('ordinary_file_recovery_owner_unavailable')
++    cap.check()
++    owner = dict(runtime_home=str(cap.home), runtime_profile=cap.profile,
++                 transport_profile=cap.principal[1], scope_key=cap.key,
++                 principal=list(cap.principal), route=freeze_route(route))
++    if not await runner.async_session_store.mark_managed_file_recovery(
++            binding[0], binding[1], session_id, owner=owner, artifacts=artifacts):
++        raise ValueError('ordinary_file_recovery_owner_changed')
++    cap.check()
++
++
++async def prepare_ordinary_file_recovery(runner, source, response):
++    """Final-model boundary before transcript/streamed or ordinary file dispatch.
++
++    Use the existing selected parser and immutable workspace snapshots. An
++    example/quoted MEDIA string or an unavailable path is no delivery proof.
++    A held phase preserves all pending/history; separate admission is needed
++    to assess or deliver any still missing part, including a caption.
++    """
++    if getattr(source, '_friday_user_scope', None) is None or not isinstance(response, str):
++        return
++    from gateway.platforms.base import BasePlatformAdapter, _strip_media_directives
++    from hermes_cli.friday_user_scope import workspace_document
++    adapter = runner._delivery_adapter_for(source)
++    if adapter is None:
++        raise ValueError('ordinary_file_recovery_adapter_unavailable')
++    media, remaining = adapter.extract_media(response)
++    _, text = adapter.extract_images(remaining)
++    local, _ = adapter.extract_local_files(_strip_media_directives(text).strip())
++    paths = list(dict.fromkeys([path for path, _ in media] + local))
++    if not paths:
++        return
++    cap, actual_runner, _, route, check = _ordinary_authority(adapter, source)
++    if actual_runner is not runner:
++        raise ValueError('ordinary_file_recovery_runner_changed')
++    artifacts = []
++    for path in paths:
++        check()
++        data, relative = workspace_document(path)
++        artifacts.append(dict(relative_path=relative, sha256=hashlib.sha256(data).hexdigest(), bytes=len(data)))
++    await _mark_ordinary_file_recovery(runner, source, cap, route, artifacts)
++    check()
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -810,12 +810,17 @@
+         from gateway.run import (
+             _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window, _is_fresh_gateway_interruption,
+         )
++        from gateway.session_lifecycle import managed_file_recovery_state
+         window = _auto_continue_freshness_window()
+         candidates = self._resume_pending_candidates(platform)
+         if candidates is None:
+             return 0
+         scheduled = 0
+         for entry in candidates:
++            if managed_file_recovery_state(entry) is not None:
++                # Includes a normal marker clear with an existing pending flag;
++                # only a genuinely new host turn invalidates this generation.
++                continue
+             if (getattr(self, "_delivery_resume_recovery_failed", False)
+                     and entry.origin.platform == Platform.TELEGRAM):
+                 continue  # retain the marker until a successful ledger recovery
+@@ -1020,18 +1025,24 @@
+         nothing, any other goes to the delivery ledger for the boot sweep. Without the ledger a
+         presentable reply stays marked and resumes."""
+         from gateway.delivery_ledger import compute_obligation_id, ledger_enabled, record_crash_left_reply
++        from gateway.session_lifecycle import managed_file_recovery_state
+         ledger_on = await asyncio.to_thread(ledger_enabled)
+         cutoff = time.time() - max_age_seconds  # older markers are cleared, never acted on
+         with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
+             self.session_store._ensure_loaded_locked()  # noqa: SLF001
+             marked = [
+                 (e.session_key, e.session_id, e.active_turn_token, e.active_turn_started_at, e.origin,
+-                 e.transport_profile)
++                 e.transport_profile, managed_file_recovery_state(e))
+                 for e in self.session_store._entries.values()  # noqa: SLF001
+                 if e.active_turn_token and e.active_turn_started_at and e.origin and not e.suspended
+             ]
+         ledgered = 0
+-        for key, session_id, token, started_at, origin, profile in marked:
++        for key, session_id, token, started_at, origin, profile, file_phase in marked:
++            if file_phase is not None:
++                # Host output phase is neither a text obligation nor an ACK.
++                # Retain the exact marker/history for separately admitted recovery.
++                logger.warning("Managed-file output recovery held: %s", file_phase)
++                continue
+             started = started_at.timestamp()  # aware UTC marker; a pre-upgrade naive one reads as local
+             if started < cutoff:
+                 continue
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -2128,6 +2128,11 @@
+         # A turn becomes durable recovery work only after it owns the per-session lease; marking
+         # earlier would falsely recover a message that never began processing.
+         await self._mark_durable_active_turn(event, session_entry.session_key)
++        if getattr(source, '_friday_user_scope', None) is not None:
++            # Host-only ownership; never recover a token from model/display metadata.
++            source._friday_document_turn = (
++                getattr(event, '_gateway_active_turn_session_key', None),
++                getattr(event, '_gateway_active_turn_token', None))
+ 
+         # An unreadable store is not an empty conversation: stop before the agent invents continuity
+         # from []. Restore task-local context here (before the broad cleanup finally).
+@@ -2311,6 +2316,16 @@
+             response, session_entry = await self._hmwa_compression_exhaustion_reset(
+                 agent_result, response, session_entry, session_key, source,
+             )
++            # The model has returned its final result. Persist file-phase ownership
++            # before transcript/delivery: MEDIA-only and partial batches must not
++            # be re-generated after a crash. This is not a delivery receipt.
++            if not (agent_failed_early or hidden_reasoning_incomplete or is_context_overflow_failure):
++                from gateway.run_plugin_delivery import prepare_ordinary_file_recovery
++                if getattr(source, '_friday_user_scope', None) is not None:
++                    # Accepted compression/reset may have advanced this owning
++                    # entry since ingress resolution; the token CAS stays exact.
++                    source._friday_document_session_id = session_entry.session_id
++                await prepare_ordinary_file_recovery(self, source, response)
+             await self._hmwa_persist_turn_transcript(
+                 event=event, source=source, session_entry=session_entry, session_key=session_key,
+                 agent_result=agent_result, agent_messages=agent_messages, prepared=prepared,
+--- a/gateway/session_lifecycle.py
++++ b/gateway/session_lifecycle.py
+@@ -3,7 +3,12 @@
+ from __future__ import annotations
+ 
+ import logging
++import copy
++import hashlib
++import json
+ import os
++import posixpath
++import re
+ import time
+ import uuid
+ from datetime import datetime, timedelta, timezone
+@@ -39,6 +44,158 @@
+         return datetime.fromisoformat(value)
+     except (TypeError, ValueError):
+         return None
++
++
++_MANAGED_FILE_RECOVERY = "_friday_managed_file_recovery"
++_MANAGED_FILE_GENERATION = "_friday_managed_file_generation"
++_MANAGED_FILE_SCHEMA = "friday.managed-file-recovery.v1"
++
++
++def _managed_text(value, maximum=4096):
++    return (isinstance(value, str) and 0 < len(value) <= maximum
++            and value == value.strip() and not any(ord(c) < 32 for c in value))
++
++
++def _managed_digest(value):
++    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
++
++
++def _managed_file_owner(owner):
++    """Validate the typed host record, without reading policy, a store or a transcript."""
++    if (not isinstance(owner, dict) or set(owner) != {
++            "runtime_home", "runtime_profile", "transport_profile", "scope_key", "principal", "route"}
++            or not _managed_text(owner["runtime_home"])
++            or not owner["runtime_home"].startswith("/")
++            or posixpath.normpath(owner["runtime_home"]) != owner["runtime_home"]
++            or not _managed_text(owner["runtime_profile"], 128)
++            or not _managed_text(owner["transport_profile"], 128)
++            or not _managed_digest(owner["scope_key"])):
++        raise ValueError("managed_file_owner_invalid")
++    principal, route = owner["principal"], owner["route"]
++    if (not isinstance(principal, list) or len(principal) != 4
++            or any(not _managed_text(v, 128) for v in principal)
++            or principal[0] != "telegram" or principal[1] != owner["transport_profile"]
++            or not isinstance(route, dict)
++            or set(route) != {"transport_profile", "runtime_profile", "bot_id", "source"}
++            or route["transport_profile"] != owner["transport_profile"]
++            or route["runtime_profile"] != owner["runtime_profile"]
++            or route["bot_id"] != principal[2]):
++        raise ValueError("managed_file_owner_invalid")
++    source = route["source"]
++    fields = {"platform", "chat_id", "chat_type", "user_id", "thread_id", "message_id", "profile"}
++    if (not isinstance(source, dict) or set(source) != fields
++            or any(not _managed_text(source[k], 128) for k in fields - {"thread_id"})
++            or source["platform"] != "telegram"
++            or source["profile"] != owner["runtime_profile"]
++            or source["user_id"] != principal[3]
++            or source["chat_type"] not in {"dm", "group", "channel", "thread"}):
++        raise ValueError("managed_file_owner_invalid")
++    for value in (principal[2], principal[3], source["message_id"]):
++        if not value.isascii() or not value.isdecimal() or int(value) <= 0:
++            raise ValueError("managed_file_owner_invalid")
++    try:
++        if str(int(source["chat_id"])) != source["chat_id"] or int(source["chat_id"]) == 0:
++            raise ValueError("managed_file_owner_invalid")
++    except (TypeError, ValueError):
++        raise ValueError("managed_file_owner_invalid") from None
++    topic = source["thread_id"]
++    if topic is not None and (not _managed_text(topic, 128) or not topic.isascii()
++                              or not topic.isdecimal() or int(topic) <= 0):
++        raise ValueError("managed_file_owner_invalid")
++    digest = hashlib.sha256(json.dumps(principal, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
++    if digest != owner["scope_key"]:
++        raise ValueError("managed_file_owner_invalid")
++    return copy.deepcopy(owner)
++
++
++def _managed_file_artifacts(artifacts):
++    if not isinstance(artifacts, list) or len(artifacts) > 10000:
++        raise ValueError("managed_file_artifacts_invalid")
++    result, seen = [], set()
++    for row in artifacts:
++        if not isinstance(row, dict) or set(row) != {"relative_path", "sha256", "bytes"}:
++            raise ValueError("managed_file_artifacts_invalid")
++        path = row["relative_path"]
++        if (not _managed_text(path, 1024) or path.startswith("/") or "\\" in path
++                or any(part in {"", ".", ".."} for part in path.split("/"))
++                or posixpath.normpath(path) != path or path in seen
++                or not _managed_digest(row["sha256"])
++                or type(row["bytes"]) is not int or not 0 <= row["bytes"] <= 1_000_000):
++            raise ValueError("managed_file_artifacts_invalid")
++        seen.add(path)
++        result.append(dict(row))
++    return result
++
++
++def _managed_owner_matches(entry, owner):
++    origin = getattr(entry, "origin", None)
++    key = getattr(entry, "session_key", "")
++    parts = key.split(":", 2) if isinstance(key, str) else []
++    if len(parts) != 3 or parts[0] != "agent":
++        return False
++    profile = {"main": "default", "main~": "main"}.get(parts[1], parts[1])
++    if (origin is None or owner["runtime_profile"] != profile
++            or owner["transport_profile"] != getattr(entry, "transport_profile", None)
++            or (getattr(origin, "profile", None) or owner["transport_profile"]) != profile):
++        return False
++    source = owner["route"]["source"]
++    platform = getattr(origin, "platform", None)
++    if source["platform"] != getattr(platform, "value", platform):
++        return False
++    # The routing origin belongs to session creation/recovery, not each inbound
++    # event. Its message_id may predate the exact active turn. The live producer
++    # already froze that turn's admitted message_id in owner.route.source; host
++    # token/session/start/generation CAS keeps this phase on that turn. Compare
++    # only the stable routing identity here, preserving the frozen message id.
++    return all(source[k] == getattr(origin, k, None) for k in (
++        "chat_id", "chat_type", "user_id", "thread_id"))
++
++
++def managed_file_recovery_state(entry):
++    """Pure no-replay fence: None (absent/stale/foreign), held, or unavailable.
++
++    This private routing-index phase only owns model recovery. It never proves a
++    document attempt, UNKNOWN, a receipt, or whole-answer delivery. Only the narrow
++    host setter creates it; transcript/display/event metadata is never consulted.
++    A retained host generation survives normal marker clear and is replaced by
++    the next mark, so an old phase cannot suppress a later turn after its clear.
++    """
++    metadata = getattr(entry, "metadata", None)
++    if not isinstance(metadata, dict):
++        return None
++    row, generation = metadata.get(_MANAGED_FILE_RECOVERY), metadata.get(_MANAGED_FILE_GENERATION)
++    if (not isinstance(row, dict) or not _managed_text(generation, 128)
++            or row.get("token") != generation):
++        return None
++    active = getattr(entry, "active_turn_token", None)
++    if active is not None and active != generation:
++        return None
++    for name in ("session_key", "session_id"):
++        if name in row and row[name] != getattr(entry, name, None):
++            return None
++    try:
++        if (set(row) != {"schema", "phase", "token", "session_key", "session_id", "started_at",
++                         "owner", "artifacts", "response_sha256"}
++                or row["schema"] != _MANAGED_FILE_SCHEMA or row["phase"] != "FINAL_OUTPUT_READY"
++                or not _managed_text(row["session_key"]) or not _managed_text(row["session_id"])
++                or not _managed_text(row["started_at"], 128)
++                or _parse_iso(row["started_at"]) is None
++                or _parse_iso(row["started_at"]).utcoffset() is None
++                or row["response_sha256"] is not None and not _managed_digest(row["response_sha256"])):
++            return "unavailable"
++        owner = _managed_file_owner(row["owner"])
++        artifacts = _managed_file_artifacts(row["artifacts"])
++        if not artifacts and row["response_sha256"] is None:
++            return "unavailable"
++        if not _managed_owner_matches(entry, owner):
++            return None
++        if active is not None and row["started_at"] != _iso(getattr(entry, "active_turn_started_at", None)):
++            return None
++        if len(json.dumps(row, ensure_ascii=False, allow_nan=False).encode()) > 65536:
++            return "unavailable"
++        return "held"
++    except (TypeError, ValueError, KeyError, OverflowError):
++        return "unavailable"
+ 
+ 
+ # Auto-continue freshness window (1 hour) after the ``resume_pending`` mark; ``gateway/run.py``
+@@ -126,6 +283,11 @@
+         candidate = entry.to_dict()
+         candidate["active_turn_token"] = token
+         candidate["active_turn_started_at"] = _iso(started_at)
++        metadata = None
++        if token is not None:
++            metadata = copy.deepcopy(entry.metadata)
++            metadata[_MANAGED_FILE_GENERATION] = token
++            candidate["metadata"] = metadata
+         touched = _now() if started_at is not None else None
+         if touched is not None:
+             # Keeps the legacy 120s startup heuristic working for an older binary during a rolling
+@@ -134,6 +296,8 @@
+         self._save_entry(session_key, entry_data=candidate, lock_held=True)
+         entry.active_turn_token = token
+         entry.active_turn_started_at = started_at
++        if metadata is not None:
++            entry.metadata = metadata
+         if touched is not None:
+             entry.updated_at = touched
+ 
+@@ -161,6 +325,71 @@
+             self._set_turn_marker_locked(session_key, entry, None, None)
+         return True
+ 
++    def mark_managed_file_recovery(
++        self, session_key: str, token: str, session_id: str, *, owner, artifacts, response_sha256=None,
++    ) -> bool:
++        """Persist a host final-file phase before any managed file delivery effect.
++
++        False means the exact active token/session no longer owns the entry. Invalid
++        authority, malformed current phase or conflicting same-turn snapshots raise
++        ValueError; save errors propagate. Neither memory nor freshness advances on
++        save failure. The caller must refuse delivery unless this returns True.
++        Same-turn calls merge artifacts, preserving owner and known response. The
++        native 10000-file ceiling and 65536-byte host-phase bound refuse before
++        delivery; the metadata bound does not promise all such plans fit.
++        Transport status remains exclusively in the ordinary native file journal.
++        """
++        if (not _managed_text(session_key) or not _managed_text(token, 128)
++                or not _managed_text(session_id)
++                or response_sha256 is not None and not _managed_digest(response_sha256)):
++            raise ValueError("managed_file_recovery_invalid")
++        owner, artifacts = _managed_file_owner(owner), _managed_file_artifacts(artifacts)
++        if not artifacts and response_sha256 is None:
++            raise ValueError("managed_file_recovery_empty")
++        with self._lock:
++            entry = self._entry_locked(session_key)
++            if (entry is None or entry.active_turn_token != token or entry.session_id != session_id):
++                return False
++            if (not isinstance(entry.active_turn_started_at, datetime)
++                    or entry.active_turn_started_at.utcoffset() is None
++                    or not _managed_owner_matches(entry, owner)):
++                raise ValueError("managed_file_recovery_owner_mismatch")
++            metadata = copy.deepcopy(entry.metadata)
++            generation = metadata.get(_MANAGED_FILE_GENERATION)
++            if generation is not None and generation != token:
++                raise ValueError("managed_file_recovery_generation_mismatch")
++            metadata[_MANAGED_FILE_GENERATION] = token  # pre-upgrade active token, exact CAS above
++            old = metadata.get(_MANAGED_FILE_RECOVERY)
++            if isinstance(old, dict) and old.get("token") == token:
++                # Validate against the new metadata only for a legacy active marker
++                # that had no host generation field before this invocation.
++                shadow = copy.copy(entry)
++                shadow.metadata = metadata
++                if managed_file_recovery_state(shadow) != "held" or old["owner"] != owner:
++                    raise ValueError("managed_file_recovery_existing_invalid")
++                if old["response_sha256"] is not None:
++                    if response_sha256 is not None and response_sha256 != old["response_sha256"]:
++                        raise ValueError("managed_file_recovery_response_conflict")
++                    response_sha256 = old["response_sha256"]
++                merged = {row["relative_path"]: row for row in old["artifacts"]}
++                for row in artifacts:
++                    if row["relative_path"] in merged and merged[row["relative_path"]] != row:
++                        raise ValueError("managed_file_recovery_artifact_conflict")
++                    merged[row["relative_path"]] = row
++                artifacts = _managed_file_artifacts(list(merged.values()))
++            row = {"schema": _MANAGED_FILE_SCHEMA, "phase": "FINAL_OUTPUT_READY", "token": token,
++                   "session_key": session_key, "session_id": session_id,
++                   "started_at": _iso(entry.active_turn_started_at), "owner": owner,
++                   "artifacts": artifacts, "response_sha256": response_sha256}
++            if len(json.dumps(row, ensure_ascii=False, allow_nan=False).encode()) > 65536:
++                raise ValueError("managed_file_recovery_quota")
++            metadata[_MANAGED_FILE_RECOVERY] = row
++            candidate = entry.to_dict()
++            candidate["metadata"] = metadata
++            self._save_entry(session_key, entry_data=candidate, lock_held=True)
++            entry.metadata = metadata
++        return True
++
+     def recover_interrupted_turns(self, max_age_seconds: int = 60 * 60) -> int:
+         """Promote crash-left turn markers into ``resume_pending`` (unclean startup only).
+         Old/invalid markers are cleared without resuming; suspended sessions are never re-armed.
+@@ -170,6 +399,8 @@
+ 
+         def _promote(entry: SessionEntry) -> bool:
+             nonlocal promoted
++            if managed_file_recovery_state(entry) in {"held", "unavailable"}:
++                return False  # preserve the exact active/pending work; no delivery is inferred
+             if not entry.active_turn_token:
+                 return False
+             started_at = entry.active_turn_started_at
