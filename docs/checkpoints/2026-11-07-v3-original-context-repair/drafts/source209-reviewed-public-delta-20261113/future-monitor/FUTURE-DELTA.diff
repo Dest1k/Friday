@@ -1,0 +1,130 @@
+--- original/root_f07_once.py
++++ future-only/root_f07_once.py
+@@ -265,25 +265,76 @@
+     return decision,privacy
+ 
+ 
+-def scan_scope(scope,*,deadline):
++DISK_MONITOR_ENUMS = ('F07_DISK_SCAN_OUTER_DEADLINE','F07_DISK_SCOPE_ENTRY_BOUND',
++    'F07_OPERATION_WRITE_SCOPE_LINK_RECONCILE_ONLY','F07_WRITE_SCOPE_SPECIAL_FILE',
++    'F07_CANONICAL_ABSOLUTE_PATH_REQUIRED')
++DISK_MONITOR_STAGES = ('SCAN_START','SCAN_ENTRY_DEADLINE','SCAN_ENTRY_BOUND','SCAN_ENTRY_LSTAT',
++    'SCAN_ENTRY_LINK_GUARD','SCAN_ENTRY_REGULAR_SIZE','SCAN_DIRECTORY_OPEN','SCAN_DIRECTORY_NEXT',
++    'SCAN_ENTRY_TYPE_GUARD','SCAN_ROOT_CANONICAL_PATH','CHARGE_GROWTH','SAMPLE_UPDATE','MONITOR_BLOCK')
++
++
++def disk_monitor_failure(exc,*,stage,path=None,entries=None):
++    """Bounded protected metadata only; no exception message/args or file body."""
++    classes=(ValueError,PermissionError,FileNotFoundError,NotADirectoryError,IsADirectoryError,
++        OSError,RecursionError,RuntimeError,OverflowError,MemoryError,TypeError)
++    kind=type(exc);name=kind.__name__ if kind in classes else 'OTHER_EXCEPTION'
++    code='F07_DISK_MONITOR_UNCLASSIFIED_EXCEPTION'
++    if kind is ValueError and len(exc.args)==1 and type(exc.args[0]) is str and exc.args[0] in DISK_MONITOR_ENUMS:
++        code=exc.args[0]
++    number=None
++    if kind in (PermissionError,FileNotFoundError,NotADirectoryError,IsADirectoryError,OSError):
++        code='F07_DISK_MONITOR_OS_ERROR'
++        value=exc.errno
++        if type(value) is int and -4095<=value<=4095:number=value
++    text=str(path) if isinstance(path,Path) else path if type(path) is str else None
++    size=len(text) if text is not None else None
++    return dict(exception_class=name,enum=code,errno=number,
++        stage=stage if stage in DISK_MONITOR_STAGES else 'MONITOR_BLOCK',
++        path=text if text is not None and len(text)<=4096 else None,
++        path_status='RECORDED' if text is not None and len(text)<=4096 else 'OMITTED_OVER_BOUND' if text is not None else 'NOT_APPLICABLE',
++        path_chars=size,entries=entries if type(entries) is int and 0<=entries<=100001 else None)
++
++
++def scan_scope(scope,*,deadline,failure=None):
+     """Finite scoped metadata scan, no bulk H/source traversal or content read."""
+     rows={};visited=set();count=0
++    stage='SCAN_START';active_path=None
+     def entry(path,recurse):
+-        nonlocal count
++        nonlocal count,stage,active_path
++        stage='SCAN_ENTRY_DEADLINE';active_path=path
+         need(time.monotonic()<deadline,'F07_DISK_SCAN_OUTER_DEADLINE')
+         text=str(path)
+         if text in visited:return
+-        visited.add(text);count+=1;need(count<=scope['max_entries'],'F07_DISK_SCOPE_ENTRY_BOUND')
++        visited.add(text);count+=1;stage='SCAN_ENTRY_BOUND'
++        need(count<=scope['max_entries'],'F07_DISK_SCOPE_ENTRY_BOUND')
++        stage='SCAN_ENTRY_LSTAT'
+         try:info=path.lstat()
+         except FileNotFoundError:return
++        stage='SCAN_ENTRY_LINK_GUARD'
+         need(not stat.S_ISLNK(info.st_mode),'F07_OPERATION_WRITE_SCOPE_LINK_RECONCILE_ONLY')
+-        if stat.S_ISREG(info.st_mode): rows[(info.st_dev,info.st_ino)]=max(rows.get((info.st_dev,info.st_ino),0),info.st_size)
++        if stat.S_ISREG(info.st_mode):
++            stage='SCAN_ENTRY_REGULAR_SIZE'
++            rows[(info.st_dev,info.st_ino)]=max(rows.get((info.st_dev,info.st_ino),0),info.st_size)
+         elif stat.S_ISDIR(info.st_mode) and recurse:
++            stage='SCAN_DIRECTORY_OPEN'
+             with os.scandir(path) as children:
+-                for child in children:entry(Path(child.path),True)
+-        else:need(stat.S_ISDIR(info.st_mode),'F07_WRITE_SCOPE_SPECIAL_FILE')
+-    for path in scope['directory_roots']:entry(canonical_path(path),True)
+-    for path in scope['file_paths']:entry(canonical_path(path),False)
++                stage='SCAN_DIRECTORY_NEXT'
++                for child in children:
++                    entry(Path(child.path),True)
++                    stage='SCAN_DIRECTORY_NEXT';active_path=path
++        else:
++            stage='SCAN_ENTRY_TYPE_GUARD'
++            need(stat.S_ISDIR(info.st_mode),'F07_WRITE_SCOPE_SPECIAL_FILE')
++    try:
++        for path in scope['directory_roots']:
++            stage='SCAN_ROOT_CANONICAL_PATH';active_path=path
++            entry(canonical_path(path),True)
++        for path in scope['file_paths']:
++            stage='SCAN_ROOT_CANONICAL_PATH';active_path=path
++            entry(canonical_path(path),False)
++    except Exception as exc:
++        if failure is not None:failure.update(disk_monitor_failure(exc,stage=stage,path=active_path,entries=count))
++        raise
+     return rows
+ 
+ 
+@@ -315,28 +366,38 @@
+ 
+ def wait_owned(actor,clock,scope,baseline,disk_bytes,stops,lifetime=None):
+     highwater={};samples=0;largest=0;reason=None;signals=[]
++    monitor_failure=None;final_monitor_failure=None
+     while actor.poll() is None:
+         if stops:reason='PARENT_STOP_REQUEST';break
+         if remaining(clock)<=5:reason='ORIGINAL_OUTER_CLEANUP_RESERVE';break
++        failure={};stage='MONITOR_BLOCK'
+         try:
+-            charged=charge_growth(baseline,scan_scope(scope,deadline=clock['deadline_monotonic']-5),highwater)
++            current=scan_scope(scope,deadline=clock['deadline_monotonic']-5,failure=failure)
++            stage='CHARGE_GROWTH';charged=charge_growth(baseline,current,highwater)
++            stage='SAMPLE_UPDATE'
+             samples+=1;largest=max(largest,charged)
+             if charged>=disk_bytes:reason='OBSERVED_AGGREGATE_NEW_DISK_BOUND';break
+-        except Exception:
++        except Exception as exc:
++            monitor_failure=failure or disk_monitor_failure(exc,stage=stage)
+             reason='AGGREGATE_DISK_MONITOR_REFUSED';break
+         try:actor.wait(timeout=min(scope['sample_seconds'],max(0.001,remaining(clock)-5)))
+         except subprocess.TimeoutExpired:pass
+     code=stop_reap(actor,clock,signals,lifetime) if actor.poll() is None else actor.wait(timeout=0)
+     # Preserve a final sample when possible, including the just-exited process's
+     # carriers. This never consumes a replacement or extended operation clock.
++    failure={};stage='MONITOR_BLOCK'
+     try:
+-        largest=max(largest,charge_growth(baseline,scan_scope(scope,deadline=clock['deadline_monotonic']),highwater));samples+=1
++        current=scan_scope(scope,deadline=clock['deadline_monotonic'],failure=failure)
++        stage='CHARGE_GROWTH';charged=charge_growth(baseline,current,highwater)
++        stage='SAMPLE_UPDATE';largest=max(largest,charged);samples+=1
+         if largest>=disk_bytes and reason is None:reason='OBSERVED_DISK_BOUND_AT_EXIT'
+-    except Exception:
++    except Exception as exc:
++        final_monitor_failure=failure or disk_monitor_failure(exc,stage=stage)
+         if reason is None:reason='FINAL_DISK_SAMPLE_NOT_ESTABLISHED'
+     return dict(exit_code=code,stop_reason=reason,cleanup_signals=signals,samples=samples,
+         observed_new_bytes_highwater=largest,aggregate_cap_bytes=disk_bytes,
+         accounting='SUM_PER_INODE_OBSERVED_POSITIVE_GROWTH_HIGHWATER',hard_filesystem_quota=False,
++        monitor_failure=monitor_failure,final_monitor_failure=final_monitor_failure,
+         limitations=['between-sample transient files/growth can be missed','gateway external growth outside declared roots is unbounded',
+                     'stop targets owned tester consumer; product host lifetime is separately owned'])
+ 

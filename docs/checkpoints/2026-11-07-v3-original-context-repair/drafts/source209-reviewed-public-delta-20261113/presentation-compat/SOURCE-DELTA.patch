@@ -1,0 +1,82 @@
+--- /home/jericho/.cache/FRW-SOL-V3-PRESENTATION-CURRENT209-CALLER-CORE-20261113/presentation_prepare.py
++++ /home/jericho/.cache/FRW-ASTRA-NATIVE-PRESENTATION-ORIGINAL-RECEIPT-COMPAT-20261113/presentation_prepare.py
+@@ -207,14 +207,60 @@
+          and source.get('capture_window_complete') is True
+          and source.get('status') in ('EVIDENCE_READY','STOPPED'),
+          'PRESENTATION_ORIGINAL_CLOSED_SINGLE_UPLOAD_REQUIRED')
+-    runner.verify_capture_context(source)
+-    runner.verify_window(source)
+-    runner.verify_reply_custody(source)
+-    _,_,drain=runner.receive_inventory(source,terminal=True)
+-    need(type(drain) is dict and set(drain)=={'intent','response','complete'}
+-         and all(type(v) is dict for v in drain.values())
+-         and drain['complete'].get('kind')=='terminal_complete',
+-         'PRESENTATION_ORIGINAL_AUTHENTICATED_TERMINAL_DRAIN_REQUIRED')
++    # Reuse only this cryptographically pinned, fully closed original admission.
++    # The original serial consumer uses the same exact-run/plan scope while
++    # inspecting a closed immediate predecessor. Its consumed parent is not a
++    # current authority for this saved source; all NEW-effect gates stay intact.
++    admission_ref=source.get('continuation_reference')
++    need(type(admission_ref) is dict and set(admission_ref)=={'basename','bytes','sha256'}
++         and type(admission_ref.get('basename')) is str
++         and Path(admission_ref['basename']).name==admission_ref['basename']
++         and same(unit['original']['admission'],dict(path=str(runner.store.root/admission_ref['basename']),
++             bytes=admission_ref.get('bytes'),sha256=admission_ref.get('sha256'))),
++         'PRESENTATION_ORIGINAL_EXACT_ADMISSION_REFERENCE_REQUIRED')
++    admission=json.loads(reader(unit['original']['admission']))
++    need(type(admission) is dict,'PRESENTATION_ORIGINAL_CLOSED_ADMISSION_JOIN_REQUIRED')
++    plan=admission.get('plan')
++    need(type(plan) is dict and admission.get('schema')=='friday.tester.closed-unknown-admission.v1'
++         and admission.get('status')=='ONE_NEW_EFFECT_ADMITTED_NO_RETRY'
++         and admission.get('original_outcome')=='UNKNOWN' and admission.get('original_replayed') is False
++         and admission.get('response_binding')=='UNBOUND'
++         and admission.get('plan_sha256')==digest(encoded(plan))
++         and plan.get('schema')=='friday.tester.continue-closed-unknown.v2' and plan.get('operator')=='Root'
++         and plan.get('new_run_id')==source['id'] and same(plan.get('new_scenario'),source.get('scenario'))
++         and type(source.get('step')) is int and source['step']==0
++         and type(plan.get('new_task')) is dict and plan['new_task'].get('kind')=='ordinary-document-task'
++         and plan.get('acknowledgement')=='OLD_OUTCOME_UNKNOWN_NO_REPLAY_NEW_DISTINCT_EFFECT_AUTHORIZED'
++         and type(plan.get('ack_timeout_seconds')) is int and plan['ack_timeout_seconds']==30
++         and type(source.get('new_ack_timeout_seconds')) is int and source['new_ack_timeout_seconds']==30,
++         'PRESENTATION_ORIGINAL_CLOSED_ADMISSION_JOIN_REQUIRED')
++    closure=json.loads(reader(unit['original']['closed_operation']))
++    need(type(closure) is dict and closure.get('schema')=='frw.Root.B00-ordinary-operational-closure.v1'
++         and closure.get('operator')=='Root' and closure.get('accepted') is True
++         and closure.get('full180') is True and closure.get('resource0') is True
++         and closure.get('original_replayed') is False
++         and type(closure.get('child_reaped')) is dict and closure['child_reaped'].get('reaped') is True
++         and same(closure.get('run'),dict(path=unit['original']['run']['path'],sha256=SOURCE_REF['run_sha256']))
++         and source.get('status')=='EVIDENCE_READY',
++         'PRESENTATION_ORIGINAL_FULL_WINDOW_OPERATIONAL_CLOSURE_REQUIRED')
++    missing=object()
++    saved_closed=getattr(runner,'_closed_text_predecessor',missing)
++    saved_reply=getattr(runner,'reply_run',missing)
++    runner._closed_text_predecessor=(source['id'],plan)
++    try:
++        runner.verify_capture_context(source)
++        runner.verify_window(source)
++        runner.verify_reply_custody(source)
++        _,_,drain=runner.receive_inventory(source,terminal=True)
++        need(type(drain) is dict and set(drain)=={'intent','response','complete'}
++             and all(type(v) is dict for v in drain.values())
++             and drain['complete'].get('kind')=='terminal_complete',
++             'PRESENTATION_ORIGINAL_AUTHENTICATED_TERMINAL_DRAIN_REQUIRED')
++    finally:
++        for name,saved in (('_closed_text_predecessor',saved_closed),('reply_run',saved_reply)):
++            if saved is missing:
++                if hasattr(runner,name):delattr(runner,name)
++            else:setattr(runner,name,saved)
+     for original_key,run_key in [('source_upload_ack','sent_api_ack_reference'),('window','sent_window_reference')]:
+         r=source.get(run_key)
+         need(type(r) is dict and type(r.get('basename')) is str and Path(r['basename']).name==r['basename']
+--- /home/jericho/.cache/FRW-SOL-V3-PRESENTATION-CURRENT209-CALLER-CORE-20261113/presentation_current209.py
++++ /home/jericho/.cache/FRW-ASTRA-NATIVE-PRESENTATION-ORIGINAL-RECEIPT-COMPAT-20261113/presentation_current209.py
+@@ -30,7 +30,7 @@
+ EXACT_LIMIT = 24*1024**2
+ CLOSURE = {'path':'/home/jericho/.cache/FRW-ASTRA-V3-CORE209-ROOT-20261113/ACTUAL209-INSTALLED-CLOSED.json','sha256':'202c51d2d9b0a7214016dcd5e085bd8425506d0316999805c14c82909f295f1c'}
+ ACCEPTANCE = {'path':'/home/jericho/.cache/FRW-ASTRA-V3-CORE209-ROOT-20261113/ROOT-SOURCE-INTEGRATION-ACCEPTANCE.json','sha256':'db947c93844895e4ce19f4708aaeec2a10fd0114e025c1f857b366c17f0ff6ba'}
+-PREP = {'path': '/home/jericho/.cache/FRW-SOL-V3-PRESENTATION-CURRENT209-CALLER-CORE-20261113/presentation_prepare.py', 'bytes': 20895, 'sha256': 'a0d2dda195cbb643f9f923bb113d210e81ea3f7089c45fc18d2629c574719d40'}
++PREP = {'path': '/home/jericho/.cache/FRW-ASTRA-NATIVE-PRESENTATION-ORIGINAL-RECEIPT-COMPAT-20261113/presentation_prepare.py', 'bytes': 24323, 'sha256': 'dd73c32caf9425aaf7387655f4770d85a7394c97fd8671608536257674ac458a'}
+ TRANSPORT = {'path':'/home/jericho/.cache/FRW-ASTRA-NATIVE-CORE209-ROOT-FRAME-PREP-20261113-R2/native_scope.py','bytes':5584,'sha256':'62bd8ae8ba125768ba495bbdc0c553b7a0c3a073d231a897fb03372a22328dc9'}
+ SELECTED_SHA = 'cc36c0933bd01cfa5c33a3fb1123fefd0345a2185fbcf7f70f5a3bc2f7c0905b'
+ COUNTS = dict(layers=209,project=499,native=17891,plugins=52,base=17730)

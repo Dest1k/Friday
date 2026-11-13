@@ -1,0 +1,611 @@
+diff --git a/gateway/delivery_ledger.py b/gateway/delivery_ledger.py
+index 5633890ac935..e23e14be70e9 100644
+--- a/gateway/delivery_ledger.py
++++ b/gateway/delivery_ledger.py
+@@ -1,18 +1,22 @@
+-"""Durable delivery-obligation ledger for gateway final responses (rows in the shared ``state.db``;
+-WAL, owner pid + process-start liveness, bounded retention) so a crash between finalize and
+-platform ACK cannot lose a response silently. Checkpoints: record_obligation() 'pending' before
+-any send | mark_attempting() 'attempting' right before the await | mark_delivered() 'delivered'
+-only on SendResult.success | mark_failed() 'failed' on a definitive rejection. Crash semantics
+-(never silently resend an ambiguous send): pending = never started, redeliver plainly; attempting
+-= crashed mid-await, platform MAY have it, redeliver WITH a visible recovered marker; failed =
+-rejected once, restart is a retry boundary, also marked; delivered = prune. Attempts are capped
+-and stale rows expire, both -> 'abandoned' (kept briefly, then pruned). Everything is
+-best-effort: ledger failures must never block a send; callers wrap every call in try/except.
++"""Durable final-response delivery obligations in the shared state.db.
++
++Ordinary Telegram text: pending was never attempted; attempting/legacy failed
++without zero-effect proof becomes explicit uncertain and MUST NOT automatically
++send again. A parsed positive ACK followed by durable delivered finalization is
++terminal. failed_unsent preserves a bounded retry for a proven wholly unsent
++payload. No remote receipt lookup or exactly-once guarantee is implied.
++
++Other channels retain their existing marked at-least-once recovery policy.
++Telegram uncertainty is not evicted or silently expired; ownership/profile and
++attempt guards remain in force. Ordinary Telegram recording fails closed; other
++callers keep their historical best-effort ledger behavior.
+ """
+ 
+ from __future__ import annotations
+ 
+ import hashlib
++from contextlib import contextmanager
++from contextvars import ContextVar
+ import logging
+ import os
+ import re
+@@ -27,6 +31,49 @@
+ 
+ logger = logging.getLogger(__name__)
+ _DB_LOCK = threading.Lock()
++
++# Only the ordinary Telegram final/recovery caller enters this lexical scope.
++# ContextVar keeps concurrent channels and sends independent; no global activation.
++_TELEGRAM_TEXT_SEND = ContextVar("ordinary_telegram_text_send", default=False)
++
++
++@contextmanager
++def telegram_text_send_scope(enabled: bool):
++    token = _TELEGRAM_TEXT_SEND.set(enabled)
++    try:
++        yield
++    finally:
++        _TELEGRAM_TEXT_SEND.reset(token)
++
++
++def telegram_text_send_fenced() -> bool:
++    return _TELEGRAM_TEXT_SEND.get()
++
++
++def telegram_text_no_effect(result: Any) -> bool:
++    raw = getattr(result, "raw_response", None)
++    return (not getattr(result, "success", False) and isinstance(raw, dict)
++            and raw.get("telegram_text_no_effect") is True and not raw.get("partial_overflow"))
++
++
++def delivery_acknowledged(platform: str, result: Any) -> bool:
++    if not getattr(result, "success", False):
++        return False
++    if platform != "telegram":
++        return True
++    # A success flag without a parsed positive Telegram message ID is not an ACK.
++    def positive(value):
++        return not isinstance(value, bool) and str(value).isascii() and str(value).isdigit() and int(value) > 0
++    if not positive(getattr(result, "message_id", None)):
++        return False
++    raw = getattr(result, "raw_response", None)
++    if isinstance(raw, dict):
++        if raw.get("partial_overflow"):
++            return False
++        ids = raw.get("message_ids")
++        if ids is not None and (not isinstance(ids, list) or not ids or not all(positive(v) for v in ids)):
++            return False
++    return True
+ 
+ # Redelivery policy knobs (deliberately not config — the ledger is gated by
+ # ``gateway.delivery_ledger`` and these only matter in the rare recovery path).
+@@ -268,12 +315,12 @@
+ 
+ 
+ def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
+-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
+-    """Record a final response as owed to the platform (state='pending')."""
++                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> bool:
++    """Record a final response. Telegram never replaces a prior delivery fence."""
+     now, (pid, started) = time.time(), _owner_stamp()
+     with _DB_LOCK, _transaction() as conn:
+-        conn.execute(
+-            """INSERT OR REPLACE INTO delivery_obligations
++        cursor = conn.execute(
++            ("INSERT OR IGNORE" if platform == "telegram" else "INSERT OR REPLACE") + """ INTO delivery_obligations
+                (obligation_id, session_key, platform, chat_id, thread_id,
+                 content, state, attempts, created_at, updated_at,
+                 owner_pid, owner_started_at, adapter_profile)
+@@ -283,6 +330,7 @@
+         # Same transaction, same connection: the cron ledgers prune this way too
+         # (cron/delivery_queue._prune_terminal_unlocked, cron/executions._prune_unlocked).
+         _prune_unlocked(conn, now)
++        return bool(cursor.rowcount)
+ 
+ 
+ def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
+@@ -307,20 +355,40 @@
+              session_key, content, since))
+ 
+ 
+-def mark_attempting(obligation_id: str) -> None:
+-    _update_state(obligation_id, "attempting")
++def mark_attempting(obligation_id: str) -> bool:
++    pid, started = _owner_stamp()
++    with _DB_LOCK, _transaction() as conn:
++        cursor = conn.execute(
++            """UPDATE delivery_obligations SET state='attempting', updated_at=?
++               WHERE obligation_id=? AND (platform!='telegram' OR
++                 (state='pending' AND owner_pid IS ? AND owner_started_at IS ?))""",
++            (time.time(), obligation_id, pid, started))
++        return bool(cursor.rowcount)
+ 
+ 
+ def mark_delivered(obligation_id: str) -> None:
+     _update_state(obligation_id, "delivered")
+ 
+ 
+-def mark_failed(obligation_id: str, error: str = "") -> None:
+-    _update_state(obligation_id, "failed", error=error)
++def mark_failed(obligation_id: str, error: str = "", *, no_effect: bool = False) -> None:
++    # Only the actual producer's whole-payload no-effect flag permits a retry.
++    # Exception text (including send_path_degraded) is never that proof.
++    pid, started = _owner_stamp()
++    with _DB_LOCK, _transaction() as conn:
++        conn.execute(
++            """UPDATE delivery_obligations SET state=CASE
++                   WHEN platform='telegram' AND ? THEN 'failed_unsent'
++                   WHEN platform='telegram' AND NOT ? THEN 'uncertain' ELSE 'failed' END,
++                   updated_at=?, last_error=?
++               WHERE obligation_id=? AND (platform!='telegram' OR
++                 (state='attempting' AND owner_pid IS ? AND owner_started_at IS ?))""",
++            (bool(no_effect),
++             bool(no_effect or classify_dead_error(error)),
++             time.time(), error[:500] if error else None, obligation_id, pid, started))
+ 
+ 
+ def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
+-    """Return an unsent runtime claim to ``failed`` without spending an attempt.
++    """Return an undispatched claim to failed_unsent (Telegram) or failed, without spending an attempt.
+ 
+     Runtime recovery claims before clearing ``resume_pending`` so two reconnect paths cannot send the
+     same row; if the flag cannot be cleared no send was attempted and the claim must not consume the
+@@ -331,7 +399,7 @@
+     with _DB_LOCK, _transaction() as conn:
+         cursor = conn.execute(
+             """UPDATE delivery_obligations
+-               SET state='failed', attempts=CASE
++               SET state=CASE WHEN platform='telegram' THEN 'failed_unsent' ELSE 'failed' END, attempts=CASE
+                        WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+                    updated_at=?, last_error=?
+                WHERE obligation_id=? AND state='attempting'
+@@ -345,8 +413,9 @@
+         conn.execute(
+             """UPDATE delivery_obligations
+                SET state=?, updated_at=?, last_error=?
+-               WHERE obligation_id=?""",
+-            (state, time.time(), error[:500] if error else None, obligation_id))
++               WHERE obligation_id=? AND (platform!='telegram' OR
++                 (state='attempting' AND owner_pid IS ? AND owner_started_at IS ?))""",
++            (state, time.time(), error[:500] if error else None, obligation_id, *_owner_stamp()))
+ 
+ 
+ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
+@@ -393,12 +462,30 @@
+                       content, state, attempts, created_at,
+                       owner_pid, owner_started_at, adapter_profile, last_error, updated_at
+                FROM delivery_obligations
+-               WHERE state IN ('pending', 'attempting', 'failed')"""
++               WHERE state IN ('pending', 'attempting', 'failed', 'failed_unsent', 'uncertain')"""
+         ).fetchall()
+         for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
+              owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
+             if _owner_alive(owner_pid, owner_started_at):
+                 continue  # a live gateway still owns this row
++            if platform == "telegram" and (
++                    state in {"attempting", "uncertain"} or (state == "pending" and attempts > 0)
++                    or state == "failed"):
++                if state == "failed" and classify_dead_error(last_error):
++                    continue  # terminal target rejection is never replayed
++                if ((deliverable_platforms is not None and platform not in deliverable_platforms)
++                        or (deliverable_targets is not None and (platform, adapter_profile) not in deliverable_targets)):
++                    continue
++                # Retain payload/history and expose uncertainty, without spending a send.
++                conn.execute(
++                    """UPDATE delivery_obligations SET state='uncertain', owner_pid=?, owner_started_at=?
++                       WHERE obligation_id=? AND owner_pid IS ? AND owner_started_at IS ?""",
++                    (pid, started, oid, owner_pid, owner_started_at))
++                claimed.append({"obligation_id": oid, "session_key": session_key, "platform": platform,
++                                "chat_id": chat_id, "thread_id": thread_id, "content": content,
++                                "profile": adapter_profile or "default", "attempts": attempts,
++                                "adopted": True, "uncertain": True})
++                continue
+             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
+                 conn.execute(
+                     """UPDATE delivery_obligations
+@@ -407,7 +494,7 @@
+             if ((deliverable_platforms is not None and platform not in deliverable_platforms)
+                     or (deliverable_targets is not None and (platform, adapter_profile) not in deliverable_targets)):
+                 continue  # no adapter this boot — claiming would spend an attempt on a no-op
+-            flood_row = state == "failed" and is_flood_error(last_error)
++            flood_row = state in {"failed", "failed_unsent"} and is_flood_error(last_error)
+             if flood_row and now < flood_not_before(updated_at, last_error):
+                 # Still inside the platform's wait: adopt the dead owner's row without spending an attempt
+                 # (state and error kept) so this process's flood timer can claim it once the wait passes.
+@@ -442,7 +529,7 @@
+                 # the marker.
+                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
+                                             adapter_profile or "default",
+-                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row))
++                                            needs_marker=platform != "telegram" and (state != "pending" or attempts > 0), flood=flood_row))
+     return claimed
+ 
+ 
+@@ -467,13 +554,20 @@
+         rows = conn.execute(
+             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
+                       content, attempts, created_at, owner_pid,
+-                      owner_started_at, last_error, adapter_profile, updated_at
++                      owner_started_at, last_error, adapter_profile, updated_at, state
+                FROM delivery_obligations
+-               WHERE state='failed' AND platform=?""", (platform,)).fetchall()
++               WHERE state IN ('failed', 'failed_unsent') AND platform=?""", (platform,)).fetchall()
+         for (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
+-             owner_pid, owner_started_at, last_error, adapter_profile, updated_at) in rows:
++             owner_pid, owner_started_at, last_error, adapter_profile, updated_at, state) in rows:
+             # Exact process-start matching prevents PID reuse from stealing work.
+             if adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started:
++                continue
++            if row_platform == "telegram" and state == "failed":
++                if not classify_dead_error(last_error):
++                    conn.execute("""UPDATE delivery_obligations SET state='uncertain'
++                                    WHERE obligation_id=? AND state IN ('failed', 'failed_unsent')
++                                      AND owner_pid IS ? AND owner_started_at IS ?""",
++                                 (oid, owner_pid, owner_started_at))
+                 continue
+             due = retry_not_before(updated_at, last_error, attempts)
+             if due is None:
+@@ -483,7 +577,7 @@
+                 conn.execute(
+                     """UPDATE delivery_obligations
+                        SET state='abandoned', updated_at=?
+-                       WHERE obligation_id=? AND state='failed'
++                       WHERE obligation_id=? AND state IN ('failed', 'failed_unsent')
+                          AND owner_pid IS ? AND owner_started_at IS ?""", owner_guard)
+                 continue
+             if now < due:
+@@ -493,14 +587,14 @@
+             cursor = conn.execute(
+                 """UPDATE delivery_obligations
+                    SET state='attempting', attempts=attempts+1, updated_at=?, last_error=NULL
+-                   WHERE obligation_id=? AND state='failed'
++                   WHERE obligation_id=? AND state IN ('failed', 'failed_unsent')
+                      AND owner_pid IS ? AND owner_started_at IS ?""", owner_guard)
+             if cursor.rowcount:
+                 # The failed send's ack may have been lost (reconnect) or its earlier chunks accepted
+                 # (flood): every runtime redelivery carries a marker. The pre-claim error rides along so a
+                 # claim released unsent keeps its flood retry eligibility.
+                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
+-                                            attempts, adapter_profile, needs_marker=True, runtime=True,
++                                            attempts, adapter_profile, needs_marker=row_platform != "telegram", runtime=True,
+                                             flood=is_flood_error(last_error), last_error=last_error))
+     return claimed
+ 
+@@ -515,11 +609,13 @@
+         return []
+     with _DB_LOCK, _transaction() as conn:
+         rows = conn.execute(
+-            """SELECT platform, adapter_profile, updated_at, last_error, attempts, created_at
++            """SELECT platform, adapter_profile, updated_at, last_error, attempts, created_at, state
+                FROM delivery_obligations
+-               WHERE state='failed' AND owner_pid IS ? AND owner_started_at IS ?""", (pid, started)).fetchall()
++               WHERE state IN ('failed', 'failed_unsent') AND owner_pid IS ? AND owner_started_at IS ?""", (pid, started)).fetchall()
+     earliest: Dict[tuple, float] = {}
+-    for platform, adapter_profile, updated_at, last_error, attempts, created_at in rows:
++    for platform, adapter_profile, updated_at, last_error, attempts, created_at, state in rows:
++        if platform == "telegram" and state == "failed":
++            continue  # ambiguous/partial legacy failures must not arm a replay timer
+         # Reconnect-only rows (a claim released because the adapter was gone) are re-claimed by the
+         # reconnect sweep; a timer would claim and release them every tick until the adapter is back.
+         if is_reconnect_only(last_error):
+@@ -539,11 +635,13 @@
+     conn.execute(
+         """DELETE FROM delivery_obligations
+            WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""", (now - _RETENTION_SECONDS,))
+-    total = conn.execute("SELECT COUNT(*) FROM delivery_obligations").fetchone()[0]
++    # Unresolved Telegram evidence is a fence, not an evictable cache entry.
++    evictable = "NOT (platform='telegram' AND state NOT IN ('delivered', 'abandoned'))"
++    total = conn.execute("SELECT COUNT(*) FROM delivery_obligations WHERE " + evictable).fetchone()[0]
+     if total > _MAX_ROWS:
+         conn.execute(
+             """DELETE FROM delivery_obligations WHERE obligation_id IN (
+-                 SELECT obligation_id FROM delivery_obligations
++                 SELECT obligation_id FROM delivery_obligations WHERE """ + evictable + """
+                  ORDER BY CASE state
+                             WHEN 'delivered' THEN 0
+                             WHEN 'abandoned' THEN 1
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+index a61dde52dbab..ac41d4600cc6 100644
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -3705,6 +3705,9 @@
+             return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
+ 
+         result = await _send(content)
++        from gateway.delivery_ledger import telegram_text_send_fenced
++        if telegram_text_send_fenced():
++            return result  # adapter's proven-no-effect chunk retries remain bounded below
+         if result.success or self._send_retry_is_final(result):
+             return result
+         error_str = result.error or ""
+@@ -4327,16 +4330,23 @@
+                 _ledger_id = getattr(event, "message_id", "")
+             obligation_id = compute_obligation_id(
+                 session_key, str(_ledger_id or ""), text_content)
+-            await asyncio.to_thread(
++            recorded = await asyncio.to_thread(
+                 record_obligation, obligation_id=obligation_id, session_key=session_key,
+                 platform=str(getattr(source.platform, "value", source.platform)),
+                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
+                 content=text_content,
+                 adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
+-            await asyncio.to_thread(mark_attempting, obligation_id)
++            telegram = str(getattr(source.platform, "value", source.platform)) == "telegram"
++            if telegram and not recorded:
++                raise RuntimeError("delivery_requires_reconciliation")
++            attempting = await asyncio.to_thread(mark_attempting, obligation_id)
++            if telegram and not attempting:
++                raise RuntimeError("delivery_requires_reconciliation")
+             return obligation_id
+         except Exception:
+             logger.debug("delivery ledger record failed", exc_info=True)
++            if str(getattr(event.source.platform, "value", event.source.platform)) == "telegram":
++                raise  # no unjournaled ordinary Telegram send after a ledger failure
+             return None
+ 
+     async def _finalize_delivery_obligation(
+@@ -4349,12 +4359,17 @@
+         backoff has passed instead of waiting for the next restart (#91653)."""
+         try:
+             from gateway.dead_targets import classify_dead_error
+-            from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
+-            if getattr(result, "success", False):
++            from gateway.delivery_ledger import (
++                delivery_acknowledged, is_reconnect_only, mark_delivered, mark_failed, telegram_text_no_effect)
++            platform = str(getattr(event.source.platform, "value", event.source.platform))
++            if delivery_acknowledged(platform, result):
+                 await asyncio.to_thread(mark_delivered, obligation_id)
+                 return
+             error = str(getattr(result, "error", "") or "")
+-            await asyncio.to_thread(mark_failed, obligation_id, error)
++            await asyncio.to_thread(mark_failed, obligation_id, error,
++                                    no_effect=telegram_text_no_effect(result))
++            if platform == "telegram" and not telegram_text_no_effect(result):
++                return  # ambiguous attempts stay fenced; no timer/reconnect replay
+             if is_reconnect_only(error):
+                 redeliver = getattr(
+                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
+@@ -4457,12 +4472,20 @@
+         delivery_adapter = self._final_delivery_adapter(event.source)
+         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                     len(text_content), event.source.chat_id)
+-        obligation_id = await self._record_delivery_obligation(
+-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
++        from gateway.delivery_ledger import delivery_acknowledged, telegram_text_send_scope
++        telegram = str(getattr(event.source.platform, "value", event.source.platform)) == "telegram"
++        try:
++            obligation_id = await self._record_delivery_obligation(
++                event, session_key, text_content, delivery_adapter, is_ephemeral_response)
++        except Exception:
++            return SendResult(success=False, error="delivery_not_admitted"), delivery_adapter
+         if obligation_id is not None:
+             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
+-        result = await delivery_adapter._send_with_retry(
+-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
++        with telegram_text_send_scope(telegram and obligation_id is not None):
++            result = await delivery_adapter._send_with_retry(
++                chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
++        if telegram and obligation_id is not None and getattr(result, "success", False) and not delivery_acknowledged("telegram", result):
++            result = SendResult(success=False, error="delivery_ack_unconfirmed")
+         stop_reply_clock(delivery_adapter, event.source.chat_id, result)
+         if obligation_id is not None:
+             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+diff --git a/gateway/run_startup.py b/gateway/run_startup.py
+index e2ac69d6e7da..18c13264c4bd 100644
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -379,6 +379,12 @@
+             boot_task.cancel()
+             raise
+ 
++    @staticmethod
++    def _delivery_resume_generation(entry):
++        return tuple(getattr(entry, key, None) for key in (
++            "session_key", "session_id", "transport_profile", "last_resume_marked_at",
++            "updated_at", "active_turn_token", "active_turn_started_at"))
++
+     async def _clear_resume_pending_for_claimed_obligations(
+         self, claimed: list, *, require_success: bool = False
+     ) -> list:
+@@ -391,6 +397,17 @@
+             if not session_key:
+                 sendable.append(row)
+                 continue
++            if row.get("platform") == "telegram":
++                # Snapshot values, not the mutable SessionEntry: a failed save can
++                # already have changed its in-memory resume_pending field.
++                with self.session_store._lock:
++                    self.session_store._ensure_loaded_locked()
++                    entry = self.session_store._entries.get(session_key)
++                    if entry is not None:
++                        veto = getattr(self, "_delivery_resume_veto", None)
++                        if veto is None:
++                            veto = self._delivery_resume_veto = set()
++                        veto.add(self._delivery_resume_generation(entry))
+             try:
+                 await self.async_session_store.clear_resume_pending(session_key)
+             except Exception:
+@@ -520,7 +537,9 @@
+         # No early return on an empty claim: the boot sweep may have ADOPTED flood-refused rows that are
+         # not due yet, and those still need their timer armed below.
+         try:
+-            from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed
++            from gateway.delivery_ledger import (
++                RECOVERED_MARKER, delivery_acknowledged, mark_delivered, mark_failed,
++                telegram_text_no_effect, telegram_text_send_scope)
+         except Exception:
+             logger.debug("delivery ledger import failed", exc_info=True)
+             await self._release_unsent_boot_claims(claimed)
+@@ -549,12 +568,13 @@
+                 # From this point the current send is uncertain even if cancellation interrupts it.
+                 untouched = index + 1
+                 try:
+-                    result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
++                    with telegram_text_send_scope(row["platform"] == "telegram"):
++                        result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
+                 except Exception as send_err:
+                     logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
+                     result = None
+                 with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
+-                    if result is not None and getattr(result, "success", False):
++                    if result is not None and delivery_acknowledged(row["platform"], result):
+                         await asyncio.to_thread(mark_delivered, row["obligation_id"])
+                         redelivered += 1
+                         logger.info(
+@@ -563,7 +583,8 @@
+                         )
+                     else:
+                         await asyncio.to_thread(
+-                            mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
++                            mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed"),
++                            no_effect=telegram_text_no_effect(result)
+                         )
+         finally:
+             await self._release_unsent_boot_claims(claimed[untouched:])
+@@ -695,6 +716,8 @@
+             return 0
+         scheduled = 0
+         for entry in candidates:
++            if self._delivery_resume_generation(entry) in getattr(self, "_delivery_resume_veto", ()):
++                continue  # this exact answered generation is owned by the delivery ledger
+             # Epoch math: the marker was stamped naive-local by the previous process, possibly
+             # on the other side of a DST change; wall-clock subtraction is off by the shift.
+             marker = entry.last_resume_marked_at or entry.updated_at
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+index 266406a68f3e..d0e6e3b9008a 100644
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -14,6 +14,15 @@
+ from datetime import datetime, timezone
+ from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+ from hermes_cli import setup_platforms
++from gateway.delivery_ledger import telegram_text_send_fenced
++
++
++def _ordinary_text_unsent(result):
++    if telegram_text_send_fenced():
++        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
++        raw["telegram_text_no_effect"] = True
++        result.raw_response = raw
++    return result
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -1529,6 +1538,8 @@
+     def _rich_rejected(self, exc: Exception, what: str, fallback: str) -> bool:
+         """True for a permanent/capability rich-API failure (caller falls back to legacy); capability
+         errors latch rich off so no doomed roundtrip repeats per send."""
++        if telegram_text_send_fenced() and not self._text_no_effect_exception(exc):
++            return False
+         if not self._is_rich_fallback_error(exc):
+             return False
+         if self._is_rich_capability_error(exc):
+@@ -3470,6 +3481,27 @@
+             _TimedOut = None  # type: ignore[assignment,misc]
+         return _NetErr, _BadReq, _TimedOut
+ 
++    @staticmethod
++    def _text_no_effect_exception(error: Exception) -> bool:
++        """Typed provider rejection or pre-transport timeout, never exception-message inference."""
++        try:
++            from telegram.error import BadRequest, RetryAfter
++            if isinstance(error, (BadRequest, RetryAfter)):
++                return True
++        except ImportError:
++            pass
++        try:
++            from httpx import ConnectError, ConnectTimeout, PoolTimeout
++            seen = set()
++            while error is not None and id(error) not in seen:
++                seen.add(id(error))
++                if isinstance(error, (ConnectError, ConnectTimeout, PoolTimeout)):
++                    return True
++                error = error.__cause__  # incidental __context__ is not proof
++            return False
++        except ImportError:
++            return False
++
+     async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: Dict[str, Any]):
+         """MarkdownV2 first; on a parse/markdown rejection resend as stripped plain text."""
+         try:
+@@ -3477,6 +3509,8 @@
+                 self._bot.send_message(text=chunk, parse_mode=ParseMode.MARKDOWN_V2, **send_kwargs),
+                 timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
+         except Exception as md_error:
++            if telegram_text_send_fenced() and not self._text_no_effect_exception(md_error):
++                raise
+             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                 return await _await_with_thread_deadline(
+@@ -3509,6 +3543,8 @@
+                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
+                 return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
+             except _NetErr as send_err:
++                if telegram_text_send_fenced() and not self._text_no_effect_exception(send_err):
++                    raise
+                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
+                 if _BadReq and isinstance(send_err, _BadReq):
+                     if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
+@@ -3557,6 +3593,8 @@
+                                self.name, _send_attempt + 1, wait, _redact_telegram_error_text(send_err))
+                 await asyncio.sleep(wait)
+             except Exception as send_err:
++                if telegram_text_send_fenced() and not self._text_no_effect_exception(send_err):
++                    raise
+                 retry_after = getattr(send_err, "retry_after", None)
+                 if retry_after is not None or "retry after" in str(send_err).lower():
+                     wait = float(retry_after) if retry_after is not None else 1.0
+@@ -3638,15 +3676,15 @@
+             if live is not None:
+                 return await live.send(chat_id, content, reply_to, metadata)
+             if self._is_permanent_fatal() or not await self._wait_for_reconnection():
+-                return SendResult(success=False, error="Not connected", retryable=not self._is_permanent_fatal())
++                return _ordinary_text_unsent(SendResult(success=False, error="Not connected", retryable=not self._is_permanent_fatal()))
+             live = self._replacement_telegram_adapter()
+             if not self._bot and live is not None:
+                 return await live.send(chat_id, content, reply_to, metadata)
+             if not self._bot:
+-                return SendResult(success=False, error="Not connected", retryable=True)
++                return _ordinary_text_unsent(SendResult(success=False, error="Not connected", retryable=True))
+         # getattr() — tests build adapters via object.__new__() (no __init__).
+         if getattr(self, "_send_path_degraded", False):
+-            return SendResult(success=False, error="send_path_degraded", retryable=True)
++            return _ordinary_text_unsent(SendResult(success=False, error="send_path_degraded", retryable=True))
+         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
+         if not content or not content.strip():
+             return SendResult(success=True, message_id=None)
+@@ -3664,7 +3702,7 @@
+             logger.warning(
+                 "[%s] Telegram flood control still active for chat %s (%.0fs left); refusing locally without an API call",
+                 self.name, chat_id, cooldown)
+-            return _flood_cap_result(cooldown)
++            return _ordinary_text_unsent(_flood_cap_result(cooldown))
+         # Shared per-chat budget (#116312): a send WAITS for its slot (a send that waits
+         # is delivered; one that is skipped would drop a message).
+         slot_remaining = self._chat_outbound_slot_remaining(chat_id)
+@@ -3696,6 +3734,10 @@
+             return await self._send_chunks(chat_id, chunks, delivered, reply_to, metadata, error_types)
+         except Exception as e:
+             classified = self._classify_send_exception(e, error_types)
++            if telegram_text_send_fenced():
++                classified.retryable = self._text_no_effect_exception(e)
++                if not delivered and classified.retryable:
++                    classified = _ordinary_text_unsent(classified)
+             return self._with_partial_send(classified, chunks[len(delivered):], delivered, tail_certain=classified.retryable)
+ 
+     def _classify_send_exception(self, e: Exception, error_types: tuple) -> SendResult:
+@@ -3733,6 +3775,8 @@
+             if isinstance(outcome, SendResult):
+                 # Every SendResult returned here is a DEFINITE non-delivery (flood cap, DM-topic refusal);
+                 # ambiguous timeouts raise instead, so the remainder is safe to resume from.
++                if not delivered:
++                    outcome = _ordinary_text_unsent(outcome)
+                 return self._with_partial_send(outcome, chunks[len(delivered) - prior:], delivered)
+             msg, used_thread_fallback = outcome
+             delivered.append(str(msg.message_id))
