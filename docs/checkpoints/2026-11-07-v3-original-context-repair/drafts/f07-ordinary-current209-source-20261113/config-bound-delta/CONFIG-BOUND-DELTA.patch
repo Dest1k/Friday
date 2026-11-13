@@ -1,0 +1,48 @@
+--- accepted-d6f981a2/source/current209.py
++++ config-bound-24215d1f/source/current209.py
+@@ -56,6 +56,9 @@
+ MESSAGE_FIELDS = ('id','session_id','role','timestamp','platform_message_id','active','compacted')
+ PRINCIPAL = dict(id=SID,source='telegram',user_id='8812646969',chat_id='8812646969',chat_type='dm',session_key=KEY,profile_name='telegram-bot-8812646969',transport_profile='default')
+ DATABASES = {'default':H/'state.db','dest':H/'profiles/dest_telegram/state.db','tester':H/'profiles/telegram-bot-8812646969/state.db'}
++# Only these three known profile configs have a separate prospective read bound.
++# Bounds are fixed before reading, never inferred from file size or a failed read.
++PROFILE_CONFIG_LIMITS = {'default':4*1024**2,'dest':DEFAULT_LIMIT,'tester':4*1024**2}
+ PROOF_FIELDS = {'schema','status','operator','effect','whole_effect_sha256','created_at','expires_at','created_monotonic','expires_monotonic','boot_id','observed','lock_owners','invocation','Root_decision','privacy_preflight'}
+ EFFECT_FIELDS = {'schema','run_id','phase','authority','scenario','checker','source_preparation','installation_closure','source_acceptance','resources'}
+ 
+@@ -151,6 +154,19 @@
+ def ref(path,*,private=True):
+     raw=read(path,private=private)
+     return dict(path=str(canonical_path(path)),bytes=len(raw),sha256=digest(raw))
++
++
++
++def profile_config_refs():
++    """Known-profile bounded snapshots; default read/ref ABI stays1MiB.
++    Exact returned refs carry the observed bytes/SHA into final CAS and privacy.
++    """
++    configs={}
++    for label,limit in PROFILE_CONFIG_LIMITS.items():
++        path=DATABASES[label].parent/'config.yaml'
++        raw=_read_bounded(path,limit,False)
++        configs[label]=dict(path=str(canonical_path(path)),bytes=len(raw),sha256=digest(raw))
++    return configs
+ 
+ 
+ def module(reference):
+@@ -435,13 +451,13 @@
+     info=canonical_path(source['path']).stat()
+     actual_stat=dict(device=info.st_dev,inode=info.st_ino,size_bytes=info.st_size,uid=info.st_uid,mtime_ns=info.st_mtime_ns,ctime_ns=info.st_ctime_ns)
+     need(digest(source_raw)==source['sha256'] and actual_stat==source['stat'],'F07_PROSPECTIVE_SOURCE_CUSTODY_CHANGED')
+-    configs={label:ref(path.parent/'config.yaml',private=False) for label,path in DATABASES.items()}
++    configs=profile_config_refs()
+     logs=technical_log_cursor()
+     need(read(H/'gateway_state.json',private=False)==raw and kernel(ident['pid'])==ident
+          and services(installed['environment_basis'])==(service_rows,env),'F07_SERVICE_OR_STATE_CAS_CHANGED')
+     need(databases()==dbs and history(effect,stage)==hist and custody()==owned
+          and ref(STATE/'cursor.json')==cursor and technical_log_cursor()==logs
+-         and {label:ref(path.parent/'config.yaml',private=False) for label,path in DATABASES.items()}==configs,
++         and profile_config_refs()==configs,
+          'F07_FINAL_SQL_HISTORY_ONCE_CURSOR_CONFIG_OR_LOG_CAS_CHANGED')
+     need(digest(read(source['path']))==source['sha256'] and identity(canonical_path(source['path']).stat())==identity(info),
+          'F07_FINAL_PROSPECTIVE_SOURCE_CAS_CHANGED')

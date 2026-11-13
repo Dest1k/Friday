@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Обновлено **13.11.2026, 03:25 МСК**. **Астра Fast, Сол Standard**, gpt-6.1-sol/ultra; единственный live/main-интегратор — Астра.
+Обновлено **13.11.2026, 04:15 МСК**. **Астра Fast, Сол Standard**, gpt-6.1-sol/ultra; единственный live/main-интегратор — Астра.
 Тот же native goal/thread `01a1c688-e36d-7021-8df4-9c5644a4d75b` **active**, история/учёт сохранены, общего cap нет.
 **Приоритет всей команды: основной функционал Friday → DSH → A0; полный170/120/B00 остаётся открыт.**
 Исходные критерии/immutable ledgers — [scope V3](DSH-RESUME-2026-11-10.md#7-объём-v3); подробная история — [RESUME](DSH-RESUME-2026-11-10.md).
@@ -27,20 +27,22 @@ All-profile in-memory pending/approvals не экспонированы; scoped 
 normalinstalledimports/один freshprocess; snapshot binary default отказ, explicitreadonly exactbytes; noext/falsePDF/healthy1233B67d1, malformed64B03bc,
 nonDOCXZIP negative и UTF8literalPK regression. Входы/source before-after сохранены, сервисы неизменны; модель/Office/Telegram/producer/send/edit/install0.
 Это явный DOCX parser/snapshot, **не** MIME routing/currentharness/ordinary/formal. [Source/PLAN](drafts/f07-installed209-readonly-leaf-source-20261113/README.md).
-Нужно: настоящий normalcontext→tool; B226 `Runner.continuation_material(plan,check_current=True)` на выбранном currentharness;
+[Actual readonly ordinary/history и current209](evidence/astra-20261113/f07-actual-readonly-current209-and-config-delta.json) **выполнены**:514canonical/3UNKNOWN, все bytes/4existingStoreдиректории неизменны; api=None/new/send0. Current209 реально проверил receipt/marker/stamp/input,12nativepins/plugins52, freshservices/globalwork/3SQL/principal/cancel/leases/cursor/once/source/config/logCAS. B226 current-safety сохраняется; [выбор настоящего маршрута](evidence/astra-20261113/f07-current-route-gate-and-legacy-scope-correction.json).
+Legacy `continuation_material(check_current=True)` остаётся NOT_RUN_FOR_LEGACY_ROUTE, не PASSподдругимименем; фиктивный quarantine/legacyplan не создаётся. Отдельные8UserScopeвызовов не исходная предпосылка: genuine toolcontext наблюдается на настоящем Telegramпути послеoffline/current допуска. Требуются
 исходные noext→falsePDF→truncated→healthy в одной беседе с точными prior actualclosed/effect/custody/negativeoracle и допустимыми повторами.
 SameSHA фаз1/2/4 требует точного исходного phasepolicy, не generic freshness exception. Продуктовый expected-negative и технический capture/transportUNKNOWN различать;
-raw STOPPED/PARTIAL/полноту наблюдения не переименовывать в PASS ради следующей фазы. Старый F07R1 только exactzero-send/no-model/600clock закрыт; S13UNKNOWN отдельно.
+raw STOPPED/PARTIAL/полноту наблюдения не переименовывать в PASS ради следующей фазы. Старый F07R1 только exactzero-send/no-model/600clock закрыт. Исправлена ложная S13UNKNOWN-связка: S13canonical896a28 совпадает с исходнымPLAN, EVIDENCE_READY/sent2106 (не semantic/formalPASS); реальный UNKNOWNпредок — root-source110-fresh-xlsx-cell-edit-r1, его не повторять.
 Отсутствующий original39644B/a9b0 и старые sealedscenarios не воссоздавать; prospective1233/64 не исторические артефакты.
-Native **f07_ordinary_phase_preparation** готовит связный source-only caller/phase/harness пакет с независимым review; actual send/admission толькоRoot после приёмки.
+[Исходники ordinary/current](drafts/f07-ordinary-current209-source-20261113/README.md): phase6599be28/review66, current8b1b7630/114+33 завершены; ACK30 current+exactimmediatepredecessor исправлен, unrelated10 сохранён. Первый actualreadonly отказал до userclock:3MiBconfigs превышали default1MiB. Configdelta5761e90a/checker24215d1f/44+independent30 добавила только фиксированные known3config bounds, defaultread1MiB и все safety/CAS сохранены; actualreread0.937s PASS. Исходный отказ сохранён, fullsnapshot1.65MiB приватен. Rootвыбрал один исходный четырёхфазный forwardsequence:514canonical дают0целевыхmatches.
+[Первый finiteRootcaller f4798ee4/50+19 реально закрыт](evidence/astra-20261113/f07-first-phase-pre-save-refusal-and-closed-boundary.json):3.009s/childexit2, Refused наNEW **до canonicalsave/API/send**; originaltrial не наблюдался, ordinary/semantic/formal NOT_RUN. Исходный outer600/claim сохраняется, не возобновлять. Rootreadonly diagnosis: cursor_offsets→receive_inventory старого m03-addendum-check-01-r50 STOPPED/sent/processing261479793 без acceptedpartialadapter. Полный pre-save caller пропущен первоначальным qualifier; native **f07_history_caller_compat_delta** переносит весь пригодный acceptedv42 historical receipt/custody subset и готовит настоящую readonly pre-save проверку. Старый UNKNOWN/partial не завершается/не переигрывается. Сервисы/native/3SQL/514history/custody/config/cursor unchanged; отдельный postclose fullcollector отказалCAS при изменении logcursor, не объявленPASS. Нужны reviewed delta + actualwholeprefix readonly + отдельное решение о ещё не выполненном будущем участке; старыйdriver/clock не повторять. Laterphase только после actualclosed/custody/oracle предыдущей.
 
 **Сол — постоянный co-architect**, [новая существующая сессия](evidence/astra-20261113/sol-new-persistent-session-retargeted.json)
 `01a1d1c5-fa3c-7152-a978-bd887e12c441`, Standard/default/ultra, прежняя видимаяTUI; новой общейgoal нет.
 Task33/source209 завершён/интегрирован/теперь установлен. **Task34 FINAL принят**: savedcorrectREAD208 FAIL, full180/custody/2logsites и row5515scope независимоподтверждены;
 исторический effective toolpassword не сохранён, причина UNKNOWN, speculativeproductfix отсутствует. Старый M1NOT_REOBSERVED и scannercount1 не переписаны.
 После одного completednativecompact **Task35 FINAL принят**: [R3 source prototype](drafts/f06-argument-relation-source-prototype-20261113/README.md),276synthetic/39cases+88componentchecks и независимое review; actualconfigured/historicalruntime не выданы за syntheticPASS. Точная trusted programmatic reference/sink не подменяется извлечением пароля из текста; безreference — NO_REFERENCE.
-Root сохранил sourceкомпонент без интеграции: realreference/sink UNAVAILABLE, defaultinert. Никакого globalinstrumentation/layer210/install/ordinary replay не следует. **Task36 active** после одного completednativecompact: исходнаяA14 applicability/acceptedobservation attribution; Root209 отTask35 не зависел.
-Временные rootframe/R1/R2/leaf/criterion/publicarchive/A14 исполнители завершены; сохранены результаты/пределы, новых liveправ им не выдавали.
+Root сохранил sourceкомпонент без интеграции: realreference/sink UNAVAILABLE, defaultinert. Никакого globalinstrumentation/layer210/install/ordinary replay не следует. **Task36 FINAL принят**: [A14 attribution](evidence/astra-20261113/a14-original-attribution-final-root-acceptance.json), точные188count/depth и151summary scopes; row1613/wholeA14OPEN. После одного completednativecompact **Task37 active**: missingordinaryPPTX→ODP, exacteffectreconciliation и source-only подготовка без Office/send; RootF07 отнего не зависит.
+Временные rootframe/R1/R2/leaf/criterion/publicarchive/A14/current/configdelta/finiteRootonce исполнители завершены; native historicalcaller delta active, liveправ детям нет.
 
 **F06/P0/LIVE_BOT/cases167:** [sameuploadcorrectREAD208](evidence/astra-20261113/f06-correctread208-actual-closed-root-postconditions.json)
 выполнен ровно один раз: ACK2759/reply2761, native5515/platform4865→5516read_file→5517ooxml_password_incorrect→5518; full180/actor196.215s/closed.
@@ -64,7 +66,7 @@ R02controlledwrite→ACK interruption/reconciliation отсутствует, н�
 DSH/A0 standalone отложены: pairingarchiveonce/T1pretransactionFAIL/P,T2NOT_RUN; повторятьarchiveнельзя. Preflight/A0launcher sourcecoupling — второйэтап, еслине доказанточныйcoreблокер.
 
 **Публикация:** canonical [Dest1k/Friday main](https://github.com/Dest1k/Friday), [migration](evidence/astra-20261112/repository-migration.json), [local-work policy](ASTRA-LOCAL-WORK-2026-11-12.json).
-HEAD/trackingorigin перед этим checkpoint `35c85be3a80999ee352a781d4990df3ba955e634` (actual209 sourcecommit); итоговый SHA — содержащий сводку коммит, не попытка записать его хеш внутрь себя.
+HEAD/trackingorigin перед этим checkpoint `8d6749442aada512958dd9098f45e15c8db527d4`; actual209 sourcecommit остаётся35c85be3, новая документация не требует переустановки. Итоговый SHA — содержащий сводку коммит, не попытка записать его хеш внутрь себя.
 Origin сервер проверять при публикации отдельно; freshremote не выдумывать. Чужие3 сохранены byteexact вне собственных коммитов: docs/foundation-status.md,
 v2 PROVIDER-SWITCH-TECHNICAL-NOTE-2026-11-07.md, текущий FORMAT-COVERAGE-MAP.json. БД/WAL/SHM/private tester runs/downloads/closures/source/userpayload сохраняютсяVM.
 [Три одобренных процессных уточнения и тот же realactivegoal](evidence/astra-20261113/owner-process-clarification-and-same-goal-readback.json):
