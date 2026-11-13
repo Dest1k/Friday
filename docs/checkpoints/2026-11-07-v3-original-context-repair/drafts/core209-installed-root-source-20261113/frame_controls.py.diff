@@ -1,0 +1,81 @@
+--- consumed-R1/frame_controls.py
++++ source-R2/frame_controls.py
+@@ -1,12 +1,13 @@
+-"""Finite R1 relocation/inertness/composition controls; no actual H/current data."""
++"""Finite R2 metadata/caller-pin/relocation controls; no current H or product effects."""
+ from pathlib import Path
+-import ast,copy,hashlib,json,subprocess,sys,types,time
+-B=Path(__file__).parent;O=Path('/home/jericho/.cache/FRW-ASTRA-NATIVE-CORE209-ROOT-FRAME-PREP-20261113');start=time.monotonic();rows=[]
++import ast,hashlib,json,subprocess,sys,types,time
++B=Path(__file__).parent;O=Path('/home/jericho/.cache/FRW-ASTRA-NATIVE-CORE209-ROOT-FRAME-PREP-20261113-R1');start=time.monotonic();rows=[]
+ def check(n,v):
+  assert v,n;rows.append(dict(name=n,passed=True))
++sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+ interfaces=['boundary_contract.py','native_scope.py','root209_metadata.py','start_core209_once.py','run_native209_once.py','resume_native209_services.py','core209-first-actual-root.py','root209_real_preflight.py','prepare_source.py','admission-retained/observe-current-retained-units.py']
+ for n in interfaces:compile((B/n).read_bytes(),str(B/n),'exec')
+-check('all_relocated_interfaces_compile',True)
++check('R2_operational_interfaces_compile',True)
+ script='''import sys,types,pathlib,os,json,subprocess,socket,sqlite3,importlib.util,datetime,zoneinfo,fcntl,stat,hashlib,signal,time,struct,math,resource,errno
+ B=pathlib.Path(sys.argv[1])
+ def audit(event,args):
+@@ -17,37 +18,29 @@
+   if flags&(os.O_WRONLY|os.O_RDWR|os.O_CREAT|os.O_TRUNC|os.O_APPEND):raise RuntimeError('import_write')
+ sys.addaudithook(audit)
+ for n in sys.argv[2:]:
+- p=B/n;m=types.ModuleType('R1_'+n.replace('/','_').replace('.','_'));m.__file__=str(p);sys.modules[m.__name__]=m;exec(compile(p.read_bytes(),str(p),'exec'),m.__dict__)
++ p=B/n;m=types.ModuleType('R2_'+n.replace('/','_').replace('.','_'));m.__file__=str(p);sys.modules[m.__name__]=m;exec(compile(p.read_bytes(),str(p),'exec'),m.__dict__)
+ '''
+-r=subprocess.run([sys.executable,'-I','-B','-c',script,str(B),*interfaces],capture_output=True,timeout=10);check('R1_import_inert_no_H_reads_or_effects',r.returncode==0)
++r=subprocess.run([sys.executable,'-I','-B','-c',script,str(B),*interfaces],capture_output=True,timeout=10);check('R2_import_inert_no_H_IO_or_effects',r.returncode==0)
+ for n in ['root209_real_preflight.py','start_core209_once.py','run_native209_once.py','core209-first-actual-root.py','resume_native209_services.py','root209_metadata.py','prepare_source.py']:
+- r=subprocess.run([sys.executable,'-I','-B',str(B/n)],capture_output=True,timeout=5);check('R1_noarg_refused_'+n,r.returncode!=0 and any(k in r.stderr.lower()for k in [b'explicit',b'required']))
+-for n in ['root209_metadata.py','run_native209_once.py','resume_native209_services.py','boundary_contract.py','native_scope.py','start_core209_once.py','publication/build-layer-publication-request.py','publication/friday_v3_layer_publication.py','admission-retained/observe-current-retained-units.py']:
+- check('unchanged_source_except_path_relocation_'+n,(B/n).read_text()==(O/n).read_text().replace(str(O),str(B)))
+-s=(B/'core209-first-actual-root.py').read_text();old=(O/'core209-first-actual-root.py').read_text().replace(str(O),str(B));new="save(E/'CORE209-REAL-H-SPEC-INSPECT-RETURN.json', dict(returncode=inspected.returncode, stdout=inspected.stdout, stderr=inspected.stderr))\n        correlation = module(B/'root209_real_preflight.py','Root209ReadonlyOutputCorrelation').correlate_completed(inspected.returncode,inspected.stdout,inspected.stderr)\n        save(E/'CORE209-REAL-H-SPEC-INSPECT-CORRELATION.json', correlation)";prior="save(E/'CORE209-REAL-H-SPEC-INSPECT-RETURN.json', dict(returncode=inspected.returncode, stdout=inspected.stdout, stderr=inspected.stderr))";check('boundary_only_safe_correlation_added',s.replace(new,prior)==old)
+-check('exitcode_captured_and_durably_saved_before_parser',s.index('inspected = subprocess.run(')<s.index("save(E/'CORE209-REAL-H-SPEC-INSPECT-RETURN.json'")<s.index('.correlate_completed(inspected.returncode'))
+-check('correlation_before_admission',s.index('.correlate_completed(inspected.returncode')<s.index("save(F/'ROOT-209-FRESH-ADMISSION.json'"))
++ r=subprocess.run([sys.executable,'-I','-B',str(B/n)],capture_output=True,timeout=5);check('R2_noarg_refused_'+n,r.returncode!=0 and any(k in r.stderr.lower()for k in [b'explicit',b'required']))
++for n in ['resume_native209_services.py','boundary_contract.py','native_scope.py','start_core209_once.py','core209-first-actual-root.py','root209_real_preflight.py','prepare_source.py','publication/build-layer-publication-request.py','publication/friday_v3_layer_publication.py','admission-retained/observe-current-retained-units.py']:
++ check('R1_runtime_source_reused_'+n,(B/n).read_text()==(O/n).read_text().replace(str(O),str(B)))
++actor=(B/'run_native209_once.py').read_text();oldactor=(O/'run_native209_once.py').read_text().replace(str(O),str(B));check('actor_delta_only_metadata_source_pin',actor==oldactor.replace(sha(O/'root209_metadata.py'),sha(B/'root209_metadata.py')))
++def defs(p):return {n.name:ast.dump(n,include_attributes=False)for n in ast.parse(p.read_bytes()).body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
++before=defs(O/'root209_metadata.py');after=defs(B/'root209_metadata.py')
++check('readref_strict_AST_unchanged',after['readref']==before['readref'])
++for n in before:
++ if n!='validate_join':check('metadata_existing_definition_unchanged_'+n,after[n]==before[n])
++s=(B/'root209_metadata.py').read_text();a=ast.parse(s);v=next(n for n in a.body if isinstance(n,ast.FunctionDef)and n.name=='validate_join');count=0
++for n in ast.walk(v):
++ if isinstance(n,ast.Call)and isinstance(n.func,ast.Name)and n.func.id=='read_sized_source_ref':n.func.id='readref';count+=1
++check('validate_join_exact_two_gate_ref_adapter_calls_only',count==2 and ast.dump(v,include_attributes=False)==before['validate_join'])
+ for p in B.glob('*TEMPLATE.json'):
+- old=json.loads((O/p.name).read_bytes());expected=json.loads(json.dumps(old).replace(str(O),str(B)));actual=json.loads(p.read_bytes())
+- for key in ('actor','recovery','boundary','caller'):
+-  if key in expected and p.name in {'ROOT-209-FRESH-ADMISSION-TEMPLATE.json','ROOT-209-RUNTIME-AUTHORITY-TEMPLATE.json'}:expected[key]=actual[key]
+- check('template_relocation_no_policy_or_grant_'+p.name,actual==expected)
+-m=types.ModuleType('R1_pure_parser');m.__file__=str(B/'root209_real_preflight.py');exec(compile((B/'root209_real_preflight.py').read_bytes(),m.__file__,'exec'),m.__dict__)
+-base=dict(schema=m.RECORD_SCHEMA,state=m.REFUSED_STATE,phase='source_ref_validation',exception_class='RuntimeError',fixed_code='SOURCE_PINNED_CURRENT208_PREFLIGHT_FAILED',trace_locations=[],private_exception_message_emitted=False)
+-for field in ['state','fixed_code','phase','exception_class','trace_locations','private_exception_message_emitted']:
+- for value in [[],{},None,23,False]:
+-  bad=copy.deepcopy(base);bad[field]=value;out=m.correlate_completed(23,'warning-prefix\n',json.dumps(bad)+'\nwarning-suffix')
+-  check('malformed_record_preserves_exitcode_'+field+'_'+type(value).__name__,out['captured_exit_code']==23 and out['execution_grant']is False and out['raw_nonrecord_text_emitted']is False)
+-# Exact boundary capture statements prove parser failure cannot prevent raw/exitcode retention.
+-tree=ast.parse(s);statements=[]
+-for n in ast.walk(tree):
+- if isinstance(n,ast.Expr)and isinstance(n.value,ast.Call)and isinstance(n.value.func,ast.Name)and n.value.func.id=='save' and 'CORE209-REAL-H-SPEC-INSPECT-RETURN.json'in ast.unparse(n):statements.append(n)
+- elif isinstance(n,ast.Assign)and any(isinstance(t,ast.Name)and t.id=='correlation'for t in n.targets):statements.append(n)
+-statements.sort(key=lambda n:n.lineno);captured=[]
+-def broken_module(*a):raise TypeError('SYNTHETIC_PARSER_FAILURE')
+-try:exec(compile(ast.fix_missing_locations(ast.Module(body=statements,type_ignores=[])),'exact_capture_before_correlation','exec'),dict(E=Path('/synthetic/E'),B=B,inspected=types.SimpleNamespace(returncode=23,stdout='warning-prefix',stderr='synthetic-stderr'),save=lambda p,v:captured.append((p,v)),module=broken_module))
+-except TypeError:pass
+-check('exact_boundary_retains_raw_and_exit23_even_parser_failure',len(captured)==1 and captured[0][1]==dict(returncode=23,stdout='warning-prefix',stderr='synthetic-stderr'))
+-check('original_b9_manifest_preserved',hashlib.sha256((O/'SOURCE-PINS.json').read_bytes()).hexdigest()=='b9b388de63d7afd04c0da345275573bffdc7a15b95fbc147a1f421493a5e3368')
+-check('future_artifacts_still_absent',all(not(B/n).exists()for n in ['FUTURE-EXECUTION','ROOT-FRESH-REQUEST.json','ROOT-209-SOURCE-ACCEPTANCE.json','ROOT-209-RUNTIME-AUTHORITY.json','ROOT-209-FRESH-ADMISSION.json','ROOT-NATIVE209-LIVE-OPERATION.json']))
+-v=dict(state='PASS_R1_SOURCE_ONLY_RELOCATION_AND_COMPOSITION',count=len(rows),rows=rows,elapsed_seconds=time.monotonic()-start,actual_H_reads_or_runs=0,original_b9_unchanged=True,unchanged_original_controls_reused=True);p=B/'FRAME-CONTROLS.json';p.write_text(json.dumps(v,sort_keys=True,indent=2)+'\n');p.chmod(0o600);print(json.dumps(dict(state=v['state'],count=v['count'])))
++ expected=json.loads(json.dumps(json.loads((O/p.name).read_bytes())).replace(str(O),str(B)));actual=json.loads(p.read_bytes())
++ if p.name in {'ROOT-209-FRESH-ADMISSION-TEMPLATE.json','ROOT-209-RUNTIME-AUTHORITY-TEMPLATE.json'}:
++  for k in ('actor','recovery','boundary','caller'):
++   if k in expected:expected[k]=actual[k]
++ check('template_relocation_no_new_policy_'+p.name,expected==actual)
++check('consumed_R1_manifest_preserved',sha(O/'SOURCE-PINS.json')=='cc66b9cb42ec75f5a8af6e1133842976cce1949b030905b1b70590f6e873f90b')
++check('R1_no_retry_and_root_decisions_not_copied',all(not(B/n).exists()for n in ['FUTURE-EXECUTION','ROOT-FRESH-REQUEST.json','ROOT-209-SOURCE-ACCEPTANCE.json','ROOT-209-RUNTIME-AUTHORITY.json','ROOT-209-FRESH-ADMISSION.json','ROOT-209-BOUND-INPUTS.json','ROOT-NATIVE209-LIVE-OPERATION.json']))
++v=dict(state='PASS_R2_METADATA_CALLER_SOURCE_ONLY',count=len(rows),rows=rows,elapsed_seconds=time.monotonic()-start,current_H_reads_or_effects=0,consumed_R1_untouched=True,existing_R1_guard_and_runtime_reviews_reused=True);p=B/'FRAME-CONTROLS.json';p.write_text(json.dumps(v,sort_keys=True,indent=2)+'\n');p.chmod(0o600);print(json.dumps(dict(state=v['state'],count=v['count'])))

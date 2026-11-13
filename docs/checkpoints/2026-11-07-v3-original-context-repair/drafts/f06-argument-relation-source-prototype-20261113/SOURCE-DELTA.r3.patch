@@ -1,0 +1,295 @@
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -462,6 +462,9 @@
+ def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
+     name = _canonical_tool_name(tool_call.function.name)
+     args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
++    from hermes_cli.friday_argument_relation import observe_args
++    if name == "read_file" and parse_error is None:
++        observe_args("MODEL_OUTPUT", args)
+     scope_block = None
+     if parse_error is None:
+         from hermes_cli.friday_user_scope import guard_tool, check_agent, ScopeDenied, ordinary_tool_error_json
+@@ -730,6 +733,8 @@
+         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
+         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
+         state.args = ref.args
++        from hermes_cli.friday_argument_relation import observe_args
++        observe_args("PRE_TOOL_RETURN", ref.args)
+     block_body = None if block_message is None else {"error": block_message}
+ 
+     # Checked once, after plugin modify hooks (which may replace arguments) and
+@@ -796,6 +801,8 @@
+     dispatch_lock = threading.Lock()
+ 
+     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
++        from hermes_cli.friday_argument_relation import observe_args
++        observe_args("EXECUTION_RETURN", final_args)
+         with dispatch_lock:
+             if state.dispatched:
+                 raise RuntimeError("Hermes tool execution callback invoked more than once")
+@@ -817,6 +824,8 @@
+     _authorized_dispatch = bind_prepared_dispatch(_authorized_dispatch)
+ 
+     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
++        from hermes_cli.friday_argument_relation import observe_args
++        observe_args("RELAY_RETURN", relay_args)
+         request_result = apply_tool_request_middleware(
+             function_name,
+             relay_args,
+@@ -824,6 +833,7 @@
+             **tool_hook_ids(agent, effective_task_id, tool_call_id),
+         )
+         request_args = request_result.payload if isinstance(request_result.payload, dict) else relay_args
++        observe_args("REQUEST_RETURN", request_args)
+         trace.clear()
+         trace.extend(request_result.trace)
+         from hermes_cli.friday_cli_work import native_cli_call
+@@ -2054,7 +2064,8 @@
+     raw_name = getattr(getattr(tool_call, "function", None), "name", None)
+     caller_scope = (enter_original(agent, tool_call.id, effective_task_id, entry=entry)
+                     if raw_name == "friday_result" and is_cli() else contextlib.nullcontext())
+-    with caller_scope:
++    from hermes_cli.friday_argument_relation import call_scope
++    with caller_scope, call_scope(tool_hook_ids(agent, effective_task_id, tool_call.id), raw_name):
+         pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
+         ref = pc.ref(effective_task_id)
+         if pc.parse_error is not None:
+--- /dev/null
++++ b/hermes_cli/friday_argument_relation.py
+@@ -0,0 +1,193 @@
++"""Opt-in, enum-only argument relations for one correlated direct read call.
++
++No activation from model arguments, environment, config, logs or natural language.
++The trusted caller supplies a protected sink and optionally an explicit structured
++reference. Default operation is inert. This observer never authorizes a tool.
++"""
++from contextlib import contextmanager
++from contextvars import ContextVar
++from threading import RLock
++
++PHASES = ("MODEL_OUTPUT", "RELAY_RETURN", "REQUEST_RETURN", "EXECUTION_RETURN",
++          "PRE_TOOL_RETURN", "DISPATCH_ENTRY", "FILE_ADAPTER", "FILE_SCALAR", "OOXML_CODEC")
++_KEYS = ("task_id", "session_id", "tool_call_id", "turn_id", "api_request_id")
++_MISSING = object()
++_armed = ContextVar("friday_argument_relation_armed", default=None)
++_active = ContextVar("friday_argument_relation_active", default=None)
++
++
++def _identity(value):
++    if type(value) is not dict or set(value) != set(_KEYS):
++        return None
++    fields = tuple(value[k] for k in _KEYS)
++    if any(type(x) is not str or len(x) > 256 for x in fields):
++        return None
++    if not fields[1] or not fields[2]:
++        return None
++    return fields
++
++
++def _kind(value):
++    if value is _MISSING:
++        return "ABSENT"
++    if value is None:
++        return "NULL"
++    if type(value) is str:
++        return "STRING" if value else "EMPTY_STRING"
++    return "OTHER"
++
++
++def _relation(left, right):
++    if type(left) is not str or type(right) is not str:
++        return "NOT_COMPARABLE"
++    return "EQUAL" if left == right else "DIFFERENT"
++
++
++class _Arm:
++    __slots__ = ("identity", "reference", "sink", "used", "lock", "delivery", "closed", "call")
++
++    def __init__(self, identity, reference, sink):
++        self.identity, self.reference, self.sink = identity, reference, sink
++        self.used, self.lock, self.delivery, self.closed = False, RLock(), "NOT_OBSERVED", False
++        self.call = None
++
++    def __repr__(self):
++        return "<argument-relation authorization>"
++
++
++class _Call:
++    __slots__ = ("arm", "baseline", "rows", "last", "valid", "closed", "lock")
++
++    def __init__(self, arm):
++        self.arm, self.baseline, self.rows = arm, _MISSING, {}
++        self.last, self.valid, self.closed, self.lock = -1, True, False, RLock()
++
++    def __repr__(self):
++        return "<argument-relation observation>"
++
++    def mark(self, phase, value):
++        with self.arm.lock, self.lock:
++            if self.closed or self.arm.closed or phase not in PHASES:
++                return
++            index = PHASES.index(phase)
++            if index != self.last + 1:
++                self.valid = False
++            if phase in self.rows:
++                return
++            self.last = index
++            if phase == "MODEL_OUTPUT":
++                # Retain only an exact immutable built-in string, never arguments.
++                self.baseline = value if type(value) is str else _MISSING
++            reference = self.arm.reference
++            self.rows[phase] = {
++                "phase": phase, "observed": "OBSERVED", "type": _kind(value),
++                "model_relation": _relation(self.baseline, value),
++                "reference_relation": ("NO_REFERENCE" if reference is _MISSING
++                                       else _relation(reference, value)),
++            }
++
++    def expire(self):
++        with self.arm.lock, self.lock:
++            self.closed = True
++            self.baseline, self.rows = _MISSING, {}
++            self.arm.call = None
++            self.arm.delivery = "AUTHORITY_EXPIRED"
++
++    def close(self):
++        with self.arm.lock, self.lock:
++            if self.closed:
++                return
++            self.closed = True
++            rows = [self.rows.get(p, {"phase": p, "observed": "NOT_OBSERVED",
++                     "type": "UNKNOWN", "model_relation": "UNKNOWN",
++                     "reference_relation": "UNKNOWN"}) for p in PHASES]
++            report = {"schema": "ARGUMENT_RELATION_V1",
++                      "baseline": "MODEL_JSON_DIRECT_READ_FILE",
++                      "reference": ("NOT_SUPPLIED" if self.arm.reference is _MISSING
++                                    else "EXPLICIT_STRUCTURED_REFERENCE"),
++                      "phase_order": "VALID" if self.valid else "INVALID",
++                      "coverage": "COMPLETE" if self.valid and len(self.rows) == len(PHASES)
++                                  else "PARTIAL", "phases": rows}
++            if not self.valid:
++                for row in rows:
++                    row["model_relation"] = row["reference_relation"] = "UNKNOWN"
++            self.baseline = _MISSING
++            self.rows = {}
++            # Copies of context share this capsule; late workers cannot update it.
++            self.arm.reference = _MISSING
++            self.arm.call = None
++            sink, self.arm.sink = self.arm.sink, None
++        if sink is not None:
++            try:
++                sink(report)  # Protected correlation belongs to the trusted sink.
++                self.arm.delivery = "DELIVERED"
++            except Exception:
++                # Never log/format an observer exception or change tool semantics.
++                self.arm.delivery = "SINK_FAILED"
++
++
++@contextmanager
++def diagnostic_scope(correlation, sink, *, structured_reference=_MISSING):
++    """Trusted, one-call activation. Not a public tool or automatic request parser.
++
++    The sink MUST already belong to the protected correlation supplied here.
++    This scope does not persist anything itself. Strings are released, not wiped.
++    """
++    identity = _identity(correlation)
++    if identity is None or not callable(sink):
++        raise ValueError("argument_relation_authority_invalid")
++    if structured_reference is not _MISSING and type(structured_reference) is not str:
++        raise ValueError("argument_relation_reference_invalid")
++    arm = _Arm(identity, structured_reference, sink)
++    token = _armed.set(arm)
++    try:
++        yield arm
++    finally:
++        _armed.reset(token)
++        with arm.lock:
++            arm.closed = True
++            if arm.call is not None:
++                arm.call.expire()
++            arm.reference, arm.sink = _MISSING, None
++
++
++@contextmanager
++def call_scope(correlation, raw_name):
++    arm, call = _armed.get(), None
++    if arm is not None and type(raw_name) is str and raw_name == "read_file":
++        with arm.lock:
++            if not arm.closed and not arm.used and _identity(correlation) == arm.identity:
++                arm.used = True
++                call = _Call(arm)
++                arm.call = call
++    # Every nested/foreign/unsupported caller masks a parent observation.
++    token = _active.set(call)
++    try:
++        yield
++    finally:
++        _active.reset(token)
++        if call is not None:
++            call.close()
++
++
++def observe_args(phase, args):
++    call = _active.get()
++    if call is not None:
++        call.mark(phase, args.get("password", _MISSING) if type(args) is dict else _MISSING)
++
++
++def observe_scalar(phase, password):
++    call = _active.get()
++    if call is not None:
++        call.mark(phase, password)
++
++
++def observe_dispatch(name, args, correlation):
++    call = _active.get()
++    if call is not None:
++        with call.lock:
++            if (type(name) is not str or name != "read_file"
++                    or _identity(correlation) != call.arm.identity):
++                call.valid = False
++                return
++        observe_args("DISPATCH_ENTRY", args)
+--- a/model_tools.py
++++ b/model_tools.py
+@@ -1007,6 +1007,8 @@
+     trace = list(tool_request_middleware_trace or [])
+     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
+     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
++    from hermes_cli.friday_argument_relation import observe_dispatch
++    observe_dispatch(function_name, function_args, ids.hook_kwargs())
+     start = time.monotonic()
+ 
+     def _emit(result: Any, **extra: Any) -> Any:
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -785,6 +785,8 @@
+     → Hermes internal denylist → document extraction → binary-extension guard
+     → negative-result cache → dedup stub → real read.
+     """
++    from hermes_cli.friday_argument_relation import observe_scalar
++    observe_scalar("FILE_SCALAR", password)
+     from hermes_cli.friday_user_scope import scoped_file, ScopeDenied, ordinary_tool_error_json
+     try:
+         scoped = scoped_file("read_file", dict(path=path, offset=offset, limit=limit, char_offset=char_offset, pdf_form_fields=pdf_form_fields, password=password, pdf_signatures=pdf_signatures, archive_parts=archive_parts), task_id=task_id)
+@@ -1671,6 +1673,8 @@
+                  'use tool_call with one calls entry named write_file and an arguments '
+                  'object matching its schema. '
+                  'No file was read or written by this call.')
++    from hermes_cli.friday_argument_relation import observe_args
++    observe_args("FILE_ADAPTER", args)
+     tid = kw.get("task_id") or "default"
+     return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0), pdf_form_fields=args.get("pdf_form_fields", False), password=args.get("password"), pdf_signatures=args.get("pdf_signatures", False), archive_parts=args.get("archive_parts"))
+ 
+--- a/tools/scoped_ooxml_password.py
++++ b/tools/scoped_ooxml_password.py
+@@ -610,6 +610,8 @@
+     through; its ordinary format parser remains authoritative. No password,
+     derived key, verifier, plaintext or hash of plaintext is returned as metadata.
+     """
++    from hermes_cli.friday_argument_relation import observe_scalar
++    observe_scalar("OOXML_CODEC", password)
+     check = checkpoint if checkpoint is not None else lambda: None
+     check()
+     if not isinstance(data, bytes) or len(data) > MAX_INPUT:

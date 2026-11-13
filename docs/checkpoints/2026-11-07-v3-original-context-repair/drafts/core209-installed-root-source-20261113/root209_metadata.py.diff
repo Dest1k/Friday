@@ -1,0 +1,29 @@
+--- consumed-R1/root209_metadata.py
++++ source-R2/root209_metadata.py
+@@ -49,6 +49,17 @@
+  require(type(ref) is dict and set(ref)=={'path','sha256'},'exact_reference_fields_required')
+  require(type(ref['path']) is str and Path(ref['path']).is_absolute() and type(ref['sha256']) is str and len(ref['sha256'])==64 and all(c in '0123456789abcdef'for c in ref['sha256']),'bound_absolute_sha256_reference_required')
+  p=owned(ref['path']);require(sha(p)==ref['sha256'],'reference_hash_changed:'+str(p));return json.loads(p.read_bytes())
++def read_sized_source_ref(ref):
++ # Only the closed source-gate producer shape is admitted here. General Root
++ # refs keep readref's exact two-field contract and all existing path checks.
++ require(type(ref)is dict and set(ref)=={'path','sha256','bytes'},'exact_sized_source_reference_fields_required')
++ require(type(ref['bytes'])is int and ref['bytes']>0,'positive_sized_source_reference_bytes_required')
++ plain={'path':ref['path'],'sha256':ref['sha256']}
++ readref(plain)
++ raw=owned(ref['path']).read_bytes()
++ require(len(raw)==ref['bytes'],'sized_source_reference_byte_length_changed')
++ require(hashlib.sha256(raw).hexdigest()==ref['sha256'],'sized_source_reference_hash_changed')
++ return json.loads(raw)
+ def fresh(value,now,reason):
+  try:
+   instant=datetime.datetime.fromisoformat(value);require(instant.utcoffset() is not None,'timezone_required')
+@@ -311,7 +322,7 @@
+  gates=readref(FIXED['gates_summary']);source=readref(FIXED['source_result'])
+  require(gates['state']=='PASS_SUCCESS_AND_LATE_DEFAULT_ROLLBACK_SYNTHETIC_AUTHORITY'and gates['runtime_or_install_or_user_acceptance']is False and source['state']=='SOURCE_COMPLETE_REVIEWED_ROOT_ORDINARY208_TO209_READY_NOT_INSTALLED','exact209_existing_source_fixture_results_required')
+  for kind in ('operational-success','operational-rollback'):
+-  row=gates['runs'][kind];readref(row['result']);readref(row['process_record'])
++  row=gates['runs'][kind];read_sized_source_ref(row['result']);read_sized_source_ref(row['process_record'])
+   require(row['state']=='PASS'and row['parent_process_gone']is True and row['temporary_stands_remaining']==[],'source_fixtures_not_actual_authority')
+  require(acceptance['frame_source_manifest']==reference(B/'SOURCE-PINS.json')and acceptance['frame_review_evidence'],'new_coherent_frame_review_required')
+  for ref in acceptance['frame_review_evidence']+acceptance['independent_review_evidence']:readref(ref)
