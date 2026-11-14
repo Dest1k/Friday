@@ -221,6 +221,7 @@ def build_request(args):
                 "friday.current-source-native-successor.v17": "friday.current-source-native-successor.v18",
                 "friday.current-source-native-successor.v18": "friday.current-source-native-successor.v19",
                 "friday.current-source-native-successor.v19": "friday.current-source-native-successor.v20",
+                "friday.current-source-native-successor.v20": "friday.current-source-native-successor.v21",
             }
             previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
             consumer.require(previous_schema in supported,
@@ -279,6 +280,9 @@ def build_request(args):
             consumer.require(previous_schema != "friday.current-source-native-successor.v19"
                              or args.layer_names == ("m09-genuine-summary-carrier-after-source217",),
                              "transaction_current_source_exact_twentieth_layer_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v20"
+                             or args.layer_names == ("docx-inactive-story-interop-after-source218",),
+                             "transaction_current_source_exact_twenty_first_layer_required")
             request["current_source_successor"].update({
                 "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),
