@@ -1,0 +1,157 @@
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -35,11 +35,12 @@
+     'cell paragraph boundaries, Unicode text, spaces, tabs and line breaks are verified. '
+     'The bounded structured profile also compares native single-level bullet lists, '
+     'automatic footnotes with exact text/anchor/class, single-section referenced '
+-    'default header/footer stories and explicit page breaks before paragraphs. '
++    'default header/footer stories, strictly redundant inactive first/even copies, '
++    'and explicit page breaks before paragraphs. '
+     'Page-break intent does not establish rendered page count or last-page position. '
+     'Only native output may carry strictly empty-label heading wrappers and fixed passive metadata. '
+     'Other numbering, fields, bookmarks, tracked changes, comments/endnotes, '
+-    'alternate/multiple sections or page stories, drawings/media, hyperlinks, '
++    'active alternate page stories, multiple sections, drawings/media, hyperlinks, '
+     'embedded fonts/objects, protection, signatures, macros and external resources '
+     'are refused. Ambiguous raw ODF whitespace is refused; explicit native ODF '
+     'spaces, tabs and line breaks are supported.'
+@@ -343,10 +344,11 @@
+             expected_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.' + kind + '+xml'
+             candidates = ({'word/footnotes.xml'} & self.pkg.parts.keys() if kind == 'footnotes'
+                           else {name for name in self.pkg.parts if re.fullmatch('word/' + kind + r'[1-9][0-9]{0,2}\.xml', name)})
+-            if len(links) > 1 or {target for _, target in links} != candidates:
++            maximum = 1 if kind == 'footnotes' else 3
++            if (len(links) > maximum or len({target for _, target in links}) != len(links)
++                    or {target for _, target in links} != candidates):
+                 _fail('unsupported_word_relationship')
+-            if links:
+-                identity, target = links[0]
++            for identity, target in links:
+                 if self.pkg.types.get(target) != expected_type or self.pkg.relationships.get(target):
+                     _fail('unsupported_word_relationship')
+                 root = self.pkg.xml.get(target)
+@@ -880,23 +882,89 @@
+             result.append(paragraph)
+         return result
+ 
++    @staticmethod
++    def _inactive_story_signature(root):
++        # These newly accepted parts must not hide unsupported attributes behind
++        # the paragraph model, which intentionally omits visual formatting.
++        # Property subtrees still pass the shared property verifier. Retain their
++        # entire structure/attributes in the duplicate signature, even though
++        # formatting fidelity is otherwise outside the conversion contract.
++        for node in root.iter():
++            if node.tag in {q(W, n) for n in ('p', 'r', 'pPr', 'rPr')} and node.attrib:
++                _fail('unsupported_word_story')
++            if node.tag == q(W, 'proofErr') and set(node.attrib) != {q(W, 'type')}:
++                _fail('unsupported_word_story')
++            # The new redundant-copy profile is deliberately narrower than
++            # active stories: only simple w:val visual-property attributes.
++            # Do not inherit the visual verifier's permissive attribute policy
++            # for parts omitted from the returned inventory, even if identical.
++            if (node is not root and node.tag not in {q(W, n) for n in ('t', 'br', 'proofErr')}
++                    and set(node.attrib) - {q(W, 'val')}):
++                _fail('unsupported_word_story')
++
++        def signature(node):
++            # XML prefix/attribute order and structural indentation are inert;
++            # native text, run/paragraph boundaries and all properties are not.
++            return (node.tag, tuple(sorted(node.attrib.items())),
++                    (node.text or '') if node.tag == q(W, 't') else '',
++                    tuple(signature(child) for child in node))
++        return signature(root)
++
++    @staticmethod
++    def _empty_inactive_even(root, kind):
++        # The generated blank even-page part has one plain empty paragraph.
++        # Admit only its passive role-style skeleton, not an arbitrary empty
++        # model carrying distinct properties, fields or hidden structure.
++        if len(root) != 1 or root[0].tag != q(W, 'p') or root[0].attrib:
++            return False
++        paragraph = root[0]
++        properties = paragraph.find(q(W, 'pPr'))
++        for child in paragraph:
++            if child is properties:
++                if child.attrib:
++                    return False
++                for prop in child:
++                    if len(prop):
++                        return False
++                    if prop.tag == q(W, 'pStyle'):
++                        if prop.attrib != {q(W, 'val'): {'header': 'Header', 'footer': 'Footer'}[kind]}:
++                            return False
++                    elif prop.tag == q(W, 'bidi'):
++                        if set(prop.attrib) != {q(W, 'val')} or prop.get(q(W, 'val')) not in ('0', 'false', 'off'):
++                            return False
++                    elif prop.tag == q(W, 'jc'):
++                        if prop.attrib != {q(W, 'val'): 'left'}:
++                            return False
++                    elif prop.tag != q(W, 'rPr') or prop.attrib:
++                        return False
++            elif child.tag != q(W, 'r') or child.attrib or any(
++                    part.tag != q(W, 'rPr') or part.attrib or len(part) for part in child):
++                return False
++        return sum(child.tag == q(W, 'r') for child in paragraph) <= 1
++
+     def _section(self, node):
+         _white(node)
+         seen, stories = set(), {'header': [], 'footer': []}
++        referenced = {'header': {}, 'footer': {}}
+         for child in node:
+-            if child.tag in seen:
++            reference = child.tag in (q(W, 'headerReference'), q(W, 'footerReference'))
++            key = (child.tag, child.get(q(W, 'type')) if reference else None)
++            if key in seen:
+                 _fail('ambiguous_word_properties')
+-            seen.add(child.tag)
+-            if child.tag in (q(W, 'headerReference'), q(W, 'footerReference')):
++            seen.add(key)
++            if reference:
+                 kind = 'header' if child.tag == q(W, 'headerReference') else 'footer'
+                 _white(child)
+-                if len(child) or set(child.attrib) != {q(W, 'type'), q(R, 'id')} or child.get(q(W, 'type')) != 'default':
++                category = child.get(q(W, 'type'))
++                if len(child) or set(child.attrib) != {q(W, 'type'), q(R, 'id')} or category not in ('default', 'first', 'even'):
+                     _fail('unsupported_word_section')
+                 identity = child.get(q(R, 'id'))
+                 if identity not in self.story_parts or identity in self.story_refs or self.story_parts[identity][0] != kind:
+                     _fail('unsupported_word_relationship')
+                 self.story_refs.add(identity)
+-                stories[kind] = self._story(self.story_parts[identity][2])
++                root = self.story_parts[identity][2]
++                # Parse/count every part before considering an inactive copy.
++                referenced[kind][category] = (self._story(root), root)
+             elif child.tag == q(W, 'footnotePr'):
+                 self._note_properties(child)
+             else:
+@@ -912,6 +980,29 @@
+                     _fail('unsupported_word_section')
+                 if child.tag == q(W, 'cols') and (len(child) or child.get(q(W, 'num'), '1') != '1'):
+                     _fail('unsupported_columns')
++        # All flags have now passed their existing disabled-only gates. With
++        # one terminal section, default is the only active page-story variant.
++        for kind, variants in referenced.items():
++            if not variants:
++                continue
++            if 'default' not in variants:
++                _fail('unsupported_word_section')
++            if len(variants) > 1 and node.attrib:
++                _fail('unsupported_word_section')
++            stories[kind], default_root = variants['default']
++            default_signature = None
++            for category, (model, root) in variants.items():
++                if category == 'default':
++                    continue
++                signature = self._inactive_story_signature(root)
++                if default_signature is None:
++                    default_signature = self._inactive_story_signature(default_root)
++                if model == stories[kind] and signature == default_signature:
++                    continue
++                if (category == 'even' and model == [{'type': 'paragraph', 'text': ''}]
++                        and self._empty_inactive_even(root, kind)):
++                    continue
++                _fail('unsupported_word_story')
+         return stories
+ 
+     def table(self, node):
