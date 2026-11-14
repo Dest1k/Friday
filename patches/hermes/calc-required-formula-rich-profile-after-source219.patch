@@ -1,0 +1,2308 @@
+--- a/hermes_cli/friday_workspace_spreadsheet_conversion.py
++++ b/hermes_cli/friday_workspace_spreadsheet_conversion.py
+@@ -79,6 +79,7 @@
+     from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
+     from hermes_cli.friday_workspace_revision import check
+     from tools.scoped_spreadsheet_conversion import inventory, validate_destination, FORMULA_DIALECT
++    from tools.scoped_spreadsheet_rich import fidelity_report
+     if (source,target) not in PAIRS: raise ExportRefused('conversion_pair_unsupported')
+     check(cap)
+     before = inventory(data,source,checkpoint=lambda:check(cap))
+@@ -94,12 +95,22 @@
+         rendered = _read_output(work,target)
+         after = validate_destination(before,rendered,target,checkpoint=lambda:check(cap))
+         check(cap)
++        fidelity = fidelity_report(before.rich_signature, after.rich_signature,
++                                   source_kind=source, target_kind=target) if before.rich_signature else None
++        losses = fidelity['declared_losses'] if fidelity else []
++        unassessed = fidelity['unassessed'] if fidelity else []
+         return rendered, dict(native_editable=True, formulas_preserved=True,
+                               formula_cache_validation='independent_bounded_decimal_recomputation',
+                               formula_dialect=FORMULA_DIALECT,
+                               semantic_inventory_sha256=after.digest(), **after.counts(),
+-                              preservation='typed_literals_sheet_order_and_supported_formula_references',
+-                              declared_limits='plain_scalar_cells_dates_SUM_rectangle_two_cell_product; no_names_tables_custom_styles',
++                              preservation=('typed_literals_sheet_order_supported_formula_references_and_validated_spreadsheet_structure_with_declared_fidelity'
++                                            if losses or unassessed else 'typed_literals_sheet_order_supported_formula_references_and_validated_spreadsheet_structure'
++                                            if before.rich_signature else 'typed_literals_sheet_order_and_supported_formula_references'),
++                              declared_limits=('bounded_scalar_cells_dates_SUM_rectangle_two_cell_product_and_validated_spreadsheet_features; unknown_features_refused'
++                                               if before.rich_signature else 'plain_scalar_cells_dates_SUM_rectangle_two_cell_product; no_names_tables_custom_styles'),
++                              **({'rich_spreadsheet_profile_preserved': not bool(losses or unassessed),
++                                  'declared_losses': losses, 'fidelity': fidelity}
++                                 if before.rich_signature else {}),
+                               office_filter=PAIRS[source,target][0], runtime_qualified=False)
+     finally:
+         try: shutil.rmtree(work)
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2008,7 +2008,7 @@
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _MACRO_PRESENTATION_GUIDANCE
+ 
+ _WORD_CONVERSION_GUIDANCE = 'Word conversion: docx_odt creates a NEW .odt from .docx; odt_docx creates a NEW .docx from .odt. Content is exactly JSON {source,source_sha256}; read the source first and use its current lowercase SHA-256. An isolated local Office process converts genuine native input. The complete bounded semantic inventory must match before create-only publication: Unicode text and order, heading levels, unmerged rectangular tables, single-level native bullet lists, supported native footnotes with citation, class, text and anchor, referenced header/footer stories, and explicit page-break intent. Features outside this finite profile, ambiguous graphs/styles, fields, images, links, hidden/protected/signed/active content and unvalidated semantic loss refuse without publishing; never flatten structures to claim preservation. Source remains unchanged. Native structure checks do not establish visual fidelity, rendering, pagination, arbitrary formatting preservation or ordinary/App acceptance. Unavailable toolchain or unsupported conversion refuses. Never rename a suffix or rebuild extracted text to claim conversion. For an exact unchanged DOCX copy use docx_copy instead of conversion or reconstruction. '
+-_SPREADSHEET_CONVERSION_GUIDANCE = 'XLSX/ODS cross-family conversion: spreadsheet_convert with exactly {source} into a NEW opposite .ods or .xlsx output uses isolated Office. Only this XLSX<->ODS pair is added; other existing native family conversions keep their limits. The output must retain sheet order, exact text/IDs, booleans, bounded decimals, dates and supported formula references, with independent formula/cache verification. Plain scalar cells and bounded SUM/product formulas only; custom styles, names, tables, charts, merged/hidden cells or sheets, protected/macro/external content refuse. Source is unchanged. No general filter or visual/layout fidelity is promised; unsupported output or unavailable toolchain produces no file. '
++_SPREADSHEET_CONVERSION_GUIDANCE = 'XLSX/ODS cross-family conversion: spreadsheet_convert takes exactly {source} into a NEW opposite .ods or .xlsx output, using isolated Office. Only this pair has a bounded, explicitly validated rich profile: sheet order, typed values, exact text/IDs, acyclic SUM ranges/two-cell products, supported names, tables, charts and references. Unknown or unsupported structures and active, external, macro or protected content refuse. Other native conversions and same-format operations keep their existing limits. The output requires semantic and independent formula/cache validation; source is unchanged. Report ALL tool-returned known losses AND unassessed aspects to the user: include frozen-view and table header/background/row-banding appearance losses when returned, and UNASSESSED physical column-width metric mapping/fidelity. Never describe this conversion as lossless or claim visual/layout or physical fidelity. Unsupported output or unavailable toolchain refuses without publishing. '
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["docx_odt", "odt_docx"]
+ for _conversion_guidance in (_WORD_CONVERSION_GUIDANCE, _SPREADSHEET_CONVERSION_GUIDANCE):
+     WRITE_FILE_SCHEMA["description"] += _conversion_guidance
+@@ -2192,7 +2192,7 @@
+     'content JSON exactly {source,source_sha256} from the current read_file. Source bytes '
+     'are retained verbatim; unsupported/active packages refuse without reconstruction. '
+     'Omit format for normal text files. '
+-    'Document format catalogues are returned by the tool when a document format is requested.')
++    'Document format catalogues are returned by the tool when a document format is requested. ') + _SPREADSHEET_CONVERSION_GUIDANCE
+ WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'] = (
+     'Document format profile from the enum. Plain text files omit this field.')
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] = (
+--- a/tools/scoped_delimited_table.py
++++ b/tools/scoped_delimited_table.py
+@@ -252,6 +252,8 @@
+ 
+ def _export_rows(data, source, spec, checkpoint):
+     contents = inventory(data, source, checkpoint=checkpoint)
++    if contents.rich_signature:
++        refuse('delimited_rich_spreadsheet_unsupported')
+     names = [name for name, _ in contents.sheets]
+     if source == 'xlsx':
+         for name in names:
+--- a/tools/scoped_document_pdf.py
++++ b/tools/scoped_document_pdf.py
+@@ -103,6 +103,8 @@
+         from tools.scoped_ods import Spreadsheet, TB, q
+         try:
+             book = inventory(data, source, checkpoint=checkpoint)
++            if book.rich_signature:
++                fail('pdf_spreadsheet_rich_profile_unsupported')
+             # Native Office recalculates, but stale source caches cannot serve as
+             # evidence that it exported the intended values. Require valid caches.
+             values = evaluate(book, checkpoint=checkpoint, check_cache=True)
+--- a/tools/scoped_spreadsheet_conversion.py
++++ b/tools/scoped_spreadsheet_conversion.py
+@@ -103,17 +103,66 @@
+     formula: object = None
+ 
+ 
++def _rich_digest_atom(value):
++    """Versioned typed atoms; Decimal scale never changes rich identity."""
++    budget = [0]
++    def encode(item, depth=0):
++        budget[0] += 1
++        if depth > 24 or budget[0] > 20000:
++            refuse('conversion_rich_digest_unsupported')
++        if item is None:
++            return ('null',)
++        if type(item) is bool:
++            return ('bool', item)
++        if type(item) is int:
++            # Exact finite ODS lengths may carry rational denominators larger
++            # than a machine integer. Bound work, not the host integer width.
++            if item.bit_length() > 4096:
++                refuse('conversion_rich_digest_unsupported')
++            return ('int', item)
++        if type(item) is str:
++            if len(item) > 100000:
++                refuse('conversion_rich_digest_unsupported')
++            return ('str', item)
++        if isinstance(item, Decimal):
++            if not item.is_finite():
++                refuse('conversion_rich_digest_nonfinite')
++            sign, digits, exponent = item.as_tuple()
++            if len(digits) > 4096:
++                refuse('conversion_rich_digest_unsupported')
++            if not any(digits):
++                return ('decimal', 0, '0', 0)
++            while digits[-1] == 0:
++                digits = digits[:-1]
++                exponent += 1
++            return ('decimal', sign, ''.join(str(digit) for digit in digits), exponent)
++        if isinstance(item, tuple):
++            return ('tuple', tuple(encode(child, depth + 1) for child in item))
++        refuse('conversion_rich_digest_unsupported')
++    return ('rich-v1', encode(value))
++
++
+ @dataclass(frozen=True)
+ class Inventory:
+     sheets: tuple  # (name, ((row, column, Cell), ...)) in original sheet order
+     # Set only after the complete closed inbound Calc source profile passes.
+     # Keep its generated destination bundle separate from generic source styles.
+     destination_profile: str = ''
++    rich_signature: tuple = ()
++    source_format: str = ''
+ 
+     def digest(self):
+         # Private content never leaves this gate; only the digest is public.
+         rows = [(name, [(r, c, cell.kind, str(cell.value), repr(cell.formula))
+                         for r, c, cell in cells]) for name, cells in self.sheets]
++        if self.rich_signature:
++            # Exact same-format geometry and vendor defaults are independently
++            # checked provenance. Formula-cache probes are evaluation evidence,
++            # so cache presence alone must not change semantic identity.
++            rich = (self.rich_signature,
++                    ('vendor_styles', getattr(self.rich_signature, 'vendor_styles', ())),
++                    ('native_geometry', getattr(self.rich_signature, 'native_geometry', ())))
++            rows.append(('_rich_signature', _rich_digest_atom(rich)))
+         return hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+ 
+     def counts(self):
+@@ -184,7 +233,8 @@
+             for column in range(first.column, last.column+1)]
+ 
+ 
+-def evaluate(inventory, *, overrides=None, checkpoint=None, check_cache=False):
++def evaluate(inventory, *, overrides=None, checkpoint=None, check_cache=False,
++             check_present_cache=False):
+     """Independent finite dependency check. Overrides are for disposable probes."""
+     cells = {(name, r, c): cell for name, rows in inventory.sheets for r, c, cell in rows}
+     values = {}; plans = {}; overrides = overrides or {}; dependencies = 0
+@@ -214,7 +264,7 @@
+                 result = (values[deps[0]] * values[deps[1]] if cells[key].formula.operation == 'product'
+                           else sum((values[dep] for dep in deps), Decimal(0)))
+                 result = _number(format(result, 'f'))
+-                if check_cache and cells[key].value is not None and cells[key].value != result:
++                if (check_cache or check_present_cache) and cells[key].value is not None and cells[key].value != result:
+                     refuse('conversion_formula_cache_mismatch')
+                 if check_cache and cells[key].value is None:
+                     refuse('conversion_formula_cache_missing')
+@@ -242,6 +292,37 @@
+     return node.text or ''
+ 
+ 
++def _xlsx_unused_style_metadata(root):
++    """Validate inert defaults; admitted cell styles cannot select this palette."""
++    tables = root.findall(q(S, 'tableStyles'))
++    if len(tables) > 1:
++        refuse('conversion_styles_unsupported')
++    for table in tables:
++        _attrs(table, ('count', 'defaultTableStyle', 'defaultPivotStyle'))
++        _children(table, ())
++        if (table.get('count', '0') != '0'
++                or table.get('defaultTableStyle', 'TableStyleMedium9') != 'TableStyleMedium9'
++                or table.get('defaultPivotStyle', 'PivotStyleLight16') != 'PivotStyleLight16'
++                or (table.text or '').strip()):
++            refuse('conversion_styles_unsupported')
++    palettes = root.findall(q(S, 'colors'))
++    if len(palettes) > 1:
++        refuse('conversion_styles_unsupported')
++    for palette in palettes:
++        _attrs(palette, ())
++        if len(palette) != 1 or palette[0].tag != q(S, 'indexedColors'):
++            refuse('conversion_styles_unsupported')
++        indexed = palette[0]
++        _attrs(indexed, ())
++        if len(indexed) != 64 or (palette.text or '').strip() or (indexed.text or '').strip():
++            refuse('conversion_styles_unsupported')
++        for color in indexed:
++            if (color.tag != q(S, 'rgbColor') or set(color.attrib) != {'rgb'}
++                    or not re.fullmatch('[0-9A-F]{8}', color.get('rgb', ''))
++                    or len(color) or (color.text or '').strip()):
++                refuse('conversion_styles_unsupported')
++
++
+ def _xlsx_styles(book):
+     targets = book.targets('xl/workbook.xml', 'styles')
+     if len(targets) > 1:
+@@ -249,8 +330,20 @@
+     if not targets:
+         return ['general']
+     root = book.root(targets[0][1], q(S, 'styleSheet'))
+-    _children(root, (q(S, x) for x in ('numFmts','fonts','fills','borders','cellStyleXfs','cellXfs','cellStyles')),
++    _attrs(root, ())
++    _children(root, (q(S, x) for x in ('numFmts','fonts','fills','borders','cellStyleXfs','cellXfs','cellStyles','tableStyles','colors')),
+               'conversion_styles_unsupported')
++    _xlsx_unused_style_metadata(root)
++    for tag in ('numFmts', 'fonts', 'fills', 'borders', 'cellStyleXfs', 'cellXfs', 'cellStyles'):
++        groups = root.findall(q(S, tag))
++        if len(groups) > 1:
++            refuse('conversion_styles_unsupported')
++        for group in groups:
++            _attrs(group, ('count',))
++            count = group.get('count')
++            if count is not None and (not count.isascii() or not count.isdecimal()
++                                      or len(count) > 4 or int(count) != len(group)):
++                refuse('conversion_styles_unsupported')
+     formats = {0: 'general', 1: 'number', 2: 'number', 49: 'text'}
+     for item in root.findall(q(S, 'numFmts')+'/'+q(S, 'numFmt')):
+         _attrs(item, ('numFmtId','formatCode'))
+@@ -279,10 +372,10 @@
+             if local not in defaults or len(child) or child.attrib.get(defaults[local][0]) not in defaults[local][1] or len(child.attrib) != 1:
+                 refuse('conversion_styles_unsupported')
+     fills = root.findall(q(S,'fills')+'/'+q(S,'fill'))
+-    if len(fills) not in (0,1,2) or (fills and fills[0][0].get('patternType') != 'none'):
++    if len(fills) not in (0,1,2) or (fills and (len(fills[0]) != 1 or fills[0][0].get('patternType', 'none') != 'none')):
+         refuse('conversion_styles_unsupported')
+     for fill in fills:
+-        if fill.attrib or len(fill) != 1 or fill[0].tag != q(S,'patternFill') or len(fill[0]) or fill[0].attrib not in ({'patternType':'none'}, {'patternType':'gray125'}):
++        if fill.attrib or len(fill) != 1 or fill[0].tag != q(S,'patternFill') or len(fill[0]) or fill[0].attrib not in ({}, {'patternType':'none'}, {'patternType':'gray125'}):
+             refuse('conversion_styles_unsupported')
+     borders = root.findall(q(S,'borders')+'/'+q(S,'border'))
+     if len(borders) > 1: refuse('conversion_styles_unsupported')
+@@ -295,7 +388,9 @@
+     result = []
+     for group in ('cellStyleXfs','cellXfs'):
+         for xf in root.findall(q(S,group)+'/'+q(S,'xf')):
+-            _attrs(xf, ('numFmtId','fontId','fillId','borderId','xfId','applyNumberFormat','applyFont','applyFill','applyBorder','applyAlignment','applyProtection'))
++            _attrs(xf, ('numFmtId','fontId','fillId','borderId','xfId','applyNumberFormat','applyFont','applyFill','applyBorder','applyAlignment','applyProtection','pivotButton','quotePrefix'))
++            if any(xf.get(key, '0') not in ('0', 'false') for key in ('pivotButton', 'quotePrefix')):
++                refuse('conversion_styles_unsupported')
+             if (any(xf.get(key, '0') != '0' for key in ('fontId','fillId','borderId','xfId'))
+                     or any(child.tag != q(S,'alignment') or child.attrib not in ({}, {'vertical':'bottom'}) or len(child) for child in xf)):
+                 refuse('conversion_styles_unsupported')
+@@ -307,7 +402,8 @@
+                 refuse('conversion_styles_unsupported')
+             if group == 'cellXfs': result.append(formats[int(raw)])
+     names = root.findall(q(S,'cellStyles')+'/'+q(S,'cellStyle'))
+-    if any(item.attrib != {'name':'Normal','xfId':'0','builtinId':'0'} or len(item) for item in names) or len(names) > 1:
++    if any(({key: value for key, value in item.attrib.items() if key != 'hidden'} != {'name':'Normal','xfId':'0','builtinId':'0'}
++            or item.get('hidden', '0') not in ('0', 'false') or len(item)) for item in names) or len(names) > 1:
+         refuse('conversion_named_styles_unsupported')
+     return result
+ 
+@@ -532,9 +628,63 @@
+                 refuse('conversion_office_default_unsupported')
+ 
+ 
++def _xlsx_source_metadata(book):
++    """Passive default source properties have no cell or layout semantics."""
++    root = book.xml['xl/workbook.xml']
++    for props in root.findall(q(S, 'workbookPr')):
++        _attrs(props, ('date1904',))
++        _children(props, ())
++        if (props.text or '').strip():
++            refuse('conversion_names_or_workbook_features_unsupported')
++    for calc in root.findall(q(S, 'calcPr')):
++        _attrs(calc, ('calcId', 'calcMode', 'fullCalcOnLoad', 'forceFullCalc',
++                      'calcCompleted', 'calcOnSave', 'concurrentCalc',
++                      'iterate', 'fullPrecision'))
++        _children(calc, ())
++        if (calc.get('calcMode', 'auto') != 'auto'
++                or any(calc.get(key, '1') not in ('0', '1', 'false', 'true')
++                       for key in ('fullCalcOnLoad', 'forceFullCalc', 'calcCompleted',
++                                   'calcOnSave', 'concurrentCalc'))
++                or ('calcId' in calc.attrib and (not calc.get('calcId').isascii()
++                    or not calc.get('calcId').isdecimal() or len(calc.get('calcId')) > 10))):
++            refuse('conversion_calculation_settings_unsupported')
++    for group in root.findall(q(S, 'definedNames')):
++        if group.attrib or len(group) or (group.text or '').strip():
++            refuse('conversion_names_or_workbook_features_unsupported')
++    for part in book.sheet_parts.values():
++        tree = book.xml[part]
++        for props in tree.findall(q(S, 'sheetPr')):
++            _attrs(props, ())
++            _children(props, (q(S, 'outlinePr'), q(S, 'pageSetUpPr')))
++            if len(props.findall(q(S, 'outlinePr'))) > 1 or len(props.findall(q(S, 'pageSetUpPr'))) > 1:
++                refuse('conversion_worksheet_features_unsupported')
++            if (props.text or '').strip():
++                refuse('conversion_worksheet_features_unsupported')
++            for child in props:
++                _children(child, ())
++                if (child.text or '').strip():
++                    refuse('conversion_worksheet_features_unsupported')
++                if child.tag == q(S, 'outlinePr'):
++                    _attrs(child, ('summaryBelow', 'summaryRight'))
++                    if any(child.get(key, '1') not in ('1', 'true') for key in ('summaryBelow', 'summaryRight')):
++                        refuse('conversion_worksheet_features_unsupported')
++                elif child.attrib:
++                    refuse('conversion_worksheet_features_unsupported')
++        margins = tree.findall(q(S, 'pageMargins'))
++        if len(margins) > 1:
++            refuse('conversion_worksheet_features_unsupported')
++        expected = {'left': Decimal('0.75'), 'right': Decimal('0.75'),
++                    'top': Decimal('1'), 'bottom': Decimal('1'),
++                    'header': Decimal('0.5'), 'footer': Decimal('0.5')}
++        for margin in margins:
++            if set(margin.attrib) != set(expected) or len(margin) or any(
++                    _number(margin.get(key)) != value for key, value in expected.items()):
++                refuse('conversion_worksheet_features_unsupported')
++
++
+ def _xlsx(data, checkpoint, *, office_generated=False, retained_calc=False):
+     book = ooxml(data, 'xlsx', writing=True, checkpoint=checkpoint,
+-                 allow_empty_workbook_protection=office_generated)
++                 allow_empty_workbook_protection=True)
+     allowed = {'[Content_Types].xml','_rels/.rels','xl/workbook.xml','xl/_rels/workbook.xml.rels',
+                'docProps/core.xml','docProps/app.xml'} | set(book.sheet_parts.values())
+     for kind in ('styles','sharedStrings','theme'):
+@@ -547,8 +697,8 @@
+             if not any(kind.endswith('/'+suffix) for suffix in relation_kinds):
+                 refuse('conversion_relationship_unsupported')
+     root = book.xml['xl/workbook.xml']
+-    _children(root, (q(S,x) for x in ('fileVersion','workbookPr','bookViews','sheets','calcPr')
+-                     + (('workbookProtection','extLst') if office_generated else ())),
++    _children(root, (q(S,x) for x in ('fileVersion','workbookPr','bookViews','sheets','calcPr','workbookProtection')
++                     + (('extLst',) if office_generated else ('definedNames',))),
+               'conversion_names_or_workbook_features_unsupported')
+     _attrs(root, ())
+     if any(len(root.findall(q(S,name))) > 1 for name in ('fileVersion','workbookPr','bookViews','calcPr')):
+@@ -560,6 +710,7 @@
+     if props is not None and props.get('date1904','0') not in ('0','false'):
+         refuse('conversion_date_epoch_unsupported')
+     if office_generated: _office_default_metadata(book,retained_calc=retained_calc)
++    else: _xlsx_source_metadata(book)
+     styles = _office_default_styles(book,retained_calc=retained_calc) if office_generated else _xlsx_styles(book)
+     strings = []
+     if book.shared_strings_part:
+@@ -578,7 +729,7 @@
+         name = _sheet_name(sheet.get('name')); cells = []; occupied = set()
+         tree = book.xml[book.sheet_parts[sheet.get(q(R,'id'))]]
+         _attrs(tree, ())
+-        _children(tree, (q(S,x) for x in ('dimension','sheetViews','sheetFormatPr','sheetData')
++        _children(tree, (q(S,x) for x in ('dimension','sheetViews','sheetFormatPr','sheetData','sheetPr','pageMargins')
+                          + (('sheetPr','printOptions','pageMargins','pageSetup','headerFooter') if office_generated else ())),
+                   'conversion_worksheet_features_unsupported')
+         if any(len(tree.findall(q(S,tag))) > 1 for tag in ('dimension','sheetViews','sheetFormatPr')):
+@@ -640,7 +791,9 @@
+                     if form.attrib or len(form) or typ not in ('n',) or inline is not None or style not in ('general','number'):
+                         refuse('conversion_formula_type_unsupported')
+                     parsed = parse_formula(form.text or '', 'xlsx', name)
+-                    value = _number(raw.text or '') if raw is not None else None
++                    # Empty OOXML <v/> denotes an absent formula cache. Keep
++                    # that distinction; only the independent evaluator computes.
++                    value = _number(raw.text) if raw is not None and raw.text is not None else None
+                     item = Cell('number', value, parsed)
+                 elif typ in ('s','inlineStr','str'):
+                     if style not in ('general','text'): refuse('conversion_text_style_unsupported')
+@@ -982,12 +1135,203 @@
+                 node.text = None
+ 
+ 
+-def _ods_generated_profile(book, *, calc_source=False):
++def _ods_imported_profile(book, rich_signature=None):
++    """Closed two/three-sheet Calc import defaults, independent of cell payloads.
++
++    Every passive tree is fingerprinted in full after binding only page aliases,
++    calendar clocks and bounded save metadata. This does not waive rich feature
++    capture, cell parsing, namespace checks or independently evaluated caches.
++    No ZIP/workbook/cell hash is an admission key; unknown defaults stay refused.
++    """
++    from copy import deepcopy
++    from tools.scoped_ods import _empty_forms
++    config = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
++    meta = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
++    dc = 'http://purl.org/dc/elements/1.1/'
++    parts = {'mimetype','content.xml','styles.xml','meta.xml','settings.xml',
++             'META-INF/manifest.xml','manifest.rdf','Thumbnails/thumbnail.png'}
++    if set(book.parts) != parts or len(book.sheets) not in (2,3):
++        refuse('conversion_imported_ods_package_unsupported')
++    sheet_count=len(book.sheets)
++    if sheet_count==3 and not getattr(rich_signature,'native_calc_profile',False):
++        refuse('conversion_imported_ods_rich_context_required')
++    _ods_generated_xml_guard(book.parts)
++    names = [_sheet_name(sheet.get(q(TB,'name'))) for sheet in book.sheets]
++    styles = deepcopy(book.xml['styles.xml'])
++    content = book.xml['content.xml']
++    if (content.attrib != {q(O,'version'):'1.4'}
++            or [node.tag for node in content] != [q(O,x) for x in ('scripts','font-face-decls','automatic-styles','body')]):
++        refuse('conversion_imported_ods_scaffolding_unsupported')
++    body=content.find(q(O,'body'))
++    if body is None or body.attrib:
++        refuse('conversion_imported_ods_scaffolding_unsupported')
++    # All text outside typed paragraphs remains structural and must be empty.
++    def structural_text(node, parent_is_paragraph=False):
++        paragraph = node.tag == q(T,'p')
++        if ((not paragraph and node.text not in (None,''))
++                or (not parent_is_paragraph and node.tail not in (None,''))):
++            refuse('conversion_imported_ods_scaffolding_unsupported')
++        for child in node:
++            structural_text(child, paragraph)
++    structural_text(content)
++    automatic = deepcopy(content.find(q(O,'automatic-styles')))
++    master = styles.find(q(O,'master-styles'))
++    if master is None:
++        refuse('conversion_imported_ods_styles_unsupported')
++    pages = [node for node in master if node.get(q(ST,'display-name'),'').startswith('PageStyle_')]
++    tables = [node for node in automatic if node.get(q(ST,'family')) == 'table']
++    if len(pages) != len(names) or len(tables) != len(names):
++        refuse('conversion_imported_ods_styles_unsupported')
++    for index,(name,table) in enumerate(zip(names,tables)):
++        matching=[page for page in pages if page.get(q(ST,'display-name')) == 'PageStyle_'+name]
++        if len(matching) != 1:
++            refuse('conversion_imported_ods_styles_unsupported')
++        page=matching[0]; alias = page.get(q(ST,'name'))
++        if (not re.fullmatch(r'PageStyle_5f_[A-Za-z0-9_\u0080-\uffff]+',alias or '')
++                or page.get(q(ST,'display-name')) != 'PageStyle_'+name
++                or table.get(q(ST,'master-page-name')) != alias
++                or table.get(q(ST,'name')) != 'ta'+str(index+1)):
++            refuse('conversion_imported_ods_styles_unsupported')
++        page.set(q(ST,'name'),'@sheet-page-'+str(index)+'@')
++        page.set(q(ST,'display-name'),'@sheet-display-'+str(index)+'@')
++        table.set(q(ST,'master-page-name'),'@sheet-page-'+str(index)+'@')
++    dates = list(styles.iter(q(T,'date')))
++    if len(dates) != 1:
++        refuse('conversion_imported_ods_styles_unsupported')
++    _date(dates[0].get(q(T,'date-value')))
++    dates[0].set(q(T,'date-value'),'@calendar-date@')
++    statistics = deepcopy(book.xml['meta.xml'])
++    counts = list(statistics.iter(q(meta,'document-statistic')))
++    if len(counts) != 1 or set(counts[0].attrib) != {q(meta,k) for k in ('table-count','cell-count','object-count')} or counts[0].get(q(meta,'object-count')) != '0':
++        refuse('conversion_imported_ods_metadata_unsupported')
++    declared = []
++    for name,maximum in (('table-count',sheet_count),('cell-count',MAX_CELLS)):
++        value = counts[0].get(q(meta,name))
++        if not re.fullmatch(r'[1-9][0-9]{0,3}',value or '') or int(value)>maximum:
++            refuse('conversion_imported_ods_metadata_unsupported')
++        declared.append(int(value)); counts[0].set(q(meta,name),'@inventory-count@')
++    for tag in (q(meta,'creation-date'),q(dc,'date')):
++        nodes = list(statistics.iter(tag))
++        if len(nodes) != 1 or nodes[0].attrib or len(nodes[0]) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,9})?',nodes[0].text or ''):
++            refuse('conversion_imported_ods_metadata_unsupported')
++        _date(nodes[0].text[:10]); nodes[0].text='@metadata-clock@'
++    creators = list(statistics.iter(q(meta,'initial-creator')))
++    if (len(creators) != 1 or creators[0].attrib or len(creators[0])
++            or not 1 <= len((creators[0].text or '').encode()) <= 256
++            or any(ord(c)<32 for c in creators[0].text or '')):
++        refuse('conversion_imported_ods_metadata_unsupported')
++    creators[0].text='@bounded-author@'
++    settings = deepcopy(book.xml['settings.xml']); extents = []
++    for node in settings.iter(q(config,'config-item')):
++        if node.get(q(config,'name')) in ('VisibleAreaWidth','VisibleAreaHeight'):
++            if not re.fullmatch(r'[1-9][0-9]{0,6}',node.text or '') or int(node.text)>1000000:
++                refuse('conversion_imported_ods_settings_unsupported')
++            extents.append(node.get(q(config,'name'))); node.text='@view-extent@'
++    if sorted(extents) != ['VisibleAreaHeight','VisibleAreaWidth']:
++        refuse('conversion_imported_ods_settings_unsupported')
++    if sheet_count==3:
++        from tools.scoped_spreadsheet_rich import _cm_exact, integer
++        # These are semantic geometry fields already captured by the rich
++        # parser, not passive-default admission hashes. Keep their original
++        # native units in the signature/fidelity report; only the independently
++        # validated scalar scaffold gets symbolic bindings here.
++        if not any(feature=='column_width' for feature,scope,payload in rich_signature):
++            refuse('conversion_imported_ods_rich_context_required')
++        for node in automatic:
++            if node.get(q(ST,'family'))=='table-column' and node.get(q(ST,'name')) in ('co1','co2','co3'):
++                props=node.findall(q(ST,'table-column-properties'))
++                if len(props)!=1 or _cm_exact(props[0].get(q(ST,'column-width')))[0]<=0:
++                    refuse('conversion_imported_ods_styles_unsupported')
++                props[0].set(q(ST,'column-width'),'@captured-column-width@')
++        printed=[scope for feature,scope,payload in rich_signature if feature=='print_setup']
++        if len(printed)!=1 or printed[0] not in names:
++            refuse('conversion_imported_ods_rich_context_required')
++        page=next(node for node in pages if node.get(q(ST,'name'))=='@sheet-page-'+str(names.index(printed[0]))+'@')
++        layouts=[node for node in styles.iter(q(ST,'page-layout')) if node.get(q(ST,'name'))==page.get(q(ST,'page-layout-name'))]
++        props=layouts[0].findall(q(ST,'page-layout-properties')) if len(layouts)==1 else []
++        if len(props)!=1:
++            refuse('conversion_imported_ods_styles_unsupported')
++        for field in ('page-width','page-height'):
++            if _cm_exact(props[0].get(q(FO,field)))[0]<=0:
++                refuse('conversion_imported_ods_styles_unsupported')
++            props[0].set(q(FO,field),'@captured-print-dimension@')
++        if props[0].get(q(ST,'print-orientation')) not in ('landscape','portrait'):
++            refuse('conversion_imported_ods_styles_unsupported')
++        props[0].set(q(ST,'print-orientation'),'@captured-print-orientation@')
++        for field in ('scale-to-X','scale-to-Y'):
++            integer(props[0].get(q(ST,field)),0,100)
++            props[0].set(q(ST,field),'@captured-print-fit@')
++    trees = {'styles.xml':styles,'meta.xml':statistics,'settings.xml':settings,
++             'META-INF/manifest.xml':book.xml['META-INF/manifest.xml'],
++             'content:font-face-decls':content.find(q(O,'font-face-decls')),
++             'content:automatic-styles':automatic}
++    for part,tree in trees.items():
++        if _ods_tree_digest(tree) != _ODS_IMPORTED_PASSIVE[sheet_count][part]:
++            refuse('conversion_imported_ods_passive_part_unsupported')
++    if hashlib.sha256(book.parts['manifest.rdf']).hexdigest() != _ODS_IMPORTED_RDF:
++        refuse('conversion_imported_ods_passive_part_unsupported')
++    _ods_png_preview(book.parts['Thumbnails/thumbnail.png'])
++    for parent,tag in ((content,q(O,'scripts')),(book.body,q(TB,'named-expressions'))):
++        nodes=parent.findall(tag)
++        if sheet_count==3 and tag==q(TB,'named-expressions') and not nodes: continue
++        if len(nodes)!=1 or nodes[0].attrib or len(nodes[0]) or nodes[0].text not in (None,'') or nodes[0].tail not in (None,''):
++            refuse('conversion_imported_ods_scaffolding_unsupported')
++        parent.remove(nodes[0])
++    calculation=book.body.findall(q(TB,'calculation-settings'))
++    expected={q(TB,'case-sensitive'):'false',q(TB,'automatic-find-labels'):'false',
++              q(TB,'use-regular-expressions'):'false',q(TB,'use-wildcards'):'true',q(TB,'null-year'):'1950'}
++    if (len(calculation)!=1 or calculation[0].attrib!=expected or len(calculation[0])!=1
++            or calculation[0][0].tag!=q(TB,'iteration')
++            or calculation[0][0].attrib!={q(TB,'maximum-difference'):'0.0001'}
++            or len(calculation[0][0]) or calculation[0][0].text not in (None,'')
++            or calculation[0][0].tail not in (None,'')):
++        refuse('conversion_imported_ods_calculation_unsupported')
++    calculation[0].attrib.clear(); calculation[0].remove(calculation[0][0])
++    for index,sheet in enumerate(book.sheets):
++        forms=sheet.findall(q(O,'forms'))
++        if len(forms)>1 or any(not _empty_forms(node) for node in forms):
++            refuse('conversion_imported_ods_scaffolding_unsupported')
++        for node in forms: sheet.remove(node)
++        if sheet.get(q(TB,'style-name')) != 'ta'+str(index+1):
++            refuse('conversion_imported_ods_style_reference_unsupported')
++        if sheet_count==3:
++            position=1
++            for column in sheet.findall(q(TB,'table-column')):
++                repeat=integer(column.get(q(TB,'number-columns-repeated'),'1'),1,16384)
++                if (position+repeat-1>16384 or
++                        column.get(q(TB,'style-name'))!='co4' and position+repeat-1>MAX_COLS):
++                    refuse('conversion_imported_ods_style_reference_unsupported')
++                position+=repeat
++            if position!=16385:
++                refuse('conversion_imported_ods_style_reference_unsupported')
++        columns=('co1',) if sheet_count==2 else ('co1','co2','co3','co4')
++        cells=('Default',) if sheet_count==2 else ('Default','ce3')
++        defaults=(None,'Default','ce1','ce2') if sheet_count==2 else (None,'Default','ce1','ce2','ce3')
++        for tag,allowed in (('table-column',columns),('table-row',('ro1',)),('table-cell',cells)):
++            for node in sheet.iter(q(TB,tag)):
++                if (node.get(q(TB,'style-name')) not in (None,*allowed)
++                        or node.get(q(TB,'default-cell-style-name')) not in defaults):
++                    refuse('conversion_imported_ods_style_reference_unsupported')
++    def used(name):
++        allowed=('Default','co1','ro1','ta1','ta2','ce1','ce2') if sheet_count==2 else ('Default','co1','co2','co3','co4','ro1','ta1','ta2','ta3','ce1','ce2','ce3')
++        if name not in allowed:
++            refuse('conversion_imported_ods_style_reference_unsupported')
++    used.declared_counts=tuple(declared); used.imported_profile=True
++    return used
++
++
++_ODS_IMPORTED_RDF = 'aeb297984b26a30bd9a26f304b39bc7d91a2645749b35e7bf3f44c4b9511dc75'
++_ODS_IMPORTED_PASSIVE = {2: {'styles.xml': 'c893735da17d3e15b82adadbd7968a0d3734e6fcec17e8f295cb984566bf7921', 'meta.xml': '979e8cb60e364b791ff1f030e777cfa116140898dc5e56737def5f5e04f93ce1', 'settings.xml': 'b77eeb4f7e3fdc86e5c296e3803581592c6e66022c7ac965d43f892598fbfb5c', 'META-INF/manifest.xml': '589d6e270f367c4e2bc75a6a9015f9cb1e32f077480088f9f96f2bd543ecd18c', 'content:font-face-decls': '012b44d0995e9655873bf8b4281fcbdecc93577f0e1d2b9e21168cb3ee5037c9', 'content:automatic-styles': '6dadef4d2caec6076420e786b646981fb2b214ff08a21e9de24014e23b3f7783'}, 3: {'styles.xml': '431428f73f2cb1a3acac838d34bf7c550913996a01b63b478ef9fcd7fed0e10d', 'meta.xml': '979e8cb60e364b791ff1f030e777cfa116140898dc5e56737def5f5e04f93ce1', 'settings.xml': 'b77eeb4f7e3fdc86e5c296e3803581592c6e66022c7ac965d43f892598fbfb5c', 'META-INF/manifest.xml': '589d6e270f367c4e2bc75a6a9015f9cb1e32f077480088f9f96f2bd543ecd18c', 'content:font-face-decls': '012b44d0995e9655873bf8b4281fcbdecc93577f0e1d2b9e21168cb3ee5037c9', 'content:automatic-styles': 'f34652c4078c895d3cdca0bd79ebcc198caa4dcdf53a491d6e3561a5cbbef5e2'}}
++
++
++def _ods_generated_profile(book, *, calc_source=False, rich_signature=None):
+     from copy import deepcopy
+     config = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
+     meta = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
+     parts = {'mimetype','content.xml','styles.xml','meta.xml','settings.xml',
+              'META-INF/manifest.xml','manifest.rdf','Thumbnails/thumbnail.png'}
++    if len(book.sheets) in (2,3):
++        return _ods_imported_profile(book,rich_signature)
+     if set(book.parts) != parts or len(book.sheets) != 1:
+         refuse('conversion_generated_ods_package_unsupported')
+     _ods_generated_xml_guard(book.parts)
+@@ -1104,13 +1448,13 @@
+     return used
+ 
+ 
+-def _ods(data, checkpoint, *, office_generated=False, calc_source=False):
++def _ods(data, checkpoint, *, office_generated=False, calc_source=False, rich_signature=None):
+     book = Spreadsheet(data,'ods',checkpoint)
+     if book.unsupported: refuse('conversion_active_or_linked_content')
+     _formula_namespaces(book.parts['content.xml'])
+     if set(book.parts)-{'mimetype','content.xml','styles.xml','meta.xml','settings.xml','META-INF/manifest.xml', 'manifest.rdf','Thumbnails/thumbnail.png'}:
+         refuse('conversion_package_features_unsupported')
+-    used_style = _ods_generated_profile(book,calc_source=calc_source) if office_generated or calc_source else _ods_styles(book)
++    used_style = _ods_generated_profile(book,calc_source=calc_source,rich_signature=rich_signature) if office_generated or calc_source else _ods_styles(book)
+     content = book.xml['content.xml']
+     _attrs(content, (q(O,'version'),))
+     _children(content, (q(O,x) for x in ('font-face-decls','automatic-styles','body')),
+@@ -1192,20 +1536,45 @@
+     result = _finish(sheets,checkpoint)
+     if (office_generated or calc_source) and used_style.declared_counts != (result.counts()['sheets'],result.counts()['nonempty_cells']):
+         refuse('conversion_generated_ods_statistics_changed')
+-    return Inventory(result.sheets,_CALC_RETAINED_PROFILE) if calc_source else result
++    return Inventory(result.sheets,_CALC_RETAINED_PROFILE) if calc_source and not getattr(used_style,'imported_profile',False) else result
++
++
++def _prepare_rich(data, format, checkpoint):
++    from tools.scoped_spreadsheet_rich import prepare_xlsx, prepare_ods
++    if format == 'xlsx':
++        return prepare_xlsx(data, checkpoint=checkpoint)
++    if format == 'ods':
++        return prepare_ods(data, checkpoint=checkpoint)
++    refuse('conversion_pair_unsupported')
++
++
++def _scalar_inventory(data, format, checkpoint, source_profile, rich_signature=None):
++    if format == 'xlsx': return _xlsx(data,checkpoint)
++    if format == 'ods':
++        try: return _ods(data,checkpoint,rich_signature=rich_signature)
++        except ConversionRefused:
++            if not source_profile: raise
++            # Keep the retained Calc bundle separate from rich semantics.
++            return _ods(data,checkpoint,calc_source=True,rich_signature=rich_signature)
++    refuse('conversion_pair_unsupported')
++
++
++def _with_rich(actual, signature, format):
++    from tools.scoped_spreadsheet_rich import validate_references
++    validate_references(signature, actual)
++    if signature:
++        signature.sheet_names=tuple(name for name,cells in actual.sheets)
++    return Inventory(actual.sheets, actual.destination_profile, signature, format)
+ 
+ 
+ def inventory(data, format, *, checkpoint=None, source_profile=True):
+     try:
+-        if format == 'xlsx': return _xlsx(data,checkpoint)
+-        if format == 'ods':
+-            try: return _ods(data,checkpoint)
+-            except ConversionRefused:
+-                if not source_profile: raise
+-                # A closed inbound default-Calc scalar dialect; the original
+-                # strict-source parser and destination profile stay intact.
+-                return _ods(data,checkpoint,calc_source=True)
+-        refuse('conversion_pair_unsupported')
++        data, signature = _prepare_rich(data, format, checkpoint)
++        result = _scalar_inventory(data, format, checkpoint, source_profile, signature)
++        # Missing source caches remain missing. Present caches cannot stand in
++        # for independently evaluating the supported formula graph.
++        evaluate(result, checkpoint=checkpoint, check_present_cache=True)
++        return _with_rich(result, signature, format)
+     except ConversionRefused:
+         raise
+     except (ODSError, ODTError) as error:
+@@ -1216,17 +1585,22 @@
+ 
+ def validate_destination(source, data, target, *, checkpoint=None):
+     try:
++        data, signature = _prepare_rich(data, target, checkpoint)
+         if target == 'xlsx' and source.destination_profile == _CALC_RETAINED_PROFILE:
+             # Never fall back to generic/Arial output after this bound bundle
+             # fails: scalar equality alone cannot establish its format fidelity.
+             actual = _xlsx(data,checkpoint,office_generated=True,retained_calc=True)
+         else:
+             try:
+-                actual = inventory(data,target,checkpoint=checkpoint,source_profile=False)
++                actual = _scalar_inventory(data,target,checkpoint,False,signature)
+             except ConversionRefused:
+                 if target not in ('xlsx','ods'): raise
+                 actual = (_xlsx(data,checkpoint,office_generated=True) if target == 'xlsx'
+-                          else _ods(data,checkpoint,office_generated=True))
++                          else _ods(data,checkpoint,office_generated=True,rich_signature=signature))
++        actual = _with_rich(actual, signature, target)
++        from tools.scoped_spreadsheet_rich import compare_rich
++        compare_rich(source.rich_signature, actual.rich_signature,
++                     source_kind=source.source_format, target_kind=target)
+     except ConversionRefused:
+         raise
+     except (ODSError, ODTError) as error:
+--- /dev/null
++++ b/tools/scoped_spreadsheet_rich.py
+@@ -0,0 +1,1640 @@
++"""Finite passive XLSX/ODS richness projection for an independent scalar gate.
++
++The ORIGINAL bytes pass Package/Spreadsheet before any projection. Only fully
++captured structures are removed, in memory, for the real scalar parser. This is
++not a converter, repairer, Office executor, or destination reconstruction path.
++Unmodelled features remain for that parser to reject, or are refused here.
++"""
++from collections import Counter
++from decimal import Decimal, ROUND_HALF_UP
++from io import BytesIO
++from fractions import Fraction
++import hashlib
++import json
++import re
++import zipfile
++from xml.etree import ElementTree as ET
++
++from tools.scoped_spreadsheet_profiles import ooxml, S, R, CT
++from tools.scoped_presentation import Package, PresentationError, q, MAX_XML, MAX_XML_TOTAL
++from tools.scoped_ods import Spreadsheet, ODSError, O, T, TB, ST, M, XL, OF, decimal, address, tick, _empty_forms
++
++CH = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
++A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
++XDR = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
++D = 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0'
++C = 'urn:oasis:names:tc:opendocument:xmlns:chart:1.0'
++SVG = 'urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0'
++FO = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
++CFG = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
++MAX_ROWS, MAX_COLS, MAX_POINTS = 512, 64, 128
++TABLE_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml'
++DRAWING_MIME = 'application/vnd.openxmlformats-officedocument.drawing+xml'
++CHART_MIME = 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml'
++OD_CHART_MIME = 'application/vnd.oasis.opendocument.chart'
++
++
++def refuse(code):
++    raise ODSError('rich_' + code)
++
++
++def attrs(node, allowed):
++    if set(node.attrib) - set(allowed): refuse('attributes_unsupported')
++
++
++def children(node, allowed):
++    if any(n.tag not in set(allowed) for n in node): refuse('structure_unsupported')
++
++
++def one(node, tag, optional=False):
++    found = node.findall(tag)
++    if len(found) != 1:
++        if optional and not found: return None
++        refuse('ambiguous_structure')
++    return found[0]
++
++
++def boolean(value, default=False):
++    if value is None: return default
++    if value in ('1', 'true'): return True
++    if value in ('0', 'false'): return False
++    refuse('boolean_unsupported')
++
++
++def number(raw, low=0, high=1000000):
++    result = decimal(raw)
++    if not low <= result <= high: refuse('number_bounds')
++    return result
++
++
++def integer(raw, low=0, high=MAX_ROWS):
++    if not isinstance(raw, str) or not re.fullmatch(r'[0-9]{1,8}', raw): refuse('integer_unsupported')
++    result = int(raw)
++    if not low <= result <= high: refuse('integer_bounds')
++    return result
++
++
++def text(node, allowed=()):
++    if node is None: return ''
++    attrs(node,allowed)
++    if len(node) or len((node.text or '').encode()) > 4096: refuse('text_unsupported')
++    return node.text or ''
++
++
++def _sheet(raw):
++    if raw.startswith('$'): raw = raw[1:]
++    if raw.startswith("'"):
++        if not raw.endswith("'"): refuse('reference_unsupported')
++        raw = raw[1:-1].replace("''", "'")
++    if not raw or len(raw) > 31 or any(c in raw for c in '[]:*?/\\') or any(ord(c)<32 for c in raw):
++        refuse('reference_unsupported')
++    return raw
++
++
++def rect(raw, kind, current=None):
++    name = r"(?:'(?:[^']|'')+'|[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff .]*)"
++    cell = r'\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}'
++    if kind == 'xlsx':
++        match = re.fullmatch(r'(?:(%s)!)?(%s)(?::(?:(%s)!)?(%s))?' % (name,cell,name,cell), raw or '')
++    else:
++        match = re.fullmatch(r'(?:\$?(%s))?\.(%s)(?::(?:\$?(%s))?\.(%s))?' % (name,cell,name,cell), raw or '')
++    if not match: refuse('reference_unsupported')
++    sheet = _sheet(match[1]) if match[1] else current
++    end_sheet = _sheet(match[3]) if match[3] else sheet
++    if sheet is None or sheet != end_sheet: refuse('reference_sheet_unsupported')
++    r1,c1 = address(match[2].replace('$',''))
++    r2,c2 = address((match[4] or match[2]).replace('$',''))
++    if not (r1 <= r2 <= MAX_ROWS and c1 <= c2 <= MAX_COLS): refuse('reference_bounds')
++    return sheet,r1,c1,r2,c2
++
++
++def _cm_exact(raw):
++    match = re.fullmatch(r'(-?[0-9]+(?:\.[0-9]+)?)(cm|mm|in|pt)', raw or '')
++    if not match: refuse('length_unsupported')
++    value = Fraction(Decimal(match[1])) * {'cm':Fraction(1),'mm':Fraction(1,10),'in':Fraction(127,50),'pt':Fraction(127,3600)}[match[2]]
++    if not 0 <= value <= 1000: refuse('length_bounds')
++    return value.numerator,value.denominator
++
++
++def _cm(raw):
++    num,den=_cm_exact(raw)
++    return (Decimal(num)/Decimal(den)).quantize(Decimal('.001'), rounding=ROUND_HALF_UP)
++
++
++def _xwidth(raw):
++    # OOXML character widths use the known source font's 7-pixel max digit.
++    # The scalar source profile independently validates that default font.
++    width = number(raw, 1, 255)
++    pixels = (width * 7 + 5).to_integral_value(rounding=ROUND_HALF_UP)
++    return (pixels * Decimal('2.54') / 96).quantize(Decimal('.001'),rounding=ROUND_HALF_UP)
++
++
++class RichSignature(tuple):
++    """Canonical tuple; cache checks are private evidence, never equality data."""
++    def __new__(cls, records=(), cache_checks=()):
++        obj = super().__new__(cls, sorted(records, key=repr))
++        obj.cache_checks = tuple(cache_checks)
++        obj.vendor_styles = ()
++        obj.native_geometry = ()
++        obj.source_kind = ''
++        obj.native_calc_profile = False
++        obj.sheet_names = ()
++        return obj
++
++
++def _formula_namespace_bindings(raw):
++    """Validate original scoped formula QNames before lexical-only bindings die.
++
++    ElementTree preserves expanded element/attribute names but not prefixes used
++    inside formula attribute values. Preserve only bindings actually validated
++    at those attributes; a missing, foreign, or conflicting prefix is refused.
++    The real scalar parser still validates the complete formula dialect.
++    """
++    bindings={}; frames=[]; pending=[]; declarations=[]; required={}
++    for event,item in ET.iterparse(BytesIO(raw),events=('start-ns','start','end')):
++        if event=='start-ns':
++            pending.append(item); declarations.append(item)
++        elif event=='start':
++            frames.append(bindings); bindings=dict(bindings)
++            bindings.update(pending); pending=[]
++            for field in ('formula','condition'):
++                value=item.get(q(TB,field))
++                if value is None: continue
++                match=re.match(r'([A-Za-z_][A-Za-z0-9_.-]*):',value)
++                if not match or match[1]!='of' or bindings.get(match[1])!=OF:
++                    refuse('formula_namespace_unsupported')
++                required[match[1]]=OF
++        else:
++            bindings=frames.pop()
++    # A rewritten XML root cannot preserve conflicting lexical meanings for
++    # the same formula prefix. Refuse rather than silently hoist or repair it.
++    if any(prefix in required and uri!=required[prefix] for prefix,uri in declarations):
++        refuse('formula_namespace_shadow_conflict')
++    return required
++
++
++def _rewrite(data, roots, removed=(), lexical_bindings=None):
++    out = BytesIO()
++    with zipfile.ZipFile(BytesIO(data)) as source, zipfile.ZipFile(out,'w') as dest:
++        dest.comment = source.comment
++        for info in source.infolist():
++            if info.filename in removed: continue
++            if info.filename in roots:
++                root=roots[info.filename]
++                for prefix,uri in (lexical_bindings or {}).get(info.filename,{}).items():
++                    root.set('xmlns:'+prefix,uri)
++                payload=ET.tostring(root,encoding='utf-8',xml_declaration=True)
++            else:
++                payload=source.read(info)
++            dest.writestr(info,payload)
++    result=out.getvalue()
++    if len(result)>1000000: refuse('output_limit')
++    return result
++
++
++def _x_filter(node, sheet):
++    attrs(node, ('ref',))
++    area=rect(node.get('ref'),'xlsx',sheet)
++    predicates=[]
++    for field in node:
++        if field.tag != q(S,'filterColumn'): refuse('filter_unsupported')
++        attrs(field, ('colId','hiddenButton','showButton'))
++        if boolean(field.get('hiddenButton')) or not boolean(field.get('showButton'),True): refuse('filter_buttons_unsupported')
++        index=integer(field.get('colId'),0,MAX_COLS-1)
++        if index>area[4]-area[2]: refuse('filter_bounds')
++        values=one(field,q(S,'filters'))
++        attrs(values,('blank',))
++        children(values,(q(S,'filter'),))
++        items=[]
++        for item in values:
++            attrs(item,('val',))
++            if len(item) or item.get('val') is None: refuse('filter_unsupported')
++            items.append(item.get('val'))
++        if not items or len(items)>128 or len(set(items))!=len(items): refuse('filter_unsupported')
++        predicates.append((index,tuple(sorted(items)),boolean(values.get('blank'))))
++    if len({p[0] for p in predicates})!=len(predicates): refuse('filter_unsupported')
++    return area,tuple(sorted(predicates))
++
++
++def _x_title(node):
++    if node is None: return ''
++    attrs(node,())
++    children(node,(q(CH,'tx'),))
++    tx=one(node,q(CH,'tx')); attrs(tx,()); children(tx,(q(CH,'rich'),))
++    rich=one(tx,q(CH,'rich')); attrs(rich,())
++    children(rich,(q(A,'bodyPr'),q(A,'p')))
++    body=one(rich,q(A,'bodyPr'))
++    if body.attrib or len(body): refuse('chart_text_unsupported')
++    paragraphs=rich.findall(q(A,'p'))
++    if len(paragraphs)!=1: refuse('chart_text_unsupported')
++    p=paragraphs[0]; attrs(p,()); children(p,(q(A,'pPr'),q(A,'r')))
++    pp=one(p,q(A,'pPr'),True)
++    if pp is not None:
++        if pp.attrib or len(pp)!=1 or pp[0].tag!=q(A,'defRPr') or pp[0].attrib or len(pp[0]): refuse('chart_text_unsupported')
++    runs=p.findall(q(A,'r'))
++    if len(runs)!=1 or runs[0].attrib or len(runs[0])!=1 or runs[0][0].tag!=q(A,'t'): refuse('chart_text_unsupported')
++    return text(runs[0][0])
++
++
++def _x_chart_ref(node, kind, checks):
++    attrs(node,()); children(node,(q(CH,'strRef'),q(CH,'numRef')))
++    if len(node)!=1: refuse('chart_reference_unsupported')
++    ref=node[0]; attrs(ref,()); children(ref,(q(CH,'f'),q(CH,'strCache'),q(CH,'numCache')))
++    area=rect(text(one(ref,q(CH,'f'))),'xlsx')
++    cache=[n for n in ref if n.tag in (q(CH,'strCache'),q(CH,'numCache'))]
++    if len(cache)>1: refuse('chart_cache_unsupported')
++    if cache:
++        c=cache[0]; attrs(c,()); children(c,(q(CH,'formatCode'),q(CH,'ptCount'),q(CH,'pt')))
++        fmt=one(c,q(CH,'formatCode'),True)
++        if fmt is not None and text(fmt) not in ('General','general'): refuse('chart_cache_format_unsupported')
++        count=one(c,q(CH,'ptCount')); attrs(count,('val',))
++        size=integer(count.get('val'),1,MAX_POINTS)
++        points=[]
++        for pt in c.findall(q(CH,'pt')):
++            attrs(pt,('idx',)); children(pt,(q(CH,'v'),))
++            points.append((integer(pt.get('idx'),0,MAX_POINTS-1),text(one(pt,q(CH,'v')))))
++        if sorted(p[0] for p in points)!=list(range(size)): refuse('chart_cache_unsupported')
++        checks.append((area,kind,tuple(value for _,value in sorted(points))))
++    return area
++
++
++def _x_chart(book, part, sheet, anchor, size, checks):
++    root=book.root(part,q(CH,'chartSpace')); attrs(root,()); children(root,(q(CH,'chart'),))
++    chart=one(root,q(CH,'chart')); attrs(chart,())
++    children(chart,tuple(q(CH,n) for n in ('title','plotArea','legend','plotVisOnly','dispBlanksAs')))
++    title=_x_title(one(chart,q(CH,'title'),True))
++    plot=one(chart,q(CH,'plotArea')); attrs(plot,()); children(plot,tuple(q(CH,n) for n in ('barChart','catAx','valAx')))
++    bar=one(plot,q(CH,'barChart')); attrs(bar,())
++    children(bar,tuple(q(CH,n) for n in ('barDir','grouping','ser','gapWidth','axId')))
++    for tag,value in (('barDir','col'),('grouping','clustered'),('gapWidth','150')):
++        n=one(bar,q(CH,tag));
++        if n.attrib!={'val':value} or len(n): refuse('chart_type_unsupported')
++    series=[]
++    for i,ser in enumerate(bar.findall(q(CH,'ser'))):
++        if i>=2: refuse('chart_series_limit')
++        attrs(ser,()); children(ser,tuple(q(CH,n) for n in ('idx','order','tx','spPr','cat','val')))
++        for tag in ('idx','order'):
++            n=one(ser,q(CH,tag))
++            if n.attrib!={'val':str(i)} or len(n): refuse('chart_series_unsupported')
++        style=one(ser,q(CH,'spPr'),True)
++        if style is not None:
++            if style.attrib or len(style)!=1 or style[0].tag!=q(A,'ln') or style[0].attrib or len(style[0])!=1 or style[0][0].tag!=q(A,'prstDash') or style[0][0].attrib!={'val':'solid'} or len(style[0][0]): refuse('chart_style_unsupported')
++        label=_x_chart_ref(one(ser,q(CH,'tx')),'string',checks)
++        category=_x_chart_ref(one(ser,q(CH,'cat')),'any',checks)
++        values=_x_chart_ref(one(ser,q(CH,'val')),'number',checks)
++        series.append((category,label,values))
++    if not series or any(s[0]!=series[0][0] for s in series): refuse('chart_series_unsupported')
++    axes=[one(plot,q(CH,n)) for n in ('catAx','valAx')]
++    axis_ids=[]; cross_ids=[]; ytitle=''
++    for i,axis in enumerate(axes):
++        attrs(axis,()); children(axis,tuple(q(CH,n) for n in ('axId','scaling','axPos','majorTickMark','minorTickMark','crossAx','lblOffset','majorGridlines','title')))
++        axis_ids.append(one(axis,q(CH,'axId')).get('val')); cross_ids.append(one(axis,q(CH,'crossAx')).get('val'))
++        for tag in ('axId','crossAx'):
++            n=one(axis,q(CH,tag)); attrs(n,('val',)); integer(n.get('val'),1,1000000)
++            if len(n): refuse('chart_axis_unsupported')
++        sc=one(axis,q(CH,'scaling'))
++        if sc.attrib or len(sc)!=1 or sc[0].tag!=q(CH,'orientation') or sc[0].attrib!={'val':'minMax'} or len(sc[0]): refuse('chart_axis_unsupported')
++        for tag,default in (('axPos','l'),('majorTickMark','none'),('minorTickMark','none')):
++            n=one(axis,q(CH,tag))
++            if n.attrib!={'val':default} or len(n): refuse('chart_axis_unsupported')
++        off=one(axis,q(CH,'lblOffset'),True)
++        if off is not None and (off.attrib!={'val':'100'} or len(off) or i!=0): refuse('chart_axis_unsupported')
++        grid=one(axis,q(CH,'majorGridlines'),True)
++        if grid is not None and (grid.attrib or len(grid) or i!=1): refuse('chart_axis_unsupported')
++        at=one(axis,q(CH,'title'),True)
++        if at is not None:
++            if i!=1: refuse('chart_axis_unsupported')
++            ytitle=_x_title(at)
++    barids=bar.findall(q(CH,'axId'))
++    if len(set(axis_ids))!=2 or cross_ids!=axis_ids[::-1] or [n.get('val') for n in barids]!=axis_ids or any(n.attrib!={'val':n.get('val')} or len(n) for n in barids): refuse('chart_axis_linkage')
++    legend=one(chart,q(CH,'legend'),True); legendpos='none'
++    if legend is not None:
++        if legend.attrib or len(legend)!=1 or legend[0].tag!=q(CH,'legendPos') or legend[0].attrib!={'val':'r'} or len(legend[0]): refuse('chart_legend_unsupported')
++        legendpos='right'
++    vis=one(chart,q(CH,'plotVisOnly')); attrs(vis,('val',))
++    blanks=one(chart,q(CH,'dispBlanksAs'))
++    if blanks.attrib!={'val':'gap'} or len(blanks) or len(vis): refuse('chart_blanks_unsupported')
++    return ('column',title,ytitle,legendpos,boolean(vis.get('val')),series[0][0],tuple((s[1],s[2]) for s in series),anchor,size)
++
++
++def _x_drawing(book, part, sheet, checks):
++    root=book.root(part,q(XDR,'wsDr')); attrs(root,()); children(root,(q(XDR,'oneCellAnchor'),))
++    if len(root)!=1: refuse('drawing_count_unsupported')
++    node=root[0]; attrs(node,()); children(node,tuple(q(XDR,n) for n in ('from','ext','graphicFrame','clientData')))
++    start=one(node,q(XDR,'from')); attrs(start,()); children(start,tuple(q(XDR,n) for n in ('col','row','colOff','rowOff')))
++    row=integer(text(one(start,q(XDR,'row'))),0,MAX_ROWS-1)+1
++    col=integer(text(one(start,q(XDR,'col'))),0,MAX_COLS-1)+1
++    if any(text(one(start,q(XDR,n)))!='0' for n in ('rowOff','colOff')): refuse('drawing_offset_unsupported')
++    ext=one(node,q(XDR,'ext')); attrs(ext,('cx','cy'))
++    if len(ext): refuse('drawing_unsupported')
++    size=tuple((number(ext.get(n),1,360000000)/360000).quantize(Decimal('.001')) for n in ('cx','cy'))
++    gf=one(node,q(XDR,'graphicFrame')); attrs(gf,())
++    children(gf,tuple(q(XDR,n) for n in ('nvGraphicFramePr','xfrm'))+(q(A,'graphic'),))
++    nv=one(gf,q(XDR,'nvGraphicFramePr')); attrs(nv,()); children(nv,(q(XDR,'cNvPr'),q(XDR,'cNvGraphicFramePr')))
++    pr=one(nv,q(XDR,'cNvPr')); attrs(pr,('id','name'))
++    if len(pr) or not pr.get('name'): refuse('drawing_unsupported')
++    for n in (one(nv,q(XDR,'cNvGraphicFramePr')),one(gf,q(XDR,'xfrm')),one(node,q(XDR,'clientData'))):
++        if n.attrib or len(n): refuse('drawing_unsupported')
++    graphic=one(gf,q(A,'graphic')); attrs(graphic,()); children(graphic,(q(A,'graphicData'),)); gd=one(graphic,q(A,'graphicData'))
++    if gd.attrib!={'uri':CH} or len(gd)!=1 or gd[0].tag!=q(CH,'chart') or len(gd[0]) or set(gd[0].attrib)!={q(R,'id')}: refuse('drawing_chart_linkage')
++    chartpart=book.target(part,gd[0].get(q(R,'id')),'chart')
++    return _x_chart(book,chartpart,sheet,(row,col),size,checks),chartpart
++
++
++def prepare_xlsx(data, *, checkpoint=None):
++    """Capture the supported original rich structures, then real scalar parse."""
++    tick(checkpoint)
++    book=ooxml(data,'xlsx',checkpoint=checkpoint)
++    if book.external or book.unsupported or book.macro_parts: refuse('active_or_external')
++    root=book.xml['xl/workbook.xml']
++    trigger_tags={q(S,n) for n in ('mergeCells','autoFilter','dataValidations','tableParts','drawing','pane','cols')}
++    has_names=any(len(n) for n in root.findall(q(S,'definedNames')))
++    has_rich=has_names or any(n.tag in trigger_tags or (n.tag==q(S,'row') and boolean(n.get('hidden'))) for part in book.sheet_parts.values() for n in book.xml[part].iter())
++    if not has_rich: return data,()
++    names=[node.get('name') for node in one(root,q(S,'sheets'))]
++    records=[]; checks=[]; changed={}; removed=set(); rich_edges=set(); vendor_styles=[]; native_geometry=[]
++    defs=one(root,q(S,'definedNames'),True)
++    if defs is not None:
++        attrs(defs,()); children(defs,(q(S,'definedName'),))
++        seen=set()
++        for n in defs:
++            attrs(n,('name','localSheetId','hidden'))
++            if len(n): refuse('name_unsupported')
++            name=n.get('name',''); scope=n.get('localSheetId'); scope=names[integer(scope,0,len(names)-1)] if scope is not None else ''
++            area=rect(text(n,('name','localSheetId','hidden')),'xlsx'); key=(name,scope)
++            if key in seen or area[0] not in names or (scope and scope!=area[0]): refuse('name_unsupported')
++            seen.add(key)
++            if name=='_xlnm.Print_Area':
++                if not scope or boolean(n.get('hidden')): refuse('print_area_unsupported')
++                records.append(('print_area',scope,area))
++            elif name=='_xlnm._FilterDatabase':
++                if not scope or not boolean(n.get('hidden')): refuse('filter_database_unsupported')
++                records.append(('filter_database',scope,area))
++            else:
++                if name.startswith('_xlnm.') or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]{0,63}',name) or boolean(n.get('hidden')): refuse('name_unsupported')
++                records.append(('name',scope,(name,area)))
++        root.remove(defs); changed['xl/workbook.xml']=root
++    for sheet,part in zip(names,book.sheet_parts.values()):
++        tick(checkpoint)
++        tree=book.xml[part]
++        if tree.find(q(S,'sheetProtection')) is not None: refuse('protection_unsupported')
++        if tree.find(q(S,'conditionalFormatting')) is not None: refuse('conditional_formatting_unsupported')
++        # Unsupported richness must not be lost during projection.
++        for tag in ('extLst','hyperlinks','oleObjects','controls','legacyDrawing','picture','rowBreaks','colBreaks'):
++            if tree.find(q(S,tag)) is not None: refuse('sheet_feature_unsupported')
++        for row in tree.findall(q(S,'sheetData')+'/'+q(S,'row')):
++            if boolean(row.get('hidden')):
++                records.append(('hidden_row',sheet,integer(row.get('r'),1,MAX_ROWS)))
++                row.attrib.pop('hidden'); changed[part]=tree
++        merges=one(tree,q(S,'mergeCells'),True)
++        if merges is not None:
++            attrs(merges,('count',)); children(merges,(q(S,'mergeCell'),))
++            if merges.get('count') is not None and integer(merges.get('count'),0,MAX_ROWS)!=len(merges): refuse('merge_count')
++            occupied=set()
++            for n in merges:
++                attrs(n,('ref',)); area=rect(n.get('ref'),'xlsx',sheet)
++                if len(n) or area[1:3]==area[3:5]: refuse('merge_unsupported')
++                cells={(r,c) for r in range(area[1],area[3]+1) for c in range(area[2],area[4]+1)}
++                if cells & occupied: refuse('merge_overlap')
++                occupied |= cells; records.append(('merge',sheet,area))
++            tree.remove(merges); changed[part]=tree
++        views=tree.find(q(S,'sheetViews'))
++        if views is not None:
++            for view in views:
++                pane=one(view,q(S,'pane'),True)
++                if pane is not None:
++                    attrs(pane,('xSplit','ySplit','topLeftCell','activePane','state'))
++                    if len(pane) or pane.get('state')!='frozen': refuse('pane_unsupported')
++                    cols=integer(pane.get('xSplit','0'),0,MAX_COLS); rows=integer(pane.get('ySplit','0'),0,MAX_ROWS)
++                    if not (rows or cols): refuse('pane_unsupported')
++                    if address(pane.get('topLeftCell',''))!=(rows+1,cols+1): refuse('pane_unsupported')
++                    records.append(('freeze',sheet,(rows,cols))); view.remove(pane)
++                    for selection in view.findall(q(S,'selection')): selection.attrib.pop('pane',None)
++                    changed[part]=tree
++        cols=one(tree,q(S,'cols'),True)
++        if cols is not None:
++            attrs(cols,()); children(cols,(q(S,'col'),)); occupied=set()
++            for col in cols:
++                attrs(col,('min','max','width','customWidth'))
++                first=integer(col.get('min'),1,MAX_COLS); last=integer(col.get('max'),first,MAX_COLS)
++                if len(col) or not boolean(col.get('customWidth')) or set(range(first,last+1)) & occupied: refuse('column_unsupported')
++                occupied.update(range(first,last+1))
++                records.append(('column_width',sheet,(first,last,_xwidth(col.get('width')))))
++                native_geometry.append(('column_width',sheet,first,last,decimal(col.get('width'))))
++            tree.remove(cols); changed[part]=tree
++        af=one(tree,q(S,'autoFilter'),True)
++        if af is not None:
++            records.append(('filter',sheet,_x_filter(af,sheet))); tree.remove(af); changed[part]=tree
++        dvs=one(tree,q(S,'dataValidations'),True)
++        if dvs is not None:
++            attrs(dvs,('count',)); children(dvs,(q(S,'dataValidation'),))
++            if dvs.get('count') is not None and integer(dvs.get('count'),0,128)!=len(dvs): refuse('validation_count')
++            for dv in dvs:
++                attrs(dv,('sqref','showDropDown','showInputMessage','showErrorMessage','allowBlank','error','type','operator'))
++                children(dv,(q(S,'formula1'),q(S,'formula2')))
++                if dv.get('type')!='whole' or dv.get('operator','between')!='between' or boolean(dv.get('showDropDown')) or boolean(dv.get('showInputMessage')): refuse('validation_unsupported')
++                low=number(text(one(dv,q(S,'formula1'))),-1000000,1000000); high=number(text(one(dv,q(S,'formula2'))),-1000000,1000000)
++                if low!=low.to_integral_value() or high!=high.to_integral_value() or low>high: refuse('validation_unsupported')
++                records.append(('validation',sheet,(rect(dv.get('sqref'),'xlsx',sheet),low,high,boolean(dv.get('allowBlank')),boolean(dv.get('showErrorMessage')),dv.get('error',''))))
++            tree.remove(dvs); changed[part]=tree
++        setup=one(tree,q(S,'pageSetup'),True)
++        if setup is not None:
++            attrs(setup,('orientation','paperSize','fitToHeight','fitToWidth'))
++            if len(setup) or setup.get('orientation') not in ('portrait','landscape') or setup.get('paperSize')!='9': refuse('print_setup_unsupported')
++            records.append(('print_setup',sheet,(setup.get('orientation'),'A4',integer(setup.get('fitToHeight','1'),0,100),integer(setup.get('fitToWidth','1'),0,100))))
++            tree.remove(setup); changed[part]=tree
++            sheetpr=tree.find(q(S,'sheetPr'))
++            ps=one(sheetpr,q(S,'pageSetUpPr'),True) if sheetpr is not None else None
++            if ps is not None:
++                attrs(ps,('fitToPage','autoPageBreaks'))
++                if len(ps) or not boolean(ps.get('fitToPage'),True) or boolean(ps.get('autoPageBreaks')): refuse('print_setup_unsupported')
++                ps.attrib.clear()
++        tables=one(tree,q(S,'tableParts'),True)
++        if tables is not None:
++            attrs(tables,('count',)); children(tables,(q(S,'tablePart'),))
++            if tables.get('count') is not None and integer(tables.get('count'),0,32)!=len(tables): refuse('table_count')
++            for table in tables:
++                if set(table.attrib)!={q(R,'id')} or len(table): refuse('table_linkage')
++                tp=book.target(part,table.get(q(R,'id')),'table'); tr=book.root(tp,q(S,'table'))
++                attrs(tr,('id','name','displayName','ref','headerRowCount','totalsRowShown'))
++                children(tr,(q(S,'autoFilter'),q(S,'tableColumns'),q(S,'tableStyleInfo')))
++                if tr.get('name')!=tr.get('displayName') or tr.get('headerRowCount','1')!='1' or boolean(tr.get('totalsRowShown')): refuse('table_unsupported')
++                area=rect(tr.get('ref'),'xlsx',sheet); columns=one(tr,q(S,'tableColumns')); attrs(columns,('count',))
++                if integer(columns.get('count'),1,MAX_COLS)!=len(columns) or len(columns)!=area[4]-area[2]+1: refuse('table_columns')
++                headings=[]
++                for i,column in enumerate(columns,1):
++                    if column.tag!=q(S,'tableColumn') or set(column.attrib)!={'id','name'} or len(column) or column.get('id')!=str(i) or not column.get('name'): refuse('table_columns')
++                    headings.append(column.get('name'))
++                taf=one(tr,q(S,'autoFilter'))
++                if _x_filter(taf,sheet)!=(area,()): refuse('table_filter_unsupported')
++                tsi=one(tr,q(S,'tableStyleInfo')); attrs(tsi,('name','showRowStripes','showColumnStripes','showFirstColumn','showLastColumn'))
++                if len(tsi) or tsi.get('name')!='TableStyleMedium2' or any(boolean(tsi.get(a)) for a in ('showColumnStripes','showFirstColumn','showLastColumn')): refuse('table_style_unsupported')
++                records.append(('table',sheet,(tr.get('name'),area,tuple(headings),boolean(tsi.get('showRowStripes')))))
++                vendor_styles.append((sheet,tr.get('name'),tsi.get('name')))
++                removed.add(tp); rich_edges.add((part,table.get(q(R,'id')),R+'/table',tp))
++            tree.remove(tables); changed[part]=tree
++        drawing=one(tree,q(S,'drawing'),True)
++        if drawing is not None:
++            if set(drawing.attrib)!={q(R,'id')} or len(drawing): refuse('drawing_linkage')
++            dp=book.target(part,drawing.get(q(R,'id')),'drawing')
++            chart,cp=_x_drawing(book,dp,sheet,checks)
++            ext=one(book.xml[dp][0],q(XDR,'ext'))
++            native_geometry.append(('chart_size',sheet,decimal(ext.get('cx')),decimal(ext.get('cy'))))
++            records.append(('chart',sheet,chart)); removed.update((dp,cp)); rich_edges.add((part,drawing.get(q(R,'id')),R+'/drawing',dp))
++            for rid,(kind,target) in book.relationships.get(dp,{}).items():
++                if kind!=R+'/chart' or target!=cp: refuse('drawing_relationship_unsupported')
++                rich_edges.add((dp,rid,kind,target))
++            tree.remove(drawing); changed[part]=tree
++    # Every removed relationship and part has an exact captured owner/type/target.
++    types=book.xml['[Content_Types].xml']; wanted={TABLE_MIME,DRAWING_MIME,CHART_MIME}
++    for n in list(types):
++        if n.tag==q(CT,'Override') and n.get('PartName','')[1:] in removed:
++            if n.get('ContentType') not in wanted: refuse('part_content_type')
++            types.remove(n); changed['[Content_Types].xml']=types
++    for owner,rows in book.relationships.items():
++        if owner in removed:
++            if any((owner,rid,kind,target) not in rich_edges for rid,(kind,target) in rows.items()): refuse('relationship_unsupported')
++        for rid,(kind,target) in rows.items():
++            if target in removed and (owner,rid,kind,target) not in rich_edges: refuse('relationship_unsupported')
++        relpart='_rels/.rels' if owner=='' else owner.rpartition('/')[0]+'/_rels/'+owner.rpartition('/')[2]+'.rels'
++        if owner in removed:
++            removed.add(relpart); continue
++        if relpart in book.xml:
++            rr=book.xml[relpart]
++            for rel in list(rr):
++                if (owner,rel.get('Id'),rel.get('Type'),rows[rel.get('Id')][1]) in rich_edges: rr.remove(rel); changed[relpart]=rr
++            if not len(rr) and relpart in changed: removed.add(relpart)
++    if not records: return data,()
++    from tools.scoped_ods import colname
++    for sheet,part in zip(names,book.sheet_parts.values()):
++        tree=book.xml[part]; dimension=one(tree,q(S,'dimension'),True)
++        if dimension is None: continue
++        if set(dimension.attrib)!={'ref'} or len(dimension): refuse('dimension_unsupported')
++        points=[address(c.get('r')) for c in tree.iter(q(S,'c'))]
++        boundpoints=list(points)
++        for feature,scope,area in records:
++            if feature=='merge' and scope==sheet: boundpoints.extend((area[1:3],area[3:5]))
++        if not boundpoints: boundpoints=[(1,1)]
++        r1=min(p[0] for p in boundpoints);c1=min(p[1] for p in boundpoints);r2=max(p[0] for p in boundpoints);c2=max(p[1] for p in boundpoints)
++        if rect(dimension.get('ref'),'xlsx',sheet)!=(sheet,r1,c1,r2,c2): refuse('dimension_mismatch')
++        if not points: points=[(1,1)]
++        lo=(min(p[0] for p in points),min(p[1] for p in points)); hi=(max(p[0] for p in points),max(p[1] for p in points))
++        raw=colname(lo[1])+str(lo[0])
++        if lo!=hi: raw+=':'+colname(hi[1])+str(hi[0])
++        dimension.set('ref',raw); changed[part]=tree
++    signature=RichSignature(records,checks); signature.source_kind='xlsx'; signature.vendor_styles=tuple(sorted(vendor_styles)); signature.native_geometry=tuple(sorted(native_geometry));signature.sheet_names=tuple(names)
++    _validate_relations(signature,names)
++    return _rewrite(data,changed,removed),signature
++
++
++def _check_area(area,names,scope=None):
++    if (not isinstance(area,tuple) or len(area)!=5 or area[0] not in names
++            or any(type(v) is not int for v in area[1:])
++            or not (1<=area[1]<=area[3]<=MAX_ROWS and 1<=area[2]<=area[4]<=MAX_COLS)
++            or (scope is not None and area[0]!=scope)):
++        refuse('reference_sheet_or_bounds')
++    return area
++
++
++def _validate_relations(signature,names):
++    for feature,scope,payload in signature:
++        if scope and scope not in names: refuse('sheet_missing')
++        if feature=='name':
++            _check_area(payload[1],names,scope or None)
++        elif feature in ('print_area','filter_database','merge'):
++            _check_area(payload,names,scope)
++        elif feature in ('filter','validation'):
++            _check_area(payload[0],names,scope)
++        elif feature=='table':
++            _check_area(payload[1],names,scope)
++        elif feature=='chart':
++            _check_area(payload[5],names)
++            for label,values in payload[6]:
++                _check_area(label,names); _check_area(values,names)
++        if feature=='filter_database':
++            filters=[v[2][0] for v in signature if v[0]=='filter' and v[1]==scope]
++            if payload not in filters: refuse('filter_database_unbound')
++    if len(set(signature))!=len(signature): refuse('duplicate_feature')
++
++
++def declared_losses(source,destination=None,*,source_kind='',target_kind=''):
++    source_kind=source_kind or getattr(source,'source_kind','')
++    target_kind=target_kind or getattr(destination,'source_kind','')
++    losses=[]
++    if source_kind and target_kind and source_kind!=target_kind:
++        if any(row[0]=='table' for row in source): losses.append('vendor_builtin_table_style_identifier')
++        native=destination is not None and getattr(destination,'native_calc_profile',False) is True and (source_kind,target_kind)==('xlsx','ods')
++        if not native and any(row[0] in ('chart','column_width') for row in source): losses.append('physical_geometry_quantized_0.001cm')
++        if destination is not None and _missing_first_row_views(source,destination,source_kind,target_kind):
++            losses.append('frozen_first_row_view_not_serialized_xlsx_to_ods')
++        if native:
++            _,_,extra,_=_native_directed_projection(source,destination)
++            losses.extend(extra)
++    return tuple(losses)
++
++
++def compare_rich(source,destination,*,source_kind='',target_kind=''):
++    source_kind=source_kind or getattr(source,'source_kind','')
++    target_kind=target_kind or getattr(destination,'source_kind','')
++    missing=_missing_first_row_views(source,destination,source_kind,target_kind)
++    if (source_kind,target_kind)==('xlsx','ods') and getattr(destination,'native_calc_profile',False) is True:
++        left,right,_,_=_native_directed_projection(source,destination)
++    else:left,right=tuple(row for row in source if row not in missing),tuple(destination)
++    if left!=right: refuse('semantic_mismatch')
++    if source_kind==target_kind:
++        if getattr(source,'vendor_styles',())!=getattr(destination,'vendor_styles',()): refuse('vendor_style_mismatch')
++        if getattr(source,'native_geometry',())!=getattr(destination,'native_geometry',()): refuse('native_geometry_mismatch')
++    return True
++
++
++def _missing_first_row_views(source,destination,source_kind,target_kind):
++    # A directed declared loss for the observed first-row freeze only. Other
++    # freeze shapes, changed split positions, reverse and same-format remain
++    # exact. This never removes any destination structure from comparison.
++    if (source_kind,target_kind)!=('xlsx','ods') or getattr(destination,'native_calc_profile',False) is not True:return ()
++    return tuple(row for row in source if row[0]=='freeze' and row[2]==(1,0)
++                 and not any(d[0]=='freeze' and d[1]==row[1] for d in destination))
++
++
++def _native_directed_projection(source,destination):
++    left=[];right=[];losses=[];unassessed=[]
++    missing=_missing_first_row_views(source,destination,'xlsx','ods')
++    sw=[r for r in source if r[0]=='column_width'];dw=[r for r in destination if r[0]=='column_width']
++    def coverage(rows):
++        points=[]
++        for _,scope,(first,last,width) in rows:
++            if not 1<=first<=last<=MAX_COLS:refuse('column_unsupported')
++            points.extend((scope,c) for c in range(first,last+1))
++        if len(points)!=len(set(points)):refuse('column_unsupported')
++        return set(points)
++    if coverage(sw)!=coverage(dw):refuse('column_coverage_mismatch')
++    if sw:unassessed.append('column_width_physical_mapping_unassessed')
++    for row in source:
++        feature,scope,payload=row
++        if row in missing or feature=='column_width':continue
++        if feature=='table' and payload[-1] is True:
++            altered=(feature,scope,payload[:-1]+(False,))
++            if altered in destination:
++                losses.append('table_header_background_row_banding_not_serialized_xlsx_to_ods');left.append(altered);continue
++        if feature=='chart':
++            left.append((feature,scope,payload[:-1]));unassessed.append('chart_physical_size_unassessed');continue
++        if feature=='print_setup':
++            left.append((feature,scope,(payload[0],payload[2],payload[3])));unassessed.append('physical_pagination_unassessed');continue
++        left.append(row)
++    for row in destination:
++        feature,scope,payload=row
++        if feature=='native_hidden_mode':
++            if (payload[1] not in ('filter','collapse') or ('hidden_row',scope,payload[0]) not in source):refuse('hidden_row_semantics_mismatch')
++            if payload[1]=='filter':unassessed.append('hidden_row_provenance_and_filter_clear_behavior_unassessed')
++            continue
++        if feature=='column_width':continue
++        if feature=='chart':right.append((feature,scope,payload[:-1]));continue
++        if feature=='print_setup':
++            source_print=[r[2] for r in source if r[:2]==row[:2]]
++            if len(source_print)!=1 or source_print[0][1]!='A4':refuse('print_layout_unsupported')
++            if payload[1]!='A4':
++                if not isinstance(payload[1],tuple) or len(payload[1])!=2 or payload[1][0]!='physical_cm':refuse('print_layout_unsupported')
++                dims=payload[1][1];expected=(Decimal('29.700'),Decimal('21.000')) if source_print[0][0]=='landscape' else (Decimal('21.000'),Decimal('29.700'))
++                if (not isinstance(dims,tuple) or len(dims)!=2 or any(not isinstance(v,Decimal) or not v.is_finite() for v in dims)
++                        or any(abs(actual-want)>Decimal('.001') for actual,want in zip(dims,expected))):refuse('print_layout_unsupported')
++                losses.append('a4_page_dimension_serialization_discrepancy_xlsx_to_ods')
++            right.append((feature,scope,(payload[0],payload[2],payload[3])));continue
++        right.append(row)
++    return tuple(sorted(left,key=repr)),tuple(sorted(right,key=repr)),tuple(dict.fromkeys(losses)),tuple(dict.fromkeys(unassessed))
++
++
++def fidelity_report(source,destination,*,source_kind='',target_kind=''):
++    source_kind=source_kind or getattr(source,'source_kind','');target_kind=target_kind or getattr(destination,'source_kind','')
++    native=(source_kind,target_kind)==('xlsx','ods') and getattr(destination,'native_calc_profile',False) is True
++    unassessed=_native_directed_projection(source,destination)[3] if native else ()
++    names=getattr(source,'sheet_names',())
++    def encoded(v):
++        if isinstance(v,Decimal):return str(v)
++        if isinstance(v,tuple):return [encoded(x) for x in v]
++        return v
++    dimensions=[]
++    for role,sig,kind in (('source',source,source_kind),('destination',destination,target_kind)):
++        order=getattr(sig,'sheet_names',()) or names
++        for item in getattr(sig,'native_geometry',()):
++            feature,scope,*payload=item
++            if scope not in order:refuse('dimension_scope_unsupported')
++            unit=('xlsx_character_width' if feature=='column_width' else 'EMU') if kind=='xlsx' else 'cm_rational'
++            dimensions.append({'side':role,'feature':feature,'sheet_index':order.index(scope)+1,'unit':unit,'data':encoded(tuple(payload))})
++        for feature,scope,payload in sig:
++            if feature!='print_setup':continue
++            if scope not in order:refuse('dimension_scope_unsupported')
++            dimensions.append({'side':role,'feature':'print_setup','sheet_index':order.index(scope)+1,'paper':encoded(payload[1]),'orientation':payload[0],'fit_height':payload[2],'fit_width':payload[3]})
++    return {'declared_losses':list(declared_losses(source,destination,source_kind=source_kind,target_kind=target_kind)),'unassessed':list(unassessed),'dimension_metadata':dimensions}
++
++
++def normalize_source(data,kind,*,checkpoint=None):
++    if kind=='xlsx': return prepare_xlsx(data,checkpoint=checkpoint)
++    if kind=='ods': return prepare_ods(data,checkpoint=checkpoint)
++    refuse('format_unsupported')
++
++
++def _o_filter(node, area):
++    attrs(node,())
++    conditions=[]
++    if len(node)==1 and node[0].tag in (q(TB,'filter-or'),q(TB,'filter-and')):
++        parent=node[0]; attrs(parent,())
++        if parent.tag==q(TB,'filter-and') and len(parent)!=1:refuse('filter_unsupported')
++    else: parent=node
++    children(parent,(q(TB,'filter-condition'),))
++    grouped={}
++    for cond in parent:
++        attrs(cond,tuple(q(TB,n) for n in ('field-number','case-sensitive','data-type','value','operator')))
++        if cond.get(q(TB,'operator'))!='=' or cond.get(q(TB,'data-type'),'text')!='text' or boolean(cond.get(q(TB,'case-sensitive'))): refuse('filter_unsupported')
++        field=integer(cond.get(q(TB,'field-number')),0,area[4]-area[2])
++        value=cond.get(q(TB,'value'))
++        if value is None or len(value.encode())>4096: refuse('filter_unsupported')
++        if len(cond):
++            children(cond,(q(TB,'filter-set-item'),));values=[]
++            for item in cond:
++                attrs(item,(q(TB,'value'),));v=item.get(q(TB,'value'))
++                if len(item) or v is None or len(v.encode())>4096:refuse('filter_unsupported')
++                values.append(v)
++            if not values or value!=values[0]:refuse('filter_unsupported')
++        else:values=[value]
++        grouped.setdefault(field,[]).extend(values)
++    if len(grouped)>1 or any(len(v)!=len(set(v)) for v in grouped.values()): refuse('filter_unsupported')
++    for field,values in grouped.items(): conditions.append((field,tuple(sorted(values)),False))
++    return tuple(sorted(conditions))
++
++
++def _o_text(node):
++    if node is None: return ''
++    attrs(node,tuple(q(SVG,k) for k in ('x','y')))
++    children(node,(q(T,'p'),))
++    ps=node.findall(q(T,'p'))
++    if len(ps)!=1 or ps[0].attrib: refuse('chart_text_unsupported')
++    return text(ps[0])
++
++
++def _od_chart(book, base, frame, scope, checks):
++    root=book.root(base+'/content.xml',q(O,'document-content'))
++    attrs(root,(q(O,'version'),)); children(root,(q(O,'automatic-styles'),q(O,'body')))
++    body=one(root,q(O,'body')); attrs(body,()); children(body,(q(O,'chart'),))
++    chartbody=one(body,q(O,'chart')); attrs(chartbody,()); children(chartbody,(q(C,'chart'),))
++    chart=one(chartbody,q(C,'chart'))
++    attrs(chart,tuple(q(n,k) for n,k in ((C,'class'),(C,'style-name'),(SVG,'width'),(SVG,'height'),(XL,'href'),(XL,'type'))))
++    if chart.get(q(C,'class'))!='chart:bar' or chart.get(q(XL,'href')) not in (None,'..'): refuse('chart_type_unsupported')
++    children(chart,tuple(q(n,k) for n,k in ((C,'title'),(C,'legend'),(C,'plot-area'),(TB,'table'))))
++    plot=one(chart,q(C,'plot-area')); attrs(plot,tuple(q(n,k) for n,k in ((C,'style-name'),(C,'data-source-has-labels'),(TB,'cell-range-address'),(SVG,'x'),(SVG,'y'),(SVG,'width'),(SVG,'height'))))
++    if plot.get(q(C,'data-source-has-labels')) not in ('both','column'): refuse('chart_labels_unsupported')
++    children(plot,tuple(q(C,n) for n in ('axis','series','wall','floor')))
++    auto=one(root,q(O,'automatic-styles'),True)
++    if auto is not None: attrs(auto,()); children(auto,(q(ST,'style'),))
++    style_nodes={n.get(q(ST,'name')):n for n in root.findall('./'+q(O,'automatic-styles')+'/'+q(ST,'style'))}
++    used=set()
++    def props(target):
++        sn=target.get(q(C,'style-name'))
++        if not sn: return {}
++        if sn not in style_nodes: refuse('chart_style_missing')
++        used.add(sn); st=style_nodes[sn]
++        attrs(st,(q(ST,'name'),q(ST,'family')))
++        if st.get(q(ST,'family'))!='chart': refuse('chart_style_unsupported')
++        children(st,(q(ST,'chart-properties'),))
++        cp=one(st,q(ST,'chart-properties'),True)
++        if cp is None: return {}
++        if len(cp): refuse('chart_style_unsupported')
++        attrs(cp,tuple(q(C,n) for n in ('vertical','stacked','percentage','three-dimensional','include-hidden-cells','treat-empty-cells','gap-width','visible','display-label')))
++        return cp.attrib
++    cp=props(plot)
++    if boolean(cp.get(q(C,'vertical'))) or any(boolean(cp.get(q(C,n))) for n in ('stacked','percentage','three-dimensional')) or cp.get(q(C,'treat-empty-cells'),'leave-gap')!='leave-gap' or number(cp.get(q(C,'gap-width'),'150'))!=150: refuse('chart_type_unsupported')
++    visible=not boolean(cp.get(q(C,'include-hidden-cells')))
++    chartprops=props(chart)
++    if chartprops and chartprops!=cp: refuse('chart_style_unsupported')
++    axes=plot.findall(q(C,'axis'))
++    if len(axes)!=2 or {a.get(q(C,'dimension')) for a in axes}!={'x','y'}: refuse('chart_axis_unsupported')
++    category=None; ytitle=''
++    for axis in axes:
++        attrs(axis,tuple(q(C,n) for n in ('dimension','name','style-name')))
++        children(axis,tuple(q(C,n) for n in ('categories','title','grid')))
++        ap=props(axis)
++        if ap: refuse('chart_axis_style_unsupported')
++        cats=one(axis,q(C,'categories'),True)
++        if cats is not None:
++            if axis.get(q(C,'dimension'))!='x' or set(cats.attrib)!={q(TB,'cell-range-address')} or len(cats): refuse('chart_axis_unsupported')
++            category=rect(cats.get(q(TB,'cell-range-address')),'ods')
++        at=one(axis,q(C,'title'),True)
++        if at is not None:
++            if axis.get(q(C,'dimension'))!='y': refuse('chart_axis_unsupported')
++            ytitle=_o_text(at)
++        for grid in axis.findall(q(C,'grid')):
++            if axis.get(q(C,'dimension'))!='y' or grid.attrib!={q(C,'class'):'major'} or len(grid): refuse('chart_axis_unsupported')
++    if category is None: refuse('chart_categories_missing')
++    series=[]
++    for s in plot.findall(q(C,'series')):
++        attrs(s,tuple(q(C,n) for n in ('class','values-cell-range-address','label-cell-address','style-name')))
++        if s.get(q(C,'class'),'chart:bar')!='chart:bar' or len(s) or props(s): refuse('chart_series_unsupported')
++        series.append((rect(s.get(q(C,'label-cell-address')),'ods'),rect(s.get(q(C,'values-cell-range-address')),'ods')))
++    if not 1<=len(series)<=2: refuse('chart_series_unsupported')
++    legend=one(chart,q(C,'legend'),True); legendpos='none'
++    if legend is not None:
++        attrs(legend,tuple(q(n,k) for n,k in ((C,'legend-position'),(C,'style-name'),(SVG,'x'),(SVG,'y'))))
++        if len(legend) or legend.get(q(C,'legend-position'))!='end' or props(legend): refuse('chart_legend_unsupported')
++        legendpos='right'
++    for wall in (n for n in plot if n.tag in (q(C,'wall'),q(C,'floor'))):
++        if wall.attrib or len(wall): refuse('chart_wall_unsupported')
++    if set(style_nodes)!=used: refuse('chart_unused_style_unsupported')
++    cache=one(chart,q(TB,'table'),True)
++    if cache is not None:
++        # Local chart caches are evidence only. Verify against actual source
++        # cells after the scalar evaluator has resolved their formula values.
++        attrs(cache,(q(TB,'name'),)); children(cache,(q(TB,'table-row'),q(TB,'table-column')))
++        rows=[]
++        for column in cache.findall(q(TB,'table-column')):
++            attrs(column,(q(TB,'number-columns-repeated'),))
++            if len(column) or integer(column.get(q(TB,'number-columns-repeated'),'1'),1,3)!=len(series)+1: refuse('chart_cache_unsupported')
++        for row in cache.findall(q(TB,'table-row')):
++            attrs(row,()); children(row,(q(TB,'table-cell'),))
++            values=[]
++            for cell in row:
++                attrs(cell,(q(O,'value-type'),q(O,'value'))); children(cell,(q(T,'p'),))
++                kind=cell.get(q(O,'value-type'))
++                ps=cell.findall(q(T,'p'))
++                if len(ps)!=1 or ps[0].attrib: refuse('chart_cache_unsupported')
++                raw=cell.get(q(O,'value')) if kind=='float' else text(ps[0])
++                if kind not in ('float','string'): refuse('chart_cache_unsupported')
++                values.append((kind,raw))
++            rows.append(values)
++        npoints=(category[3]-category[1]+1)*(category[4]-category[2]+1)
++        if len(rows)!=npoints+1 or any(len(r)!=len(series)+1 for r in rows): refuse('chart_cache_dimensions')
++        checks.append((category,'any',tuple(row[0][1] for row in rows[1:])))
++        for i,(label,values) in enumerate(series,1):
++            checks.append((label,'string',(rows[0][i][1],)))
++            checks.append((values,'number',tuple(row[i][1] for row in rows[1:])))
++    # Cell anchored charts only, not a free-floating object with unrelated data.
++    anchor_raw=frame.get(q(TB,'end-cell-address'))
++    # A frame held directly by a table cell obtains its anchor from caller.
++    anchor=frame.attrib.get('_rich_anchor')
++    if not anchor or anchor[0]!=scope or anchor[1:3]!=anchor[3:5]: refuse('drawing_anchor_unsupported')
++    if anchor_raw: rect(anchor_raw,'ods')
++    if _cm(frame.get(q(SVG,'x'),'0cm'))!=0 or _cm(frame.get(q(SVG,'y'),'0cm'))!=0: refuse('drawing_offset_unsupported')
++    size=(_cm(frame.get(q(SVG,'width'))),_cm(frame.get(q(SVG,'height'))))
++    return ('column',_o_text(one(chart,q(C,'title'),True)),ytitle,legendpos,visible,category,tuple(series),anchor[1:3],size)
++
++
++def _ods_freeze(book, records):
++    """The standard Calc per-table view map is the only admitted freeze source."""
++    root=book.xml.get('settings.xml')
++    if root is None: return False
++    changed=False
++    for tablemap in root.iter(q(CFG,'config-item-map-named')):
++        if tablemap.get(q(CFG,'name'))!='Tables': continue
++        for entry in tablemap:
++            if entry.tag!=q(CFG,'config-item-map-entry'): refuse('settings_unsupported')
++            scope=entry.get(q(CFG,'name'))
++            items={n.get(q(CFG,'name')):n for n in entry if n.tag==q(CFG,'config-item')}
++            if len(items)!=len(entry): refuse('settings_unsupported')
++            modes=[]; positions=[]
++            for axis in ('Horizontal','Vertical'):
++                mode=items.get(axis+'SplitMode'); pos=items.get(axis+'SplitPosition')
++                if mode is None:
++                    modes.append(0); positions.append(0); continue
++                attrs(mode,(q(CFG,'name'),q(CFG,'type')))
++                if mode.get(q(CFG,'type'))!='short' or len(mode): refuse('pane_unsupported')
++                m=integer(text(mode,(q(CFG,'name'),q(CFG,'type'))),0,2)
++                if m not in (0,2): refuse('pane_unsupported')
++                p=integer(text(pos,(q(CFG,'name'),q(CFG,'type'))),0,MAX_ROWS) if pos is not None else 0
++                if bool(m)!=bool(p): refuse('pane_unsupported')
++                modes.append(m); positions.append(p)
++            if any(modes):
++                cols,rows=positions
++                if cols>MAX_COLS: refuse('pane_unsupported')
++                records.append(('freeze',scope,(rows,cols)))
++                for axis in ('Horizontal','Vertical'):
++                    for suffix in ('SplitMode','SplitPosition'):
++                        if axis+suffix in items: items[axis+suffix].text='0'
++                changed=True
++    return changed
++
++
++def prepare_ods(data, *, checkpoint=None):
++    tick(checkpoint)
++    book=Spreadsheet(data,'ods',checkpoint)
++    formula_bindings=_formula_namespace_bindings(book.parts['content.xml'])
++    if book.external: refuse('active_or_external')
++    if 'Object 1/content.xml' in book.parts and 'ObjectReplacements/Object 1' in book.parts:
++        return _prepare_native_calc_rich(data,book,formula_bindings,checkpoint)
++    records=[]; checks=[]; changed={}; removed=set(); captured_links=set(); styles_removed=set(); styles_used=set(); covered=[]; filter_hidden=[]; native_geometry=[]
++    triggers={q(TB,n) for n in ('content-validations','database-ranges')}
++    has_rich=any(n.tag in triggers or n.tag==q(D,'frame') or (n.tag==q(TB,'named-expressions') and len(n)) or any(n.get(q(TB,a)) for a in ('number-rows-spanned','number-columns-spanned','content-validation-name','print-ranges')) or n.get(q(TB,'visibility'))=='collapse' for n in book.body.iter())
++    if not has_rich: return data,()
++    root=book.xml['content.xml']; names=[s.get(q(TB,'name')) for s in book.sheets]
++    original_links=[n for tree in book.xml.values() for n in tree.iter() if n.get(q(XL,'href'))]
++    # Protect all other linked/active constructs, including unvisited chart XML.
++    for part,tree in book.xml.items():
++        for n in tree.iter():
++            uri=n.tag[1:].split('}',1)[0] if n.tag.startswith('{') else ''
++            if ('script' in uri or uri.endswith(':form:1.0') or n.tag.startswith(q(T,'dde-'))
++                    or n.tag in {q(TB,k) for k in ('table-source','cell-range-source','dde-links','dde-link','data-pilot-tables','tracked-changes')}
++                    or n.tag==q(O,'dde-source') or n.get('{http://www.w3.org/XML/1998/namespace}base')) and not (n.tag==q(O,'forms') and _empty_forms(n)): refuse('active_or_external')
++    named=one(book.body,q(TB,'named-expressions'),True)
++    if named is not None and len(named):
++        attrs(named,()); children(named,(q(TB,'named-range'),))
++        for n in named:
++            attrs(n,tuple(q(TB,k) for k in ('name','cell-range-address','base-cell-address','range-usable-as')))
++            name=n.get(q(TB,'name'),''); area=rect(n.get(q(TB,'cell-range-address')),'ods')
++            if len(n) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]{0,63}',name): refuse('name_unsupported')
++            if n.get(q(TB,'range-usable-as')): refuse('name_unsupported')
++            if n.get(q(TB,'base-cell-address')): _check_area(rect(n.get(q(TB,'base-cell-address')),'ods'),names)
++            records.append(('name','',(name,area)))
++        book.body.remove(named); changed['content.xml']=root
++    # Collect rich geometry styles. Every property on a removed style is closed.
++    colstyles={}; colexact={}
++    for part in ('content.xml','styles.xml'):
++        if part not in book.xml: continue
++        for parent in book.xml[part].iter():
++            for style in list(parent):
++                if style.tag!=q(ST,'style') or style.get(q(ST,'family'))!='table-column': continue
++                attrs(style,(q(ST,'name'),q(ST,'family'))); children(style,(q(ST,'table-column-properties'),))
++                prop=one(style,q(ST,'table-column-properties')); attrs(prop,(q(ST,'column-width'),q(ST,'use-optimal-column-width')))
++                if len(prop) or boolean(prop.get(q(ST,'use-optimal-column-width'))): refuse('column_unsupported')
++                name=style.get(q(ST,'name'))
++                if not name or name in colstyles: refuse('column_unsupported')
++                colstyles[name]=_cm(prop.get(q(ST,'column-width'))); colexact[name]=_cm_exact(prop.get(q(ST,'column-width')))
++                parent.remove(style); changed[part]=book.xml[part]; styles_removed.add(name)
++    for sheet in book.sheets:
++        tick(checkpoint)
++        scope=sheet.get(q(TB,'name'))
++        if boolean(sheet.get(q(TB,'protected'))): refuse('protection_unsupported')
++        printareas=sheet.get(q(TB,'print-ranges'))
++        if printareas:
++            records.append(('print_area',scope,rect(printareas,'ods'))); sheet.attrib.pop(q(TB,'print-ranges')); changed['content.xml']=root
++        if sheet.find(q(TB,'named-expressions')) is not None: refuse('local_names_unsupported')
++        col=1
++        for n in sheet.findall(q(TB,'table-column')):
++            width=integer(n.get(q(TB,'number-columns-repeated'),'1'),1,MAX_COLS)
++            sn=n.get(q(TB,'style-name'))
++            if sn in colstyles:
++                attrs(n,(q(TB,'number-columns-repeated'),q(TB,'style-name')))
++                if len(n) or col+width-1>MAX_COLS: refuse('column_unsupported')
++                records.append(('column_width',scope,(col,col+width-1,colstyles[sn]))); styles_used.add(sn)
++                native_geometry.append(('column_width',scope,col,col+width-1,colexact[sn]))
++                n.attrib.pop(q(TB,'style-name')); changed['content.xml']=root
++            col+=width
++        rownum=1
++        for row in book.rows(sheet):
++            repeat=integer(row.get(q(TB,'number-rows-repeated'),'1'),1,MAX_ROWS)
++            visibility=row.get(q(TB,'visibility'),'visible')
++            if visibility not in ('visible','collapse','filter'): refuse('row_visibility_unsupported')
++            if visibility=='collapse':
++                for r in range(rownum,rownum+repeat): records.append(('hidden_row',scope,r))
++                row.attrib.pop(q(TB,'visibility')); changed['content.xml']=root
++            elif visibility=='filter':
++                # Filter-hidden rows are not manually hidden; the actual filter
++                # predicate, not a stale display cache, controls them.
++                filter_hidden.append(scope); row.attrib.pop(q(TB,'visibility')); changed['content.xml']=root
++            colnum=1
++            for cell in row:
++                if cell.tag not in (q(TB,'table-cell'),q(TB,'covered-table-cell')): continue
++                crepeat=integer(cell.get(q(TB,'number-columns-repeated'),'1'),1,MAX_COLS)
++                spanr=integer(cell.get(q(TB,'number-rows-spanned'),'1'),1,MAX_ROWS)
++                spanc=integer(cell.get(q(TB,'number-columns-spanned'),'1'),1,MAX_COLS)
++                if spanr>1 or spanc>1:
++                    if repeat!=1 or crepeat!=1: refuse('merge_unsupported')
++                    area=(scope,rownum,colnum,rownum+spanr-1,colnum+spanc-1)
++                    rect(_render_rect(area),'ods')
++                    records.append(('merge',scope,area)); cell.attrib.pop(q(TB,'number-rows-spanned'),None); cell.attrib.pop(q(TB,'number-columns-spanned'),None); changed['content.xml']=root
++                if cell.tag==q(TB,'covered-table-cell'):
++                    if len(cell) or set(cell.attrib)-{q(TB,'number-columns-repeated')}: refuse('covered_cell_unsupported')
++                    covered.extend((scope,rr,cc) for rr in range(rownum,rownum+repeat) for cc in range(colnum,colnum+crepeat))
++                    cell.tag=q(TB,'table-cell'); changed['content.xml']=root
++                for frame in cell.findall(q(D,'frame')):
++                    if repeat!=1 or crepeat!=1: refuse('drawing_anchor_unsupported')
++                    frame.attrib['_rich_anchor']=(scope,rownum,colnum,rownum,colnum)
++                colnum+=crepeat
++            rownum+=repeat
++        frames=[]
++        for parent in sheet.iter():
++            for frame in list(parent):
++                if frame.tag!=q(D,'frame'): continue
++                attrs(frame,tuple(q(n,k) for n,k in ((D,'name'),(D,'style-name'),(SVG,'x'),(SVG,'y'),(SVG,'width'),(SVG,'height'),(TB,'end-cell-address'),(TB,'end-x'),(TB,'end-y')))+('_rich_anchor',))
++                if frame.get(q(D,'style-name')): refuse('drawing_style_unsupported')
++                if len(frame)!=1 or frame[0].tag!=q(D,'object'): refuse('drawing_object_unsupported')
++                obj=frame[0]; attrs(obj,tuple(q(XL,k) for k in ('href','type','show','actuate')))
++                href=obj.get(q(XL,'href'),''); base=href[2:] if href.startswith('./') else href
++                if len(obj) or obj.get(q(XL,'type'),'simple')!='simple' or obj.get(q(XL,'show'),'embed')!='embed' or obj.get(q(XL,'actuate'),'onLoad')!='onLoad' or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_ /-]{0,127}',base) or '..' in base.split('/'): refuse('drawing_object_unsupported')
++                if base+'/content.xml' not in book.parts: refuse('chart_content_missing')
++                records.append(('chart',scope,_od_chart(book,base,frame,scope,checks)))
++                native_geometry.append(('chart_size',scope,_cm_exact(frame.get(q(SVG,'width'))),_cm_exact(frame.get(q(SVG,'height')))))
++                captured_links.add(id(obj))
++                chartroot=book.xml[base+'/content.xml']
++                for cn in chartroot.iter(q(C,'chart')):
++                    if cn.get(q(XL,'href'))=='..': captured_links.add(id(cn))
++                parent.remove(frame); changed['content.xml']=root
++                removed.add(base+'/content.xml')
++                # Only content.xml is allowed in this finite embedded object.
++                if any(p.startswith(base+'/') and p!=base+'/content.xml' for p in book.parts): refuse('chart_object_parts_unsupported')
++                frames.append(base)
++        shapes=sheet.find(q(TB,'shapes'))
++        if shapes is not None and not len(shapes) and not shapes.attrib: sheet.remove(shapes)
++    dbs=one(book.body,q(TB,'database-ranges'),True)
++    if dbs is not None:
++        attrs(dbs,()); children(dbs,(q(TB,'database-range'),))
++        for db in dbs:
++            attrs(db,tuple(q(TB,n) for n in ('name','target-range-address','contains-header','display-filter-buttons','orientation')))
++            area=rect(db.get(q(TB,'target-range-address')),'ods'); scope=area[0]; name=db.get(q(TB,'name'),'')
++            if not boolean(db.get(q(TB,'contains-header')),True) or not boolean(db.get(q(TB,'display-filter-buttons'))) or db.get(q(TB,'orientation'),'row')!='row': refuse('database_range_unsupported')
++            children(db,(q(TB,'filter'),))
++            filt=one(db,q(TB,'filter'),True); conditions=_o_filter(filt,area) if filt is not None else ()
++            if name.startswith('_xlnm._FilterDatabase') or name.startswith('_FilterDatabase') or name=='__Anonymous_Sheet_DB__'+str(names.index(scope)):
++                records.append(('filter_database',scope,area)); records.append(('filter',scope,(area,conditions)))
++            else:
++                if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]{0,63}',name) or conditions: refuse('table_database_range_unsupported')
++                # ODS database ranges retain the named table's semantics. Header
++                # strings are checked against the actual cell inventory below.
++                headings=_ods_headers(book,scope,area)
++                # Header/stripe appearance is encoded by explicit ODF styles;
++                # this finite mapping requires the named table's row-band flag.
++                stripe=_ods_table_banding(book,scope,changed)
++                records.append(('table',scope,(name,area,headings,stripe)))
++        book.body.remove(dbs); changed['content.xml']=root
++    validations=one(book.body,q(TB,'content-validations'),True)
++    if validations is not None:
++        attrs(validations,()); children(validations,(q(TB,'content-validation'),))
++        definitions={}
++        for dv in validations:
++            attrs(dv,tuple(q(TB,n) for n in ('name','condition','allow-empty-cell','base-cell-address','display-list')))
++            name=dv.get(q(TB,'name'))
++            if not name or name in definitions: refuse('validation_unsupported')
++            condition=dv.get(q(TB,'condition'),'')
++            match=re.fullmatch(r'of:cell-content-is-whole-number\(\) and cell-content-is-between\((-?[0-9]+);(-?[0-9]+)\)',condition)
++            if not match: refuse('validation_unsupported')
++            low,high=(number(v,-1000000,1000000) for v in match.groups())
++            if low>high: refuse('validation_unsupported')
++            if dv.get(q(TB,'base-cell-address')): _check_area(rect(dv.get(q(TB,'base-cell-address')),'ods'),names)
++            if dv.get(q(TB,'display-list'),'no')!='no': refuse('validation_unsupported')
++            children(dv,(q(TB,'error-message'),))
++            err=one(dv,q(TB,'error-message'),True); message=''; show=False
++            if err is not None:
++                attrs(err,(q(TB,'display'),q(TB,'message-type'),q(TB,'title')))
++                if err.get(q(TB,'message-type'),'stop')!='stop' or err.get(q(TB,'title'),''): refuse('validation_unsupported')
++                show=boolean(err.get(q(TB,'display')),True); children(err,(q(T,'p'),))
++                p=one(err,q(T,'p')); attrs(p,()); message=text(p)
++            definitions[name]=(low,high,boolean(dv.get(q(TB,'allow-empty-cell'))),show,message)
++        used={name:[] for name in definitions}
++        for sheet in book.sheets:
++            scope=sheet.get(q(TB,'name'))
++            for r,c,h,w,cell,row in book.cells(sheet):
++                name=cell.get(q(TB,'content-validation-name'))
++                if name:
++                    if name not in definitions: refuse('validation_name_missing')
++                    used[name].extend((scope,rr,cc) for rr in range(r,r+h) for cc in range(c,c+w)); cell.attrib.pop(q(TB,'content-validation-name')); changed['content.xml']=root
++        for name,points in used.items():
++            if not points or len({p[0] for p in points})!=1: refuse('validation_binding_unsupported')
++            scope=points[0][0]; r1=min(p[1] for p in points);r2=max(p[1] for p in points);c1=min(p[2] for p in points);c2=max(p[2] for p in points)
++            if len(set(points))!=(r2-r1+1)*(c2-c1+1): refuse('validation_binding_unsupported')
++            records.append(('validation',scope,((scope,r1,c1,r2,c2),)+definitions[name]))
++        book.body.remove(validations); changed['content.xml']=root
++    if styles_removed!=styles_used: refuse('unused_geometry_style_unsupported')
++    mergecover={(scope,r,c) for feature,scope,area in records if feature=='merge' for r in range(area[1],area[3]+1) for c in range(area[2],area[4]+1) if (r,c)!=(area[1],area[2])}
++    if set(covered)!=mergecover or len(covered)!=len(set(covered)): refuse('merge_coverage_mismatch')
++    if any(not any(f=='filter' and s==scope and bool(p[1]) for f,s,p in records) for scope in filter_hidden): refuse('unbound_filter_hidden_rows')
++    _ods_print_setup(book,records,changed)
++    if _ods_freeze(book,records): changed['settings.xml']=book.xml['settings.xml']
++    # Audit the ORIGINAL link list, including descendants later projected out.
++    if any(id(n) not in captured_links for n in original_links): refuse('external_or_unmodelled_link')
++    # Reject every link that was not precisely consumed as a native chart edge.
++    for part,tree in book.xml.items():
++        for n in tree.iter():
++            if n.get(q(XL,'href')) and id(n) not in captured_links: refuse('external_or_unmodelled_link')
++            if n.tag.startswith(q(TB,'database-')) and n.tag not in (q(TB,'database-ranges'),q(TB,'database-range')): refuse('database_feature_unsupported')
++    if removed:
++        manifest=book.xml['META-INF/manifest.xml']
++        for n in list(manifest):
++            p=n.get(q(M,'full-path'),'')
++            if p in removed or (p.endswith('/') and p[:-1]+'/content.xml' in removed):
++                wanted='text/xml' if p.endswith('content.xml') else OD_CHART_MIME
++                if n.get(q(M,'media-type'))!=wanted or set(n.attrib)!={q(M,'full-path'),q(M,'media-type')}: refuse('chart_manifest_unsupported')
++                manifest.remove(n)
++        changed['META-INF/manifest.xml']=manifest
++    if not records:
++        if changed or removed: refuse('unrepresented_projection')
++        return data,()
++    signature=RichSignature(records,checks); signature.source_kind='ods'; signature.vendor_styles=(); signature.native_geometry=tuple(sorted(native_geometry))
++    _validate_relations(signature,names)
++    return _rewrite(data,changed,removed,{'content.xml':formula_bindings}),signature
++
++
++def _native_chart_digest(root):
++    # Complete closed chart scaffold. Only separately captured content, source
++    # references, and independently checked cache values are variable. Unknown
++    # attributes, children, styles and passive properties change this digest.
++    chart=one(one(one(root,q(O,'body')),q(O,'chart')),q(C,'chart'));plot=one(chart,q(C,'plot-area'));cache=one(chart,q(TB,'table'))
++    headers=one(one(cache,q(TB,'table-header-rows')),q(TB,'table-row')).findall(q(TB,'table-cell'));rows=one(cache,q(TB,'table-rows')).findall(q(TB,'table-row'))
++    if len(headers)!=2:refuse('chart_cache_dimensions')
++    variable_text=set();variable_attrs={}
++    for title in chart.iter(q(C,'title')):
++        for p in title.findall(q(T,'p')):variable_text.update(id(n) for n in p.iter())
++    for cell in [headers[1]]+[cell for row in rows for cell in row.findall(q(TB,'table-cell'))]:
++        variable_text.update(id(n) for p in cell.findall(q(T,'p')) for n in p.iter())
++        variable_text.update(id(n) for n in cell.iter(q(SVG,'desc')))
++    for row in rows:
++        cells=row.findall(q(TB,'table-cell'))
++        if len(cells)!=2:refuse('chart_cache_dimensions')
++        variable_attrs[id(cells[1])]={q(O,'value')}
++    for s in plot.findall(q(C,'series')):variable_attrs[id(s)]={q(C,'values-cell-range-address'),q(C,'label-cell-address')}
++    for cats in plot.iter(q(C,'categories')):variable_attrs[id(cats)]={q(TB,'cell-range-address')}
++    def tree(n):
++        attrs_=[(k,v) for k,v in sorted(n.attrib.items()) if k not in variable_attrs.get(id(n),())]
++        text_='@text@' if id(n) in variable_text else n.text or ''
++        return n.tag,attrs_,text_,n.tail or '',[tree(c) for c in n]
++    return hashlib.sha256(json.dumps(tree(root),ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
++
++
++_NATIVE_CALC_CHART_SHAPE='610bb712a66487a72fa69646e9c6b73d0e5c8d24507b7f66e44559c12043838a'
++_NATIVE_CALC_CHART_AUX={
++    'Object 1/styles.xml':'060fb26caa8f953e6a2b02ffdd9d91fd5276ed1bac8e2e0fcbeaa8b373d91594',
++    'Object 1/meta.xml':'aa2303f5926fdb855b4816d7a82a8764b11bdc7e348388a539e50dc02434985c',
++}
++_NATIVE_CALC_FRAME_SHAPE='dd5312fda6d97d0c9da3f3163524984e236a95365e871a57af82f6cb1052f481'
++
++
++def _native_frame_digest(frame):
++    captured={q(D,'name'),q(D,'notify-on-update-of-ranges')}|{q(SVG,k) for k in ('x','y','width','height')}
++    def tree(n):
++        return n.tag,[(k,v) for k,v in sorted(n.attrib.items()) if k not in captured],n.text or '',n.tail or '',[tree(c) for c in n]
++    return hashlib.sha256(json.dumps(tree(frame),ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
++
++
++def _native_reference_list(raw):
++    if not isinstance(raw,str) or len(raw.encode())>8192:refuse('chart_update_reference_unsupported')
++    tokens=[];buf='';quoted=False;i=0
++    while i<len(raw):
++        c=raw[i]
++        if c=="'":
++            if quoted and i+1<len(raw) and raw[i+1]=="'":buf+="''";i+=2;continue
++            quoted=not quoted
++        if c.isspace() and not quoted:
++            if buf:tokens.append(buf);buf=''
++        else:buf+=c
++        i+=1
++    if buf:tokens.append(buf)
++    if quoted or not 1<=len(tokens)<=6:refuse('chart_update_reference_unsupported')
++    return tuple(rect(t,'ods') for t in tokens)
++
++
++def _native_chart_namespaces(raw):
++    bindings={};frames=[];pending=[]
++    for event,n in ET.iterparse(BytesIO(raw),events=('start-ns','start','end')):
++        if event=='start-ns':pending.append(n)
++        elif event=='start':
++            frames.append(bindings);bindings=dict(bindings);bindings.update(pending);pending=[]
++            value=n.get(q(C,'class'),'')
++            if ':' in value:
++                prefix,local=value.split(':',1)
++                if not prefix or not local or bindings.get(prefix)!=C:refuse('chart_namespace_unsupported')
++        else:bindings=frames.pop()
++
++
++def _native_svm_preview(data):
++    # Bounded passive SVM container, never executed. Only the observed native
++    # vector/text/font/state record classes and closed comment schemas exist;
++    # bitmap, foreign, unknown and executable/reference action classes refuse.
++    import struct
++    if not isinstance(data,bytes) or not 61<=len(data)<=1000000 or data[:6]!=b'VCLMTF':refuse('native_chart_preview_unsupported')
++    if struct.unpack_from('<HI',data,6)!=(1,49) or struct.unpack_from('<IHI',data,12)!=(0,1,27):refuse('native_chart_preview_header_unsupported')
++    unit,ox,oy,xnum,xden,ynum,yden,simple=struct.unpack_from('<HiiiiiiB',data,22)
++    if unit!=0 or (ox,oy)!=(0,0) or (xnum,xden,ynum,yden)!=(1,1,1,1) or simple!=0:refuse('native_chart_preview_map_mode_unsupported')
++    canvas=struct.unpack_from('<ii',data,49)
++    if any(not 1<=v<=1000000 for v in canvas):refuse('native_chart_preview_canvas_unsupported')
++    count=int.from_bytes(data[57:61],'little')
++    if not 1<=count<=10000:refuse('native_chart_preview_record_limit')
++    fixed={139:(1,{2}),129:(1,{16}),130:(1,{33}),149:(1,{4}),150:(1,{2}),133:(1,{5}),132:(1,{5}),140:(1,{0}),136:(1,{2}),135:(1,{5}),134:(1,{4})}
++    comments={b'XPATHSTROKE_SEQ_BEGIN',b'XPATHSTROKE_SEQ_END',b'XTEXT_PAINTSHAPE_BEGIN',b'XTEXT_PAINTSHAPE_END',b'XTEXT_EOC',b'XTEXT_EOL',b'XTEXT_EOP',b'XTEXT_EOW'}
++    pos=61;paint_depth=0;stroke_depth=0;state_depth=0
++    for _ in range(count):
++        if pos+8>len(data):refuse('native_chart_preview_truncated')
++        kind,version,size=struct.unpack_from('<HHI',data,pos);pos+=8
++        if size>65536 or pos+size>len(data):refuse('native_chart_preview_payload_bounds')
++        p=data[pos:pos+size];pos+=size
++        if kind in fixed:
++            if version!=fixed[kind][0] or size not in fixed[kind][1]:refuse('native_chart_preview_action_unsupported')
++            if kind==130:
++                if (p[:12]!=b'\x02\x00\x1b\x00\x00\x00\x02\x00\x02\x00\x00\x00' or p[20:22]!=b'\x01\x00' or p[30:]!=b'\x02\x00\x00'
++                        or struct.unpack_from('<ii',p,12)!=(0,canvas[1]-1) or struct.unpack_from('<ii',p,22)!=(0,canvas[0]-1)):refuse('native_chart_preview_clip_unsupported')
++            elif kind==129:
++                left,top,right,bottom=struct.unpack('<iiii',p)
++                if not -1000000<=left<=right<=1000000 or not -1000000<=top<=bottom<=1000000:refuse('native_chart_preview_clip_unsupported')
++            elif kind in (132,133,135):
++                if p[-1] not in (0,1):refuse('native_chart_preview_boolean_unsupported')
++            elif kind==136 and int.from_bytes(p,'little')!=1:refuse('native_chart_preview_enum_unsupported')
++            elif kind==149 and int.from_bytes(p,'little')!=0:refuse('native_chart_preview_enum_unsupported')
++            elif kind==150 and int.from_bytes(p,'little')!=9:refuse('native_chart_preview_enum_unsupported')
++            elif kind==139:
++                if int.from_bytes(p,'little') not in (3,32,65535) or state_depth>=128:refuse('native_chart_preview_state_unsupported')
++                state_depth+=1
++            elif kind==140:
++                if state_depth==0:refuse('native_chart_preview_state_unsupported')
++                state_depth-=1
++        elif kind==109:
++            points=int.from_bytes(p[:2],'little')
++            if version!=3 or not 2<=points<=128 or len(p)!=2+8*points+65:refuse('native_chart_preview_vector_unsupported')
++            # The variable point array is separate from this closed passive
++            # LineInfo default state (no text or point coordinates in the pin).
++            if hashlib.sha256(p[2+8*points:]).hexdigest()!='799aa16ba56209c5212f38957f3694fd61b23dd38cd484660171e9094d3759dc':refuse('native_chart_preview_vector_state_unsupported')
++        elif kind==111:
++            points=int.from_bytes(p[2:4],'little')
++            if version!=2 or p[:2]!=b'\x01\x00' or not 3<=points<=128 or len(p)!=6+8*points or p[-2:]!=b'\x00\x00':refuse('native_chart_preview_vector_unsupported')
++        elif kind==138:
++            if version!=1 or len(p)<10 or struct.unpack_from('<HI',p)!=(5,len(p)-6):refuse('native_chart_preview_font_unsupported')
++            n=int.from_bytes(p[6:8],'little');end=8+n
++            if not 1<=n<=128 or end+2>len(p):refuse('native_chart_preview_font_unsupported')
++            name=p[8:end];style_n=int.from_bytes(p[end:end+2],'little');style=p[end+2:end+2+style_n]
++            if style_n>128 or end+2+style_n+46!=len(p) or any(a<32 or a>126 for a in name+style):refuse('native_chart_preview_font_unsupported')
++            # Closed native font metric/enum defaults, after the parsed name
++            # strings. These three state blocks correspond to the chart's
++            # separately guarded passive text styles, not document contents.
++            if hashlib.sha256(p[end+2+style_n:]).hexdigest() not in {'e610efa14128a6b84b5266143f74ee98ea92d10646c969bc647e48effb620b0f','3c3847c847eb14fd40b1b3d0f3266affda691e025377cdbc0b819de64abcaabe','ba1563ba254a39dbda9cfc1cd5d81f4b3305bce99e2ad41f0d0c013d1e6b346c'}:refuse('native_chart_preview_font_state_unsupported')
++        elif kind==113:
++            if version!=4 or len(p)<27:refuse('native_chart_preview_text_unsupported')
++            n=int.from_bytes(p[8:12],'little');end=12+2*n
++            if not 1<=n<=2048 or len(p)!=8*n+27:refuse('native_chart_preview_text_unsupported')
++            try:value=p[12:end].decode('utf-16le')
++            except UnicodeError:refuse('native_chart_preview_text_unsupported')
++            if any(ord(c)<32 or 0xD800<=ord(c)<=0xDFFF for c in value):refuse('native_chart_preview_text_unsupported')
++            if struct.unpack_from('<HHI',p,end)!=(0,n,n):refuse('native_chart_preview_text_unsupported')
++            tail=p[end+8+4*n:]
++            if int.from_bytes(tail[:2],'little')!=n or tail[2:2+2*n]!=p[12:end] or tail[2+2*n:]!=b'\x00'*5:refuse('native_chart_preview_text_unsupported')
++        elif kind==512:
++            n=int.from_bytes(p[:2],'little');name=p[2:2+n];rest=p[2+n:]
++            if version!=1 or name not in comments or len(rest)<8:refuse('native_chart_preview_comment_unsupported')
++            value,payload=struct.unpack_from('<II',rest);blob=rest[8:]
++            if payload!=len(blob) or payload>4096:refuse('native_chart_preview_comment_unsupported')
++            if name==b'XPATHSTROKE_SEQ_BEGIN':
++                if value!=0 or len(blob)<6 or struct.unpack_from('<HI',blob)!=(1,len(blob)-6) or stroke_depth:refuse('native_chart_preview_comment_unsupported')
++                stroke_depth=1
++            else:
++                if blob or name!=b'XTEXT_EOC' and name!=b'XTEXT_EOW' and value!=0 or value>2048:refuse('native_chart_preview_comment_unsupported')
++                if name==b'XPATHSTROKE_SEQ_END':
++                    if not stroke_depth:refuse('native_chart_preview_comment_unsupported')
++                    stroke_depth=0
++                elif name==b'XTEXT_PAINTSHAPE_BEGIN':
++                    if paint_depth:refuse('native_chart_preview_comment_unsupported')
++                    paint_depth=1
++                elif name==b'XTEXT_PAINTSHAPE_END':
++                    if not paint_depth:refuse('native_chart_preview_comment_unsupported')
++                    paint_depth=0
++                elif not paint_depth:refuse('native_chart_preview_comment_unsupported')
++        else:refuse('native_chart_preview_action_unsupported')
++    if pos!=len(data) or paint_depth or stroke_depth or state_depth:refuse('native_chart_preview_trailing_or_unbalanced')
++    return canvas
++
++
++def _native_chart_text(node):
++    if node is None:return ''
++    ps=node.findall(q(T,'p'))
++    if len(ps)!=1:refuse('chart_text_unsupported')
++    value=''.join(ps[0].itertext())
++    if len(value.encode())>4096:refuse('text_unsupported')
++    return value
++
++
++def _native_calc_chart(book,frame,scope,anchor,hidden,checks):
++    _native_chart_namespaces(book.parts['Object 1/content.xml'])
++    root=book.root('Object 1/content.xml',q(O,'document-content'))
++    if _native_chart_digest(root)!=_NATIVE_CALC_CHART_SHAPE:refuse('native_chart_scaffolding_unsupported')
++    for part,digest in _NATIVE_CALC_CHART_AUX.items():
++        if hashlib.sha256(book.parts.get(part,b'')).hexdigest()!=digest:refuse('native_chart_auxiliary_unsupported')
++    preview_size=_native_svm_preview(book.parts.get('ObjectReplacements/Object 1',b''))
++    chart=one(one(one(root,q(O,'body')),q(O,'chart')),q(C,'chart'))
++    plot=one(chart,q(C,'plot-area'))
++    styles={n.get(q(ST,'name')):n for n in one(root,q(O,'automatic-styles')) if n.tag==q(ST,'style')}
++    props=one(styles[plot.get(q(C,'style-name'))],q(ST,'chart-properties'))
++    visible=not boolean(props.get(q(C,'include-hidden-cells')))
++    axes=plot.findall(q(C,'axis'));category=None;ytitle=''
++    for axis in axes:
++        if axis.get(q(C,'dimension'))=='x':category=rect(one(axis,q(C,'categories')).get(q(TB,'cell-range-address')),'ods')
++        elif axis.get(q(C,'dimension'))=='y':ytitle=_native_chart_text(one(axis,q(C,'title'),True))
++    if category is None:refuse('chart_categories_missing')
++    series=tuple((rect(s.get(q(C,'label-cell-address')),'ods'),rect(s.get(q(C,'values-cell-range-address')),'ods')) for s in plot.findall(q(C,'series')))
++    if len(series)!=1:refuse('chart_series_unsupported')
++    obj=one(frame,q(D,'object'));notify=_native_reference_list(obj.get(q(D,'notify-on-update-of-ranges')))
++    if set(notify)!={category,series[0][0],series[0][1]} or len(notify)!=3:refuse('chart_update_reference_mismatch')
++    # Native cache contains the visible data subset. Bind every cached item to
++    # its actual source coordinate, then the scalar evaluator checks its value.
++    cache=one(chart,q(TB,'table'));headers=one(one(cache,q(TB,'table-header-rows')),q(TB,'table-row')).findall(q(TB,'table-cell'))
++    rows=one(cache,q(TB,'table-rows')).findall(q(TB,'table-row'))
++    if len(headers)!=2:refuse('chart_cache_dimensions')
++    label,values=series[0]
++    if category[2]!=category[4] or values[2]!=values[4] or category[3]-category[1]!=values[3]-values[1]:refuse('chart_series_dimensions')
++    source_rows=[r for r in range(category[1],category[3]+1) if not visible or (category[0],r) not in hidden]
++    if len(rows)!=len(source_rows):refuse('chart_cache_dimensions')
++    checks.append((label,'string',(_native_chart_text(headers[1]),)))
++    descs=[n for n in cache.iter(q(SVG,'desc'))]
++    if len(descs)!=3 or tuple(rect(n.text or '','ods') for n in descs)!=(label,category,values):refuse('chart_cache_reference_mismatch')
++    for offset,row in zip(source_rows,rows):
++        cells=row.findall(q(TB,'table-cell'))
++        if len(cells)!=2:refuse('chart_cache_dimensions')
++        if cells[0].get(q(O,'value-type'))!='string' or cells[1].get(q(O,'value-type'))!='float':refuse('chart_cache_unsupported')
++        if decimal(_native_chart_text(cells[1]))!=decimal(cells[1].get(q(O,'value'))):refuse('chart_cache_mismatch')
++        vr=values[1]+offset-category[1]
++        checks.append(((category[0],offset,category[2],offset,category[2]),'any',(_native_chart_text(cells[0]),)))
++        checks.append(((values[0],vr,values[2],vr,values[2]),'number',(cells[1].get(q(O,'value')),)))
++    if _cm(frame.get(q(SVG,'x'),'0cm'))!=0 or _cm(frame.get(q(SVG,'y'),'0cm'))!=0:refuse('drawing_offset_unsupported')
++    legend=one(chart,q(C,'legend'),True);legendpos='right' if legend is not None else 'none'
++    size=(_cm(frame.get(q(SVG,'width'))),_cm(frame.get(q(SVG,'height'))))
++    if any(v<=0 for v in size):refuse('chart_size_unsupported')
++    if tuple(Decimal(v-1)/1000 for v in preview_size)!=size:refuse('native_chart_preview_canvas_mismatch')
++    return ('column',_native_chart_text(one(chart,q(C,'title'),True)),ytitle,legendpos,visible,category,series,anchor,size)
++
++
++def _native_original_xml_guard(parts,checkpoint=None):
++    # ElementTree omits comments and processing instructions. Inspect every
++    # ORIGINAL native XML resource before rich projection can remove it. The
++    # parser has no resolver; all DTD/entity declarations and references refuse.
++    from xml.parsers import expat
++    addressed=[raw for name,raw in parts.items() if name.endswith('.xml') or name=='manifest.rdf']
++    if (any(not isinstance(raw,bytes) or len(raw)>MAX_XML for raw in addressed)
++            or sum(len(raw) for raw in addressed)>MAX_XML_TOTAL):refuse('native_original_xml_limit')
++    def unsupported(*args):refuse('native_original_xml_unsupported')
++    for raw in addressed:
++        tick(checkpoint);depth=0;nodes=0
++        parser=expat.ParserCreate(encoding='UTF-8')
++        parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
++        parser.CommentHandler=unsupported
++        parser.ProcessingInstructionHandler=unsupported
++        parser.StartDoctypeDeclHandler=unsupported
++        parser.EntityDeclHandler=unsupported
++        parser.ExternalEntityRefHandler=unsupported
++        parser.SkippedEntityHandler=unsupported
++        def start(name,attributes):
++            nonlocal depth,nodes
++            depth+=1;nodes+=1
++            if depth>64 or nodes>50000 or len(attributes)>64:refuse('native_original_xml_limit')
++            if nodes%256==0:tick(checkpoint)
++        def end(name):
++            nonlocal depth
++            depth-=1
++        parser.StartElementHandler=start;parser.EndElementHandler=end
++        try:parser.Parse(raw,True)
++        except expat.ExpatError:refuse('native_original_xml_unsupported')
++
++
++def _prepare_native_calc_rich(data,book,formula_bindings,checkpoint):
++    # The genuine retained Calc chart has an explicit finite native scaffold.
++    # Cell/row/column/page styles stay intact for the independent scalar native
++    # profile to validate in full. Only fully captured rich structures vanish.
++    _native_original_xml_guard(book.parts,checkpoint)
++    root=book.xml['content.xml'];records=[];checks=[];changed={};removed=set();links=set();covered=[];hidden=set();geometry=[]
++    names=[s.get(q(TB,'name')) for s in book.sheets]
++    def structural_text(n):
++        if n.tag!=q(T,'p') and (n.text or '').strip():refuse('native_rich_structural_text_unsupported')
++        if (n.tail or '').strip():refuse('native_rich_structural_text_unsupported')
++        for child in n:structural_text(child)
++    structural_text(root)
++    if len(names)!=3:refuse('native_rich_sheet_count_unsupported')
++    expected_parts={'Object 1/content.xml','Object 1/styles.xml','Object 1/meta.xml','ObjectReplacements/Object 1'}
++    if {p for p in book.parts if p.startswith(('Object 1/','ObjectReplacements/'))}!=expected_parts:refuse('chart_object_parts_unsupported')
++    for tree in book.xml.values():
++        for n in tree.iter():
++            uri=n.tag[1:].split('}',1)[0] if n.tag.startswith('{') else ''
++            if ('script' in uri or uri.endswith(':form:1.0') or n.tag.startswith(q(T,'dde-')) or n.tag in {q(TB,k) for k in ('table-source','cell-range-source','dde-links','dde-link','data-pilot-tables','tracked-changes')} or n.tag==q(O,'dde-source') or n.get('{http://www.w3.org/XML/1998/namespace}base')) and not (n.tag==q(O,'forms') and _empty_forms(n)):refuse('active_or_external')
++    def capture_names(parent,scope=''):
++        group=one(parent,q(TB,'named-expressions'),True)
++        if group is None:return
++        attrs(group,());children(group,(q(TB,'named-range'),))
++        seen=set()
++        for n in group:
++            attrs(n,tuple(q(TB,k) for k in ('name','cell-range-address','base-cell-address','range-usable-as')))
++            name=n.get(q(TB,'name'),'');area=rect(n.get(q(TB,'cell-range-address')),'ods')
++            if len(n) or name in seen:refuse('name_unsupported')
++            seen.add(name)
++            if n.get(q(TB,'base-cell-address')):_check_area(rect(n.get(q(TB,'base-cell-address')),'ods'),names)
++            if name=='_xlnm.Print_Area':
++                if not scope or area[0]!=scope or n.get(q(TB,'range-usable-as'))!='print-range':refuse('print_area_unsupported')
++                if not any(f=='print_area' and s==scope and p==area for f,s,p in records):refuse('print_area_unsupported')
++            else:
++                if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]{0,63}',name) or n.get(q(TB,'range-usable-as')):refuse('name_unsupported')
++                records.append(('name',scope,(name,area)))
++        parent.remove(group);changed['content.xml']=root
++    # Global names precede per-sheet names; print builtins are independently
++    # bound to the actual table print-ranges rather than treated as new names.
++    capture_names(book.body)
++    colstyles={n.get(q(ST,'name')):n for tree in book.xml.values() for n in tree.iter(q(ST,'style')) if n.get(q(ST,'family'))=='table-column'}
++    allstyles={n.get(q(ST,'name')):n for tree in book.xml.values() for n in tree.iter(q(ST,'style')) if n.get(q(ST,'family'))=='table'}
++    masters={n.get(q(ST,'name')):n for tree in book.xml.values() for n in tree.iter(q(ST,'master-page'))};layouts={n.get(q(ST,'name')):n for tree in book.xml.values() for n in tree.iter(q(ST,'page-layout'))}
++    for sheet in book.sheets:
++        rn=1
++        for row in book.rows(sheet):
++            repeat=integer(row.get(q(TB,'number-rows-repeated'),'1'),1,MAX_ROWS)
++            if rn+repeat-1>MAX_ROWS:refuse('row_bounds')
++            if row.get(q(TB,'visibility'),'visible') in ('collapse','filter'):hidden.update((sheet.get(q(TB,'name')),r) for r in range(rn,rn+repeat))
++            rn+=repeat
++    for sheet in book.sheets:
++        tick(checkpoint);scope=sheet.get(q(TB,'name'))
++        if boolean(sheet.get(q(TB,'protected'))):refuse('protection_unsupported')
++        raw=sheet.get(q(TB,'print-ranges'))
++        if raw:
++            records.append(('print_area',scope,rect(raw,'ods')));sheet.attrib.pop(q(TB,'print-ranges'));changed['content.xml']=root
++            st=allstyles[sheet.get(q(TB,'style-name'))];master=masters[st.get(q(ST,'master-page-name'))];prop=one(layouts[master.get(q(ST,'page-layout-name'))],q(ST,'page-layout-properties'))
++            orient=prop.get(q(ST,'print-orientation'));dims=(_cm(prop.get(q(FO,'page-width'))),_cm(prop.get(q(FO,'page-height'))))
++            paper='A4' if dims==((Decimal('29.700'),Decimal('21.000')) if orient=='landscape' else (Decimal('21.000'),Decimal('29.700'))) else ('physical_cm',dims)
++            records.append(('print_setup',scope,(orient,paper,integer(prop.get(q(ST,'scale-to-Y'),'1'),0,100),integer(prop.get(q(ST,'scale-to-X'),'1'),0,100))))
++            geometry.append(('print_page_size',scope,_cm_exact(prop.get(q(FO,'page-width'))),_cm_exact(prop.get(q(FO,'page-height')))))
++        capture_names(sheet,scope)
++        col=1
++        for n in sheet.findall(q(TB,'table-column')):
++            repeat=integer(n.get(q(TB,'number-columns-repeated'),'1'),1,16384)
++            # Trailing unused native columns are a scalar-profile concern.
++            if col<=MAX_COLS and n.get(q(TB,'style-name'))!='co4':
++                prop=one(colstyles[n.get(q(TB,'style-name'))],q(ST,'table-column-properties'));width=_cm(prop.get(q(ST,'column-width')))
++                if col+repeat-1>MAX_COLS:refuse('column_unsupported')
++                for cc in range(col,col+repeat):records.append(('column_width',scope,(cc,cc,width)));geometry.append(('column_width',scope,cc,cc,_cm_exact(prop.get(q(ST,'column-width')))))
++            col+=repeat
++        rn=1
++        for row in book.rows(sheet):
++            repeat=integer(row.get(q(TB,'number-rows-repeated'),'1'),1,MAX_ROWS)
++            if rn+repeat-1>MAX_ROWS:refuse('row_bounds')
++            visibility=row.get(q(TB,'visibility'),'visible')
++            if visibility not in ('visible','collapse','filter'):refuse('row_visibility_unsupported')
++            if visibility!='visible':
++                for rr in range(rn,rn+repeat):records.extend((('hidden_row',scope,rr),('native_hidden_mode',scope,(rr,visibility))));hidden.add((scope,rr))
++                row.attrib.pop(q(TB,'visibility'));changed['content.xml']=root
++            cn=1
++            for cell in row:
++                if cell.tag not in (q(TB,'table-cell'),q(TB,'covered-table-cell')):continue
++                rep=integer(cell.get(q(TB,'number-columns-repeated'),'1'),1,16384);sr=integer(cell.get(q(TB,'number-rows-spanned'),'1'),1,MAX_ROWS);sc=integer(cell.get(q(TB,'number-columns-spanned'),'1'),1,MAX_COLS)
++                if sr>1 or sc>1:
++                    if repeat!=1 or rep!=1:refuse('merge_unsupported')
++                    area=(scope,rn,cn,rn+sr-1,cn+sc-1);rect(_render_rect(area),'ods');records.append(('merge',scope,area));cell.attrib.pop(q(TB,'number-rows-spanned'),None);cell.attrib.pop(q(TB,'number-columns-spanned'),None);changed['content.xml']=root
++                if cell.tag==q(TB,'covered-table-cell'):
++                    if len(cell) or set(cell.attrib)-{q(TB,'number-columns-repeated')}:refuse('covered_cell_unsupported')
++                    if cn+rep-1>MAX_COLS:refuse('merge_coverage_mismatch')
++                    covered.extend((scope,rr,cc) for rr in range(rn,rn+repeat) for cc in range(cn,cn+rep));cell.tag=q(TB,'table-cell');changed['content.xml']=root
++                frames=cell.findall(q(D,'frame'))
++                for frame in frames:
++                    if _native_frame_digest(frame)!=_NATIVE_CALC_FRAME_SHAPE:refuse('native_frame_scaffolding_unsupported')
++                    attrs(frame,tuple(q(n,k) for n,k in ((D,'name'),(D,'style-name'),(D,'text-style-name'),(D,'z-index'),(SVG,'x'),(SVG,'y'),(SVG,'width'),(SVG,'height'))));children(frame,(q(D,'object'),q(D,'image')))
++                    if repeat!=1 or rep!=1 or len(frames)!=1:refuse('drawing_anchor_unsupported')
++                    if not frame.get(q(D,'name')) or len(frame.get(q(D,'name')).encode())>256:refuse('drawing_name_unsupported')
++                    obj=one(frame,q(D,'object'));image=one(frame,q(D,'image'))
++                    attrs(obj,tuple(q(n,k) for n,k in ((XL,'href'),(XL,'type'),(XL,'show'),(XL,'actuate'),(D,'notify-on-update-of-ranges'))));attrs(image,tuple(q(XL,k) for k in ('href','type','show','actuate')))
++                    if obj.get(q(XL,'href'))!='./Object 1' or image.get(q(XL,'href'))!='./ObjectReplacements/Object 1' or len(image):refuse('drawing_object_unsupported')
++                    if len(obj)!=1 or obj[0].tag!=q('urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0','p') or obj[0].attrib or len(obj[0]) or (obj[0].text or ''):refuse('drawing_object_unsupported')
++                    records.append(('chart',scope,_native_calc_chart(book,frame,scope,(rn,cn),hidden,checks)));geometry.append(('chart_size',scope,_cm_exact(frame.get(q(SVG,'width'))),_cm_exact(frame.get(q(SVG,'height')))))
++                    links.update((id(obj),id(image)));links.update(id(n) for n in book.xml['Object 1/content.xml'].iter() if n.get(q(XL,'href'))=='..')
++                    cell.remove(frame);removed.update(expected_parts);changed['content.xml']=root
++                cn+=rep
++            rn+=repeat
++    cover={(s,r,c) for f,s,a in records if f=='merge' for r in range(a[1],a[3]+1) for c in range(a[2],a[4]+1) if (r,c)!=a[1:3]}
++    if set(covered)!=cover or len(covered)!=len(set(covered)):refuse('merge_coverage_mismatch')
++    dbs=one(book.body,q(TB,'database-ranges'),True)
++    if dbs is not None:
++        attrs(dbs,());children(dbs,(q(TB,'database-range'),))
++        for db in dbs:
++            attrs(db,tuple(q(TB,k) for k in ('name','target-range-address','display-filter-buttons')));children(db,(q(TB,'filter'),))
++            area=rect(db.get(q(TB,'target-range-address')),'ods');scope=area[0];name=db.get(q(TB,'name'),'')
++            if not boolean(db.get(q(TB,'display-filter-buttons'))):refuse('database_range_unsupported')
++            filt=one(db,q(TB,'filter'),True)
++            if filt is not None:
++                conditions=_o_filter(filt,area);records.extend((('filter_database',scope,area),('filter',scope,(area,conditions))))
++            else:
++                if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]{0,63}',name):refuse('table_database_range_unsupported')
++                records.append(('table',scope,(name,area,_ods_headers(book,scope,area),False)))
++        book.body.remove(dbs);changed['content.xml']=root
++    # Reuse the existing strict validation parser on a temporary minimal view:
++    # validation syntax/bindings are copied below without any native widening.
++    validations=one(book.body,q(TB,'content-validations'),True)
++    if validations is not None:
++        attrs(validations,());children(validations,(q(TB,'content-validation'),));definitions={}
++        for dv in validations:
++            attrs(dv,tuple(q(TB,k) for k in ('name','condition','allow-empty-cell','base-cell-address','display-list')));name=dv.get(q(TB,'name'));condition=dv.get(q(TB,'condition'),'')
++            match=re.fullmatch(r'of:cell-content-is-whole-number\(\) and cell-content-is-between\((-?[0-9]+),(-?[0-9]+)\)',condition)
++            if not name or name in definitions or not match or dv.get(q(TB,'display-list'),'no')!='no':refuse('validation_unsupported')
++            low,high=(number(v,-1000000,1000000) for v in match.groups())
++            if low>high:refuse('validation_unsupported')
++            if dv.get(q(TB,'base-cell-address')):_check_area(rect(dv.get(q(TB,'base-cell-address')),'ods'),names)
++            children(dv,(q(TB,'error-message'),));err=one(dv,q(TB,'error-message'),True);show=False;message=''
++            if err is not None:
++                attrs(err,tuple(q(TB,k) for k in ('display','message-type','title')))
++                if err.get(q(TB,'message-type'),'stop')!='stop' or err.get(q(TB,'title'),''):refuse('validation_unsupported')
++                children(err,(q(T,'p'),));p=one(err,q(T,'p'));attrs(p,());message=text(p);show=boolean(err.get(q(TB,'display')),True)
++            definitions[name]=(low,high,boolean(dv.get(q(TB,'allow-empty-cell'))),show,message)
++        used={name:[] for name in definitions}
++        for sheet in book.sheets:
++            scope=sheet.get(q(TB,'name'))
++            for r,c,h,w,cell,row in book.cells(sheet):
++                name=cell.get(q(TB,'content-validation-name'))
++                if name:
++                    if name not in definitions:refuse('validation_name_missing')
++                    if r+h-1>MAX_ROWS or c+w-1>MAX_COLS:refuse('validation_binding_unsupported')
++                    used[name].extend((scope,rr,cc) for rr in range(r,r+h) for cc in range(c,c+w));cell.attrib.pop(q(TB,'content-validation-name'));changed['content.xml']=root
++        for name,points in used.items():
++            if not points or len({p[0] for p in points})!=1:refuse('validation_binding_unsupported')
++            scope=points[0][0];r1=min(p[1] for p in points);r2=max(p[1] for p in points);c1=min(p[2] for p in points);c2=max(p[2] for p in points)
++            if len(points)!=(r2-r1+1)*(c2-c1+1) or len(points)!=len(set(points)):refuse('validation_binding_unsupported')
++            records.append(('validation',scope,((scope,r1,c1,r2,c2),)+definitions[name]))
++        book.body.remove(validations);changed['content.xml']=root
++    if _ods_freeze(book,records):changed['settings.xml']=book.xml['settings.xml']
++    for tree in book.xml.values():
++        for n in tree.iter():
++            if n.get(q(XL,'href')) and id(n) not in links:refuse('external_or_unmodelled_link')
++    if not removed:refuse('chart_content_missing')
++    manifest=book.xml['META-INF/manifest.xml']
++    for n in list(manifest):
++        p=n.get(q(M,'full-path'),'')
++        if p in removed or p=='Object 1/':
++            wanted=OD_CHART_MIME if p=='Object 1/' else 'application/x-openoffice-gdimetafile;windows_formatname="GDIMetaFile"' if p.startswith('ObjectReplacements/') else 'text/xml'
++            if set(n.attrib)!={q(M,'full-path'),q(M,'media-type')} or n.get(q(M,'media-type'))!=wanted:refuse('chart_manifest_unsupported')
++            manifest.remove(n)
++    changed['META-INF/manifest.xml']=manifest
++    META='urn:oasis:names:tc:opendocument:xmlns:meta:1.0';stats=list(book.xml['meta.xml'].iter(q(META,'document-statistic')))
++    if len(stats)!=1 or stats[0].get(q(META,'object-count'))!='1':refuse('native_chart_statistics_unsupported')
++    stats[0].set(q(META,'object-count'),'0');changed['meta.xml']=book.xml['meta.xml']
++    signature=RichSignature(records,checks);signature.source_kind='ods';signature.native_geometry=tuple(sorted(geometry));signature.native_calc_profile=True;signature.sheet_names=tuple(names);_validate_relations(signature,names)
++    return _rewrite(data,changed,removed,{'content.xml':formula_bindings}),signature
++
++
++def _render_rect(area):
++    from tools.scoped_ods import colname
++    sheet,r1,c1,r2,c2=area
++    name="$'"+sheet.replace("'","''")+"'"
++    return name+'.$'+colname(c1)+'$'+str(r1)+':.$'+colname(c2)+'$'+str(r2)
++
++
++def _ods_headers(book,scope,area):
++    sheet=next(s for s in book.sheets if s.get(q(TB,'name'))==scope)
++    cells={}
++    for r,c,h,w,cell,row in book.cells(sheet):
++        if r<=area[1]<r+h:
++            value=book.value(cell)
++            if value.get('type')!='string' or value.get('formula'): continue
++            for col in range(c,c+w): cells[col]=value.get('value')
++    if any(c not in cells for c in range(area[2],area[4]+1)): refuse('table_headers_missing')
++    return tuple(cells[c] for c in range(area[2],area[4]+1))
++
++
++def validate_references(signature,inventory):
++    """Verify chart/table/merge bindings against actual scalar cells and values."""
++    if not signature: return True
++    from tools.scoped_spreadsheet_conversion import evaluate
++    cells={(name,r,c):cell for name,rows in inventory.sheets for r,c,cell in rows}
++    names={name for name,_ in inventory.sheets}
++    values=evaluate(inventory)
++    def linked(area,kind='any'):
++        name,r1,c1,r2,c2=area
++        if name not in names or (r2-r1+1)*(c2-c1+1)>MAX_POINTS: refuse('chart_reference_bounds')
++        result=[]
++        for r in range(r1,r2+1):
++            for c in range(c1,c2+1):
++                key=name,r,c; cell=cells.get(key)
++                if cell is None or cell.kind not in ('number','string') or kind!='any' and cell.kind!=kind: refuse('chart_reference_cell_unsupported')
++                result.append(values[key] if cell.kind=='number' else cell.value)
++        return result
++    for feature,scope,payload in signature:
++        if feature=='chart':
++            kind,title,ytitle,legend,visible,category,series,anchor,size=payload
++            cats=linked(category)
++            if len(cats)>MAX_POINTS: refuse('chart_points_limit')
++            for label,values_ref in series:
++                if len(linked(label,'string'))!=1 or len(linked(values_ref,'number'))!=len(cats): refuse('chart_series_dimensions')
++        elif feature=='table':
++            name,area,headings,stripe=payload
++            name,r,c,_,last=area
++            actual=tuple(cells.get((name,r,col)) for col in range(c,last+1))
++            if any(cell is None or cell.kind!='string' or cell.formula is not None for cell in actual) or tuple(cell.value for cell in actual)!=headings: refuse('table_header_mismatch')
++        elif feature=='merge':
++            name,r1,c1,r2,c2=payload
++            if any((name,r,c) in cells for r in range(r1,r2+1) for c in range(c1,c2+1) if (r,c)!=(r1,c1)): refuse('merge_hides_value')
++    for area,kind,cache in getattr(signature,'cache_checks',()):
++        actual=linked(area,kind)
++        try:
++            if any((decimal(raw)!=value if isinstance(value,Decimal) else raw!=value) for raw,value in zip(cache,actual)) or len(cache)!=len(actual): refuse('chart_cache_mismatch')
++        except ODSError: refuse('chart_cache_mismatch')
++    return True
++
++
++def _ods_table_banding(book,scope,changed):
++    sheet=next(s for s in book.sheets if s.get(q(TB,'name'))==scope)
++    # The native table-template appearance flags are distinct from database
++    # keep-formats. Never infer banding from the latter unrelated setting.
++    sn=sheet.get(q(TB,'template-name'))
++    if not sn: refuse('table_stripe_mapping_missing')
++    flags=('use-first-row-styles','use-last-row-styles','use-first-column-styles','use-last-column-styles','use-banding-rows-styles','use-banding-columns-styles')
++    selected={flag:boolean(sheet.get(q(TB,flag))) for flag in flags}
++    if not selected['use-first-row-styles'] or any(selected[n] for n in ('use-last-row-styles','use-first-column-styles','use-last-column-styles','use-banding-columns-styles')): refuse('table_appearance_unsupported')
++    templates=[]; cellstyles={}
++    for part in ('content.xml','styles.xml'):
++        tree=book.xml.get(part)
++        if tree is None: continue
++        for parent in tree.iter():
++            for child in parent:
++                if child.tag==q(TB,'table-template') and child.get(q(TB,'name'))==sn: templates.append((part,parent,child))
++                if child.tag==q(ST,'style') and child.get(q(ST,'family'))=='table-cell':
++                    cellstyles.setdefault(child.get(q(ST,'name')),[]).append((part,parent,child))
++    if len(templates)!=1: refuse('table_template_unsupported')
++    part,parent,template=templates[0]; attrs(template,(q(TB,'name'),))
++    children(template,(q(TB,'first-row'),q(TB,'body'),q(TB,'odd-rows'),q(TB,'even-rows')))
++    names={}
++    for component in template:
++        if set(component.attrib)!={q(TB,'style-name')} or len(component): refuse('table_template_unsupported')
++        tag=component.tag.rsplit('}',1)[-1]
++        if tag in names: refuse('table_template_unsupported')
++        names[tag]=component.get(q(TB,'style-name'))
++    if set(names)!={'first-row','body','odd-rows','even-rows'}: refuse('table_template_unsupported')
++    colors={}
++    for component,style_name in names.items():
++        found=cellstyles.get(style_name,[])
++        if len(found)!=1: refuse('table_template_style_unsupported')
++        sp,sparent,style=found[0]; attrs(style,(q(ST,'name'),q(ST,'family')))
++        children(style,(q(ST,'table-cell-properties'),))
++        prop=one(style,q(ST,'table-cell-properties')); attrs(prop,(q(FO,'background-color'),))
++        color=prop.get(q(FO,'background-color'))
++        if len(prop) or not re.fullmatch(r'#[0-9a-fA-F]{6}',color or ''): refuse('table_template_style_unsupported')
++        colors[component]=color.lower()
++    if colors['first-row']==colors['body'] or (selected['use-banding-rows-styles'] and colors['odd-rows']==colors['even-rows']): refuse('table_appearance_unsupported')
++    # The template and its private cell styles are removed only if they are
++    # exclusively referenced by this template, never by actual scalar cells.
++    for style_name in set(names.values()):
++        if any(n.get(q(TB,'style-name'))==style_name for tree in book.xml.values() for n in tree.iter() if n.tag not in (q(TB,'first-row'),q(TB,'body'),q(TB,'odd-rows'),q(TB,'even-rows'))): refuse('table_template_style_shared')
++        sp,sparent,style=cellstyles[style_name][0]
++        sparent.remove(style); changed[sp]=book.xml[sp]
++    parent.remove(template); changed[part]=book.xml[part]
++    sheet.attrib.pop(q(TB,'template-name'))
++    for flag in flags: sheet.attrib.pop(q(TB,flag),None)
++    changed['content.xml']=book.xml['content.xml']
++    return selected['use-banding-rows-styles']
++
++
++def _ods_print_setup(book,records,changed):
++    allstyles={}; layouts={}; masters={}
++    for part in ('content.xml','styles.xml'):
++        tree=book.xml.get(part)
++        if tree is None: continue
++        for parent in tree.iter():
++            for child in parent:
++                if child.tag==q(ST,'style') and child.get(q(ST,'family'))=='table': allstyles.setdefault(child.get(q(ST,'name')),[]).append((part,parent,child))
++                elif child.tag==q(ST,'page-layout'): layouts.setdefault(child.get(q(ST,'name')),[]).append((part,parent,child))
++                elif child.tag==q(ST,'master-page'): masters.setdefault(child.get(q(ST,'name')),[]).append((part,parent,child))
++    usedlayouts=set(); usedmasters=set(); usedstyles=set()
++    for sheet in book.sheets:
++        name=sheet.get(q(TB,'style-name')); entries=allstyles.get(name,[])
++        if len(entries)!=1: continue
++        part,parent,style=entries[0]
++        mastername=style.get(q(ST,'master-page-name'))
++        if not mastername: continue
++        attrs(style,(q(ST,'name'),q(ST,'family'),q(ST,'master-page-name')))
++        if len(style): refuse('print_style_unsupported')
++        found=masters.get(mastername,[])
++        if len(found)!=1: refuse('print_master_unsupported')
++        mp,mparent,master=found[0]; attrs(master,(q(ST,'name'),q(ST,'page-layout-name')))
++        if len(master): refuse('print_header_footer_unsupported')
++        layoutname=master.get(q(ST,'page-layout-name')); found=layouts.get(layoutname,[])
++        if len(found)!=1: refuse('print_layout_unsupported')
++        lp,lparent,layout=found[0]; attrs(layout,(q(ST,'name'),)); children(layout,(q(ST,'page-layout-properties'),))
++        prop=one(layout,q(ST,'page-layout-properties'))
++        attrs(prop,tuple(q(n,k) for n,k in ((FO,'page-width'),(FO,'page-height'),(ST,'print-orientation'),(ST,'scale-to-X'),(ST,'scale-to-Y'))))
++        orientation=prop.get(q(ST,'print-orientation'))
++        dims=(_cm(prop.get(q(FO,'page-width'))),_cm(prop.get(q(FO,'page-height'))))
++        expected=(Decimal('29.700'),Decimal('21.000')) if orientation=='landscape' else (Decimal('21.000'),Decimal('29.700'))
++        if orientation not in ('landscape','portrait') or dims!=expected or len(prop): refuse('print_layout_unsupported')
++        records.append(('print_setup',sheet.get(q(TB,'name')),(orientation,'A4',integer(prop.get(q(ST,'scale-to-Y'),'1'),0,100),integer(prop.get(q(ST,'scale-to-X'),'1'),0,100))))
++        sheet.attrib.pop(q(TB,'style-name')); changed['content.xml']=book.xml['content.xml']
++        usedlayouts.add(layoutname); usedmasters.add(mastername); usedstyles.add(name)
++    for catalog,used in ((allstyles,usedstyles),(masters,usedmasters),(layouts,usedlayouts)):
++        for name in used:
++            part,parent,node=catalog[name][0]; parent.remove(node); changed[part]=book.xml[part]

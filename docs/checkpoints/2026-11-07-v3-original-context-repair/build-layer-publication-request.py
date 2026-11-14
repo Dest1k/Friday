@@ -222,6 +222,7 @@ def build_request(args):
                 "friday.current-source-native-successor.v18": "friday.current-source-native-successor.v19",
                 "friday.current-source-native-successor.v19": "friday.current-source-native-successor.v20",
                 "friday.current-source-native-successor.v20": "friday.current-source-native-successor.v21",
+                "friday.current-source-native-successor.v21": "friday.current-source-native-successor.v22",
             }
             previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
             consumer.require(previous_schema in supported,
@@ -283,6 +284,9 @@ def build_request(args):
             consumer.require(previous_schema != "friday.current-source-native-successor.v20"
                              or args.layer_names == ("docx-inactive-story-interop-after-source218",),
                              "transaction_current_source_exact_twenty_first_layer_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v21"
+                             or args.layer_names == ("calc-required-formula-rich-profile-after-source219",),
+                             "transaction_current_source_exact_twenty_second_layer_required")
             request["current_source_successor"].update({
                 "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),
