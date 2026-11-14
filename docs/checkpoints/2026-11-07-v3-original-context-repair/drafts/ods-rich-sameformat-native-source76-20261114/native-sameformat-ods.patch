@@ -1,0 +1,151 @@
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -557,12 +557,62 @@
+     return found[0]
+ 
+ 
++def _rich_edit_profile(data, checkpoint):
++    # Lazy imports avoid the profiles -> ODS -> rich/conversion import cycle.
++    # The projection is admission evidence only; edits use the ORIGINAL bytes.
++    from tools.scoped_spreadsheet_rich import prepare_ods, validate_references
++    from tools.scoped_spreadsheet_conversion import _scalar_inventory, evaluate
++    try:
++        projected, signature = prepare_ods(data, checkpoint=checkpoint)
++        if not getattr(signature, 'native_calc_profile', False):
++            fail('unsupported_preserving_edit')
++        actual = _scalar_inventory(projected, 'ods', checkpoint, True, signature)
++        evaluate(actual, checkpoint=checkpoint)
++        # Same-format scalar edits preserve formula/chart caches without updating
++        # them. Keep every reference check, but do not require cache freshness.
++        validate_references(tuple(signature), actual)
++        return signature, actual
++    except ODSError:
++        raise
++    except (KeyError, IndexError, TypeError, ValueError, OverflowError, ET.ParseError):
++        fail('rich_edit_malformed_package')
++
++
++def _rich_edit_validation(book, signature, sheet, target, row, column, value):
++    name = target.get(q(TB, 'content-validation-name'))
++    bound = [payload for feature, scope, payload in signature
++             if feature == 'validation' and scope == sheet.get(q(TB, 'name'))
++             and payload[0][1] <= row <= payload[0][3]
++             and payload[0][2] <= column <= payload[0][4]]
++    if not name:
++        if bound: fail('ambiguous_target_validation')
++        return
++    definitions = [node for group in book.body.findall(q(TB, 'content-validations'))
++                   for node in group if node.get(q(TB, 'name')) == name]
++    if len(definitions) != 1 or len(bound) != 1:
++        fail('ambiguous_target_validation')
++    match = re.fullmatch(r'of:cell-content-is-whole-number\(\) and cell-content-is-between\((-?[0-9]+),(-?[0-9]+)\)',
++                         definitions[0].get(q(TB, 'condition'), ''))
++    if not match or tuple(decimal(v) for v in match.groups()) != bound[0][1:3]:
++        fail('ambiguous_target_validation')
++    number = decimal(value)
++    if number != number.to_integral_value() or not bound[0][1] <= number <= bound[0][2]:
++        fail('cell_validation_failed')
++
++
+ def edit_spreadsheet(data, spec, *, format='ods', checkpoint=None):
+     if not isinstance(spec, dict) or set(spec) != {'sheet', 'cell', 'expected', 'value'}:
+         fail('ods_edit_schema')
+     if not isinstance(spec['sheet'], str): fail('ods_edit_schema')
+     book = Spreadsheet(data, format, checkpoint=checkpoint)
+-    if book.unsupported: fail('unsupported_preserving_edit')
++    rich_profile = None
++    constraints = any(n.tag in {q(TB, k) for k in ('named-expressions', 'database-ranges', 'content-validations')}
++                      and (n.tag != q(TB, 'named-expressions') or n.attrib or len(n)
++                           or n.text not in (None, '') or n.tail not in (None, ''))
++                      for n in book.xml['content.xml'].iter())
++    if book.unsupported or constraints:
++        if format != 'ods': fail('unsupported_preserving_edit')
++        rich_profile = _rich_edit_profile(data, checkpoint)
+     # Validate every forms scaffold before target search can break at a cell.
+     # A hidden/active tail or another sheet must not escape the preserving gate.
+     forms_seen = set()
+@@ -575,11 +625,6 @@
+                     if parent not in book.sheets or parent in forms_seen or not _empty_forms(node):
+                         fail('unsupported_preserving_edit')
+                     forms_seen.add(parent)
+-    if any(n.tag in {q(TB, k) for k in ('named-expressions', 'database-ranges', 'content-validations')}
+-           and (n.tag != q(TB,'named-expressions') or n.attrib or len(n)
+-                or n.text not in (None,'') or n.tail not in (None,'')) for n in book.xml['content.xml'].iter()):
+-        # They are preserved, but target constraints require a separate editor.
+-        fail('edit_constraints_not_supported')
+     targets = [s for s in book.sheets if s.get(q(TB, 'name')) == spec['sheet']]
+     if len(targets) != 1: fail('sheet_not_found')
+     sheet = targets[0]; row_wanted, col_wanted = address(spec['cell'])
+@@ -591,9 +636,11 @@
+             target = cell; break
+     if target is None: fail('cell_not_found')
+     if (target.tag != q(TB, 'table-cell') or target.get(q(TB, 'formula')) is not None
+-        or any(target.get(q(TB, n)) for n in ('number-columns-spanned', 'number-rows-spanned', 'content-validation-name', 'protect'))):
++        or any(target.get(q(TB, n)) for n in ('number-columns-spanned', 'number-rows-spanned', 'protect'))
++        or (target.get(q(TB, 'content-validation-name')) and rich_profile is None)):
+         fail('unsupported_target_cell')
+     old = book.value(target)
++    if rich_profile is not None and old['type'] != 'float': fail('rich_numeric_edit_only')
+     if old['type'] not in ('float', 'string', 'boolean'):
+         fail('unsupported_target_type')
+     if type(spec['expected']) is not type(old['value']) or spec['expected'] != old['value']:
+@@ -606,12 +653,17 @@
+     else:
+         if type(value) is not bool: fail('invalid_boolean_value')
+         attrs = {q(O, 'value-type'): 'boolean', q(O, 'boolean-value'): str(value).lower()}; display = str(value).lower()
++    if rich_profile is not None:
++        _rich_edit_validation(book, rich_profile[0], sheet, target, row_wanted, col_wanted, value)
+     # Keep style and identity; refuse arbitrary rich content rather than drop it.
+-    if set(target.attrib) - {q(O, k) for k in ('value-type', 'value', 'string-value', 'boolean-value')} - {q(TB, 'style-name'), q(CALCEXT, 'value-type')}:
++    retained = {q(TB, 'content-validation-name')} if rich_profile is not None else set()
++    if set(target.attrib) - {q(O, k) for k in ('value-type', 'value', 'string-value', 'boolean-value')} - {q(TB, 'style-name'), q(CALCEXT, 'value-type')} - retained:
+         fail('unsupported_target_attributes')
+     if any(child.tag != q(T, 'p') or len(child) or child.attrib for child in target):
+         fail('unsupported_target_content')
+     if q(TB, 'style-name') in target.attrib: attrs[q(TB, 'style-name')] = target.get(q(TB, 'style-name'))
++    for key in retained:
++        if key in target.attrib: attrs[key] = target.get(key)
+     if q(CALCEXT, 'value-type') in target.attrib:
+         if target.get(q(CALCEXT, 'value-type')) != old['type']:
+             fail('ambiguous_target_type')
+@@ -636,4 +688,12 @@
+     if len(result) > 1000000: fail('output_limit')
+     found = [after.value(n) for r, c, h, w, n, _ in after.cells(after.sheets[book.sheets.index(sheet)]) if r == row_wanted and c == col_wanted]
+     if len(found) != 1 or found[0]['value'] != value: fail('edited_value_mismatch')
++    if rich_profile is not None:
++        signature, actual = _rich_edit_profile(result, checkpoint)
++        if signature != rich_profile[0]: fail('rich_preservation_verification_failed')
++        def unchanged_cells(inventory):
++            return [(name, r, c, cell) for name, cells in inventory.sheets for r, c, cell in cells
++                    if (name, r, c) != (spec['sheet'], row_wanted, col_wanted)]
++        if unchanged_cells(actual) != unchanged_cells(rich_profile[1]):
++            fail('rich_preservation_verification_failed')
+     return result
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1800,6 +1800,7 @@
+ registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
+ 
+ # Native ODS extends the existing bounded own-workspace document lane.
++_ODS_SAMEFORMAT_EDIT_GUIDANCE = ('ODS same-format edits: ods_edit or spreadsheet_edit uses exact JSON {source,sheet,cell,expected,value} into a NEW .ods. Float expected/value are decimal strings. The bounded validated passive chart/name/filter ODS profile permits numeric scalar edits and enforces existing supported integer-between validation. Current passive hidden rows are retained only in this bounded numeric ODS profile. Source and other XML/package payloads are preserved; existing formula and chart caches are not recalculated. Repeated, merged, rich-text, protected, formula or unsupported targets and active/external/macro/unknown structures refuse. No rendering or layout fidelity claim. ')
+ _ODS_GUIDANCE = 'Native ODS: ods_create creates a NEW .ods from exactly {sheets:[{name,rows}]}, using explicit scalar cells as xlsx_create. String IDs and prefixes remain literal; bounded acyclic SUM ranges and two-cell multiplication are calculated locally. ods_edit creates a NEW .ods from {source,sheet,cell,expected,value}: exact float/string/boolean target only, same type, no repeated/merged/formula/protected target. Other member payloads preserved; existing formula caches are not recalculated after edits. ODS/OTS reading separates values, formula cache and display. Use spreadsheet modes for OTS/FODS. '
+ WRITE_FILE_SCHEMA["description"] = _ODS_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["ods_create", "ods_edit"]
+@@ -1817,7 +1818,7 @@
+ READ_FILE_SCHEMA["description"] += " Supported native ODS charts return source ranges, series values and verified local cache records; rendering is not covered."
+ 
+ # Native spreadsheet profiles extend the existing scoped document contracts.
+-_SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value} for nonmacro profiles, or exact {source,source_sha256,sheet,cell,expected,value} for existing XLSM/XLTM, into a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. For XLSM/XLTM, read_file first supplies source_sha256; only exact-value numeric edits retaining one opaque VBA payload are supported, never macro creation/execution or a safety claim. Signed, protected, hidden, external/active, formula-target and other unsupported packages refuse; old macro create/convert refusals remain. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. The XLSX/ODS pair uses a separately validated isolated Office conversion; other cross-family pairs are unsupported. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: macros are opaque and never executed. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
++_SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value} for nonmacro profiles, or exact {source,source_sha256,sheet,cell,expected,value} for existing XLSM/XLTM, into a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. For XLSM/XLTM, read_file first supplies source_sha256; only exact-value numeric edits retaining one opaque VBA payload are supported, never macro creation/execution or a safety claim. Signed, protected, external/active, formula-target and other unsupported packages refuse. Unsupported hidden-content profiles refuse; current passive hidden rows are retained only in the bounded ODS numeric profile. Old macro create/convert refusals remain. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. The XLSX/ODS pair uses a separately validated isolated Office conversion; other cross-family pairs are unsupported. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: macros are opaque and never executed. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich-text, protected, formula or unsupported ODF edit targets refuse; the bounded passive ODS numeric profile permits existing supported integer-between validation. Unsupported resources/styles refuse flat conversion. '
+ WRITE_FILE_SCHEMA["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["spreadsheet_create", "spreadsheet_edit", "spreadsheet_convert"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"]
+@@ -2192,7 +2193,7 @@
+     'content JSON exactly {source,source_sha256} from the current read_file. Source bytes '
+     'are retained verbatim; unsupported/active packages refuse without reconstruction. '
+     'Omit format for normal text files. '
+-    'Document format catalogues are returned by the tool when a document format is requested. ') + _SPREADSHEET_CONVERSION_GUIDANCE
++    'Document format catalogues are returned by the tool when a document format is requested. ') + _ODS_SAMEFORMAT_EDIT_GUIDANCE + _SPREADSHEET_CONVERSION_GUIDANCE
+ WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'] = (
+     'Document format profile from the enum. Plain text files omit this field.')
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] = (
