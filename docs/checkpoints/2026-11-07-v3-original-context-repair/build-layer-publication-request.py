@@ -40,6 +40,10 @@ LAYER_NAMES = (
 )
 
 
+# UNBOUND until the exact frozen v24 layer is supplied.
+CURRENT_SOURCE_TWENTY_FOURTH_LAYER = 'ods-xlsx-native-visibility-compare-after-source221'
+
+
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -224,6 +228,7 @@ def build_request(args):
                 "friday.current-source-native-successor.v20": "friday.current-source-native-successor.v21",
                 "friday.current-source-native-successor.v21": "friday.current-source-native-successor.v22",
                 "friday.current-source-native-successor.v22": "friday.current-source-native-successor.v23",
+                "friday.current-source-native-successor.v23": "friday.current-source-native-successor.v24",
             }
             previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
             consumer.require(previous_schema in supported,
@@ -291,6 +296,9 @@ def build_request(args):
             consumer.require(previous_schema != "friday.current-source-native-successor.v22"
                              or args.layer_names == ("sameformat-rich-ods-after-source220",),
                              "transaction_current_source_exact_twenty_third_layer_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v23"
+                             or args.layer_names == (CURRENT_SOURCE_TWENTY_FOURTH_LAYER,),
+                             "transaction_current_source_exact_twenty_fourth_layer_required")
             request["current_source_successor"].update({
                 "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),
