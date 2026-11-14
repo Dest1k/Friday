@@ -1,0 +1,61 @@
+--- /home/jericho/.cache/FRW-ASTRA-NATIVE223-MAINTENANCE-FRAME-SOURCE-PREP-20261115/construct_frame223.py
++++ /home/jericho/.cache/FRW-ASTRA-NATIVE223-MAINTENANCE-FRAME-SOURCE-PREP-20261115/revision1/construct_frame223.py
+@@ -7,6 +7,8 @@
+ from pathlib import Path
+ import argparse,ast,copy,hashlib,json,os,re,stat,types
+ B=Path(__file__).parent;D=B/'frame-draft'
++DRAFT_LOGICAL_FRAME_PREFIX='/home/jericho/.cache/FRW-ASTRA-NATIVE223-MAINTENANCE-FRAME-SOURCE-PREP-20261115/frame-draft'
++BASELINE_SOURCE_PINS_REF={'path':'/home/jericho/.cache/FRW-ASTRA-NATIVE222-INSTALL-FRAME-PREP-20261114/frame/SOURCE-PINS.json','sha256':'5e358ccfc80558741e1c34e152d7297b8c733b1490d37d27831a6749cf5b6d00'}
+ CAP=Path('/home/jericho/.cache/FRW-ASTRA-NATIVE223-ACTUAL222-PREDECESSOR-CAPTURE-20261115/ACTUAL222-ROOT-CANONICAL-CAPTURE.json')
+ CAP_SHA='32b80537a4e8c51246b21830b80b3fb48d8e3d6ffdc600006e660d9f7debca25'
+ PRIVATE525='/home/jericho/.cache/FRW-ASTRA-NATIVE222-ACTUAL-CALLER-GATE-20261114/project'
+@@ -36,6 +38,15 @@
+ def sized(path,raw):return dict(path=str(path),sha256=sha(raw),bytes=len(raw))
+ def module(name,raw,path):
+  ast.parse(raw);m=types.ModuleType(name);m.__file__=str(path);exec(compile(raw,str(path),'exec'),m.__dict__);return m
++def accepted_baseline_source(add):
++ raw=refraw(BASELINE_SOURCE_PINS_REF)
++ # Authenticate the accepted5e bytes before parsing or profile/bank lookup.
++ add(BASELINE_SOURCE_PINS_REF['path'],raw)
++ return json.loads(raw)
++def rebase_frame_text(text,out):
++ # R1 frame source bytes retain R0's immutable logical prefix. Historical and
++ # canonical paths outside this own frame prefix remain untouched.
++ return text.replace(str(D),str(out)).replace(DRAFT_LOGICAL_FRAME_PREFIX,str(out))
+ def construct(record_ref,output):
+  record=json.loads(refraw(record_ref));require(record['schema']=='frw.Root.native223.frozen-maintenance-source-inputs.v1' and record['source_only']is True and record['execution_grant']is False,'Root_explicit_frozen_SOURCE_record_required')
+  require(set(record)=={'schema','source_only','execution_grant','product_source_commit','refs','project_roots','native_after','publication','draft_snapshot'},'exact_finite_constructor_fields')
+@@ -52,6 +63,7 @@
+  sources={}
+  def add(p,raw):
+   p=str(p);require(p not in sources or sources[p]==raw,'conflicting_source_path_bytes');sources[p]=raw
++ oldpins=accepted_baseline_source(add)
+  add(record_ref['path'],refraw(record_ref));add(record['draft_snapshot']['path'],refraw(record['draft_snapshot']));add(Path(__file__),read(Path(__file__)))
+  capraw=refraw(dict(path=str(CAP),sha256=CAP_SHA));cap=json.loads(capraw);add(CAP,capraw)
+  actual={};binding=dict(schema='frw.Root.actual222.eight-row-binding.v1',source_commit=cap['actual_product_source_commit'],installed=cap['actual_installed_counts'],not_fresh_future_precondition=True,no_new_effect_or_admission=True)
+@@ -87,7 +99,7 @@
+  substitutions={'REQUEST_SHA':record['refs']['request']['sha256'],'INPUT_SHA':record['refs']['private_input']['sha256'],'PRIVATE_HELPER':private[h],'PUBLIC_HELPER':public[h],'CONSUMER_SHA':sha(pub['friday_v3_layer_publication.py']),'CONSUMER':str(out/'publication/friday_v3_layer_publication.py'),'REQUEST':str(out/'ROOT-FRESH-REQUEST.json'),'COMMIT':record['product_source_commit'],'PRODUCT223_COMMIT':record['product_source_commit'],'NATIVE_PROJECTION_SHA256':post_guard,'OBSERVER_SHA256':None}
+  rendered={}
+  for path in sorted(D.rglob('*.py')):
+-  rel=str(path.relative_to(D));raw=draft_read(path).decode().replace(str(D),str(out))
++  rel=str(path.relative_to(D));raw=rebase_frame_text(draft_read(path).decode(),out)
+   for k,v in substitutions.items():
+    if v is not None:raw=raw.replace('UNBOUND_NATIVE223_'+k,v)
+   raw=raw.replace('SOURCE_BOUND = False','SOURCE_BOUND = True')
+@@ -112,7 +124,7 @@
+  for p in D.glob('*TEMPLATE.json'):
+   if 'CONSUMED-HISTORY'in p.name:
+    value=json.loads(draft_read(p));value['actual222_binding']=fixed['actual222_binding'];local[p.name]=encoded(value);continue
+-  value=json.loads(draft_read(p).decode().replace(str(D),str(out)))
++  value=json.loads(rebase_frame_text(draft_read(p).decode(),out))
+   def fill(v):
+    if type(v)is list:return [fill(x)for x in v]
+    if type(v)is dict:
+@@ -134,7 +146,6 @@
+  # The acceptance template's origin ref is exact static source, never a current/grant claim.
+  acceptance_name='ROOT-223-SOURCE-ACCEPTANCE-TEMPLATE.json';acceptance=json.loads(local[acceptance_name]);acceptance['origin_policy']=dict(path=str(out/'SOURCE-ORIGIN-POLICY223.json'),sha256=sha(local['SOURCE-ORIGIN-POLICY223.json']));local[acceptance_name]=encoded(acceptance)
+  # Reuse exact immutable profile/bank evidence only, never cached current truth.
+- oldpins=json.loads(read('/home/jericho/.cache/FRW-ASTRA-NATIVE222-INSTALL-FRAME-PREP-20261114/frame/SOURCE-PINS.json'))
+  profile='/home/jericho/.cache/FRW-ASTRA-V3-F06-COHERENT207-ROOT-SOURCE-AFTER206-20261112/PROFILE-SOURCE-JOIN.json';bank='/home/jericho/.cache/FRW-ASTRA-V3-CORE-FILE-INTEGRATION-20261111/presentation-bank-direct/EXPECTED-BANK-MANIFEST.json'
+  for p in (profile,bank):add(p,refraw(dict(path=p,sha256=oldpins['source_refs'][p])))
+  for r in json.loads(sources[profile])['evidence']:add(r['path'],refraw(r))
