@@ -1,0 +1,184 @@
+{
+  "assignment": "ASTRA-CODEX-WS-RELOAD-REVIEW-20261115",
+  "generation": 1,
+  "status": "COMPLETE_READ_ONLY_SOURCE_REVIEW",
+  "completed_msk": "2026-11-15T02:27:16.067759+03:00",
+  "local_package": {
+    "path": "/home/jericho/.codex/packages/standalone/current/codex-package.json",
+    "version": "0.169.0",
+    "target": "x86_64-unknown-linux-musl",
+    "note": "Read package metadata only. Matching public release source reviewed; binary reproducibility/commit identity not independently proved."
+  },
+  "official_source": {
+    "repo": "https://github.com/openai/codex",
+    "tag": "rust-v0.169.0",
+    "tag_object": "a41fe5b443652cbdbee57717fbb9fd78d8d8b32a",
+    "commit": "d32063f96c2dff1dc96af839b3952abb6acfeda4"
+  },
+  "facts": [
+    {
+      "id": "supported_selection",
+      "finding": "Select top-level model_provider = \"openai\" (or CLI -c model_provider='\"openai\"'). Omitted provider defaults to openai. Built-in OpenAI uses Responses and has supports_websockets=true; client prefers WebSocket while capability is true and session fallback is false. This selects WebSocket preference, not exclusive WebSocket enforcement.",
+      "refs": [
+        "codex-rs/core/src/config/mod.rs:4061-4079",
+        "codex-rs/model-provider-info/src/lib.rs:571-615",
+        "codex-rs/core/src/client.rs:1329-1340",
+        "codex-rs/core/src/client.rs:2588-2645"
+      ]
+    },
+    {
+      "id": "builtin_override_ignored",
+      "finding": "[model_providers.openai].supports_websockets cannot explicitly change the built-in value. For key openai, merger applies only model_catalog_url and preserves built-in identity/inference/authentication. Other provider fields are discarded. Existing default remains true. Adding supports_websockets=true is redundant and must not be described as an effective override.",
+      "refs": [
+        "codex-rs/model-provider-info/src/lib.rs:791-821",
+        "codex-rs/model-provider-info/src/model_provider_info_tests.rs:998-1017"
+      ]
+    },
+    {
+      "id": "oauth_default_url_preserved",
+      "finding": "Keeping built-in openai preserves requires_openai_auth=true, unset provider base_url and auth-mode-based default URL selection. ChatGPT modes select CHATGPT_CODEX_BASE_URL; other modes default to https://api.openai.com/v1. Existing explicit top-level openai_base_url is passed to built-in provider and must not be changed by this work.",
+      "refs": [
+        "codex-rs/model-provider-info/src/lib.rs:471-490",
+        "codex-rs/model-provider-info/src/lib.rs:571-615",
+        "codex-rs/core/src/config/mod.rs:4061-4068"
+      ]
+    },
+    {
+      "id": "no_supported_fallback_disable",
+      "finding": "No supported configuration setting for Responses WebSocket-only / disable HTTP fallback is present in full 0.169.0 config schema. Provider transport controls are supports_websockets and websocket_connect_timeout_ms; request_max_retries/stream_max_retries are retry budgets, not a fallback-off switch. Runtime fallback path is unconditional once selected.",
+      "refs": [
+        "codex-rs/core/config.schema.json:ModelProviderInfo",
+        "codex-rs/core/src/client.rs:788-807",
+        "codex-rs/core/src/client.rs:2608-2645"
+      ]
+    },
+    {
+      "id": "removed_flags",
+      "finding": "features.responses_websockets and features.responses_websockets_v2 are Stage::Removed. Do not enable old flags as an attempted fix.",
+      "refs": [
+        "codex-rs/features/src/lib.rs:2375-2386"
+      ]
+    },
+    {
+      "id": "fallback_persistence",
+      "finding": "Fallback state is an in-memory session AtomicBool, initialized false in ModelClient::new and set true in force_http_fallback. Test explicitly proves stickiness across turns. Tests also verify immediate fallback on HTTP426 during startup prewarm and fallback after WebSocket retry exhaustion.",
+      "refs": [
+        "codex-rs/core/src/client.rs:198-225",
+        "codex-rs/core/src/client.rs:615-645",
+        "codex-rs/core/src/client.rs:788-807",
+        "codex-rs/core/tests/suite/websocket_fallback.rs:33-80",
+        "codex-rs/core/tests/suite/websocket_fallback.rs:85-127",
+        "codex-rs/core/tests/suite/websocket_fallback.rs:255-303"
+      ]
+    },
+    {
+      "id": "warm_resume_not_reset",
+      "finding": "thread/resume first tries the already-loaded-thread path and reuses existing thread. A TUI reconnect or warm same-thread resume is not a guaranteed reconstruction of ModelClient and therefore does not clear sticky fallback.",
+      "refs": [
+        "codex-rs/app-server/src/request_processors/thread_processor.rs:3992-4027",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs:4674-4724"
+      ]
+    }
+  ],
+  "inferences": [
+    {
+      "id": "cold_reset",
+      "finding": "A truly fresh daemon followed by a cold resume of the same saved thread constructs a new session ModelClient with disable_websockets=false. Thus the old in-memory sticky fallback is cleared without deleting thread/history or changing auth. A genuine unloaded-and-cold thread reload has the same property.",
+      "basis": [
+        "codex-rs/core/src/client.rs:615-645",
+        "codex-rs/core/src/session/session.rs:1927-1958"
+      ],
+      "limit": "Source-derived inference; no daemon or TUI was restarted and no model request was sent."
+    },
+    {
+      "id": "reset_not_guarantee",
+      "finding": "Fresh state only restores a WebSocket attempt/preference. Startup prewarm or later transport failure may immediately activate fallback again. Current responses_http telemetry alone does not establish why fallback began.",
+      "basis": [
+        "codex-rs/core/tests/suite/websocket_fallback.rs:33-80",
+        "codex-rs/core/tests/suite/websocket_fallback.rs:255-303"
+      ]
+    }
+  ],
+  "config_snippet": "model_provider = \"openai\"\n",
+  "schema_provider_transport_keys": [
+    "supports_websockets",
+    "websocket_connect_timeout_ms"
+  ],
+  "sources": {
+    "codex-rs/model-provider-info/src/lib.rs": {
+      "url": "https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/model-provider-info/src/lib.rs",
+      "sha256": "eb22a9048415efba0ecb91cb373ef91144245becc5628d13269352ea94a674e9"
+    },
+    "codex-rs/model-provider-info/src/model_provider_info_tests.rs": {
+      "url": "https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/model-provider-info/src/model_provider_info_tests.rs",
+      "sha256": "53f9f8bd709d7d6875172bf4c714d46120b52663fb693143b54a3bfe3c55ad6c"
+    },
+    "codex-rs/core/src/config/mod.rs": {
+      "url": "https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/core/src/config/mod.rs",
+      "sha256": "a56536664f910cfa10cc35f0a0905fb6fe66bfe2cb760e5d06bb9be99544b54c"
+    },
+    "codex-rs/core/src/client.rs": {
+      "url": "https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/core/src/client.rs",
+      "sha256": "544c428df0ebe2eb7e99bdaf507eb7873d6a8ec8e4e193885b3bfa37a200d03f"
+    },
+    "codex-rs/core/config.schema.json": {
+      "url": "https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/core/config.schema.json",
+      "sha256": "f515f420927460250181097af8dc72b80a6be4f01f4324a0efef816e46cc9c86"
+    },
+    "codex-rs/features/src/lib.rs": {
+      "url": "https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/features/src/lib.rs",
+      "sha256": "ae5067b54222326863207b2c3f9fdcf08d3476dfb850f9084b9ea34a0eb2d649"
+    },
+    "codex-rs/core/tests/suite/websocket_fallback.rs": {
+      "url": "https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/core/tests/suite/websocket_fallback.rs",
+      "sha256": "8c3916e1d23bf2924ba0a77491fe3760eae8566ff29d703e25c3abe963de3185"
+    },
+    "codex-rs/core/src/session/session.rs": {
+      "url": "https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/core/src/session/session.rs",
+      "sha256": "d959c8c6e9193e202fb94237e1674fcecaa2e865ca7e38f4937eef78ac5160f2"
+    },
+    "codex-rs/app-server/src/request_processors/thread_processor.rs": {
+      "url": "https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/app-server/src/request_processors/thread_processor.rs",
+      "sha256": "79e71ebf940fec219e4ffd96f5421b639b4677f6906c0925aff40c51d68224a8"
+    }
+  },
+  "official_docs_secondary": "https://learn.chatgpt.com/docs/config-file/config-reference",
+  "effects": {
+    "config_auth_thread_history_goal_model_reasoning_tier_changes": false,
+    "daemon_restart": false,
+    "TUI_started": false,
+    "model_requests": 0,
+    "paid_probes": 0,
+    "tests_run": false,
+    "writes": "Only this new 0700 artifact directory; downloaded public source reduced to focused evidence excerpts plus full schema."
+  },
+  "limitations": [
+    "No actual connection success proved. No claim that every Codex network operation uses WebSockets; review concerns Responses inference transport.",
+    "No code change can be replaced by unsupported flags to disable built-in fallback. If user requires fail-closed WS exclusively, stock supported configuration cannot promise that."
+  ],
+  "launcher_review": {
+    "status": "PASS_STATIC_REVIEW_NO_NEW_RUNTIME_EFFECTS",
+    "candidate": "/home/jericho/.jericho/runtime/sol-link-native-reconnect.py",
+    "sha256": "af98cba9cca76582113c64056d63f5e9e738e789f84783ea302e548002d4b86e",
+    "no_findings": true,
+    "observations": [
+      "build_resume_command sets model_provider=openai for both slots and retains exact fixed session IDs via SLOTS; model_reasoning_effort=ultra is already-present behavior per assignment baseline; no service_tier argument introduced.",
+      "daemon_verb chooses restart for explicit --reload; otherwise no-backend start, same installed binary start/reuse, differing executable restart. Multiple or missing identity states are rejected (multiple is additionally rejected by ready_for_owner_reconnect before daemon_verb).",
+      "First ownership check, real-terminal requirement, per-slot native flock, second ownership check all run before computing daemon action and subprocess.run. Required endpoint validation and final ownership check precede execve.",
+      "No auth, model, reasoning, tier, goal or thread rewrite appears in this candidate; CODEX_HOME and exact saved thread selection are retained.",
+      "Root CHECKS.json reports 12 passing checks bound to this exact candidate SHA. Root CONFIG-CHANGES.json reports only top-level provider selection and Astra unused legacy supports_websockets false→true. Config files/backups/auth files were not independently opened in this review."
+    ],
+    "checks_performed": [
+      "Exact launcher SHA verification",
+      "Complete static source review of 152-line launcher",
+      "In-memory ast.parse syntax check (no imports, pycache, daemon, TUI or model effects)",
+      "Read root CHECKS.json and CONFIG-CHANGES.json only"
+    ],
+    "limits": [
+      "No old source snapshot was provided; this independently reviews the complete exact candidate plus described delta, while prior-behavior comparison relies on assignment baseline.",
+      "No daemon restart or live WebSocket success was verified. Owner must exit each designated TUI normally before that profile launcher --reload; current sticky fallback cannot be reset through mere reattachment.",
+      "Automatic stale-binary replacement changes the next eligible launcher reconnect; it does not update a currently running daemon until that boundary.",
+      "Legacy unused provider supports_websockets=true does not affect active built-in openai. Effective setting is builtin provider selection; HTTP fallback remains stock and unavoidable through supported config."
+    ]
+  }
+}

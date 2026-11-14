@@ -1,0 +1,48 @@
+diff --git a/sol-link-native-reconnect.py b/sol-link-native-reconnect.py
+--- a/sol-link-native-reconnect.py
++++ b/sol-link-native-reconnect.py
+@@ -85,10 +85,25 @@
+ 
+ def build_resume_command(slot, endpoint, thread):
+     command = [str(BIN), '--disable', 'hooks', 'resume', '--remote', 'unix://' + str(endpoint),
+-               '--config', 'model_reasoning_effort="ultra"', '--cd', REPO]
+-    if slot == 'astra':
+-        command.extend(['--config', 'model_provider="openai"'])
++               '--config', 'model_reasoning_effort="ultra"', '--cd', REPO,
++               '--config', 'model_provider="openai"']
+     return [*command, thread]
++
++
++def daemon_verb(state, *, reload_requested, binary=BIN, proc_root=Path('/proc')):
++    """Refresh a stale daemon at the existing owner-exited reconnect boundary."""
++    if reload_requested:
++        return 'restart'
++    backends = state['backend_pids']
++    if not backends:
++        return 'start'
++    if len(backends) != 1:
++        raise SystemExit('Expected at most one designated daemon before reconnect.')
++    try:
++        running = (proc_root / str(backends[0]) / 'exe').resolve(strict=True)
++    except OSError:
++        raise SystemExit('Daemon identity changed; inspect it before reconnecting.') from None
++    return 'start' if running == binary else 'restart'
+ 
+ 
+ def main():
+@@ -118,12 +133,13 @@
+     except BlockingIOError:
+         raise SystemExit('This profile already has a reconnect/TUI.')
+     os.set_inheritable(fd, True)
+-    if not slot_state(home, thread, endpoint)['ready_for_owner_reconnect']:
++    settled = slot_state(home, thread, endpoint)
++    if not settled['ready_for_owner_reconnect']:
+         raise SystemExit('Another TUI acquired this profile; no duplicate started.')
+     env = os.environ.copy()
+     env['CODEX_HOME'] = home
+     env.pop('CODEX_THREAD_ID', None)
+-    verb = 'restart' if args.reload else 'start'
++    verb = daemon_verb(settled, reload_requested=args.reload)
+     subprocess.run([str(BIN), '--disable', 'hooks', 'app-server', 'daemon', verb],
+                    env=env, check=True, timeout=120)
+     validate_control_directory(endpoint, required=True)
