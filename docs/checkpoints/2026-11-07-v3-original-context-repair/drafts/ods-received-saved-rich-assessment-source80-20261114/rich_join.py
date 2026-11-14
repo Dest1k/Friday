@@ -1,0 +1,759 @@
+"""Pure fixed-profile ODS received -> saved selected-rich byte assessment.
+
+Every input is explicit bytes or JSON data.  No paths, Office, provider,
+product, custody, admission, or execution services are used.  The immutable
+XLSX is feature authority for an expected semantic projection, never an ODS
+output producer.  A successful result establishes supplied-byte facts only.
+"""
+import ast
+import collections
+from copy import deepcopy
+from decimal import Decimal, InvalidOperation, localcontext
+import hashlib
+import io
+import json
+from pathlib import PurePosixPath
+import posixpath
+import re
+import stat
+import types
+import xml.etree.ElementTree as ET
+import zipfile
+
+
+LIBRARY_PINS = {
+    'structures': '8cb35d60e20db4a34c37fd9be9a382c3230d10132d79481fae0a2de4ee35c4c6',
+    'strict': 'c272c984c90ce2b08a8f4589c361aa299cd461230896deab97e583e117456bf5',
+    'received': '5a0f297aad09ef3e5aabad8fb3cccc03f20514863b3680b663e9178570e23bab',
+    'preservation': '8b6241e2749f68005faa01b344ec6fe4747da927382269de2d4b796ac66a1e07',
+    'recalc': '679cc90c2f14150f011a0330f5f96ef23de48912ed5b738d49a2a43b074e254f',
+}
+PIN_KEYS = {'source_sha256', 'received_sha256', 'saved_sha256',
+            'authority_sha256', 'request_sha256', 'delta_sha256',
+            'projection_sha256', 'oracle_sha256', 'independent_fact_sha256'}
+PROJECTION_KEYS = {'schema', 'profile', 'authority_sha256', 'source_sha256',
+                   'received_sha256', 'request_sha256', 'delta_sha256',
+                   'oracle_sha256', 'independent_fact_sha256'}
+FALSE_CLAIMS = {
+    'authority_verified': False, 'custody_verified': False,
+    'runtime_verified': False, 'installed_version_verified': False,
+    'oracle_independence_verified': False, 'ordinary_delivery_verified': False,
+    'nonreplay_verified': False, 'new_effect_authorized': False,
+    'user_acceptance': False, 'app_acceptance': False, 'f03_acceptance': False,
+}
+
+
+class RichJoinError(ValueError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def need(value, code):
+    if not value:
+        raise RichJoinError(code)
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True,
+                      separators=(',', ':'), allow_nan=False).encode('utf-8')
+
+
+def _keys(value, keys, code):
+    need(type(value) is dict and set(value) == set(keys), code)
+
+
+def _number(value):
+    need(type(value) is str and 0 < len(value) <= 128 and
+         re.fullmatch(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[Ee][+-]?[0-9]+)?', value),
+         'NUMERIC_LEXICAL')
+    try:
+        result = Decimal(value)
+    except InvalidOperation:
+        raise RichJoinError('NUMERIC_LEXICAL') from None
+    need(result.is_finite() and abs(result.adjusted()) <= 100, 'NUMERIC_BOUND')
+    return result
+
+
+def _json(data):
+    need(type(data) is bytes and 0 < len(data) <= 1000000, 'FACT_BYTES_BOUND')
+    def pairs(items):
+        need(len(dict(items)) == len(items), 'FACT_DUPLICATE_KEY')
+        return dict(items)
+    return json.loads(data, object_pairs_hook=pairs,
+                      parse_constant=lambda unused: (_ for _ in ()).throw(RichJoinError('FACT_NONFINITE')))
+
+
+def _select(source, names, constants=()):
+    tree = ast.parse(source)
+    selected = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name in names]
+    need({node.name for node in selected} == set(names), 'LIBRARY_DEFINITION_SET')
+    namespace = {'Decimal': Decimal, 'collections': collections, 're': re,
+                 'ET': ET, 'io': io, 'zipfile': zipfile, 'stat': stat,
+                 'PurePosixPath': PurePosixPath, 'posixpath': posixpath,
+                 'need': need, '__name__': __name__}
+    for constant in constants:
+        assignments = [node for node in tree.body if isinstance(node, ast.Assign)
+                       and len(node.targets) == 1
+                       and isinstance(node.targets[0], ast.Name)
+                       and node.targets[0].id == constant]
+        need(len(assignments) == 1, 'LIBRARY_CONSTANT_SET')
+        namespace[constant] = ast.literal_eval(assignments[0].value)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])),
+                 '<pinned-pure-selected-definitions>', 'exec'), namespace)
+    return types.SimpleNamespace(**namespace)
+
+
+def _load(libraries):
+    _keys(libraries, LIBRARY_PINS, 'LIBRARY_SET')
+    for name, expected in LIBRARY_PINS.items():
+        need(type(libraries[name]) is bytes and sha(libraries[name]) == expected,
+             'LIBRARY_PIN')
+    # These two pinned public modules contain only standard-library imports,
+    # constants and pure definitions.  Substitute the explicit helper namespace
+    # rather than importing a caller-selected or filesystem module.
+    helper = {'__name__': __name__}
+    exec(compile(libraries['preservation'], '<pinned-preservation>', 'exec'), helper)
+    tree = ast.parse(libraries['received'])
+    body = [node for node in tree.body
+            if not (isinstance(node, ast.ImportFrom) and node.module == 'preservation_helpers')]
+    received = dict(helper)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])),
+                 '<pinned-received-checker>', 'exec'), received)
+    recalc = {'__name__': __name__}
+    exec(compile(libraries['recalc'], '<pinned-recalc-checker>', 'exec'), recalc)
+    names = {'q', 'attr', 'xml', 'cellref', 'colref', 'norm', 'textnode',
+             'ods_text', 'count_types', 'xlsx', 'ods', 'rich'}
+    structures = _select(libraries['structures'], names, ('NS',))
+    strict = _select(libraries['strict'], {'strict_rich'})
+    raw = _select(libraries['strict'],
+                  {'q', 'need', 'finite_decimal', 'positive_int', 'xml_bytes',
+                   'archive_bytes', 'text', 'coordinate', 'raw_cells'}, ('NS',))
+    return types.SimpleNamespace(**received), types.SimpleNamespace(**recalc), structures, strict, raw
+
+
+def _archive(data, kind, received, raw):
+    need(type(data) is bytes and 0 < len(data) <= 2000000, 'FINITE_ARCHIVE_BYTES')
+    # Active declarations/PI/UTF16, malformed/ambiguous ZIP names and XML are
+    # rejected before any legacy structure reader receives an archive provider.
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        infos = archive.infolist()
+        need(0 < len(infos) <= 128 and sum(x.file_size for x in infos) <= 2000000,
+             'ZIP_TOTAL_BOUND')
+        need(len({x.filename for x in infos}) == len(infos), 'ZIP_DUPLICATE_PART')
+        for info in infos:
+            name = info.filename
+            need(name == info.orig_filename and name and not name.startswith('/')
+                 and '\\' not in name and ':' not in name and '\0' not in name
+                 and all(x not in ('', '.', '..') for x in name.rstrip('/').split('/')),
+                 'ZIP_PART_PATH')
+            need(not info.flag_bits & 1 and info.file_size <= 500000
+                 and info.compress_type in (0, 8)
+                 and not stat.S_ISLNK(info.external_attr >> 16), 'ZIP_PART_BOUND')
+            content = archive.read(info)
+            need(len(content) == info.file_size, 'ZIP_PART_SIZE')
+            if name.endswith(('.xml', '.rels')):
+                received._parse_xml(content)
+    roots = raw.archive_bytes(data, kind)
+    if kind == 'ods':
+        snapshot = received.inspect_ods(data)
+        need(len(snapshot.sheets) == 3, 'FIXED_THREE_SHEETS')
+        row_tag = '{' + received.TB + '}table-row'
+        unsupported = {'{' + received.TB + '}' + x for x in
+                       ('table-row-group', 'table-header-rows', 'table-rows')}
+        for sheet in snapshot.sheets:
+            need(not any(node.tag in unsupported for node in sheet.iter()),
+                 'NESTED_ROW_STRUCTURE_UNSUPPORTED')
+            direct = {id(node) for node in sheet if node.tag == row_tag}
+            need(all(id(node) in direct for node in sheet.iter(row_tag)),
+                 'NESTED_ROW_STRUCTURE_UNSUPPORTED')
+    return roots
+
+
+def _parse(library, method, data, *args):
+    token = '<explicit-' + method + '-bytes>'
+    def provider(requested):
+        need(requested == token, 'ARCHIVE_PROVIDER_TOKEN')
+        return zipfile.ZipFile(io.BytesIO(data))
+    namespace = getattr(library, method).__globals__
+    namespace['archive'] = provider
+    try:
+        return getattr(library, method)(token, *args)
+    finally:
+        namespace.pop('archive', None)
+
+
+def _source_cells(authority, observed):
+    need(len(authority['sheets']) == len(observed['sheets']) == 3
+         and authority['names'] == observed['names'], 'AUTHORITY_SHEET_IDENTITY')
+    formula_count = 0
+    for expected, actual in zip(authority['sheets'], observed['sheets'], strict=True):
+        need(set(expected['cells']) == set(actual['cells']), 'AUTHORITY_POPULATED_CELLS')
+        for location, value in expected['cells'].items():
+            seen = actual['cells'][location]
+            need(value['kind'] == seen['kind'], 'AUTHORITY_CELL_TYPE')
+            if value['kind'] == 'formula':
+                formula_count += 1
+                need(value['formula'] == seen['formula'], 'AUTHORITY_FORMULA')
+            else:
+                need(value['value'] == seen.get('value'), 'AUTHORITY_LITERAL')
+    need(formula_count == 5, 'FIXED_FORMULA_COUNT')
+
+
+def _arithmetic(projection, target_value):
+    cells = projection['sheets'][0]['cells']
+    need(cells['C2']['kind'] == 'number', 'TARGET_LITERAL_PROFILE')
+    result = {}
+    for row in range(2, 6):
+        need(cells['G' + str(row)]['kind'] == 'formula' and
+             cells['G' + str(row)]['formula'] == 'C' + str(row) + '*D' + str(row),
+             'MULTIPLICATION_PROFILE')
+        need(cells['C' + str(row)]['kind'] == cells['D' + str(row)]['kind'] == 'number',
+             'NUMERIC_INPUT_PROFILE')
+        quantity = target_value if row == 2 else cells['C' + str(row)]['value']
+        result[(0, 'G' + str(row))] = quantity * cells['D' + str(row)]['value']
+    need(projection['sheets'][1]['cells']['B2']['kind'] == 'formula' and
+         projection['sheets'][1]['cells']['B2']['formula'] == 'SUM(S0!G2:G5)',
+         'SUMMARY_PROFILE')
+    result[(1, 'B2')] = sum(result.values())
+    return result
+
+
+def _reference(value, names, *, separator='.', default_sheet=None):
+    """Resolve the selected single-sheet cell/range grammar before old norm.
+
+    The retained normalizer erases an explicit second sheet endpoint.  That is
+    safe only after both actual endpoint identities have been checked here.
+    This is a bounded reference guard, not a formula/Office evaluator.
+    """
+    need(type(value) is str and 0 < len(value) <= 4096, 'REFERENCE_BOUND')
+    if value.startswith('[') and value.endswith(']'):
+        value = value[1:-1]
+    parts = value.split(':')
+    need(1 <= len(parts) <= 2, 'REFERENCE_PROFILE')
+    def endpoint(part):
+        for index, name in sorted(enumerate(names), key=lambda item: -len(item[1])):
+            for spelling in (name, "'" + name.replace("'", "''") + "'"):
+                match = re.fullmatch(r'\$?' + re.escape(spelling) + re.escape(separator)
+                                     + r'\$?([A-Z]{1,3})\$?([1-9][0-9]{0,3})', part)
+                if match:
+                    return index, match[1] + match[2]
+        match = re.fullmatch((r'\.?' if separator == '.' else '')
+                             + r'\$?([A-Z]{1,3})\$?([1-9][0-9]{0,3})', part)
+        need(match is not None, 'REFERENCE_PROFILE')
+        return None, match[1] + match[2]
+    first_sheet, first = endpoint(parts[0])
+    first_sheet = default_sheet if first_sheet is None else first_sheet
+    need(first_sheet is not None, 'REFERENCE_SHEET_REQUIRED')
+    if len(parts) == 1:
+        return first_sheet, first, first
+    second_sheet, second = endpoint(parts[1])
+    need(second_sheet is None or second_sheet == first_sheet,
+         'CROSS_SHEET_RANGE_ENDPOINT_UNSUPPORTED')
+    return first_sheet, first, second
+
+
+def _guard_references(observed, library, raw_cells):
+    for node in observed['root'].findall('.//table:named-range', library.NS):
+        _reference(library.attr(node, 'table', 'cell-range-address'), observed['names'])
+    for node in observed['root'].findall('.//table:database-range', library.NS):
+        _reference(library.attr(node, 'table', 'target-range-address'), observed['names'])
+    for chart in observed['charts']:
+        for node in chart.findall('.//chart:series', library.NS):
+            _reference(library.attr(node, 'chart', 'label-cell-address'), observed['names'])
+            _reference(library.attr(node, 'chart', 'values-cell-range-address'), observed['names'])
+        for node in chart.findall('.//chart:categories', library.NS):
+            _reference(library.attr(node, 'table', 'cell-range-address'), observed['names'])
+    formula = raw_cells[1]['cells']['B2']['formula']
+    need(type(formula) is str, 'SUMMARY_RAW_FORMULA_PROFILE')
+    match = re.fullmatch(r'of:=SUM\((\[[^\[\]]+\])\)', formula)
+    need(match is not None and
+         _reference(match[1], observed['names'], default_sheet=1) == (0, 'G2', 'G5'),
+         'SUMMARY_RAW_FORMULA_PROFILE')
+
+
+def _entry_values(entries):
+    need(type(entries) is list and len(entries) == 5, 'EXPECTED_CACHE_COUNT')
+    result = {}
+    for entry in entries:
+        need(type(entry) is dict and {'sheet_index', 'cell', 'value'} <= set(entry),
+             'EXPECTED_CACHE_SCHEMA')
+        need(type(entry['sheet_index']) is int and type(entry['cell']) is str,
+             'EXPECTED_CACHE_LOCATION')
+        key = (entry['sheet_index'] - 1, entry['cell'])
+        need(key not in result, 'EXPECTED_CACHE_DUPLICATE')
+        result[key] = _number(entry['value'])
+    return result
+
+
+def _facts(fact, authority, source_raw, received_raw, request, delta, source_hash):
+    need(type(fact) is dict and
+         fact.get('schema') == 'friday.Root.F03.independent-numeric-oracle-precommit.v1',
+         'INDEPENDENT_FACT_SCHEMA')
+    need(fact['source']['sha256'] == source_hash, 'INDEPENDENT_FACT_SOURCE')
+    need(fact['ordinary_requested_delta'] == request, 'INDEPENDENT_FACT_REQUEST')
+    need(fact['future_disposable_delta'] == {'sheet': request['sheet'], 'cell': 'C2',
+         'expected': delta['before'], 'value': delta['after']}, 'INDEPENDENT_FACT_DELTA')
+    source_value = _number(request['expected'])
+    received_value = _number(request['value'])
+    after_value = _number(delta['after'])
+    before = _arithmetic(authority, source_value)
+    current = _arithmetic(authority, received_value)
+    after = _arithmetic(authority, after_value)
+    for key, expected in [('source_numeric_formula_semantics', before),
+                          ('ordinary_numeric_formula_semantics_if_requested_edit_exact', current),
+                          ('future_saved_expected_formula_caches', after)]:
+        need(_entry_values(fact[key]) == expected, 'INDEPENDENT_FACT_ARITHMETIC')
+    need(type(fact['text_IDs']) is dict and set(fact['text_IDs']) == {'A2', 'A3', 'A4', 'A5'},
+         'INDEPENDENT_FACT_TEXT_IDS')
+    for location, expected in fact['text_IDs'].items():
+        need(type(expected) is str, 'INDEPENDENT_FACT_TEXT_IDS')
+        for raw in (source_raw, received_raw):
+            cell = raw[0]['cells'][location]
+            need(cell['attrs'].get('value-type') == 'string' and cell['formula'] is None
+                 and cell['attrs'].get('string-value', cell['text']) == expected,
+                 'INDEPENDENT_FACT_TEXT_IDS')
+    bindings = fact['formula_source_bindings']
+    need(type(bindings) is list and len(bindings) == 4, 'INDEPENDENT_FACT_FORMULA_BINDINGS')
+    expected_locations = {'G' + str(row) for row in range(2, 6)}
+    need({entry['cell'] for entry in bindings} == expected_locations,
+         'INDEPENDENT_FACT_FORMULA_BINDINGS')
+    for entry in bindings:
+        need(entry['sheet'] == request['sheet'] and
+             source_raw[0]['cells'][entry['cell']]['formula'] == entry['raw'] and
+             received_raw[0]['cells'][entry['cell']]['formula'] == entry['raw'],
+             'INDEPENDENT_FACT_FORMULA_BINDINGS')
+    changed = {(index + 1, location) for (index, location), value in current.items()
+               if after[(index, location)] != value}
+    need(type(fact['expected_changed_formula_locations']) is list and
+         {tuple(x) for x in fact['expected_changed_formula_locations']} == changed,
+         'INDEPENDENT_FACT_CHANGED_LOCATIONS')
+    return after
+
+
+def _tree(element, library, names, ignored=()):
+    attrs = []
+    for key, value in element.attrib.items():
+        if key in ignored:
+            continue
+        if any(key.endswith('}' + suffix) for suffix in
+               ('cell-range-address', 'target-range-address', 'base-cell-address',
+                'label-cell-address', 'values-cell-range-address')):
+            value = library.norm(value, names)
+        attrs.append((key, value))
+    text = element.text or ''
+    if element.tag.startswith('{' + library.NS['table'] + '}') and not text.strip():
+        text = ''
+    return (element.tag, tuple(sorted(attrs)), text,
+            tuple(_tree(child, library, names, ignored) for child in element))
+
+
+def _filters(observed, library):
+    ns = library.NS
+    ranges = observed['root'].findall('.//table:database-range', ns)
+    filters = observed['root'].findall('.//table:filter', ns)
+    facts = []
+    for item in ranges:
+        # Generated database declaration identifiers carry no predicate meaning;
+        # declaration multiplicity and every other attribute/tree do.
+        facts.append(_tree(item, library, observed['names'], (library.q('table', 'name'),)))
+    return sorted(facts, key=repr), len(filters)
+
+
+def _filter_authority(authority, observed, library):
+    ns = library.NS
+    source_filters = [node for sheet in authority['sheets']
+                      for node in sheet['xml'].findall('x:autoFilter', ns)]
+    need(len(source_filters) == 1, 'AUTHORITY_FILTER_COUNT')
+    expected = source_filters[0]
+    columns = expected.findall('x:filterColumn', ns)
+    need(len(columns) == 1 and len(list(expected)) == 1, 'AUTHORITY_FILTER_PROFILE')
+    column = columns[0]
+    need(len(list(column)) == 1 and column[0].tag == library.q('x', 'filters'),
+         'AUTHORITY_FILTER_PROFILE')
+    expected_values = sorted(node.get('val') for node in column.findall('x:filters/x:filter', ns))
+    need(expected_values and len(set(expected_values)) == len(expected_values), 'AUTHORITY_FILTER_PROFILE')
+    ranges = observed['root'].findall('.//table:database-range', ns)
+    effective = [node for node in ranges if node.find('table:filter', ns) is not None]
+    need(len(ranges) >= 1 and len(effective) == 1 and
+         len(observed['root'].findall('.//table:filter', ns)) == 1,
+         'FILTER_REQUIRED_COUNTS')
+    need(all(library.norm(library.attr(node, 'table', 'target-range-address'), observed['names'])
+             == 'S0!' + expected.get('ref') for node in ranges), 'FILTER_TARGET_AUTHORITY')
+    conditions = effective[0].findall('.//table:filter-condition', ns)
+    filter_node = effective[0].find('table:filter', ns)
+    need(len(conditions) == 1, 'FILTER_PREDICATE_COUNT')
+    # The selected ODS serializes its one condition inside a singleton AND.
+    # Every boolean node must resolve to this one leaf; additional leaves or
+    # unsupported nodes cannot disappear behind a first-condition check.
+    branch = filter_node
+    while branch is not conditions[0]:
+        need(len(list(branch)) == 1, 'FILTER_PREDICATE_COUNT')
+        branch = list(branch)[0]
+        need(branch is conditions[0] or branch.tag in
+             (library.q('table', 'filter-and'), library.q('table', 'filter-or')),
+             'FILTER_BOOLEAN_PROFILE')
+    condition = conditions[0]
+    items = condition.findall('table:filter-set-item', ns)
+    need(len(items) == len(list(condition)), 'FILTER_PREDICATE_PROFILE')
+    values = [library.attr(item, 'table', 'value') for item in items] if items else [library.attr(condition, 'table', 'value')]
+    need(sorted(values) == expected_values and
+         library.attr(condition, 'table', 'field-number') == column.get('colId') and
+         library.attr(condition, 'table', 'operator') == '=', 'FILTER_PREDICATE_AUTHORITY')
+
+
+def _validations(observed, library):
+    ns = library.NS
+    definitions = observed['root'].findall('.//table:content-validation', ns)
+    need(len(definitions) == 1, 'VALIDATION_DEFINITION_COUNT')
+    definition = definitions[0]
+    name = library.attr(definition, 'table', 'name')
+    need(type(name) is str and name, 'VALIDATION_IDENTITY')
+    condition = library.attr(definition, 'table', 'condition', '')
+    match = re.fullmatch(r'of:cell-content-is-whole-number\(\) and cell-content-is-between\((-?[0-9]+),(-?[0-9]+)\)', condition)
+    need(match is not None and _number(match[1]) <= _number(match[2]),
+         'VALIDATION_ABSOLUTE_INTEGER_BOUNDS')
+    errors = definition.findall('table:error-message', ns)
+    need(len(errors) == 1 and library.attr(errors[0], 'table', 'display') == 'true'
+         and library.attr(errors[0], 'table', 'message-type') == 'stop',
+         'VALIDATION_STOP_ERROR')
+    bindings = []
+    for index, sheet in enumerate(observed['sheets']):
+        for location, bound in sheet['validation_cells'].items():
+            need(bound == name, 'VALIDATION_RESOLVED_BINDING')
+            bindings.append((index, location))
+    need(set(bindings) == {(0, 'C' + str(row)) for row in range(2, 6)},
+         'VALIDATION_ALL_LOCATIONS')
+    # The absolute condition has no relative refs.  Its declared base is
+    # retained independently even though it does not affect this predicate.
+    semantic = _tree(definition, library, observed['names'], (library.q('table', 'name'),))
+    return semantic, tuple(sorted(bindings)), _number(match[1]), _number(match[2])
+
+
+def _hidden(observed, library):
+    result = []
+    declarations = [node for root in (observed['root'], observed['styles'])
+                    for node in root.findall('.//style:style', library.NS)
+                    if library.attr(node, 'style', 'family') == 'table']
+    styles = {library.attr(node, 'style', 'name'): node for node in declarations}
+    need(len(styles) == len(declarations) and None not in styles, 'SHEET_STYLE_IDENTITY')
+    for sheet in observed['sheets']:
+        style_name = library.attr(sheet['xml'], 'table', 'style-name')
+        visited = set()
+        display = None
+        while style_name is not None:
+            need(style_name in styles and style_name not in visited, 'SHEET_STYLE_RESOLUTION')
+            visited.add(style_name)
+            style = styles[style_name]
+            properties = style.findall('style:table-properties', library.NS)
+            need(len(properties) <= 1, 'SHEET_STYLE_PROPERTIES')
+            if properties and display is None:
+                display = library.attr(properties[0], 'table', 'display')
+            style_name = library.attr(style, 'style', 'parent-style-name')
+        display = 'true' if display is None else display
+        need(display in ('true', 'false'), 'SHEET_DISPLAY_MODE')
+        rows = []
+        index = 1
+        for row in sheet['xml'].findall('table:table-row', library.NS):
+            count = int(library.attr(row, 'table', 'number-rows-repeated', '1'))
+            visibility = library.attr(row, 'table', 'visibility', 'visible')
+            need(visibility in ('visible', 'collapse', 'filter'), 'ROW_VISIBILITY_MODE')
+            if visibility != 'visible':
+                rows.extend((index + offset, visibility) for offset in range(count))
+            index += count
+        columns = []
+        index = 1
+        # Reject unsupported column grouping rather than dropping hidden modes.
+        direct = sheet['xml'].findall('table:table-column', library.NS)
+        need(len(direct) == len(sheet['xml'].findall('.//table:table-column', library.NS)),
+             'NESTED_COLUMN_STRUCTURE_UNSUPPORTED')
+        for column in direct:
+            raw_count = library.attr(column, 'table', 'number-columns-repeated', '1')
+            need(re.fullmatch(r'[1-9][0-9]{0,4}', raw_count) and int(raw_count) <= 16384,
+                 'COLUMN_EXTENT_BOUND')
+            count = int(raw_count)
+            need(index + count <= 16385, 'COLUMN_EXTENT_BOUND')
+            visibility = library.attr(column, 'table', 'visibility', 'visible')
+            need(visibility in ('visible', 'collapse', 'filter'), 'COLUMN_VISIBILITY_MODE')
+            if visibility != 'visible':
+                columns.extend((index + offset, visibility) for offset in range(count))
+            index += count
+        result.append((display, tuple(rows), tuple(columns)))
+    return tuple(result)
+
+
+def _chart_profile(observed, library, authority):
+    need(len(observed['charts']) == 1, 'ALL_CHART_COUNTS')
+    root = observed['charts'][0]
+    charts = root.findall('.//chart:chart', library.NS)
+    plots = root.findall('.//chart:plot-area', library.NS)
+    series = root.findall('.//chart:series', library.NS)
+    categories = root.findall('.//chart:categories', library.NS)
+    need(len(charts) == len(plots) == len(series) == len(categories) == 1,
+         'ALL_CHART_COUNTS')
+    need(library.attr(charts[0], 'chart', 'class') ==
+         library.attr(series[0], 'chart', 'class') == 'chart:bar', 'CHART_ROOT_SERIES_TYPE')
+    declarations = root.findall('.//style:style', library.NS)
+    styles = {library.attr(node, 'style', 'name'): node for node in declarations}
+    need(len(styles) == len(declarations) and None not in styles, 'CHART_STYLE_IDENTITY')
+    style_name = library.attr(plots[0], 'chart', 'style-name')
+    visited = set()
+    effective = {}
+    while style_name is not None:
+        need(style_name in styles and style_name not in visited, 'CHART_STYLE_RESOLUTION')
+        visited.add(style_name)
+        style = styles[style_name]
+        properties = style.findall('style:chart-properties', library.NS)
+        need(len(properties) <= 1, 'CHART_STYLE_PROPERTIES')
+        if properties:
+            for key, value in properties[0].attrib.items():
+                effective.setdefault(key, value)
+        style_name = library.attr(style, 'style', 'parent-style-name')
+    # An omitted property is not affirmative evidence of the independently
+    # selected visible-only requirement.  Resolve its actual plot-area style.
+    need(effective.get(library.q('chart', 'include-hidden-cells')) == 'false',
+         'CHART_INCLUDE_HIDDEN_EXPLICIT_FALSE')
+    direction = authority['charts'][0].findall('.//c:barChart/c:barDir', library.NS)
+    need(len(direction) == 1 and direction[0].get('val') in ('bar', 'col'),
+         'AUTHORITY_CHART_DIRECTION')
+    # Keep the exact normalized declaration/default state of the qualified
+    # received baseline.  The selected source omits chart:vertical; guessing
+    # a new cross-format default mapping would manufacture extra evidence.
+    selected = ('vertical', 'stacked', 'percentage', 'three-dimensional',
+                'deep', 'lines', 'connect-bars', 'include-hidden-cells')
+    cache_tables = root.findall('.//table:table', library.NS)
+    need(len(cache_tables) == 1, 'CHART_CACHE_TABLE_COUNT')
+    table = cache_tables[0]
+    body_groups = table.findall('table:table-rows', library.NS)
+    header_groups = table.findall('table:table-header-rows', library.NS)
+    need(len(body_groups) == len(header_groups) == 1, 'CHART_CACHE_GROUP_COUNTS')
+    cache_rows = body_groups[0].findall('table:table-row', library.NS)
+    headers = header_groups[0].findall('table:table-row', library.NS)
+    need(len(headers) == 1 and len(list(body_groups[0])) == len(cache_rows)
+         and len(list(header_groups[0])) == 1 and
+         {id(row) for row in table.findall('.//table:table-row', library.NS)} ==
+         {id(row) for row in cache_rows + headers}, 'CHART_ALL_CACHE_ROW_SCOPE')
+    need(cache_rows, 'CHART_CACHE_ROWS_REQUIRED')
+    def primitive(cell, kind):
+        allowed = {'value-type', 'string-value'} if kind == 'string' else {'value-type', 'value'}
+        office_keys = {key.split('}', 1)[1] for key in cell.attrib
+                       if key.startswith('{' + library.NS['office'] + '}')}
+        need(office_keys <= allowed and library.attr(cell, 'office', 'value-type') == kind,
+             'CHART_CACHE_PRIMITIVE_ATTRIBUTES')
+        if kind == 'string':
+            text = library.ods_text(cell)
+            need(library.attr(cell, 'office', 'string-value', text) == text,
+                 'CHART_CACHE_CATEGORY_STRING_COHERENCY')
+        else:
+            value = _number(library.attr(cell, 'office', 'value'))
+            text = library.ods_text(cell)
+            need(not text or _number(text) == value, 'CHART_CACHE_NUMERIC_DISPLAY_COHERENCY')
+    for row in cache_rows + headers:
+        cells = row.findall('table:table-cell', library.NS)
+        need(len(cells) == len(list(row)) == 2 and
+             library.attr(row, 'table', 'number-rows-repeated', '1') == '1' and
+             library.attr(row, 'table', 'visibility', 'visible') == 'visible',
+             'CHART_CACHE_ROW_SHAPE')
+        need(all(library.attr(cell, 'table', 'number-columns-repeated', '1') == '1'
+                 and library.attr(cell, 'table', 'formula') is None for cell in cells),
+             'CHART_CACHE_CELL_TYPES')
+        if row in cache_rows:
+            primitive(cells[0], 'string')
+            primitive(cells[1], 'float')
+        else:
+            need(not library.ods_text(cells[0]) and
+                 not any(key.startswith('{' + library.NS['office'] + '}')
+                         for key in cells[0].attrib), 'CHART_CACHE_HEADER_CORNER')
+            primitive(cells[1], 'string')
+            label_ref = _reference(library.attr(series[0], 'chart', 'label-cell-address'),
+                                   observed['names'])
+            need(label_ref[1] == label_ref[2], 'CHART_LABEL_SINGLE_CELL')
+            label = authority['sheets'][label_ref[0]]['cells'][label_ref[1]]
+            need(label['kind'] == 'text' and library.ods_text(cells[1]) == label['value'],
+                 'CHART_CACHE_HEADER_LABEL')
+    return tuple((key, effective.get(library.q('chart', key))) for key in selected)
+
+
+def _baseline_rich(report):
+    # A received formula/chart cache may be stale.  Inspect all required
+    # structural flags directly; never rewrite a report to simulate cache PASS.
+    n = report['custom_named_range']
+    need(n['expected_count'] == n['actual_count'] == 1 and n['name_scope_range_exact_equal'],
+         'BASELINE_NAME_AUTHORITY')
+    c = report['chart']
+    need(c['expected_chart_count'] == c['actual_chart_count'] == 1
+         and len(c['series']) == 1, 'BASELINE_CHART_COUNTS')
+    s = c['series'][0]
+    need(s['expected_reference_count'] == s['actual_reference_count'] == 3
+         and s['source_category_values_label_references_equal'] and s['chart_type_bar_retained']
+         and s['source_title_count'] == s['actual_title_count'] and s['source_title_count'] > 0
+         and s['title_text_exact_equal'] and s['source_plot_visible_only']
+         and not s['actual_include_hidden_cells'], 'BASELINE_CHART_AUTHORITY')
+    need(len(report['hidden_rows']) == len(report['merged_label_cells']) == 3
+         and all(item['visible_state_equal'] for item in report['hidden_rows'])
+         and all(item['ranges_exact_equal'] for item in report['merged_label_cells'])
+         and report['merged_label_cells'][2]['actual_count'] == 1,
+         'BASELINE_MERGE_HIDDEN')
+    v = report['data_validation']
+    need(v['expected_definition_count'] == v['actual_definition_count'] == 1
+         and len(v['observations']) == 1, 'BASELINE_VALIDATION_COUNT')
+    need(all(v['observations'][0][key] for key in
+             ('applied_cell_locations_equal', 'integer_between_condition_equal',
+              'allow_empty_equal', 'error_message_text_equal', 'error_stop_behavior_equal')),
+         'BASELINE_VALIDATION_AUTHORITY')
+
+
+def _check(*, source_bytes, received_bytes, saved_bytes, authority_bytes,
+           independent_fact_bytes, request, delta, projection, oracle, pins, libraries):
+    _keys(pins, PIN_KEYS, 'PIN_SCHEMA')
+    need(all(type(value) is str and re.fullmatch(r'[0-9a-f]{64}', value)
+             for value in pins.values()), 'PIN_FORMAT')
+    blobs = {'source': source_bytes, 'received': received_bytes, 'saved': saved_bytes,
+             'authority': authority_bytes, 'independent_fact': independent_fact_bytes}
+    for key, data in blobs.items():
+        need(type(data) is bytes and sha(data) == pins[key + '_sha256'], 'INPUT_PIN')
+    for key, value in [('request', request), ('delta', delta),
+                       ('projection', projection), ('oracle', oracle)]:
+        need(sha(canonical(value)) == pins[key + '_sha256'], 'JSON_PIN')
+    _keys(projection, PROJECTION_KEYS, 'PROJECTION_SCHEMA')
+    need(projection['schema'] == 'friday.received-saved.rich-projection-binding.v1'
+         and projection['profile'] == 'fixed3sheet-original-rich.v1', 'PROJECTION_VERSION')
+    for key in PROJECTION_KEYS - {'schema', 'profile'}:
+        need(projection[key] == pins[key], 'PROJECTION_BINDING')
+    checker, recalc, library, strict, raw = _load(libraries)
+    need(checker.request_sha256(request) == pins['request_sha256'], 'REQUEST_CANONICAL_PIN')
+    # Validate every archive before any legacy reader, including the input
+    # archive.  The exact ordinary-edit checker then joins source -> received.
+    source_roots = _archive(source_bytes, 'ods', checker, raw)
+    received_roots = _archive(received_bytes, 'ods', checker, raw)
+    saved_roots = _archive(saved_bytes, 'ods', checker, raw)
+    authority_roots = _archive(authority_bytes, 'xlsx', checker, raw)
+    edit = checker.assess_edit(source_bytes, received_bytes, request,
+                             {key: pins[key] for key in
+                              ('source_sha256', 'received_sha256', 'request_sha256')})
+    need(edit.get('status') == 'EDIT_BYTES_MATCH', 'ORDINARY_EDIT_' + edit.get('code', 'REFUSED'))
+    need(request['cell'] == 'C2' and _number(request['value']) == _number(request['expected']) + 1,
+         'ORDINARY_PLUS_ONE_PROFILE')
+    _keys(delta, {'kind', 'sheet_index', 'cell', 'before', 'after', 'addend'}, 'DELTA_SCHEMA')
+    need(delta == oracle.get('delta'), 'ORACLE_DELTA_BINDING')
+    need(delta['kind'] == 'additional_independent_numeric_plus_one'
+         and type(delta['sheet_index']) is int and delta['sheet_index'] == 1
+         and delta['cell'] == 'C2' and delta['addend'] == '1'
+         and delta['before'] == request['value']
+         and _number(delta['after']) == _number(delta['before']) + 1, 'CONTROLLED_DELTA_PROFILE')
+    authority = _parse(library, 'xlsx', authority_bytes)
+    source = _parse(library, 'ods', source_bytes, authority['names'])
+    received = _parse(library, 'ods', received_bytes, authority['names'])
+    saved = _parse(library, 'ods', saved_bytes, authority['names'])
+    _source_cells(authority, source)
+    need(authority['names'][0] == request['sheet'], 'REQUEST_AUTHORITY_SHEET')
+    source_raw, received_raw = raw.raw_cells(source_roots), raw.raw_cells(received_roots)
+    for observed, cells in ((source, source_raw), (received, received_raw)):
+        _guard_references(observed, library, cells)
+    _guard_references(saved, library, raw.raw_cells(saved_roots))
+    for node in authority_roots['xl/workbook.xml'].findall('.//x:definedName', library.NS):
+        _reference(node.text, authority['names'], separator='!')
+    for chart in authority['charts']:
+        for node in chart.findall('.//c:f', library.NS):
+            _reference(node.text, authority['names'], separator='!')
+    fact = _json(independent_fact_bytes)
+    expected_caches = _facts(fact, authority, source_raw, received_raw,
+                             request, delta, pins['source_sha256'])
+    need(_entry_values(oracle['formula_caches_after']) == expected_caches,
+         'ORACLE_INDEPENDENT_ARITHMETIC')
+    # The private after projection is semantic data in memory.  It changes no
+    # workbook bytes and consumes no observed formula/chart cache as truth.
+    expected = deepcopy(authority)
+    for left, right in zip(expected['sheets'], received['sheets'], strict=True):
+        left['hidden'] = deepcopy(right['hidden'])
+    expected['sheets'][0]['cells']['C2']['value'] = _number(delta['after'])
+    baseline_expected = deepcopy(authority)
+    for left, right in zip(baseline_expected['sheets'], received['sheets'], strict=True):
+        left['hidden'] = deepcopy(right['hidden'])
+    baseline_expected['sheets'][0]['cells']['C2']['value'] = _number(request['value'])
+    baseline = library.rich(baseline_expected, received)
+    _baseline_rich(baseline)
+    chart_before = _chart_profile(received, library, authority)
+    _filter_authority(authority, received, library)
+    need(_filters(received, library) == _filters(saved, library), 'ALL_FILTER_FACTS_PRESERVATION')
+    need(not received['root'].findall('.//table:named-expression', library.NS)
+         and not saved['root'].findall('.//table:named-expression', library.NS),
+         'NAMED_EXPRESSION_PROFILE_UNSUPPORTED')
+    source_names = sorted(((item['name'], item['scope'], item['ref'], item['usable'])
+                           for item in received['named']), key=repr)
+    saved_names = sorted(((item['name'], item['scope'], item['ref'], item['usable'])
+                          for item in saved['named']), key=repr)
+    need(source_names == saved_names and len(source_names) >= 1, 'ALL_NAMED_FACTS_PRESERVATION')
+    validation_before = _validations(received, library)
+    need(validation_before == _validations(saved, library), 'ALL_VALIDATION_FACTS_PRESERVATION')
+    need(_number(delta['after']) == _number(delta['after']).to_integral_value()
+         and validation_before[2] <= _number(delta['after']) <= validation_before[3],
+         'CONTROLLED_DELTA_VALIDATION')
+    need(_hidden(received, library) == _hidden(saved, library), 'ALL_HIDDEN_MODES_PRESERVATION')
+    need(all(before['merges'] == after['merges'] for before, after in
+             zip(received['sheets'], saved['sheets'], strict=True)), 'ALL_MERGES_PRESERVATION')
+    cache_report = recalc.assess_recalc(received_bytes, saved_bytes, request, oracle,
+                                       {key: pins[key] for key in
+                                        ('received_sha256', 'saved_sha256', 'request_sha256',
+                                         'oracle_sha256', 'delta_sha256')},
+                                       received_checker=checker,
+                                       old_checker_source=libraries['strict'])
+    need(cache_report.get('state') == 'RECALC_CELL_BYTES_MATCH_EXPLICIT_ORACLE',
+         'CELLS_' + cache_report.get('code', 'REFUSED'))
+    report = library.rich(expected, saved)
+    strict.strict_rich(report)
+    # Close legacy all([]), first-condition and zip-count gaps explicitly.
+    _baseline_rich(report)
+    _filter_authority(authority, saved, library)
+    need(chart_before == _chart_profile(saved, library, authority),
+         'CHART_SELECTED_TYPE_VISIBILITY_PRESERVATION')
+    derived_digest = sha(canonical({'binding': projection,
+         'formula_caches_after': [{'sheet_index': index + 1, 'cell': cell, 'value': str(value)}
+                                 for (index, cell), value in sorted(expected_caches.items())]}))
+    return {'schema': 'friday.received-saved.selected-rich-byte-assessment.v1',
+            'state': 'SELECTED_RICH_BYTES_MATCH_EXPLICIT_PROJECTION',
+            'scope': 'supplied_bytes_fixed_three_sheet_profile_only', **FALSE_CLAIMS,
+            'pins': dict(pins), 'library_pins': dict(LIBRARY_PINS),
+            'derived_expected_projection_sha256': derived_digest,
+            'strict_rich_checked_report_sha256': sha(canonical(report)),
+            'facts': {'ordinary_source_received_edit_bytes_match': True,
+                      'all_populated_cells_raw_formulas_types_text_ids_checked': True,
+                      'all_five_saved_formula_caches_independently_rederived': True,
+                      'stale_received_formula_and_chart_caches_permitted': True,
+                      'original_selected_feature_authority_crosschecked': True,
+                      'all_named_declarations_and_scopes_ranges_preserved': True,
+                      'all_filter_targets_predicates_declaration_multiplicity_preserved': True,
+                      'validation_definition_resolved_bindings_locations_stop_errors_preserved': True,
+                      'all_three_sheet_merges_and_current_hidden_modes_preserved': True,
+                      'selected_chart_references_title_type_visibility_and_fresh_cache_match': True},
+            'external_joins': 'UNBOUND',
+            'limitations': ['byte_assessment_does_not_verify_independence_or_authority',
+                            'actual_runtime_save_close_reopen_once_cleanup_not_observed',
+                            'four_known_cross_format_losses_not_restored',
+                            'four_unassessed_features_not_promoted',
+                            'nineteen_dimension_history_observations_not_promoted',
+                            'physical_width_pagination_chart_size_provenance_not_proved']}
+
+
+def assess_received_saved(**inputs):
+    """Assess explicit immutable inputs; return sanitized fixed codes and hashes.
+
+    Even caller labels, matching pins and a successful byte match confer none
+    of the authority/runtime/custody/independence/acceptance claims above.
+    Underlying exceptions and workbook data are never included in results.
+    """
+    try:
+        with localcontext() as context:
+            context.prec = 512
+            return _check(**inputs)
+    except RichJoinError as error:
+        return {'schema': 'friday.received-saved.selected-rich-byte-assessment.v1',
+                'state': 'REFUSED', 'code': error.code, **FALSE_CLAIMS}
+    except Exception:
+        return {'schema': 'friday.received-saved.selected-rich-byte-assessment.v1',
+                'state': 'REFUSED', 'code': 'BOUNDED_PARSER_OR_SCHEMA', **FALSE_CLAIMS}
