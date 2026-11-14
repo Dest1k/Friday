@@ -1,0 +1,53 @@
+--- a/finalize_source24.py
++++ b/finalize_source24.py
+@@ -11,6 +11,9 @@
+ from pathlib import PurePosixPath
+ 
+ TEMPLATE_SHA256='3e6d5d522d8c0de1d69d0c68138810d088ab17fdde9eda430646996a9ee962c1'
++PRIVATE_TEMPLATE_SHA256='6c9c7e06dc2e317bb4fc369692e890f2e64886fe878d5ea2dce65a8fc2b5348f'
++PUBLIC_BASE_SHA256='a281dafffc509974ed6f40bfe5cef7e21f86838f00173f1c9227f05e5c4939a8'
++PRIVATE_BASE_SHA256='e4c4e33d07fd370c62ada08c67c6fafe42c64228a54c6b73fcb947d893b598d9'
+ EXPORT_SHA256='20d0f3a5cea9efd37deb6d91994d366ad367715e752dd6327e025d2f0f02447d'
+ PINS={'request':'0c04fac41fed1ddbe4c4e7c12140f5caecf6f8bc904cddff66b00235411f2141',
+  'input':'60d879571771e861df8441a02489cb74bf8d8707e2f14e0ae3448b81ed87504d',
+@@ -65,14 +68,16 @@
+  require(marker['home']==req['home'] and marker['input_sha256']==PINS['input'] and marker['source_receipt_sha256']==PINS['source_receipt'] and marker['ordinary_gateway']['source_receipt_sha256']==PINS['source_receipt'] and marker['ordinary_gateway']['operator_entry']['input']==req['current_input'] and len(marker['plugin_files'])==52,'actual221_marker_join_changed')
+  return docs
+ 
+-def bind(template_raw,freeze_raw,manifest_raw,patch_raw,export_raw,copies,*,now):
++def bind(template_raw,freeze_raw,manifest_raw,patch_raw,export_raw,copies,*,now,base_flavor='public'):
+  """Produce bound source bytes only; Root still owns fresh admission and integration."""
+- require(type(template_raw) is bytes and sha(template_raw)==TEMPLATE_SHA256,'unbound_template_changed')
++ require(type(base_flavor) is str and base_flavor in ('public','actual221-private'),'explicit_known_base_flavor_required')
++ template_pin=TEMPLATE_SHA256 if base_flavor=='public' else PRIVATE_TEMPLATE_SHA256
++ require(type(template_raw) is bytes and sha(template_raw)==template_pin,'unbound_template_changed')
+  docs=predecessor_checked(export_raw,copies);receipt=docs['source_receipt']
+  freeze=load(freeze_raw)
+  fields={'schema','template_sha256','predecessor_request_sha256','predecessor_input_sha256','predecessor_receipt_sha256','layer_name','manifest_sha256','patch_sha256','created_at','expires_at'}
+  require(type(freeze) is dict and set(freeze)==fields and freeze['schema']=='friday.source-only-successor24-freeze.v1','exact_freeze_required')
+- require(freeze['template_sha256']==TEMPLATE_SHA256 and freeze['predecessor_request_sha256']==PINS['request'] and freeze['predecessor_input_sha256']==PINS['input'] and freeze['predecessor_receipt_sha256']==PINS['source_receipt'],'actual221_freeze_join_changed')
++ require(freeze['template_sha256']==template_pin and freeze['predecessor_request_sha256']==PINS['request'] and freeze['predecessor_input_sha256']==PINS['input'] and freeze['predecessor_receipt_sha256']==PINS['source_receipt'],'actual221_freeze_join_changed')
+  require(type(now) in (int,float) and math.isfinite(now) and all(type(freeze[k]) in (int,float) and math.isfinite(freeze[k]) for k in ('created_at','expires_at')) and freeze['created_at']<=now<freeze['expires_at'],'freeze_expired_or_future')
+  name=freeze['layer_name']
+  require(type(name) is str and name and all(c in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in name),'explicit_final_layer_name_required')
+@@ -96,7 +101,7 @@
+   before='CURRENT_SOURCE_TWENTY_FOURTH_'+key+' = None'
+   require(text.count(before)==1,'binding_seam_changed');text=text.replace(before,'CURRENT_SOURCE_TWENTY_FOURTH_'+key+' = '+repr(value))
+  ast.parse(text)
+- return text.encode(),{'schema':'friday.source-only-successor24-bindings.v1','authority_granted':False,'runtime_accepted':False,'source_sha256':sha(text.encode()),'manifest':manifest_name,'manifest_sha256':sha(manifest_raw),'patch':patch_name,'patch_sha256':sha(patch_raw),'native':native,'after_native_count':17893+sum(int(row[3]) for row in native.values())}
++ return text.encode(),{'schema':'friday.source-only-successor24-bindings.v1','authority_granted':False,'runtime_accepted':False,'base_flavor':base_flavor,'base_sha256':PUBLIC_BASE_SHA256 if base_flavor=='public' else PRIVATE_BASE_SHA256,'template_sha256':template_pin,'source_sha256':sha(text.encode()),'manifest':manifest_name,'manifest_sha256':sha(manifest_raw),'patch':patch_name,'patch_sha256':sha(patch_raw),'native':native,'after_native_count':17893+sum(int(row[3]) for row in native.values())}
+ 
+ CALLER_TEMPLATES={'build-layer-publication-request.py':'45a6b87117893028e0b3c71789e8d932555215cd493e6c3b2c114c608545c7ff','friday_v3_layer_publication.py':'ba135fdf5dd12b96d36aafe3b638ae65d8a877587eb4d84c2c30534ebd079dfd'}
+ def bind_callers(builder_raw,consumer_raw,*,layer_name):
+@@ -116,9 +121,9 @@
+         ast.parse(text);outputs[name]=text.encode()
+     return outputs
+ 
+-def finalize_package(template_raw,builder_raw,consumer_raw,freeze_raw,manifest_raw,patch_raw,export_raw,copies,*,now):
++def finalize_package(template_raw,builder_raw,consumer_raw,freeze_raw,manifest_raw,patch_raw,export_raw,copies,*,now,base_flavor='public'):
+     """Single coherent pure binding seam; returns bytes, never grants execution."""
+-    source,bindings=bind(template_raw,freeze_raw,manifest_raw,patch_raw,export_raw,copies,now=now)
++    source,bindings=bind(template_raw,freeze_raw,manifest_raw,patch_raw,export_raw,copies,now=now,base_flavor=base_flavor)
+     callers=bind_callers(builder_raw,consumer_raw,layer_name=load(freeze_raw)['layer_name'])
+     outputs={'scripts/friday_ordinary_install.py':source,**callers}
+     return outputs,{**bindings,'outputs':{name:sha(raw) for name,raw in outputs.items()},'effects_performed':False,'fresh_root_admission_required':True,'independent_final_binding_review_required':True}

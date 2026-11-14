@@ -1,0 +1,301 @@
+--- bot_tester.f03.before.py
++++ bot_tester.f03.first-send.py
+@@ -11250,7 +11250,7 @@
+             raise Refused('Stored scenario hash mismatch; never change an oracle after sending')
+         if type(run.get('step')) is not int or not 0 <= run['step'] < len(run['scenario']['steps']):
+             raise Refused('Stored step invalid')
+-        if type(run.get('deadline')) not in (int, float) or not math.isfinite(run['deadline']):
++        if type(run.get('deadline')) not in (int, float) or not math.isfinite(self.effective_deadline(run)):
+             raise Refused('Stored deadline invalid')
+         expected = run['scenario']['steps'][run['step']]['observe']
+         if reply_capture(expected) and run.get('send_state') == 'sent':
+@@ -11260,7 +11260,7 @@
+                     or type(run.get('send_intent_at')) not in (int, float)
+                     or run['send_intent_at'] > run['sent_at']
+                     or run['sent_at'] + expected['window_seconds']
+-                       + REPLY_WINDOW_RESERVE > run['deadline']
++                       + REPLY_WINDOW_RESERVE > self.effective_deadline(run)
+                     or not self.valid_send_budget(run)):
+                 raise Refused('Stored bounded reply window changed or missing; never extended')
+             self.verify_window(run)
+@@ -11277,7 +11277,7 @@
+                 and run.get('send_timeout_seconds') == self.send_ack_budget(run)
+                 and dispatched <= sent <= dispatched + self.send_ack_budget(run)
+                 and dispatched + self.send_ack_budget(run) + expected['window_seconds']
+-                    + REPLY_WINDOW_RESERVE <= run['deadline'])
++                    + REPLY_WINDOW_RESERVE <= self.effective_deadline(run))
+ 
+     def guard(self, run, *, http_cap=10):
+         continuation = self.continuation_receipt(run, with_prior=True)
+@@ -11298,7 +11298,7 @@
+                 self.cursor_offsets(self.store.get(self.store.root / 'cursor.json'))
+         if (self.store.root / 'observer-stop.json').exists():
+             raise Refused('Observer stopped; product cancellation is separate')
+-        if self.clock() >= run['deadline']:
++        if self.clock() >= self.effective_deadline(run):
+             raise Refused('Original scenario deadline expired; product may still run')
+         cooldown = self.store.get(self.store.root / 'cooldown.json', {})
+         if self.clock() < cooldown.get('until', 0):
+@@ -11313,7 +11313,7 @@
+             if S07_RUNTIME_HOOK is None:
+                 raise Refused('S07 receiver cutoff UNBOUND')
+             monotonic_budget = min(monotonic_budget, S07_RUNTIME_HOOK.receiver_remaining(continuation[0]))
+-        return min(http_cap, monotonic_budget, run['deadline'] - self.clock())
++        return min(http_cap, monotonic_budget, self.effective_deadline(run) - self.clock())
+ 
+     def cooldown(self, exc):
+         self.store.put(self.store.root / 'cooldown.json', {'until': self.clock() + exc.seconds, 'seconds': exc.seconds})
+@@ -11327,7 +11327,7 @@
+                 or type(run.get('send_intent_at')) not in (int, float)
+                 or run['send_intent_at'] > run['sent_at']
+                 or run['sent_at'] + expected['window_seconds']
+-                   + REPLY_WINDOW_RESERVE > run['deadline']
++                   + REPLY_WINDOW_RESERVE > self.effective_deadline(run)
+                 or not self.valid_send_budget(run)):
+             raise Refused('Bounded reply window missing or changed; never extended')
+         return until
+@@ -11374,7 +11374,9 @@
+                 or type(commitment.get('capture_until')) not in (int, float)
+                 or commitment.get('window_seconds') != expected['window_seconds']
+                 or commitment['capture_until'] != commitment['sent_at'] + expected['window_seconds']
+-                or commitment.get('deadline') != run['deadline']
++                or commitment.get('first_send_phase') != run.get('first_send_phase')
++                or ('first_send_phase' in run and commitment.get('original_deadline') != run['deadline'])
++                or commitment.get('deadline') != self.effective_deadline(run)
+                 or commitment['sent_at'] + expected['window_seconds']
+                    + REPLY_WINDOW_RESERVE > commitment['deadline']
+                 or commitment.get('send_dispatch_at') != run.get('send_dispatch_at')
+@@ -12115,9 +12117,9 @@
+         admitted = self.continuation_receipt(run)
+         ack_budget = self.send_ack_budget(run)
+         def monotonic_window_fits():
+-            return (admitted is None or time.monotonic() + ack_budget
++            return (('first_send_phase' not in run or _f03_phase_module().remaining(run['first_send_phase'], run, self.store.root) >= ack_budget + run['scenario']['steps'][run['step']]['observe']['window_seconds'] + REPLY_WINDOW_RESERVE) and (admitted is None or time.monotonic() + ack_budget
+                     + run['scenario']['steps'][run['step']]['observe']['window_seconds']
+-                    + REPLY_WINDOW_RESERVE <= admitted[0]['clock']['deadline_monotonic'])
++                    + REPLY_WINDOW_RESERVE <= admitted[0]['clock']['deadline_monotonic']))
+         if admitted is not None and (run.get('send_attempts') != 0 or run.get('send_state') != 'none'):
+             raise Refused('Continuation permits one send attempt, never retry')
+         if admitted is not None:
+@@ -12159,7 +12161,7 @@
+         reply = reply_capture(step['observe'])
+         self.reply_run = None
+         self.legacy_run = None if reply else run
+-        if reply and (self.clock() + ack_budget + step['observe']['window_seconds'] + REPLY_WINDOW_RESERVE > run['deadline'] or not monotonic_window_fits()):
++        if reply and (self.clock() + ack_budget + step['observe']['window_seconds'] + REPLY_WINDOW_RESERVE > self.effective_deadline(run) or not monotonic_window_fits()):
+             raise Refused('Bounded reply window does not fit the remaining original deadline; nothing sent')
+         upload = step.get('input')
+         body = content_type = None
+@@ -12226,7 +12228,7 @@
+         self.save(run)  # Crash from this point is ambiguous, never a replay grant.
+         try:
+             remaining = self.guard(run)
+-            if reply and (self.clock() + ack_budget + step['observe']['window_seconds'] + REPLY_WINDOW_RESERVE > run['deadline'] or not monotonic_window_fits()):
++            if reply and (self.clock() + ack_budget + step['observe']['window_seconds'] + REPLY_WINDOW_RESERVE > self.effective_deadline(run) or not monotonic_window_fits()):
+                 # Preflight/custody may have consumed the mandatory window+reserve.
+                 raise Refused('Bounded reply window no longer fits the original deadline; nothing sent')
+         except Refused:
+@@ -12236,7 +12238,7 @@
+         if reply:
+             run.update(send_dispatch_at=self.clock(), send_timeout_seconds=ack_budget)
+             self.save(run)
+-            if (self.clock() + ack_budget + step['observe']['window_seconds'] + REPLY_WINDOW_RESERVE > run['deadline'] or not monotonic_window_fits()):
++            if (self.clock() + ack_budget + step['observe']['window_seconds'] + REPLY_WINDOW_RESERVE > self.effective_deadline(run) or not monotonic_window_fits()):
+                 run.update(send_state='refused_pre_request', status='PRE_REQUEST_REFUSED')
+                 self.save(run)
+                 raise Refused('ACK, full receive window and cleanup no longer fit; nothing sent')
+@@ -12344,10 +12346,13 @@
+                           'send_intent_at': run['send_intent_at'],
+                           'send_dispatch_at': run['send_dispatch_at'],
+                           'send_timeout_seconds': run['send_timeout_seconds'],
+-                          'capture_until': run['capture_until'], 'deadline': run['deadline'],
++                          'capture_until': run['capture_until'], 'deadline': self.effective_deadline(run),
+                           'window_seconds': step['observe']['window_seconds'],
+                           'ack': run['sent_api_ack_reference'],
+                           'task': run.get('sent_task_reference')}
++            if 'first_send_phase' in run:
++                commitment['first_send_phase'] = run['first_send_phase']
++                commitment['original_deadline'] = run['deadline']
+             if admitted is not None:
+                 commitment['continuation'] = run['continuation_reference']
+             commitment_raw = encoded(commitment)
+@@ -12429,9 +12434,12 @@
+ 
+     def receive_context(self, run):
+         context = dict(self.capture_binding(run), tester_id=TESTER, peer_id=PEER,
+-                    window=run['sent_window_reference'], deadline=run['deadline'],
++                    window=run['sent_window_reference'], deadline=self.effective_deadline(run),
+                     capture_start_offset=run['capture_start_offset'],
+                     prior_tracking=run['reply_capture_prior_tracking'])
++        if 'first_send_phase' in run:
++            context['first_send_phase'] = run['first_send_phase']
++            context['original_deadline'] = run['deadline']
+         if 'continuation_reference' in run:
+             context['continuation'] = run['continuation_reference']
+         return context
+@@ -12494,7 +12502,7 @@
+         receipt = dict(kind='legacy_capture', sequence=sequence,
+                        previous=run.get('legacy_receive_head'),
+                        context=dict(run_id=run['id'], scenario_sha256=run['scenario_sha256'],
+-                                    tester_id=TESTER, peer_id=PEER, deadline=run['deadline']),
++                                    tester_id=TESTER, peer_id=PEER, deadline=self.effective_deadline(run)),
+                        step=run['step'], sent_message_id=run['sent_message_id'],
+                        prior_offset=cursor['offset'], update_id=uid, offset=uid + 1,
+                        raw_update=dict(basename=str(uid) + '.json', bytes=len(raw), sha256=digest(raw)),
+@@ -12520,7 +12528,7 @@
+                 or owner.get('scenario_sha256') != digest(encoded(owner['scenario']))):
+             raise Refused('Legacy capture lacks independent exact run commitment')
+         context = dict(run_id=owner['id'], scenario_sha256=owner['scenario_sha256'],
+-                       tester_id=TESTER, peer_id=PEER, deadline=owner['deadline'])
++                       tester_id=TESTER, peer_id=PEER, deadline=self.effective_deadline(owner))
+         reference = head; records = []
+         for index in range(sequence, -1, -1):
+             name = 'legacy-receive-' + owner['id'] + '-' + str(index) + '.json'
+@@ -12839,12 +12847,12 @@
+                 if (drain or processing or set(captures) != set(processed)
+                         or record['offset'] != offset
+                         or type(started) not in (int, float) or not math.isfinite(started)
+-                        or not run['capture_until'] <= started < run['deadline'] - REPLY_WINDOW_RESERVE
++                        or not run['capture_until'] <= started < self.effective_deadline(run) - REPLY_WINDOW_RESERVE
+                         or type(timeout) not in (int, float) or not math.isfinite(timeout)
+-                        or not (0 < timeout <= min(10, run['deadline'] - started - REPLY_WINDOW_RESERVE)
++                        or not (0 < timeout <= min(10, self.effective_deadline(run) - started - REPLY_WINDOW_RESERVE)
+                                 or (history is not None and history['pending_update'] is None
+                                     and record.get('http_timeout_cap') == 10
+-                                    and 10 < timeout <= run['deadline'] - started - REPLY_WINDOW_RESERVE))
++                                    and 10 < timeout <= self.effective_deadline(run) - started - REPLY_WINDOW_RESERVE))
+                         or type(count) is not int or not len(processed) <= count <= run['scenario']['max_updates']
+                         or type(record.get('limit')) is not int
+                         or record['limit'] != min(20, run['scenario']['max_updates'] - count + 1)):
+@@ -12856,7 +12864,7 @@
+                 if (intent is None or 'response' in drain or record['offset'] != offset
+                         or type(received) not in (int, float) or not math.isfinite(received)
+                         or not intent['started_at'] <= received <= intent['started_at'] + intent['timeout_seconds']
+-                        or received >= run['deadline'] - REPLY_WINDOW_RESERVE):
++                        or received >= self.effective_deadline(run) - REPLY_WINDOW_RESERVE):
+                     raise Refused('Invalid terminal response boundary')
+                 name = 'terminal-response-' + self.receive_key(run) + '.json'
+                 wire = self.read_reference(record.get('wire'), name)
+@@ -12876,7 +12884,7 @@
+                         or len(processed) - terminal_processed != len(terminal_updates)
+                         or run['update_count'] != intent['update_count'] + len(terminal_updates)
+                         or type(completed) not in (int, float) or not math.isfinite(completed)
+-                        or not drain['response']['received_at'] <= completed < run['deadline']
++                        or not drain['response']['received_at'] <= completed < self.effective_deadline(run)
+                         or any(u['update_id'] not in processed for u in terminal_updates)):
+                     raise Refused('Unproven or saturated terminal drain cannot complete')
+                 drain['complete'] = record
+@@ -12956,7 +12964,7 @@
+                 expected_drain = {'intent', 'response', 'complete'} if history['terminal_complete'] else {'intent'}
+                 if (set(drain) != expected_drain or intent.get('http_timeout_cap') != 10
+                         or intent.get('budget_semantics') != 'VALIDATION_PLUS_HTTP_WITHIN_ORIGINAL_DEADLINE'
+-                        or not 10 < intent.get('timeout_seconds', 0) <= run['deadline'] - intent['started_at'] - REPLY_WINDOW_RESERVE):
++                        or not 10 < intent.get('timeout_seconds', 0) <= self.effective_deadline(run) - intent['started_at'] - REPLY_WINDOW_RESERVE):
+                     raise Refused('Exact historical terminal custody required')
+             elif drain or processing != {history_pending}:
+                 raise Refused('Exact stopped processing custody required; never invent completion')
+@@ -13306,7 +13314,7 @@
+         # Keep the existing cleanup/report reserve; guard retains stop/cooldown and
+         # every continuation/runtime clock. No getUpdates, retry or new clock.
+         guarded = self.guard(run)
+-        remaining = run['deadline'] - REPLY_WINDOW_RESERVE - self.clock()
++        remaining = self.effective_deadline(run) - REPLY_WINDOW_RESERVE - self.clock()
+         if remaining <= 0:
+             raise Refused('Original document processing budget expired')
+         return min(guarded, remaining)
+@@ -13783,7 +13791,7 @@
+         self.reply_window(run)
+         self.guard(run)
+         started = self.clock()
+-        timeout = min(10, run['deadline'] - started - REPLY_WINDOW_RESERVE)
++        timeout = min(10, self.effective_deadline(run) - started - REPLY_WINDOW_RESERVE)
+         if started < run['capture_until'] or timeout <= 0:
+             raise Refused('No original budget for terminal drain')
+         if (type(run.get('update_count')) is not int
+@@ -14017,7 +14025,7 @@
+                     phase = 'process_update'
+                     self.process(run, update)
+                 phase = 'sleep'
+-                pause = min(run['scenario']['pace_seconds'], max(0, run['deadline'] - self.clock()))
++                pause = min(run['scenario']['pace_seconds'], max(0, self.effective_deadline(run) - self.clock()))
+                 if reply:
+                     pause = min(pause, max(0, run['capture_until'] - self.clock()))
+                 self.sleep(pause)
+@@ -14875,7 +14883,7 @@
+ 
+ 
+ # Exact F03 singleton delta; full v42 receiver/locks/CAS/window/custody stay.
+-F03_CONTRACT = {'adapter': {'bytes': 11978, 'path': '/home/jericho/.cache/FRW-ASTRA-NATIVE-F03-UNSENT-STEP-CONTINUATION-PREP-20261114/candidate/driver/adapter.py', 'sha256': 'f9c8e838247f415cadab97aabd5a25e2409dd9285c91d556f94717d477c283e5'}, 'case': 'F-03', 'current_gate': {'bytes': 39928, 'path': '/home/jericho/.cache/FRW-ASTRA-NATIVE-F03-UNSENT-STEP-CONTINUATION-PREP-20261114/candidate/driver/current/current221.py', 'sha256': '9d633e17a570fd485f262a88dcb1b4775a676c3a7a91956f5a4765521bd40f98'}, 'expected_product': {'base_source_files': 17730, 'input_sha256': '60d879571771e861df8441a02489cb74bf8d8707e2f14e0ae3448b81ed87504d', 'native_files': 17893, 'plugin_files': 52, 'project_files': 523, 'source_layers': 221, 'source_receipt_sha256': 'a4d278c67b044b684c3182107947bdb9d82a592b54924d9a5bb283fc11ac1d40'}, 'mutable_boundary': {'canonical4_sha256': '5f53cb9eb533117a033ba6be5b788449b8b227344ef045520be20277ee442ced', 'canonical_cursor_sha256': '4260bdb5e2068e643e8f343150a4e51cdebce18a8500becba8708ae34d597436', 'current_files_sha256': '8ca8afb96fe858f77a5074ac1872b7ed0285b2abdeecd3e94ff6c01c798d3b75', 'gateway': {'boot_id': '31a7955c-c9e7-42a1-b291-4f7d4b0d5b26', 'pid': 829577, 'start_time': 8327056}, 'history_manifest_sha256': '04333f69a38808ea960cc717e6b196821e0d1e8f2e35a2de8baa478693d0e7be', 'installed_closure_sha256': 'f155ec3337f46b9405afcc73725af71f0bce09d71c1bee4525a44fc10066bfa2', 'mutable_paths_sha256': '83fda1c1185d251f68f0e1b9242ec05926791b69d9ecd47fb379249a8cfbfb9c', 'native_boundary_sha256': '2491788b1fd2e1f1a097975c8101032160d94f69af241632c4575c67e5c42722', 'once_sha256': '63c615b0e97a4afaf41d4d636da010995d3a7a3b737bf627e1aadd98a4fc0f06', 'source_stat_sha256': '54e8eeaacf95a30271ed70cbd647f8cb96328955e55bb5b862b17e382900fbbf'}, 'operation_id': 'CASE164/format27/edit/formulas-v02/row667', 'phase': 'FIRST-ORDINARY-UPLOAD-EDIT-RETURN', 'proposal_ref': {'bytes': 2191, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/SCENARIO-PROPOSAL.private.json', 'sha256': 'c62fa2c1155f12219b94a383342e18023c87f3f03ba5b3db1c9af7a7a46c5a5b'}, 'resources': {'ack_seconds': 30, 'clock': {'bytes': 901, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/ordinary-unsent-user-step-continuation-phase/PHASE-CLOCK.json', 'sha256': '0ed051152f53d7b8193fa8ffd91de7230d4a22cb2a582617c46f59ac6be6ac99'}, 'cpu_seconds': 120, 'disk_bytes': 67108864, 'max_rss_bytes': 536870912, 'operation_seconds': 300, 'outer_seconds': 600, 'reply_window_seconds': 180, 'reserve_seconds': 5}, 'root_current_review': {'bytes': 1075059, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/ordinary-unsent-user-step-continuation-phase/ROOT-FRESH-CURRENT-PROOF.json', 'sha256': 'b25f513bf5911d85fdcb98259691aac07daeff6c2ddbf259ec8ec410cfe11b7f'}, 'root_proofs': {'all_profile_history_semantic_once': {'bytes': 4224, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/ordinary-unsent-user-step-continuation-phase/all_profile_history_semantic_once.json', 'sha256': 'a98bbde61b6f648850a780857079da7350e0cc49a41657ad79dc8a0f71595f93'}, 'original_selection': {'bytes': 6531, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/ROOT-ORIGINAL-VARIANT-PHASE-DECISION.json', 'sha256': 'a62471b1ea1766fb4f22696f58867848981e6043d3f0edf3b13e3c4a57091203'}, 'owned_actor_stop_resources': {'bytes': 22786, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/ordinary-unsent-user-step-continuation-phase/owned_actor_stop_resources.json', 'sha256': '6c09bac400aaf421b0f75030e572df751c0bd18d2e12f279acdc8d5f1f9652eb'}, 'private_exclusion': {'bytes': 133080, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/ordinary-unsent-user-step-continuation-phase/private_exclusion.json', 'sha256': '0feceb408aca6ea891399bfc9adef2d6091ba7ac58b8d016435cb74aafaa751a'}, 'source_custody': {'bytes': 4170, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/ordinary-unsent-user-step-continuation-phase/source_custody.json', 'sha256': 'cedf341d50b38c0e2bcd9d093b1593fae519fa234a35b7a5543c3763994f7864'}, 'source_review': {'bytes': 5334, 'path': '/home/jericho/.cache/FRW-ASTRA-NATIVE-F03-UNSENT-STEP-CONTINUATION-PREP-20261114/review/FINAL-REVIEW.json', 'sha256': '7ffe121d9947fb515ffa47a159452e6155b0e7a7de82d28f42fede7dee25679f'}}, 'run_id': 'f03-ods-formulas-original-221-20261114', 'scenario_ref': {'bytes': 2374, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/current-readonly-preparation-r2/SCENARIO.private.json', 'sha256': '98c0c37105804e600a47eed83e6ba7504849333054e409c6af6080ed5496dd4f'}, 'scenario_sha256': '98c0c37105804e600a47eed83e6ba7504849333054e409c6af6080ed5496dd4f', 'schema': 'frw.F03.original-ordinary221.binding.v1', 'scope': 'One genuinely missing original CASE164/F-03 format27 ODS edit formulas/v02 row667: Orders C2 numeric 2 to 3 in exact retained rich ODS. One ordinary document upload and new same-format returned copy in existing tester8812646969 peer8751854128 conversation; source unchanged; all sheets/formulas/text IDs/relevant existing structure preserved, honest cache/coverage disclosure. First ordinary ingress/delivery/custody are runtime postconditions, never invented preconditions. Root positive original/frontier/current source/principal/ACL/history/private exclusion/once required. Original300/full180/ACK30/reserve5/outer600; max1 captured document<=1MiB,max4 messages,text8000. No new producer, Office, install, restart, old R86/S11 replay, source110 UNKNOWN clearance, automatic followup or semantic acceptance. NOT a B00 acceptance; NOT a product acceptance.', 'source': {'bytes': 16538, 'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/input/orders-formulas-original.ods', 'sha256': 'a2e68bc685e4d689aa7972ff4f2c7f9841441c9dcb4fc5e40327a5ae190b5d58'}, 'status': 'ROOT_BOUND_EXACT_F03'}
++F03_CONTRACT = {'schema': 'frw.F03.original-ordinary221.binding.v1', 'status': 'UNBOUND_NOT_GRANTED', 'case': 'F-03', 'operation_id': 'CASE164/format27/edit/formulas-v02/row667', 'phase': 'FIRST-ORDINARY-UPLOAD-EDIT-RETURN', 'run_id': 'f03-ods-formulas-original-221-20261114', 'scope': 'One genuinely missing original CASE164/F-03 format27 ODS edit formulas/v02 row667: Orders C2 numeric 2 to 3 in exact retained rich ODS. One ordinary document upload and new same-format returned copy in existing tester8812646969 peer8751854128 conversation; source unchanged; all sheets/formulas/text IDs/relevant existing structure preserved, honest cache/coverage disclosure. First ordinary ingress/delivery/custody are runtime postconditions, never invented preconditions. Root positive original/frontier/current source/principal/ACL/history/private exclusion/once required. Original300/full180/ACK30/reserve5/outer600; max1 captured document<=1MiB,max4 messages,text8000. No new producer, Office, install, restart, old R86/S11 replay, source110 UNKNOWN clearance, automatic followup or semantic acceptance. NOT a B00 acceptance; NOT a product acceptance.', 'scenario_ref': None, 'scenario_sha256': None, 'source': {'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/input/orders-formulas-original.ods', 'bytes': 16538, 'sha256': 'a2e68bc685e4d689aa7972ff4f2c7f9841441c9dcb4fc5e40327a5ae190b5d58'}, 'proposal_ref': {'path': '/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/SCENARIO-PROPOSAL.private.json', 'bytes': 2191, 'sha256': 'c62fa2c1155f12219b94a383342e18023c87f3f03ba5b3db1c9af7a7a46c5a5b'}, 'expected_product': {'source_layers': 221, 'project_files': 523, 'native_files': 17893, 'plugin_files': 52, 'base_source_files': 17730, 'source_receipt_sha256': 'a4d278c67b044b684c3182107947bdb9d82a592b54924d9a5bb283fc11ac1d40', 'input_sha256': '60d879571771e861df8441a02489cb74bf8d8707e2f14e0ae3448b81ed87504d'}, 'adapter': None, 'current_gate': None, 'root_current_review': None, 'root_proofs': {'all_profile_history_semantic_once': None, 'original_selection': None, 'owned_actor_stop_resources': None, 'private_exclusion': None, 'source_custody': None, 'source_review': None}, 'mutable_boundary': None, 'resources': None}
+ _f03_boundary_phase = None
+ 
+ def _f03_adapter():
+@@ -14893,7 +14901,7 @@
+ def _f03_native_freshness(state, state_raw, state_path):
+     try:
+         return _f03_adapter().current_gate(F03_CONTRACT, _f03_boundary_phase,
+-                                          state, state_raw, state_path, safe_read)
++                                          state, state_raw, state_path, safe_read, first_send=_f03_first_send_context)
+     except Exception as _exc:
+         raise Refused('Exact F03 current source/profile/private/history/once refused') from _exc
+ 
+@@ -14936,6 +14944,9 @@
+ 
+ _f03_original_send = Runner._send
+ def _f03_send(self, run, *, resume_prepared=False, consumer_fd=None, credential_fd=None):
++    global _f03_first_send_context
++    if 'first_send_phase' in run and getattr(self, '_f03_first_send_entry', None) != run['first_send_phase']:
++        raise Refused('Separate F03 first send requires explicit once entry; generic send refused')
+     try:
+         _m = _f03_adapter(); _m.shape(F03_CONTRACT, run.get('id'), run.get('scenario'), safe_read)
+         if (run.get('scenario_sha256') != F03_CONTRACT['scenario_sha256']
+@@ -14946,8 +14957,12 @@
+             raise ValueError('F03 permits one pristine attempt; no retry/prepared resume')
+     except Exception as _exc:
+         raise Refused('Exact F03 one-attempt boundary refused') from _exc
+-    return _f03_original_send(self, run, resume_prepared=False,
+-                              consumer_fd=consumer_fd, credential_fd=credential_fd)
++    _f03_first_send_context = run.get('first_send_phase')
++    try:
++        return _f03_original_send(self, run, resume_prepared=False,
++                                  consumer_fd=consumer_fd, credential_fd=credential_fd)
++    finally:
++        _f03_first_send_context = None
+ Runner._send = _f03_send
+ 
+ # A scoped method seam preserves ACK10 for every historical/other run. Public
+@@ -14965,5 +14980,34 @@
+     return _f03_original_ack(self, run)
+ Runner.send_ack_budget = _f03_ack
+ 
++
++_f03_first_send_context = None
++_F03_PHASE_SOURCE = {'path': '/home/jericho/.cache/FRW-ASTRA-NATIVE-F03-MISSING-FIRST-SEND-CONTRACT-CANDIDATE-20261114/candidate/first_send.py', 'bytes': 17341, 'sha256': 'dc4cac00c396c33ad3dd7f4b971ac7088bc79898e07e15cda7fe6682f63da1cf'}
++def _f03_phase_module():
++    import types as _types
++    ref=_F03_PHASE_SOURCE;raw=safe_read(Path(ref['path']))
++    if len(raw)!=ref['bytes'] or digest(raw)!=ref['sha256']:
++        raise Refused('Separate first-send implementation changed')
++    m=_types.ModuleType('_F03_separate_first_send');m.__file__=ref['path']
++    exec(compile(raw,m.__file__,'exec'),m.__dict__);return m
++
++def _f03_effective_deadline(self,run):
++    try:return _f03_phase_module().effective_deadline(self,run) if 'first_send_phase' in run else run['deadline']
++    except Exception as exc:raise Refused('Separate first-send durable clock refused') from exc
++Runner.effective_deadline=_f03_effective_deadline
++_f03_before_separate_guard=Runner.guard
++def _f03_separate_guard(self,run,*,http_cap=10):
++    value=_f03_before_separate_guard(self,run,http_cap=http_cap)
++    if 'first_send_phase' in run:
++        try:value=min(value,_f03_phase_module().remaining(run['first_send_phase'],run,self.store.root))
++        except Exception as exc:raise Refused('Separate first-send paired live clock refused') from exc
++    return value
++Runner.guard=_f03_separate_guard
++
++def _f03_prepared_first_send(self,contract_reference,consumer_fd,credential_fd):
++    try:return _f03_phase_module().entry(self,contract_reference,consumer_fd,credential_fd)
++    except (ValueError,OSError) as exc:raise Refused('Separate missing first-send entry refused') from exc
++Runner.prepared_first_send=_f03_prepared_first_send
++
+ if __name__ == '__main__':
+     sys.exit(main())

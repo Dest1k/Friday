@@ -1,0 +1,34 @@
+--- before/root_operator.py
++++ after/root_operator.py
+@@ -95,7 +95,16 @@
+     need(rv['reviewed_root_operator'] == phase.pin(Path(__file__), phase.read(Path(__file__))),
+          'ROOT_REVIEW_TARGET_CHANGED')
+     need(sha(POLICY.read_bytes()) == '220a86e1e59dccb50a0ce34332d1f9061cb52a5e4c17f81df08df38202a18128', 'OWNER_POLICY_PIN')
++    # This narrow reviewed supervisor copy fixes comparison of the native
++    # query timestamp while preserving every stable field and all other checks.
++    supervisor_ref = rv.get('reviewed_supervisor')
++    need(phase.refshape(supervisor_ref) and
++         Path(supervisor_ref['path']) == OWN / 'candidate/supervisor_adapter.py',
++         'ROOT_REVIEW_SUPERVISOR_UNBOUND')
++    phase.rawref(supervisor_ref)
++    result = copy.deepcopy(result)
+     sources = result['source_delta']
++    sources['supervisor'] = supervisor_ref
+     modules = {name: load_raw(phase.rawref(sources[key]), sources[key]['path'], '_Root_' + name)
+                for name, key in [('adapter', 'adapter'), ('current', 'current'),
+                                  ('binder', 'pure_binder'), ('supervisor', 'supervisor')]}
+--- before/candidate/supervisor_adapter.py
++++ after/candidate/supervisor_adapter.py
+@@ -65,7 +65,11 @@
+     current.shared_slot(proof['shared_slot_owner'],current.helper())
+     # The child's actual current.check remains mandatory before GET and intent.
+     observed=current.observe(proof,boundary_phase='CURSOR_AUTHORITY',first_send=projected_meta,first_send_preclaim=True)
+-    if observed!=proof.get('observed'):raise ValueError('F03_SUPERVISOR_PRECLAIM_CURRENT_CAS_CHANGED')
++    saved_observed=proof.get('observed')
++    if (type(saved_observed)is not dict or set(observed)!=set(saved_observed)
++        or any(observed[k]!=saved_observed[k]for k in observed if k!='native_readonly')
++        or current.native_stable(observed['native_readonly'])!=current.native_stable(saved_observed['native_readonly'])):
++        raise ValueError('F03_SUPERVISOR_PRECLAIM_CURRENT_CAS_CHANGED')
+     current.semantics(proof['contract_effect'],current.proof_documents(proof['contract_effect']),observed)
+     r=cc['resources']
+     if any(type(r.get(k))is not int or r.get(k)!=v for k,v in {'cpu_seconds':120,'max_rss_bytes':536870912,'disk_bytes':67108864,'operation_seconds':300,'reply_window_seconds':180,'ack_seconds':30,'reserve_seconds':5,'outer_seconds':600}.items()):raise ValueError('F03_ORIGINAL_CAPS_CHANGED')
