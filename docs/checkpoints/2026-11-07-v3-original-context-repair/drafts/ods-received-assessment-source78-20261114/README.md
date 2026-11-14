@@ -1,0 +1,15 @@
+Finite ODS byte-assessment preparation
+
+This package assesses explicit supplied bytes. It performs no filesystem or network operation, model call, publication, application execution or authorization. Its results never establish canonical custody, ordinary ingress/delivery, installed version, nonreplay permission or user acceptance. Caller labels and matching supplied hashes cannot change that scope.
+
+received_ods_checker.assess_edit takes source bytes, candidate returned bytes, an exact numeric sheet/cell/expected/value request and source/received/request SHA pins. It checks bounded ZIP/XML, exact expected lexical/type CAS, requested value/display, target identity and supported integer validation, every outside-target XML byte and every other member payload. Thus formulas/types/text IDs and relevant rich structures remain unchanged. Formula caches may be stale; no freshness or recalculation is claimed. Bounded parsing is not a whole-document security/profile approval.
+
+preservation_helpers.py contains unchanged, provenance-pinned AST source segments from an existing reviewed pure helper. The public interface and report-code files specify details. Load the exact sibling modules in an isolated assessment context and verify all manifest pins; do not substitute another imported module with the same name.
+
+assess_recalc.py is a separate finite cell/cache assessment adapter. It accepts explicit received/saved bytes, private independently supplied expected facts and hash bindings, the pinned received-checker module and exact prior reviewed raw-helper source bytes (source SHA c272c984c90ce2b08a8f4589c361aa299cd461230896deab97e583e117456bf5). Only selected pure raw-reader functions are compiled; the old module/context/driver/private oracle is not executed. This prior source dependency is not bundled. Strict parsing runs first; unsupported nested row structures refuse.
+
+The recalc adapter exercises only a conditional first-sheet C2 numeric +1 followed by a further disposable-copy +1 profile. That is a source-fixture example, not a verified original request or permission. If the actual original operation differs, this adapter is unsupported. Its raw-cell/cache match cannot establish rich-structure preservation after application serialization, independent oracle provenance, actual save/reopen/cleanup or full F03 acceptance. Those require separately bound qualified observations.
+
+Original ordinary operation, canonical source/ingress/received bytes, semantic nonreplay frontier and future independent oracle/runtime evidence remain external inputs. An old component, new version, new bytes or a new run identifier does not authorize a repeat. The preparation supplies no execution entrypoint or application actor.
+
+Focused new-code controls passed on source-only and synthetic vectors, including malformed ZIP/XML, wrong delta or pins, lost formulas/metadata, stale caches, unsupported rows and scope-label spoofing. No ordinary user artifact or application execution was performed by these checks. Private fixtures, actual execution reports, handoff records and oracle values are excluded.
