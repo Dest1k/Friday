@@ -1,0 +1,808 @@
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -3984,6 +3984,7 @@
+         memory_context: str = "", bypass_cooldown: bool = False,
+     ) -> Optional[str]:
+         """Structured summary of the turns (iterative update when a previous summary exists); None if all attempts fail."""
++        self._summary_producer_outcome = None
+         prompt_started_at = time.monotonic()
+         if self._compression_cancelled():
+             raise AuxiliaryExplicitCancellation()
+@@ -4058,7 +4059,10 @@
+             self._clear_terminal_summary_failures()
+             # The provider answered a summary again: the sustained-overload budget restarts (#123167).
+             self._reset_consecutive_overload_aborts()
+-            return self._with_selected_summary_prefix(summary)
++            rendered_summary = self._with_selected_summary_prefix(summary)
++            from agent.summary_provenance import record_summary_success
++            record_summary_success(self, summary, rendered_summary)
++            return rendered_summary
+         except Exception as e:
+             return self._on_summary_failure(e, turns_to_summarize, focus_topic, memory_context)
+ 
+@@ -5358,6 +5362,7 @@
+ 
+     def _begin_compress_attempt(self, current_tokens: Optional[int], force: bool) -> Dict[str, Any]:
+         """Reset per-call result state (callers read it after compress()) and open telemetry."""
++        self._summary_producer_outcome = None
+         self._last_summary_dropped_count = 0
+         self._last_summary_fallback_used = False
+         self._last_feasibility_skip = False
+@@ -5513,6 +5518,7 @@
+             logger.info("Pre-LLM summary skip — inserting deterministic fallback context summary")
+         elif not self.quiet_mode:
+             logger.warning("Summary generation failed — inserting deterministic fallback context summary")
++        self._summary_producer_outcome = None
+         self._last_summary_dropped_count = n_dropped
+         self._last_summary_fallback_used = True
+         telemetry["fallback_used"] = True
+@@ -5877,14 +5883,17 @@
+     ) -> List[Dict[str, Any]]:
+         """Head + summary + tail from the pruned copy: its tool-result demotions are what let an oversized
+         head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""
++        from agent.summary_provenance import bind_summary_carrier
+         compressed = self._assemble_head(messages, compress_start)
+         tail_messages = self._assemble_tail(messages, compress_end, scan.tail_start, scan.summary_indices)
+         if getattr(self, "bounded_context_policy", None) is not None:
+             # A separate carrier cannot rewrite the protected current user/tool
+             # rows, even when template alternation would otherwise merge them.
+-            return compressed + [{"role": "assistant", "content": summary + "\n\n" + _SUMMARY_END_MARKER,
++            carrier = {"role": "assistant", "content": summary + "\n\n" + _SUMMARY_END_MARKER,
+                 COMPRESSED_SUMMARY_METADATA_KEY: True,
+-                COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(self._summary_has_user_turn)}] + tail_messages
++                COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(self._summary_has_user_turn)}
++            bind_summary_carrier(self, carrier, summary, "standalone")
++            return compressed + [carrier] + tail_messages
+         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
+             self._summary_placement(compressed, tail_messages, compress_start)
+         )
+@@ -5896,6 +5905,7 @@
+                 COMPRESSED_SUMMARY_METADATA_KEY: True,
+                 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(self._summary_has_user_turn),
+             })
++            bind_summary_carrier(self, compressed[-1], summary, "standalone")
+         # Default carrier is tail[0]: an exempt row absorbs the summary invisibly. The forced repair
+         # path needs a non-empty role=user row, so it targets the template-visible row.
+         merge_target_idx = first_tail_visible_idx if force_user_leading and first_tail_visible_idx is not None else 0
+@@ -5906,6 +5916,8 @@
+                 msg[_COMPACTION_TAIL_MARKER] = True
+             if merge_into_tail and tail_idx == merge_target_idx:
+                 self._merge_summary_into_tail_row(msg, summary, summary_role, force_user_leading)
++                bind_summary_carrier(self, msg, summary,
++                                     "merged_prefix" if force_user_leading and summary_role == "user" else "merged_suffix")
+             compressed.append(msg)
+         return compressed
+ 
+--- a/agent/conversation_compression.py
++++ b/agent/conversation_compression.py
+@@ -169,7 +169,7 @@
+ 
+ 
+ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
+-    "_previous_summary", "_summary_has_user_turn", "compression_count", "_last_compression_savings_pct",
++    "_previous_summary", "_summary_producer_outcome", "_summary_has_user_turn", "compression_count", "_last_compression_savings_pct",
+     "_ineffective_compression_count", "_anti_thrash_recovery_deadline", "_fallback_compression_streak",
+     "_verify_compaction_cleared_threshold", "_last_compression_made_progress", "_summary_failure_cooldown_until",
+     "_cooldown_persist_failed", "_last_summary_error", "_consecutive_timeout_failures", "_consecutive_truncation_failures",
+@@ -3395,6 +3395,7 @@
+         _child_model_config = dict(_child_model_config or {})
+         _child_model_config[DATE_OWNERSHIP_FIELD] = {**_child_date_ownership, "session_id": new_session_id}
+     from agent.context_compressor import _DB_PERSISTED_MARKER
++    from agent.summary_provenance import producer_for_commit
+     agent._session_db.publish_compression_child(
+         parent_session_id=old_session_id, child_session_id=new_session_id,
+         source=_compression_child_source(agent, old_session_id), model=agent.model,
+@@ -3404,6 +3405,7 @@
+         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
+         watermark=(lease.watermark if _foreign_tail_ceiling is not None else None),
+         watermark_ceiling=_foreign_tail_ceiling,
++        summary_producer=producer_for_commit(agent.context_compressor),
+     )
+     # `already_present` stamping is done by run_agent's _sync_persisted_markers;
+     # this branch covers inserted/merged only; direct callers must use that wrapper.
+@@ -3763,6 +3765,8 @@
+                 attempt_snapshot=attempt.snapshot,
+             )
+             if compressed is None:
++                from agent.summary_provenance import clear_summary_carrier_proofs
++                clear_summary_carrier_proofs(candidate)
+                 return _CommitOutcome(
+                     compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at
+                 )
+@@ -3809,11 +3813,13 @@
+                     agent._session_db, agent.session_id,
+                     messages_before_compression if messages_before_compression is not None else messages,
+                     verbatim_tail)
++                from agent.summary_provenance import producer_for_commit
+                 agent._session_db.archive_and_compact(
+                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None, "_friday_bounded_multipass_v1": None},
+                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
+                     lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
+                     covered_ids=covered_ids, unresolved_held=unresolved_held,
++                    summary_producer=producer_for_commit(agent.context_compressor),
+                 )
+                 compressed = persisted
+                 split_status = "in_place_committed"
+@@ -3913,6 +3919,8 @@
+                 agent.context_compressor._record_compression_failure_cooldown(
+                     _SPLIT_FAILURE_COOLDOWN_SECONDS, f"session_split_failed: {e}"
+                 )
++    from agent.summary_provenance import clear_summary_carrier_proofs
++    clear_summary_carrier_proofs(compressed)
+     return _CommitOutcome(
+         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
+         split_status=split_status, session_commit_succeeded=session_commit_succeeded,
+--- /dev/null
++++ b/agent/summary_provenance.py
+@@ -0,0 +1,227 @@
++"""Narrow native summary receipts, stored on the existing committed carrier row.
++
++The trust boundary is native Python/SQLite, not arbitrary Python execution or an
++attacker able to edit state.db. Text, tags and serialized metadata are not minting
++APIs. Old rows are deliberately unbound; there is no ledger or backfill.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++from dataclasses import dataclass
++from typing import Any
++
++SUMMARY_PROVENANCE_KEY = "_friday_summary_provenance_v1"
++SUMMARY_CARRIER_PROOF_KEY = "_friday_summary_carrier_proof"
++_SCHEMA = "friday.summary-provenance.v1"
++_PROOF_KEYS = frozenset(("schema", "producer", "outcome", "commit_kind",
++    "source_session_id", "session_id", "carrier_row_id", "message_uid", "role",
++    "policy", "placement", "has_user_turn", "body_sha256", "carrier_sha256",
++    "carrier_value_sha256"))
++
++
++def _text_sha256(value: str):
++    try:
++        return hashlib.sha256(value.encode("utf-8")).hexdigest()
++    except (AttributeError, UnicodeError):
++        return None
++
++
++def summary_content_fingerprint(content: Any):
++    """Full decoded carrier value, including its type; invalid values are unbound."""
++    if not isinstance(content, (str, list, dict)) and content is not None:
++        return None
++    try:
++        encoded = json.dumps({"type": type(content).__name__, "value": content},
++                             ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
++        return _text_sha256(encoded)
++    except (TypeError, ValueError, RecursionError):
++        return None
++
++
++@dataclass(frozen=True)
++class _ProducerProof:
++    source_session_id: str
++    body_sha256: str
++    rendered_summary_sha256: str
++
++    def __deepcopy__(self, memo):
++        return self
++
++
++@dataclass(frozen=True)
++class _CarrierProof:
++    producer: _ProducerProof
++    role: str
++    value_sha256: str
++    policy: str
++    placement: str
++    has_user_turn: bool
++
++    def __deepcopy__(self, memo):
++        return self
++
++
++def record_summary_success(compressor: Any, body: str, rendered_summary: str) -> None:
++    """Called only after the builtin producer's validation/stale-attempt guard."""
++    session_id = getattr(compressor, "_session_id", None)
++    body_sha256 = _text_sha256(body)
++    compressor._summary_producer_outcome = (
++        _ProducerProof(session_id, body_sha256, _text_sha256(rendered_summary))
++        if isinstance(session_id, str) and session_id and isinstance(body, str) and body
++        and isinstance(rendered_summary, str) and rendered_summary and body_sha256 else None)
++
++
++def producer_for_commit(compressor: Any):
++    proof = getattr(compressor, "_summary_producer_outcome", None)
++    body = getattr(compressor, "_previous_summary", None)
++    if (type(proof) is _ProducerProof and isinstance(body, str)
++            and proof.source_session_id == getattr(compressor, "_session_id", None)
++            and proof.body_sha256 == _text_sha256(body)
++            and not getattr(compressor, "_last_summary_fallback_used", False)
++            and not getattr(compressor, "_last_compress_aborted", False)):
++        return proof
++    return None
++
++
++def bind_summary_carrier(compressor: Any, message: dict, rendered_summary: str, placement: str) -> None:
++    """Bind the assembler's actual new carrier, never a content-search result."""
++    proof = producer_for_commit(compressor)
++    if (proof is None or _text_sha256(rendered_summary) != proof.rendered_summary_sha256
++            or message.get("_compressed_summary") is not True
++            or message.get("role") not in {"assistant", "user"}
++            or placement not in {"standalone", "merged_prefix", "merged_suffix"}):
++        return
++    policy = "bounded" if getattr(compressor, "bounded_context_policy", None) is not None else "ordinary"
++    if policy == "bounded" and (message["role"] != "assistant" or placement != "standalone"):
++        return
++    value_sha256 = summary_content_fingerprint(message.get("content"))
++    if value_sha256 is None:
++        return
++    message[SUMMARY_CARRIER_PROOF_KEY] = _CarrierProof(
++        proof, message["role"], value_sha256,
++        policy, placement, bool(getattr(compressor, "_summary_has_user_turn", False)))
++
++
++def strip_summary_provenance(metadata: dict) -> dict:
++    """All ordinary metadata encoders exclude the native commit-only namespace."""
++    return {key: value for key, value in metadata.items() if key != SUMMARY_PROVENANCE_KEY}
++
++
++def stamp_committed_summary_proofs(conn, session_id: str, messages: list, *,
++                                   source_session_id: str, producer: Any, decode_content) -> None:
++    """Run inside the existing compaction write transaction after row insertion.
++
++    The current producer receipt is passed independently of message metadata. A
++    carried old receipt or user-supplied dict cannot substitute for its identity.
++    Generic insert/append/import paths do not pass this admission argument.
++    """
++    if type(producer) is not _ProducerProof or producer.source_session_id != source_session_id:
++        return
++    for message in messages:
++        proof = message.get(SUMMARY_CARRIER_PROOF_KEY)
++        row_id = message.get("_row_id")
++        if (type(proof) is not _CarrierProof or proof.producer is not producer
++                or type(row_id) is not int or row_id <= 0
++                or message.get("_compressed_summary") is not True
++                or message.get("role") != proof.role
++                or summary_content_fingerprint(message.get("content")) != proof.value_sha256):
++            continue
++        row = conn.execute("SELECT id, session_id, role, content, message_uid, "
++            "_compressed_summary, active, compacted, display_metadata FROM messages "
++            "WHERE id = ? AND session_id = ?", (row_id, session_id)).fetchone()
++        if (row is None or row["role"] != proof.role or row["_compressed_summary"] != 1
++                or row["active"] != 1 or row["compacted"] != 0
++                or not isinstance(row["content"], str) or not isinstance(row["message_uid"], str)
++                or not row["message_uid"]
++                or summary_content_fingerprint(decode_content(row["content"])) != proof.value_sha256):
++            continue
++        metadata = json.loads(row["display_metadata"]) if row["display_metadata"] else {}
++        if not isinstance(metadata, dict):
++            continue
++        metadata[SUMMARY_PROVENANCE_KEY] = dict(
++            schema=_SCHEMA, producer="builtin_context_compressor", outcome="genuine_summary",
++            commit_kind="in_place" if session_id == source_session_id else "rotation",
++            source_session_id=source_session_id, session_id=session_id, carrier_row_id=row_id,
++            message_uid=row["message_uid"], role=proof.role, policy=proof.policy,
++            placement=proof.placement, has_user_turn=proof.has_user_turn,
++            body_sha256=producer.body_sha256, carrier_sha256=_text_sha256(row["content"]),
++            carrier_value_sha256=proof.value_sha256)
++        conn.execute("UPDATE messages SET display_metadata = ? WHERE id = ? AND session_id = ?",
++                     (json.dumps(metadata), row_id, session_id))
++        # The caller's row snapshots are stamped immediately after this helper.
++        # Keep this dict aligned; _execute_transcript_write restores it on rollback.
++        message["display_metadata"] = metadata
++
++
++def committed_summary_proof(row, session_id: str):
++    """Validate a receipt read from a trusted native DB row; no text inference."""
++    try:
++        metadata = row["display_metadata"]
++        if isinstance(metadata, str):
++            metadata = json.loads(metadata)
++        if not isinstance(metadata, dict):
++            return None
++        proof = metadata.get(SUMMARY_PROVENANCE_KEY)
++        if not isinstance(proof, dict) or set(proof) != _PROOF_KEYS:
++            return None
++        if (proof["schema"] != _SCHEMA or proof["producer"] != "builtin_context_compressor"
++                or proof["outcome"] != "genuine_summary" or proof["session_id"] != session_id
++                or row["session_id"] != session_id or type(row["id"]) is not int
++                or proof["carrier_row_id"] != row["id"] or type(proof["carrier_row_id"]) is not int
++                or proof["message_uid"] != row["message_uid"] or not proof["message_uid"]
++                or proof["role"] != row["role"] or proof["role"] not in {"assistant", "user"}
++                or row["_compressed_summary"] != 1 or row["active"] != 1 or row["compacted"] != 0
++                or not isinstance(row["content"], str)
++                or proof["carrier_sha256"] != _text_sha256(row["content"])
++                or proof["policy"] not in {"ordinary", "bounded"}
++                or proof["placement"] not in {"standalone", "merged_prefix", "merged_suffix"}
++                or type(proof["has_user_turn"]) is not bool
++                or not isinstance(proof["source_session_id"], str) or not proof["source_session_id"]):
++            return None
++        if proof["policy"] == "bounded" and (proof["role"] != "assistant" or proof["placement"] != "standalone"):
++            return None
++        if proof["commit_kind"] != ("in_place" if proof["source_session_id"] == session_id else "rotation"):
++            return None
++        for key in ("body_sha256", "carrier_sha256", "carrier_value_sha256"):
++            value = proof[key]
++            if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
++                return None
++        return dict(proof)
++    except (KeyError, TypeError, ValueError, UnicodeError):
++        return None
++
++
++def committed_summary_proof_for_agent(agent: Any, message: dict):
++    """Anchor a decoded cached source row to its current committed native DB row.
++
++    Called at native request assembly using an already-open SessionDB. Observer
++    reads later use the cache module's private sealed observation, without I/O.
++    """
++    if not isinstance(message, dict):
++        return None
++    session_id = getattr(agent, "session_id", None)
++    compressor = getattr(agent, "context_compressor", None)
++    db = getattr(agent, "_session_db", None)
++    row_id, uid = message.get("_row_id"), message.get("message_uid")
++    if (not isinstance(session_id, str) or not session_id
++            or getattr(compressor, "_session_id", None) != session_id
++            or (row_id is not None and (type(row_id) is not int or row_id <= 0))
++            or not isinstance(uid, str) or not uid or db is None):
++        return None
++    reader = getattr(db, "get_committed_summary_proof", None)
++    if not callable(reader):
++        return None
++    proof = reader(session_id, row_id, message_uid=uid)
++    if (proof is None or message.get("role") != proof["role"]
++            or message.get("_compressed_summary") is not True
++            or summary_content_fingerprint(message.get("content")) != proof["carrier_value_sha256"]):
++        return None
++    return proof
++
++
++def clear_summary_carrier_proofs(messages: list) -> None:
++    """Consume process-local capabilities before any ordinary request transport."""
++    for message in messages:
++        if isinstance(message, dict):
++            message.pop(SUMMARY_CARRIER_PROOF_KEY, None)
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -1274,7 +1274,7 @@
+ def build_api_messages(
+     agent: Any, messages: List[Dict[str, Any]], *, current_turn_user_idx: Any,
+     ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
+-    replay_all: bool = False,
++    replay_all: bool = False, _m09_summary_origins: Any = None,
+ ) -> Tuple[List[Dict[str, Any]], str]:
+     """Build the wire copy of ``messages`` for one API call plus the effective system
+     message. Returns ``(api_messages, effective_system)``.
+@@ -1309,6 +1309,9 @@
+     canonical_messages = canonicalize_replay_history(replay_prefix, now=turn_now) + messages[split:]
+ 
+     api_messages = []
++    # Optional request-local source association; no marker reaches the wire or DB.
++    # The ordinary caller retains only digest metadata after final assembly.
++    _m09_source_rows = [] if type(_m09_summary_origins) is list else None
+     for idx, msg in enumerate(canonical_messages):
+         # Structural clone, NOT msg.copy(): in-place transforms below must not reach
+         # persisted history via nested containers; see _clone_message_for_send.
+@@ -1319,6 +1322,9 @@
+         # and only chat-completions strips underscore keys. The token estimator drops
+         # the same set, so it never prices bytes the provider never receives.
+         _api_content = api_msg.pop("api_content", None)
++        # Private producer capability is never provider-visible, including a
++        # direct compressor caller that bypassed the native commit seam.
++        api_msg.pop("_friday_summary_carrier_proof", None)
+         # Keep receipt typing until the request-only projection below. Dropping
+         # it earlier makes an operational observation indistinguishable from speech.
+         for key in PERSISTENCE_ONLY_MESSAGE_FIELDS - {'display_kind', 'display_metadata'}:
+@@ -1367,6 +1373,8 @@
+         # 'reasoning_details' is kept here; the chat-completions transport drops it on the
+         # wire for every route that does not replay it (OpenRouter/Nous do).
+         api_messages.append(api_msg)
++        if _m09_source_rows is not None:
++            _m09_source_rows.append(msg)
+ 
+     # A provider-rejected Anthropic signature is suppressed outside canonical history and
+     # survives fresh request construction / process resume via session model_config.
+@@ -1383,8 +1391,16 @@
+         effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+     if effective_system:
+         api_messages = [{"role": "system", "content": effective_system}] + api_messages
++        if _m09_source_rows is not None:
++            _m09_source_rows.insert(0, None)
+     from hermes_cli.friday_user_scope import public_identity_request_view
+     api_messages = public_identity_request_view(agent, api_messages)
++    if _m09_source_rows is not None:
++        # This native projection deep-copies in the same order, then its explicit
++        # file-context filter may remove rows. Never recover origins by text.
++        _m09_summary_origins[:] = ([(source, row) for source, row in zip(_m09_source_rows, api_messages)
++                                   if source is not None and not row.get('_friday_file_context_only')]
++                                  if len(_m09_source_rows) == len(api_messages) else [])
+     api_messages = [row for row in api_messages if not row.get('_friday_file_context_only')]
+     for idx, row in enumerate(api_messages):
+         for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
+--- a/agent/turn_request_assembly.py
++++ b/agent/turn_request_assembly.py
+@@ -36,6 +36,130 @@
+     request_pressure_tokens: Any
+     total_chars: Any
+ 
++
++
++_M09_SUMMARY_OBSERVATION_SEAL = object()
++
++
++@dataclass(frozen=True)
++class _M09SummaryRequestObservation:
++    # Only immutable metadata; the request/source payloads are never retained here.
++    seal: Any
++    session_id: str
++    turn_timestamp: Any
++    provenance_items: tuple
++    source_bytes: int
++    request_content_sha256: str
++
++
++def _m09_summary_content_matches(source_content, wire_content):
++    """Exact full carrier, allowing only native strip/cache-control decoration.
++
++    This comparison qualifies a known source-row association. It never discovers
++    provenance by searching arbitrary same-text request rows.
++    """
++    from agent.summary_provenance import summary_content_fingerprint
++    expected = source_content.strip() if isinstance(source_content, str) else source_content
++    if isinstance(source_content, str) and isinstance(wire_content, list):
++        if not wire_content or any(type(part) is not dict or part.get("type") != "text"
++                or type(part.get("text")) is not str
++                or set(part) - {"type", "text", "cache_control"} for part in wire_content):
++            return False
++        actual = "".join(part["text"] for part in wire_content)
++    else:
++        # A native multimodal carrier keeps its full value/part order. The cache
++        # planner may add cache_control only at content-part boundaries.
++        actual = ([{key: value for key, value in part.items() if key != "cache_control"}
++                   if type(part) is dict else part for part in wire_content]
++                  if isinstance(wire_content, list) else wire_content)
++    return summary_content_fingerprint(expected) == summary_content_fingerprint(actual)
++
++
++def _m09_summary_candidates(agent, origins, api_messages):
++    """Read only exact committed rows using the existing already-open SessionDB."""
++    from agent.summary_provenance import committed_summary_proof_for_agent
++    result = []
++    if getattr(agent, "_interrupt_requested", False):
++        return result
++    for source, original_wire in origins:
++        if source.get("_compressed_summary") is not True:
++            continue
++        indexes = [index for index, row in enumerate(api_messages) if row is original_wire]
++        if len(indexes) != 1:
++            continue
++        proof = committed_summary_proof_for_agent(agent, source)
++        if (proof is None or original_wire.get("role") != proof["role"]
++                or not _m09_summary_content_matches(source.get("content"), original_wire.get("content"))):
++            continue
++        result.append((proof, source.get("content"), indexes[0], len(api_messages)))
++    # Ambiguous multiple carriers are not silently reduced to a selected receipt.
++    return result if len(result) == 1 else []
++
++
++def _m09_record_summary_request(agent, candidates, api_messages):
++    """Qualify final logical assembly, not SDK submission or a generated answer."""
++    agent._m09_summary_request_observation = None
++    if (len(candidates) != 1 or getattr(agent, "_interrupt_requested", False)
++            or getattr(agent, "_current_turn_timestamp", None) is None):
++        return
++    # Persistent MoA can replace context through another producer/client seam.
++    if getattr(agent, "provider", None) == "moa":
++        return
++    proof, content, index, count = candidates[0]
++    if len(api_messages) != count or not 0 <= index < len(api_messages):
++        return
++    wire = api_messages[index]
++    if wire.get("role") != proof["role"] or not _m09_summary_content_matches(content, wire.get("content")):
++        return
++    from agent.summary_provenance import summary_content_fingerprint
++    normalized = content.strip() if isinstance(content, str) else content
++    import json
++    source_bytes = len((content if isinstance(content, str) else json.dumps(
++        content, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)).encode("utf-8"))
++    agent._m09_summary_request_observation = _M09SummaryRequestObservation(
++        _M09_SUMMARY_OBSERVATION_SEAL, proof["session_id"],
++        getattr(agent, "_current_turn_timestamp", None), tuple(sorted(proof.items())),
++        source_bytes,
++        summary_content_fingerprint(normalized))
++
++
++def m09_effective_summary_carrier(agent):
++    """No I/O: revalidate the last native assembly against the current cache.
++
++    The native Root consumer separately rechecks this exact receipt against the
++    fresh committed DB manifest, activity flags and retained session lineage.
++    A private type distinguishes trusted assembly from hostile serialized tags;
++    it is not a defense against arbitrary native Python/SQLite execution.
++    """
++    unbound = dict(state="UNBOUND_NO_CURRENT_COMMITTED_EFFECTIVE_CACHE", effective_context="UNBOUND",
++                   present=False, session_id=None, sha256=None, bytes=0)
++    d = object.__getattribute__(agent, "__dict__")
++    observed = d.get("_m09_summary_request_observation")
++    if (type(observed) is not _M09SummaryRequestObservation
++            or observed.seal is not _M09_SUMMARY_OBSERVATION_SEAL
++            or d.get("_interrupt_requested", False)
++            or d.get("session_id") != observed.session_id
++            or d.get("_current_turn_timestamp") != observed.turn_timestamp
++            or type(d.get("_session_messages")) is not list):
++        return unbound
++    engine = d.get("context_compressor")
++    if engine is None or object.__getattribute__(engine, "__dict__").get("_session_id") != observed.session_id:
++        return unbound
++    proof = dict(observed.provenance_items)
++    from agent.summary_provenance import summary_content_fingerprint
++    matching = [row for row in d["_session_messages"] if type(row) is dict
++        and (row.get("_row_id") is None or
++             (type(row.get("_row_id")) is int and row["_row_id"] == proof["carrier_row_id"]))
++        and row.get("message_uid") == proof["message_uid"]
++        and row.get("_compressed_summary") is True and row.get("role") == proof["role"]
++        and summary_content_fingerprint(row.get("content")) == proof["carrier_value_sha256"]]
++    if len(matching) != 1:
++        return unbound
++    return dict(state="BOUND_COMMITTED_EFFECTIVE_CACHE", effective_context="ASSEMBLED", present=True,
++                session_id=observed.session_id, sha256=proof["carrier_sha256"], bytes=observed.source_bytes,
++                body_sha256=proof["body_sha256"], carrier_sha256=proof["carrier_sha256"],
++                carrier_value_sha256=proof["carrier_value_sha256"], provenance=proof,
++                request_content_sha256=observed.request_content_sha256)
+ 
+ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original_user_message: Any) -> None:
+     """Run the MoA reference models and append their aggregated context to the last user
+@@ -111,6 +235,9 @@
+     """Assemble the request in the original order. ORDER IS LOAD-BEARING: cache breakpoints
+     are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
+     user merge and surrogate stripping, so the same row's bytes never vary across turns."""
++    # A failed/replaced/new assembly must never reuse an older observation.
++    agent._m09_summary_request_observation = None
++    _m09_origins = []
+     from agent.conversation_loop import (
+         _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
+         _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
+@@ -137,6 +264,7 @@
+         agent, messages, current_turn_user_idx=current_turn_user_idx,
+         ext_prefetch_cache=_ext_prefetch_cache, plugin_user_context=_plugin_user_context,
+         moa_config=moa_config, active_system_prompt=active_system_prompt,
++        _m09_summary_origins=_m09_origins,
+     )
+ 
+     if moa_config:
+@@ -158,6 +286,11 @@
+     api_messages = _apply_context_engine_selection(
+         agent, api_messages, messages, _sel_incoming, logger=request_logger
+     )
++
++    # Selection can return fresh canonical copies; strip the commit-only typed
++    # capability here as well as in build_api_messages. It is never a wire field.
++    for _m09_row in api_messages:
++        _m09_row.pop("_friday_summary_carrier_proof", None)
+ 
+     # Context selection may replace the request with a fresh clone of canonical history.
+     # Re-apply durable rejection suppression after that final replacement hook.
+@@ -215,6 +348,12 @@
+ 
+     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
+     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
++
++    try:
++        _m09_candidates = _m09_summary_candidates(agent, _m09_origins, api_messages)
++    except Exception:
++        # Observation failure cannot change the product request or log its content.
++        _m09_candidates = []
+ 
+     # Build the request-local cache sections LAST, after every transcript mutation;
+     # the canonical tool registry stays undecorated. Marked ``content`` becomes text
+@@ -308,6 +447,10 @@
+     bounded = bounded_request_pressure(agent, api_messages, effective_system or "", tools_for_api)
+     if bounded is not None:
+         request_pressure_tokens = bounded
++    try:
++        _m09_record_summary_request(agent, _m09_candidates, api_messages)
++    except Exception:
++        agent._m09_summary_request_observation = None
+     return AssembledRequest(
+         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
+         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,
+--- a/gateway/ordinary_turn_projection.py
++++ b/gateway/ordinary_turn_projection.py
+@@ -498,13 +498,18 @@
+         raise RuntimeError('m09_cached_summary_carrier_shape')
+     if len(previous or '')>4*1024**2:
+         raise RuntimeError('m09_cached_summary_carrier_bound')
+-    previous_raw=(previous or '').encode()
+-    carrier=dict(present=bool(previous_raw),session_id=ed.get('_session_id'),
+-                 sha256=hashlib.sha256(previous_raw).hexdigest() if previous_raw else None,bytes=len(previous_raw))
+-    if carrier['session_id'] is not None and type(carrier['session_id']) is not str:
+-        raise RuntimeError('m09_cached_summary_session_shape')
+-    summary=dict(state='UNOBSERVED_NO_RETAINED_PRODUCER' if last is None else 'UNBOUND_NATIVE_EVIDENCE_LACKS_SESSION_PRODUCER_TAG',
+-                 counters=counters)
++    # The compressor body is diagnostic only. A committed DB row is not a cached
++    # answer-context surface until native assembly and current canonical cache join.
++    assembly = sys.modules.get('agent.turn_request_assembly')
++    projector = None if assembly is None else getattr(assembly, 'm09_effective_summary_carrier', None)
++    carrier = (projector(agent) if callable(projector) else
++               dict(state='UNBOUND_NO_NATIVE_ASSEMBLY_OBSERVATION', effective_context='UNBOUND',
++                    present=False, session_id=None, sha256=None, bytes=0))
++    summary = dict(state=('BOUND_GENUINE_COMMITTED_SUMMARY' if carrier.get('state') == 'BOUND_COMMITTED_EFFECTIVE_CACHE'
++                          else 'UNOBSERVED_NO_RETAINED_PRODUCER' if last is None
++                          else 'UNBOUND_NATIVE_EVIDENCE_LACKS_SESSION_PRODUCER_TAG'), counters=counters)
++    if carrier.get('state') == 'BOUND_COMMITTED_EFFECTIVE_CACHE':
++        summary['provenance'] = carrier['provenance']
+     # Existing manager/provider fields show presence/capability, not a genuine ordinary
+     # ingestion/retrieval outcome or ACL namespace. Never turn presence into that proof.
+     embedding=dict(state='UNBOUND_NATIVE_HAS_NO_ORDINARY_INGRESS_RETRIEVAL_RECEIPT')
+--- a/hermes_state_compression.py
++++ b/hermes_state_compression.py
+@@ -313,7 +313,8 @@
+         system_prompt: str = None, cwd: str = None, profile_name: str = None,
+         compression_lock_holder: str = None, require_compression_lease: bool = True,
+         require_lease_refresh: bool = False, lease_ttl_seconds: float = 300.0,
+-        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
++        watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None,
++        summary_producer: Any = None) -> None:
+         """Atomically close a parent and publish its durable compression child: closure, child row, and
+         handoff commit in one transaction, so readers see the live parent or a complete child, never an
+         ended parent with a missing/empty child. *watermark* (the parent's highest row already represented
+@@ -373,7 +374,8 @@
+             # `now`, breaking their _display_dedupe_key identity with the parent's durable originals
+             # and duplicating them in the lineage display read (#59661).
+             self._carry_parent_timestamps(conn, parent_session_id, messages)
+-            total_messages, total_tool_calls = self._insert_message_rows(conn, child_session_id, messages)
++            total_messages, total_tool_calls = self._insert_message_rows(conn, child_session_id, messages,
++                summary_producer=summary_producer, summary_source_session_id=parent_session_id)
+             if watermark is not None:
+                 # Clone the parent's concurrent tail into the child after the handoff;
+                 # originals stay in the closed parent for lineage recovery.
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -179,7 +179,9 @@
+         elif not isinstance(display_metadata, dict):
+             logger.warning("Ignoring unexpected display metadata type on write: %s", type(display_metadata).__name__)
+             return None
+-        return json.dumps(display_metadata)
++        from agent.summary_provenance import strip_summary_provenance
++        display_metadata = strip_summary_provenance(display_metadata)
++        return json.dumps(display_metadata) if display_metadata else None
+ 
+     @staticmethod
+     def _decode_display_metadata(raw: Any) -> Optional[Dict[str, Any]]:
+@@ -496,7 +498,7 @@
+             return inserted
+         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+ 
+-    _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp")
++    _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp", "display_metadata", "_friday_summary_carrier_proof")
+ 
+     def _execute_transcript_write(self, fn, messages: List[Dict[str, Any]], **kwargs):
+         """``_execute_write(fn)`` for callbacks that stamp row state onto the caller's *messages* (every
+@@ -519,10 +521,13 @@
+             _restore()
+             return fn(conn)
+         try:
+-            return self._execute_write(_attempt, **kwargs)
++            result = self._execute_write(_attempt, **kwargs)
+         except BaseException:
+             _restore()
+             raise
++        from agent.summary_provenance import clear_summary_carrier_proofs
++        clear_summary_carrier_proofs(messages)
++        return result
+ 
+     def set_latest_matching_message_display_kind(self, session_id: str, *, role: str, content: str,
+                                                  display_kind: str,
+@@ -717,6 +722,43 @@
+             "AND role NOT IN ('session_meta', 'system') ORDER BY id DESC LIMIT 1", (session_id,))
+         return row[0] if row else None
+ 
++    def get_committed_summary_proof(self, session_id: str, row_id: Optional[int] = None, *,
++                                    message_uid: Optional[str] = None):
++        """Read one current trusted native receipt, without creating/rewriting rows.
++
++        Transcript loads omit row ids. Their durable UID resolves only a unique
++        active row in this exact session; ambiguous/cloned/stale identity fails.
++        """
++        if not isinstance(session_id, str) or not session_id:
++            return None
++        columns = "id, session_id, role, content, message_uid, _compressed_summary, active, compacted, display_metadata"
++        if row_id is None:
++            if not isinstance(message_uid, str) or not message_uid:
++                return None
++            row = self._read_one(f"SELECT {columns} FROM messages WHERE session_id = ? AND message_uid = ? "
++                "AND active = 1 AND compacted = 0 AND (SELECT COUNT(*) FROM messages "
++                "WHERE session_id = ? AND message_uid = ? AND active = 1 AND compacted = 0) = 1",
++                (session_id, message_uid, session_id, message_uid))
++        else:
++            if type(row_id) is not int or row_id <= 0:
++                return None
++            row = self._read_one(f"SELECT {columns} FROM messages AS chosen WHERE id = ? AND session_id = ? "
++                "AND (SELECT COUNT(*) FROM messages AS peers WHERE peers.session_id = chosen.session_id "
++                "AND peers.message_uid = chosen.message_uid AND peers.active = 1 AND peers.compacted = 0) = 1",
++                (row_id, session_id))
++        from agent.summary_provenance import committed_summary_proof, summary_content_fingerprint
++        proof = committed_summary_proof(row, session_id) if row is not None else None
++        if (proof is None or (message_uid is not None and proof["message_uid"] != message_uid)
++                or summary_content_fingerprint(self._decode_content(row["content"])) != proof["carrier_value_sha256"]):
++            return None
++        if proof["commit_kind"] == "rotation":
++            lineage = self._read_one("SELECT c.parent_session_id, p.end_reason FROM sessions c "
++                "JOIN sessions p ON p.id = c.parent_session_id WHERE c.id = ?", (session_id,))
++            if (lineage is None or lineage["parent_session_id"] != proof["source_session_id"]
++                    or lineage["end_reason"] != "compression"):
++                return None
++        return proof
++
+     def get_message_role(self, session_id: str, row_id: int) -> Optional[str]:
+         """Role of the active message at *row_id* in *session_id*, or ``None``."""
+         if not session_id:
+@@ -758,7 +800,8 @@
+             return  # Best-effort: a failed carry falls back to the publish-time stamp, never breaks publish.
+ 
+     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]], *,
+-                             prune_checkpoints: bool = True) -> tuple[int, int]:
++                             prune_checkpoints: bool = True, summary_producer: Any = None,
++                             summary_source_session_id: Optional[str] = None) -> tuple[int, int]:
+         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
+         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows.
+         A caller that re-archives some rows afterwards passes ``prune_checkpoints=False`` and prunes once they
+@@ -792,6 +835,11 @@
+         # Every inserter (flush, compaction clone, replace, rotation handoff, import) gets the new rows' own
+         # stored-row digest, so a later re-flush of these dicts takes the versioned rewrite path instead of the
+         # legacy one. One batched SELECT; hash the STORED rows (column affinity rewrites bind values).
++        if summary_source_session_id is not None:
++            from agent.summary_provenance import stamp_committed_summary_proofs
++            stamp_committed_summary_proofs(conn, session_id, messages,
++                source_session_id=summary_source_session_id, producer=summary_producer,
++                decode_content=self._decode_content)
+         from agent.transcript_repair import stamp_inserted_row_snapshots
+         stamp_inserted_row_snapshots(conn, session_id, messages)
+         return inserted, tool_calls_total
+@@ -939,7 +987,7 @@
+     def _archive_named_rows(
+         self, conn, session_id: str, compacted_messages: List[Dict[str, Any]], covered: List[int], *,
+         tail_count: int, carried_messages: Optional[List[Dict[str, Any]]], patched_model_config: Any,
+-        patch: bool, merged_away: Set[int],
++        patch: bool, merged_away: Set[int], summary_producer: Any = None,
+     ) -> int:
+         """Archive *covered* as summarized and clone every other active row after the new set.
+ 
+@@ -969,7 +1017,8 @@
+         # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
+         # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
+         self._carry_parent_timestamps(conn, session_id, compacted_messages)
+-        inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
++        inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages,
++            summary_producer=summary_producer, summary_source_session_id=session_id)
+         if unseen:
+             _ids, unseen_tool_calls = self._tail_rows_after_watermark(
+                 conn,
+@@ -992,7 +1041,7 @@
+         lock_holder: Optional[str] = None, tail_count: int = 0,
+         carried_messages: Optional[List[Dict[str, Any]]] = None,
+         covered_ids: Optional[List[int]] = None,
+-        unresolved_held: Optional[List[Dict[str, Any]]] = None) -> int:
++        unresolved_held: Optional[List[Dict[str, Any]]] = None, summary_producer: Any = None) -> int:
+         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
+         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
+         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
+@@ -1034,7 +1083,7 @@
+                 return self._archive_named_rows(
+                     conn, session_id, compacted_messages, proved[0], tail_count=tail_count,
+                     carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch,
+-                    merged_away=proved[1])
++                    merged_away=proved[1], summary_producer=summary_producer)
+             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
+                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
+                 (session_id, int(watermark)))
+@@ -1062,7 +1111,8 @@
+             # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
+             # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
+             self._carry_parent_timestamps(conn, session_id, compacted_messages)
+-            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
++            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages,
++                summary_producer=summary_producer, summary_source_session_id=session_id)
+             if tail_ids:
+                 self._clone_message_rows(conn, tail_ids)
+                 inserted += len(tail_ids)
