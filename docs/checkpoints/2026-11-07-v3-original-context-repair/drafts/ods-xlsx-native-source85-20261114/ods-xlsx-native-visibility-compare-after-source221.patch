@@ -1,0 +1,163 @@
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2009,7 +2009,7 @@
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _MACRO_PRESENTATION_GUIDANCE
+ 
+ _WORD_CONVERSION_GUIDANCE = 'Word conversion: docx_odt creates a NEW .odt from .docx; odt_docx creates a NEW .docx from .odt. Content is exactly JSON {source,source_sha256}; read the source first and use its current lowercase SHA-256. An isolated local Office process converts genuine native input. The complete bounded semantic inventory must match before create-only publication: Unicode text and order, heading levels, unmerged rectangular tables, single-level native bullet lists, supported native footnotes with citation, class, text and anchor, referenced header/footer stories, and explicit page-break intent. Features outside this finite profile, ambiguous graphs/styles, fields, images, links, hidden/protected/signed/active content and unvalidated semantic loss refuse without publishing; never flatten structures to claim preservation. Source remains unchanged. Native structure checks do not establish visual fidelity, rendering, pagination, arbitrary formatting preservation or ordinary/App acceptance. Unavailable toolchain or unsupported conversion refuses. Never rename a suffix or rebuild extracted text to claim conversion. For an exact unchanged DOCX copy use docx_copy instead of conversion or reconstruction. '
+-_SPREADSHEET_CONVERSION_GUIDANCE = 'XLSX/ODS cross-family conversion: spreadsheet_convert takes exactly {source} into a NEW opposite .ods or .xlsx output, using isolated Office. Only this pair has a bounded, explicitly validated rich profile: sheet order, typed values, exact text/IDs, acyclic SUM ranges/two-cell products, supported names, tables, charts and references. Unknown or unsupported structures and active, external, macro or protected content refuse. Other native conversions and same-format operations keep their existing limits. The output requires semantic and independent formula/cache validation; source is unchanged. Report ALL tool-returned known losses AND unassessed aspects to the user: include frozen-view and table header/background/row-banding appearance losses when returned, and UNASSESSED physical column-width metric mapping/fidelity. Never describe this conversion as lossless or claim visual/layout or physical fidelity. Unsupported output or unavailable toolchain refuses without publishing. '
++_SPREADSHEET_CONVERSION_GUIDANCE = 'XLSX/ODS cross-family conversion: spreadsheet_convert takes exactly {source} into a NEW opposite .ods or .xlsx output, using isolated Office. Only this pair has a bounded, explicitly validated rich profile: sheet order, typed values, exact text/IDs, acyclic SUM ranges/two-cell products, supported names, tables, charts and references. Unknown or unsupported structures and active, external, macro or protected content refuse. Other native conversions and same-format operations keep their existing limits. The output requires semantic and independent formula/cache validation; source is unchanged. In the recognized native ODS-to-XLSX profile, current hidden-row state must match exactly; native ODF visibility-mode provenance and filter-clear behavior remain unassessed when returned. Disclose returned A4 paper-dimension representation quantization and unassessed physical pagination; recognized paper size does not establish physical page or layout equivalence. This comparison does not restore losses from an earlier conversion. Report ALL tool-returned known losses AND unassessed aspects to the user: include frozen-view and table header/background/row-banding appearance losses when returned, and UNASSESSED physical column-width metric mapping/fidelity. Never describe this conversion as lossless or claim visual/layout or physical fidelity. Unsupported output or unavailable toolchain refuses without publishing. '
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["docx_odt", "odt_docx"]
+ for _conversion_guidance in (_WORD_CONVERSION_GUIDANCE, _SPREADSHEET_CONVERSION_GUIDANCE):
+     WRITE_FILE_SCHEMA["description"] += _conversion_guidance
+diff --git a/tools/scoped_spreadsheet_rich.py b/tools/scoped_spreadsheet_rich.py
+--- a/tools/scoped_spreadsheet_rich.py
++++ b/tools/scoped_spreadsheet_rich.py
+@@ -570,6 +570,9 @@
+         if native:
+             _,_,extra,_=_native_directed_projection(source,destination)
+             losses.extend(extra)
++        elif destination is not None and (source_kind,target_kind)==('ods','xlsx') and getattr(source,'native_calc_profile',False) is True:
++            _,_,extra,_=_native_reverse_projection(source,destination)
++            losses.extend(loss for loss in extra if loss not in losses)
+     return tuple(losses)
+ 
+ 
+@@ -579,6 +582,8 @@
+     missing=_missing_first_row_views(source,destination,source_kind,target_kind)
+     if (source_kind,target_kind)==('xlsx','ods') and getattr(destination,'native_calc_profile',False) is True:
+         left,right,_,_=_native_directed_projection(source,destination)
++    elif (source_kind,target_kind)==('ods','xlsx') and getattr(source,'native_calc_profile',False) is True:
++        left,right,_,_=_native_reverse_projection(source,destination)
+     else:left,right=tuple(row for row in source if row not in missing),tuple(destination)
+     if left!=right: refuse('semantic_mismatch')
+     if source_kind==target_kind:
+@@ -633,20 +638,123 @@
+             source_print=[r[2] for r in source if r[:2]==row[:2]]
+             if len(source_print)!=1 or source_print[0][1]!='A4':refuse('print_layout_unsupported')
+             if payload[1]!='A4':
+-                if not isinstance(payload[1],tuple) or len(payload[1])!=2 or payload[1][0]!='physical_cm':refuse('print_layout_unsupported')
+-                dims=payload[1][1];expected=(Decimal('29.700'),Decimal('21.000')) if source_print[0][0]=='landscape' else (Decimal('21.000'),Decimal('29.700'))
+-                if (not isinstance(dims,tuple) or len(dims)!=2 or any(not isinstance(v,Decimal) or not v.is_finite() for v in dims)
+-                        or any(abs(actual-want)>Decimal('.001') for actual,want in zip(dims,expected))):refuse('print_layout_unsupported')
++                _a4_physical_paper(payload[1],source_print[0][0])
+                 losses.append('a4_page_dimension_serialization_discrepancy_xlsx_to_ods')
+             right.append((feature,scope,(payload[0],payload[2],payload[3])));continue
+         right.append(row)
+     return tuple(sorted(left,key=repr)),tuple(sorted(right,key=repr)),tuple(dict.fromkeys(losses)),tuple(dict.fromkeys(unassessed))
+ 
+ 
++def _a4_physical_paper(paper,orientation):
++    # This is exactly the pre-existing forward native A4 recognition boundary,
++    # after _cm's Decimal .001cm quantization. Reuse it in the reverse direction
++    # without widening the bound or claiming raw physical page equivalence.
++    if not isinstance(paper,tuple) or len(paper)!=2 or paper[0]!='physical_cm':refuse('print_layout_unsupported')
++    dims=paper[1];expected=(Decimal('29.700'),Decimal('21.000')) if orientation=='landscape' else (Decimal('21.000'),Decimal('29.700'))
++    if (not isinstance(dims,tuple) or len(dims)!=2 or any(not isinstance(v,Decimal) or not v.is_finite() for v in dims)
++            or any(abs(actual-want)>Decimal('.001') for actual,want in zip(dims,expected))):refuse('print_layout_unsupported')
++
++
++
++def _native_reverse_projection(source,destination):
++    """Compare bounded native ODF state with recognized XLSX representation.
++
++    The ODF-only hidden diagnostic never replaces exact current hidden rows.
++    Column interval partitions may differ only at exactly equal per-column
++    Decimal widths; this establishes no physical width mapping or tolerance.
++    Native physical page dimensions may represent A4 only within the exact
++    existing forward recognition boundary. Orientation and fit remain exact;
++    raw geometry and physical pagination remain explicitly unassessed. Other
++    records and every same-format comparison keep their strict equality.
++    """
++    if (not isinstance(source,RichSignature) or not isinstance(destination,RichSignature)
++            or getattr(source,'source_kind','')!='ods'
++            or getattr(destination,'source_kind','')!='xlsx'
++            or getattr(source,'native_calc_profile',False) is not True
++            or getattr(destination,'native_calc_profile',False) is not False):
++        refuse('native_reverse_visibility_profile_unsupported')
++    names=getattr(source,'sheet_names',())
++    if (not isinstance(names,tuple) or not names or len(names)!=len(set(names))
++            or getattr(destination,'sheet_names',())!=names):
++        refuse('native_reverse_visibility_profile_unsupported')
++    def hidden_rows(signature):
++        hidden=[]
++        for feature,scope,payload in signature:
++            if feature!='hidden_row':continue
++            if scope not in names or type(payload) is not int or not 1<=payload<=MAX_ROWS:
++                refuse('hidden_row_semantics_mismatch')
++            hidden.append((scope,payload))
++        if len(hidden)!=len(set(hidden)):refuse('hidden_row_semantics_mismatch')
++        return set(hidden)
++    source_hidden=hidden_rows(source);target_hidden=hidden_rows(destination)
++    if source_hidden!=target_hidden:refuse('hidden_row_semantics_mismatch')
++    modes=[]
++    for feature,scope,payload in source:
++        if feature!='native_hidden_mode':continue
++        if (not isinstance(payload,tuple) or len(payload)!=2
++                or type(payload[0]) is not int or payload[1] not in ('filter','collapse')
++                or (scope,payload[0]) not in source_hidden):
++            refuse('hidden_row_semantics_mismatch')
++        modes.append((scope,payload[0]))
++    # Missing, duplicate, changed or unbound modes cannot authorize projection.
++    if len(modes)!=len(set(modes)) or set(modes)!=source_hidden:
++        refuse('hidden_row_semantics_mismatch')
++    if any(row[0]=='native_hidden_mode' for row in destination):
++        refuse('hidden_row_semantics_mismatch')
++    def columns(signature):
++        points={}
++        for feature,scope,payload in signature:
++            if feature!='column_width':continue
++            if (scope not in names or not isinstance(payload,tuple) or len(payload)!=3
++                    or type(payload[0]) is not int or type(payload[1]) is not int
++                    or not 1<=payload[0]<=payload[1]<=MAX_COLS
++                    or not isinstance(payload[2],Decimal) or not payload[2].is_finite()
++                    or not Decimal(0)<payload[2]<=Decimal(1000)):
++                refuse('column_unsupported')
++            for column in range(payload[0],payload[1]+1):
++                key=scope,column
++                if key in points:refuse('column_unsupported')
++                points[key]=payload[2]
++        return points
++    source_columns=columns(source);target_columns=columns(destination)
++    if source_columns.keys()!=target_columns.keys():refuse('column_coverage_mismatch')
++    if source_columns!=target_columns:refuse('column_width_semantics_mismatch')
++    losses=[]
++    def print_setups(signature,target=False):
++        setups={}
++        for feature,scope,payload in signature:
++            if feature!='print_setup':continue
++            if (scope not in names or scope in setups or not isinstance(payload,tuple) or len(payload)!=4
++                    or payload[0] not in ('landscape','portrait')
++                    or any(type(v) is not int or not 0<=v<=100 for v in payload[2:])):
++                refuse('print_layout_unsupported')
++            if payload[1]!='A4':
++                if target:refuse('print_layout_unsupported')
++                _a4_physical_paper(payload[1],payload[0])
++                losses.extend(('physical_geometry_quantized_0.001cm','a4_page_dimension_serialization_discrepancy_ods_to_xlsx'))
++            setups[scope]=('print_setup',scope,(payload[0],'A4',payload[2],payload[3]))
++        return setups
++    source_print=print_setups(source);target_print=print_setups(destination,True)
++    if source_print.keys()!=target_print.keys():refuse('print_setup_semantics_mismatch')
++    def projected(signature):
++        rows=[row for row in signature if row[0] not in ('native_hidden_mode','column_width','print_setup')]
++        rows.extend(('column_width',scope,(column,column,width))
++                    for (scope,column),width in source_columns.items())
++        rows.extend((source_print if signature is source else target_print).values())
++        return tuple(sorted(rows,key=repr))
++    unassessed=[]
++    if modes:unassessed.append('hidden_row_provenance_and_filter_clear_behavior_unassessed')
++    if source_columns:unassessed.append('column_width_physical_mapping_unassessed')
++    if source_print:unassessed.append('physical_pagination_unassessed')
++    return projected(source),projected(destination),tuple(dict.fromkeys(losses)),tuple(unassessed)
++
++
+ def fidelity_report(source,destination,*,source_kind='',target_kind=''):
+     source_kind=source_kind or getattr(source,'source_kind','');target_kind=target_kind or getattr(destination,'source_kind','')
+     native=(source_kind,target_kind)==('xlsx','ods') and getattr(destination,'native_calc_profile',False) is True
+-    unassessed=_native_directed_projection(source,destination)[3] if native else ()
++    reverse=(source_kind,target_kind)==('ods','xlsx') and getattr(source,'native_calc_profile',False) is True
++    unassessed=(_native_directed_projection(source,destination)[3] if native else
++                _native_reverse_projection(source,destination)[3] if reverse else ())
+     names=getattr(source,'sheet_names',())
+     def encoded(v):
+         if isinstance(v,Decimal):return str(v)
