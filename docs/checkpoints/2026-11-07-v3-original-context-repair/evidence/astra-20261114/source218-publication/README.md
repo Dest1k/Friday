@@ -1,5 +1,7 @@
 # Source218: genuine summary carrier
 
+Актуализация14.11: **218 установлена, операция CLOSED** на containing source `edd52edb4c88110669477acf31ca7b36b0b0e211`; product origin `f43b566` прежний. [Actual closure/default postconsumer/full17892/data/fresh services](../native218-installed-and-operation-closed.json). Ниже сохранены исходные source-publication факты; они сами не означали установки или приёмки M09.
+
 Последующая фактическая граница — [отказы caller/actor и сохранённая217](../source218-actual-caller-refusals-and-reconciliation.json). Код опубликован, но218 не установлена; начальная source-only оценка ниже сохраняется как история подготовки.
 
 Подключён проверенный исходник `m09-genuine-summary-carrier-after-source217` для M09/CASE88/OP001 и V3/B00. Сейчас установлен217; **218 ещё не установлена**, обычный M09 не начат. [Точные исходники, состав и проверенные границы](SOURCE-ROOT-ACCEPTED.json), [оперативная очередь](../../../ASTRA-CURRENT.md).
