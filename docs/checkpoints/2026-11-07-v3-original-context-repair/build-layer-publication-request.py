@@ -219,6 +219,7 @@ def build_request(args):
                 "friday.current-source-native-successor.v15": "friday.current-source-native-successor.v16",
                 "friday.current-source-native-successor.v16": "friday.current-source-native-successor.v17",
                 "friday.current-source-native-successor.v17": "friday.current-source-native-successor.v18",
+                "friday.current-source-native-successor.v18": "friday.current-source-native-successor.v19",
             }
             previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
             consumer.require(previous_schema in supported,
@@ -271,6 +272,9 @@ def build_request(args):
             consumer.require(previous_schema != "friday.current-source-native-successor.v17"
                              or args.layer_names == ("m09-real-web-custody-receipt-after-source215",),
                              "transaction_current_source_exact_eighteenth_layer_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v18"
+                             or args.layer_names == ("ordinary-document-owner-through-attachments-after-source216",),
+                             "transaction_current_source_exact_nineteenth_layer_required")
             request["current_source_successor"].update({
                 "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),

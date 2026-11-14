@@ -1,0 +1,128 @@
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -4461,6 +4461,7 @@
+     async def send_final_ledgered(
+         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
+         reply_to: Optional[str], is_ephemeral_response: bool = False,
++        defer_turn_marker_release: bool = False,
+     ) -> "tuple[SendResult, BasePlatformAdapter]":
+         """The delivery-ledger bracket every final text goes through, on the CURRENT transport
+         (a reconnect may have replaced this adapter): record the obligation before the send,
+@@ -4469,6 +4470,8 @@
+         supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
+         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
+         (an ephemeral delete must go to the same transport)."""
++        if type(defer_turn_marker_release) is not bool:
++            raise ValueError("invalid_delivery_marker_policy")
+         delivery_adapter = self._final_delivery_adapter(event.source)
+         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                     len(text_content), event.source.chat_id)
+@@ -4479,8 +4482,10 @@
+                 event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+         except Exception:
+             return SendResult(success=False, error="delivery_not_admitted"), delivery_adapter
+-        if obligation_id is not None:
+-            await self._release_turn_marker(event)  # the ledger now owns the crash recovery
++        # A text ledger owns only the text. Pending managed attachments still
++        # require this same active owner for their host-phase/CAS preflight.
++        if obligation_id is not None and not defer_turn_marker_release:
++            await self._release_turn_marker(event)  # the ledger now owns text-only crash recovery
+         with telegram_text_send_scope(telegram and obligation_id is not None):
+             result = await delivery_adapter._send_with_retry(
+                 chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+@@ -4500,11 +4505,13 @@
+ 
+     async def _send_final_text(
+         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
+-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
++        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable, *,
++        defer_turn_marker_release: bool = False) -> None:
+         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
+         result, delivery_adapter = await self.send_final_ledgered(
+             event, session_key, text_content, metadata,
+-            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
++            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response,
++            defer_turn_marker_release=defer_turn_marker_release)
+         record_delivery(result)
+         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
+             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
+@@ -4765,7 +4772,10 @@
+                     if text_content and not _tts_caption_delivered:
+                         await self._send_final_text(
+                             event, session_key, text_content, _final_thread_metadata,
+-                            is_ephemeral_response, _ephemeral_ttl, _record_delivery)
++                            is_ephemeral_response, _ephemeral_ttl, _record_delivery,
++                            defer_turn_marker_release=(
++                                getattr(event.source, "_friday_user_scope", None) is not None
++                                and bool(extracted.media_files or extracted.local_files or extracted.images)))
+                     await self._deliver_attachments(
+                         event, extracted, _final_thread_metadata,
+                         anything_sent=delivery_attempted or _tts_caption_delivered,
+--- a/gateway/run_plugin_delivery.py
++++ b/gateway/run_plugin_delivery.py
+@@ -3,6 +3,7 @@
+ 
+ import asyncio
+ import hashlib
++import logging
+ import math
+ from collections.abc import Mapping
+ 
+@@ -119,6 +120,7 @@
+ 
+ 
+ _ORDINARY_DOCUMENTS = 'ordinary_documents.v1'
++_logger = logging.getLogger(__name__)
+ 
+ 
+ def _ordinary_marker(selection):
+@@ -273,27 +275,47 @@
+     from pathlib import Path
+     from hermes_cli.friday_user_scope import workspace_document
+     from gateway.platforms.base import SendResult
++    stage = 'authority'
+     try:
+         cap, runner, context, route, check = _ordinary_authority(adapter, source)
++        stage = 'caption'
+         if caption is not None:
+             from hermes_cli.friday_user_scope import guard_gateway_reply
+             guarded, blocked = guard_gateway_reply(source, caption)
+             if blocked or guarded != caption or not _ordinary_caption_fits(caption):
+                 return SendResult(success=False, error='gateway_document_caption_rejected')
++        stage = 'workspace_snapshot'
+         data, relative = workspace_document(path)
++        stage = 'document_name'
+         from gateway.run_attachment_presentation import original_document_name
+         name = file_name or original_document_name(source, cap, relative, data) or Path(relative).name
+         if (not isinstance(name, str) or not name or len(name) > 255
+                 or name in {'.', '..'} or any(ord(c) < 32 or c in '/\\' for c in name)):
+             raise ValueError('invalid_document_name')
++        stage = 'session_binding'
+         session_id = getattr(source, '_friday_document_session_id', None)
+         if not isinstance(session_id, str) or not session_id:
+             raise ValueError('original_session_required')
++        stage = 'recovery_owner'
+         await _mark_ordinary_file_recovery(runner, source, cap, route,
+             [{'relative_path': relative, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}])
++        stage = 'journal_reservation'
+         state, selection, reserved = _begin_ordinary_document(cap, relative, data, route, name)
+-    except Exception:
+-        return SendResult(success=False, error='gateway_document_preflight_rejected')
++    except Exception as exc:
++        # Class/place only: never exception text, paths, route, payload or secrets.
++        error_class = type(exc).__name__
++        if (not error_class or len(error_class) > 64 or not error_class.isascii()
++                or not all(c.isalnum() or c == '_' for c in error_class)):
++            error_class = 'OTHER'
++        diagnostic = {'phase': stage, 'exception_class': error_class,
++                      'place': 'ordinary_document_preflight'}
++        try:
++            _logger.warning('ordinary_document_preflight_rejected phase=%s class=%s place=%s',
++                            stage, error_class, diagnostic['place'])
++        except Exception:
++            pass  # Diagnostic availability must not change the safe refusal.
++        return SendResult(success=False, error='gateway_document_preflight_rejected',
++                          raw_response={'friday_document_preflight': diagnostic})
+     # Cancellation or ANY commit/ack uncertainty leaves the original UNKNOWN.
+     try:
+         cap.check()

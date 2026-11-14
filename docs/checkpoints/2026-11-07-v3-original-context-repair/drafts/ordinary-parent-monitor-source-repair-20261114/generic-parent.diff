@@ -1,0 +1,214 @@
+--- a/root_f07_once.py
++++ b/root_f07_once.py
+@@ -266,29 +266,110 @@
+ 
+ 
+ def scan_scope(scope,*,deadline):
+-    """Finite scoped metadata scan, no bulk H/source traversal or content read."""
++    """Bounded metadata-only scan through checked no-follow directory descriptors.
++
++    Pending nodes are iterative; at most a constant number of descriptors are
++    live. Reopening a pending directory checks every saved inode in its lineage.
++    Namespace guards refuse replacement while descriptors prevent following it.
++    """
+     rows={};visited=set();count=0
+-    def entry(path,recurse):
++    flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC
++    def check_deadline():need(time.monotonic()<deadline,'F07_DISK_SCAN_OUTER_DEADLINE')
++    def directory_key(info):return (info.st_dev,info.st_ino,stat.S_IFMT(info.st_mode))
++    def visit(text):
+         nonlocal count
+-        need(time.monotonic()<deadline,'F07_DISK_SCAN_OUTER_DEADLINE')
+-        text=str(path)
+-        if text in visited:return
++        check_deadline()
++        if text in visited:return False
+         visited.add(text);count+=1;need(count<=scope['max_entries'],'F07_DISK_SCOPE_ENTRY_BOUND')
+-        try:info=path.lstat()
+-        except FileNotFoundError:return
+-        need(not stat.S_ISLNK(info.st_mode),'F07_OPERATION_WRITE_SCOPE_LINK_RECONCILE_ONLY')
+-        if stat.S_ISREG(info.st_mode): rows[(info.st_dev,info.st_ino)]=max(rows.get((info.st_dev,info.st_ino),0),info.st_size)
+-        elif stat.S_ISDIR(info.st_mode) and recurse:
+-            with os.scandir(path) as children:
+-                for child in children:entry(Path(child.path),True)
+-        else:need(stat.S_ISDIR(info.st_mode),'F07_WRITE_SCOPE_SPECIAL_FILE')
+-    for path in scope['directory_roots']:entry(canonical_path(path),True)
+-    for path in scope['file_paths']:entry(canonical_path(path),False)
++        return True
++    def checked_directory(parent,name,expected=None):
++        check_deadline();before=os.stat(name,dir_fd=parent,follow_symlinks=False)
++        need(not stat.S_ISLNK(before.st_mode),'F07_OPERATION_WRITE_SCOPE_LINK_RECONCILE_ONLY')
++        need(stat.S_ISDIR(before.st_mode),'F07_DISK_SCOPE_DIRECTORY_CHANGED')
++        if expected is not None:need(directory_key(before)==expected,'F07_DISK_SCOPE_DIRECTORY_CHANGED')
++        fd=os.open(name,flags,dir_fd=parent)
++        try:
++            after=os.fstat(fd);current=os.stat(name,dir_fd=parent,follow_symlinks=False)
++            need(stat.S_ISDIR(after.st_mode) and directory_key(before)==directory_key(after)==directory_key(current),
++                 'F07_DISK_SCOPE_DIRECTORY_CHANGED')
++            return fd
++        except BaseException:
++            os.close(fd);raise
++    def absolute_parent(path):
++        fd=os.open('/',flags)
++        try:
++            for name in path.parts[1:-1]:
++                next_fd=checked_directory(fd,name);os.close(fd);fd=next_fd
++            return fd
++        except BaseException:
++            os.close(fd);raise
++    def root_guard(path,expected):
++        parent=absolute_parent(path)
++        try:
++            fd=checked_directory(parent,path.name,expected)
++            os.close(fd)
++        finally:os.close(parent)
++    def reopen(root_fd,node):
++        chain=[];cursor=node
++        while cursor[0] is not None:
++            check_deadline();chain.append(cursor);cursor=cursor[0]
++        fd=os.dup(root_fd)
++        try:
++            for part in reversed(chain):
++                next_fd=checked_directory(fd,part[1],part[2]);os.close(fd);fd=next_fd
++            return fd
++        except BaseException:
++            os.close(fd);raise
++    def regular(info):
++        key=(info.st_dev,info.st_ino);rows[key]=max(rows.get(key,0),info.st_size)
++    for raw,recurse in [(p,True) for p in scope['directory_roots']]+[(p,False) for p in scope['file_paths']]:
++        path=canonical_path(raw)
++        if not visit(str(path)):continue
++        try:parent=absolute_parent(path)
++        except FileNotFoundError:continue
++        root_fd=None
++        try:
++            try:info=os.stat(path.name,dir_fd=parent,follow_symlinks=False)
++            except FileNotFoundError:continue
++            need(not stat.S_ISLNK(info.st_mode),'F07_OPERATION_WRITE_SCOPE_LINK_RECONCILE_ONLY')
++            if stat.S_ISREG(info.st_mode):regular(info);continue
++            need(stat.S_ISDIR(info.st_mode),'F07_WRITE_SCOPE_SPECIAL_FILE')
++            if not recurse:continue
++            root_key=directory_key(info);root_fd=checked_directory(parent,path.name,root_key)
++        finally:os.close(parent)
++        if root_fd is None:continue
++        try:
++            root=(None,None,root_key,str(path));pending=[root]
++            while pending:
++                check_deadline();node=pending.pop();root_guard(path,root_key);fd=reopen(root_fd,node)
++                try:
++                    with os.scandir(fd) as children:
++                        for child in children:
++                            text=str(Path(node[3])/child.name)
++                            if not visit(text):continue
++                            try:info=os.stat(child.name,dir_fd=fd,follow_symlinks=False)
++                            except FileNotFoundError:continue
++                            need(not stat.S_ISLNK(info.st_mode),'F07_OPERATION_WRITE_SCOPE_LINK_RECONCILE_ONLY')
++                            if stat.S_ISREG(info.st_mode):regular(info)
++                            elif stat.S_ISDIR(info.st_mode):pending.append((node,child.name,directory_key(info),text))
++                            else:need(False,'F07_WRITE_SCOPE_SPECIAL_FILE')
++                    root_guard(path,root_key)
++                    guard=reopen(root_fd,node);os.close(guard)
++                finally:os.close(fd)
++        finally:os.close(root_fd)
+     return rows
+ 
+ 
+-def charge_growth(baseline,current,highwater):
+-    for key,size in current.items():highwater[key]=max(highwater.get(key,0),max(0,size-baseline.get(key,0)))
++def charge_growth(baseline,current,highwater,*,max_entries=100000):
++    # Keep exactly the original positive-growth highwater sum. Zero-growth keys
++    # cost no accounting state; positive-key exhaustion refuses without eviction.
++    need(type(max_entries) is int and 0<max_entries<=100000 and len(highwater)<=max_entries,
++         'F07_DISK_HIGHWATER_ENTRY_BOUND')
++    for key,size in current.items():
++        growth=max(0,size-baseline.get(key,0))
++        if growth:
++            need(key in highwater or len(highwater)<max_entries,'F07_DISK_HIGHWATER_ENTRY_BOUND')
++            highwater[key]=max(highwater.get(key,0),growth)
+     return sum(highwater.values())
+ 
+ 
+@@ -299,42 +380,70 @@
+ 
+ 
+ def stop_reap(actor,clock,signals,lifetime=None):
+-    """Only this Popen child; no group/global kill and no fresh cleanup clock."""
++    """One same-clock cleanup sequence for this child, even after signal errors."""
+     if lifetime is not None:lifetime['cleanup_attempted']=True
+     for sig,parts in ((signal.SIGINT,3),(signal.SIGTERM,2),(signal.SIGKILL,1)):
+-        if actor.poll() is not None:return actor.wait(timeout=0)
+-        try:actor.send_signal(sig);signals.append(int(sig))
+-        except ProcessLookupError:pass
++        try:
++            if actor.poll() is not None:return actor.wait(timeout=0)
++        except Exception:pass
++        sent=False
++        try:
++            actor.send_signal(sig);sent=True;signals.append(int(sig))
++        except Exception:pass
++        if not sent:continue
+         left=remaining(clock)
+         if left:
+             try:return actor.wait(timeout=left/parts)
+-            except subprocess.TimeoutExpired:pass
+-    if actor.poll() is not None:return actor.wait(timeout=0)
+-    raise StopUnconfirmed('F07_STOP_UNCONFIRMED_ORIGINAL_OUTER600_EXPIRED')
++            except Exception:pass
++    try:
++        if actor.poll() is not None:return actor.wait(timeout=0)
++    except Exception:pass
++    raise StopUnconfirmed('F07_STOP_UNCONFIRMED_ORIGINAL_OUTER600_EXPIRED') from None
++
++
++def disk_monitor_diagnostic(exc,phase,place):
++    """Fixed metadata only: no exception text/args, traceback, paths or locals."""
++    need(phase in ('RUNTIME_SAMPLE','FINAL_SAMPLE') and place in ('SCAN_SCOPE','CHARGE_GROWTH'),
++         'F07_DISK_DIAGNOSTIC_ENUM_REQUIRED')
++    classes=((FileNotFoundError,'FileNotFoundError'),(NotADirectoryError,'NotADirectoryError'),
++        (PermissionError,'PermissionError'),(TimeoutError,'TimeoutError'),(OSError,'OSError'),
++        (ValueError,'ValueError'),(TypeError,'TypeError'),(KeyError,'KeyError'),
++        (RecursionError,'RecursionError'),(MemoryError,'MemoryError'),(RuntimeError,'RuntimeError'))
++    name=next((name for kind,name in classes if type(exc) is kind),'OTHER')
++    return dict(phase=phase,exception_class=name,place=place)
+ 
+ 
+ def wait_owned(actor,clock,scope,baseline,disk_bytes,stops,lifetime=None):
+-    highwater={};samples=0;largest=0;reason=None;signals=[]
++    highwater={};samples=0;largest=0;reason=None;signals=[];failures=[];diagnostic_failed=False
+     while actor.poll() is None:
+         if stops:reason='PARENT_STOP_REQUEST';break
+         if remaining(clock)<=5:reason='ORIGINAL_OUTER_CLEANUP_RESERVE';break
+         try:
+-            charged=charge_growth(baseline,scan_scope(scope,deadline=clock['deadline_monotonic']-5),highwater)
++            place='SCAN_SCOPE';current=scan_scope(scope,deadline=clock['deadline_monotonic']-5)
++            place='CHARGE_GROWTH';charged=charge_growth(baseline,current,highwater,max_entries=scope['max_entries'])
+             samples+=1;largest=max(largest,charged)
+             if charged>=disk_bytes:reason='OBSERVED_AGGREGATE_NEW_DISK_BOUND';break
+-        except Exception:
+-            reason='AGGREGATE_DISK_MONITOR_REFUSED';break
++        except Exception as exc:
++            reason='AGGREGATE_DISK_MONITOR_REFUSED'
++            try:failures.append(disk_monitor_diagnostic(exc,'RUNTIME_SAMPLE',place))
++            except BaseException:diagnostic_failed=True
++            break
+         try:actor.wait(timeout=min(scope['sample_seconds'],max(0.001,remaining(clock)-5)))
+         except subprocess.TimeoutExpired:pass
+     code=stop_reap(actor,clock,signals,lifetime) if actor.poll() is None else actor.wait(timeout=0)
+     # Preserve a final sample when possible, including the just-exited process's
+     # carriers. This never consumes a replacement or extended operation clock.
+     try:
+-        largest=max(largest,charge_growth(baseline,scan_scope(scope,deadline=clock['deadline_monotonic']),highwater));samples+=1
++        place='SCAN_SCOPE';current=scan_scope(scope,deadline=clock['deadline_monotonic'])
++        place='CHARGE_GROWTH';largest=max(largest,charge_growth(baseline,current,highwater,max_entries=scope['max_entries']));samples+=1
+         if largest>=disk_bytes and reason is None:reason='OBSERVED_DISK_BOUND_AT_EXIT'
+-    except Exception:
++    except Exception as exc:
+         if reason is None:reason='FINAL_DISK_SAMPLE_NOT_ESTABLISHED'
++        try:failures.append(disk_monitor_diagnostic(exc,'FINAL_SAMPLE',place))
++        except BaseException:diagnostic_failed=True
+     return dict(exit_code=code,stop_reason=reason,cleanup_signals=signals,samples=samples,
++        disk_monitor_failures=failures,disk_monitor_diagnostic_failed=diagnostic_failed,
++        aggregate_highwater_entry_cap=scope['max_entries'],
+         observed_new_bytes_highwater=largest,aggregate_cap_bytes=disk_bytes,
+         accounting='SUM_PER_INODE_OBSERVED_POSITIVE_GROWTH_HIGHWATER',hard_filesystem_quota=False,
+         limitations=['between-sample transient files/growth can be missed','gateway external growth outside declared roots is unbounded',
