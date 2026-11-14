@@ -1,0 +1,199 @@
+--- accepted-F03/run_once.py
++++ F04/run_once.py
+@@ -22,8 +22,8 @@
+ 
+ sys.dont_write_bytecode = True
+ ROOT = Path(__file__).parent
+-ASSIGNMENT = 'ASTRA-NATIVE-F03-RECEIVED-COPY-APP-ENTRY-PREP-20261114#1'
+-UNIT = 'frw-astra-f03-received-copy-20261114-g1.service'
++ASSIGNMENT = 'ASTRA-F04-RECEIVED-XLSX-APP-PREP-20261114#1'
++UNIT = 'frw-astra-f04-received-xlsx-20261114-g1.service'
+ SLOT = Path('/home/jericho/.jericho/runtime/locks/synthetic-live-acceptance.lock')
+ TOOLCHAIN = Path('/home/jericho/.jericho/toolchains/libreoffice-26.2.5.2-ubuntu26.04-amd64')
+ PREFIX = '/opt/friday-document-toolchain'
+@@ -31,16 +31,17 @@
+ WORK = ROOT / 'operation'
+ SOURCE = Path('/home/jericho/.cache/FRW-ASTRA-V3-F03-RICH-ODS-ORIGINAL221-20261114/input/orders-formulas-original.ods')
+ SOURCE_SHA = 'a2e68bc685e4d689aa7972ff4f2c7f9841441c9dcb4fc5e40327a5ae190b5d58'
+-REQUEST = {'sheet': 'Orders', 'cell': 'C2', 'expected': '2', 'value': '3'}
++SOURCE83_SHA = '87e2a8e37e6a28e63d09f148e997a55783875d528efa7a4e09e4409e626d336c'
+ DELTA = {'kind': 'additional_independent_numeric_plus_one', 'sheet_index': 1,
+-         'cell': 'C2', 'before': '3', 'after': '4', 'addend': '1'}
++         'cell': 'C2', 'before': '2', 'after': '3', 'addend': '1'}
+ OLD_OUTPUTS = {'608bade9881fc66a6d0d16ee4ebb2d9899222fcf9eeb3b7ed297c7fe16e9cadf',
+                'b0a686b3b15a58dc149861d01843df968ed8f247c3a8c284ff304ecc5157a5db'}
+ OLD_PREFIXES = ('/home/jericho/.cache/FRW-ASTRA-CALC-REAL-',
+-                '/home/jericho/.cache/FRW-ASTRA-NATIVE-CALC-REAL-APP-RECALC-')
+-BINDING_KEYS = {'schema', 'state', 'assignment', 'source', 'received', 'request',
+-                'request_sha256', 'delta', 'ordinary_assessment', 'custody',
+-                'phase_authority', 'installed_current'}
++                '/home/jericho/.cache/FRW-ASTRA-NATIVE-CALC-REAL-APP-RECALC-',
++                '/home/jericho/.cache/FRW-ASTRA-NATIVE-F03-RECEIVED-COPY-APP-ENTRY-PREP-')
++BINDING_KEYS = {'schema', 'state', 'assignment', 'source', 'received',
++                'ordinary_request', 'ordinary_request_sha256', 'delta',
++                'conversion_assessment', 'custody', 'phase_authority', 'installed_current'}
+ PIN_KEYS = {'path', 'bytes', 'sha256', 'identity'}
+ IDENTITY_KEYS = {'dev', 'ino', 'mode', 'uid', 'gid', 'nlink', 'size', 'mtime_ns', 'ctime_ns'}
+ EXPECTED_COUNTS = '1:2:1:2:1:1'
+@@ -155,7 +156,7 @@
+     # subprocess, work directory, intent, clock creation or Office admission.
+     need(type(binding) is dict and binding.get('state') == 'ROOT_BOUND_FUTURE_RECEIVED_COPY_ONCE', 'UNBOUND')
+     need(set(binding) == BINDING_KEYS
+-         and binding['schema'] == 'friday.Root.F03.received-copy-input.v1'
++         and binding['schema'] == 'friday.Root.F04.received-xlsx-input.v1'
+          and binding['assignment'] == ASSIGNMENT, 'BINDING_SCHEMA')
+     for key in ('source', 'received'):
+         validate_pin(binding[key])
+@@ -166,16 +167,25 @@
+          and received['path'] != source['path']
+          and not any(received['path'].startswith(p) for p in OLD_PREFIXES)
+          and not Path(received['path']).is_relative_to(ROOT), 'NOT_FUTURE_RECEIVED')
+-    need(binding['request'] == REQUEST
+-         and binding['request_sha256'] == sha(canonical(REQUEST)), 'REQUEST')
+-    need(type(binding['delta']) is dict and binding['delta'] == DELTA
+-         and type(binding['delta']['sheet_index']) is int, 'DELTA')
+-    ordinary = binding['ordinary_assessment']
+-    need(type(ordinary) is dict and set(ordinary) == {'receipt', 'status', 'source_sha256', 'received_sha256', 'request_sha256'}
+-         and ordinary['status'] == 'EDIT_BYTES_MATCH'
++    # Actual ordinary request bytes are an opaque Root-owned file pin. They are
++    # distinct from Source83's canonical semantic request and the App delta.
++    validate_ref(binding['ordinary_request'])
++    need(binding['ordinary_request_sha256'] == binding['ordinary_request']['sha256'],
++         'ORDINARY_REQUEST_PIN')
++    need(type(binding['delta']) is dict and canonical(binding['delta']) == canonical(DELTA), 'DELTA')
++    ordinary = binding['conversion_assessment']
++    need(type(ordinary) is dict and set(ordinary) == {
++         'receipt', 'state', 'assessor_sha256', 'source_sha256',
++         'received_sha256', 'request_sha256'}
++         and ordinary['state'] in ('SELECTED_REQUIRED_BYTES_MATCH_SOURCE_PROJECTION',
++                                  'SELECTED_STRUCTURE_MATCH_WITH_CACHE_GAPS')
++         and ordinary['assessor_sha256'] == SOURCE83_SHA
+          and ordinary['source_sha256'] == SOURCE_SHA
+          and ordinary['received_sha256'] == received['sha256']
+-         and ordinary['request_sha256'] == binding['request_sha256'], 'ORDINARY_ASSESSMENT')
++         and type(ordinary['request_sha256']) is str
++         and len(ordinary['request_sha256']) == 64
++         and all(c in '0123456789abcdef' for c in ordinary['request_sha256']),
++         'CONVERSION_QUALIFICATION')
+     validate_ref(ordinary['receipt'])
+     for key in ('custody', 'phase_authority', 'installed_current'):
+         validate_ref(binding[key])
+@@ -186,7 +196,7 @@
+     for key in ('source', 'received'):
+         actual, _ = input_pin(binding[key]['path'])
+         need(actual == binding[key], 'CURRENT_INPUT_' + key.upper())
+-    for row in [binding['ordinary_assessment']['receipt']] + [binding[k] for k in ('custody', 'phase_authority', 'installed_current')]:
++    for row in [binding['ordinary_request'], binding['conversion_assessment']['receipt']] + [binding[k] for k in ('custody', 'phase_authority', 'installed_current')]:
+         need(ref(Path(row['path']), row['bytes']) == row, 'ROOT_EVIDENCE_PIN')
+ 
+ 
+@@ -214,7 +224,7 @@
+ 
+ def validate_copy(staged, received):
+     validate_pin(staged)
+-    need(staged['path'] == str(WORK / 'received-copy.ods')
++    need(staged['path'] == str(WORK / 'received-copy.xlsx')
+          and staged['sha256'] == received['sha256']
+          and staged['bytes'] == received['bytes']
+          and (staged['identity']['dev'], staged['identity']['ino'])
+@@ -223,7 +233,7 @@
+ 
+ def validate_saved(before, after):
+     need(before is not None and before == after
+-         and before['path'] == str(WORK / 'controlledcopy-saved.ods'), 'SAVED_PRE_POST_REOPEN_CAS')
++         and before['path'] == str(WORK / 'controlledcopy-saved.xlsx'), 'SAVED_PRE_POST_REOPEN_CAS')
+ 
+ 
+ def publish_reopen_gate(budget, phase_deadline, observation_deadline, now=time.monotonic):
+@@ -254,13 +264,13 @@
+ def validate_capture(journal, observations, complete):
+     need(complete.splitlines() == [b'COMPLETE\t1:2:1:2:1:1'], 'MAIN_COMPLETE_RECEIPT')
+     expected = [
+-        ('OPEN_INTENT', '/work/received-copy.ods'), ('OPENED', '/work/received-copy.ods'),
+-        ('CHANGE_INTENT', 'FIRST_SHEET:C2:3:PLUS_ONE:4'), ('CHANGED', 'FIRST_SHEET:C2:3:PLUS_ONE:4'),
++        ('OPEN_INTENT', '/work/received-copy.xlsx'), ('OPENED', '/work/received-copy.xlsx'),
++        ('CHANGE_INTENT', 'FIRST_SHEET:C2:2:PLUS_ONE:3'), ('CHANGED', 'FIRST_SHEET:C2:2:PLUS_ONE:3'),
+         ('CALCULATE_ALL_INTENT', 'RECEIVED_COPY'), ('CALCULATED_ALL', 'RECEIVED_COPY'),
+-        ('SAVE_INTENT', 'controlledcopy-saved.ods'), ('SAVED', 'controlledcopy-saved.ods'),
+-        ('CLOSE_INTENT', 'controlledcopy-saved.ods'), ('CLOSED', 'controlledcopy-saved.ods'),
+-        ('OPEN_INTENT', '/work/controlledcopy-saved.ods'), ('OPENED', '/work/controlledcopy-saved.ods'),
+-        ('CLOSE_INTENT', 'controlledcopy-saved.ods'), ('CLOSED', 'controlledcopy-saved.ods'),
++        ('SAVE_INTENT', 'controlledcopy-saved.xlsx'), ('SAVED', 'controlledcopy-saved.xlsx'),
++        ('CLOSE_INTENT', 'controlledcopy-saved.xlsx'), ('CLOSED', 'controlledcopy-saved.xlsx'),
++        ('OPEN_INTENT', '/work/controlledcopy-saved.xlsx'), ('OPENED', '/work/controlledcopy-saved.xlsx'),
++        ('CLOSE_INTENT', 'controlledcopy-saved.xlsx'), ('CLOSED', 'controlledcopy-saved.xlsx'),
+         ('COMPLETE', EXPECTED_COUNTS)]
+     need(journal.splitlines() == [(k + '\t' + v).encode() for k, v in expected], 'JOURNAL_SEQUENCE_COUNTERS')
+     rows = [line.decode('utf-8').split('\t') for line in observations.splitlines()]
+@@ -303,20 +313,20 @@
+     return {'same_interpreter_all3_AtoG_widths_equal': all(
+                 widths[('RECEIVED_COPY_BASELINE', s, c)] == widths[('CONTROLLED_COPY_READONLY_REOPENED', s, c)]
+                 for s in range(3) for c in range(1, 8)), 'observation_rows': len(rows),
+-            'exact_counter_journal': True, 'semantic_or_F03_acceptance': False}
++            'exact_counter_journal': True, 'semantic_or_F04_acceptance': False}
+ 
+ 
+ def validate_grant(grant, plan_raw, binding_raw, review, driver_sha, now):
+     need(type(grant) is dict and set(grant) == {'state', 'assignment', 'purpose', 'plan_sha256',
+          'input_sha256', 'unit', 'review_path', 'review_sha256', 'fresh_root_admission'}, 'GRANT_SCHEMA')
+     need(grant['state'] == 'ROOT_GRANTED_ONCE' and grant['assignment'] == ASSIGNMENT
+-         and grant['purpose'] == 'FUTURE_CANONICAL_RECEIVED_COPY_C2_3_TO_4_SAVE_REOPEN_ONLY'
++         and grant['purpose'] == 'FUTURE_F04_RECEIVED_XLSX_C2_2_TO_3_SAVE_REOPEN_ONLY'
+          and grant['plan_sha256'] == sha(plan_raw) and grant['input_sha256'] == sha(binding_raw)
+          and grant['unit'] == UNIT, 'ROOT_GRANT')
+     fresh = grant['fresh_root_admission']
+     keys = {'at_moscow', 'exclusive_shared_slot', 'same_selected_base_toolchain',
+             'current_resources_and_custody', 'old_effects_closed_or_isolated', 'source_review_accepted',
+-            'genuine_received_and_ordinary_assessed', 'original_phase_positive_not_begun',
++            'genuine_received_and_source83_structure_qualified', 'original_phase_positive_not_begun',
+             'additional_delta_allowed_by_original_authority_and_validation', 'current_installed_permissions_cancel_CAS'}
+     need(type(fresh) is dict and set(fresh) == keys
+          and all(fresh[k] is True for k in keys - {'at_moscow'}), 'FRESH_ADMISSION')
+@@ -575,9 +585,9 @@
+                         record['handoff_observation_deadline'] = min(deadline, actor_deadline,
+                             record['saved_closed_first_observed_monotonic'] + 30)
+                         need(read(WORK / 'saved-closed.tsv', 128).splitlines() == [b'SAVED_CLOSED\t1:1:1:1:1:1'], 'SAVED_CLOSED_RECEIPT')
+-                        need(staged_pin is not None and input_pin(WORK / 'received-copy.ods')[0] == staged_pin, 'STAGED_INPUT_CHANGED')
++                        need(staged_pin is not None and input_pin(WORK / 'received-copy.xlsx')[0] == staged_pin, 'STAGED_INPUT_CHANGED')
+                         verify_current_inputs(binding)
+-                        output_pin, _ = input_pin(WORK / 'controlledcopy-saved.ods')
++                        output_pin, _ = input_pin(WORK / 'controlledcopy-saved.xlsx')
+                         need(output_pin['sha256'] != binding['received']['sha256'], 'SAVED_UNCHANGED')
+                         report['saved_before_reopen'] = output_pin
+                         save(WORK / 'SAVED-BEFORE-REOPEN.json', output_pin)
+@@ -603,7 +613,7 @@
+             ready = False
+             for index in (1, 2, 3):
+                 report['profile_guards'].append(profile_ready(snapshot, helper))
+-                need(not (WORK / 'received-copy.ods').exists() and not (WORK / 'controlledcopy-saved.ods').exists(), 'INIT_DOCUMENTS_PRESENT')
++                need(not (WORK / 'received-copy.xlsx').exists() and not (WORK / 'controlledcopy-saved.xlsx').exists(), 'INIT_DOCUMENTS_PRESENT')
+                 need(not (WORK / 'init-entered.tsv').exists() and not (WORK / 'init-only.tsv').exists() and not (WORK / 'init-failed.tsv').exists()
+                      and not (WORK / 'journal.tsv').exists(), 'INIT_ALREADY_ENTERED_OR_FAILED')
+                 code = phase('document-free-macro-init-' + str(index), 'macro:///Standard.Module1.InitOnly', 15, (0, 81))
+@@ -621,12 +631,12 @@
+             verify_current_inputs(binding)
+             received_pin, raw = input_pin(binding['received']['path'])
+             need(received_pin == binding['received'], 'STAGE_RECEIVED_PIN')
+-            fd = os.open(WORK / 'received-copy.ods', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
++            fd = os.open(WORK / 'received-copy.xlsx', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+             with os.fdopen(fd, 'wb') as stream:
+                 stream.write(raw)
+                 stream.flush()
+                 os.fsync(stream.fileno())
+-            staged_pin, _ = input_pin(WORK / 'received-copy.ods')
++            staged_pin, _ = input_pin(WORK / 'received-copy.xlsx')
+             validate_copy(staged_pin, binding['received'])
+             save(WORK / 'STAGED-RECEIVED-PIN.json', staged_pin)
+             (WORK / 'MAIN-LAUNCH-ONCE').mkdir(mode=0o700)
+@@ -652,9 +662,9 @@
+             else:
+                 try:
+                     verify_current_inputs(binding)
+-                    need(staged_pin is not None and input_pin(WORK / 'received-copy.ods')[0] == staged_pin, 'STAGED_POSTPIN')
++                    need(staged_pin is not None and input_pin(WORK / 'received-copy.xlsx')[0] == staged_pin, 'STAGED_POSTPIN')
+                     report['source_unchanged'] = True
+-                    output = WORK / 'controlledcopy-saved.ods'
++                    output = WORK / 'controlledcopy-saved.xlsx'
+                     if output.exists():
+                         actual, _ = input_pin(output)
+                         report['outputs'].append(actual)
