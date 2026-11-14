@@ -1,0 +1,1030 @@
+diff --git a/gateway/ordinary_f04_bridge.py b/gateway/ordinary_f04_bridge.py
+new file mode 100644
+--- /dev/null
++++ b/gateway/ordinary_f04_bridge.py
+@@ -0,0 +1,621 @@
++"""Bounded opt-in F04 ownership evidence on existing gateway lifecycles.
++
++This is host metadata only. Root authentication/current-rights/source/kernel checks
++belong to the existing control projection. No user text, model input, files, queue,
++network send, timer, or lifecycle is created by this module.
++"""
++from __future__ import annotations
++
++from contextvars import ContextVar
++from copy import deepcopy
++import hashlib
++import json
++import math
++from pathlib import Path
++import re
++import time
++
++_REQUEST = 'frw.gateway.f04-owned-request.v1'
++_CAPABILITY = 'ordinary-f04-owned-ingress-stop-terminal.v1'
++_MAX_RECORDS = 8
++_MAX_BYTES = 1_000_000
++_CURRENT = ContextVar('ordinary_f04_host_target', default=None)
++
++
++def canonical_sha256(value):
++    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
++                                     allow_nan=False).encode('utf-8')).hexdigest()
++
++
++def _hex(value):
++    return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
++
++
++def _string(value, maximum=256, *, empty=False):
++    return (isinstance(value, str) and (empty or bool(value)) and len(value) <= maximum
++            and value == value.strip() and not any(ord(c) < 32 for c in value))
++
++
++def _number(value):
++    return type(value) in (int, float) and math.isfinite(value)
++
++
++def _decimal(value, *, signed=False, empty=False):
++    if empty and value == '':
++        return True
++    return (isinstance(value, str) and len(value) <= 32 and value.isascii()
++            and (value.lstrip('-').isdecimal() if signed else value.isdecimal())
++            and str(int(value)) == value and (int(value) != 0 if signed else int(value) > 0))
++
++
++def capability():
++    return {'schema': 'frw.gateway.f04-owned-capability.v1', 'capability': _CAPABILITY,
++            'request_schema': _REQUEST, 'implementation_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++            'original_own_ingress': True, 'verified_samebyte': True,
++            'typed_ctx_lease': True, 'retained_terminal': True,
++            'native_id_namespace': 'native.telegram', 'tester_id_namespace': 'tester.telegram',
++            'max_records': _MAX_RECORDS, 'max_attachment_bytes': _MAX_BYTES,
++            'max_outer_seconds': 600, 'max_metadata_seconds': 720, 'root_authenticated_by': 'existing-control-projection'}
++
++
++def _base(request):
++    if not isinstance(request, dict):
++        raise ValueError('f04_request_shape')
++    fields = {'schema', 'scope_id', 'source_receipt_sha256', 'metadata_created_monotonic', 'metadata_expires_monotonic', 'selector'}
++    if set(request) - (fields | {'tester_ack', 'binding_sha256', 'target', 'ordinary_clock'}) or not fields <= set(request):
++        raise ValueError('f04_request_fields')
++    base = {key: deepcopy(request[key]) for key in fields}
++    selector = base['selector']
++    if (base['schema'] != _REQUEST or not isinstance(base['scope_id'], str)
++            or re.fullmatch(r'root-f04-[A-Za-z0-9_-]{1,80}', base['scope_id']) is None
++            or not _hex(base['source_receipt_sha256'])
++            or not _number(base['metadata_created_monotonic']) or not _number(base['metadata_expires_monotonic'])
++            or not base['metadata_created_monotonic'] < base['metadata_expires_monotonic'] <= base['metadata_created_monotonic'] + 720
++            or not isinstance(selector, dict)
++            or set(selector) != {'principal', 'input', 'caption_sha256', 'window', 'tester'}):
++        raise ValueError('f04_selector_shape')
++    principal = selector['principal']
++    if (not isinstance(principal, dict) or set(principal) != {
++            'platform', 'transport_profile', 'runtime_profile', 'bot_id', 'user_id', 'chat_id', 'thread_id'}
++            or principal['platform'] != 'telegram'
++            or not all(_string(principal[k], 128) for k in ('transport_profile', 'runtime_profile'))
++            or not all(_decimal(principal[k]) for k in ('bot_id', 'user_id'))
++            or not _decimal(principal['chat_id'], signed=True)
++            or not _decimal(principal['thread_id'], empty=True)):
++        raise ValueError('f04_principal_shape')
++    content, window, tester = selector['input'], selector['window'], selector['tester']
++    if (not isinstance(content, dict) or set(content) != {'sha256', 'size_bytes'}
++            or not _hex(content['sha256']) or type(content['size_bytes']) is not int
++            or not 0 <= content['size_bytes'] <= _MAX_BYTES or not _hex(selector['caption_sha256'])
++            or not isinstance(window, dict) or set(window) != {'not_before_monotonic', 'not_after_monotonic'}
++            or not all(_number(window[k]) for k in window)
++            or not window['not_before_monotonic'] < window['not_after_monotonic'] <= base['metadata_expires_monotonic']
++            or not isinstance(tester, dict) or set(tester) != {'namespace', 'send_commitment_sha256'}
++            or tester['namespace'] != 'tester.telegram' or not _hex(tester['send_commitment_sha256'])):
++        raise ValueError('f04_content_window_tester_shape')
++    committed = deepcopy(base)
++    committed['selector'].pop('tester')
++    if tester['send_commitment_sha256'] != canonical_sha256(committed):
++        raise ValueError('f04_send_commitment')
++    return base
++
++
++def _records(runner, *, create=False):
++    value = getattr(runner, '_ordinary_f04_host_records', None)
++    if value is None and create:
++        value = {}
++        runner._ordinary_f04_host_records = value
++    return value if isinstance(value, dict) else {}
++
++
++def arm(runner, request):
++    base = _base(request)
++    now = time.monotonic()
++    window = base['selector']['window']
++    if (set(request) != set(base) or not base['metadata_created_monotonic'] <= now < base['metadata_expires_monotonic']
++            or now - base['metadata_created_monotonic'] > 120
++            or not now <= window['not_before_monotonic'] < window['not_after_monotonic'] <= base['metadata_expires_monotonic']):
++        raise ValueError('f04_arm_future_bound')
++    records = _records(runner, create=True)
++    if base['scope_id'] in records:
++        raise ValueError('f04_arm_already_exists')
++    # No live record evicts; expired bounded evidence may be replaced on a NEW arm.
++    if len(records) >= _MAX_RECORDS:
++        expired = [key for key, row in records.items() if now > row['base']['metadata_expires_monotonic']]
++        for key in expired:
++            disarm(runner, records[key]['base'])
++            del records[key]
++            if len(records) < _MAX_RECORDS:
++                break
++    if len(records) >= _MAX_RECORDS:
++        raise ValueError('f04_host_metadata_full')
++    records[base['scope_id']] = {'base': base, 'request_sha256': canonical_sha256(base),
++        'candidates': [], 'error': None, 'artifacts': [], 'cancel': None, 'disarmed': False}
++    return {'schema': 'frw.gateway.f04-owned-arm.v1', 'state': 'ARMED',
++            'scope_id': base['scope_id'], 'selector_sha256': canonical_sha256(base['selector']),
++            'request_sha256': canonical_sha256(base)}
++
++
++def _record(runner, request):
++    base = _base(request)
++    row = _records(runner).get(base['scope_id'])
++    if row is None or row['base'] != base:
++        raise ValueError('f04_unarmed_or_selector_changed')
++    if row['error'] is not None:
++        raise ValueError(row['error'])
++    return row
++
++
++def _source_principal(source):
++    cap = getattr(source, '_friday_user_scope', None)
++    if cap is None:
++        return None
++    return {'platform': cap.principal[0], 'transport_profile': cap.principal[1],
++            'runtime_profile': cap.profile, 'bot_id': cap.principal[2], 'user_id': cap.principal[3],
++            'chat_id': source.chat_id, 'thread_id': source.thread_id or ''}
++
++
++def _lease_dict(token):
++    return {'session_id': token.session_id, 'owner_key': token.owner_key,
++            'generation': token.generation, 'released': token.released}
++
++
++def mark_original_event(event):
++    """Called only by the actual SDK event constructor; never deserialized."""
++    event._ordinary_f04_original_stamp = (event.raw_message, event.platform_update_id, time.monotonic())
++
++
++def bind_turn(runner, event, source, session_entry, quick_key, generation):
++    """Called after actual acquire; never interrupts ordinary preparation on error."""
++    _CURRENT.set(None)
++    selected = []
++    try:
++        now = time.monotonic()
++        stamp = getattr(event, '_ordinary_f04_original_stamp', None)
++        ingress_at = stamp[2] if isinstance(stamp, tuple) and len(stamp) == 3 else now
++        principal = _source_principal(source)
++        selected = [row for row in _records(runner).values()
++                    if not row['disarmed'] and now <= row['base']['metadata_expires_monotonic']
++                    and row['base']['selector']['principal'] == principal
++                    and row['base']['selector']['window']['not_before_monotonic'] <= ingress_at
++                    <= row['base']['selector']['window']['not_after_monotonic']]
++        if not selected:
++            return
++        if len(selected) != 1:
++            raise ValueError('f04_overlapping_observation_windows')
++        row = selected[0]
++        state = runner._peek_session_state(quick_key)
++        token = None if state is None else state.turn.lease_tokens.get(generation)
++        if (not isinstance(stamp, tuple) or len(stamp) != 3 or stamp[0] is not event.raw_message
++                or stamp[1] != event.platform_update_id or not _number(stamp[2])
++                or stamp[2] > now or event.internal or event._ingress_merged or event.raw_message is None
++                or source is not event.source or type(generation) is not int or generation <= 0
++                or state is None or state.persistent.run_generation != generation
++                or state.turn.event is not event or token is None
++                or token.session_id != session_entry.session_id or token.owner_key != quick_key
++                or token.generation != generation or token.released is not False
++                or token.lease.holder is not token or not token.lease.lock.locked()
++                or session_entry.session_key != quick_key):
++            raise ValueError('f04_original_event_lease_required')
++        if len(row['candidates']) >= 2:
++            raise ValueError('f04_multiple_ingress')
++        adapter = runner._delivery_adapter_for(source)
++        delivery_guard = getattr(adapter, '_active_sessions', {}).get(quick_key)
++        target = {'row': row, 'runner': runner, 'event': event, 'source': source, 'token': token,
++                  'session_id': session_entry.session_id, 'session_key': quick_key,
++                  'generation': generation, 'bound_monotonic': now, 'ingress_monotonic': ingress_at, 'ctx': None, 'ctx_fields': None,
++                  'receipt': None, 'dispatch_finalized': False, 'worker_done': None,
++                  'executor_task': None, 'worker_ctx': None, 'worker_settled': False,
++                  'delivery_guard': delivery_guard, 'lease_before': _lease_dict(token)}
++        row['candidates'].append(target)
++        if len(row['candidates']) != 1:
++            raise ValueError('f04_multiple_ingress')
++        event._ordinary_f04_host_target = target
++        _CURRENT.set(target)
++    except Exception:
++        for row in selected:
++            row['error'] = 'f04_original_event_binding_rejected'
++
++
++def capture_verified_ingress(event, proof, staged):
++    """Consume only the actual custody consumer's immutable verified byte values.
++
++    ``staged`` comes from _rehome_user_attachments AFTER _verified_bytes and
++    cap.check. No receipt path is opened here, and file bytes are never retained.
++    """
++    target = getattr(event, '_ordinary_f04_host_target', None)
++    if not isinstance(target, dict):
++        return
++    row = target['row']
++    if row['disarmed']:
++        return
++    try:
++        if target['event'] is not event or target['receipt'] is not None:
++            raise ValueError('f04_duplicate_custody_hook')
++        selector = row['base']['selector']
++        message = proof['message']
++        principal = {'platform': proof['platform'], 'transport_profile': proof['transport_profile'],
++                     'runtime_profile': proof['runtime_profile'], **{key: message[key] for key in
++                         ('bot_id', 'user_id', 'chat_id', 'thread_id')}}
++        raw = event.raw_message
++        caption = raw.caption if raw.caption is not None else raw.text
++        caption = caption if caption is not None else ''
++        media = message['media']
++        if (event.internal or event._ingress_merged or raw is None or raw.document is None
++                or principal != selector['principal'] or proof.get('source_profile') not in ('', principal['runtime_profile'])
++                or not isinstance(caption, str) or hashlib.sha256(caption.encode('utf-8')).hexdigest() != selector['caption_sha256']
++                or len(staged) != 1 or len(media) != 1 or len(event.media_urls) != 1):
++            raise ValueError('f04_original_own_document_required')
++        raw_path, _, data, content, receipt = staged[0]
++        item = media[0]
++        origin = item['origin']
++        if (type(data) is not bytes or item.get('local_reference') != raw_path
++                or content != selector['input'] or item.get('content') != content
++                or receipt.get('content') != content
++                or receipt.get('origin') != {k: v for k, v in origin.items() if k != 'thread_id'}
++                or len(data) != content['size_bytes'] or hashlib.sha256(data).hexdigest() != content['sha256']
++                or origin['message_id'] != message['message_id']
++                or message['message_id'] != str(event.message_id)
++                or origin['file_id'] != raw.document.file_id or origin['file_unique_id'] != raw.document.file_unique_id
++                or (origin.get('declared_bytes') is not None and origin['declared_bytes'] != len(data))):
++            raise ValueError('f04_verified_own_bytes_required')
++        target['receipt'] = {'schema': 'frw.gateway.f04-original-own-ingress.v1',
++            'namespace': 'native.telegram', 'principal': principal,
++            'message_id': message['message_id'], 'platform_update_id': message['platform_update_id'],
++            'reply_to_message_id': message['reply_to_message_id'],
++            'input': deepcopy(content), 'caption_sha256': selector['caption_sha256'],
++            'origin_sha256': canonical_sha256(origin), 'source_receipt_sha256': row['base']['source_receipt_sha256'],
++            'observed_monotonic': target['ingress_monotonic'], 'verified_by': 'run_inbound_media._verified_bytes'}
++    except Exception:
++        row['error'] = 'f04_verified_original_ingress_rejected'
++
++
++def observe_context(runner, ctx):
++    target = _CURRENT.get()
++    if not isinstance(target, dict) or target['runner'] is not runner:
++        candidates = [item for row in _records(runner).values() if not row['disarmed']
++                      for item in row['candidates'] if item['session_key'] == ctx.session_key
++                      and item['generation'] == ctx.run_generation and not item['dispatch_finalized']]
++        target = candidates[0] if len(candidates) == 1 else None
++    if target is None or target['row']['disarmed']:
++        return
++    try:
++        state = runner._peek_session_state(target['session_key'])
++        if (state is None or state.turn.ctx is not ctx or state.turn.event is not target['event']
++                or ctx.session_key != target['session_key'] or ctx.session_id != target['session_id']
++                or ctx.run_generation != target['generation']
++                or str(ctx.inbound_message_id) != str(target['event'].message_id)
++                or state.turn.lease_tokens.get(target['generation']) is not target['token']):
++            raise ValueError('f04_ctx_binding')
++        if ((target['ctx'] is not None and target['ctx'] is not ctx)
++                or (target['worker_ctx'] is not None and target['worker_ctx'] is not ctx)):
++            raise ValueError('f04_ctx_replacement')
++        target['ctx'] = ctx
++        target['ctx_fields'] = {'session_id': ctx.session_id, 'session_key': ctx.session_key,
++                                'run_generation': ctx.run_generation,
++                                'inbound_message_id': str(ctx.inbound_message_id)}
++    except Exception:
++        target['row']['error'] = 'f04_ctx_binding_rejected'
++
++
++def observe_worker(runner, ctx, worker):
++    """Retain the existing executor completion witnesses, never create/wait work."""
++    try:
++        candidates = [item for row in _records(runner).values() if not row['disarmed']
++                      for item in row['candidates'] if item['session_key'] == ctx.session_key
++                      and item['generation'] == ctx.run_generation and not item['dispatch_finalized']]
++        if not candidates:
++            return
++        if len(candidates) != 1:
++            raise ValueError('f04_unique_worker_target')
++        target = candidates[0]
++        if (ctx.session_id != target['session_id'] or str(ctx.inbound_message_id) != str(target['event'].message_id)
++                or worker.executor_task is None or not callable(getattr(worker.executor_task, 'done', None))
++                or not callable(getattr(worker.worker_done, 'is_set', None))
++                or target['worker_done'] is not None or target['executor_task'] is not None
++                or (target['ctx'] is not None and target['ctx'] is not ctx)):
++            raise ValueError('f04_actual_worker_required')
++        target['worker_done'], target['executor_task'] = worker.worker_done, worker.executor_task
++        target['worker_ctx'] = ctx
++    except Exception:
++        for row in _records(runner).values():
++            for item in row['candidates']:
++                if item['session_key'] == getattr(ctx, 'session_key', None) and item['generation'] == getattr(ctx, 'run_generation', None):
++                    row['error'] = 'f04_worker_binding_rejected'
++
++
++def _worker_settled(target):
++    if target['worker_done'] is not None and target['executor_task'] is not None:
++        return (target['worker_done'].is_set() and target['executor_task'].done()
++                and not target['executor_task'].cancelled())
++    return target['worker_settled'] is True
++
++
++def _candidate(row):
++    if len(row['candidates']) != 1:
++        raise ValueError('f04_unique_original_ingress_required')
++    target = row['candidates'][0]
++    if target['receipt'] is None:
++        raise ValueError('f04_verified_ingress_not_available')
++    return target
++
++
++def _native_target(target, observation, *, live):
++    token, ctx, event = target['token'], target['ctx'], target['event']
++    fields = target['ctx_fields']
++    if fields is None:
++        raise ValueError('f04_actual_ctx_not_retained')
++    user = observation.get('latest_user_row')
++    if (not isinstance(user, dict) or set(user) != {'id', 'platform_message_id'}
++            or type(user['id']) is not int or user['id'] <= 0
++            or str(user['platform_message_id']) != target['receipt']['message_id']
++            or fields['session_key'] != target['session_key'] or fields['session_id'] != target['session_id']
++            or fields['run_generation'] != target['generation']
++            or fields['inbound_message_id'] != target['receipt']['message_id']
++            or token.session_id != target['session_id'] or token.owner_key != target['session_key']
++            or token.generation != target['generation']):
++        raise ValueError('f04_ctx_user_lease_changed')
++    result = {'namespace': 'native.telegram', 'session_id': target['session_id'],
++              'session_key': target['session_key'], 'generation': target['generation'],
++              'event_message_id': target['receipt']['message_id'],
++              'ctx_inbound_message_id': fields['inbound_message_id'], 'ctx_generation': fields['run_generation'],
++              'lease': deepcopy(target['lease_before']),
++              'latest_user_row': {'id': user['id'], 'platform_message_id': str(user['platform_message_id'])}}
++    if live:
++        state = target['runner']._peek_session_state(target['session_key'])
++        if (ctx is None or state is None or state.turn.ctx is not ctx or state.turn.event is not event
++                or {'session_id': ctx.session_id, 'session_key': ctx.session_key,
++                    'run_generation': ctx.run_generation, 'inbound_message_id': str(ctx.inbound_message_id)} != fields
++                or state.persistent.run_generation != target['generation']
++                or state.turn.lease_tokens.get(target['generation']) is not token
++                or token.released is not False or token.lease.holder is not token
++                or not token.lease.lock.locked()
++                or observation.get('generation') != target['generation']
++                or observation.get('ctx_generation') != ctx.run_generation
++                or str(observation.get('ctx_inbound_message_id')) != result['ctx_inbound_message_id']
++                or str(observation.get('event_message_id')) != result['event_message_id']
++                or observation.get('turn_tokens') != [result['lease']]):
++            raise ValueError('f04_live_target_changed')
++    return result
++
++
++def _ack(request):
++    ack = request.get('tester_ack')
++    if (not isinstance(ack, dict) or set(ack) != {'namespace', 'send_message_id', 'ack_sha256'}
++            or ack['namespace'] != 'tester.telegram' or not _decimal(ack['send_message_id'])
++            or not _hex(ack['ack_sha256'])):
++        raise ValueError('f04_genuine_tester_ack_required')
++    return deepcopy(ack)
++
++
++def _clock(request, row, target):
++    clock = request.get('ordinary_clock')
++    if (not isinstance(clock, dict) or set(clock) != {'origin_monotonic', 'deadline_monotonic', 'clock_sha256'}
++            or not _number(clock['origin_monotonic']) or not _number(clock['deadline_monotonic'])
++            or not _hex(clock['clock_sha256'])
++            or not row['base']['metadata_created_monotonic'] <= clock['origin_monotonic']
++            <= target['receipt']['observed_monotonic'] <= clock['deadline_monotonic']
++            <= clock['origin_monotonic'] + 600
++            or not clock['origin_monotonic'] < clock['deadline_monotonic'] <= row['base']['metadata_expires_monotonic']):
++        raise ValueError('f04_genuine_original_clock_required')
++    return deepcopy(clock)
++
++
++def readonly(runner, request, observation):
++    row = _record(runner, request)
++    if not row['candidates'] or row['candidates'][0]['receipt'] is None:
++        if 'target' in request or 'binding_sha256' in request:
++            raise ValueError('f04_bound_target_missing')
++        return {'schema': 'frw.gateway.f04-owned-current.v1', 'state': 'WAITING',
++                'scope_id': row['base']['scope_id'], 'request_sha256': row['request_sha256']}
++    target = _candidate(row)
++    actual = _native_target(target, observation, live=not target['dispatch_finalized'])
++    ack = _ack(request)
++    clock = _clock(request, row, target)
++    binding = {'request_sha256': row['request_sha256'], 'ingress_receipt_sha256': canonical_sha256(target['receipt']),
++               'target': actual, 'tester_ack': ack, 'ordinary_clock': clock}
++    binding_sha = canonical_sha256(binding)
++    if ('binding_sha256' in request or 'target' in request) and (
++            request.get('binding_sha256') != binding_sha or request.get('target') != actual):
++        raise ValueError('f04_bound_request_changed')
++    return {'schema': 'frw.gateway.f04-owned-current.v1', 'state': 'BOUND',
++            'scope_id': row['base']['scope_id'], 'request_sha256': row['request_sha256'],
++            'ingress_receipt': deepcopy(target['receipt']), 'binding_sha256': binding_sha,
++            'target': actual, 'tester_ack': ack, 'ordinary_clock': clock, 'artifact_proofs': deepcopy(row['artifacts']),
++            'stop_selector': deepcopy(observation.get('stop_selector'))}
++
++
++def validate_cancel_binding(runner, request, snapshot):
++    row = _record(runner, request)
++    if 'target' not in request or 'binding_sha256' not in request:
++        raise ValueError('f04_cancel_exact_bound_request_required')
++    result = readonly(runner, request, snapshot)
++    target = _candidate(row)
++    if (row['disarmed'] or result['state'] != 'BOUND' or target['dispatch_finalized'] or row['cancel'] is not None
++            or time.monotonic() >= request['ordinary_clock']['deadline_monotonic']):
++        raise ValueError('f04_cancel_terminal_or_deadline')
++    _native_target(target, snapshot, live=True)
++    return True
++
++
++def mark_cancelled(runner, request, generation_after, status):
++    row = _record(runner, request)
++    target = _candidate(row)
++    binding = {'request_sha256': row['request_sha256'],
++               'ingress_receipt_sha256': canonical_sha256(target['receipt']),
++               'target': request.get('target'), 'tester_ack': _ack(request),
++               'ordinary_clock': _clock(request, row, target)}
++    if (request.get('binding_sha256') != canonical_sha256(binding)
++            or request.get('target', {}).get('generation') != target['generation']
++            or type(generation_after) is not int or generation_after <= target['generation']
++            or not _string(status, 64) or row['cancel'] is not None):
++        raise ValueError('f04_actual_cancel_generation_required')
++    row['cancel'] = {'generation_after': generation_after, 'status': status,
++                     'binding_sha256': request['binding_sha256'], 'target': deepcopy(request['target'])}
++
++
++def retain_document_ack(adapter, chat_id, data, *, file_name, reply_to, metadata, proof):
++    """Retain the actual ACK during the exact turn or its final-MEDIA delivery.
++
++    Native adapter final delivery follows the dispatch finalizer. Its existing
++    authenticated file-source scope carries the identical original SessionSource;
++    a cleared ContextVar, idle session or matching numeric IDs cannot select it.
++    """
++    target = _CURRENT.get()
++    if not isinstance(target, dict) or target['dispatch_finalized']:
++        try:
++            runner = getattr(adapter, 'gateway_runner', None)
++            records = _records(runner)
++            if not records:
++                return
++            from hermes_cli.friday_user_scope import ordinary_file_source
++            source = ordinary_file_source()
++            candidates = [item for row in records.values() if not row['disarmed']
++                          for item in row['candidates'] if item['source'] is source
++                          and source is not None and item['runner'] is runner]
++            if len(candidates) != 1:
++                return
++            target = candidates[0]
++        except Exception:
++            return
++    row = target['row']
++    if row['disarmed']:
++        return
++    try:
++        runner = target['runner']
++        state = runner._peek_session_state(target['session_key'])
++        if (not target['dispatch_finalized'] and target['ctx'] is None
++                and state is not None and state.turn.ctx is not None):
++            observe_context(runner, state.turn.ctx)
++        ctx, token, source = target['ctx'], target['token'], target['source']
++        receipt = target['receipt']
++        principal = row['base']['selector']['principal']
++        if (row['error'] is not None or receipt is None or source is None or row['cancel'] is not None
++                or time.monotonic() > row['base']['metadata_expires_monotonic']
++                or getattr(adapter, 'gateway_runner', None) is not runner
++                or runner._delivery_adapter_for(source) is not adapter
++                or _source_principal(source) != principal or str(source.message_id) != receipt['message_id']
++                or state is None or state.persistent.run_generation != target['generation']
++                or type(data) is not bytes or len(data) > 50_000_000 or not isinstance(proof, dict)
++                or not _string(file_name, 255) or len(row['artifacts']) >= 4):
++            raise ValueError('f04_send_ownership_required')
++        if target['dispatch_finalized']:
++            from hermes_cli.friday_user_scope import ordinary_file_source
++            guard = getattr(adapter, '_active_sessions', {}).get(target['session_key'])
++            if (ordinary_file_source() is not source or not _worker_settled(target)
++                    or token.released is not True or token.lease.holder is not None
++                    or token.lease.lock.locked() or token.lease.pending_acquires != 0
++                    or state.turn.ctx is not None or state.turn.event is not None
++                    or state.turn.agent is not None or state.turn.lease_tokens
++                    or guard is None or guard is not target.get('delivery_guard')
++                    or getattr(guard, '_hermes_run_generation', None) != target['generation']):
++                raise ValueError('f04_final_media_original_dispatch_required')
++        elif (ctx is None or state.turn.ctx is not ctx or state.turn.event is not target['event']
++                or state.turn.lease_tokens.get(target['generation']) is not token
++                or token.released is not False or token.lease.holder is not token
++                or not token.lease.lock.locked()):
++            raise ValueError('f04_send_ownership_required')
++        expected = {'kind': 'document', 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data),
++                    'file_name': file_name, 'bot_id': principal['bot_id'], 'chat_id': principal['chat_id'],
++                    'thread_id': principal['thread_id'], 'reply_to': receipt['message_id']}
++        normalized = dict(proof)
++        normalized['thread_id'] = normalized.get('thread_id') or ''
++        if (set(normalized) != set(expected) | {'message_id'} or not _decimal(normalized.get('message_id'))
++                or any(normalized.get(k) != v for k, v in expected.items())
++                or str(chat_id) != expected['chat_id'] or str(reply_to) != expected['reply_to']
++                or str(getattr(getattr(adapter, '_bot', None), 'id', '')) != expected['bot_id']
++                or (adapter._metadata_thread_id(metadata) or '') != expected['thread_id']):
++            raise ValueError('f04_send_proof_route_bytes')
++        item = {'schema': 'frw.gateway.f04-document-ack.v1', 'namespace': 'native.telegram',
++                'proof': normalized, 'ingress_receipt_sha256': canonical_sha256(receipt),
++                'generation': target['generation'], 'session_id': target['session_id'],
++                'session_key': target['session_key'], 'observed_monotonic': time.monotonic()}
++        row['artifacts'].append(item)
++    except Exception:
++        row['error'] = 'f04_actual_document_ack_rejected'
++
++
++def dispatch_finalized(runner, event, key, generation):
++    target = getattr(event, '_ordinary_f04_host_target', None)
++    if not isinstance(target, dict) or target['runner'] is not runner:
++        return
++    try:
++        if target['event'] is not event or key != target['session_key'] or generation != target['generation']:
++            raise ValueError('f04_finalizer_target')
++        token = target['token']
++        if (token.released is not True or token.lease.holder is token
++                or token.lease.holder is not None or token.lease.lock.locked()
++                or token.lease.pending_acquires != 0):
++            raise ValueError('f04_original_lease_not_settled')
++        target['dispatch_finalized'] = True
++        target['finalized_monotonic'] = time.monotonic()
++        target['worker_settled'] = _worker_settled(target)
++        if target['worker_settled']:
++            # Completion is irreversible; release the Future's returned model graph.
++            target['worker_done'] = target['executor_task'] = None
++        # Retain bounded scalar facts, not a completed model/history graph.
++        # The exact small source capability remains for the adapter's subsequent
++        # final-MEDIA lifecycle; explicit disarm/expired replacement clears it.
++        target['ctx'] = target['event'] = target['worker_ctx'] = None
++    except Exception:
++        target['row']['error'] = 'f04_dispatch_finalization_unconfirmed'
++    finally:
++        if _CURRENT.get() is target:
++            _CURRENT.set(None)
++
++
++def retained_terminal(runner, request, observation):
++    row = _record(runner, request)
++    target = _candidate(row)
++    current = readonly(runner, request, observation)
++    expected_generation = target['generation'] if row['cancel'] is None else row['cancel']['generation_after']
++    token = target['token']
++    # This is an exact retained dispatch+lease fact PLUS fresh own-association
++    # observations. Global idle alone cannot produce a terminal receipt.
++    complete = (target['dispatch_finalized'] is True and _worker_settled(target) and token.released is True
++        and token.lease.holder is None and not token.lease.lock.locked() and token.lease.pending_acquires == 0
++        and observation.get('session_id') == target['session_id']
++        and observation.get('session_key') == target['session_key']
++        and observation.get('generation') == expected_generation
++        and observation.get('active') is False and observation.get('turn_tokens') == []
++        and observation.get('live_turn_leases') == [] and observation.get('active_session_keys') == []
++        and observation.get('adapter_generations') == []
++        and observation.get('pending_messages') == 0 and observation.get('active_adapters') == 0
++        and observation.get('queued_events') == 0 and observation.get('pending_command') is False
++        and observation.get('approvals') is False and observation.get('detached_owned_work') == []
++        and observation.get('live_owned_delegations') == [] and observation.get('durable_pending_delegations') == []
++        and isinstance(observation.get('web_custody'), dict) and observation['web_custody'].get('status') == 'QUIESCENT'
++        and isinstance(observation.get('terminal_custody'), dict) and observation['terminal_custody'].get('status') == 'QUIESCENT'
++        and (row['cancel'] is None or (row['cancel']['status'] in {'QUIESCENT', 'NATIVE_METHOD_RETURNED'}
++            and row['cancel']['binding_sha256'] == current['binding_sha256']
++            and row['cancel']['target'] == current['target'])))
++    result = {'schema': 'frw.gateway.f04-owned-terminal.v1', 'state': 'SETTLED' if complete else 'UNKNOWN',
++              'binding_sha256': current['binding_sha256'], 'target': current['target'],
++              'ordinary_clock': current['ordinary_clock'],
++              'generation_after': observation.get('generation'), 'cancel': deepcopy(row['cancel']),
++              'original_lease_released': token.released is True and token.lease.holder is not token,
++              'dispatch_finalized': target['dispatch_finalized'], 'worker_settled': _worker_settled(target), 'artifact_proofs': deepcopy(row['artifacts']),
++              'artifact_state': 'ACK_RETAINED' if len(row['artifacts']) == 1 else ('MISSING' if not row['artifacts'] else 'AMBIGUOUS'),
++              'fresh_observation_sha256': canonical_sha256(observation)}
++    result['terminal_sha256'] = canonical_sha256(result)
++    return result
++
++
++def disarm(runner, request):
++    """Explicit finite-lifecycle metadata cleanup; never cancels product work."""
++    base = _base(request)
++    row = _records(runner).get(base['scope_id'])
++    if row is None or row['base'] != base:
++        raise ValueError('f04_exact_disarm_scope_required')
++    row['disarmed'] = True
++    for target in row['candidates']:
++        if getattr(target['event'], '_ordinary_f04_host_target', None) is target:
++            delattr(target['event'], '_ordinary_f04_host_target')
++        target['ctx'] = target['source'] = target['event'] = target['worker_ctx'] = None
++        target['worker_settled'] = _worker_settled(target)
++        target['worker_done'] = target['executor_task'] = target['delivery_guard'] = None
++        if _CURRENT.get() is target:
++            _CURRENT.set(None)
++    return {'schema': 'frw.gateway.f04-owned-disarm.v1', 'state': 'DISARMED',
++            'scope_id': base['scope_id'], 'request_sha256': row['request_sha256'],
++            'metadata_only': True, 'deadline_unchanged': row['base']['metadata_expires_monotonic']}
+diff --git a/gateway/ordinary_turn_projection.py b/gateway/ordinary_turn_projection.py
+--- a/gateway/ordinary_turn_projection.py
++++ b/gateway/ordinary_turn_projection.py
+@@ -216,6 +216,8 @@
+ 
+ def ordinary_turn_readonly_verb(runner, loop):
+     def handler(params):
++        if type(params) is dict and str(params.get('mode', '')).startswith('f04-'):
++            return _f04_readonly_control(runner, loop, params)
+         if type(params) is dict and set(params) == {'mode', 'root_request'} and params['mode'] == 'm09-current':
+             async def read_m09_on_loop():
+                 return m09_snapshot(runner, params['root_request'])
+@@ -328,6 +330,8 @@
+     The sync compare and native sync interrupt run before the first await yields.
+     """
+     def handler(params):
++        if type(params) is dict and params.get('schema') == _F04_CANCEL_SCHEMA:
++            return _f04_cancel_control(runner, loop, params)
+         async def dispatch():
+             import json
+             import re
+@@ -661,3 +665,282 @@
+         registry_recovery_blocked=any(value.get('recovery_blocked') is not False for value in (web,terminal)),
+         web_sessions=len(web['sessions']),terminal_sessions=len(terminal['sessions']),
+         live_owned_delegations=live,durable_pending_delegations=durable,durable_turn_leases=durable_leases)
++
++
++# F04 is an explicit opt-in on the existing two native control verbs. Legacy
++# requests above keep their original schemas, selectors, receipts and behavior.
++_F04_CANCEL_SCHEMA = 'frw.Root.F04-owned-native-stop.v1'
++_F04_CONTROL_SCHEMA = 'frw.Root.F04.native-control-request.v1'
++
++
++def _f04_bridge():
++    from gateway import ordinary_f04_bridge
++    return ordinary_f04_bridge
++
++
++def _f04_digest(value):
++    import re
++    return type(value) is str and re.fullmatch('[a-f0-9]{64}', value) is not None
++
++
++def _f04_number(value):
++    import math
++    return type(value) in (int, float) and math.isfinite(value)
++
++
++def _f04_check_current(home, source_sha, rights, payload):
++    """Observe native current authority for the protected selector principal."""
++    from hermes_cli import friday_product_access as access
++    from hermes_constants import get_process_hermes_home
++    if Path(get_process_hermes_home()) != HOME or home != HOME:
++        raise RuntimeError('f04_exact_process_home')
++    principal = _f04_bridge()._base(payload)['selector']['principal']
++    if principal['runtime_profile'] != PROFILE:
++        raise RuntimeError('f04_exact_runtime_profile')
++    key = access.principal_id(principal['platform'], principal['transport_profile'],
++                              principal['bot_id'], principal['user_id'])
++    selected = access.current_access().get('users', {}).get(key)
++    expected = dict(platform=principal['platform'], transport_profile=principal['transport_profile'],
++                    account_id=principal['bot_id'], user_id=principal['user_id'],
++                    enabled=True, role='user', generation=2)
++    if selected != expected:
++        raise RuntimeError('f04_current_enabled_user_G2')
++    paths = dict(root_config=home/'config.yaml', profile_config=home/'profiles'/PROFILE/'config.yaml',
++        scope_marker=home/'profiles'/PROFILE/'.friday-user-scope.json',
++        plugin_state=home/'plugin-data/agent-plugin-friday_rework-877e6505/state.json')
++    if type(rights) is not dict or set(rights) != set(paths) or not all(_f04_digest(v) for v in rights.values()):
++        raise RuntimeError('f04_exact_rights_pins')
++    paths['source_receipt'] = home/'hermes-agent.source.json'
++    pins = dict(rights, source_receipt=source_sha)
++    if not _f04_digest(source_sha):
++        raise RuntimeError('f04_exact_source_pin')
++    for name, path in paths.items():
++        if any(p.is_symlink() for p in (path, *path.parents)) or hashlib.sha256(path.read_bytes()).hexdigest() != pins[name]:
++            raise RuntimeError('f04_current_source_rights_CAS')
++
++
++def _f04_root_control_request(pin):
++    """Protected bounded control envelope, never model text or event history."""
++    import re
++    if type(pin) is not dict or set(pin) != {'path', 'sha256'} or not _f04_digest(pin['sha256']):
++        raise RuntimeError('f04_root_request_pin')
++    path = Path(pin['path'])
++    if not path.is_absolute() or '..' in path.parts or path.is_relative_to(HOME):
++        raise RuntimeError('f04_root_request_outside_home')
++    request = _checked_root_intent(pin)
++    fields = {'schema', 'operator', 'query_id', 'boot_id', 'gateway', 'created_monotonic',
++              'expires_monotonic', 'source_receipt_sha256', 'rights_sha256', 'payload'}
++    birth = int(Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[19])
++    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
++    now = time.monotonic()
++    if (type(request) is not dict or set(request) != fields
++            or request['schema'] != _F04_CONTROL_SCHEMA or request['operator'] != 'Root'
++            or type(request['query_id']) is not str or re.fullmatch('[a-f0-9]{32}', request['query_id']) is None
++            or request['boot_id'] != boot or request['gateway'] != dict(pid=os.getpid(), start_time=birth)
++            or not _f04_number(request['created_monotonic']) or not _f04_number(request['expires_monotonic'])
++            or not request['created_monotonic'] <= now < request['expires_monotonic'] <= request['created_monotonic'] + 120
++            or type(request['payload']) is not dict
++            or request['payload'].get('source_receipt_sha256') != request['source_receipt_sha256']):
++        raise RuntimeError('f04_exact_fresh_root_control_request')
++    _f04_check_current(HOME, request['source_receipt_sha256'], request['rights_sha256'], request['payload'])
++    return request
++
++
++def _f04_observation(runner, current=None):
++    """Snapshot plus actual latest native user/structured leases from existing RO store."""
++    current = snapshot(runner) if current is None else current
++    leases, users, routes, delegations = _leases_and_user(HOME)
++    if len(users) != 1 or type(users[0].get('id')) is not int or users[0]['id'] <= 0:
++        raise RuntimeError('f04_actual_latest_native_user_required')
++    result = dict(current)
++    result['latest_user_row'] = dict(id=users[0]['id'], platform_message_id=str(users[0]['platform_message_id']))
++    result['live_turn_leases'] = [dict(row) for group in leases for row in group]
++    result['durable_pending_delegations'] = delegations
++    result['stop_selector'] = None
++    if len(result['live_turn_leases']) == 1 and len(routes) == 1:
++        result['stop_selector'] = dict(gateway_pid=current['answering_pid'], gateway_birth=current['birth_ticks'],
++            session_id=current['session_id'], session_key=current['session_key'], generation=current['generation'],
++            lease=result['live_turn_leases'][0], own_user_row_id=users[0]['id'],
++            route_sha256=hashlib.sha256((json.dumps(json.loads(routes[0][0]), ensure_ascii=True, sort_keys=True) + '\n').encode()).hexdigest())
++    return result
++
++
++def _f04_capability():
++    bridge = _f04_bridge()
++    native = bridge.capability()
++    if type(native) is not dict:
++        raise RuntimeError('f04_native_capability_required')
++    return dict(schema='frw.gateway.F04-owned-control-capability.v1',
++        projection_implementation_sha256=CODE_SHA, bridge=native,
++        control_schema=_F04_CONTROL_SCHEMA, cancel_schema=_F04_CANCEL_SCHEMA,
++        cancel_operation_pattern='root-f04-[a-f0-9]{12}',
++        verbs={'ordinary-turn-readonly': ['f04-capability', 'f04-current', 'f04-terminal'],
++               'ordinary-turn-cancel': [_F04_CANCEL_SCHEMA],
++               'ordinary-f04-arm': [_F04_CONTROL_SCHEMA], 'ordinary-f04-disarm': [_F04_CONTROL_SCHEMA]},
++        legacy_behavior_preserved=True, root_current_binding_required=True,
++        source_only_readiness_is_runtime_acceptance=False)
++
++
++def _f04_readonly_control(runner, loop, params):
++    mode = params.get('mode')
++    if mode == 'f04-capability':
++        if set(params) != {'mode'}:
++            return dict(accepted=False, error='f04_exact_capability_request')
++        try:
++            return dict(accepted=True, capability=_f04_capability())
++        except Exception:
++            return dict(accepted=False, error='f04_native_capability_unavailable')
++    if mode not in ('f04-current', 'f04-terminal') or set(params) != {'mode', 'root_request'}:
++        return dict(accepted=False, error='f04_exact_control_mode')
++    async def dispatch():
++        # No await in this scope: protected intent/current/native metadata form
++        # one gateway-loop observation. These query modes never mutate metadata.
++        request = _f04_root_control_request(params['root_request'])
++        bridge = _f04_bridge()
++        if mode == 'f04-current':
++            value = bridge.readonly(runner, request['payload'], _f04_observation(runner))
++        else:
++            value = bridge.retained_terminal(runner, request['payload'], _f04_observation(runner))
++        return dict(accepted=True, snapshot=value, query_id=request['query_id'])
++    try:
++        future = asyncio.run_coroutine_threadsafe(dispatch(), loop)
++        return future.result(timeout=1.5)
++    except concurrent.futures.TimeoutError:
++        return dict(accepted=False, error='f04_projection_timeout')
++    except Exception:
++        return dict(accepted=False, error='f04_control_refused')
++
++
++def ordinary_f04_metadata_verb(runner, loop, action):
++    """Explicit finite metadata effect on the existing socket, separate from reads.
++
++    Root admits this arm/disarm lifecycle separately before ordinary600. Neither
++    metadata operation starts, renews or extends an ordinary/product clock.
++    """
++    if action not in ('arm', 'disarm'):
++        raise ValueError('f04_exact_metadata_action')
++    def handler(params):
++        if type(params) is not dict or set(params) != {'root_request'}:
++            return dict(accepted=False, error='f04_exact_metadata_request', no_retry=True)
++        async def dispatch():
++            request = _f04_root_control_request(params['root_request'])
++            bridge = _f04_bridge()
++            value = (bridge.arm(runner, request['payload']) if action == 'arm'
++                     else bridge.disarm(runner, request['payload']))
++            return dict(accepted=True, metadata=value, action=action, query_id=request['query_id'],
++                        ordinary_clock_started=False, no_retry=True)
++        try:
++            future = asyncio.run_coroutine_threadsafe(dispatch(), loop)
++            return future.result(timeout=1.5)
++        except concurrent.futures.TimeoutError:
++            return dict(accepted=False, error='f04_metadata_outcome_UNKNOWN', no_retry=True)
++        except Exception:
++            return dict(accepted=False, error='f04_metadata_refused', no_retry=True)
++    return handler
++
++
++def _f04_cancel_intent(params):
++    intent = _checked_root_intent(params['root_intent'])
++    if (intent['plan']['operation_id'] != params['operation_id']
++            or intent['current']['owned_turn'] != params['owned_turn']
++            or intent.get('rights_sha256') != params['rights_sha256']
++            or intent.get('source_receipt_sha256') != params['source_receipt_sha256']
++            or intent.get('f04_request') != params['f04_request']
++            or intent.get('literal') != '/stop' or intent.get('no_retry') is not True
++            or intent['authority']['operator'] != 'Root'
++            or intent['plan']['boot_id'] != params['boot_id']
++            or not _f04_number(intent['plan']['deadline_monotonic'])
++            or type(params['f04_request'].get('ordinary_clock')) is not dict
++            or not _f04_number(params['f04_request']['ordinary_clock'].get('deadline_monotonic'))
++            or not time.monotonic() < params['deadline_monotonic'] <= intent['plan']['deadline_monotonic'] <= params['f04_request']['ordinary_clock']['deadline_monotonic']
++            or params['f04_request'].get('source_receipt_sha256') != params['source_receipt_sha256']):
++        raise RuntimeError('f04_exact_root_intent_owner_join')
++    return intent
++
++
++def _f04_cancel_compare(runner, params):
++    # Both calls preserve the entire existing native CAS kernel, rights/access,
++    # source, route, latest user, dict lease, generation and delegation guard.
++    expected = {k: params[k] for k in ('owned_turn', 'boot_id', 'deadline_monotonic')}
++    current = _cancel_compare(runner, expected, HOME, params['source_receipt_sha256'], params['rights_sha256'])
++    result = _f04_bridge().validate_cancel_binding(runner, params['f04_request'], _f04_observation(runner, current))
++    if result is not True:
++        raise RuntimeError('f04_native_binding_refused')
++    return current
++
++
++def _f04_cancel_control(runner, loop, params):
++    async def dispatch():
++        import re
++        from gateway.run import _INTERRUPT_REASON_STOP
++        fields = {'schema', 'operation_id', 'text', 'root_intent', 'boot_id', 'deadline_monotonic',
++                  'source_receipt_sha256', 'owned_turn', 'rights_sha256', 'f04_request'}
++        if (type(params) is not dict or set(params) != fields or params['schema'] != _F04_CANCEL_SCHEMA
++                or params['text'] != '/stop' or type(params['operation_id']) is not str
++                or re.fullmatch('root-f04-[a-f0-9]{12}', params['operation_id']) is None
++                or not _f04_number(params['deadline_monotonic']) or type(params['f04_request']) is not dict):
++            return dict(accepted=False, error='f04_exact_owned_cancel_schema', no_retry=True)
++        try:
++            _f04_check_current(HOME, params['source_receipt_sha256'], params['rights_sha256'], params['f04_request'])
++            intent = _f04_cancel_intent(params)
++            _f04_cancel_compare(runner, params)
++            state = runner._peek_session_state(KEY)
++            source = state.turn.event.source
++            if runner._check_slash_access(source, 'stop') is not None:
++                raise RuntimeError('f04_ordinary_stop_access_changed')
++            # Separate F04 namespace, O_EXCL/fsync before interrupt. A failure or
++            # timeout never removes this receipt and never permits blind retry.
++            path = HOME/'runtime'/('f04-own-stop-' + params['operation_id'] + '.json')
++            if any(p.is_symlink() for p in (path, *path.parents)):
++                raise RuntimeError('f04_native_once_path_link')
++            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
++            payload = json.dumps(params, sort_keys=True).encode()
++            with os.fdopen(fd, 'wb') as stream:
++                stream.write(payload); stream.flush(); os.fsync(stream.fileno())
++            dfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++            try:
++                os.fsync(dfd)
++            finally:
++                os.close(dfd)
++            dispatch_id = hashlib.sha256(payload).hexdigest()
++            if _f04_cancel_intent(params) != intent:
++                raise RuntimeError('f04_root_intent_CAS_changed')
++            _f04_cancel_compare(runner, params)
++            if time.monotonic() >= params['deadline_monotonic']:
++                raise RuntimeError('f04_cancel_deadline_before_interrupt')
++            task = asyncio.current_task()
++            deadline_handle = loop.call_later(max(0, params['deadline_monotonic'] - time.monotonic()), task.cancel)
++            try:
++                # The actual native async method invokes _interrupt_running_turn
++                # synchronously (generation invalidation) before its first await.
++                receipt = await runner._interrupt_and_clear_session(KEY, source,
++                    interrupt_reason=_INTERRUPT_REASON_STOP, invalidation_reason='stop_command')
++            except asyncio.CancelledError:
++                return dict(accepted=False, error='f04_owned_cancel_settlement_deadline_UNKNOWN', no_retry=True,
++                            native_dispatch_id=dispatch_id)
++            finally:
++                deadline_handle.cancel()
++            generation = runner._current_session_run_generation(KEY)
++            before = params['owned_turn']['generation']
++            if (type(before) is not int or type(generation) is not int or generation <= before
++                    or (receipt is not None and (type(receipt) is not dict or receipt.get('status') != 'QUIESCENT'))):
++                return dict(accepted=False, error='f04_owned_cancel_incomplete_UNKNOWN', no_retry=True,
++                            native_dispatch_id=dispatch_id, generation_before=before, generation_after=generation,
++                            native_receipt=receipt)
++            _f04_bridge().mark_cancelled(runner, params['f04_request'], generation,
++                'NATIVE_METHOD_RETURNED' if receipt is None else receipt['status'])
++            return dict(accepted=True, sent_once=True, no_retry=True, transport='existing_gateway_control_socket',
++                schema='frw.gateway.F04-owned-cancel-dispatch.v1', native_dispatch_id=dispatch_id,
++                session_id=SID, generation_before=before, generation_after=generation,
++                binding_sha256=params['f04_request']['binding_sha256'], native_receipt=receipt,
++                settlement='REQUIRES_FRESH_INDEPENDENT_OWN_TERMINAL_OBSERVATION', telegram_stop_message_created=False)
++        except Exception:
++            return dict(accepted=False, error='f04_owned_cancel_refused_or_UNKNOWN', no_retry=True)
++    try:
++        future = asyncio.run_coroutine_threadsafe(dispatch(), loop)
++        timeout = min(9.0, max(0.001, params.get('deadline_monotonic', 0) - time.monotonic()))
++        return future.result(timeout=timeout)
++    except concurrent.futures.TimeoutError:
++        return dict(accepted=False, error='f04_owned_cancel_outcome_UNKNOWN', no_retry=True)
++    except Exception:
++        return dict(accepted=False, error='f04_owned_cancel_unavailable', no_retry=True)
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -5691,10 +5691,12 @@
+                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
+ 
+         from hermes_cli.plugins_gateway_control import plugin_control_verb
+-        from gateway.ordinary_turn_projection import ordinary_turn_readonly_verb, ordinary_turn_cancel_verb
++        from gateway.ordinary_turn_projection import ordinary_turn_readonly_verb, ordinary_turn_cancel_verb, ordinary_f04_metadata_verb
+         _control_server = GatewayControlServer(
+             verb_handlers={"ordinary-turn-readonly": ordinary_turn_readonly_verb(runner, _main_loop),
+                            "ordinary-turn-cancel": ordinary_turn_cancel_verb(runner, _main_loop),
++                           "ordinary-f04-arm": ordinary_f04_metadata_verb(runner, _main_loop, "arm"),
++                           "ordinary-f04-disarm": ordinary_f04_metadata_verb(runner, _main_loop, "disarm"),
+                            "plugin-control": plugin_control_verb(runner, _main_loop),
+                            "pause-for-update": _pause_for_update_handler,
+                            "rescan-profiles": _rescan_profiles_handler,
+diff --git a/gateway/run_inbound.py b/gateway/run_inbound.py
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -1420,6 +1420,10 @@
+             # Turn lease is keyed by (routing key, run generation) so this unwind can only free
+             # the lease its own turn acquired, never a newer turn's.
+             self._release_turn_lease(_quick_key, _run_generation)
++            # Retain the exact original unwind only after its lease release.
++            # Read-only closure still requires the owned resource/drain proof.
++            from gateway.ordinary_f04_bridge import dispatch_finalized as _f04_finalized
++            _f04_finalized(self, event, _quick_key, _run_generation)
+ 
+     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
+         """Restore the per-session model override captured by ``/model --once`` or ``/moa``.
+diff --git a/gateway/run_inbound_media.py b/gateway/run_inbound_media.py
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -224,6 +224,10 @@
+             os.close(received_fd)
+     finally:
+         os.close(root_fd)
++    # Host-only F04 evidence consumes the exact immutable values just verified
++    # above. It never opens a receipt path or changes ordinary presentation.
++    from gateway.ordinary_f04_bridge import capture_verified_ingress
++    capture_verified_ingress(event, proof, staged)
+     rewritten = []
+     for raw, destination, _, _, receipt in staged:
+         rewritten.append(str(destination))
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -2124,6 +2124,9 @@
+             self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
+ 
+         await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
++        # Root-only opt-in metadata; never added to user text, history or tools.
++        from gateway.ordinary_f04_bridge import bind_turn as _f04_bind_turn
++        _f04_bind_turn(self, event, source, session_entry, _quick_key, run_generation)
+ 
+         # A turn becomes durable recovery work only after it owns the per-session lease; marking
+         # earlier would falsely recover a message that never began processing.
+@@ -3378,6 +3381,8 @@
+             return
+         turn_state = self._session_state(session_key).turn
+         turn_state.agent, turn_state.ctx = agent_holder[0], turn_ctx
++        from gateway.ordinary_f04_bridge import observe_context as _f04_context
++        _f04_context(self, turn_ctx)
+         if self._draining:
+             self._update_runtime_status("draining")
+ 
+@@ -4509,6 +4514,8 @@
+         try:
+             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
+             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
++            from gateway.ordinary_f04_bridge import observe_worker as _f04_worker
++            _f04_worker(self, turn_ctx, worker)
+             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
+             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+             if turn_ctx._telegram_status is not None:
+diff --git a/plugins/platforms/telegram/telegram_document_bytes.py b/plugins/platforms/telegram/telegram_document_bytes.py
+--- a/plugins/platforms/telegram/telegram_document_bytes.py
++++ b/plugins/platforms/telegram/telegram_document_bytes.py
+@@ -96,6 +96,10 @@
+             "chat_id": str(chat_id), "thread_id": adapter._metadata_thread_id(metadata),
+             "reply_to": str(reply_to), "message_id": str(message_id),
+         }
++        # Preserve this actual ACK under its exact host-owned turn, if opted in.
++        from gateway.ordinary_f04_bridge import retain_document_ack
++        retain_document_ack(adapter, chat_id, data, file_name=file_name,
++                            reply_to=reply_to, metadata=metadata, proof=proof)
+         return SendResult(success=True, message_id=str(message_id), raw_response=proof)
+     except Exception:  # health: allow BLE001 -- SDK errors can contain bot credentials; ambiguous sends are never retried here.
+         return SendResult(success=False, error="document_ack_unavailable")
+diff --git a/plugins/platforms/telegram/telegram_message_event.py b/plugins/platforms/telegram/telegram_message_event.py
+--- a/plugins/platforms/telegram/telegram_message_event.py
++++ b/plugins/platforms/telegram/telegram_message_event.py
+@@ -50,4 +50,6 @@
+         channel_prompt=group_identity_prompt(self, message, channel_prompt),
+         timestamp=message.date)
+     event._ingress_update_id = update_id
++    from gateway.ordinary_f04_bridge import mark_original_event
++    mark_original_event(event)
+     return event

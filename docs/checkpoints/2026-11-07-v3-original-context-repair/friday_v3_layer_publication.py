@@ -84,7 +84,15 @@ LAYER_NAMES = (
     "calc-required-formula-rich-profile-after-source219",
     "sameformat-rich-ods-after-source220",
     'ods-xlsx-native-visibility-compare-after-source221',
+    'ordinary-f04-owned-ingress-stop-terminal-after-source222',
 )
+# Draft binding barrier: no request generation or publication may read the installed
+# home for this selected edge until the exact frozen manifest and patch are supplied.
+# These are deliberately not fixture pins and confer no admission by themselves.
+CURRENT_SOURCE_TWENTY_FIFTH_LAYER = "ordinary-f04-owned-ingress-stop-terminal-after-source222"
+CURRENT_SOURCE_TWENTY_FIFTH_MANIFEST_SHA256 = '12e52a66eccb9a3e8b0da7f68fea2ab440e51245a1e4d1f2b3c4d54fd36d7384'
+CURRENT_SOURCE_TWENTY_FIFTH_PATCH_SHA256 = '934d189d9551eb7f81c27f3ac359d8550c8ba24b423bfb4c43a8295f50c145e2'
+
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
 # every layer this file happens to know today.
@@ -130,6 +138,20 @@ class StopUnconfirmed(Exception):
 def require(condition, reason):
     if not condition:
         raise Refused(reason)
+
+
+def require_twenty_fifth_source_binding(layer_names=(), context=None):
+    """Refuse the selected draft before any installed-home or request-file access."""
+    selected = (isinstance(layer_names, (list, tuple))
+                and CURRENT_SOURCE_TWENTY_FIFTH_LAYER in layer_names)
+    selected_context = (type(context) is dict
+                        and context.get("schema") == "friday.current-source-native-successor.v25")
+    if selected or selected_context:
+        require(all(type(value) is str
+                    and __import__("re").fullmatch("[0-9a-f]{64}", value)
+                    for value in (CURRENT_SOURCE_TWENTY_FIFTH_MANIFEST_SHA256,
+                                  CURRENT_SOURCE_TWENTY_FIFTH_PATCH_SHA256)),
+                "transaction_current_source_twenty_fifth_binding_unbound")
 
 
 def digest(data):
@@ -1093,7 +1115,7 @@ def current_source_request_bytes(request, request_path, request_sha256):
                     "friday.current-source-native-successor.v5",
                     "friday.current-source-native-successor.v6",
                     "friday.current-source-native-successor.v7",
-                    "friday.current-source-native-successor.v8", "friday.current-source-native-successor.v9", "friday.current-source-native-successor.v10", "friday.current-source-native-successor.v11", "friday.current-source-native-successor.v12", "friday.current-source-native-successor.v13", "friday.current-source-native-successor.v14", "friday.current-source-native-successor.v15", "friday.current-source-native-successor.v16", "friday.current-source-native-successor.v17", "friday.current-source-native-successor.v18", "friday.current-source-native-successor.v19", "friday.current-source-native-successor.v20", "friday.current-source-native-successor.v21", "friday.current-source-native-successor.v22", "friday.current-source-native-successor.v23", "friday.current-source-native-successor.v24")
+                    "friday.current-source-native-successor.v8", "friday.current-source-native-successor.v9", "friday.current-source-native-successor.v10", "friday.current-source-native-successor.v11", "friday.current-source-native-successor.v12", "friday.current-source-native-successor.v13", "friday.current-source-native-successor.v14", "friday.current-source-native-successor.v15", "friday.current-source-native-successor.v16", "friday.current-source-native-successor.v17", "friday.current-source-native-successor.v18", "friday.current-source-native-successor.v19", "friday.current-source-native-successor.v20", "friday.current-source-native-successor.v21", "friday.current-source-native-successor.v22", "friday.current-source-native-successor.v23", "friday.current-source-native-successor.v24", "friday.current-source-native-successor.v25")
                 and set(context) == {"schema", "root_project_update", "previous_native_update"},
                 "transaction_current_source_context_required")
         references = ("root_project_update", "previous_native_update")
@@ -1198,13 +1220,15 @@ def current_source_consumer_checked(value, request, candidate, *, committed=Fals
 def run(request, request_path, request_sha256):
     global INJECT_AFTER_RENAME, INJECT_TARGET, INJECT_SNAPSHOT_DIR, INJECT_SNAPSHOT_FILES
     global INJECT_SNAPSHOT_HOME
+    require_twenty_fifth_source_binding(request.get("layer_names", ()),
+                                       request.get("current_source_successor"))
     started = time.monotonic()
     os.umask(0o077)
     raw_current_request = current_source_request_bytes(request, request_path, request_sha256)
     current_context = raw_current_request is not None
     guarded_current = current_context and request["current_source_successor"]["schema"] in (
         "friday.current-source-native-successor.v5", "friday.current-source-native-successor.v6",
-        "friday.current-source-native-successor.v7", "friday.current-source-native-successor.v8", "friday.current-source-native-successor.v9", "friday.current-source-native-successor.v10", "friday.current-source-native-successor.v11", "friday.current-source-native-successor.v12", "friday.current-source-native-successor.v13", "friday.current-source-native-successor.v14", "friday.current-source-native-successor.v15", "friday.current-source-native-successor.v16", "friday.current-source-native-successor.v17", "friday.current-source-native-successor.v18", "friday.current-source-native-successor.v19", "friday.current-source-native-successor.v20", "friday.current-source-native-successor.v21", "friday.current-source-native-successor.v22", "friday.current-source-native-successor.v23", "friday.current-source-native-successor.v24")
+        "friday.current-source-native-successor.v7", "friday.current-source-native-successor.v8", "friday.current-source-native-successor.v9", "friday.current-source-native-successor.v10", "friday.current-source-native-successor.v11", "friday.current-source-native-successor.v12", "friday.current-source-native-successor.v13", "friday.current-source-native-successor.v14", "friday.current-source-native-successor.v15", "friday.current-source-native-successor.v16", "friday.current-source-native-successor.v17", "friday.current-source-native-successor.v18", "friday.current-source-native-successor.v19", "friday.current-source-native-successor.v20", "friday.current-source-native-successor.v21", "friday.current-source-native-successor.v22", "friday.current-source-native-successor.v23", "friday.current-source-native-successor.v24", "friday.current-source-native-successor.v25")
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")
