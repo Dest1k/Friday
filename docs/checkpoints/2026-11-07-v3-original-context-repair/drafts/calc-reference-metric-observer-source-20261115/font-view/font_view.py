@@ -1,0 +1,304 @@
+"""Static namespace dependency view only; never opens Office or selects a font.
+
+Baseline is a streamed byte fingerprint. CAS reuses unchanged font digests only
+under the same trusted read-only namespace and externally pinned baseline; it is
+not a new byte proof against hostile kernel/metadata rollback. Critical config,
+cache and engine inputs are rehashed. Any metadata/set/topology drift refuses.
+"""
+import argparse, collections, hashlib, json, os, pathlib, resource, stat, struct, sys, time
+import xml.etree.ElementTree as ET
+
+PREFIX='/opt/friday-document-toolchain'
+LO=PREFIX+'/root/usr/lib/libreoffice'
+PROGRAM=LO+'/program'
+ROOTS=['/usr/share/fonts','/usr/local/share/fonts','/etc/fonts','/usr/share/fontconfig','/var/cache/fontconfig',LO+'/share/fonts']
+REGISTRY=LO+'/share/registry/main.xcd'
+FIXED=[REGISTRY,PROGRAM+'/bootstraprc',PROGRAM+'/fundamentalrc',PROGRAM+'/lounorc',PROGRAM+'/libmergedlo.so','/etc/ld.so.cache']
+STATIC_LAYERS=[LO+'/share/extensions',LO+'/share/uno_packages/cache','/etc/dconf','/usr/share/dconf']
+TRUSTED=ROOTS+STATIC_LAYERS+[PREFIX+'/.host-share/'+p for p in ('fonts','fontconfig','poppler/cMap','ghostscript/fonts','texmf/fonts','dconf')]+[PREFIX+'/root/usr/share/fonts',PREFIX+'/root/usr/share/fontconfig',LO+'/share/.registry',LO+'/share/registry',PREFIX+'/root/var/spool/libreoffice/uno_packages/cache',PROGRAM,PREFIX+'/root/usr/lib/x86_64-linux-gnu','/usr/lib/x86_64-linux-gnu','/lib/x86_64-linux-gnu','/etc/ld.so.cache','/etc/alternatives','/var/lib/ghostscript/CMap']
+SONAMES=('libfontconfig.so.1','libfreetype.so.6','libharfbuzz.so.0','libharfbuzz-icu.so.0','libgraphite2.so.3','libicuuc.so.78','libicui18n.so.78','libicudata.so.78','libcairo.so.2')
+MAX_ENTRIES=4096;MAX_READ=1024**3;MAX_OUTPUT=4*1024**2
+ENV_KEYS=('HOME','TMPDIR','XDG_CACHE_HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','FONTCONFIG_FILE','FONTCONFIG_PATH','FONTCONFIG_SYSROOT','FC_LANG','LANG','LC_ALL','SAL_FONTPATH','SAL_USE_VCLPLUGIN','LD_LIBRARY_PATH','URE_BOOTSTRAP')
+
+def canonical(x):return json.dumps(x,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()
+def digest(x):return hashlib.sha256(canonical(x)).hexdigest()
+def checked_baseline(value,pinned):
+    if not pinned or value.get('view_sha256')!=pinned or digest(value['view'])!=pinned:raise Refusal('baseline_out_of_band_digest_mismatch')
+    return value
+def assert_view_matches(view,baseline):
+    if view!=baseline['view']:raise Refusal('view_metadata_or_critical_content_changed')
+def assert_user_directive(tag,value,prefix):
+    supported={('dir','fonts','xdg'),('dir','~/.fonts',None),('cachedir','fontconfig','xdg'),('cachedir','~/.fontconfig',None),('include','fontconfig/conf.d','xdg'),('include','fontconfig/fonts.conf','xdg'),('include','~/.fonts.conf',None),('include','~/.fonts.conf.d',None)}
+    if (tag,value,prefix) not in supported:raise Refusal('uncovered_user_fontconfig_directive:'+tag+':'+value)
+def static_system_target(tag,value,source):
+    if value.startswith('/'):return os.path.normpath(value)
+    if tag=='include' and source=='/etc/fonts/fonts.conf' and value=='conf.d':return '/etc/fonts/conf.d'
+    if tag=='include' and source=='/etc/fonts/conf.d/51-local.conf' and value=='local.conf':return '/etc/fonts/local.conf'
+    raise Refusal('unsupported_relative_fontconfig_directive:'+tag+':'+value)
+def metadata(s):
+    return {'dev':s.st_dev,'ino':s.st_ino,'mode':s.st_mode,'uid':s.st_uid,'gid':s.st_gid,'nlink':s.st_nlink,'size':s.st_size,'mtime_ns':s.st_mtime_ns,'ctime_ns':s.st_ctime_ns}
+def inroot(p,root):return p==root or p.startswith(root+'/')
+def trusted(p):return any(inroot(p,r) for r in TRUSTED)
+def traversable(p):return trusted(p) or any(inroot(r,p) for r in TRUSTED)
+class Refusal(Exception):pass
+def open_regular(resolved,expected):
+    # resolved must contain no symlink components. Pin directory descriptors so
+    # a concurrent component replacement cannot redirect a content read.
+    if not trusted(resolved):raise Refusal('untrusted_open:'+resolved)
+    parts=pathlib.PurePosixPath(resolved).parts
+    current=os.open('/',os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC)
+    fd=None
+    try:
+        for part in parts[1:-1]:
+            nxt=os.open(part,os.O_PATH|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=current)
+            os.close(current);current=nxt
+        fd=os.open(parts[-1],os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW,dir_fd=current)
+        if metadata(os.fstat(fd))!=expected or not stat.S_ISREG(os.fstat(fd).st_mode):raise Refusal('open_stat_changed:'+resolved)
+        result=fd;fd=None;return result
+    finally:
+        if fd is not None:os.close(fd)
+        os.close(current)
+
+class Scanner:
+    def __init__(self,baseline=None):
+        self.entries={};self.links={};self.hashes={};self.read=0;self.hashed=0;self.reused=0
+        self.directives=[];self.subtrees=[];self.registry_nonconfig=[];self.baseline=baseline
+        self.oldentries={e['path']:e for e in baseline['view']['entries']} if baseline else {}
+        self.start=time.monotonic()
+    def check(self):
+        if len(self.entries)+len(self.links)>MAX_ENTRIES:raise Refusal('entry_limit')
+        if self.read>MAX_READ:raise Refusal('read_limit')
+        if time.monotonic()-self.start>55:raise Refusal('internal_wall_limit')
+    def resolve(self,path):
+        if not path.startswith('/') or '..' in pathlib.PurePosixPath(path).parts:raise Refusal('noncanonical_path:'+path)
+        todo=collections.deque(path.split('/')[1:]);done=[];hops=0
+        while todo:
+            part=todo.popleft()
+            if part in ('','.'):continue
+            if part=='..':
+                if done:done.pop()
+                continue
+            candidate='/'+ '/'.join(done+[part])
+            if not traversable(candidate):raise Refusal('untrusted_resolution:'+candidate)
+            try:s=os.lstat(candidate)
+            except FileNotFoundError:
+                tail='/'.join([candidate,*todo])
+                if not trusted(tail):raise Refusal('untrusted_missing:'+tail)
+                return tail,None
+            if stat.S_ISLNK(s.st_mode):
+                raw=os.readlink(candidate);observation={'target':raw,'lstat':metadata(s)}
+                if candidate in self.links and self.links[candidate]!=observation:raise Refusal('repeated_symlink_observation_changed:'+candidate)
+                self.links[candidate]=observation;self.check()
+                hops+=1
+                if hops>40:raise Refusal('symlink_loop:'+path)
+                target=raw.split('/')
+                if raw.startswith('/'):done=[]
+                todo.extendleft(reversed(target))
+            else:done.append(part)
+        final='/'+ '/'.join(done)
+        if not trusted(final):raise Refusal('untrusted_target:'+final)
+        try:return final,os.lstat(final)
+        except FileNotFoundError:return final,None
+    def read_file(self,resolved,expected,critical=False):
+        key=tuple(expected.values())
+        if key in self.hashes:return self.hashes[key]
+        fd=open_regular(resolved,expected)
+        try:
+            if metadata(os.fstat(fd))!=expected:raise Refusal('open_stat_changed:'+resolved)
+            h=hashlib.sha256()
+            while True:
+                chunk=os.read(fd,1024*1024)
+                if not chunk:break
+                self.read+=len(chunk);self.check();h.update(chunk)
+            if metadata(os.fstat(fd))!=expected:raise Refusal('read_stat_changed:'+resolved)
+        finally:os.close(fd)
+        if metadata(os.stat(resolved,follow_symlinks=False))!=expected:raise Refusal('path_stat_changed:'+resolved)
+        value=h.hexdigest();self.hashes[key]=value;self.hashed+=1;return value
+    def add(self,path,recurse=False,critical=False,ancestors=()):
+        if path in self.entries:return
+        resolved,s=self.resolve(path)
+        try:ls=metadata(os.lstat(path))
+        except FileNotFoundError:ls=None
+        entry={'path':path,'resolved':resolved,'lstat':ls,'stat':metadata(s) if s else None}
+        self.entries[path]=entry;self.check()
+        if s is None:entry['kind']='missing';return
+        if stat.S_ISREG(s.st_mode):
+            entry['kind']='file';old=self.oldentries.get(path)
+            if self.baseline and not critical:
+                if old is None or any(old.get(k)!=entry.get(k) for k in ('path','resolved','lstat','stat','kind')):raise Refusal('font_metadata_changed:'+path)
+                entry['sha256']=old['sha256'];self.reused+=1
+            else:entry['sha256']=self.read_file(resolved,entry['stat'],critical)
+        elif stat.S_ISDIR(s.st_mode):
+            entry['kind']='directory'
+            ident=(s.st_dev,s.st_ino)
+            if ident in ancestors:raise Refusal('directory_cycle:'+path)
+            if recurse:
+                before=metadata(s)
+                entry['children']=sorted(os.listdir(path))
+                for name in entry['children']:self.add(path+'/'+name,True,critical,ancestors+(ident,))
+                if metadata(os.stat(resolved,follow_symlinks=False))!=before:raise Refusal('directory_changed:'+path)
+        else:raise Refusal('unsupported_file_kind:'+path)
+    def critical_bytes(self,path):
+        e=self.entries[path]
+        if e['kind']!='file':raise Refusal('required_config_missing:'+path)
+        if e['stat']['size']>16*1024**2:raise Refusal('config_parse_size:'+path)
+        fd=open_regular(e['resolved'],e['stat'])
+        try:
+            with os.fdopen(fd,'rb',closefd=False) as f:data=f.read(16*1024**2+1)
+            if metadata(os.fstat(fd))!=e['stat']:raise Refusal('parse_fd_changed:'+path)
+        finally:os.close(fd)
+        self.read+=len(data);self.check()
+        if hashlib.sha256(data).hexdigest()!=e['sha256'] or metadata(os.stat(e['resolved'],follow_symlinks=False))!=e['stat']:raise Refusal('parse_bytes_changed:'+path)
+        return data
+    def fontconfig(self):
+        # Inventory every static config file, including inactive conf.avail. Do
+        # not claim full Fontconfig evaluation: directive coverage is checked
+        # against the already inventoried roots and explicit empty user paths.
+        directives=[]
+        for p,e in sorted(self.entries.items()):
+            if e['kind']!='file' or not inroot(p,'/etc/fonts') or not p.endswith('.conf'):continue
+            try:tree=ET.fromstring(self.critical_bytes(p))
+            except ET.ParseError:raise Refusal('fontconfig_xml_parse:'+p)
+            for el in tree.iter():
+                if el.tag=='remap-dir':raise Refusal('unsupported_fontconfig_remap_dir:'+p)
+                if el.tag not in ('dir','include','cachedir'):continue
+                text=(el.text or '').strip();attrs=dict(el.attrib)
+                directives.append({'source':p,'tag':el.tag,'value':text,'attributes':attrs})
+                if not text:raise Refusal('empty_fontconfig_directive:'+p)
+                if attrs.get('prefix')=='xdg' or text.startswith('~'):
+                    assert_user_directive(el.tag,text,attrs.get('prefix'))
+                    continue # Exact checked user-path emptiness conditions below.
+                if attrs.get('prefix') not in (None,'default','relative'):raise Refusal('unsupported_fontconfig_prefix:'+p)
+                target=static_system_target(el.tag,text,p)
+                if not any(inroot(target,r) for r in ROOTS):raise Refusal('uncovered_fontconfig_directive:'+target)
+        self.directives=directives
+    def losubtrees(self):
+        root=ET.fromstring(self.critical_bytes(REGISTRY));ns='{http://openoffice.org/2001/registry}'
+        # Record complete relevant schema/data subtree digests without its text.
+        def walk(el,context):
+            tag=el.tag.split('}')[-1];name=el.get(ns+'name')
+            here=context+([tag+':'+name] if name else [tag])
+            if name in ('FontSubstitutions','LocalizedFontSubstitutions','FontReplacement','Substitution'):
+                self.subtrees.append({'path':'/'.join(here),'element_sha256':hashlib.sha256(ET.tostring(el,encoding='utf-8')).hexdigest(),'descendant_count':sum(1 for _ in el.iter())})
+            for child in el:walk(child,here)
+        walk(root,[])
+        if not any('FontSubstitutions' in s['path'] for s in self.subtrees):raise Refusal('lo_font_substitutions_missing')
+    def registry_set(self,path):
+        self.add(path,False,True)
+        self.entries[path]['children']=sorted(os.listdir(path))
+        for name in self.entries[path]['children']:
+            child=path+'/'+name
+            if os.path.isdir(child):self.registry_set(child)
+            elif name.endswith(('.xcd','.xcu','.xcs')):self.add(child,False,True)
+            else:
+                s=os.lstat(child)
+                self.registry_nonconfig.append({'path':child,'lstat':metadata(s),'link':os.readlink(child) if stat.S_ISLNK(s.st_mode) else None})
+    def final_metadata_revalidation(self):
+        oldlinks=dict(self.links)
+        for p,e in sorted(self.entries.items()):
+            resolved,s=self.resolve(p)
+            try:ls=metadata(os.lstat(p))
+            except FileNotFoundError:ls=None
+            if resolved!=e['resolved'] or (metadata(s) if s else None)!=e['stat'] or ls!=e['lstat']:raise Refusal('final_metadata_changed:'+p)
+            if 'children' in e and sorted(os.listdir(p))!=e['children']:raise Refusal('final_directory_set_changed:'+p)
+        if self.links!=oldlinks:raise Refusal('final_symlink_topology_changed')
+        for e in self.registry_nonconfig:
+            s=os.lstat(e['path']);raw=os.readlink(e['path']) if stat.S_ISLNK(s.st_mode) else None
+            if metadata(s)!=e['lstat'] or raw!=e['link']:raise Refusal('final_registry_nonconfig_changed')
+    def elf_needed(self):
+        # Read ELF64 little-endian dynamic dependencies as bytes; never dlopen.
+        path=PROGRAM+'/libmergedlo.so';e=self.entries[path];fd=open_regular(e['resolved'],e['stat'])
+        def at(off,size):
+            data=os.pread(fd,size,off);self.read+=len(data);self.check()
+            if len(data)!=size:raise Refusal('elf_truncated')
+            return data
+        try:
+            if metadata(os.fstat(fd))!=e['stat']:raise Refusal('elf_changed')
+            head=at(0,64)
+            if head[:6]!=b'\x7fELF\x02\x01':raise Refusal('unsupported_elf')
+            vals=struct.unpack('<16sHHIQQQIHHHHHH',head);off,esz,num=vals[5],vals[9],vals[10]
+            if num>128 or esz!=56:raise Refusal('elf_phdr_bound')
+            ph=[struct.unpack('<IIQQQQQQ',at(off+i*esz,esz)) for i in range(num)]
+            dyn=[x for x in ph if x[0]==2]
+            if len(dyn)!=1 or dyn[0][5]>65536:raise Refusal('elf_dynamic_bound')
+            ds=at(dyn[0][2],dyn[0][5]);pairs=[]
+            for i in range(0,len(ds),16):
+                a,b=struct.unpack_from('<qQ',ds,i)
+                if a==0:break
+                pairs.append((a,b))
+            st=next(v for k,v in pairs if k==5);size=next(v for k,v in pairs if k==10)
+            segment=next(x for x in ph if x[0]==1 and x[3]<=st< x[3]+x[5])
+            needed=[]
+            for k,v in pairs:
+                if k!=1:continue
+                if v>=size:raise Refusal('elf_needed_offset')
+                text=at(segment[2]+st-segment[3]+v,min(256,size-v))
+                if b'\0' not in text:raise Refusal('elf_soname_bound')
+                needed.append(text.split(b'\0',1)[0].decode('ascii'))
+            if metadata(os.fstat(fd))!=e['stat']:raise Refusal('elf_changed')
+            return sorted(needed)
+        finally:os.close(fd)
+    def run(self):
+        for p in ROOTS:self.add(p,True,critical=not (p.endswith('/fonts')))
+        for p in FIXED:self.add(p,False,True)
+        self.registry_set(LO+'/share/registry')
+        for p in STATIC_LAYERS:
+            self.add(p,True,True)
+            if p.startswith(LO+'/') and self.entries[p]['kind']=='directory' and os.listdir(p):raise Refusal('nonempty_optional_configuration_layer:'+p)
+        self.fontconfig();self.losubtrees();needed=self.elf_needed()
+        search=os.environ.get('LD_LIBRARY_PATH','').split(':')+['/lib/x86_64-linux-gnu','/usr/lib/x86_64-linux-gnu']
+        candidates={}
+        # Binding directories are helper-specific and do not ship these engines;
+        # test candidate absence without opening/importing their contents.
+        for name in SONAMES:
+            rows=[]
+            for directory in dict.fromkeys(search):
+                p=directory+'/'+name
+                if not trusted(p):
+                    if os.path.lexists(p):raise Refusal('engine_in_untrusted_binding:'+p)
+                    rows.append({'path':p,'exists':False});continue
+                self.add(p,False,True);rows.append({'path':p,'exists':self.entries[p]['kind']!='missing'})
+            candidates[name]={'direct_needed_by_libmergedlo':name in needed,'candidates':rows}
+        empty=self.empty_user_conditions()
+        self.final_metadata_revalidation()
+        view={'format':'friday-static-font-config-view-v1','scope':'actual namespace static dependency view; no selected runtime face, M, physical or historical applicability','roots':ROOTS,'static_configuration_layers':STATIC_LAYERS,'trusted_resolution_roots':TRUSTED,'environment':{k:os.environ.get(k) for k in ENV_KEYS},'entries':[self.entries[p] for p in sorted(self.entries)],'symlink_topology':{p:self.links[p] for p in sorted(self.links)},'fontconfig_static_directives':self.directives,'lo_font_substitution_subtrees':self.subtrees,'registry_nonconfiguration_entries':self.registry_nonconfig,'engine_candidates':candidates,'libmergedlo_DT_NEEDED':needed,'empty_user_conditions':empty}
+        if self.baseline:assert_view_matches(view,self.baseline)
+        usage=resource.getrusage(resource.RUSAGE_SELF)
+        return {'view':view,'view_sha256':digest(view),'observation':{'status':'metadata_cas_pass_with_critical_rehash' if self.baseline else 'streamed_byte_inventory','read_bytes':self.read,'hashed_unique_files':self.hashed,'reused_font_digests':self.reused,'entry_count':len(self.entries),'symlink_count':len(self.links),'wall_seconds':time.monotonic()-self.start,'cpu_seconds':usage.ru_utime+usage.ru_stime,'max_rss_kib':usage.ru_maxrss},'limits':{'wall_seconds':60,'cpu_seconds':30,'rss_bytes':512*1024**2,'entries_plus_links':4096,'read_bytes':MAX_READ,'output_bytes':MAX_OUTPUT},'limitations':['No Office process, selected runtime face, FcConfig evaluation, M or fidelity claim.','ELF DT_NEEDED and candidate identities are static coverage, not evidence of actual dynamic loading.','Font CAS reuses byte digests only on exact metadata/set/topology equality in unchanged trusted RO software view; hostile privileged metadata rollback is outside this check.','User HOME/XDG font/config/cache absence must be revalidated for each future actual runtime scratch; this evidence does not attest an Office profile or its user extensions/registry.']}
+    def empty_user_conditions(self):
+        home=os.environ['HOME'];config=os.environ.get('XDG_CONFIG_HOME',home+'/.config');cache=os.environ.get('XDG_CACHE_HOME',home+'/.cache');data=os.environ.get('XDG_DATA_HOME',home+'/.local/share')
+        paths=[home+'/.fonts',home+'/.fonts.conf',home+'/.fonts.conf.d',home+'/.fontconfig',data+'/fonts',config+'/fontconfig',cache+'/fontconfig']
+        out=[]
+        for p in sorted(set(paths)):
+            if not inroot(p,'/tmp/friday-metric-work'):raise Refusal('user_condition_outside_own_scratch')
+            if os.path.lexists(p):raise Refusal('user_font_config_cache_present:'+p)
+            out.append({'path':p,'condition':'absent'})
+        return out
+
+def validate_static_font_config_view(baseline,*,expected_view_digest):
+    """Data-in/data-out CAS for the caller's bounded current namespace process.
+
+    Caller pins this source and manifest bytes, supplies the external canonical
+    digest, and attests the exact Root namespace/stock mount provenance. No
+    subprocess or runtime effect is started. Raises Refusal on any difference;
+    never refreshes a baseline. Returned view_sha256 is the canonical view digest,
+    not the serialized inventory/RESULT file hash.
+    """
+    checked_baseline(baseline,expected_view_digest)
+    current_environment={k:os.environ.get(k) for k in ENV_KEYS}
+    if current_environment!=baseline['view']['environment']:raise Refusal('namespace_environment_changed_before_scan')
+    return Scanner(baseline).run()
+
+def main():
+    parser=argparse.ArgumentParser();parser.add_argument('--baseline');parser.add_argument('--expected-view-sha256');args=parser.parse_args()
+    baseline=None
+    if args.baseline:
+        with open(args.baseline,'rb') as f:baseline=json.load(f)
+    result=validate_static_font_config_view(baseline,expected_view_digest=args.expected_view_sha256) if baseline else Scanner().run()
+    raw=canonical(result)+b'\n'
+    if len(raw)>MAX_OUTPUT:raise Refusal('output_limit')
+    sys.stdout.buffer.write(raw)
+if __name__=='__main__':
+    try:main()
+    except (Refusal,OSError,ValueError,KeyError,StopIteration) as exc:
+        print(json.dumps({'status':'REFUSED','reason':str(exc)}));sys.exit(2)

@@ -63,3 +63,19 @@ review вместе с целым caller. Опубликованный R3 сох
 срез, не допуск к этой0400копии.
 
 Полные170/120/B00 OPEN; порядок core → DSH → A0.
+
+Статический font/config view подготовлен отдельно и прошёл23контроля и независимое
+review. [Consumer](font-view/CONSUMER-CONTRACT.json) различает SHA файла-манифеста
+и canonical view digest; callback в том же namespace проверяет metadata/set/
+topology и critical bytes, повторно используя неизменные font hashes. Здесь
+публикуются только validator/tests/contract, без фактического host inventory.
+Свежий callback на actual process phase остаётся обязательным; выбранный face,
+динамическая загрузка библиотек, Office profile, M и историческая применимость
+этим static view не подтверждаются. Собственный новый fontconfig cache вызывает
+отказ; baseline автоматически не обновляется.
+
+[Срез подготовки](../../evidence/astra-20261115/calc-static-font-view-source-ready-executor-pending.json)
+также сохраняет границу oldb93: старый renderer f39bf вызывал прямой soffice,
+но исторические фактические font/config bytes/reference state/maps не записаны.
+Будущий current raw M сам по себе не доказывает M_current=M_historical.
+Root/Sol101 завершают цельный caller; новая Office-операция ещё не начата.
