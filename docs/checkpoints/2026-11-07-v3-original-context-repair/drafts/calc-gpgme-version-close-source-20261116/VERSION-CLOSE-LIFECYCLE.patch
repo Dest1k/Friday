@@ -1,0 +1,266 @@
+--- before/outer/deps/gpgme_engine_gdb.py
++++ after/outer/deps/gpgme_engine_gdb.py
+@@ -34,10 +34,12 @@
+     'version_close_call': 0x42be6, 'version_close_return': 0x42beb,
+     'version_newline_close_call': 0x42c2d,
+     'version_newline_close_return': 0x42c32,
++    'version_return': 0x42c11,
+ }
+ # The selected file supplies these bytes offline, and the pinned manifest must
+ # carry the exact same dictionary.  A manifest cannot supply arbitrary sites.
+ SITE_BYTES = {'engine_entry': 'f30f1efa554889e54157415641554154', 'engine_return': 'c30f1f00488b0551960200660f6f0561', 'dirs_parent0': 'be010000004c89e7e8b2edffff488b05', 'dirs_parent1': '488b05abb701004c89259cb70100595e', 'version_parent': '48894598488b45904885c00f847d0100', 'wait_call': 'e87806fdff83f8ff74e34139c40f840a', 'wait_return': '83f8ff74e34139c40f840a030000418b', 'spawn_entry': 'f30f1efa554889e541574989ff415645', 'first_fork_return': '4189c44189c683f8ff0f843704000085', 'second_fork_return': '4189c485c00f8520020000488b45a848', 'exec_call': 'e81d05fdffbf08000000e833fefcff0f', 'dirs_entry': '55b980000000488d1525ee0000660fef', 'dirs_spawn_return': '5a5983f8ff0f84ad0400004863f3baff', 'dirs_read_call': 'e8cccaffff85c07f308bbd6cfbffffe8', 'dirs_read_return': '85c07f308bbd6cfbffffe8bdcfffff48', 'dirs_close_call': 'e8bdcfffff488b45c864482b04252800', 'dirs_close_return': '488b45c864482b0425280000000f85fc', 'version_entry': 'f30f1efa55660fefc04889e541574156', 'version_spawn_return': '5a5985c00f882e0200000f1f80000000', 'version_read_call': 'e8362cffff85c07e324101c44a8d3c3b', 'version_read_return': '85c07e324101c44a8d3c3bbe0a000000', 'version_newline_return': '4885c075484183fc4e7eba662e0f1f84', 'version_close_call': 'e8f530ffff31ff488b45c864482b0425', 'version_close_return': '31ff488b45c864482b0425280000000f', 'version_newline_close_call': 'e8ae30ffff0fb68570ffffff84c00f84', 'version_newline_close_return': '0fb68570ffffff84c00f84930000003c'}
++SITE_BYTES['version_return'] = 'c3660f1f4400004839c30f8247010000'
+ 
+ 
+ def need(ok, reason):
+@@ -123,6 +125,7 @@
+         self.wait_capture = self.spawn_signature = None
+         self.wait_observed = False
+         self.caller_route = self.caller_thread = None
++        self.version_call = self.close_capture = self.cached_call = None
+         self.observations = []
+         self.finished_at_return = False
+         self.finished_initialization = False
+@@ -769,7 +772,8 @@
+             'dirs_close_call': self.close_call, 'version_close_call': self.close_call,
+             'version_newline_close_call': self.close_call,
+             'dirs_close_return': self.close_return, 'version_close_return': self.close_return,
+-            'version_newline_close_return': self.close_return}
++            'version_newline_close_return': self.close_return,
++            'version_return': self.version_return}
+         need(set(SITE_BYTES) == set(SITE_OFFSETS), 'gpgme_source_site_bytes_incomplete')
+         for name, fn in handlers.items():
+             address = binding['load_bias'] + SITE_OFFSETS[name]
+@@ -781,12 +785,18 @@
+     def engine_entry(self):
+         if self.finished_initialization:
+             need(not self.init_active and self.g.selected_inferior().num == 1
++                 and self.cached_call is None and self.version_call is None
++                 and self.close_capture is None
+                  and int.from_bytes(self.memory(self.binding['load_bias'] + 0x55558, 8), 'little') != 0,
+                  'gpgme_cached_engine_list_changed')
++            self.context(thread=self.tid())
++            self.cached_call = {'thread': self.tid(), 'stack': self.reg('rsp')}
+             return
+         self.paper_closed()
+         need(not self.init_active and not self.finished_initialization
+-             and self.g.selected_inferior().num == 1, 'gpgme_repeated_or_foreign_engine_initialization')
++             and self.g.selected_inferior().num == 1 and self.cached_call is None
++             and self.version_call is None and self.close_capture is None,
++             'gpgme_repeated_or_foreign_engine_initialization')
+         self.ensure()
+         self.init_active, self.init_thread, self.init_stack = True, self.tid(), self.reg('rsp')
+         self.context(thread=self.init_thread)
+@@ -795,7 +805,8 @@
+         self.pending = 'CONTINUE'
+ 
+     def dirs_entry(self):
+-        need(self.init_active and self.tid() == self.init_thread and self.c.current is None,
++        need(self.init_active and self.tid() == self.init_thread and self.c.current is None
++             and self.version_call is None and self.close_capture is None,
+              'gpgme_dirs_outside_initialization')
+         components = self.reg('rsi') & 0xffffffff
+         need(components in (0, 1), 'gpgme_dirs_components')
+@@ -813,12 +824,10 @@
+         self.string(self.reg('rdi'), helper['path'])
+ 
+     def version_entry(self):
+-        need(self.init_active and self.tid() == self.init_thread and self.c.current is None,
++        need(self.init_active and self.tid() == self.init_thread and self.c.current is None
++             and self.version_call is None and self.close_capture is None,
+              'gpgme_version_outside_initialization')
+-        if self.reg('rdi') == 0:
+-            # Source returns without spawning.  No fabricated helper evidence.
+-            self.caller_route = None
+-            return
++        self.context(thread=self.init_thread)
+         older = self.g.newest_frame().older()
+         # Optimized version callbacks tail-call this function.  The actual
+         # engine loop callsite and protocol register are both checked.
+@@ -829,10 +838,48 @@
+         proto = self.reg('r14') & 0xffffffff
+         route = {0: 'gpg_version', 1: 'gpgsm_version', 2: 'gpgconf_version', 4: 'g13_version'}.get(proto)
+         need(route is not None, 'gpgme_version_protocol')
++        stack, return_pc = self.reg('rsp'), int(older.pc())
++        need(int.from_bytes(self.memory(stack, 8), 'little') == return_pc,
++             'gpgme_version_entry_stack')
+         helper = self.m['helpers'].get(self.p['ROLES'][route])
+-        need(helper is not None, 'gpgme_version_helper_pin_missing')
+-        self.string(self.reg('rdi'), helper['path'])
+-        self.caller_route, self.caller_thread = route, self.tid()
++        null_file = self.reg('rdi') == 0
++        if null_file:
++            # The engine loop asks for a version before skipping a missing
++            # engine name.  The pinned absent helper has no pipe or spawn.
++            need(helper is None, 'gpgme_version_null_pinned_helper')
++        else:
++            need(helper is not None, 'gpgme_version_helper_pin_missing')
++            self.string(self.reg('rdi'), helper['path'])
++        self.version_call = {'thread': self.tid(), 'stack': stack,
++            'return_pc': return_pc, 'route': route, 'null_file': null_file,
++            'spawned': False, 'read_closed': False, 'null_epilogue': False}
++        self.caller_route, self.caller_thread = (None if null_file else route), self.tid()
++
++    def version_frame(self, *, at_return=False):
++        call = self.version_call
++        need(call is not None and self.init_active and self.tid() == self.init_thread == call['thread'],
++             'gpgme_version_unmatched_frame')
++        stack = self.reg('rsp') if at_return else self.reg('rbp') + 8
++        older = self.g.newest_frame().older()
++        need(stack == call['stack'] and older is not None
++             and int(older.pc()) == call['return_pc']
++             and int.from_bytes(self.memory(stack, 8), 'little') == call['return_pc'],
++             'gpgme_version_frame_changed')
++        self.site('version_parent', older)
++        return call
++
++    def version_return(self):
++        self.context(thread=self.init_thread)
++        call = self.version_frame(at_return=True)
++        need(self.close_capture is None and self.c.current is None and self.read is None,
++             'gpgme_version_return_unclosed')
++        if call['null_file']:
++            need(call['null_epilogue'] and not call['spawned'] and not call['read_closed']
++                 and self.reg('rax') == 0, 'gpgme_version_null_return_changed')
++        else:
++            need(call['spawned'] and call['read_closed'], 'gpgme_version_return_without_read_close')
++        self.version_call = None
++        self.caller_route = self.caller_thread = None
+ 
+     def spawn_entry(self):
+         self.paper_closed()
+@@ -840,6 +887,13 @@
+              and self.caller_route in self.p['BRANCHES'], 'gpgme_unknown_spawn_factory')
+         context, snap = self.context(thread=self.init_thread)
+         branch = self.caller_route
++        if branch in self.p['VERSIONS']:
++            call = self.version_call
++            need(call is not None and not call['null_file'] and not call['spawned']
++                 and call['route'] == branch and call['thread'] == self.tid()
++                 and self.reg('rbp') + 8 == call['stack']
++                 and int.from_bytes(self.memory(call['stack'], 8), 'little') == call['return_pc'],
++                 'gpgme_version_spawn_lifecycle')
+         expected_return = 0x38cf0 if branch in self.p['BRANCHES'][:2] else 0x42b7f
+         older = self.g.newest_frame().older()
+         need(int(older.pc()) - self.binding['load_bias'] == expected_return
+@@ -877,6 +931,8 @@
+             image, fds[self.pipe_fd], write, source_route=branch)
+         self.record('arm', snap)
+         self.read, self.read_terminal = None, None
++        if branch in self.p['VERSIONS']:
++            self.version_call['spawned'] = True
+ 
+     def birth(self):
+         need(self.c is not None and self.c.current is not None, 'gpgme_unarmed_fork')
+@@ -1064,16 +1120,76 @@
+ 
+     def close_call(self):
+         self.context(thread=self.init_thread)
+-        need(self.c.current is not None and self.reg('rdi') == self.pipe_fd
+-             and self.read is None and self.read_terminal is not None, 'gpgme_read_close_without_terminal')
++        name = self.close_site(at_return=False)
++        c = self.c.current
++        need(c is not None and self.close_capture is None and self.reg('rdi') == self.pipe_fd
++             and self.read is None and self.read_terminal is not None
++             and not c['parent_read_closed'], 'gpgme_read_close_without_terminal')
++        if name == 'dirs_close_call':
++            need(c['branch'] in self.p['BRANCHES'][:2] and self.version_call is None,
++                 'gpgme_read_close_wrong_source_route')
++        else:
++            call = self.version_frame()
++            need(c['branch'] == call['route'] and call['spawned'] and not call['read_closed']
++                 and not call['null_file'], 'gpgme_read_close_wrong_source_route')
++        terminal = ('OBSERVED_NEWLINE_THEN_READ_CLOSE' if name == 'version_newline_close_call'
++                    else 'OBSERVED_READ_EOF')
++        need(self.read_terminal == terminal, 'gpgme_read_close_terminal_route')
++        actual = self.collector.fd(self.original()['pid'], self.pipe_fd)
++        need(self.p['pipe_identity'](actual, access=0) == c['pipe'], 'gpgme_close_pipe_changed')
++        self.close_capture = {'return_site': name.replace('_call', '_return'),
++            'thread': self.tid(), 'stack': self.reg('rsp'), 'frame': self.reg('rbp'),
++            'fd': self.pipe_fd, 'pipe': copy.deepcopy(c['pipe']), 'invocation': c,
++            'terminal': self.read_terminal}
++
++    def close_site(self, *, at_return):
++        suffix = '_return' if at_return else '_call'
++        names = [family + suffix for family in
++                 ('dirs_close', 'version_close', 'version_newline_close')]
++        pc = int(self.g.newest_frame().pc())
++        found = [name for name in names if pc == self.binding['load_bias'] + SITE_OFFSETS[name]]
++        need(len(found) == 1, 'gpgme_close_unknown_source_site')
++        self.site(found[0])
++        return found[0]
+ 
+     def close_return(self):
+         context, snap = self.context(thread=self.init_thread)
++        name = self.close_site(at_return=True)
++        capture = self.close_capture
++        if capture is None:
++            # 0x42beb is also the common NULL epilogue: null file, failed
++            # pipe/spawn, and parser failures can jump here without close().
++            # Only the proven no-spawn or already-closed version call may do
++            # so; never infer read closure from this PC or inspect stale FDs.
++            need(name == 'version_close_return', 'gpgme_read_close_return_unmatched')
++            call = self.version_frame()
++            need(not call['null_epilogue'] and self.c.current is None and self.read is None
++                 and self.pipe_fd is None and self.write_fd is None and self.read_terminal is None,
++                 'gpgme_version_null_epilogue_unclosed')
++            need((call['null_file'] and not call['spawned'] and not call['read_closed'])
++                 or (not call['null_file'] and call['spawned'] and call['read_closed']),
++                 'gpgme_version_epilogue_without_spawn_or_close')
++            call['null_epilogue'] = True
++            return
++        need(name == capture['return_site'] and self.tid() == capture['thread']
++             and self.reg('rsp') == capture['stack'] and self.reg('rbp') == capture['frame']
++             and self.c.current is capture['invocation'] and self.pipe_fd == capture['fd']
++             and self.c.current['pipe'] == capture['pipe']
++             and self.read is None and self.read_terminal == capture['terminal'],
++             'gpgme_read_close_return_unmatched')
++        if name != 'dirs_close_return':
++            call = self.version_frame()
++            need(call['spawned'] and not call['read_closed'] and not call['null_file'],
++                 'gpgme_version_read_close_duplicate')
+         self.flush_exits(context, snap)
+         self.refresh_reparent(context, snap)
+         need(self.signed('rax') == 0 and not
+              (Path('/proc') / str(self.original()['pid']) / 'fd' / str(self.pipe_fd)).exists(),
+              'gpgme_read_close_not_observed_absent')
++        self.close_capture = None
++        if name != 'dirs_close_return':
++            self.version_call['read_closed'] = True
++            self.version_call['null_epilogue'] = name == 'version_close_return'
+         self.c.pipe_terminal(context, self.tid(), self.c.current['pipe'],
+             read_closed=True, terminal=self.read_terminal)
+         self.record('pipe_terminal', snap)
+@@ -1121,12 +1237,21 @@
+ 
+     def engine_return(self):
+         if not self.init_active:
+-            return  # Cached future getter with no new initialization/spawn.
++            call = self.cached_call
++            need(self.finished_initialization and call is not None
++                 and self.g.selected_inferior().num == 1 and self.tid() == call['thread']
++                 and self.reg('rsp') == call['stack'] and self.signed('rax') == 0
++                 and self.version_call is None and self.close_capture is None,
++                 'gpgme_cached_engine_return_unmatched')
++            self.context(thread=call['thread'])
++            self.cached_call = None
++            return
+         context, snap = self.context(thread=self.init_thread)
+         self.flush_exits(context, snap)
+         self.refresh_reparent(context, snap)
+         need(self.tid() == self.init_thread and self.reg('rsp') == self.init_stack
+-             and self.signed('rax') == 0, 'gpgme_engine_return_identity_status_stack')
++             and self.signed('rax') == 0 and self.version_call is None
++             and self.close_capture is None, 'gpgme_engine_return_identity_status_stack')
+         self.finished_at_return = True
+         self.try_close(context, snap)
+         if self.c.current is not None:
+@@ -1135,6 +1260,8 @@
+             self.finish(context)
+ 
+     def finish(self, context):
++        need(self.finished_at_return and self.version_call is None and self.close_capture is None
++             and self.cached_call is None, 'gpgme_finish_before_exact_return')
+         self.c.finish_initialization(context, exact_engine_info_return=True, known_no_more_spawn=True)
+         self.init_active, self.finished_initialization = False, True
+         self.retire_process_guards()
