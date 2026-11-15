@@ -1,0 +1,224 @@
+--- a/hermes_cli/_calc_native_assets/deps/gpgme_engine_gdb.py
++++ b/hermes_cli/_calc_native_assets/deps/gpgme_engine_gdb.py
+@@ -141,6 +141,7 @@
+         self.catchpoints, self.known, self.exits = {}, {}, {}
+         self.exit_order = []
+         self.exit_intents = {}
++        self.exit_completion = None
+         self.clone_entries = set()
+         self.c, self.installed, self.init_active = None, False, False
+         self.bootstrap = None
+@@ -1242,7 +1243,8 @@
+         # final child's real reparent. A later GDB exit event must still give0.
+         inf = self.g.selected_inferior()
+         need(self.c is not None and self.c.current is not None and inf.num > 3
+-             and inf.num not in self.exit_intents and self.reg('rdi') == 0,
++             and self.exit_completion is None and inf.num not in self.exit_intents
++             and self.reg('rdi') == 0,
+              'gpgme_unknown_duplicate_or_nonzero_exit_intent')
+         context, snap = self.context(role='exiting_child')
+         self.flush_exits(context, snap)
+@@ -1261,6 +1263,89 @@
+         need(len(matches) == 1 and matches[0]['identity'] == child,
+              'gpgme_exit_intent_actual_identity')
+         self.exit_intents[inf.num] = copy.deepcopy(child)
++        # Do not resume the original with this child disappearing in parallel.
++        # GNU17.1 may defer its ExitedEvent behind another inferior's stop.
++        # Dispatch completes exactly this syscall before ordinary read-return.
++        self.exit_completion = dict(inferior=inf.num, identity=copy.deepcopy(child),
++                                    selected=self._selection(), attempted=False)
++
++    def complete_exit_intent(self):
++        """One sole-child completion, outside callbacks, on the existing clock.
++
++        The normal synchronous GNU17.1 all-stop command boundary clears the
++        global step-over queue and resumed intents (same source proof as drain).
++        Settings alone do not establish that proof. No absence substitutes for
++        the actual zero ExitedEvent. A refusal never retries this command.
++        """
++        token = self.exit_completion
++        need(type(token) is dict and not token['attempted']
++             and self.n['STATE'].get('helper_event_depth', 0) == 0
++             and self.n['STATE']['error'] is None and self.init_active
++             and self.fork_pending is None and self.pending_stop is None
++             and not self.to_create and not self.to_retire,
++             'gpgme_exit_completion_unavailable')
++        need(self._selection() == token['selected']
++             and self.collector.proc(token['identity']['pid']) == token['identity']
++             and token['inferior'] in self.exit_intents
++             and self.exit_intents[token['inferior']] == token['identity'],
++             'gpgme_exit_completion_custody_changed')
++        settings = {key: self.g.parameter(key) for key in
++                    ('follow-fork-mode', 'schedule-multiple', 'scheduler-locking')}
++        # During the existing held-original drain the sole-child settings
++        # already hold; otherwise require the unchanged launch baseline.
++        baseline = {'follow-fork-mode': 'parent', 'schedule-multiple': True,
++                    'scheduler-locking': 'off'}
++        sole = {'follow-fork-mode': 'parent', 'schedule-multiple': False,
++                'scheduler-locking': 'on'}
++        need(settings == (sole if self.n['STATE'].get('gpgme_drain_active', False) else baseline),
++             'gpgme_exit_completion_runcontrol_changed')
++        need(self.paper.original_selected(thread=self.init_thread),
++             'gpgme_exit_completion_original_unavailable')
++        held = self._selection()
++        failure = None
++        prior_drain = self.n['STATE'].get('gpgme_drain_active', False)
++        self.n['STATE']['gpgme_drain_active'] = True
++        token['attempted'] = True
++        try:
++            self.context(thread=self.init_thread)
++            self._restore_selection(token['selected'])
++            self.context(role='exiting_child')
++            for key, value in (('schedule-multiple', 'off'), ('scheduler-locking', 'on')):
++                self.g.execute('set ' + key + ' ' + value, to_string=True)
++            need({key: self.g.parameter(key) for key in sole} == sole,
++                 'gpgme_exit_completion_runcontrol_readback')
++            self.context(role='exiting_child')
++            self.g.execute('continue', to_string=True)
++            need(self.n['STATE']['error'] is None and self.pending_stop is None
++                 and self.fork_pending is None and self.exit_completion is token
++                 and self.exits.get(token['inferior']) == 0
++                 and token['inferior'] in self.process_guard_retire_queue,
++                 'gpgme_exit_completion_actual_event_missing')
++            need(not any(i.is_valid() and i.num == token['inferior'] and i.pid
++                         for i in self.g.inferiors()),
++                 'gpgme_exit_completion_debugger_not_retired')
++            self._restore_selection(held)
++            self.context(thread=self.init_thread)
++            self.exit_completion = None
++        except Exception as exc:
++            failure = exc
++        finally:
++            self.n['STATE']['gpgme_drain_active'] = prior_drain
++            for key, value in settings.items():
++                try:
++                    text = ('on' if value else 'off') if type(value) is bool else value
++                    self.g.execute('set ' + key + ' ' + text, to_string=True)
++                    need(self.g.parameter(key) == value, 'gpgme_exit_completion_restore_settings')
++                except Exception as exc:
++                    failure = failure or exc
++            try:
++                self._restore_selection(held)
++            except Exception as exc:
++                failure = failure or exc
++        if failure is not None:
++            self.clear_pending()
++            raise failure
++        self.pending = 'CONTINUE'
+ 
+     def exited(self, event):
+         inf = getattr(event, 'inferior', None)
+@@ -1287,6 +1372,8 @@
+         if self.n['STATE']['error'] is not None:
+             self.clear_pending()
+             return None
++        if self.exit_completion is not None:
++            self.complete_exit_intent()
+         for owner in tuple(self.process_guard_retire_queue):
+             self.retire_process_guards(owner)
+         if self.fork_pending is not None:
+@@ -1465,6 +1552,7 @@
+         if self.fork_pending is not None:
+             self.fork_terminal = True
+         self.fork_pending = None
++        self.exit_completion = None
+         self.pending = self.pending_stop = None
+         self.to_create.clear()
+         self.to_retire.clear()
+@@ -1591,6 +1679,35 @@
+         self.paper.to_create.clear()
+         self.gpgme.clear_pending()
+ 
++    def cleanup_identity(self, inferior):
++        """Read-only birth CAS for native finally, even after collector refusal.
++
++        Terminal observation state is never reset. The raw paper parser is
++        used solely against the disjoint, previously accepted launch registry.
++        Unknown inferiors and vanished processes confer no kill permission.
++        """
++        need(inferior.is_valid() and type(inferior.pid) is int and inferior.pid > 0,
++             'gpgme_cleanup_inferior_unknown')
++        pid = inferior.pid
++        native = self.paper.n['STATE']['process']
++        if inferior.num == 1:
++            need(native is not None and pid == native['pid'], 'gpgme_cleanup_original_unknown')
++            expected = dict(pid=pid, ppid=native['gdb_pid'], start_ticks=native['start_ticks'])
++        elif pid in self.paper.known:
++            matches = [] if self.paper.c is None else [v for v in self.paper.c.e['children']
++                if v['pid'] == pid and v['inferior'] == inferior.num]
++            need(len(matches) == 1 and self.paper.c.e['state'] != 'CLOSED',
++                 'gpgme_cleanup_paper_owner_unknown')
++            expected = self.paper.known[pid]
++        else:
++            known = self.gpgme.known.get(pid)
++            need(known is not None and known['inferior'] == inferior.num,
++                 'gpgme_cleanup_foreign_inferior')
++            expected = known['identity']
++        actual = self.paper.proc(pid)
++        need(actual == expected, 'gpgme_cleanup_birth_or_parent_changed')
++        return actual
++
+     def cleanup_inferiors(self):
+         # Cleanup is the native launch owner's operation, never an adapter's
+         # permission to kill a foreign process.  Preserve the first refusal.
+--- a/hermes_cli/_calc_native_assets/deps/native_return_observer.py
++++ b/hermes_cli/_calc_native_assets/deps/native_return_observer.py
+@@ -172,9 +172,11 @@
+ def save():
+     p = Path(CFG['trace_path'])
+     tmp = p.with_suffix('.pending')
+-    # These two observer-only trackers never extend the strict trace schema.
++    # Observer-only lifecycle and cleanup facts remain private to STATE.
++    # Keep the canonical trace schema and its validated helper extensions exact.
+     public_state = {key: value for key, value in STATE.items()
+-                    if key not in ('helper_event_depth', 'gpgme_drain_active')}
++                    if key not in ('helper_event_depth', 'gpgme_drain_active',
++                                   'own_processes_absent', 'own_debugger_inferiors_empty')}
+     tmp.write_text(json.dumps(public_state, sort_keys=True) + '\n')
+     os.replace(tmp, p)
+ 
+@@ -808,6 +810,8 @@
+             (STATE['process'] is None or not Path('/proc/' + str(STATE['process']['pid'])).exists()))
+     else:
+         cleanup_pids = set(helper.known)
++        if STATE['process'] is not None:
++            cleanup_pids.add(STATE['process']['pid'])
+         if hasattr(helper, 'gpgme'):
+             cleanup_pids.update(helper.gpgme.known)
+             helper.clear_pending()
+@@ -815,17 +819,25 @@
+             if not inf.pid:
+                 continue
+             try:
+-                before = helper.proc(inf.pid)
++                before = (helper.cleanup_identity(inf) if hasattr(helper, 'gpgme')
++                          else helper.proc(inf.pid))
+                 cleanup_pids.add(inf.pid)
+                 gdb.execute('inferior ' + str(inf.num), to_string=True)
+-                require(helper.proc(inf.pid) == before, 'cleanup_process_birth_changed')
++                require((helper.cleanup_identity(inf) if hasattr(helper, 'gpgme')
++                         else helper.proc(inf.pid)) == before, 'cleanup_process_birth_changed')
+                 gdb.execute('kill', to_string=True)
+             except Exception:
+                 STATE['cleanup_error'] = 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+                 STATE['error'] = STATE['error'] or 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+                 STATE['status'] = 'REFUSED'
+-        STATE['own_inferior_absent'] = (all(i.pid == 0 for i in gdb.inferiors()) and
+-            all(not Path('/proc/' + str(pid)).exists() for pid in cleanup_pids))
++        # Kernel absence and debugger retirement are separate facts. An
++        # already absent cached child is never killed without a birth CAS;
++        # unresolved bookkeeping stays REFUSED for outer owner containment.
++        STATE['own_processes_absent'] = all(not Path('/proc/' + str(pid)).exists()
++                                            for pid in cleanup_pids)
++        STATE['own_debugger_inferiors_empty'] = all(i.pid == 0 for i in gdb.inferiors())
++        STATE['own_inferior_absent'] = (STATE['own_debugger_inferiors_empty'] and
++                                        STATE['own_processes_absent'])
+         if not STATE['own_inferior_absent']:
+             STATE['cleanup_error'] = 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+             STATE['error'] = STATE['error'] or 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+--- a/hermes_cli/friday_workspace_calc_native_pin.py
++++ b/hermes_cli/friday_workspace_calc_native_pin.py
+@@ -1,2 +1,2 @@
+ """Fixed managed ordinary source-generation pin; host prepare import only."""
+-GENERATION_SHA256 = '0f1fec7d72ebe05b22ea7f44b445080252756734fdf3e420b421d7d5085d2ca9'
++GENERATION_SHA256 = 'eb2459130e8b9fee3f0faf2e1f182dd03c53826ce52f85dbb2ae8b3e3b568019'
