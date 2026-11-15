@@ -1,0 +1,1445 @@
+--- a/inner/inner_client.py
++++ b/inner/inner_client.py
+@@ -8,6 +8,7 @@
+ import argparse
+ import hashlib
+ import json
++import math
+ import os
+ from pathlib import Path
+ import re
+@@ -131,8 +132,9 @@
+ 
+ 
+ def validate_config(c, *, allow_unstarted=False):
+-    exact(c, ('schema', 'operation_id', 'nonce', 'pipe_name', 'office_process', 'modules', 'uno',
+-              'preload', 'handler_source_ref', 'paths', 'timeouts'), 'exact_inner_input_required')
++    keys = {'schema', 'operation_id', 'nonce', 'pipe_name', 'office_process', 'modules', 'uno',
++            'preload', 'handler_source_ref', 'paths', 'timeouts'}
++    need(type(c) is dict and set(c) in (keys, keys | {'load_dependency'}), 'exact_inner_input_required')
+     need(c['schema'] == SCHEMA, 'inner_schema_required')
+     need(type(c['operation_id']) is str and re.fullmatch('[A-Za-z0-9_.-]{1,128}', c['operation_id']),
+          'operation_id_required')
+@@ -172,7 +174,28 @@
+     exact(c['timeouts'], ('connect_seconds', 'loaded_seconds', 'ready_seconds'), 'bounded_inner_timeouts_required')
+     for v in c['timeouts'].values():
+         need(type(v) in (int, float) and 0 < v <= 180, 'finite_inner_timeout_required')
++    if 'load_dependency' in c:
++        d = c['load_dependency']
++        exact(d, ('operation_id', 'nonce', 'source_sha256', 'manifest_ref', 'marker_path',
++                  'operation_deadline_monotonic'), 'load_dependency_schema')
++        need(d['operation_id'] == c['operation_id'] and d['nonce'] == c['nonce']
++             and digest(d['source_sha256']) and d['marker_path'] == WORK + '/load-dependency.json',
++             'load_dependency_binding')
++        exact(d['manifest_ref'], ('path', 'sha256'), 'load_dependency_manifest_ref')
++        safe_path(d['manifest_ref']['path'])
++        need(digest(d['manifest_ref']['sha256']), 'load_dependency_manifest_pin')
++        deadline = d['operation_deadline_monotonic']
++        need((allow_unstarted and deadline is None) or (type(deadline) in (int, float)
++             and math.isfinite(deadline) and deadline > 0), 'load_dependency_absolute_clock')
+     return c
++
++
++def load_dependency_marker(c, state):
++    d = c['load_dependency']
++    need(state in ('LOAD_OPEN', 'LOAD_CLOSED'), 'load_dependency_marker_state')
++    return dict(schema='frw.calc.load-dependency-window.v1', state=state,
++        **{k: d[k] for k in ('operation_id', 'nonce', 'source_sha256', 'manifest_ref',
++                             'operation_deadline_monotonic')})
+ 
+ 
+ def load_modules(c):
+@@ -425,7 +448,18 @@
+         handler, pv = runtime['handler'], runtime['property_value_factory']
+         args = tuple(pv(k, v) for k, v in SCALARS.items()) + (pv('InteractionHandler', handler),)
+         result['stage'] = 'LOAD'
+-        doc = runtime['desktop'].loadComponentFromURL(pre['working_copy']['url'], '_blank', 0, args)
++        dependency = c.get('load_dependency')
++        if dependency is not None:
++            need(dependency['source_sha256'] == pre['source']['sha256']
++                 and time.monotonic() < dependency['operation_deadline_monotonic'], 'load_dependency_source_or_deadline')
++            write(dependency['marker_path'], load_dependency_marker(c, 'LOAD_OPEN'))
++        try:
++            doc = runtime['desktop'].loadComponentFromURL(pre['working_copy']['url'], '_blank', 0, args)
++        finally:
++            if dependency is not None:
++                write(dependency['marker_path'], load_dependency_marker(c, 'LOAD_CLOSED'))
++        if dependency is not None:
++            need(time.monotonic() < dependency['operation_deadline_monotonic'], 'load_dependency_operation_deadline_expired')
+         need(doc is not None and handler.requests == 0, 'load_or_interaction_refused')
+         load_request = dict(url=pre['working_copy']['url'], scalar_arguments=SCALARS.copy(),
+                             interaction_requests=handler.requests,
+--- a/outer/deps/FUTURE-INTEGRATION-CONTRACT.txt
++++ b/outer/deps/FUTURE-INTEGRATION-CONTRACT.txt
+@@ -25,7 +25,7 @@
+ then reads EAX at the outer function's caller before further caller execution.
+ Normal unwindable frames/usable CFI, exact registers and exact runtime symbols
+ are required. Missing symbols, CFI/register availability, ptrace denial, signals,
+-fork/vfork/exec, unexpected stop, wrong argument/content/thread/device/frame,
++unadmitted fork/vfork/exec, unexpected stop, wrong argument/content/thread/device/frame,
+ unknown phase or incomplete/extra calls produce REFUSED, never evidence release.
+ CFI/runtime success on real Office remains untested; installed .eh_frame presence
+ is only feasibility. No promise that an Office run will pass is made.
+@@ -37,7 +37,8 @@
+ GDB and PythonUNO client live in that same namespace. Kernel ptrace_scope1 must
+ permit GDB's own direct child; no attach, capability change or ptrace bypass.
+ GDB must be the direct parent of exact soffice.bin; launch the binary directly,
+-not a shell wrapper. The executable must not fork, vfork or exec another image.
++not a shell wrapper. Without the explicit optional dependency binding below,
++the executable must not fork, vfork or exec another image.
+ No currently running Office/process may be attached. Recheck all actual pins,
+ GDB executable identity, root admission, launch argv and environment before use.
+ 
+@@ -61,7 +62,8 @@
+  "-env:UserInstallation=file:///ROOT/PRIVATE/PROFILE",
+  "--headless", "--norestore", "--nodefault", "--nofirststartwizard",
+  "--accept=pipe,name=ROOT_UNIQUE_PIPE;urp;StarOffice.ComponentContext"]
+-Set only Root-private env FRW_NATIVE_OBSERVER_CONFIG=/ROOT/PRIVATE/config.json;
++Set Root-private env FRW_NATIVE_OBSERVER_CONFIG=/ROOT/PRIVATE/config.json;
++only the optional pinned dependency extension adds its separately bound env ref.
+ private namespace/program shared-library and font environment belongs to Root's
+ separate qualified launch contract. Disable GDB auto-load BEFORE reading target;
+ -nx/-nh and no startup shell/global init. One GDB worker is solely this fixture/
+@@ -89,11 +91,13 @@
+ After ten query responses, Root completes exact full-Font restoration, unchanged
+ modified flag and private read-only document close without save. It writes CLOSED
+ with null index/digit only after the final call has returned. It then shuts down
+-that own Office instance normally. No fork/foreign process cleanup is assumed.
++that own Office instance normally. No foreign process cleanup is assumed.
+ Only exact exit0, CLOSED, ten complete paired calls, raw0<W<65536, raw64=outer32,
+ no error and the original process absent yield COMPLETE_UNATTESTED. Error path
+-kills only the confirmed direct own inferior; unexpected fork/multiple-inferior
+-cleanup stays REFUSED/UNKNOWN and Root must clean its own cgroup/namespace/tree.
++without the extension kills only the confirmed direct own inferior. With it,
++all traced inferiors of this fresh launch are killed after birth recheck. Any
++untraced/unknown descendant cleanup remains the outer whole-owned cgroup duty.
++No partial GDB cleanup releases a REFUSED operation.
+ The outer deadline must clean the entire OWN operation if GDB is externally killed.
+ 
+ Release/checker boundary
+@@ -110,8 +114,8 @@
+ close, post-close unchanged source, all namespace/cgroup descendants, and leaf
+ provenance. A supplied hash/boolean does not authenticate itself.
+ 
+-Existing R1 precondition must not be forged
+-reference_metric_leaf_r1.py currently requires factual native_width_supported_range
++Historical R1 precondition must not be forged
++The earlier reference_metric_leaf_r1.py required factual native_width_supported_range
+ and evidence BEFORE its queries. This source-only observer creates no such fact
+ in advance. Root must approve and independently review a narrow orchestration/
+ leaf-contract correction that defers native-range semantic release until the
+@@ -120,7 +124,9 @@
+ returned UNO widths are small, because this fixture passed, or because the config
+ is pinned. No realOffice use is ready until that contract delta plus Root outer
+ runner and independent runtime-font qualification have their required reviews.
+-The task here supplies only the source capability and exact next integration gap.
++The frozen C3 input already supplies the accepted RAW32_POSTQUERY_NATIVE_JOIN
++qualifier/leaf correction; its exact bytes are unchanged in this candidate.
++This historical paragraph does not reopen that completed source review.
+ 
+ Local verification, never metric observation
+ Own tiny C/assembly fixture uses a real separate shared ELF to exercise relocated
+@@ -134,3 +140,78 @@
+ thread, unknown cleanup and missing trusted custody. Synthetic parser positive
+ is expressly not evidence. Earlier setup failures (GDB worker AS pressure, absent
+ FRAME_UNWIND_FIRST_ERROR API) are retained and corrected; no Office run occurred.
++
++
++Optional stock-paper LOAD dependency extension (SOURCE, NOT ADMISSION)
++The five mutable fields and every immutable field of the original native config
++remain exact. observer.load_dependency is an optional separate map containing
++three pinned refs: manifest, policy, adapter. Outer inspect binds the exact Office
++manifest hash and same libmergedlo path/hash, and requires all three files mounted
++read-only. The inner input has an optional load_dependency runtime contract with
++operation_id, nonce, source_sha256, manifest_ref, fixed marker_path and initially
++null operation_deadline_monotonic. Only namespace_entry fills the last field from
++the existing job deadline; no new/reset/extended LOAD clock is claimed.
++loaded_seconds was a metadata/envelope wait; it was never a synchronous LOAD timer.
++The outer cgroup, CPU/RSS/PID budgets, once/cancel and final stop/empty checks stay
++unchanged and bound a synchronous helper hang which GDB callbacks cannot cancel.
++
++Namespace writes a protected helper-runtime.json bundle and passes its exact
++{path,sha256} ref as JSON in FRW_NATIVE_LOAD_DEPENDENCY_REF to GDB. The bundle pins
++adapter and policy source plus the manifest and exact runtime identity/clock.
++Without this env ref, the legacy ABI fixture/Office hook still refuses every
++fork/vfork/exec. A fixture manifest is permanently ineligible for the Office outer
++plan. No READY, helper result, future library mapping or postcondition is forged.
++
++Inner atomically opens a separate source/nonce/operation/manifest/clock-bound
++load-dependency.json LOAD_OPEN marker immediately before the existing unchanged
++loadComponentFromURL call, and closes it in that call's finally block on success
++or failure. IDLE alone never authorizes spawning. Atomic rename is the existing
++metadata primitive, not a self-logged rollback or synchronous UNO cancellation.
++
++Only one libc2.43 popen entry is armable, on the exact original PID/birth/parent
++and thread, no metric records or active metric slot, open LOAD marker, unexpired
++original absolute clock, pinned libc PC and exact PaperInfo return site/bytes.
++Only bounded equality with "paperconf 2>/dev/null\0" and "r\0" is read; unknown
++arguments/environment/user content are never emitted. Constant equality alone
++is not permission. The original native metric callbacks/64-before-32 capture,
++font/device/digit/thread guards and restoration/read-only close remain unchanged.
++
++All fork/vfork/exec catchpoints stay enabled. Exactly two direct vfork births
++and two exec images are admitted: original -> dash inferior2 -> paperconf inferior3.
++The libc spawn return PCs and stripped dash vfork return PC/call bytes are pinned.
++At exec-stop the exact PID/birth/ppid, executable bytes, bounded argv, shell link,
++working directory, inherited environment, absent paper configuration and FD
++custody are checked before loader continuation. At each helper's ELF e_entry
++breakpoint, after the loader and before executable user code, the actual complete
++mapped-image set must match dash+libc+loader or paperconf+libpaper+libc+loader.
++Libc/libpaper are not required or falsely declared mapped at exec-stop.
++Host-root files can have namespace UID65534; helper image checks pin canonical
++paths/bytes and do not compare their UID to host0. Private metadata stays owned
++by the actual namespace actor and single-link/nonwritable-to-others.
++
++FD0 is the original read-only /dev/null; FD1 is the one stock popen output pipe
++and is bound to the original FILE's read FD without opening/reading pipe data.
++Dash exec initially retains the original owned gdb.log stderr. At nested vfork
++its stderr is /dev/null; at most one CLOEXEC saved original stderr descriptor is
++allowed in dash. Paperconf has only FD0/1/2 with stderr /dev/null. Extra handles,
++sockets, changed pipe or wrong redirection refuse. No output is stolen/injected:
++the pinned stock fgets return is observed as NULL+EOF without FILE error, and the
++stock pclose return is observed as768 after both exact exit3 events and both
++children actually absent/reaped. These are runtime requirements, not source PASS.
++
++Helper new_objfile/exit events cannot replace the original process/symbols,
++exit_code, metric breakpoints or ten records. Breakpoints are inferior-specific;
++new ones are created outside stop callbacks. schedule-multiple is on, follow mode
++parent, detach off, and terminal selected helper inferiors explicitly yield back
++to original inferior1. No claim that schedule-multiple on is necessary vs untested
++off is made. Every unknown signal/event/extra helper/exec/identity/phase/FD/hash/
++argv/deadline state remains REFUSED under the original whole-cgroup containment.
++
++Before MODEL_LOADED release, namespace rereads actual trace (not old READY),
++independently validates closed custody and closed LOAD marker, checks both child
++absences, then performs the original same-Office/component/source/font CAS. The
++first METRIC callback repeats closed-marker/child-absence/original checks. Final
++outer trace validation receives the independently reconstructed original clock
++and pinned policy; helper custody is mandatory iff the explicit plan requested it.
++Source tests and the prepared tiny fixture do not establish installed224 runtime,
++semantic/full170/120/B00 acceptance or authorize replay of consumed R2/R3 LOADs.
+--- /dev/null
++++ b/outer/deps/PAPER-HELPER-OFFICE-MANIFEST.json
+@@ -0,0 +1,85 @@
++{
++  "absent_paths": [
++    "/etc/paperspecs",
++    "/etc/papersize",
++    "/tmp/friday-metric-work/config/paperspecs",
++    "/tmp/friday-metric-work/config/papersize",
++    "/tmp/friday-metric-work/tmp/.config/paperspecs",
++    "/tmp/friday-metric-work/tmp/.config/papersize"
++  ],
++  "caller": {
++    "function_offset": 44327808,
++    "function_size": 2029,
++    "path": "/opt/friday-document-toolchain/root/usr/lib/libreoffice/program/libmergedlo.so",
++    "sha256": "569ac2bfab5cccad20badfd3dbc41f9a2464b99e6b98e5d6a6f0711318041f88",
++    "sites": {
++      "fgets_return": {
++        "after": "4c89ef48898578fb",
++        "before": "e8ae127dfe",
++        "offset": 44328514
++      },
++      "pclose_return": {
++        "after": "4c8b8578fbffff4d",
++        "before": "e89fa17cfe",
++        "offset": 44328529
++      },
++      "popen_return": {
++        "after": "4989c54885c00f84",
++        "before": "e8d5f77cfe",
++        "offset": 44328475
++      }
++    }
++  },
++  "dash_vfork_return": 42624,
++  "environment": {
++    "HOME": "/tmp/friday-metric-work/tmp",
++    "LANG": "C.UTF-8",
++    "LC_ALL": "C.UTF-8",
++    "PATH": "/usr/bin:/bin",
++    "XDG_CONFIG_HOME": "/tmp/friday-metric-work/config"
++  },
++  "images": {
++    "dash": {
++      "entry": 20400,
++      "entry_bytes": "f30f1efa31ed4989d15e4889e24883e4",
++      "path": "/usr/bin/dash",
++      "sha256": "c626229526bb58ec2d0f585f3c3ae1412e6f973b4353385042d11c38d8426917"
++    },
++    "libc": {
++      "entry": 582944,
++      "entry_bytes": "f30f1efa554889e541564989f6415549",
++      "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
++      "sha256": "9941dc28e68bc5fd788d9cd024c69e68c791d63799e7538a97b6040dd9f50fb6"
++    },
++    "libpaper": {
++      "entry": 4096,
++      "entry_bytes": "f30f1efa4883ec08488b05b93f000048",
++      "path": "/usr/lib/x86_64-linux-gnu/libpaper.so.2.2.5",
++      "sha256": "f440191f8e76923fe92013a830dfe5612278a9681f164fe0e9175d0b3320adb6"
++    },
++    "loader": {
++      "entry": 144064,
++      "entry_bytes": "4889e7e8980b00004989c44989e58b15",
++      "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
++      "sha256": "c0b20d6e1ced12abfe0b1ef2b5b68017950beaaea3df69eb6949d73e0ecf7b40"
++    },
++    "paperconf": {
++      "entry": 5888,
++      "entry_bytes": "f30f1efa31ed4989d15e4889e24883e4",
++      "path": "/usr/bin/paperconf",
++      "sha256": "cce22660a60a113e52288cb55ea04cd0ee96ec1f1a19ba08aa120dd118608103"
++    }
++  },
++  "kind": "OFFICE_PAPER_LOAD_DEPENDENCY",
++  "libc_spawn_returns": [
++    582215,
++    583046
++  ],
++  "schema": "frw.calc.paper-helper-manifest.v1",
++  "shell_link": {
++    "canonical": "/usr/bin/dash",
++    "path": "/bin/sh",
++    "target": "dash"
++  },
++  "source_sha256": "a2e68bc685e4d689aa7972ff4f2c7f9841441c9dcb4fc5e40327a5ae190b5d58"
++}
+--- a/outer/deps/check_native_trace.py
++++ b/outer/deps/check_native_trace.py
+@@ -20,13 +20,17 @@
+ 
+ 
+ def validate_trace(raw_bytes, *, expected_sha256, nonce, process, symbols, uno_widths,
+-                   root_custody_confirmed):
++                   root_custody_confirmed, load_dependency=None, validate_dependency=None):
+     require(type(raw_bytes) is bytes and hashlib.sha256(raw_bytes).hexdigest() == expected_sha256,
+             'trace_bytes_changed')
+     require(root_custody_confirmed is True, 'Root_custody_UNBOUND')
+     t = json.loads(raw_bytes)
+-    require(set(t) == {'schema','kind','nonce','status','records','error','exit_code','process',
+-                       'symbols','actual_M','runtime_attested','own_inferior_absent'}, 'trace_schema')
++    keys = {'schema','kind','nonce','status','records','error','exit_code','process',
++            'symbols','actual_M','runtime_attested','own_inferior_absent'}
++    require(set(t) == (keys if load_dependency is None else keys | {'load_dependency'}), 'trace_schema')
++    if load_dependency is not None:
++        require(callable(validate_dependency), 'trusted_helper_validator_required')
++        validate_dependency(t['load_dependency'], load_dependency, process)
+     require(t['schema'] == 'frw.native-return-trace.v1' and t['kind'] == 'OFFICE_UNADMITTED'
+             and t['status'] == 'COMPLETE_UNATTESTED', 'not_complete_Office_native_evidence')
+     require(t['nonce'] == nonce and t['process'] == process and t['symbols'] == symbols,
+--- a/outer/deps/native_return_observer.py
++++ b/outer/deps/native_return_observer.py
+@@ -18,6 +18,8 @@
+ entry_bp = return_bp = outer_bp = None
+ installed = False
+ pending_action = None
++helper = None
++catchpoints = {}
+ 
+ 
+ def require(ok, reason):
+@@ -65,6 +67,8 @@
+     require(value['nonce'] == CFG['nonce'], 'phase_nonce')
+     require(value['phase'] in ('IDLE', 'METRIC', 'CLOSED'), 'unknown_phase')
+     if value['phase'] == 'METRIC':
++        if helper is not None:
++            helper.metric_ready()
+         require(type(value['index']) is int and 0 <= value['index'] <= 9
+                 and value['digit'] == str(value['index']), 'phase_digit')
+     else:
+@@ -74,7 +78,8 @@
+ 
+ def identity():
+     inf = gdb.selected_inferior()
+-    require(len(gdb.inferiors()) == 1 and inf.num == 1 and inf.pid > 0, 'inferior_identity')
++    require(inf.num == 1 and inf.pid > 0 and
++            (len(gdb.inferiors()) == 1 if helper is None else helper.identity_scope()), 'inferior_identity')
+     pid = inf.pid
+     st = Path('/proc/' + str(pid) + '/stat').read_text().rsplit(')', 1)[1].split()
+     require(int(st[1]) == os.getpid(), 'not_direct_own_child')
+@@ -230,7 +235,12 @@
+ 
+ def install(_event=None):
+     global installed, entry_bp, return_bp, outer_bp
+-    if installed or STATE['error']:
++    if helper is not None and not STATE['error']:
++        try:
++            helper.install()
++        except Exception as exc:
++            fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++    if installed or STATE['error'] or (helper is not None and gdb.selected_inferior().num != 1):
+         return
+     try:
+         o, n = address(CFG['outer_symbol']), address(CFG['native_symbol'])
+@@ -249,7 +259,12 @@
+         outer_bp = OuterEntry('*' + hex(o), internal=True)
+         entry_bp = NativeEntry('*' + hex(n), internal=True)
+         return_bp = NativeReturn('*' + hex(ret), internal=True)
++        if helper is not None:
++            for bp in (outer_bp, entry_bp, return_bp):
++                bp.inferior = 1
++                require(bp.inferior == 1, 'metric_breakpoint_original_inferior')
+         entry_bp.enabled = return_bp.enabled = False
++        require(helper is None or helper.installed, 'helper_observer_not_installed')
+         installed = True
+         identity()
+         STATE['status'] = 'READY_UNRELEASED'
+@@ -330,6 +345,12 @@
+         fail('unexpected_signal')
+     elif isinstance(event, gdb.BreakpointEvent) and any(
+             b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
++        if helper is not None:
++            try:
++                helper.boundary(event)
++                return
++            except Exception as exc:
++                fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
+         try:
+             STATE['process_boundary_diagnostic'] = process_boundary_snapshot()
+         except Exception as exc:
+@@ -338,11 +359,47 @@
+ 
+ 
+ def exited(event):
++    if helper is not None:
++        try:
++            if helper.exited(event):
++                return
++        except Exception as exc:
++            fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++            return
+     STATE['exit_code'] = getattr(event, 'exit_code', None)
+ 
+ 
++def load_helper():
++    # Optional explicit pinned bundle; absence preserves the original ABI path.
++    raw_ref = os.environ.get('FRW_NATIVE_LOAD_DEPENDENCY_REF')
++    if raw_ref is None:
++        return None
++    require(CFG['kind'] == 'OFFICE_UNADMITTED', 'helper_only_explicit_Office_contract')
++    ref = json.loads(raw_ref)
++    require(type(ref) is dict and set(ref) == {'path', 'sha256'}, 'helper_bundle_ref')
++    def read(r):
++        p = Path(r['path'])
++        require(p.is_absolute() and str(p.resolve()) == str(p) and p.is_file(), 'helper_bundle_path')
++        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
++        try:
++            st = os.fstat(fd)
++            require(st.st_nlink == 1 and not st.st_mode & 0o022 and st.st_size <= 262144,
++                    'helper_bundle_rights_bound')
++            raw = os.read(fd, 262145)
++        finally:
++            os.close(fd)
++        require(len(raw) <= 262144 and hashlib.sha256(raw).hexdigest() == r['sha256'], 'helper_bundle_pin')
++        return raw
++    bundle = json.loads(read(ref))
++    adapter = bundle['adapter_ref']
++    namespace = {'__name__': 'frw_pinned_paper_GDB', '__file__': adapter['path']}
++    exec(compile(read(adapter), adapter['path'], 'exec'), namespace)
++    native = dict(globals(), get_active=lambda: active)
++    return namespace['create'](gdb, native, ref)
++
++
+ def main():
+-    global pending_action
++    global pending_action, helper
+     require(CFG['kind'] in ('ABI_FIXTURE_ONLY', 'OFFICE_UNADMITTED'), 'kind')
+     require(type(CFG['nonce']) is str and len(CFG['nonce']) == 32
+             and all(c in '0123456789abcdef' for c in CFG['nonce']), 'nonce')
+@@ -352,15 +409,23 @@
+     pin(CFG['target_path'], CFG['target_sha256'])
+     pin(CFG['symbol_file_path'], CFG['symbol_file_sha256'])
+     require(Path(CFG['target_path']).read_bytes()[:6] == b'\x7fELF\x02\x01', 'ELF64_LE_required')
++    helper = load_helper()
+     for setting in ['set pagination off', 'set confirm off', 'set startup-with-shell off', 'set non-stop off',
+                     'set debuginfod enabled off', 'set disable-randomization off',
+                     'set follow-fork-mode parent', 'set detach-on-fork off',
+                     'set follow-exec-mode same', 'set print thread-events off', 'set stop-on-solib-events 1']:
+         gdb.execute(setting, to_string=True)
+     # Fork/vfork/exec after startup is an unreviewed process boundary; stop, then kill own inferior.
+-    gdb.execute('catch fork', to_string=True)
+-    gdb.execute('catch vfork', to_string=True)
+-    gdb.execute('catch exec', to_string=True)
++    for kind in ('fork', 'vfork', 'exec'):
++        before = {b.number for b in (gdb.breakpoints() or ())}
++        gdb.execute('catch ' + kind, to_string=True)
++        for bp in gdb.breakpoints():
++            if bp.number not in before:
++                catchpoints[bp.number] = kind
++    if helper is not None:
++        helper.catchpoints = dict(catchpoints)
++        gdb.execute('set schedule-multiple on', to_string=True)
++        gdb.execute('handle SIGCHLD nostop noprint pass', to_string=True)
+     gdb.events.new_objfile.connect(install)
+     gdb.events.exited.connect(exited)
+     gdb.events.stop.connect(stopped)
+@@ -376,17 +441,23 @@
+         install()
+     require(installed, 'symbols_unresolved')
+     gdb.execute('set stop-on-solib-events 0', to_string=True)
+-    while gdb.selected_inferior().pid:
++    while any(i.num == 1 and i.pid for i in gdb.inferiors()):
+         gdb.execute('continue', to_string=True)
+         require(STATE['error'] is None, 'trace_refused')
+-        if not gdb.selected_inferior().pid:
++        helper_action = helper.dispatch() if helper is not None else None
++        if helper is not None and not gdb.selected_inferior().pid:
++            helper.original_selected()
++        if not any(i.num == 1 and i.pid for i in gdb.inferiors()):
+             break
+-        action, pending_action = pending_action, None
++        require(helper_action is None or pending_action is None, 'helper_metric_stop_collision')
++        action, pending_action = helper_action or pending_action, None
+         require(action in ('START_CALL', 'END_CALL', 'CONTINUE'), 'unrecognized_stop')
+         # GDB documents that Breakpoint.stop must not mutate breakpoints. All
+         # finish creation and enabling/disabling occur here, outside callbacks.
+         if action == 'START_CALL':
+-            OuterFinish(frame_ok(gdb.newest_frame()), active)
++            finish = OuterFinish(frame_ok(gdb.newest_frame()), active)
++            if helper is not None:
++                finish.inferior = 1
+             entry_bp.enabled = return_bp.enabled = True
+         elif action == 'END_CALL':
+             entry_bp.enabled = return_bp.enabled = False
+@@ -404,15 +475,39 @@
+ except Exception as exc:
+     fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
+ finally:
+-    # Only this launch's exact direct child. Unknown/forked process state is never released.
+-    if STATE['process'] is not None and gdb.selected_inferior().pid:
+-        try:
+-            identity()
+-            gdb.execute('kill', to_string=True)
+-        except Exception:
+-            STATE['error'] = 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
++    # The only initial inferior was empty, and every later inferior derives from
++    # this launch. Refused unexpected descendants remain under outer cgroup
++    # containment; never mistake killing the selected helper for Office cleanup.
++    if helper is None:
++        if STATE['process'] is not None and gdb.selected_inferior().pid:
++            try:
++                identity()
++                gdb.execute('kill', to_string=True)
++            except Exception:
++                STATE['error'] = 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
++                STATE['status'] = 'REFUSED'
++        STATE['own_inferior_absent'] = (gdb.selected_inferior().pid == 0 and
++            (STATE['process'] is None or not Path('/proc/' + str(STATE['process']['pid'])).exists()))
++    else:
++        cleanup_pids = set(helper.known)
++        for inf in gdb.inferiors():
++            if not inf.pid:
++                continue
++            try:
++                before = helper.proc(inf.pid)
++                cleanup_pids.add(inf.pid)
++                gdb.execute('inferior ' + str(inf.num), to_string=True)
++                require(helper.proc(inf.pid) == before, 'cleanup_process_birth_changed')
++                gdb.execute('kill', to_string=True)
++            except Exception:
++                STATE['cleanup_error'] = 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
++                STATE['error'] = STATE['error'] or 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
++                STATE['status'] = 'REFUSED'
++        STATE['own_inferior_absent'] = (all(i.pid == 0 for i in gdb.inferiors()) and
++            all(not Path('/proc/' + str(pid)).exists() for pid in cleanup_pids))
++        if not STATE['own_inferior_absent']:
++            STATE['cleanup_error'] = 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
++            STATE['error'] = STATE['error'] or 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+             STATE['status'] = 'REFUSED'
+-    STATE['own_inferior_absent'] = (gdb.selected_inferior().pid == 0 and
+-        (STATE['process'] is None or not Path('/proc/' + str(STATE['process']['pid'])).exists()))
+     save()
+     gdb.execute('quit ' + ('0' if STATE['status'].startswith('COMPLETE_') else '2'))
+--- /dev/null
++++ b/outer/deps/paper_helper_gdb.py
+@@ -0,0 +1,496 @@
++"""Read-only GDB adapter for paper_helper_policy, shared by Office and fixture.
++
++No inferior calls, stepping, writes, detach, output-pipe reads or return changes.
++Callbacks only observe/queue; breakpoint creation occurs after execute returns.
++The original supervisor's whole-cgroup deadline/cleanup remains authoritative.
++"""
++import hashlib
++import json
++import os
++from pathlib import Path
++import stat
++import time
++
++
++def require(ok, reason):
++    if not ok:
++        raise RuntimeError(reason)
++
++
++def read_ref(ref):
++    require(type(ref) is dict and set(ref) == {'path', 'sha256'}, 'helper_exact_ref')
++    p = Path(ref['path'])
++    require(p.is_absolute() and str(p.resolve()) == str(p), 'helper_ref_alias')
++    fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
++    try:
++        s = os.fstat(fd)
++        require(stat.S_ISREG(s.st_mode) and s.st_nlink == 1 and s.st_uid in (0, os.getuid())
++                and not s.st_mode & 0o022 and s.st_size <= 262144, 'helper_ref_rights_bound')
++        raw = os.read(fd, 262145)
++        a = os.fstat(fd)
++        require((s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns) ==
++                (a.st_dev, a.st_ino, a.st_size, a.st_mtime_ns, a.st_ctime_ns)
++                and len(raw) <= 262144, 'helper_ref_changed')
++    finally:
++        os.close(fd)
++    require(hashlib.sha256(raw).hexdigest() == ref['sha256'], 'helper_ref_hash')
++    return raw
++
++
++def create(gdb, native, bundle_ref):
++    b = json.loads(read_ref(bundle_ref))
++    require(type(b) is dict and set(b) == {'schema', 'runtime', 'manifest_ref', 'policy_ref', 'adapter_ref'}
++            and b['schema'] == 'frw.calc.paper-helper-runtime-bundle.v1', 'helper_bundle_schema')
++    require(str(Path(__file__).resolve()) == b['adapter_ref']['path'], 'helper_adapter_source')
++    read_ref(b['adapter_ref'])
++    policy = {'__name__': 'frw_pinned_paper_policy', '__file__': b['policy_ref']['path']}
++    exec(compile(read_ref(b['policy_ref']), b['policy_ref']['path'], 'exec'), policy)
++    m = json.loads(read_ref(b['manifest_ref']))
++    require(b['runtime']['manifest_ref'] == b['manifest_ref'], 'helper_bundle_manifest_binding')
++    return Adapter(gdb, native, b, m, policy)
++
++
++class Adapter:
++    def __init__(self, gdb, native, bundle, manifest, policy):
++        self.g = gdb
++        self.n = native
++        self.b = bundle
++        self.m = manifest
++        self.p = policy
++        self.fixture = native['CFG']['kind'] == 'OWN_POPEN_FIXTURE_ONLY'
++        policy['validate_manifest'](manifest, fixture=self.fixture)
++        policy['validate_runtime'](bundle['runtime'], manifest)
++        require(bundle['runtime']['nonce'] == native['CFG']['nonce'], 'helper_native_nonce')
++        require(self.fixture or native['CFG']['kind'] == 'OFFICE_UNADMITTED', 'helper_no_ABI_permission')
++        self.c = None
++        self.installed = False
++        self.pending = None
++        self.to_create = []
++        self.breakpoints = []
++        self.stream = None
++        self.pipe = None
++        self.original_env = None
++        self.original_stderr = None
++        self.original_stdin = None
++        self.known = {}
++        self.catchpoints = {}
++        for image in [manifest['caller'], *manifest['images'].values()]:
++            self.pin(image)
++        link = manifest['shell_link']
++        require(os.readlink(link['path']) == link['target'] and str(Path(link['path']).resolve()) ==
++                link['canonical'] == manifest['images']['dash']['path'], 'helper_shell_link_changed')
++
++    def pin(self, image):
++        p = Path(image['path'])
++        require(p.is_absolute() and str(p.resolve()) == str(p) and p.is_file(), 'helper_image_path')
++        with p.open('rb') as f:
++            require(hashlib.file_digest(f, 'sha256').hexdigest() == image['sha256'], 'helper_image_hash')
++
++    def proc(self, pid):
++        raw = self.bounded(Path('/proc') / str(pid) / 'stat', 4096).decode('ascii')
++        v = raw.rsplit(')', 1)[1].split()
++        return {'pid': pid, 'ppid': int(v[1]), 'start_ticks': int(v[19])}
++
++    def bounded(self, path, limit):
++        with Path(path).open('rb') as f:
++            value = f.read(limit + 1)
++        require(len(value) <= limit, 'helper_proc_bound')
++        return value
++
++    def ensure(self):
++        original = self.n['STATE']['process']
++        require(original is not None, 'helper_original_unbound')
++        if self.c is None:
++            self.c = self.p['Custody'](self.m, self.b['runtime'], original, fixture=self.fixture)
++            self.known[original['pid']] = self.proc(original['pid'])
++        self.original_check()
++        return self.c
++
++    def original_check(self):
++        original = self.n['STATE']['process']
++        require(original is not None, 'helper_original_unbound')
++        p = self.proc(original['pid'])
++        require(p['ppid'] == os.getpid() and p['start_ticks'] == original['start_ticks'], 'helper_original_birth_parent')
++        root = Path('/proc') / str(p['pid'])
++        require(os.readlink(root / 'cwd') == '/tmp/friday-metric-work', 'helper_working_directory_changed')
++        require(os.readlink(root / 'exe') == self.n['CFG']['target_path'], 'helper_original_exec')
++        with (root / 'exe').open('rb') as f:
++            require(hashlib.file_digest(f, 'sha256').hexdigest() == self.n['CFG']['target_sha256'], 'helper_original_exe_hash')
++        return p
++
++    def maps(self, pid):
++        result = []
++        for line in self.bounded(Path('/proc') / str(pid) / 'maps', 512 * 1024).decode('ascii').splitlines():
++            f = line.split(None, 5)
++            if len(f) == 6 and f[5].startswith('/'):
++                require(not f[5].endswith(' (deleted)'), 'helper_deleted_mapping')
++                start, end = (int(v, 16) for v in f[0].split('-'))
++                result.append((start, end, int(f[2], 16), f[1], f[5]))
++        return result
++
++    def base(self, pid, path):
++        values = {start - offset for start, _end, offset, _perms, file in self.maps(pid) if file == path and offset == 0}
++        require(len(values) == 1, 'helper_image_base')
++        return values.pop()
++
++    def offset(self, frame, image):
++        pc = int(frame.pc())
++        pid = self.g.selected_inferior().pid
++        mapped = [v for v in self.maps(pid) if v[0] <= pc < v[1] and 'x' in v[3] and v[4] == image['path']]
++        require(len(mapped) == 1, 'helper_PC_not_pinned_image')
++        self.pin(image)
++        return pc - self.base(pid, image['path'])
++
++    def memory(self, address, count):
++        require(type(address) is int and address > 0 and 0 < count <= 64, 'helper_memory_bound')
++        return self.g.selected_inferior().read_memory(address, count).tobytes()
++
++    def register(self, name):
++        v = self.g.newest_frame().read_register(name)
++        require(not v.is_unavailable and not v.is_optimized_out, 'helper_register_unavailable')
++        return int(v) & ((1 << 64) - 1)
++
++    def tid(self):
++        t = self.g.selected_thread()
++        require(t is not None and t.is_valid(), 'helper_thread_unknown')
++        return list(t.ptid)
++
++    def site(self, name, frame):
++        site = self.m['caller']['sites'][name]
++        require(self.offset(frame, self.m['caller']) == site['offset'], 'helper_exact_caller_site')
++        pc = int(frame.pc())
++        require(self.memory(pc - 5, 5).hex() == site['before'] and self.memory(pc, 8).hex() ==
++                site['after'], 'helper_caller_site_bytes')
++        return True
++
++    def marker(self):
++        # Atomic metadata only. Never infer LOAD from IDLE or a result-stage log.
++        p = Path(self.b['runtime']['marker_path'])
++        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
++        try:
++            s = os.fstat(fd)
++            require(stat.S_ISREG(s.st_mode) and s.st_uid == os.getuid() and s.st_nlink == 1
++                    and not s.st_mode & 0o077 and s.st_size <= 4096, 'helper_marker_rights')
++            raw = os.read(fd, 4097)
++            require(len(raw) <= 4096, 'helper_marker_bound')
++        finally:
++            os.close(fd)
++        return json.loads(raw)
++
++    def window(self):
++        c = self.ensure()
++        c.window(self.marker(), self.n['phase'](), self.n['STATE']['process'], time.monotonic(),
++                 self.n['STATE']['records'], self.n['get_active']())
++        self.original_check()
++
++    def environment(self, pid, *, initial=False):
++        raw = self.bounded(Path('/proc') / str(pid) / 'environ', 128 * 1024)
++        require(os.readlink(Path('/proc') / str(pid) / 'cwd') == '/tmp/friday-metric-work', 'helper_child_cwd_changed')
++        items = raw.rstrip(b'\0').split(b'\0')
++        require(all(b'=' in v for v in items), 'helper_environment_encoding')
++        pairs = [v.split(b'=', 1) for v in items]
++        env = dict(pairs)
++        require(len(env) == len(pairs), 'helper_environment_duplicates')
++        require(all(env.get(k.encode()) == v.encode() for k, v in self.m['environment'].items()), 'helper_environment_changed')
++        require(not any(k in env for k in (b'PAPERSIZE', b'LC_PAPER', b'LD_PRELOAD', b'LD_AUDIT', b'ENV', b'BASH_ENV')),
++                'helper_environment_override')
++        require(all(not os.path.lexists(p) for p in self.m['absent_paths']), 'helper_paper_config_present')
++        if initial:
++            self.original_env = env
++        else:
++            # dash may export its actual fixed PWD. No other additions/changes.
++            expected = dict(self.original_env)
++            if b'PWD' not in expected and b'PWD' in env:
++                expected[b'PWD'] = b'/tmp/friday-metric-work'
++            require(env == expected, 'helper_inherited_environment_changed')
++        return True
++
++    def fd(self, pid, number):
++        root = Path('/proc') / str(pid)
++        p = root / 'fd' / str(number)
++        s = p.stat()
++        text = self.bounded(root / 'fdinfo' / str(number), 4096).decode('ascii')
++        fields = dict(line.split(':', 1) for line in text.splitlines() if ':' in line)
++        flags = int(fields['flags'].strip(), 8)
++        return {'dev': s.st_dev, 'ino': s.st_ino, 'type': stat.S_IFMT(s.st_mode),
++                'rdev': s.st_rdev, 'access': flags & os.O_ACCMODE,
++                'cloexec': bool(flags & os.O_CLOEXEC)}
++
++    def null(self, fd):
++        s = Path('/dev/null').stat()
++        return fd['type'] == stat.S_IFCHR and fd['rdev'] == s.st_rdev
++
++    def same_fd(self, a, b):
++        return all(a[k] == b[k] for k in ('dev', 'ino', 'type', 'rdev', 'access'))
++
++    def fds(self, pid, role, *, redirection=False):
++        numbers = [int(p.name) for p in (Path('/proc') / str(pid) / 'fd').iterdir()]
++        require(len(numbers) <= (4 if redirection else 3) and {0, 1, 2}.issubset(numbers), 'helper_extra_FD')
++        current = {n: self.fd(pid, n) for n in numbers}
++        require(self.null(current[0]) and self.same_fd(current[0], self.original_stdin)
++                and current[1]['type'] == stat.S_IFIFO and current[1]['access'] == os.O_WRONLY,
++                'helper_stdin_stdout_FD')
++        if self.pipe is None:
++            self.pipe = current[1]
++        require(self.same_fd(current[1], self.pipe), 'helper_stdout_pipe_changed')
++        if role == 'dash' and not redirection:
++            require(self.same_fd(current[2], self.original_stderr), 'helper_shell_initial_stderr')
++        else:
++            require(self.null(current[2]) and current[2]['access'] == os.O_WRONLY, 'helper_stderr_not_null')
++        for number in set(numbers) - {0, 1, 2}:
++            require(redirection and current[number]['cloexec'] and self.same_fd(current[number], self.original_stderr),
++                    'helper_unapproved_inherited_FD')
++        return True
++
++    def child(self, role):
++        c = self.c.e['children'][0 if role == 'dash' else 1]
++        inf = self.g.selected_inferior()
++        value = self.proc(inf.pid)
++        require(all(value[k] == c[k] for k in ('pid', 'ppid', 'start_ticks')), 'helper_selected_child_identity')
++        return dict(value, inferior=inf.num)
++
++    def image(self, role, pid):
++        image = self.m['images'][role]
++        root = Path('/proc') / str(pid)
++        require(os.readlink(root / 'exe') == image['path'], 'helper_exec_path')
++        with (root / 'exe').open('rb') as f:
++            require(hashlib.file_digest(f, 'sha256').hexdigest() == image['sha256'], 'helper_exec_hash')
++        expected = ([b'sh', b'-c', b'--', b'paperconf 2>/dev/null'] if role == 'dash' else [b'paperconf'])
++        require(self.bounded(root / 'cmdline', 256) == b'\0'.join(expected) + b'\0', 'helper_exec_argv')
++        return True
++
++    def loaded_images(self, role, pid, *, entry):
++        allowed = {self.m['images'][k]['path']: self.m['images'][k] for k in
++                   ([role, 'libc', 'loader'] + (['libpaper'] if role == 'paperconf' else []))}
++        actual = {v[4] for v in self.maps(pid)}
++        required = set(allowed) if entry else {self.m['images'][role]['path'], self.m['images']['loader']['path']}
++        require(required.issubset(actual) and actual.issubset(set(allowed)), 'helper_mapped_image_set')
++        for path in actual:
++            self.pin(allowed[path])
++        # At exec-stop libc/libpaper need not exist yet. At e_entry both must.
++        return True
++
++    def publish(self):
++        if self.c is not None:
++            self.n['STATE']['load_dependency'] = self.c.snapshot()
++        self.n['save']()
++
++    def callback(self, fn):
++        def stop():
++            try:
++                fn()
++                self.pending = 'CONTINUE'
++                self.publish()
++            except Exception as e:
++                self.n['fail'](str(e) if type(e) is RuntimeError else type(e).__name__)
++            return True
++        return stop
++
++    def breakpoint(self, address, fn):
++        adapter = self
++        class ObserverBreakpoint(self.g.Breakpoint):
++            def stop(self):
++                return adapter.callback(fn)()
++        bp = ObserverBreakpoint('*' + hex(address), internal=True)
++        # Installed GDB exposes this writable property (also statically present
++        # in its exact binary). An absolute Office address must not be inserted
++        # into a helper's different address space after exec.
++        bp.inferior = self.g.selected_inferior().num
++        require(bp.inferior == self.g.selected_inferior().num, 'helper_breakpoint_inferior_binding')
++        self.breakpoints.append(bp)
++        return bp
++
++    def install(self):
++        if self.installed or not self.n['STATE']['process'] or self.g.selected_inferior().num != 1:
++            return
++        pid = self.n['STATE']['process']['pid']
++        try:
++            libc_base = self.base(pid, self.m['images']['libc']['path'])
++            caller_base = self.base(pid, self.m['caller']['path'])
++        except RuntimeError as e:
++            if str(e) == 'helper_image_base':
++                return
++            raise
++        self.ensure()
++        self.breakpoint(libc_base + self.m['images']['libc']['entry'], self.popen)
++        for name, fn in (('popen_return', self.popen_return), ('fgets_return', self.eof), ('pclose_return', self.pclose_return)):
++            self.breakpoint(caller_base + self.m['caller']['sites'][name]['offset'], fn)
++        self.installed = True
++
++    def popen(self):
++        self.window()
++        require(self.g.selected_inferior().num == 1, 'helper_popen_foreign_inferior')
++        f = self.g.newest_frame()
++        libc = self.m['images']['libc']
++        entry = self.offset(f, libc) == libc['entry'] and self.memory(int(f.pc()), 16).hex() == libc['entry_bytes']
++        caller = self.site('popen_return', f.older())
++        # Exactly known bounded strings, including their NUL; unknown bytes never logged.
++        command = self.memory(self.register('rdi'), len(b'paperconf 2>/dev/null\0')) == b'paperconf 2>/dev/null\0'
++        mode = self.memory(self.register('rsi'), 2) == b'r\0'
++        self.c.arm(self.tid(), exact_entry=entry, exact_caller=caller, command_equal=command, mode_equal=mode)
++        self.environment(self.g.selected_inferior().pid, initial=True)
++        self.original_stdin = self.fd(self.g.selected_inferior().pid, 0)
++        require(self.null(self.original_stdin) and self.original_stdin['access'] == os.O_RDONLY,
++                'helper_parent_stdin_custody')
++        self.original_stderr = self.fd(self.g.selected_inferior().pid, 2)
++        require(self.original_stderr['type'] == stat.S_IFREG and self.original_stderr['access'] == os.O_WRONLY,
++                'helper_parent_stderr_custody')
++        log = Path('/tmp/friday-metric-work/gdb.log')
++        require(not log.is_symlink(), 'helper_log_symlink')
++        s = log.stat()
++        require(s.st_uid == os.getuid() and s.st_nlink == 1 and stat.S_IMODE(s.st_mode) == 0o600,
++                'helper_log_custody')
++        require((self.original_stderr['dev'], self.original_stderr['ino']) == (s.st_dev, s.st_ino),
++                'helper_parent_stderr_not_owned_log')
++
++    def birth(self):
++        self.window()
++        inf = self.g.selected_inferior()
++        p = self.proc(inf.pid)
++        role = 'dash' if len(self.c.e['children']) == 0 else 'paperconf'
++        if role == 'dash':
++            require(inf.num == 1 and self.tid() == self.c.thread, 'helper_parent_thread')
++            frames = []
++            f = self.g.newest_frame()
++            for _ in range(16):
++                if f is None or not f.is_valid():
++                    break
++                frames.append(f)
++                f = f.older()
++            libc = self.m['images']['libc']
++            offsets = []
++            for frame in frames:
++                try:
++                    offsets.append(self.offset(frame, libc))
++                except RuntimeError:
++                    pass
++            require(all(v in offsets for v in self.m['libc_spawn_returns'])
++                    and any(self.site_bool('popen_return', f) for f in frames), 'helper_libc_spawn_route')
++        else:
++            self.child('dash')
++            require(self.c.e['children'][0]['entry_verified'], 'helper_shell_not_at_entry')
++            f = self.g.newest_frame().older()
++            require(self.offset(f, self.m['images']['dash']) == self.m['dash_vfork_return']
++                    and self.memory(int(f.pc()) - 5, 5).hex() == 'e800a4ffff', 'helper_shell_vfork_callsite')
++            self.environment(inf.pid)
++            self.fds(inf.pid, 'dash', redirection=True)
++        tid = self.tid()
++        text = self.bounded(Path('/proc') / str(inf.pid) / 'task' / str(tid[1]) / 'children', 256).decode('ascii')
++        numbers = text.split()
++        require(len(numbers) == 1 and numbers[0].isdecimal(), 'helper_exact_direct_child')
++        child = self.proc(int(numbers[0]))
++        self.c.birth({'pid': p['pid'], 'start_ticks': p['start_ticks']}, child, route_ok=True)
++        self.known[child['pid']] = child
++
++    def site_bool(self, name, frame):
++        try:
++            return self.site(name, frame)
++        except RuntimeError:
++            return False
++
++    def exec(self):
++        self.window()
++        role = 'dash' if len(self.c.e['execs']) == 0 else 'paperconf'
++        child = self.child(role)
++        self.image(role, child['pid'])
++        self.environment(child['pid'])
++        self.fds(child['pid'], role)
++        self.loaded_images(role, child['pid'], entry=False)
++        self.c.exec(role, child, exact_image=True, exact_argv=True, custody_ok=True)
++        address = self.base(child['pid'], self.m['images'][role]['path']) + self.m['images'][role]['entry']
++        self.to_create.append((address, lambda: self.entry(role)))
++
++    def entry(self, role):
++        self.window()
++        child = self.child(role)
++        image = self.m['images'][role]
++        require(self.offset(self.g.newest_frame(), image) == image['entry']
++                and self.memory(int(self.g.newest_frame().pc()), 16).hex() == image['entry_bytes'], 'helper_image_entry_bytes')
++        self.image(role, child['pid'])
++        self.environment(child['pid'])
++        self.fds(child['pid'], role)
++        self.loaded_images(role, child['pid'], entry=True)
++        self.c.entry(role, child, images_ok=True, custody_ok=True)
++
++    def popen_return(self):
++        self.window()
++        self.site('popen_return', self.g.newest_frame())
++        self.stream = self.register('rax')
++        require(self.stream != 0, 'helper_popen_failed')
++        fd = int.from_bytes(self.memory(self.stream + 112, 4), 'little', signed=True)
++        require(2 < fd < 4096, 'helper_stream_FD')
++        actual = self.fd(self.n['STATE']['process']['pid'], fd)
++        # Opposite pipe access, same kernel pipe inode. Do not open/read its data.
++        require(self.pipe is not None and actual['type'] == stat.S_IFIFO and actual['access'] == os.O_RDONLY
++                and (actual['dev'], actual['ino']) == (self.pipe['dev'], self.pipe['ino']), 'helper_popen_pipe_binding')
++        self.c.popen_return(self.tid(), pipe_ok=True)
++
++    def eof(self):
++        self.window()
++        self.site('fgets_return', self.g.newest_frame())
++        flags = int.from_bytes(self.memory(self.stream, 4), 'little')
++        self.c.eof(self.tid(), empty_eof=self.register('rax') == 0 and bool(flags & 0x10) and not bool(flags & 0x20))
++
++    def pclose_return(self):
++        self.window()
++        self.site('pclose_return', self.g.newest_frame())
++        status = self.register('rax') & 0xffffffff
++        absent = all(not (Path('/proc') / str(c['pid'])).exists() for c in self.c.e['children'])
++        self.original_check()
++        self.c.close(self.tid(), status, time.monotonic(), children_absent=absent, original_ok=True)
++
++    def boundary(self, event):
++        kinds = [self.catchpoints.get(b.number) for b in getattr(event, 'breakpoints', ()) if b.type == self.g.BP_CATCHPOINT]
++        require(len(kinds) == 1 and kinds[0] in ('vfork', 'exec'), 'helper_unexpected_fork_or_catchpoint')
++        if kinds[0] == 'vfork':
++            self.birth()
++        else:
++            self.exec()
++        self.pending = 'CONTINUE'
++        self.publish()
++
++    def exited(self, event):
++        inf = getattr(event, 'inferior', None)
++        require(inf is not None, 'helper_exit_inferior_unknown')
++        if inf.num == 1:
++            if self.c is not None:
++                self.c.metric()
++            return False  # Caller alone owns original Office exit_code.
++        self.ensure()
++        self.c.exit(inf.num, getattr(event, 'exit_code', None))
++        self.pending = 'CONTINUE'
++        self.publish()
++        return True
++
++    def dispatch(self):
++        for address, fn in self.to_create:
++            self.breakpoint(address, fn)
++        self.to_create.clear()
++        result, self.pending = self.pending, None
++        return result
++
++    def metric_ready(self):
++        self.ensure().metric()
++        marker = self.marker()
++        expected = dict(schema=self.p['MARKER'], state='LOAD_CLOSED', **{k: self.b['runtime'][k] for k in
++            ('operation_id', 'nonce', 'source_sha256', 'manifest_ref', 'operation_deadline_monotonic')})
++        require(marker == expected, 'helper_LOAD_not_closed_before_metric')
++        require(all(not (Path('/proc') / str(c['pid'])).exists() for c in self.c.e['children']), 'helper_child_present_before_metric')
++        self.original_check()
++
++    def original_selected(self):
++        for inf in self.g.inferiors():
++            if inf.num == 1 and inf.pid:
++                self.g.execute('inferior 1', to_string=True)
++                return True
++        return False
++
++    def identity_scope(self):
++        """Extra terminal inferiors never replace the original numeric identity."""
++        for inf in self.g.inferiors():
++            if not inf.pid or inf.num == 1:
++                continue
++            require(self.c is not None and self.c.e['state'] != 'CLOSED' and inf.pid in self.known,
++                    'helper_foreign_live_inferior')
++            require(self.proc(inf.pid) == self.known[inf.pid], 'helper_live_inferior_birth')
++        return True
+--- /dev/null
++++ b/outer/deps/paper_helper_policy.py
+@@ -0,0 +1,219 @@
++"""Finite stock-paper LOAD dependency policy. Pure metadata, no effects/import GDB.
++
++Runtime observations are supplied by the pinned GDB adapter. This policy grants
++neither execution nor runtime attestation. Legacy observers never import it.
++"""
++import copy
++import math
++import re
++
++SCHEMA = 'frw.calc.paper-helper-manifest.v1'
++MARKER = 'frw.calc.load-dependency-window.v1'
++
++
++def require(ok, reason):
++    if not ok:
++        raise RuntimeError(reason)
++
++
++def exact(value, keys, reason):
++    require(type(value) is dict and set(value) == set(keys), reason)
++
++
++def sha(value):
++    return type(value) is str and re.fullmatch('[0-9a-f]{64}', value) is not None
++
++
++def finite(value):
++    return type(value) in (int, float) and math.isfinite(value) and value > 0
++
++
++def validate_manifest(m, *, fixture=False):
++    exact(m, ('schema', 'kind', 'source_sha256', 'caller', 'images', 'shell_link',
++              'environment', 'absent_paths', 'dash_vfork_return', 'libc_spawn_returns'), 'helper_manifest_schema')
++    require(m['schema'] == SCHEMA and m['kind'] ==
++            ('OWN_POPEN_FIXTURE_ONLY' if fixture else 'OFFICE_PAPER_LOAD_DEPENDENCY'), 'helper_manifest_kind')
++    require(sha(m['source_sha256']), 'helper_source_pin')
++    c = m['caller']
++    exact(c, ('path', 'sha256', 'function_offset', 'function_size', 'sites'), 'helper_caller_schema')
++    require(sha(c['sha256']) and type(c['path']) is str and c['path'].startswith('/'), 'helper_caller_pin')
++    require(type(c['function_offset']) is int and c['function_offset'] > 0
++            and type(c['function_size']) is int and 0 < c['function_size'] < 8192, 'helper_caller_range')
++    exact(c['sites'], ('popen_return', 'fgets_return', 'pclose_return'), 'helper_call_sites')
++    for s in c['sites'].values():
++        exact(s, ('offset', 'before', 'after'), 'helper_call_site_schema')
++        require(type(s['offset']) is int and c['function_offset'] < s['offset'] <
++                c['function_offset'] + c['function_size'], 'helper_call_site_range')
++        require(type(s['before']) is str and re.fullmatch('e8[0-9a-f]{8}', s['before'])
++                and type(s['after']) is str and re.fullmatch('[0-9a-f]{16}', s['after']), 'helper_call_bytes')
++    exact(m['images'], ('dash', 'paperconf', 'libc', 'loader', 'libpaper'), 'helper_image_roles')
++    for role, image in m['images'].items():
++        exact(image, ('path', 'sha256', 'entry', 'entry_bytes'), 'helper_image_schema')
++        require(type(image['path']) is str and image['path'].startswith('/') and sha(image['sha256'])
++                and type(image['entry']) is int and image['entry'] > 0
++                and type(image['entry_bytes']) is str and re.fullmatch('[0-9a-f]{32}', image['entry_bytes']),
++                'helper_image_pin')
++    require(m['shell_link'] == {'path': '/bin/sh', 'target': 'dash', 'canonical': '/usr/bin/dash'}, 'helper_shell_topology')
++    require(m['images']['dash']['path'] == '/usr/bin/dash'
++            and m['images']['paperconf']['path'] == '/usr/bin/paperconf', 'helper_exec_paths')
++    e = m['environment']
++    require(type(e) is dict and e.get('PATH') == '/usr/bin:/bin' and e.get('LANG') == 'C.UTF-8'
++            and e.get('LC_ALL') == 'C.UTF-8' and e.get('HOME') == '/tmp/friday-metric-work/tmp'
++            and e.get('XDG_CONFIG_HOME') == '/tmp/friday-metric-work/config'
++            and all(type(k) is str and type(v) is str for k, v in e.items()), 'helper_environment_contract')
++    require(m['absent_paths'] == ['/etc/paperspecs', '/etc/papersize',
++            '/tmp/friday-metric-work/config/paperspecs', '/tmp/friday-metric-work/config/papersize',
++            '/tmp/friday-metric-work/tmp/.config/paperspecs', '/tmp/friday-metric-work/tmp/.config/papersize'],
++            'helper_paper_inputs_contract')
++    require(m['dash_vfork_return'] == 0xa680
++            and m['libc_spawn_returns'] == [0x8e247, 0x8e586], 'helper_spawn_route_contract')
++    return m
++
++
++def validate_runtime(r, m, *, prelaunch=False):
++    exact(r, ('operation_id', 'nonce', 'source_sha256', 'manifest_ref', 'marker_path',
++              'operation_deadline_monotonic'), 'helper_runtime_schema')
++    require(type(r['operation_id']) is str and re.fullmatch('[A-Za-z0-9_.-]{1,128}', r['operation_id'])
++            and type(r['nonce']) is str and re.fullmatch('[0-9a-f]{32}', r['nonce']), 'helper_runtime_identity')
++    require(r['source_sha256'] == m['source_sha256'] and r['marker_path'] ==
++            '/tmp/friday-metric-work/load-dependency.json', 'helper_runtime_source_path')
++    exact(r['manifest_ref'], ('path', 'sha256'), 'helper_manifest_ref_schema')
++    require(type(r['manifest_ref']['path']) is str and r['manifest_ref']['path'].startswith('/')
++            and sha(r['manifest_ref']['sha256']), 'helper_manifest_ref_pin')
++    require((prelaunch and r['operation_deadline_monotonic'] is None)
++            or finite(r['operation_deadline_monotonic']), 'helper_absolute_operation_deadline')
++    return r
++
++
++def validate_closed(evidence, runtime, original):
++    """Independent consumers check terminal facts, never a bare self-logged PASS."""
++    exact(evidence, ('schema', 'operation_id', 'nonce', 'source_sha256', 'manifest_ref', 'original',
++        'state', 'invocations', 'children', 'execs', 'popen_returned', 'empty_stdout_eof',
++        'pclose_status', 'closure_observed_monotonic', 'deadline_monotonic'), 'helper_evidence_schema')
++    require(evidence['schema'] == 'frw.calc.paper-helper-custody.v1' and evidence['state'] == 'CLOSED'
++            and type(evidence['invocations']) is int and evidence['invocations'] == 1
++            and evidence['execs'] == ['dash', 'paperconf']
++            and evidence['popen_returned'] is True and evidence['empty_stdout_eof'] is True
++            and type(evidence['pclose_status']) is int and evidence['pclose_status'] == 768,
++            'helper_custody_not_closed')
++    require(all(evidence[k] == runtime[k] for k in ('operation_id', 'nonce', 'source_sha256', 'manifest_ref'))
++            and evidence['original'] == original, 'helper_custody_binding')
++    require(finite(evidence['closure_observed_monotonic']) and evidence['deadline_monotonic'] ==
++            runtime['operation_deadline_monotonic'] and evidence['closure_observed_monotonic'] <
++            evidence['deadline_monotonic'], 'helper_custody_clock')
++    require(type(evidence['children']) is list and len(evidence['children']) == 2, 'helper_two_children')
++    parent = original['pid']
++    seen = {parent}
++    for inferior, role, c in zip((2, 3), ('dash', 'paperconf'), evidence['children']):
++        exact(c, ('role', 'pid', 'ppid', 'start_ticks', 'inferior', 'exit_code', 'entry_verified',
++                  'absent_at_close'), 'helper_child_evidence_schema')
++        require(c['role'] == role and all(type(c[k]) is int and c[k] > 0 for k in
++                ('pid', 'ppid', 'start_ticks', 'inferior')) and c['pid'] not in seen
++                and c['ppid'] == parent and c['inferior'] == inferior
++                and type(c['exit_code']) is int and c['exit_code'] == 3
++                and c['entry_verified'] is True and c['absent_at_close'] is True, 'helper_child_terminal_binding')
++        seen.add(c['pid'])
++        parent = c['pid']
++    return evidence
++
++
++class Custody:
++    """One invocation; actual observations remain the adapter's responsibility."""
++    def __init__(self, manifest, runtime, original, *, fixture=False):
++        self.m = validate_manifest(manifest, fixture=fixture)
++        self.r = validate_runtime(runtime, manifest)
++        self.original = copy.deepcopy(original)
++        self.thread = None
++        self.e = dict(schema='frw.calc.paper-helper-custody.v1',
++            **{k: copy.deepcopy(runtime[k]) for k in ('operation_id', 'nonce', 'source_sha256', 'manifest_ref')},
++            original=copy.deepcopy(original), state='DISARMED', invocations=0, children=[], execs=[],
++            popen_returned=False, empty_stdout_eof=False, pclose_status=None,
++            closure_observed_monotonic=None, deadline_monotonic=runtime['operation_deadline_monotonic'])
++
++    def window(self, marker, phase, original, now, records, active):
++        require(finite(now) and now < self.r['operation_deadline_monotonic'], 'helper_deadline_expired')
++        require(original == self.original and records == [] and active is None, 'helper_original_or_metric_state')
++        require(phase == {'nonce': self.r['nonce'], 'phase': 'IDLE', 'index': None, 'digit': None}, 'helper_outside_IDLE')
++        exact(marker, ('schema', 'operation_id', 'nonce', 'source_sha256', 'manifest_ref', 'state',
++                       'operation_deadline_monotonic'), 'helper_LOAD_marker_schema')
++        require(marker['schema'] == MARKER and marker['state'] == 'LOAD_OPEN'
++                and all(marker[k] == self.r[k] for k in ('operation_id', 'nonce', 'source_sha256',
++                   'manifest_ref', 'operation_deadline_monotonic')), 'helper_LOAD_marker_binding')
++
++    def arm(self, thread, *, exact_entry, exact_caller, command_equal, mode_equal):
++        require(self.e['state'] == 'DISARMED' and self.e['invocations'] == 0, 'helper_extra_invocation')
++        require(exact_entry is True and exact_caller is True, 'helper_popen_entry_or_caller')
++        require(command_equal is True and mode_equal is True, 'helper_command_or_mode')
++        require(type(thread) is list and len(thread) == 3 and thread[0] == self.original['pid']
++                and type(thread[1]) is int and thread[1] > 0 and thread[2] == 0, 'helper_popen_thread')
++        self.thread = list(thread)
++        self.e.update(state='ARMED', invocations=1)
++
++    def birth(self, parent, child, *, route_ok):
++        n = len(self.e['children'])
++        require(n < 2 and self.e['state'] == ('ARMED' if n == 0 else 'DASH_ENTRY'), 'helper_extra_or_out_of_order_birth')
++        expected_parent = self.original if n == 0 else self.e['children'][0]
++        require(parent == {'pid': expected_parent['pid'], 'start_ticks': expected_parent['start_ticks']}
++                and route_ok is True, 'helper_birth_parent_or_route')
++        exact(child, ('pid', 'ppid', 'start_ticks'), 'helper_birth_schema')
++        require(all(type(v) is int and v > 0 for v in child.values()) and child['ppid'] == parent['pid']
++                and child['pid'] not in [self.original['pid']] + [c['pid'] for c in self.e['children']], 'helper_birth_identity')
++        self.e['children'].append(dict(role=('dash' if n == 0 else 'paperconf'), **child,
++            inferior=None, exit_code=None, entry_verified=False, absent_at_close=False))
++        self.e['state'] = 'DASH_BORN' if n == 0 else 'PAPERCONF_BORN'
++
++    def exec(self, role, child, *, exact_image, exact_argv, custody_ok):
++        require(role in ('dash', 'paperconf') and len(self.e['execs']) < 2, 'helper_extra_exec')
++        index = len(self.e['execs'])
++        require(role == ('dash', 'paperconf')[index] and self.e['state'] ==
++                ('DASH_BORN', 'PAPERCONF_BORN')[index], 'helper_exec_order')
++        expected = self.e['children'][index]
++        require(all(child.get(k) == expected[k] for k in ('pid', 'ppid', 'start_ticks'))
++                and type(child.get('inferior')) is int and child['inferior'] == index + 2, 'helper_exec_identity')
++        require(exact_image is True and exact_argv is True and custody_ok is True, 'helper_exec_image_argv_or_custody')
++        expected['inferior'] = child['inferior']
++        self.e['execs'].append(role)
++        self.e['state'] = role.upper() + '_EXEC'
++
++    def entry(self, role, child, *, images_ok, custody_ok):
++        require(self.e['state'] == role.upper() + '_EXEC', 'helper_entry_order')
++        expected = self.e['children'][0 if role == 'dash' else 1]
++        require(all(child.get(k) == expected[k] for k in ('pid', 'ppid', 'start_ticks', 'inferior'))
++                and images_ok is True and custody_ok is True, 'helper_entry_identity_images_or_custody')
++        expected['entry_verified'] = True
++        self.e['state'] = role.upper() + '_ENTRY'
++
++    def popen_return(self, thread, *, pipe_ok):
++        require(self.e['invocations'] == 1 and not self.e['popen_returned'] and thread == self.thread
++                and len(self.e['execs']) >= 1 and pipe_ok is True, 'helper_popen_return_binding')
++        self.e['popen_returned'] = True
++
++    def eof(self, thread, *, empty_eof):
++        require(self.e['popen_returned'] and not self.e['empty_stdout_eof'] and thread == self.thread
++                and len(self.e['children']) == 2 and empty_eof is True, 'helper_stdout_not_empty_EOF')
++        self.e['empty_stdout_eof'] = True
++
++    def exit(self, inferior, code):
++        matches = [c for c in self.e['children'] if c['inferior'] == inferior]
++        require(len(matches) == 1 and matches[0]['entry_verified'] and matches[0]['exit_code'] is None
++                and type(code) is int and code == 3, 'helper_unexpected_exit')
++        if matches[0]['role'] == 'dash':
++            require(self.e['children'][1]['exit_code'] == 3, 'helper_exit_order')
++        matches[0]['exit_code'] = code
++
++    def close(self, thread, status, now, *, children_absent, original_ok):
++        require(self.e['state'] == 'PAPERCONF_ENTRY' and self.e['popen_returned']
++                and self.e['empty_stdout_eof'] and thread == self.thread and type(status) is int
++                and status == 768 and children_absent is True and original_ok is True, 'helper_pclose_binding')
++        require(all(c['exit_code'] == 3 for c in self.e['children']), 'helper_unreaped_children')
++        require(finite(now) and now < self.r['operation_deadline_monotonic'], 'helper_deadline_expired')
++        for c in self.e['children']:
++            c['absent_at_close'] = True
++        self.e.update(state='CLOSED', pclose_status=status, closure_observed_monotonic=now)
++        validate_closed(self.e, self.r, self.original)
++
++    def metric(self):
++        validate_closed(self.e, self.r, self.original)
++
++    def snapshot(self):
++        return copy.deepcopy(self.e)
+--- a/outer/namespace_entry.py
++++ b/outer/namespace_entry.py
+@@ -405,6 +405,7 @@
+ def output_inventory():
+     allowed_files = {'namespace-job.json', 'unit-release.json', 'office-ready.json', 'office-release.json',
+                      'observer-config.json', 'phase.json', 'native-trace.json', 'gdb.log', 'inner.log',
++                     'helper-runtime.json', 'load-dependency.json',
+                      'inner-input.json', 'inner-result.json', 'inner-checkpoint.json', 'inner-started.json',
+                      'loaded-envelope.json', 'loaded-record.json', 'loaded-observations.json',
+                      'namespace-journal.json', 'namespace-result.json', 'font-CAS-phase.json',
+@@ -426,6 +427,41 @@
+                           'scope': 'READONLY_DERIVED_FONTCONFIG_INPUT' if relative.parts[:2] == ('cache', 'fontconfig')
+                                    else 'OWN_OPERATION_OUTPUT'})
+     return files
++
++
++def load_dependency_bundle(plan, deadline):
++    binding = plan['observer'].get('load_dependency')
++    if binding is None:
++        return None, None
++    runtime = copy.deepcopy(plan['inner_input']['load_dependency'])
++    # Exact pre-existing global operation clock, including elapsed bootstrap and
++    # startup. loaded_seconds was only a postcall wait, never a LOAD clock.
++    need(runtime['operation_deadline_monotonic'] is None, 'helper_prelaunch_clock_must_be_unbound')
++    runtime['operation_deadline_monotonic'] = deadline
++    manifest = json.loads(read_ref(binding['manifest']))
++    policy = {'__name__': 'frw_pinned_namespace_paper_policy', '__file__': binding['policy']['path']}
++    exec(compile(read_ref(binding['policy']), binding['policy']['path'], 'exec'), policy)
++    policy['validate_manifest'](manifest)
++    policy['validate_runtime'](runtime, manifest)
++    need(runtime['manifest_ref'] == binding['manifest'] and runtime['nonce'] == plan['nonce']
++         and runtime['operation_id'] == plan['operation_id'], 'helper_namespace_binding')
++    bundle = {'schema': 'frw.calc.paper-helper-runtime-bundle.v1', 'runtime': runtime,
++        'manifest_ref': binding['manifest'], 'policy_ref': binding['policy'], 'adapter_ref': binding['adapter']}
++    read_ref(binding['adapter'])
++    return bundle, policy
++
++
++def check_load_dependency_closed(trace, runtime, policy, native):
++    need(policy is not None and runtime is not None, 'helper_closure_policy_unbound')
++    evidence = policy['validate_closed'](trace.get('load_dependency'), runtime, native)
++    expected_marker = dict(schema=policy['MARKER'], state='LOAD_CLOSED', **{k: runtime[k] for k in
++        ('operation_id', 'nonce', 'source_sha256', 'manifest_ref', 'operation_deadline_monotonic')})
++    need(json.loads(runtime_read(WORK / 'load-dependency.json')) == expected_marker, 'helper_LOAD_marker_not_closed')
++    need(all(not (Path('/proc') / str(child['pid'])).exists() for child in evidence['children']),
++         'helper_child_still_present_at_loaded_release')
++    # Child exits alone are insufficient. The caller already performs the same
++    # original Office birth/executable/font CAS before and after this check.
++    return evidence
+ 
+ 
+ def run(job, *, services=None):
+@@ -475,6 +511,10 @@
+         atomic(WORK / 'phase.json', {'nonce': plan['nonce'], 'phase': 'IDLE', 'index': None, 'digit': None})
+         atomic(WORK / 'observer-config.json', plan['observer']['config'])
+         env = dict(os.environ, FRW_NATIVE_OBSERVER_CONFIG=str(WORK / 'observer-config.json'))
++        helper_bundle, helper_policy = load_dependency_bundle(plan, deadline)
++        if helper_bundle is not None:
++            bundle_ref = atomic(WORK / 'helper-runtime.json', helper_bundle)
++            env['FRW_NATIVE_LOAD_DEPENDENCY_REF'] = json.dumps(bundle_ref, sort_keys=True)
+         with (WORK / 'gdb.log').open('xb') as glog, (WORK / 'inner.log').open('xb') as ilog:
+             os.chmod(WORK / 'gdb.log', 0o600)
+             os.chmod(WORK / 'inner.log', 0o600)
+@@ -513,6 +553,8 @@
+             cfg = copy.deepcopy(plan['inner_input'])
+             cfg['office_process'] = {'namespace_pid': native['pid'], 'start_ticks': native['start_ticks'],
+                                      'executable_sha256': office['executable_sha256']}
++            if helper_bundle is not None:
++                cfg['load_dependency'] = copy.deepcopy(helper_bundle['runtime'])
+             config_ref = atomic(WORK / 'inner-input.json', cfg)
+             # Full inner inspect occurs after the actual READY process exists.
+             read_ref(plan['inner_client'])
+@@ -525,7 +567,18 @@
+                  and client_identity['boot_id'] == office['boot_id'], 'actual_inner_same_namespace_identity')
+             emit('INNER_CLIENT_STARTED', process=client_identity)
+             checkpoint = wait_file(WORK / 'inner-checkpoint.json', limit=cfg['timeouts']['loaded_seconds'], child=client)
++            # Refresh actual trace after LOAD; startup READY is not closure.
++            trace = json.loads(runtime_read(WORK / 'native-trace.json'))
++            need(trace['error'] is None and trace['process'] == native
++                 and trace['symbols'] == initial_symbols and trace['records'] == [], 'loaded_trace_original_binding')
++            helper_evidence = None
++            if helper_bundle is not None:
++                helper_evidence = check_load_dependency_closed(trace, helper_bundle['runtime'], helper_policy, native)
++            else:
++                need('load_dependency' not in trace, 'unexpected_helper_evidence')
+             observations = services.loaded_observations(plan, native)
++            if helper_evidence is not None:
++                observations['load_dependency'] = helper_evidence
+             need(services.now() < deadline, 'global_deadline_before_qualifier_query_release')
+             evidence = atomic(WORK / 'loaded-observations.json', observations)
+             record = build_loaded_record(plan, trace, checkpoint, observations, evidence)
+@@ -545,6 +598,8 @@
+         need(phase == {'nonce': plan['nonce'], 'phase': 'CLOSED', 'index': None, 'digit': None}, 'actual_CLOSED_required')
+         need(trace['status'] == 'COMPLETE_UNATTESTED' and trace['error'] is None
+              and trace['exit_code'] == 0 and trace['own_inferior_absent'] is True, 'native_actual_exit_unconfirmed')
++        if helper_bundle is not None:
++            check_load_dependency_closed(trace, helper_bundle['runtime'], helper_policy, native)
+         need(trace['process'] == native and trace['symbols'] == initial_symbols,
+              'final_trace_changed_early_process_or_symbols')
+         # The precise inner terminal contract is checked by the separate helper;
+--- a/outer/outer_runner.py
++++ b/outer/outer_runner.py
+@@ -177,6 +177,31 @@
+             'mtime_ns': st.st_mtime_ns, 'ctime_ns': st.st_ctime_ns})
+     need(len({(o['device'], o['inode']) for o in observations}) == 2, 'source_original_copy_inode_alias')
+     return observations
++
++
++def inspect_load_dependency(plan, readonly):
++    observer, base = plan['observer'], plan['inner_input']
++    binding = observer.get('load_dependency')
++    if binding is None:
++        need('load_dependency' not in base, 'helper_inner_without_outer_binding')
++        return None
++    need(type(binding) is dict and set(binding) == {'manifest', 'policy', 'adapter'}, 'helper_outer_binding_schema')
++    for ref in binding.values():
++        read_pinned(ref)
++        need(any(Path(ref['path']).is_relative_to(p) for p in readonly), 'helper_source_not_readonly_mounted')
++    need(binding['manifest']['sha256'] == '92b94f4100609c820f25891e09ec15267802833fb4665c393ff746c4565691d0',
++         'exact_reviewed_Office_helper_manifest')
++    manifest = json.loads(read_pinned(binding['manifest']))
++    policy = load_module('frw_Root_static_helper_policy', binding['policy'])
++    policy.validate_manifest(manifest)
++    runtime = base.get('load_dependency')
++    policy.validate_runtime(runtime, manifest, prelaunch=True)
++    need(runtime['operation_deadline_monotonic'] is None and runtime['nonce'] == plan['nonce']
++         and runtime['operation_id'] == plan['operation_id'] and runtime['manifest_ref'] == binding['manifest']
++         and runtime['source_sha256'] == SOURCE_SHA256, 'helper_outer_runtime_binding')
++    need(manifest['caller']['path'] == observer['config']['symbol_file_path']
++         and manifest['caller']['sha256'] == observer['config']['symbol_file_sha256'], 'helper_same_LO_caller_image')
++    return manifest
+ 
+ 
+ def inspect_plan(plan):
+@@ -216,7 +241,8 @@
+         need(Path(target).resolve() == Path(tools[name]['path']), 'selected_tool_path:' + name)
+         read_pinned(tools[name])
+     observer = plan['observer']
+-    need(type(observer) is dict and set(observer) == {'hook', 'checker', 'contract', 'config'},
++    need(type(observer) is dict and set(observer) in ({'hook', 'checker', 'contract', 'config'},
++         {'hook', 'checker', 'contract', 'config', 'load_dependency'}),
+          'observer_binding_schema')
+     for role in ('hook', 'checker', 'contract'):
+         read_pinned(observer[role])
+@@ -277,6 +303,7 @@
+          and base['preload'] == plan['preload'] and base['handler_source_ref'] == plan['inner_client'],
+          'same_inner_operation_source')
+     need(base['office_process'] is None, 'no_fabricated_prelaunch_process')
++    inspect_load_dependency(plan, readonly)
+     need(base['paths'] == {'work': WORK, 'phase': WORK + '/phase.json', 'trace': WORK + '/native-trace.json',
+          'checkpoint': WORK + '/inner-checkpoint.json', 'loaded_envelope': WORK + '/loaded-envelope.json',
+          'started': WORK + '/inner-started.json'}, 'exact_same_phase_trace_barrier_paths')
+@@ -957,9 +984,16 @@
+                  and trace['symbols'] == ns['native_symbols'] == host_binding['native_symbols'],
+                  'final_trace_differs_from_early_independent_Root_binding')
+             checker = load_module('frw_Root_postclose_native_checker', plan['observer']['checker'])
++            helper_kwargs = {}
++            if 'load_dependency' in plan['observer']:
++                policy = load_module('frw_Root_final_helper_policy', plan['observer']['load_dependency']['policy'])
++                helper_runtime = dict(plan['inner_input']['load_dependency'])
++                helper_runtime['operation_deadline_monotonic'] = (operation_started + plan['budgets']['wall_seconds']
++                                                               - plan['budgets']['cleanup_seconds'])
++                helper_kwargs = {'load_dependency': helper_runtime, 'validate_dependency': policy.validate_closed}
+             evidence = checker.validate_trace(trace_raw, expected_sha256=digest(trace_raw),
+                 nonce=plan['nonce'], process=host_binding['native_process'], symbols=host_binding['native_symbols'],
+-                uno_widths=ns['uno_widths'], root_custody_confirmed=True)
++                uno_widths=ns['uno_widths'], root_custody_confirmed=True, **helper_kwargs)
+             terminal = result['last_snapshot'][0]
+             need(now() - operation_started <= plan['budgets']['wall_seconds'], 'final_whole_operation_wall_exceeded')
+             need(int(terminal['CPUUsageNSec']) / 1_000_000_000 + outside_cpu() <= plan['budgets']['cpu_seconds'],

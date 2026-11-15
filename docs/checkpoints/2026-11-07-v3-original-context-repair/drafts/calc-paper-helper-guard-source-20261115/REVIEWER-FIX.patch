@@ -1,0 +1,157 @@
+--- a/candidate/outer/deps/paper_helper_gdb.py
++++ b/candidate/outer/deps/paper_helper_gdb.py
+@@ -67,6 +67,8 @@
+         self.pending = None
+         self.to_create = []
+         self.breakpoints = []
++        self.stop_handlers = {}
++        self.pending_stop = None
+         self.stream = None
+         self.pipe = None
+         self.original_env = None
+@@ -275,22 +277,13 @@
+             self.n['STATE']['load_dependency'] = self.c.snapshot()
+         self.n['save']()
+ 
+-    def callback(self, fn):
+-        def stop():
+-            try:
+-                fn()
+-                self.pending = 'CONTINUE'
+-                self.publish()
+-            except Exception as e:
+-                self.n['fail'](str(e) if type(e) is RuntimeError else type(e).__name__)
+-            return True
+-        return stop
+-
+     def breakpoint(self, address, fn):
+-        adapter = self
+         class ObserverBreakpoint(self.g.Breakpoint):
+             def stop(self):
+-                return adapter.callback(fn)()
++                # GDB may evaluate this predicate more than once while deciding
++                # an all-stop event. It must not advance the one-shot custody.
++                # The actual BreakpointEvent is consumed once by dispatch().
++                return True
+         bp = ObserverBreakpoint('*' + hex(address), internal=True)
+         # Installed GDB exposes this writable property (also statically present
+         # in its exact binary). An absolute Office address must not be inserted
+@@ -298,7 +291,23 @@
+         bp.inferior = self.g.selected_inferior().num
+         require(bp.inferior == self.g.selected_inferior().num, 'helper_breakpoint_inferior_binding')
+         self.breakpoints.append(bp)
++        self.stop_handlers[bp.number] = (bp.inferior, fn)
+         return bp
++
++    def queue_stop(self, event):
++        """Queue only a real helper BreakpointEvent, never a stop predicate."""
++        hits = [b for b in getattr(event, 'breakpoints', ()) if b.number in self.stop_handlers]
++        if not hits:
++            return False
++        if self.n['STATE']['error'] is not None:
++            return True  # First refusal is terminal; cleanup cannot advance custody.
++        require(len(hits) == 1 and len(event.breakpoints) == 1 and self.pending_stop is None,
++                'helper_ambiguous_or_duplicate_stop_event')
++        inf = self.g.selected_inferior()
++        expected, fn = self.stop_handlers[hits[0].number]
++        require(inf.num == expected and inf.pid > 0, 'helper_stop_event_inferior')
++        self.pending_stop = (fn, inf.num, inf.pid, self.tid(), int(self.g.newest_frame().pc()))
++        return True
+ 
+     def install(self):
+         if self.installed or not self.n['STATE']['process'] or self.g.selected_inferior().num != 1:
+@@ -440,6 +449,8 @@
+         self.c.close(self.tid(), status, time.monotonic(), children_absent=absent, original_ok=True)
+ 
+     def boundary(self, event):
++        if self.n['STATE']['error'] is not None:
++            return
+         kinds = [self.catchpoints.get(b.number) for b in getattr(event, 'breakpoints', ()) if b.type == self.g.BP_CATCHPOINT]
+         require(len(kinds) == 1 and kinds[0] in ('vfork', 'exec'), 'helper_unexpected_fork_or_catchpoint')
+         if kinds[0] == 'vfork':
+@@ -452,6 +463,8 @@
+     def exited(self, event):
+         inf = getattr(event, 'inferior', None)
+         require(inf is not None, 'helper_exit_inferior_unknown')
++        if self.n['STATE']['error'] is not None:
++            return inf.num != 1
+         if inf.num == 1:
+             if self.c is not None:
+                 self.c.metric()
+@@ -463,6 +476,24 @@
+         return True
+ 
+     def dispatch(self):
++        if self.n['STATE']['error'] is not None:
++            self.pending_stop = None
++            self.to_create.clear()
++            self.pending = None
++            return None
++        stopped, self.pending_stop = self.pending_stop, None
++        if stopped is not None:
++            fn, number, pid, thread, pc = stopped
++            try:
++                inf = self.g.selected_inferior()
++                require((inf.num, inf.pid, self.tid(), int(self.g.newest_frame().pc())) ==
++                        (number, pid, thread, pc), 'helper_stop_event_context_changed')
++                fn()
++                self.pending = 'CONTINUE'
++                self.publish()
++            except Exception as e:
++                self.n['fail'](str(e) if type(e) is RuntimeError else type(e).__name__)
++                return None
+         for address, fn in self.to_create:
+             self.breakpoint(address, fn)
+         self.to_create.clear()
+--- a/candidate/outer/deps/native_return_observer.py
++++ b/candidate/outer/deps/native_return_observer.py
+@@ -343,14 +343,17 @@
+ def stopped(event):
+     if isinstance(event, gdb.SignalEvent):
+         fail('unexpected_signal')
++    elif helper is not None and isinstance(event, gdb.BreakpointEvent):
++        try:
++            if helper.queue_stop(event):
++                return
++            if any(b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
++                helper.boundary(event)
++                return
++        except Exception as exc:
++            fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
+     elif isinstance(event, gdb.BreakpointEvent) and any(
+             b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
+-        if helper is not None:
+-            try:
+-                helper.boundary(event)
+-                return
+-            except Exception as exc:
+-                fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
+         try:
+             STATE['process_boundary_diagnostic'] = process_boundary_snapshot()
+         except Exception as exc:
+--- a/tests/paper_fixture_gdb.py
++++ b/tests/paper_fixture_gdb.py
+@@ -78,8 +78,11 @@
+     try:
+         if isinstance(event, gdb.SignalEvent):
+             raise RuntimeError('fixture_unexpected_signal')
+-        if isinstance(event, gdb.BreakpointEvent) and any(b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
+-            helper.boundary(event)
++        if isinstance(event, gdb.BreakpointEvent):
++            if helper.queue_stop(event):
++                return
++            if any(b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
++                helper.boundary(event)
+     except Exception as e:
+         fail(str(e) if type(e) is RuntimeError else type(e).__name__)
+ 
+--- a/tests/test_semantics.py
++++ b/tests/test_semantics.py
+@@ -288,6 +288,7 @@
+ 
+     def test_catchpoints_unknown_fork_and_exit_dispatch(self):
+         a = A.Adapter.__new__(A.Adapter); a.g = types.SimpleNamespace(BP_CATCHPOINT=9)
++        a.n = {'STATE': {'error': None}}
+         a.catchpoints = {1: 'fork', 2: 'vfork', 3: 'exec'}; observed = []
+         a.birth = lambda: observed.append('vfork'); a.exec = lambda: observed.append('exec'); a.publish = lambda: None
+         for n in (2, 3): a.boundary(types.SimpleNamespace(breakpoints=[types.SimpleNamespace(type=9, number=n)]))

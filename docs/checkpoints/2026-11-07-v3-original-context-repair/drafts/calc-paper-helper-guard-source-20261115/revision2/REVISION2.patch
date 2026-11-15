@@ -1,0 +1,78 @@
+--- a/candidate/outer/deps/paper_helper_gdb.py
++++ b/candidate/outer/deps/paper_helper_gdb.py
+@@ -68,6 +68,7 @@
+         self.to_create = []
+         self.breakpoints = []
+         self.stop_handlers = {}
++        self.retired_breakpoints = set()
+         self.pending_stop = None
+         self.stream = None
+         self.pipe = None
+@@ -277,7 +278,7 @@
+             self.n['STATE']['load_dependency'] = self.c.snapshot()
+         self.n['save']()
+ 
+-    def breakpoint(self, address, fn):
++    def breakpoint(self, address, fn, *, one_shot=True):
+         class ObserverBreakpoint(self.g.Breakpoint):
+             def stop(self):
+                 # GDB may evaluate this predicate more than once while deciding
+@@ -291,7 +292,7 @@
+         bp.inferior = self.g.selected_inferior().num
+         require(bp.inferior == self.g.selected_inferior().num, 'helper_breakpoint_inferior_binding')
+         self.breakpoints.append(bp)
+-        self.stop_handlers[bp.number] = (bp.inferior, fn)
++        self.stop_handlers[bp.number] = (bp, fn, one_shot)
+         return bp
+ 
+     def queue_stop(self, event):
+@@ -304,9 +305,11 @@
+         require(len(hits) == 1 and len(event.breakpoints) == 1 and self.pending_stop is None,
+                 'helper_ambiguous_or_duplicate_stop_event')
+         inf = self.g.selected_inferior()
+-        expected, fn = self.stop_handlers[hits[0].number]
+-        require(inf.num == expected and inf.pid > 0, 'helper_stop_event_inferior')
+-        self.pending_stop = (fn, inf.num, inf.pid, self.tid(), int(self.g.newest_frame().pc()))
++        bp, fn, one_shot = self.stop_handlers[hits[0].number]
++        require(bp.number not in self.retired_breakpoints, 'helper_retired_breakpoint_event')
++        require(bp.is_valid() and bp.enabled is True, 'helper_disabled_breakpoint_event')
++        require(inf.num == bp.inferior and inf.pid > 0, 'helper_stop_event_inferior')
++        self.pending_stop = (bp, fn, one_shot, inf.num, inf.pid, self.tid(), int(self.g.newest_frame().pc()))
+         return True
+ 
+     def install(self):
+@@ -321,7 +324,9 @@
+                 return
+             raise
+         self.ensure()
+-        self.breakpoint(libc_base + self.m['images']['libc']['entry'], self.popen)
++        # Keep the popen entry armed for the entire launch: any second invocation
++        # or invocation outside this LOAD still reaches the unchanged refusal.
++        self.breakpoint(libc_base + self.m['images']['libc']['entry'], self.popen, one_shot=False)
+         for name, fn in (('popen_return', self.popen_return), ('fgets_return', self.eof), ('pclose_return', self.pclose_return)):
+             self.breakpoint(caller_base + self.m['caller']['sites'][name]['offset'], fn)
+         self.installed = True
+@@ -483,12 +488,22 @@
+             return None
+         stopped, self.pending_stop = self.pending_stop, None
+         if stopped is not None:
+-            fn, number, pid, thread, pc = stopped
++            bp, fn, one_shot, number, pid, thread, pc = stopped
+             try:
+                 inf = self.g.selected_inferior()
++                require(bp.number not in self.retired_breakpoints and bp.is_valid() and bp.enabled is True,
++                        'helper_stop_breakpoint_changed')
+                 require((inf.num, inf.pid, self.tid(), int(self.g.newest_frame().pc())) ==
+                         (number, pid, thread, pc), 'helper_stop_event_context_changed')
+                 fn()
++                if one_shot:
++                    # The fixed caller visits each return site once per popen;
++                    # both helper entries are one-shot too. Retire only AFTER
++                    # its exact value/context checks succeed, outside stop().
++                    # All-stop helper exits can leave original at this same PC.
++                    bp.enabled = False
++                    require(bp.enabled is False, 'helper_breakpoint_retirement_failed')
++                    self.retired_breakpoints.add(bp.number)
+                 self.pending = 'CONTINUE'
+                 self.publish()
+             except Exception as e:
