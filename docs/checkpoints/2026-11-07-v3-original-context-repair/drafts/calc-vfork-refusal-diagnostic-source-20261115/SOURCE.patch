@@ -1,0 +1,85 @@
+--- a/outer/deps/native_return_observer.py
++++ b/outer/deps/native_return_observer.py
+@@ -258,11 +258,82 @@
+         fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
+ 
+ 
++def boundary_symbol(value, limit):
++    # Symbol/module metadata only. Never format a frame, argument, value or path.
++    if value is None:
++        return None
++    return ''.join(c if 32 <= ord(c) < 127 else '?' for c in value[:limit])
++
++
++def boundary_proc_identity(pid):
++    # Numeric Linux identity only; never retain comm, argv, environ or exe path.
++    with Path('/proc/' + str(pid) + '/stat').open('r', encoding='ascii') as f:
++        raw = f.read(4097)
++    require(len(raw) <= 4096, 'boundary_stat_bound')
++    fields = raw.rsplit(')', 1)[1].split()
++    return {'pid': pid, 'ppid': int(fields[1]), 'start_ticks': int(fields[19])}
++
++
++def process_boundary_snapshot():
++    # Refusal-only best effort while stopped. No GDB commands, inferior calls,
++    # argument/local/register/payload reads, resume, breakpoint changes or writes.
++    result = {'schema': 'frw.process-boundary-symbols.v1',
++              'purpose': 'REFUSAL_DIAGNOSTIC_ONLY', 'gdb_pid': os.getpid(),
++              'known_process': STATE['process'], 'frames': []}
++    try:
++        inferiors = gdb.inferiors()
++        result['inferiors'] = [{'number': i.num, 'pid': i.pid} for i in inferiors[:4]]
++        result['inferiors_truncated'] = len(inferiors) > 4
++        inf = gdb.selected_inferior()
++        result['selected_inferior'] = {'number': inf.num, 'pid': inf.pid}
++        t = gdb.selected_thread()
++        ptid = list(t.ptid) if t is not None and t.is_valid() else None
++        result['selected_thread_ptid'] = ptid
++        known = STATE['process']
++        if (known is not None and inf.pid == known['pid'] and ptid is not None
++                and len(ptid) == 3 and all(type(v) is int and v >= 0 for v in ptid)
++                and ptid[0] == inf.pid and ptid[1] > 0):
++            parent = boundary_proc_identity(inf.pid)
++            result['selected_process_identity'] = parent
++            # Children belong to the exact selected parent LWP, not a /proc scan.
++            if parent['ppid'] == os.getpid() and parent['start_ticks'] == known['start_ticks']:
++                p = Path('/proc/' + str(inf.pid) + '/task/' + str(ptid[1]) + '/children')
++                with p.open('r', encoding='ascii') as f:
++                    children = f.read(257)
++                require(len(children) <= 256, 'boundary_children_bound')
++                pids = children.split()
++                require(all(v.isdecimal() and 0 < int(v) <= 2147483647 for v in pids),
++                        'boundary_children_numeric')
++                result['selected_lwp_children'] = [int(v) for v in pids[:8]]
++                result['children_truncated'] = len(pids) > 8
++    except Exception as exc:
++        result['identity_exception_class'] = type(exc).__name__
++    try:
++        f = gdb.newest_frame()
++        for _ in range(24):
++            if f is None or not f.is_valid():
++                break
++            pc = int(f.pc())
++            module = gdb.solib_name(pc)
++            result['frames'].append({'pc': pc, 'kind': int(f.type()),
++                'symbol': boundary_symbol(f.name(), 256),
++                'module_basename': boundary_symbol(Path(module).name, 128) if module else None})
++            f = f.older()
++        result['frames_truncated'] = f is not None
++    except Exception as exc:
++        result['stack_exception_class'] = type(exc).__name__
++    return result
++
++
+ def stopped(event):
+     if isinstance(event, gdb.SignalEvent):
+         fail('unexpected_signal')
+     elif isinstance(event, gdb.BreakpointEvent) and any(
+             b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
++        try:
++            STATE['process_boundary_diagnostic'] = process_boundary_snapshot()
++        except Exception as exc:
++            STATE['process_boundary_diagnostic'] = {'exception_class': type(exc).__name__}
+         fail('unexpected_fork_vfork_exec')
+ 
+ 
