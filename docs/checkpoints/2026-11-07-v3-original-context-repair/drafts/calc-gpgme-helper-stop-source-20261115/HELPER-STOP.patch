@@ -1,0 +1,389 @@
+--- /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M2-REVIEWED-ROOT-20261115/candidate/outer/deps/paper_helper_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-HELPER-STOP-COMPOSITION-20261115/candidate/outer/deps/paper_helper_gdb.py
+@@ -756,12 +756,30 @@
+         require(all(not (Path('/proc') / str(c['pid'])).exists() for c in self.c.e['children']), 'helper_child_present_before_metric')
+         self.original_check()
+ 
+-    def original_selected(self):
+-        for inf in self.g.inferiors():
+-            if inf.num == 1 and inf.pid:
+-                self.g.execute('inferior 1', to_string=True)
+-                return True
+-        return False
++    def original_selected(self, *, thread=None):
++        """Select a stopped original LWP without CLI frame printing.
++
++        GDB's `inferior 1` chooses a default LWP, which need not be the
++        worker that owns this custody.  Never ask GDB for a running frame.
++        """
++        matches = [inf for inf in self.g.inferiors() if inf.is_valid() and inf.num == 1 and inf.pid]
++        if not matches:
++            return False
++        require(len(matches) == 1, 'helper_original_inferior_ambiguous')
++        inf = matches[0]
++        expected = thread
++        if expected is None and self.c is not None and self.c.e['state'] not in ('DISARMED', 'CLOSED'):
++            expected = self.c.thread
++        candidates = [t for t in inf.threads() if t.is_valid() and t.is_stopped()
++                      and (expected is None or list(t.ptid) == list(expected))]
++        require(candidates, 'helper_original_stopped_thread_unavailable')
++        current = self.g.selected_thread()
++        selected = next((t for t in candidates if t is current), None)
++        selected = selected or min(candidates, key=lambda t: tuple(t.ptid))
++        selected.switch()
++        require(self.g.selected_inferior() is inf and self.g.selected_thread() is selected
++                and selected.is_stopped(), 'helper_original_selection_changed')
++        return True
+ 
+     def identity_scope(self):
+         """Extra terminal inferiors never replace the original numeric identity."""
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-RUNCONTROL-SOURCE-DELTA-20261115/candidate/outer/deps/native_return_observer.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-HELPER-STOP-COMPOSITION-20261115/candidate/outer/deps/native_return_observer.py
+@@ -488,67 +488,78 @@
+ 
+ def stopped(event):
+     global pending_action
+-    if STATE['error'] is not None:
+-        if helper is not None and hasattr(helper, 'clear_pending'):
+-            helper.clear_pending()
+-        return
+-    if helper is not None and hasattr(helper, 'materialization_stop'):
+-        try:
+-            if helper.materialization_stop(event):
++    STATE['helper_event_depth'] = STATE.get('helper_event_depth', 0) + 1
++    try:
++        if STATE['error'] is not None:
++            if helper is not None and hasattr(helper, 'clear_pending'):
++                helper.clear_pending()
++            return
++        if helper is not None and hasattr(helper, 'materialization_stop'):
++            try:
++                if helper.materialization_stop(event):
++                    return
++            except Exception as exc:
++                fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
+                 return
+-        except Exception as exc:
+-            fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++        if isinstance(event, gdb.SignalEvent):
++            if STATE.get('gpgme_drain_active', False):
++                fail('gpgme_drain_unexpected_signal')
++                return
++            if (getattr(event, 'stop_signal', None) == 'SIGSTOP' and helper is not None
++                    and pending_action is None):
++                pending_action = 'FONT_RUNTIME'
++            else:
++                fail('unexpected_signal')
++        elif helper is not None and isinstance(event, gdb.BreakpointEvent):
++            try:
++                if helper.queue_stop(event):
++                    return
++                if any(b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
++                    helper.boundary(event)
++                    return
++            except Exception as exc:
++                # The helper refuses unknown fork/catchpoint before the generic branch.
++                # Keep that first refusal; add only the existing bounded symbol snapshot.
++                if (STATE['error'] is None and type(exc) is RuntimeError
++                        and str(exc) == 'helper_unexpected_fork_or_catchpoint'):
++                    try:
++                        STATE['process_boundary_diagnostic'] = process_boundary_snapshot()
++                    except Exception as diagnostic_exc:
++                        STATE['process_boundary_diagnostic'] = {'exception_class': type(diagnostic_exc).__name__}
++                fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++        elif isinstance(event, gdb.BreakpointEvent) and any(
++                b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
++            try:
++                STATE['process_boundary_diagnostic'] = process_boundary_snapshot()
++            except Exception as exc:
++                STATE['process_boundary_diagnostic'] = {'exception_class': type(exc).__name__}
++            fail('unexpected_fork_vfork_exec')
++
++    finally:
++        STATE['helper_event_depth'] -= 1
++
++def exited(event):
++    STATE['helper_event_depth'] = STATE.get('helper_event_depth', 0) + 1
++    try:
++        if STATE['error'] is not None:
++            if helper is not None and hasattr(helper, 'clear_pending'):
++                helper.clear_pending()
+             return
+-    if isinstance(event, gdb.SignalEvent):
+-        if (getattr(event, 'stop_signal', None) == 'SIGSTOP' and helper is not None
+-                and pending_action is None):
+-            pending_action = 'FONT_RUNTIME'
+-        else:
+-            fail('unexpected_signal')
+-    elif helper is not None and isinstance(event, gdb.BreakpointEvent):
+-        try:
+-            if helper.queue_stop(event):
++        if (helper is not None and hasattr(helper, 'gpgme')
++                and helper.gpgme.fork_pending is not None):
++            fail('gpgme_pending_fork_unexpected_exit')
++            return
++        if helper is not None:
++            try:
++                if helper.exited(event):
++                    return
++            except Exception as exc:
++                fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
+                 return
+-            if any(b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
+-                helper.boundary(event)
+-                return
+-        except Exception as exc:
+-            # The helper refuses unknown fork/catchpoint before the generic branch.
+-            # Keep that first refusal; add only the existing bounded symbol snapshot.
+-            if (STATE['error'] is None and type(exc) is RuntimeError
+-                    and str(exc) == 'helper_unexpected_fork_or_catchpoint'):
+-                try:
+-                    STATE['process_boundary_diagnostic'] = process_boundary_snapshot()
+-                except Exception as diagnostic_exc:
+-                    STATE['process_boundary_diagnostic'] = {'exception_class': type(diagnostic_exc).__name__}
+-            fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
+-    elif isinstance(event, gdb.BreakpointEvent) and any(
+-            b.type == gdb.BP_CATCHPOINT for b in event.breakpoints):
+-        try:
+-            STATE['process_boundary_diagnostic'] = process_boundary_snapshot()
+-        except Exception as exc:
+-            STATE['process_boundary_diagnostic'] = {'exception_class': type(exc).__name__}
+-        fail('unexpected_fork_vfork_exec')
+-
+-
+-def exited(event):
+-    if STATE['error'] is not None:
+-        if helper is not None and hasattr(helper, 'clear_pending'):
+-            helper.clear_pending()
+-        return
+-    if (helper is not None and hasattr(helper, 'gpgme')
+-            and helper.gpgme.fork_pending is not None):
+-        fail('gpgme_pending_fork_unexpected_exit')
+-        return
+-    if helper is not None:
+-        try:
+-            if helper.exited(event):
+-                return
+-        except Exception as exc:
+-            fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
+-            return
+-    STATE['exit_code'] = getattr(event, 'exit_code', None)
+-
++        STATE['exit_code'] = getattr(event, 'exit_code', None)
++
++    finally:
++        STATE['helper_event_depth'] -= 1
+ 
+ def load_helper():
+     # Separate explicit GpgME bundle is loaded only alongside the unchanged
+--- /home/jericho/.cache/FRW-SOL-V3-GPGME-PENDING-FORK-PROTOCOL-CORE-20261115/r3/candidate/outer/deps/gpgme_engine_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-HELPER-STOP-COMPOSITION-20261115/candidate/outer/deps/gpgme_engine_gdb.py
+@@ -136,10 +136,11 @@
+         self.fork_terminal = False
+ 
+     def _selection(self):
+-        inf, thread, frame = self.g.selected_inferior(), self.g.selected_thread(), self.g.selected_frame()
++        inf, thread = self.g.selected_inferior(), self.g.selected_thread()
+         need(inf.is_valid() and inf.pid > 0 and thread is not None and thread.is_valid()
+-             and thread.is_stopped() and frame is not None and frame.is_valid(),
+-             'gpgme_selection_unavailable')
++             and thread.is_stopped(), 'gpgme_selection_unavailable')
++        frame = self.g.selected_frame()
++        need(frame is not None and frame.is_valid(), 'gpgme_selection_unavailable')
+         level = int(frame.level())
+         need(0 <= level < 24, 'gpgme_selection_frame_bound')
+         return (inf.num, inf.pid, tuple(thread.ptid), level, int(frame.pc()))
+@@ -1194,6 +1195,8 @@
+         return True
+ 
+     def dispatch(self):
++        need(self.n['STATE'].get('helper_event_depth', 0) == 0,
++             'gpgme_dispatch_inside_event_callback')
+         if self.n['STATE']['error'] is not None:
+             self.clear_pending()
+             return None
+@@ -1230,53 +1233,122 @@
+             self.breakpoint(address, fn, inferior, one_shot)
+         self.to_create.clear()
+         if self.exits and self.c is not None and self.c.current is not None:
+-            self.paper.original_selected()
+-            context, snap = self.context()
+-            self.flush_exits(context, snap)
+-            self.refresh_reparent(context, snap)
+-            self.try_close(context, snap)
++            # Exit events may leave no selected live LWP.  Otherwise preserve
++            # the stop's exact thread/frame while observing original custody.
++            saved = self._selection() if self.g.selected_inferior().pid else None
++            try:
++                need(self.paper.original_selected(thread=self.init_thread),
++                     'gpgme_exit_original_unavailable')
++                context, snap = self.context(thread=self.init_thread)
++                self.flush_exits(context, snap)
++                self.refresh_reparent(context, snap)
++                self.try_close(context, snap)
++            finally:
++                if saved is not None:
++                    self._restore_selection(saved)
+         action, self.pending = self.pending, None
+         self.publish()
+         return action
+ 
+     def drain(self):
+-        """Hold original engine return while a known final child finishes.
+-
+-        No child receives a new budget.  Never resume the original beyond its
+-        return breakpoint to manufacture completion.  The exact GDB scheduling
+-        behavior is part of Root's separate harmless actual qualification.
++        """Complete this invocation while its exact original LWP stays held.
++
++        A read-close return is an internal library boundary; engine_return is
++        the final API boundary.  Both retain the original's exact stopped PC
++        until this invocation closes, and only final return may finish init.
++
++        The pinned GNU17.1 ordinary synchronous command path (not a callback
++        or hook) clears nonexecuting threads from the GLOBAL step-over queue
++        at normal_stop, and native all-stop clears LWP resumed intent.  Fresh
++        collector OS+GDB all-stop checks preserve those preconditions.  The
++        schedule/locking settings alone are not a sole-child execution proof.
+         """
++        need(self.n['STATE'].get('helper_event_depth', 0) == 0,
++             'gpgme_drain_inside_event_callback')
+         need(self.init_active and self.c.current is not None
+              and self.c.current['parent_read_closed'], 'gpgme_drain_wrong_phase')
+-        c = self.c.current
+-        while c is not None:
+-            need(time.monotonic() < self.b['runtime']['operation_deadline_monotonic'],
+-                 'gpgme_original_deadline_expired')
+-            live = [i for i in self.g.inferiors() if i.pid and
+-                    i.num in [v['inferior'] for v in c['children']]]
+-            if live:
++        need(self.paper.original_selected(thread=self.init_thread), 'gpgme_drain_original_unavailable')
++        held = self._selection()
++        need(list(held[2]) == self.init_thread, 'gpgme_drain_original_thread_changed')
++        settings = {key: self.g.parameter(key) for key in
++                    ('follow-fork-mode', 'schedule-multiple', 'scheduler-locking')}
++        need(settings == {'follow-fork-mode': 'parent', 'schedule-multiple': True,
++                          'scheduler-locking': 'off'}, 'gpgme_drain_runcontrol_changed')
++        failure = None
++        need(not self.n['STATE'].get('gpgme_drain_active', False), 'gpgme_drain_reentry')
++        self.n['STATE']['gpgme_drain_active'] = True
++        try:
++            while self.c.current is not None:
++                need(self.n['STATE']['error'] is None and self.fork_pending is None
++                     and self.pending_stop is None and not self.to_create and not self.to_retire,
++                     'gpgme_drain_pending_or_refused')
++                self._restore_selection(held)
++                context, snap = self.context(thread=self.init_thread)
++                self.flush_exits(context, snap)
++                self.refresh_reparent(context, snap)
++                if self.c.current is None or self.try_close(context, snap):
++                    break
++                c = self.c.current
++                numbers = {v['inferior'] for v in c['children']}
++                live = [i for i in self.g.inferiors() if i.is_valid() and i.pid and i.num in numbers]
+                 need(len(live) <= 2, 'gpgme_drain_unknown_children')
+-                self.g.execute('set schedule-multiple off', to_string=True)
+-                self.g.execute('inferior ' + str(live[-1].num), to_string=True)
+-                self.g.execute('continue', to_string=True)
+-                need(self.n['STATE']['error'] is None, 'gpgme_drain_refused')
+-                self.dispatch()
+-            self.paper.original_selected()
+-            context, snap = self.context(thread=self.init_thread)
+-            self.flush_exits(context, snap)
+-            self.refresh_reparent(context, snap)
+-            if self.c.current is None or self.try_close(context, snap):
+-                break
+-            if not live:
+-                need(all(child['exit_code'] == 0 for child in self.c.current['children']),
+-                     'gpgme_exit_status_unknown_at_reap_boundary')
+-                # The pinned namespace reaper is outside the GDB inferior set.
+-                # Wait only for already observed exit0 PIDs to disappear while
+-                # the original remains held, never give another actor a clock.
+-                time.sleep(min(0.005, max(0, self.b['runtime']['operation_deadline_monotonic'] - time.monotonic())))
+-            c = self.c.current
+-        self.g.execute('set schedule-multiple on', to_string=True)
+-        self.paper.original_selected()
++                if live:
++                    # Select the final live child first; fall back to its
++                    # original intermediate only while it remains observed.
++                    child = max(live, key=lambda i: i.num)
++                    threads = list(child.threads())
++                    need(len(threads) == 1 and threads[0].is_valid() and threads[0].is_stopped()
++                         and list(threads[0].ptid) == [child.pid, child.pid, 0],
++                         'gpgme_drain_child_thread_changed')
++                    threads[0].switch()
++                    self.context(role='final' if child.num == c['children'][-1]['inferior'] else 'intermediate')
++                    for key, value in (('schedule-multiple', 'off'), ('scheduler-locking', 'on')):
++                        self.g.execute('set ' + key + ' ' + value, to_string=True)
++                    need(self.g.parameter('follow-fork-mode') == 'parent'
++                         and self.g.parameter('schedule-multiple') is False
++                         and self.g.parameter('scheduler-locking') == 'on',
++                         'gpgme_drain_runcontrol_readback')
++                    # All-stop + exact source induction closes both the global
++                    # step-over queue and native async wait-resume edges.
++                    self.context(role='final' if child.num == c['children'][-1]['inferior'] else 'intermediate')
++                    self.g.execute('continue', to_string=True)
++                    need(self.n['STATE']['error'] is None, 'gpgme_drain_refused')
++                    # Save this stop before checking the held original.  A
++                    # queued breakpoint handler belongs to the event LWP.
++                    event_selection = self._selection() if self.g.selected_inferior().pid else None
++                    # Refuse an unfinished asynchronous continue before
++                    # dispatch/another resume, without asking for running frames.
++                    self._restore_selection(held)
++                    self.context(thread=self.init_thread)
++                    if event_selection is not None:
++                        self._restore_selection(event_selection)
++                    action = self.dispatch()
++                    need(action == 'CONTINUE', 'gpgme_drain_unrecognized_stop')
++                else:
++                    need(all(child['exit_code'] == 0 for child in c['children']),
++                         'gpgme_exit_status_unknown_at_reap_boundary')
++                    # Only the already-observed reaper may remove these exited
++                    # PIDs.  No actor resumes and no fresh clock is created.
++                    time.sleep(min(0.005, max(0, self.b['runtime']['operation_deadline_monotonic'] - time.monotonic())))
++        except Exception as exc:
++            failure = str(exc) if type(exc) is RuntimeError else type(exc).__name__
++        finally:
++            self.n['STATE']['gpgme_drain_active'] = False
++            # Bounded nonexecuting restoration also runs after the first error.
++            for key, value in settings.items():
++                try:
++                    text = ('on' if value else 'off') if type(value) is bool else value
++                    self.g.execute('set ' + key + ' ' + text, to_string=True)
++                    need(self.g.parameter(key) == value, 'gpgme_drain_restore_settings')
++                except Exception as exc:
++                    failure = failure or (str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++            try:
++                self._restore_selection(held)
++            except Exception as exc:
++                failure = failure or (str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++        if failure is not None:
++            self.clear_pending()
++            raise RuntimeError(failure)
+         context, _snap = self.context(thread=self.init_thread)
+         if self.finished_at_return:
+             self.finish(context)
+@@ -1351,6 +1423,12 @@
+     def __getattr__(self, name):
+         return getattr(self.paper, name)
+ 
++    def original_selected(self):
++        # Both actual callers use this union entry after a child exit.
++        # Keep the initialized worker, not paper's already-closed default LWP.
++        thread = self.gpgme.init_thread if self.gpgme.init_active else None
++        return self.paper.original_selected(thread=thread)
++
+     def install(self):
+         self.paper.install()
+         self.gpgme.install()
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-RUNCONTROL-SOURCE-DELTA-20261115/driver/ownc_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-HELPER-STOP-COMPOSITION-20261115/driver/ownc_gdb.py
+@@ -322,7 +322,7 @@
+             if action=='FONT_RUNTIME':
+                 capture_font_runtime();STATE['accepted_held_points']=len(font_runtime_boundaries);save()
+             elif action=='GPG_DRAIN':helper.gpgme.drain()
+-            else:require(action in(None,'CONTINUE'),'fixture_unrecognized_stop')
++            else:require(action=='CONTINUE' or (action is None and not helper.installed),'fixture_unrecognized_stop')
+         else:raise RuntimeError('fixture_stop_limit')
+         require(STATE['error'] is None and STATE['exit_code']==0 and len(font_runtime_boundaries)==2
+                 and len(STATE['records'])==10 and helper.paper.c.e['state']=='CLOSED'
