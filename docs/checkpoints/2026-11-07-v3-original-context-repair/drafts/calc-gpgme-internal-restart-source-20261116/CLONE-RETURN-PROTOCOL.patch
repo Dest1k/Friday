@@ -1,0 +1,81 @@
+--- before/outer/deps/gpgme_engine_gdb.py
++++ after/outer/deps/gpgme_engine_gdb.py
+@@ -1375,7 +1375,8 @@
+         token = self.clone_protocol.get((parent['pid'], offset))
+         need((parent['pid'], offset) in self.clone_entries and token is not None
+              and token['invocation'] is self.c.current and token['parent'] == parent
+-             and token['offset'] == offset and token['state'] == 'ENTERED'
++             and token['offset'] == offset
++             and token['state'] in ('ENTERED', 'RESTART_PENDING')
+              and token['child'] is None and not token['parent_return_seen'],
+              'gpgme_fork_without_exact_live_clone_entry')
+         return token
+@@ -1432,14 +1433,17 @@
+             self.clone_entries.add(key)
+             self.clone_protocol[key] = dict(invocation=c, parent=copy.deepcopy(parent),
+                 parent_inferior=inf.num, thread=list(tid), offset=offset,
+-                arguments=arguments, entry_reason=reason, state='ENTERED',
++                arguments=arguments, syscall_pc=pc, libc_load_bias=libc['load_bias'],
++                entry_reason=reason, state='ENTERED', restart_returns=[],
++                restart_markers=[],
+                 child=None, child_inferior=None, parent_return_seen=False,
+                 parent_return_reason=None, child_return_seen=False,
+                 source_return_seen=False)
+             return
+         need(key in self.clone_entries and token['invocation'] is c
+              and token['parent'] == parent and token['offset'] == offset
+-             and token['arguments'] == arguments,
++             and token['arguments'] == arguments and token['syscall_pc'] == pc
++             and token['libc_load_bias'] == libc['load_bias'],
+              'gpgme_clone_entry_stale_or_arguments_changed')
+         if pid == parent['pid']:
+             need(selected == parent and inf.num == token['parent_inferior']
+@@ -1447,12 +1451,34 @@
+                  and not token['source_return_seen'],
+                  'gpgme_clone_parent_return_identity_or_duplicate')
+             if value < 0:
+-                # With no extended fork event, GDB toggles the saved phase.
+-                # No child, birth, exit status or success is invented here.
+-                need(-4095 <= value < 0 and token['state'] == 'ENTERED'
+-                     and token['child'] is None and len(c['children']) == index
+-                     and (value != -38 or reason != token['entry_reason']),
++                need(-4095 <= value < 0
++                     and token['state'] in ('ENTERED', 'RESTART_PENDING')
++                     and token['child'] is None and len(c['children']) == index,
+                      'gpgme_clone_negative_return_without_exact_entry')
++                if value == -513:
++                    # copy_process returns this internal status before child
++                    # allocation. Ptrace can observe it before x86 rewinds the
++                    # same syscall. GDB may hide intervening entry traps or
++                    # reset their labels: repeated raw restart observations
++                    # retain this one token and grant no new entry or birth.
++                    # context() bounds every stop by the same deadline,
++                    # resource custody and unchanged MAX_BOUNDARIES.
++                    token['restart_returns'].append(dict(value=value, reason=reason))
++                    token['state'] = 'RESTART_PENDING'
++                    return
++                if token['state'] == 'RESTART_PENDING' and value == -38:
++                    # This may be the restarted entry sentinel or a returned
++                    # ENOSYS with a reset label. Retain the raw ambiguity; do
++                    # not invent an entry or errno. An actual fork/birth and
++                    # exact GPGME source-parent return are still mandatory.
++                    # A source return of -1 remains a terminal refusal.
++                    token['restart_markers'].append(dict(value=value, reason=reason))
++                    return
++                need(value != -38 or reason != token['entry_reason'],
++                     'gpgme_clone_negative_return_without_exact_entry')
++                if value in (-512, -514, -516):
++                    token['state'] = 'FAILED'
++                    raise RuntimeError('gpgme_clone_unexpected_kernel_restart_code_' + str(-value))
+                 token['state'], token['errno'] = 'FAILED', -value
+                 token['parent_return_seen'] = True
+                 raise RuntimeError('gpgme_clone_syscall_failed_errno_' + str(-value))
+@@ -1515,7 +1541,7 @@
+         self.collector.pinned_file(signature['image'])
+         value = self.signed('rax')
+         if value == -1:
+-            need(token['state'] == 'ENTERED' and token['child'] is None
++            need(token['state'] in ('ENTERED', 'RESTART_PENDING') and token['child'] is None
+                  and len(c['children']) == index and not token['parent_return_seen'],
+                  'gpgme_source_fork_failed_with_inconsistent_birth')
+             token['state'], token['source_return_seen'] = 'FAILED', True
