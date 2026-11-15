@@ -1,0 +1,19 @@
+# GpgME observer — reviewed M2 source
+
+SOURCE ONLY. Not installed, qualified or admitted for execution. Installed224 and permanent services are unchanged. CASE165/F04 rich ODS→XLSX, actual M, the trusted provider, historical applicability and physical fidelity remain open. Full170/120/B00 is not accepted.
+
+The selected source implements the collector, six-branch GDB adapter, disjoint paper/GpgME custody, native dispatch, namespace/outer/inner consumers, evidence checker and output inventory. The frozen original M2 was rejected: five source joins or lifecycle paths prevented the required caller from working. This archive selects three exact repaired afterimages and thirteen unchanged inputs; the original freeze and verdict remain preserved privately.
+
+The repairs assign catchpoints to both custody owners, retire clone-entry tokens only after successful invocation closure, keep debugger control references out of the inferior environment, bind the complete actual current environment once at its source-bound bootstrap, and preserve the cached getter outside LOAD without repeating that bind. Font15, isolated paths, forbidden environment inputs, exact child environment, maps/ELF/UID provenance, unknown-event refusal, original deadlines and cleanup guards remain required. Host UID0 and namespace overflow UID65534 are distinct and require the actual projection witness.
+
+Root inspected the complete repair diff, reproduced it exactly, verified45 direct review references, compiled the selected Python source in memory and bound all16 inputs (507851 bytes). The whole independent source review accepted this exact overlay. Its84 final collector controls contain54 retained and30 corrected/current-environment controls; four superseded static-environment expectations are not current acceptance tests. Native, clone lifecycle, bootstrap and nearest-consumer changes have separate addressed controls. The original142 observations are preserved and were not transferred automatically to repaired bytes. The earlier clone repair controls refer to an intermediate adapter; the final bootstrap and cross-consumer controls cover the selected115830f6 adapter.
+
+The unused `MultiCustody.cleanup_inferiors` convenience method is not a supported callable cleanup API. The reviewed native `finally` path owns actual cleanup. Do not substitute that unused method for it.
+
+The manifest records exact provenance and source hashes. Test sources retain private staging references and omitted review fixtures; they are provided for source review, not as a portable or executable qualification bundle. `candidate/outer/deps/collector_tests.py` is historical fixture source with four obsolete expectations. No test in this archive was run by packaging.
+
+Next is the separately prepared harmless own-C caller: final driver, namespace/Root witness joins and an explicit fixture-only validator copy need review before any finite actual qualification. Production Office manifest92b and its validator remain unchanged. The selected future positive is the worker/cached-getter fixture, with three scoped negative controls; compiled targets have not been executed. Actual child outcomes, namespace reaper, current host/resource bindings and cleanup are collected at their proper boundaries, never prepassed. Own-C results cannot prove Office M, font restoration, UNO state or historical applicability. A separate current Office observation remains later work.
+
+Original user2793, all closed private LOAD observations and their clocks/ONCE records remain unchanged. This source preparation grants no model, producer, render, send, App or stop replay.
+
+Only allowlisted source, this note and the manifest are published. Private raw memory/maps/addresses/core/logs, binaries/debug/source archives, documents, user DB/WAL/SHM, plans/grants/ONCE, runtime bundles, credentials and actual operation identifiers are omitted. Root owns integration and publication.

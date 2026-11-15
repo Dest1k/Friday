@@ -1,0 +1,219 @@
+--- /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M2-COMPLETE-OBSERVER-SOURCE-20261115/candidate/outer/deps/gpgme_boundary_collector.py
++++ /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M2-WHOLE-REVIEW-20261115/collector-repair/gpgme_boundary_collector.py
+@@ -7,8 +7,11 @@
+ boundary only; it is not an admission or a claim of continuous stability.
+ 
+ API: BoundaryCollector(gdb, native_namespace, pins, runtime=bundle_runtime).
+-proc(pid) returns {pid,ppid,start_ticks}; current_environment(pid) returns the
+-actual effective environment; image_binding(pid,image,pc), dependencies(pid,
++proc(pid) returns {pid,ppid,start_ticks}. At the adapter's already source-bound
++original bootstrap, bind_current_environment(pid) freezes and returns a copy
++of the actual effective environment for this one initialization. Subsequent
++current_environment(pid) checks that complete frozen snapshot; it never binds
++implicitly. image_binding(pid,image,pc), dependencies(pid,
+ role), fds(pid), config(pid), resources(pid), exec_observation(pid,image,pc,
+ role), snapshot(original_pid,role='original',expected_thread=None) collect
+ their named evidence. snapshot['context'] is the policy's exact boundary
+@@ -55,6 +58,12 @@
+     storage_offset=0x219de8, dereference_offset=0x8e238, dereference_bytes='4c8b08',
+     call_offset=0x8e242, call_bytes='e879cc0800', zero_fill_start=0x214000,
+     data_memory_end=0x220d90)
++# Exact same fifteen selected font inputs as immutable paper_helper_gdb.py.
++# Other effective environment keys are frozen from actual libc memory at bind,
++# not guessed from the launch environment or accepted by a name/value list.
++FONT_ENV_KEYS = ('HOME', 'TMPDIR', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
++    'FONTCONFIG_FILE', 'FONTCONFIG_PATH', 'FONTCONFIG_SYSROOT', 'FC_LANG', 'LANG', 'LC_ALL',
++    'SAL_FONTPATH', 'SAL_USE_VCLPLUGIN', 'LD_LIBRARY_PATH', 'URE_BOOTSTRAP')
+ 
+ 
+ def need(value, reason):
+@@ -385,6 +394,7 @@
+         self._release_digest = None
+         self._unit_digest = None
+         self._entry_verified = set()
++        self._current_environment = None
+ 
+     def _read(self, path, limit):
+         need(canonical(path) and integer(limit, 1) and limit <= MAX_FILE, 'gpgme_collector_read_bound')
+@@ -586,8 +596,57 @@
+         need(len(result) == count, 'gpgme_collector_short_memory_read')
+         return result
+ 
++    def _bound_environment(self):
++        need(self.refusal is None, self.refusal or 'gpgme_collector_terminal_refusal')
++        need(self._current_environment is not None, 'gpgme_collector_current_environment_unbound')
++        return dict(self._current_environment)
++
++    def bind_current_environment(self, pid):
++        """Freeze once at the adapter's proved current original source site.
++
++        The caller owns that source-site proof, before calling this method.
++        This method independently requires the selected original all-stop
++        boundary, reads actual pinned-libc GOT __environ twice, and joins its
++        fifteen font inputs to both the static launch pins and actual kernel
++        exec metadata. Kernel exec metadata is a separate startup baseline;
++        it never stands in for the actual effective environment. The returned
++        full dict is a copy; the internal complete snapshot is immutable.
++        """
++        if self.refusal is not None:
++            raise RuntimeError(self.refusal)
++        try:
++            need(self._current_environment is None, 'gpgme_collector_current_environment_already_bound')
++            identity = self.proc(pid)
++            need(type(pid) is int and pid == self.p['original']['pid']
++                 and identity == self.p['original'] and self.g.selected_inferior().pid == pid,
++                 'gpgme_collector_current_environment_original_binding')
++            stop = self._all_stop(pid)
++            raw = self._read('/proc/%d/environ' % pid, 131072)
++            initial = parse_environment(raw)
++            policy.validate_environment(initial, initial)
++            current = self._effective_environment(pid)
++            policy.validate_environment(current, current)
++            need(all(current.get(k) == initial.get(k) == self.p['environment'].get(k)
++                     for k in FONT_ENV_KEYS), 'gpgme_collector_font_runtime_environment_changed')
++            need(self._read('/proc/%d/environ' % pid, 131072) == raw
++                 and self.proc(pid) == identity and self._all_stop(pid) == stop
++                 and self.g.selected_inferior().pid == pid,
++                 'gpgme_collector_current_environment_binding_changed')
++            self._current_environment = tuple(sorted(current.items()))
++            return dict(self._current_environment)
++        except Exception as exc:
++            self.refusal = str(exc) if type(exc) is RuntimeError else type(exc).__name__
++            raise RuntimeError(self.refusal) from None
++
+     def current_environment(self, pid):
+-        """Effective __environ, never exec-time /proc/PID/environ as a substitute."""
++        """Actual effective __environ, exact against the explicit frozen bind."""
++        expected = self._bound_environment()
++        result = self._effective_environment(pid)
++        policy.validate_environment(result, expected)
++        return result
++
++    def _effective_environment(self, pid):
++        """Bounded double actual read; no implicit initialization or admission."""
+         identity = self.proc(pid)
+         stop = self._all_stop(pid)
+         self._memory_total = 0
+@@ -642,7 +701,6 @@
+         pointer, result = collect()
+         need((pointer, result) == collect() and self._regions(pid) == regions and self.proc(pid) == identity
+              and self._all_stop(pid) == stop, 'gpgme_collector_effective_environment_changed')
+-        policy.validate_environment(result, self.p['environment'])
+         return result
+ 
+     def fds(self, pid):
+@@ -730,13 +788,24 @@
+         return sorted(values)
+ 
+     def exec_environment(self, pid):
++        """Kernel startup view before entry; effective frozen view after entry.
++
++        Only the original's kernel startup view uses static launch pins.
++        Every child must inherit the explicitly bound full effective parent.
++        """
+         if pid in self._entry_verified:
+             return self.current_environment(pid)
++        return self._kernel_exec_environment(pid)
++
++    def _kernel_exec_environment(self, pid):
++        """Actual kernel exec metadata, separate from post-entry __environ."""
+         identity = self.proc(pid)
+         stop = self._all_stop(pid)
+         raw = self._read('/proc/%d/environ' % pid, 131072)
+         value = parse_environment(raw)
+-        policy.validate_environment(value, self.p['environment'])
++        expected = (self.p['environment'] if pid == self.p['original']['pid']
++                    else self._bound_environment())
++        policy.validate_environment(value, expected)
+         need(self._read('/proc/%d/environ' % pid, 131072) == raw and self.proc(pid) == identity
+              and self._all_stop(pid) == stop, 'gpgme_collector_kernel_exec_environment_changed')
+         return value
+@@ -1229,8 +1298,9 @@
+         # At exec-before-first-instruction the initial environment is actual
+         # kernel exec metadata. At entry, effective __environ is additionally
+         # read from the pinned libc; an unloaded libc cannot be guessed.
+-        initial_env = parse_environment(self._read('/proc/%d/environ' % pid, 131072))
+-        policy.validate_environment(initial_env, self.p['environment'])
++        initial_env = self._kernel_exec_environment(pid)
++        if pid in self._entry_verified:
++            self.current_environment(pid)
+         fds = self.fds(pid)
+         binding = self.image_binding(pid, image, pc)
+         need(self.proc(pid) == identity and self._all_stop(pid) == stop
+@@ -1283,6 +1353,7 @@
+             raise RuntimeError(self.refusal)
+         try:
+             self._bind_runtime(original_pid)
++            self._bound_environment()
+             need(type(role) is str and role in ('original', 'intermediate', 'final', 'fork_syscall',
+                  'exiting_child', 'gpgconf', 'gpg', 'gpgsm', 'g13'), 'gpgme_collector_snapshot_role')
+             need(original_pid == self.p['original']['pid'] and type(original_pid) is int,
+@@ -1376,7 +1447,7 @@
+     return guarded
+ 
+ 
+-for _method_name in ('proc', 'maps', 'pinned_file', 'image_binding', 'current_environment',
++for _method_name in ('proc', 'maps', 'pinned_file', 'image_binding', 'bind_current_environment', 'current_environment',
+         'fds', 'fd', 'children', 'config', 'resources', 'dependencies', 'exec_observation',
+         'exec_environment', 'exec_image', 'entry_address', 'verify_entry',
+         'no_pipe_writer_or_descendant', 'snapshot'):
+--- /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M2-COMPLETE-OBSERVER-SOURCE-20261115/candidate/outer/deps/gpgme_engine_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M2-WHOLE-REVIEW-20261115/bootstrap-repair/gpgme_engine_gdb.py
+@@ -258,12 +258,17 @@
+         need(owner is not None and str(Path(owner).resolve()) == self.m['collector_pins']['library']['path'],
+              'gpgme_bootstrap_symbol_owner')
+         self.paper_closed()
+-        self.collector.snapshot(self.original()['pid'], 'original', expected_thread=self.tid())
+         binding = self.collector.image_binding(self.original()['pid'], self.m['collector_pins']['library'], pc)
+         need(binding['relative_pc'] == SITE_OFFSETS['engine_entry'], 'gpgme_bootstrap_exact_symbol_offset')
+         self.binding = binding
+         self.site('engine_entry')
+         if not self.installed:
++            # Office can change non-font environment after exec. Freeze the
++            # complete effective parent ENV once at this source-bound stop;
++            # startup pins and kernel exec ENV cannot stand in for it. Later
++            # cached getters keep their existing read-only engine_entry gate.
++            self.collector.bind_current_environment(self.original()['pid'])
++            self.collector.snapshot(self.original()['pid'], 'original', expected_thread=self.tid())
+             self.install_bound_sites(binding)
+         self.engine_entry()
+ 
+@@ -621,6 +626,10 @@
+         observations = copy.deepcopy(self.observations)
+         self.c.close_invocation(context, no_writer_or_other_descendant=True, pipe_read_end_absent=True)
+         self.c.invocations[-1]['observations'] = observations
++        # Clone entries authorize this closed double-fork only. The original
++        # PID and first-fork source offset recur in the next engine branch.
++        # Retire them after actual exit/absence/pipe closure, never mid-flight.
++        self.clone_entries.clear()
+         self.caller_route = self.caller_thread = None
+         self.pipe_fd = self.write_fd = self.read_terminal = None
+         return True
+--- /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M2-COMPLETE-OBSERVER-SOURCE-20261115/candidate/outer/deps/native_return_observer.py
++++ /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M2-WHOLE-REVIEW-20261115/consumers/repair-copy/native_return_observer.py
+@@ -587,6 +587,12 @@
+     pin(CFG['symbol_file_path'], CFG['symbol_file_sha256'])
+     require(Path(CFG['target_path']).read_bytes()[:6] == b'\x7fELF\x02\x01', 'ELF64_LE_required')
+     helper = load_helper()
++    if helper is not None and hasattr(helper, 'gpgme'):
++        # Debugger control refs must not become inferior ENV or a manifest
++        # self-hash dependency. Keep GDB's own os.environ for pinned loaders.
++        for name in ('FRW_NATIVE_OBSERVER_CONFIG', 'FRW_NATIVE_LOAD_DEPENDENCY_REF',
++                     'FRW_NATIVE_GPGME_ENGINE_INIT_REF', 'FRW_NATIVE_GPGME_ENGINE_INIT_EVIDENCE'):
++            gdb.execute('unset environment ' + name, to_string=True)
+     for setting in ['set pagination off', 'set confirm off', 'set startup-with-shell off', 'set non-stop off',
+                     'set debuginfod enabled off', 'set disable-randomization off',
+                     'set follow-fork-mode parent', 'set detach-on-fork off',
+@@ -600,9 +606,11 @@
+             if bp.number not in before:
+                 catchpoints[bp.number] = kind
+     if helper is not None:
+-        helper.catchpoints = dict(catchpoints)
+         if hasattr(helper, 'gpgme'):
++            helper.paper.catchpoints = dict(catchpoints)
+             helper.gpgme.catchpoints = dict(catchpoints)
++        else:
++            helper.catchpoints = dict(catchpoints)
+         gdb.execute('set schedule-multiple on', to_string=True)
+         gdb.execute('handle SIGCHLD nostop noprint pass', to_string=True)
+         gdb.execute('handle SIGSTOP noprint nopass stop', to_string=True)
