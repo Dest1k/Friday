@@ -1,0 +1,778 @@
+--- before/candidate/outer/deps/gpgme_boundary_collector.py
++++ after/candidate/outer/deps/gpgme_boundary_collector.py
+@@ -504,6 +504,124 @@
+         need(integer(pid, 1), 'gpgme_collector_pid_type')
+         return parse_proc_stat(self._read('/proc/%d/stat' % pid, 4096), pid)
+ 
++    def pending_fork_child(self, parent_pid, tid, *, expected=None, materialized=False):
++        """Observe one ptrace-held fork birth without adopting it in proc().
++
++        This token permits only the separately proved GDB table operation. It
++        grants no target execution or generic exemption from the proc guard.
++        Compare it again BEFORE any post-materialization snapshot can adopt.
++        """
++        need(self.refusal is None and self.n['STATE']['error'] is None
++             and self.g.parameter('non-stop') is False,
++             'gpgme_pending_fork_terminal_or_nonstop')
++        need(integer(tid, 1) and parent_pid in self.known,
++             'gpgme_pending_fork_parent_unknown')
++        parent = self.proc(parent_pid)
++        path = '/proc/%d/task/%d/children' % (parent_pid, tid)
++        raw = self._read(path, 4096)
++        parts = raw.split()
++        need(len(parts) == 1 and parts[0].isdigit(), 'gpgme_pending_fork_direct_child')
++        pid = int(parts[0])
++        need(pid > 1 and pid not in self.known and pid != os.getpid(),
++             'gpgme_pending_fork_child_already_known')
++        child, detail = self._stat_process(pid)
++        need(child['ppid'] == parent_pid and detail['state'] == 't',
++             'gpgme_pending_fork_birth_or_ptrace_stop')
++        status = self._read('/proc/%d/status' % pid, 32768)
++        def field(name, text=status):
++            values = re.findall(rb'^' + name + rb':\s*([^\n]+)$', text, re.M)
++            need(len(values) == 1, 'gpgme_pending_fork_status_field')
++            return values[0].split()
++        need(field(b'Pid') == field(b'Tgid') == [str(pid).encode()]
++             and field(b'TracerPid') == [str(os.getpid()).encode()]
++             and field(b'Threads') == [b'1'], 'gpgme_pending_fork_tracer_or_thread')
++        parent_status = self._read('/proc/%d/status' % parent_pid, 32768)
++        need(all(field(name) == field(name, parent_status) for name in (b'Uid', b'Gid')),
++             'gpgme_pending_fork_credentials')
++        tasks = os.listdir('/proc/%d/task' % pid)
++        need(tasks == [str(pid)], 'gpgme_pending_fork_child_tasks')
++        matches, rosters, pending_seen = [], {}, 0
++        represented = represented_threads = 0
++        for inf in self.g.inferiors():
++            need(inf.is_valid(), 'gpgme_pending_fork_invalid_inferior')
++            if not inf.pid:
++                continue
++            represented += 1
++            if inf.pid == pid:
++                matches.append(inf)
++            else:
++                need(inf.pid in self.known, 'gpgme_pending_fork_foreign_inferior')
++                self.proc(inf.pid)
++            threads = list(inf.threads())
++            represented_threads += len(threads)
++            need(represented <= 16 and represented_threads <= 1024,
++                 'gpgme_pending_fork_roster_bound')
++            need(0 < len(threads) <= 512 and all(t.is_valid() and t.is_stopped()
++                 and list(t.ptid)[0] == inf.pid for t in threads),
++                 'gpgme_pending_fork_not_all_stopped')
++            for thread in threads:
++                ptid = list(thread.ptid)
++                policy.thread_identity(ptid)
++                roster_path = '/proc/%d/task/%d/children' % (inf.pid, ptid[1])
++                roster = self._read(roster_path, 4096)
++                members = roster.split()
++                need(len(members) <= 16 and all(v.isdigit() and int(v) > 0 for v in members)
++                     and len({int(v) for v in members}) == len(members)
++                     and roster_path not in rosters, 'gpgme_pending_fork_roster_bound')
++                rosters[roster_path] = roster
++                for value in members:
++                    member = int(value)
++                    if member == pid:
++                        need(ptid == [parent_pid, tid, 0], 'gpgme_pending_fork_child_wrong_lwp')
++                        pending_seen += 1
++                    else:
++                        # An unrepresented OS child is refused before any
++                        # generic proc() call could turn it into a known PID.
++                        need(member in self.known, 'gpgme_pending_fork_unknown_roster_child')
++                        observed, _ = self._stat_process(member)
++                        need(observed['start_ticks'] == self.known[member]['start_ticks']
++                             and observed['ppid'] == inf.pid, 'gpgme_pending_fork_roster_birth_changed')
++        need(pending_seen == 1, 'gpgme_pending_fork_pending_roster_ambiguous')
++        child_roster_path = '/proc/%d/task/%d/children' % (pid, pid)
++        child_roster = self._read(child_roster_path, 4096)
++        need(child_roster_path not in rosters or rosters[child_roster_path] == child_roster,
++             'gpgme_pending_fork_newborn_roster_cas')
++        need(not child_roster.split(), 'gpgme_pending_fork_newborn_has_child')
++        rosters.setdefault(child_roster_path, child_roster)
++        need((not materialized and matches == []) or (materialized and len(matches) == 1
++             and matches[0].num > 3 and [list(t.ptid) for t in matches[0].threads()] == [[pid, pid, 0]]),
++             'gpgme_pending_fork_inferior_stage')
++        namespaces = self._ns(os.getpid())
++        need(self._ns(pid) == self._ns(parent_pid) == namespaces,
++             'gpgme_pending_fork_namespaces')
++        membership = self._read('/proc/%d/cgroup' % pid, 32768)
++        need(membership == self._read('/proc/%d/cgroup' % parent_pid, 32768)
++             == self._read('/proc/%d/cgroup' % os.getpid(), 32768),
++             'gpgme_pending_fork_cgroup')
++        limits = self._read('/proc/%d/limits' % pid, 32768)
++        need(limits == self._read('/proc/%d/limits' % parent_pid, 32768),
++             'gpgme_pending_fork_inherited_limits')
++        exe, cwd = (stamp(os.stat('/proc/%d/%s' % (pid, name))) for name in ('exe', 'cwd'))
++        need(exe == stamp(os.stat('/proc/%d/exe' % parent_pid))
++             and cwd == stamp(os.stat('/proc/%d/cwd' % parent_pid)),
++             'gpgme_pending_fork_exe_or_cwd')
++        value = dict(identity=child, parent=parent, thread=[parent_pid, tid, 0],
++            namespaces=namespaces, membership_sha256=digest(membership),
++            limits_sha256=digest(limits), exe=exe, cwd=cwd)
++        need(expected is None or value == expected, 'gpgme_pending_fork_custody_changed')
++        child_after, detail_after = self._stat_process(pid)
++        need(child_after == child and detail_after['state'] == 't'
++             and self.proc(parent_pid) == parent and self._read(path, 4096) == raw
++             and self._read('/proc/%d/status' % pid, 32768) == status
++             and self._ns(pid) == namespaces
++             and self._read('/proc/%d/cgroup' % pid, 32768) == membership
++             and self._read('/proc/%d/limits' % pid, 32768) == limits
++             and stamp(os.stat('/proc/%d/exe' % pid)) == exe
++             and stamp(os.stat('/proc/%d/cwd' % pid)) == cwd
++             and all(self._read(path, 4096) == raw for path, raw in rosters.items()),
++             'gpgme_pending_fork_raw_cas')
++        return value
++
+     def proc(self, pid):
+         if self.p['original'] is None or self.p['reaper'] is None or self.p['operation'] is None:
+             native = self.n['STATE']['process']
+@@ -1639,7 +1757,7 @@
+     return guarded
+ 
+ 
+-for _method_name in ('proc', 'maps', 'pinned_file', 'image_binding', 'bind_current_environment', 'current_environment',
++for _method_name in ('proc', 'pending_fork_child', 'maps', 'pinned_file', 'image_binding', 'bind_current_environment', 'current_environment',
+         'fds', 'fd', 'children', 'config', 'resources', 'dependencies', 'exec_observation',
+         'exec_environment', 'exec_image', 'entry_address', 'verify_entry',
+         'no_pipe_writer_or_descendant', 'snapshot'):
+--- before/candidate/outer/deps/gpgme_engine_gdb.py
++++ after/candidate/outer/deps/gpgme_engine_gdb.py
+@@ -15,6 +15,8 @@
+ from pathlib import Path
+ 
+ MAX_BOUNDARIES = 512
++PROCESS_GUARD_COMMANDS = (('clone_guard', 'catch syscall clone clone3'), ('unsupported_process_or_session', 'catch syscall setsid setpgid'), ('exit_intent', 'catch syscall exit exit_group'))
++PROCESS_GUARD_KINDS = frozenset((kind for kind, _ in PROCESS_GUARD_COMMANDS))
+ LIBC_FORK_SYSCALL_RETURN = 0xf70a8
+ LIBC_FORK_SYSCALL_BYTES = '0f05483d00f0ffff7768'
+ SITE_OFFSETS = {
+@@ -125,7 +127,423 @@
+         self.finished_initialization = False
+         self.refusal = None
+         self.process_guards = []
++        self.process_guard_registry, self.process_guard_states = {}, {}
++        self.process_guard_refusal, self.process_guard_busy = None, False
++        self.process_guard_orphans, self.process_guard_inflight = [], None
++        self.process_guard_retire_queue = []
+         self.boundary_count = 0
++        self.fork_pending = None
++        self.fork_terminal = False
++
++    def _selection(self):
++        inf, thread, frame = self.g.selected_inferior(), self.g.selected_thread(), self.g.selected_frame()
++        need(inf.is_valid() and inf.pid > 0 and thread is not None and thread.is_valid()
++             and thread.is_stopped() and frame is not None and frame.is_valid(),
++             'gpgme_selection_unavailable')
++        level = int(frame.level())
++        need(0 <= level < 24, 'gpgme_selection_frame_bound')
++        return (inf.num, inf.pid, tuple(thread.ptid), level, int(frame.pc()))
++
++    def _restore_selection(self, saved):
++        number, pid, ptid, level, pc = saved
++        matches = [i for i in self.g.inferiors() if i.is_valid() and i.num == number and i.pid == pid]
++        need(len(matches) == 1, 'gpgme_selection_inferior_stale')
++        threads = [t for t in matches[0].threads() if t.is_valid() and tuple(t.ptid) == ptid]
++        need(len(threads) == 1 and threads[0].is_stopped(), 'gpgme_selection_thread_stale')
++        threads[0].switch()
++        frame = self.g.newest_frame()
++        for _ in range(level):
++            need(frame is not None and frame.is_valid(), 'gpgme_selection_frame_stale')
++            frame = frame.older()
++        need(frame is not None and frame.is_valid() and int(frame.pc()) == pc,
++             'gpgme_selection_frame_changed')
++        frame.select()
++        need(self._selection() == saved, 'gpgme_selection_restore_failed')
++
++    def _fork_gate(self, descriptor):
++        need(type(descriptor) is dict and not self.fork_terminal and self.fork_pending is descriptor
++             and self.n['STATE']['error'] is None and self.pending_stop is None
++             and self.pending is None and self.init_active,
++             'gpgme_pending_fork_terminal_or_reentry')
++        need(self.g.parameter('non-stop') is False
++             and self.g.parameter('detach-on-fork') is False
++             and self.g.parameter('may-call-functions') is False,
++             'gpgme_pending_fork_launch_settings')
++        # These genuine same-operation observations are made afresh; a saved
++        # context or caller-supplied boolean cannot reopen cancellation/expiry.
++        self.collector._window()
++        need(time.monotonic() < self.b['runtime']['operation_deadline_monotonic'],
++             'gpgme_original_deadline_expired')
++
++    def _owned_stop_pcs(self):
++        saved = self._selection()
++        result = []
++        try:
++            for inf in self.g.inferiors():
++                need(inf.is_valid(), 'gpgme_pending_fork_invalid_inferior')
++                if not inf.pid:
++                    continue
++                if inf.num == 1:
++                    identity = self.original()
++                else:
++                    known = self.known.get(inf.pid)
++                    need(known is not None and known['inferior'] == inf.num,
++                         'gpgme_pending_fork_foreign_inferior')
++                    identity = self.collector.proc(inf.pid)
++                    need(identity == known['identity'], 'gpgme_pending_fork_owned_birth_changed')
++                for thread in inf.threads():
++                    need(thread.is_valid() and thread.is_stopped(), 'gpgme_pending_fork_thread_running')
++                    thread.switch()
++                    result.append((inf.num, inf.pid, copy.deepcopy(identity), tuple(thread.ptid),
++                                   int(self.g.newest_frame().pc())))
++                    need(len(result) <= 1024, 'gpgme_pending_fork_thread_bound')
++        finally:
++            self._restore_selection(saved)
++        return result
++
++    def capture_fork(self):
++        """Capture only; GDB table mutation is deferred outside callbacks."""
++        need(not self.fork_terminal and self.fork_pending is None
++             and self.n['STATE']['error'] is None and self.pending is None
++             and self.pending_stop is None and not self.to_create and not self.to_retire,
++             'gpgme_pending_fork_duplicate_or_stale')
++        need(self.c is not None and self.c.current is not None, 'gpgme_unarmed_fork')
++        c = self.c.current
++        index = len(c['children'])
++        need(index in (0, 1), 'gpgme_third_fork')
++        self.paper_closed()
++        saved = self._selection()
++        parent, thread = self.collector.proc(saved[1]), self.tid()
++        need(thread == (c['thread'] if index == 0 else [parent['pid'], parent['pid'], 0]),
++             'gpgme_fork_exact_calling_thread')
++        # Pin the OS birth BEFORE context/proc is allowed to adopt a child.
++        token = self.collector.pending_fork_child(parent['pid'], thread[1])
++        context, _snap = self.context(role='original' if index == 0 else 'intermediate')
++        offset = self.p['FIRST_FORK_RETURN'] if index == 0 else self.p['SECOND_FORK_RETURN']
++        frames, frame = [], self.g.newest_frame()
++        for _ in range(24):
++            if frame is None or not frame.is_valid():
++                break
++            frames.append(int(frame.pc())); frame = frame.older()
++        need(self.binding['load_bias'] + offset in frames
++             and (parent['pid'], offset) in self.clone_entries,
++             'gpgme_pending_fork_source_or_clone_entry')
++        self.collector.image_binding(parent['pid'], self.m['collector_pins']['library'],
++                                     self.binding['load_bias'] + offset)
++        site = 'first_fork_return' if index == 0 else 'second_fork_return'
++        need(self.memory(self.binding['load_bias'] + offset, 16).hex() == SITE_BYTES[site],
++             'gpgme_fork_source_bytes_changed')
++        signature = self.spawn_signature
++        self.string(signature['path_pointer'], signature['image']['path'])
++        argv = struct.unpack('<QQQ', self.memory(signature['argv_pointer'], 24))
++        need(argv[2] == 0 and self.memory(signature['fdlist_pointer'], 32) == signature['fdlist_raw'],
++             'gpgme_fork_factory_arguments_changed')
++        self.string(argv[0], signature['image']['path'])
++        self.string(argv[1], self.p['OPTIONS'][c['branch']])
++        self.collector.pinned_file(signature['image'])
++        pcs = self._owned_stop_pcs()
++        selectors = [v for v in pcs if v[3] != tuple(thread)]
++        need(selectors, 'gpgme_pending_fork_no_distinct_owned_selector')
++        descriptor = dict(state='CAPTURED', parent=saved, token=token, index=index,
++            selector=min(selectors, key=lambda v: (v[0], v[3])), pcs=pcs, events=0)
++        self.fork_pending = descriptor
++        self._fork_gate(descriptor)
++
++    def materialization_stop(self, event):
++        descriptor = self.fork_pending
++        if descriptor is None:
++            return False
++        self._fork_gate(descriptor)
++        need(descriptor['state'] == 'COMMAND' and descriptor['events'] == 0
++             and type(event) is self.g.StopEvent and getattr(event, 'details', None) == {}
++             and not hasattr(event, 'breakpoints') and not hasattr(event, 'stop_signal'),
++             'gpgme_pending_fork_unexpected_reentrant_event')
++        token = descriptor['token']
++        self.collector.pending_fork_child(token['parent']['pid'], token['thread'][1],
++                                         expected=token, materialized=True)
++        selected = self.g.selected_inferior()
++        need(selected.pid == token['identity']['pid'] and selected.num > 3
++             and self.tid() == [selected.pid, selected.pid, 0],
++             'gpgme_pending_fork_materialized_selection')
++        descriptor['events'] = 1
++        descriptor['state'] = 'STOPPED'
++        return True
++
++    def materialize_fork(self):
++        descriptor = self.fork_pending
++        self._fork_gate(descriptor)
++        need(descriptor['state'] == 'CAPTURED', 'gpgme_pending_fork_command_already_attempted')
++        saved = descriptor['parent']
++        settings = {key: self.g.parameter(key) for key in
++                    ('follow-fork-mode', 'schedule-multiple', 'scheduler-locking')}
++        need(settings == {'follow-fork-mode': 'parent', 'schedule-multiple': True,
++                          'scheduler-locking': 'off'}, 'gpgme_pending_fork_runcontrol_changed')
++        failure = None
++        try:
++            need(self._selection() == saved and self._owned_stop_pcs() == descriptor['pcs'],
++                 'gpgme_pending_fork_captured_stop_changed')
++            self._fork_gate(descriptor)
++            token = descriptor['token']
++            self.collector.pending_fork_child(token['parent']['pid'], token['thread'][1], expected=token)
++            self.context(role='original' if descriptor['index'] == 0 else 'intermediate')
++            selector = descriptor['selector']
++            self._restore_selection((selector[0], selector[1], selector[3], 0, selector[4]))
++            for key, value in (('follow-fork-mode', 'child'), ('schedule-multiple', 'on'),
++                               ('scheduler-locking', 'off')):
++                self._fork_gate(descriptor)
++                self.g.execute('set ' + key + ' ' + value, to_string=True)
++                self._fork_gate(descriptor)
++            need(self.g.parameter('follow-fork-mode') == 'child'
++                 and self.g.parameter('schedule-multiple') is True
++                 and self.g.parameter('scheduler-locking') == 'off',
++                 'gpgme_pending_fork_settings_readback')
++            # Exactly one source-proved table operation, not a target-run
++            # fallback. Event/order induction excludes stale pending_follow.
++            descriptor['state'] = 'COMMAND'
++            self.g.execute('continue', to_string=True)
++            self._fork_gate(descriptor)
++            need(descriptor['state'] == 'STOPPED' and descriptor['events'] == 1,
++                 'gpgme_pending_fork_materialization_event_missing')
++            self.collector.pending_fork_child(token['parent']['pid'], token['thread'][1],
++                                             expected=token, materialized=True)
++            # PCs are extra postconditions; closed GDB source proves no resume.
++            for number, pid, identity, ptid, pc in descriptor['pcs']:
++                need(self.collector.proc(pid) == identity, 'gpgme_pending_fork_owned_birth_changed')
++                self._restore_selection((number, pid, ptid, 0, pc))
++            self._restore_selection(saved)
++            self._fork_gate(descriptor)
++            self.birth()  # unchanged full source/factory/context/policy guards
++            self._fork_gate(descriptor)
++            child = token['identity']
++            known = self.known.get(child['pid'])
++            need(known is not None and known['identity'] == child,
++                 'gpgme_pending_fork_adopted_birth_changed')
++            descriptor['state'] = 'ENROLLING'
++            inf = [i for i in self.g.inferiors() if i.is_valid()
++                   and i.num == known['inferior'] and i.pid == child['pid']]
++            need(len(inf) == 1, 'gpgme_pending_fork_child_inferior_changed')
++            self.enroll_process_guards(inf[0])
++            self._fork_gate(descriptor)
++        except Exception as exc:
++            failure = str(exc) if type(exc) is RuntimeError else type(exc).__name__
++            self.fork_terminal = True
++        finally:
++            # Only bounded nonexecuting restoration is allowed after refusal.
++            # Do not replace the first refusal with a cleanup failure.
++            try:
++                for key, value in settings.items():
++                    text = ('on' if value else 'off') if type(value) is bool else value
++                    self.g.execute('set ' + key + ' ' + text, to_string=True)
++                    need(self.g.parameter(key) == value, 'gpgme_pending_fork_restore_settings')
++                self._restore_selection(saved)
++            except Exception as exc:
++                failure = failure or (str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++                self.fork_terminal = True
++        if failure is not None:
++            self.clear_pending()
++            raise RuntimeError(failure)
++        self._fork_gate(descriptor)
++        self.fork_pending = None
++        self.pending = 'CONTINUE'
++
++    def _guard_fail(self, reason):
++        self.process_guard_refusal = self.process_guard_refusal or reason
++        raise RuntimeError(self.process_guard_refusal)
++
++    def _guard_need(self, condition, reason):
++        if not condition:
++            self._guard_fail(reason)
++
++    def _guard_breakpoint_ok(self, bp):
++        self._guard_need(bp.is_valid() and bp.type == self.g.BP_CATCHPOINT and (bp.enabled is True) and (bp.condition is None) and (bp.thread is None) and (bp.inferior is None) and (bp.task is None) and (type(bp.ignore_count) is int) and (bp.ignore_count == 0) and (bp.commands is None), 'gpgme_process_guard_properties_changed')
++
++    def _guard_owner_identity(self, inferior):
++        self._guard_need(inferior.is_valid() and type(inferior.num) is int and (inferior.num > 0) and (type(inferior.pid) is int) and (inferior.pid > 0), 'gpgme_process_guard_inferior_unknown')
++        if inferior.num == 1:
++            actual = self.original()
++            self._guard_need(actual['pid'] == inferior.pid, 'gpgme_process_guard_original_changed')
++        else:
++            known = self.known.get(inferior.pid)
++            self._guard_need(inferior.num > 3 and known is not None and (known['inferior'] == inferior.num), 'gpgme_process_guard_child_not_accepted')
++            actual = self.collector.proc(inferior.pid)
++            self._guard_need(actual == known['identity'] and self.c is not None and (self.c.current is not None) and any((child['inferior'] == inferior.num and child['identity'] == actual for child in self.c.current['children'])), 'gpgme_process_guard_child_birth_changed')
++        return actual
++
++    def _guard_snapshot_breakpoints(self):
++        values = list(self.g.breakpoints() or ())
++        self._guard_need(all((type(bp.number) is int for bp in values)) and len({bp.number for bp in values}) == len(values), 'gpgme_process_guard_breakpoint_number_ambiguity')
++        return {bp.number: bp for bp in values}
++
++    def _guard_observed_exited_owner(self, owner):
++        return (type(owner) is int and owner > 3
++            and owner in self.process_guard_retire_queue
++            and not any(inf.is_valid() and inf.num == owner and inf.pid > 0
++                        for inf in self.g.inferiors()))
++
++    def _guard_validate_registry(self):
++        """Retained active catch objects remain expected even after owner exit."""
++        numbers = set()
++        objects = set()
++        for (owner, kind), entry in self.process_guard_registry.items():
++            self._guard_need(type(owner) is int and owner > 0 and (kind in PROCESS_GUARD_KINDS) and (self.process_guard_states.get(owner) == 'ACTIVE') and (entry['owner_number'] == owner) and (entry['category'] == kind), 'gpgme_process_guard_registry_incomplete')
++            bp = entry['breakpoint']
++            number = entry['number']
++            if bp.is_valid():
++                self._guard_breakpoint_ok(bp)
++                self._guard_need(bp.number == number, 'gpgme_process_guard_registry_duplicate_or_stale')
++            else:
++                self._guard_need(self._guard_observed_exited_owner(owner),
++                    'gpgme_process_guard_live_owner_guard_invalid')
++            self._guard_need(number not in numbers and id(bp) not in objects and (self.catchpoints.get(number) == kind), 'gpgme_process_guard_registry_duplicate_or_stale')
++            numbers.add(number)
++            objects.add(id(bp))
++        self._guard_need(len(self.process_guards) == len(self.process_guard_registry) and {id(bp) for bp in self.process_guards} == objects, 'gpgme_process_guard_registry_list_join')
++        self._guard_need({number for number, kind in self.catchpoints.items() if kind in PROCESS_GUARD_KINDS} == numbers, 'gpgme_process_guard_catchpoint_map_join')
++        for owner, state in self.process_guard_states.items():
++            if state == 'ACTIVE':
++                self._guard_need({kind for number, kind in self.process_guard_registry if number == owner} == PROCESS_GUARD_KINDS, 'gpgme_process_guard_registry_incomplete')
++
++    def guard_kind(self, event):
++        """Exact singleton fork/exec, or all global owned catches of one category."""
++        if self.process_guard_refusal is not None:
++            raise RuntimeError(self.process_guard_refusal)
++        try:
++            self._guard_need(not self.process_guard_busy, 'gpgme_process_guard_reentry')
++            hits = tuple(getattr(event, 'breakpoints', ()))
++            self._guard_need(hits and len({id(bp) for bp in hits}) == len(hits) and (len({bp.number for bp in hits}) == len(hits)) and all((bp.type == self.g.BP_CATCHPOINT for bp in hits)), 'gpgme_ambiguous_catchpoint')
++            kinds = [self.catchpoints.get(bp.number) for bp in hits]
++            if not any((kind in PROCESS_GUARD_KINDS for kind in kinds)):
++                self._guard_need(len(hits) == 1 and kinds[0] in ('fork', 'vfork', 'exec'), 'gpgme_ambiguous_catchpoint')
++                return kinds[0]
++            self._guard_need(len(set(kinds)) == 1 and kinds[0] in PROCESS_GUARD_KINDS, 'gpgme_process_guard_mixed_category')
++            kind = kinds[0]
++            self._guard_need(self.n['STATE']['error'] is None and self.init_active, 'gpgme_process_guard_outside_initialization')
++            self._guard_validate_registry()
++            selected = self.g.selected_inferior()
++            identity = self._guard_owner_identity(selected)
++            entry = self.process_guard_registry.get((selected.num, kind))
++            self._guard_need(entry is not None and self.process_guard_states.get(selected.num) == 'ACTIVE' and (entry['owner_pid'] == identity['pid']) and (entry['owner_start_ticks'] == identity['start_ticks']) and (entry['progspace'] == selected.progspace), 'gpgme_process_guard_selected_not_enrolled')
++            expected = {entry['number']: entry['breakpoint'] for (owner, category), entry in self.process_guard_registry.items()
++                if category == kind and entry['breakpoint'].is_valid()}
++            self._guard_need(len(hits) == len(expected) and all((expected.get(bp.number) is bp for bp in hits)), 'gpgme_process_guard_event_set_changed')
++            return kind
++        except Exception as exc:
++            self._guard_fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++
++    def enroll_process_guards(self, inferior):
++        """One enrollment attempt per accepted inferior; no implicit partial retry."""
++        if self.process_guard_refusal is not None:
++            raise RuntimeError(self.process_guard_refusal)
++        owner = None
++        saved = None
++        try:
++            self._guard_need(not self.process_guard_busy and self.n['STATE']['error'] is None and self.init_active and (self.g.parameter('non-stop') is False), 'gpgme_process_guard_enrollment_unavailable')
++            identity = self._guard_owner_identity(inferior)
++            owner = inferior.num
++            threads = list(inferior.threads())
++            self._guard_need(threads and all((t.is_valid() and t.is_stopped() and (tuple(t.ptid)[0] == inferior.pid) for t in threads)), 'gpgme_process_guard_target_not_stopped')
++            existing = self.process_guard_states.get(owner)
++            if existing == 'ACTIVE':
++                self._guard_validate_registry()
++                for kind in PROCESS_GUARD_KINDS:
++                    entry = self.process_guard_registry[owner, kind]
++                    self._guard_need(entry['owner_pid'] == identity['pid'] and entry['owner_start_ticks'] == identity['start_ticks'] and (entry['progspace'] == inferior.progspace), 'gpgme_process_guard_owner_reused')
++                return
++            self._guard_need(existing is None and (not any((number == owner for number, kind in self.process_guard_registry))), 'gpgme_process_guard_enrollment_already_attempted')
++            self._guard_validate_registry()
++            saved = self._selection()
++            self.process_guard_states[owner] = 'ENROLLING'
++            self.process_guard_busy = True
++            if self.g.selected_inferior().num != owner:
++                min(threads, key=lambda t: tuple(t.ptid)).switch()
++            self._guard_need(self.g.selected_inferior() is inferior and self.g.selected_inferior().progspace == inferior.progspace, 'gpgme_process_guard_selection_changed')
++            for kind, command in PROCESS_GUARD_COMMANDS:
++                self._guard_need(self.n['STATE']['error'] is None and self._guard_owner_identity(inferior) == identity and (self.g.selected_inferior() is inferior), 'gpgme_process_guard_owner_changed_during_enrollment')
++                before = self._guard_snapshot_breakpoints()
++                self.process_guard_inflight = (owner, kind, before)
++                execution_error = None
++                try:
++                    self.g.execute(command, to_string=True)
++                except Exception as exc:
++                    execution_error = exc
++                after = self._guard_snapshot_breakpoints()
++                added = [bp for number, bp in after.items() if number not in before]
++                self.process_guard_orphans.extend((dict(owner_number=owner, category=kind, breakpoint=bp,
++                    number=bp.number, delete_attempted=False) for bp in added))
++                self.process_guard_inflight = None
++                self._guard_need(all((after.get(number) is bp for number, bp in before.items())), 'gpgme_process_guard_existing_breakpoints_changed')
++                if execution_error is not None:
++                    self._guard_fail(type(execution_error).__name__)
++                self._guard_need(len(added) == 1, 'gpgme_exact_process_guard_install')
++                bp = added[0]
++                self._guard_breakpoint_ok(bp)
++                self._guard_need(self.n['STATE']['error'] is None and self.g.selected_inferior() is inferior and (self._guard_owner_identity(inferior) == identity), 'gpgme_process_guard_owner_changed_during_enrollment')
++                self.process_guard_registry[owner, kind] = dict(owner_number=owner, owner_pid=identity['pid'], owner_start_ticks=identity['start_ticks'], progspace=inferior.progspace, category=kind, breakpoint=bp, number=bp.number, delete_attempted=False)
++                self.process_guards.append(bp)
++                self.catchpoints[bp.number] = kind
++                self.process_guard_orphans[:] = [entry for entry in self.process_guard_orphans if entry['breakpoint'] is not bp]
++            self.process_guard_states[owner] = 'ACTIVE'
++            self._guard_validate_registry()
++        except Exception as exc:
++            if owner is not None and self.process_guard_states.get(owner) == 'ENROLLING':
++                self.process_guard_states[owner] = 'FAILED'
++            self.process_guard_refusal = self.process_guard_refusal or (str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++            raise RuntimeError(self.process_guard_refusal) from None
++        finally:
++            if saved is not None:
++                try:
++                    self._restore_selection(saved)
++                except Exception as exc:
++                    self.process_guard_refusal = self.process_guard_refusal or (str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++                    if owner is not None and self.process_guard_states.get(owner) != 'RETIRED':
++                        self.process_guard_states[owner] = 'FAILED'
++                    raise RuntimeError(self.process_guard_refusal) from None
++                finally:
++                    self.process_guard_busy = False
++
++    def retire_process_guards(self, inferior_number=None):
++        """One deletion attempt per retained object, including partial creation.
++
++    Runs during normal finish or explicit refused-source cleanup. A failed
++    deletion is retained as RETIRE_FAILED and is never implicitly repeated.
++    """
++        self._guard_need(not self.process_guard_busy, 'gpgme_process_guard_retirement_reentry')
++        self._guard_need(self.process_guard_inflight is None, 'gpgme_process_guard_creation_unknown')
++        owners = {owner for owner, state in self.process_guard_states.items() if state != 'RETIRED'} if inferior_number is None else {inferior_number}
++        self._guard_need(all((type(owner) is int and owner in self.process_guard_states for owner in owners)), 'gpgme_process_guard_retirement_unknown_owner')
++        self._guard_need(not any((self.process_guard_states.get(owner) in ('RETIRING', 'RETIRE_FAILED') for owner in owners)), 'gpgme_process_guard_retirement_already_attempted')
++        entries = [entry for (owner, kind), entry in self.process_guard_registry.items() if owner in owners]
++        entries += [entry for entry in self.process_guard_orphans if entry['owner_number'] in owners]
++        self._guard_need(not any((entry['delete_attempted'] for entry in entries)), 'gpgme_process_guard_retirement_already_attempted')
++        for owner in owners:
++            self.process_guard_states[owner] = 'RETIRING'
++        seen = set()
++        try:
++            for entry in entries:
++                bp = entry['breakpoint']
++                self._guard_need(id(bp) not in seen, 'gpgme_process_guard_retirement_duplicate')
++                seen.add(id(bp))
++                number = entry['number']
++                entry['delete_attempted'] = True
++                if bp.is_valid():
++                    bp.delete()
++                else:
++                    self._guard_need(self._guard_observed_exited_owner(entry['owner_number']),
++                        'gpgme_process_guard_live_owner_guard_invalid')
++                self._guard_need(not bp.is_valid(), 'gpgme_process_guard_retirement')
++                self.catchpoints.pop(number, None)
++                self.process_guards[:] = [owned for owned in self.process_guards if owned is not bp]
++                self.process_guard_orphans[:] = [orphan for orphan in self.process_guard_orphans if orphan['breakpoint'] is not bp]
++                self.process_guard_registry.pop((entry['owner_number'], entry['category']), None)
++            for owner in owners:
++                self.process_guard_states[owner] = 'RETIRED'
++            self.process_guard_retire_queue[:] = [owner for owner in self.process_guard_retire_queue if owner not in owners]
++        except Exception as exc:
++            for owner in owners:
++                self.process_guard_states[owner] = 'RETIRE_FAILED'
++            self.process_guard_refusal = self.process_guard_refusal or (str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++            raise RuntimeError(self.process_guard_refusal) from None
++
+ 
+     def owned_numbers(self):
+         return set(self.handlers) | self.retired
+@@ -661,26 +1079,19 @@
+         self.retire_process_guards()
+         self.pending = 'CONTINUE'
+ 
+-    def retire_process_guards(self):
+-        for guard in self.process_guards:
+-            number = guard.number
+-            guard.delete()
+-            need(not guard.is_valid(), 'gpgme_process_guard_retirement')
+-            self.catchpoints.pop(number, None)
+-        self.process_guards.clear()
+-
+     def boundary(self, event):
++        need(self.n['STATE']['error'] is None and self.fork_pending is None,
++             'gpgme_pending_fork_terminal_or_reentry')
+         need(self.init_active, 'gpgme_unexpected_fork_vfork_exec_outside_initialization')
+-        kinds = [self.catchpoints.get(b.number) for b in getattr(event, 'breakpoints', ())
+-                 if b.type == self.g.BP_CATCHPOINT]
+-        need(len(kinds) == 1 and len(event.breakpoints) == 1, 'gpgme_ambiguous_catchpoint')
+-        if kinds[0] == 'fork':
+-            self.birth()
+-        elif kinds[0] == 'exec':
++        kind = self.guard_kind(event)
++        if kind == 'fork':
++            self.capture_fork()
++            return
++        elif kind == 'exec':
+             self.exec_stop()
+-        elif kinds[0] == 'clone_guard':
++        elif kind == 'clone_guard':
+             self.clone_guard()
+-        elif kinds[0] == 'exit_intent':
++        elif kind == 'exit_intent':
+             self.exit_intent()
+         else:
+             raise RuntimeError('gpgme_unsupported_process_or_session_event')
+@@ -774,6 +1185,9 @@
+              and matches[0]['identity'] == self.exit_intents[inf.num]
+              and type(getattr(event, 'exit_code', None)) is int and event.exit_code == 0,
+              'gpgme_unknown_duplicate_or_nonzero_exit')
++        need(self.process_guard_states.get(inf.num) == 'ACTIVE'
++             and inf.num not in self.process_guard_retire_queue, 'gpgme_process_guard_exit_not_enrolled')
++        self.process_guard_retire_queue.append(inf.num)
+         self.exits[inf.num] = event.exit_code
+         self.exit_order.append(inf.num)
+         self.pending = 'CONTINUE'
+@@ -783,6 +1197,10 @@
+         if self.n['STATE']['error'] is not None:
+             self.clear_pending()
+             return None
++        for owner in tuple(self.process_guard_retire_queue):
++            self.retire_process_guards(owner)
++        if self.fork_pending is not None:
++            self.materialize_fork()
+         if self.pending_stop is not None:
+             number, inferior, pid, tid, pc = self.pending_stop
+             self.pending_stop = None
+@@ -795,16 +1213,10 @@
+             if one_shot:
+                 self.to_retire.append(number)
+             self.pending = self.pending or 'CONTINUE'
+-        if self.init_active and not self.process_guards:
+-            for command, kind in (('catch syscall clone clone3', 'clone_guard'),
+-                                  ('catch syscall setsid setpgid', 'unsupported_process_or_session'),
+-                                  ('catch syscall exit exit_group', 'exit_intent')):
+-                before = {bp.number for bp in (self.g.breakpoints() or ())}
+-                self.g.execute(command, to_string=True)
+-                added = [bp for bp in self.g.breakpoints() if bp.number not in before]
+-                need(len(added) == 1, 'gpgme_exact_process_guard_install')
+-                self.process_guards.extend(added)
+-                self.catchpoints[added[0].number] = kind
++        if self.init_active:
++            originals = [i for i in self.g.inferiors() if i.is_valid() and i.num == 1 and i.pid > 0]
++            need(len(originals) == 1, 'gpgme_process_guard_original_unavailable')
++            self.enroll_process_guards(originals[0])
+         if self.finished_initialization and self.process_guards:
+             self.retire_process_guards()
+         for number in self.to_retire:
+@@ -891,6 +1303,9 @@
+              'gpgme_child_present_before_metric')
+ 
+     def clear_pending(self):
++        if self.fork_pending is not None:
++            self.fork_terminal = True
++        self.fork_pending = None
+         self.pending = self.pending_stop = None
+         self.to_create.clear()
+         self.to_retire.clear()
+@@ -940,6 +1355,13 @@
+         self.paper.install()
+         self.gpgme.install()
+ 
++    def materialization_stop(self, event):
++        if self.gpgme.fork_pending is None:
++            return False
++        need(self.paper.pending is None and self.paper.pending_stop is None,
++             'gpgme_pending_fork_paper_collision')
++        return self.gpgme.materialization_stop(event)
++
+     def queue_stop(self, event):
+         numbers = {b.number for b in getattr(event, 'breakpoints', ())}
+         paper = set(self.paper.stop_handlers) | self.paper.retired_breakpoints
+--- before/candidate/outer/deps/native_return_observer.py
++++ after/candidate/outer/deps/native_return_observer.py
+@@ -488,6 +488,17 @@
+ 
+ def stopped(event):
+     global pending_action
++    if STATE['error'] is not None:
++        if helper is not None and hasattr(helper, 'clear_pending'):
++            helper.clear_pending()
++        return
++    if helper is not None and hasattr(helper, 'materialization_stop'):
++        try:
++            if helper.materialization_stop(event):
++                return
++        except Exception as exc:
++            fail(str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++            return
+     if isinstance(event, gdb.SignalEvent):
+         if (getattr(event, 'stop_signal', None) == 'SIGSTOP' and helper is not None
+                 and pending_action is None):
+@@ -521,6 +532,14 @@
+ 
+ 
+ def exited(event):
++    if STATE['error'] is not None:
++        if helper is not None and hasattr(helper, 'clear_pending'):
++            helper.clear_pending()
++        return
++    if (helper is not None and hasattr(helper, 'gpgme')
++            and helper.gpgme.fork_pending is not None):
++        fail('gpgme_pending_fork_unexpected_exit')
++        return
+     if helper is not None:
+         try:
+             if helper.exited(event):
+@@ -594,6 +613,7 @@
+                      'FRW_NATIVE_GPGME_ENGINE_INIT_REF', 'FRW_NATIVE_GPGME_ENGINE_INIT_EVIDENCE'):
+             gdb.execute('unset environment ' + name, to_string=True)
+     for setting in ['set pagination off', 'set confirm off', 'set startup-with-shell off', 'set non-stop off',
++                    'set may-call-functions off',
+                     'set debuginfod enabled off', 'set disable-randomization off',
+                     'set follow-fork-mode parent', 'set detach-on-fork off',
+                     'set follow-exec-mode same', 'set print thread-events off', 'set stop-on-solib-events 1']:
+--- before/candidate/outer/namespace_entry.py
++++ after/candidate/outer/namespace_entry.py
+@@ -553,6 +553,7 @@
+     pre = json.loads(read_ref(plan['preload']))
+     return ['/usr/bin/gdb', '-nx', '-nh', '-batch',
+             '-iex', 'maint set worker-threads 1', '-iex', 'set auto-load off',
++            '-iex', 'set may-call-functions off',
+             '-iex', 'set debuginfod enabled off', '-iex', 'set startup-with-shell off',
+             '-iex', 'set disable-randomization off',
+             '-x', plan['observer']['hook']['path'], '--args', PROGRAM + '/soffice.bin',
+--- before/host/ownc_namespace_supervisor.py
++++ after/host/ownc_namespace_supervisor.py
+@@ -264,6 +264,7 @@
+                      FRW_NATIVE_GPGME_ENGINE_INIT_EVIDENCE=gpgme_bundle['evidence_path'])
+     argv = ['/usr/bin/gdb', '-nx', '-nh', '-q', '-batch', '-iex', 'maintenance set worker-threads 1',
+             '-iex', 'set auto-load off', '-iex', 'set debuginfod enabled off',
++            '-iex', 'set may-call-functions off',
+             '-x', prepared['gdb_driver_ref']['path'], '--args', prepared['target_ref']['path'], repr(deadline)]
+     new_json(WORK / 'own-fixture-supervisor-started.json', dict(operation_id=cfg['operation_id'],
+         nonce=cfg['nonce'], variant=prepared['variant'], deadline_monotonic=deadline,
+--- before/driver/ownc_gdb.py
++++ after/driver/ownc_gdb.py
+@@ -200,9 +200,18 @@
+     # This observer runs before the exact native stop consumer. It grants none.
+     STATE['ownc_last_guard_stage']='other-stop'
+     try:
+-        if helper is None or not isinstance(event,gdb.BreakpointEvent):return
++        if helper is None:return
++        if helper.gpgme.fork_pending is not None:
++            STATE['ownc_last_guard_stage']='pending-fork-materialization'
++            return
++        if not isinstance(event,gdb.BreakpointEvent):return
+         numbers=[b.number for b in event.breakpoints]
+-        if len(numbers)!=1:return
++        if len(numbers)!=1:
++            if numbers and helper.gpgme.init_active:
++                kinds=[helper.gpgme.catchpoints.get(number) for number in numbers]
++                if len(set(kinds))==1 and kinds[0] in ('clone_guard','exit_intent','unsupported_process_or_session'):
++                    STATE['ownc_last_guard_stage']='boundary:'+kinds[0]
++            return
+         number=numbers[0]
+         handler=helper.gpgme.handlers.get(number)
+         if handler is not None:
+@@ -270,6 +279,7 @@
+         validate_inferior_environment(gdb.execute('show environment',to_string=True),CFG['target_environment'],
+             nonce=CFG['nonce'],publish=lambda value:atomic_replace(WORK/'ownc-gdb-environment-check.json',value))
+         for setting in ('set pagination off','set confirm off','set startup-with-shell off','set non-stop off',
++                'set may-call-functions off',
+                 'set auto-load off','set debuginfod enabled off','set disable-randomization off',
+                 'set follow-fork-mode parent','set detach-on-fork off','set follow-exec-mode same',
+                 'set schedule-multiple on','handle SIGCHLD nostop noprint pass','handle SIGSTOP noprint nopass stop',
+--- before/host/ownc_root_controller.py
++++ after/host/ownc_root_controller.py
+@@ -25,7 +25,7 @@
+ INVOCATION = 'frw.ownc.gpgme-root-invocation.v1'
+ SCOPE = 'ONE_HARMLESS_OWN_C_GPGME_QUALIFICATION_ONLY'
+ PINNED_OUTER_SHA = '8f162630ab2922a75a93c79476730a7a34e34e869aa4b1eaa587b6c8d01933a1'
+-PINNED_NAMESPACE_SHA = '398c3b883a4d0fcd31032709e71c8e15163cfeaeea4dc999262260047aa2e8bb'
++PINNED_NAMESPACE_SHA = 'ff730c4c207f430fae0b587326b341ca1dfd8403545806b06f6dad52396103cc'
+ PINNED_BUILDER_SHA = '2223ffcee689611fa1ee8f19cb62e80a2a417f93affa7a28b4d3dc15acddea4b'
+ MAX_SOURCE_BYTES = 4 * 1024**2
+ 

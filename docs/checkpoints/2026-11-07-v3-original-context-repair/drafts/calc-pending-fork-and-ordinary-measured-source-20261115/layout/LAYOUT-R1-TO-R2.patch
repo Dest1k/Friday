@@ -1,0 +1,95 @@
+--- before/hermes_cli/friday_workspace_calc_native_layout.py
++++ after/hermes_cli/friday_workspace_calc_native_layout.py
+@@ -40,6 +40,15 @@
+     s = p.lstat()
+     need(stat.S_ISDIR(s.st_mode) and s.st_uid == os.getuid()
+          and stat.S_IMODE(s.st_mode) == 0o700, 'native_layout_private_directory')
++    return p
++
++
++def managed_toolchain_directory(value):
++    """Same ownership/readonly mode domain as existing _toolchain()."""
++    p = exact_path(value)
++    s = p.lstat()
++    need(stat.S_ISDIR(s.st_mode) and s.st_uid == os.getuid()
++         and s.st_mode & 0o277 == 0, 'native_layout_managed_toolchain')
+     return p
+ 
+ 
+@@ -81,11 +90,11 @@
+ 
+ 
+ def safe_relative(value):
+-    need(type(value) is str and value and '\\' not in value,
++    need(type(value) is str and value and len(value) <= 256 and '\\' not in value,
+          'native_layout_relative_name')
+     p = Path(value)
+     need(not p.is_absolute() and '..' not in p.parts and str(p) == value
+-         and all(part not in ('', '.') for part in p.parts),
++         and len(p.parts) <= 8 and all(part not in ('', '.') for part in p.parts),
+          'native_layout_relative_name')
+     return p
+ 
+@@ -96,6 +105,43 @@
+     entry: str
+     files: tuple
+     source_index_sha256: str
++
++
++def exact_generation_tree(staged):
++    """The whole mounted directory must contain exactly the indexed code."""
++    root = private_directory(staged.directory)
++    expected_files = {str(safe_relative(row[0])) for row in staged.files}
++    expected_dirs = set()
++    for relative in expected_files:
++        parts = Path(relative).parts
++        expected_dirs.update(str(Path(*parts[:i])) for i in range(1, len(parts)))
++    actual_files, actual_dirs = set(), set()
++    directory_stamps = {}
++    pending = [root]
++    while pending:
++        directory = pending.pop()
++        before = directory.lstat()
++        directory_stamps[directory] = stamp(before)
++        with os.scandir(directory) as entries:
++            for item in entries:
++                info = item.stat(follow_symlinks=False)
++                path = directory / item.name
++                relative = str(path.relative_to(root))
++                if stat.S_ISDIR(info.st_mode):
++                    need(relative in expected_dirs, 'native_layout_unindexed_directory')
++                    private_directory(path)
++                    actual_dirs.add(relative)
++                    pending.append(path)
++                elif stat.S_ISREG(info.st_mode):
++                    need(relative in expected_files, 'native_layout_unindexed_file')
++                    actual_files.add(relative)
++                else:
++                    raise LayoutRefused('native_layout_generation_type')
++        need(stamp(directory.lstat()) == stamp(before), 'native_layout_generation_race')
++    need(actual_files == expected_files and actual_dirs == expected_dirs,
++         'native_layout_generation_members')
++    for path, before in directory_stamps.items():
++        need(stamp(path.lstat()) == before, 'native_layout_generation_race')
+ 
+ 
+ def stage_code(work, trusted_index, expected_index_sha256):
+@@ -163,7 +209,9 @@
+ def namespace_argv(work, toolchain, staged, *, source_sha256, source_bytes):
+     """Build a single ordinary namespace, no separate systemd/Root operation."""
+     work = private_directory(work)
+-    toolchain = private_directory(toolchain)
++    toolchain = managed_toolchain_directory(toolchain)
++    need(not toolchain.is_relative_to(work) and not work.is_relative_to(toolchain),
++         'native_layout_toolchain_work_overlap')
+     need(type(staged) is StagedCode and staged.directory == work / 'code',
+          'native_layout_staged_generation')
+     entry = safe_relative(staged.entry)
+@@ -182,6 +230,7 @@
+     private_directory(work / 'home')
+     private_directory(work / 'tmp')
+     private_directory(staged.directory)
++    exact_generation_tree(staged)
+     for relative, expected, length in staged.files:
+         relative = safe_relative(relative)
+         need(type(length) is int and 0 <= length <= MAX_ASSET
