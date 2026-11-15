@@ -1,0 +1,76 @@
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-UID-WITNESS-SOURCE-20261115/candidate/outer/deps/gpgme_boundary_collector.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-FORK-BIRTH-SOURCE-20261115/candidate/outer/deps/gpgme_boundary_collector.py
+@@ -480,6 +480,7 @@
+         self._self_uid_map_sha256 = None
+         self._uid_projection_failure = None
+         self._uid_projection_failure_attempted = False
++        self._birth_refusal_attempted = False
+ 
+     def _read(self, path, limit):
+         need(canonical(path) and integer(limit, 1) and limit <= MAX_FILE, 'gpgme_collector_read_bound')
+@@ -525,13 +526,63 @@
+                      'gpgme_collector_owned_parent_unknown')
+             return value
+         live = [i for i in self.g.inferiors() if i.pid == pid and i.is_valid()]
+-        need(len(live) == 1 and value['ppid'] in self.known,
+-             'gpgme_collector_unowned_or_unobserved_birth')
++        try:
++            need(len(live) == 1 and value['ppid'] in self.known,
++                 'gpgme_collector_unowned_or_unobserved_birth')
++        except RuntimeError as exc:
++            # Attribution only, using facts already read above.  No diagnostic
++            # failure may replace this guard or cause a retry/continuation.
++            if not self._birth_refusal_attempted:
++                self._birth_refusal_attempted = True
++                try:
++                    self._record_birth_refusal(pid, value, len(live), exc.__traceback__)
++                except Exception:
++                    pass
++            raise
+         parent = self.proc(value['ppid'])
+         need(parent['start_ticks'] == self.known[parent['pid']]['start_ticks'],
+              'gpgme_collector_parent_birth_changed')
+         self.known[pid] = copy.deepcopy(value)
+         return value
++
++    def _record_birth_refusal(self, pid, value, matching_inferiors, failure_traceback):
++        # Fixed numeric metadata joins the existing native trace via fail/save.
++        # Never read another process, publish a file, or confer child custody.
++        policy.identity(value)
++        need(integer(pid, 1) and integer(matching_inferiors)
++             and matching_inferiors <= 512, 'gpgme_collector_birth_diagnostic_bound')
++        parent = self.known.get(value['ppid'])
++        if parent is not None:
++            policy.identity(parent)
++        need(pid <= 2147483647 and all(v['pid'] <= 2147483647 and v['ppid'] <= 2147483647
++             and v['start_ticks'] <= 18446744073709551615
++             for v in ([value] if parent is None else [value, parent])),
++             'gpgme_collector_birth_diagnostic_numeric_bound')
++        frames, frame = [], failure_traceback.tb_frame
++        roles = {'gpgme_boundary_collector.py': 'collector',
++                 'gpgme_engine_gdb.py': 'adapter',
++                 'native_return_observer.py': 'native', 'ownc_gdb.py': 'ownc_driver'}
++        try:
++            for _ in range(8):
++                if frame is None:
++                    break
++                line = failure_traceback.tb_lineno if not frames else frame.f_lineno
++                need(integer(line, 1) and line <= 1000000, 'gpgme_collector_birth_diagnostic_line')
++                frames.append(dict(source_role=roles.get(os.path.basename(frame.f_code.co_filename), 'other'),
++                                   line=line))
++                frame = frame.f_back
++        finally:
++            del frame
++        metadata = dict(schema='frw.calc.gpgme-first-unobserved-birth.v1',
++            requested_pid=pid, observed_identity={k: value[k] for k in ('pid', 'ppid', 'start_ticks')},
++            matching_valid_inferior_count=matching_inferiors,
++            known_parent_count=0 if parent is None else 1,
++            known_parent_identity=None if parent is None else {k: parent[k] for k in ('pid', 'ppid', 'start_ticks')},
++            source_frames=frames, observation_scope='FIRST_FAILED_PROC_GUARD_ONLY_NO_CUSTODY_OR_RELEASE')
++        state = self.n['STATE']
++        need(type(state) is dict and 'gpgme_collector_birth_refusal' not in state,
++             'gpgme_collector_birth_diagnostic_already_present')
++        state['gpgme_collector_birth_refusal'] = metadata
+ 
+     def _ns(self, pid):
+         result = {}
