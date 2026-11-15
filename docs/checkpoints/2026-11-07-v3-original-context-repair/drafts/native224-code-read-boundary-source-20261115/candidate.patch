@@ -1,0 +1,127 @@
+--- a/constructor/construct_frame224_r1.py
++++ b/constructor/construct_frame224_r1.py
+@@ -66,18 +66,27 @@
+     return path
+ 
+ 
+-def read(value):
+-    """Old constructor's identity-protected reader, exclusively for CODE refs."""
++def source_identity(value):
++    return (value.st_dev, value.st_ino, value.st_uid, value.st_gid, value.st_mode,
++            value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
++
++
++def _read_bounded(value, limit):
+     path = cache_path(str(value))
+     before = path.lstat()
+-    identity = lambda s: (s.st_dev, s.st_ino, s.st_uid, s.st_gid, s.st_mode, s.st_nlink, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+-    require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and before.st_nlink == 1 and before.st_size <= 16 * 1024**2, 'owned_bounded_singlelink_regular_source')
++    require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and before.st_nlink == 1 and before.st_size <= limit, 'owned_bounded_singlelink_regular_source')
+     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+     with os.fdopen(fd, 'rb') as stream:
+-        require(identity(before) == identity(os.fstat(stream.fileno())), 'source_changed_before_open')
+-        raw = stream.read(16 * 1024**2 + 1)
+-        require(identity(before) == identity(os.fstat(stream.fileno())) == identity(path.lstat()), 'source_changed_during_read')
++        require(source_identity(before) == source_identity(os.fstat(stream.fileno())), 'source_changed_before_open')
++        raw = stream.read(limit + 1)
++        require(source_identity(before) == source_identity(os.fstat(stream.fileno())) == source_identity(path.lstat()), 'source_changed_during_read')
++    require(len(raw) == before.st_size and len(raw) <= limit, 'bounded_complete_source_read_required')
+     return raw
++
++
++def read(value):
++    """Keep the default metadata/operator/source-reference limit at 16 MiB."""
++    return _read_bounded(value, 16 * 1024**2)
+ 
+ 
+ def refraw(ref):
+@@ -120,6 +129,61 @@
+ def plan_value(plan):
+     require(type(plan) is Source224Plan and plan.source_only is True and plan.current_admission is False and plan.execution_grant is False, 'typed_source_only_plan_required')
+     return dict(schema='frw.source224.constructor-authentic-CODE-plan.v1', before=plan.before, after=plan.after, project_roots=plan.project_roots, previous_project_roots=plan.previous_project_roots, native_rows=plan.native_rows, external_callers=plan.external_callers, source_metadata=plan.source_metadata, source_only=True, current_admission=False, execution_grant=False)
++
++
++def selected_project_code(plan):
++    """Read only the exact sealed95 CODE closure, with a finite 32 MiB leaf cap.
++
++    The existing descriptor authenticates the complete proof's selected roots,
++    inventories, hashes, sizes, modes and frozen identities. Its metadata is
++    CODE provenance, never current authority. No caller-supplied path or size
++    can opt a metadata/operator/data-record read into this larger limit.
++    """
++    plan_value(plan)
++    require(plan.source_metadata.get('sealed_descriptor') == DESCRIPTOR and
++            plan.source_metadata.get('sealed_producer') == PRODUCER,
++            'selected_CODE_requires_exact_sealed95_origin')
++    descriptor = json.loads(refraw(DESCRIPTOR))
++    proof = json.loads(refraw(descriptor['directory_mode_source']))
++    require(proof['source_only'] is True and proof['runtime_grant'] is False and
++            proof['current_admission'] is False, 'selected_CODE_proof_never_current_authority')
++    roots = {f: str(SOURCE95/'composition/composed529'/(f+'-project529')) for f in ('private', 'public')}
++    require(plan.project_roots == roots and plan.previous_project_roots ==
++            {f: descriptor['bases'][f]['tree'] for f in ('private', 'public')},
++            'selected_CODE_exact_source95_roots_required')
++    snapshots = {**proof['outputs'], 'previous': proof['before']['private']}
++    require(set(proof['outputs']) == {'private', 'public'}, 'selected_CODE_exact_flavors_required')
++    seen = set()
++    for flavor in ('private', 'public', 'previous'):
++        root = Path(plan.previous_project_roots['private'] if flavor == 'previous' else roots[flavor])
++        inventory = plan.before['private'] if flavor == 'previous' else plan.after[flavor]
++        snapshot = snapshots[flavor]
++        require(snapshot['tree'] == str(root) and snapshot['files'] == inventory and
++                set(snapshot['identities']) == set(snapshot['modes']) == set(inventory),
++                'selected_CODE_complete_sealed_inventory_required:'+flavor)
++        for name, pin in inventory.items():
++            require(type(name) is str and name and '\\' not in name and
++                    str(PurePosixPath(name)) == name and not name.startswith('/') and
++                    all(p not in ('', '.', '..') for p in name.split('/')) and digest(pin),
++                    'selected_CODE_safe_relative_and_hash_required')
++            frozen = snapshot['identities'][name]
++            require(type(frozen) is list and len(frozen) == 9 and
++                    all(type(v) is int for v in frozen) and
++                    0 < frozen[6] <= 32 * 1024**2,
++                    'selected_CODE_finite_declared_size_required')
++            path = cache_path(str(root/name))
++            before = path.lstat()
++            require(source_identity(before) == tuple(frozen) and
++                    stat.S_IMODE(before.st_mode) == snapshot['modes'][name],
++                    'selected_CODE_sealed_identity_or_mode_changed')
++            inode = (before.st_dev, before.st_ino)
++            require(inode not in seen, 'selected_CODE_inode_alias_rejected')
++            seen.add(inode)
++            raw = _read_bounded(path, 32 * 1024**2)
++            require(source_identity(path.lstat()) == tuple(frozen) and
++                    len(raw) == frozen[6] and sha(raw) == pin,
++                    'actual_CODE_source_changed:'+flavor+':'+name)
++            yield flavor, name, dict(path=str(path), sha256=pin, bytes=len(raw)), raw
+ 
+ 
+ def prepare_source_plan():
+@@ -315,20 +379,15 @@
+         require(path not in sources or sources[path] == raw, 'conflicting_source_path_bytes')
+         sources[path] = raw
+     for flavor in ('private', 'public', 'previous'):
+-        root = Path(plan.previous_project_roots['private'] if flavor == 'previous' else plan.project_roots[flavor])
+-        inventory = plan.before['private'] if flavor == 'previous' else plan.after[flavor]
+-        rows = {}
++        project_sources[flavor] = {}
+         if flavor != 'previous':
+             project_bytes[flavor], project_modes[flavor] = {}, {}
+-        for name, pin in inventory.items():
+-            raw = read(root/name)
+-            require(sha(raw) == pin, 'actual_CODE_source_changed:'+flavor+':'+name)
+-            rows[name] = dict(path=str(root/name), sha256=pin, bytes=len(raw))
+-            add(root/name, raw)
+-            if flavor != 'previous':
+-                project_bytes[flavor][name] = raw
+-                project_modes[flavor][name] = '100755' if (root/name).lstat().st_mode & 0o111 else '100644'
+-        project_sources[flavor] = rows
++    for flavor, name, ref, raw in selected_project_code(plan):
++        project_sources[flavor][name] = ref
++        add(ref['path'], raw)
++        if flavor != 'previous':
++            project_bytes[flavor][name] = raw
++            project_modes[flavor][name] = '100755' if Path(ref['path']).lstat().st_mode & 0o111 else '100644'
+     projection = module('Bound224SourceProjection', rendered['root224_projection.py'], out/'root224_projection.py').validate(predecessor=predecessor, static_binding=static, request=values['request'], private_input=values['private_input'], public_input=values['public_input'], before_public_input=values['before_public_input'], public_origin=values['public_origin'], public_delta=values['public_delta'], spec=spec, project_bytes=project_bytes, project_modes=project_modes, product_source_commit=data.product_source_commit)
+     clean = lambda ref: {k: ref[k] for k in ('path', 'sha256')}
+     fixed = {k: clean(value.reference) for k, value in data.fixed.items()}
