@@ -1,0 +1,256 @@
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-EXIT-DEPENDENCY-SOURCE-20261115/candidate/outer/deps/gpgme_engine_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-PENDING-EXIT-CUSTODY-SOURCE-20261115/candidate/outer/deps/gpgme_engine_gdb.py
+@@ -114,6 +114,7 @@
+         self.catchpoints, self.known, self.exits = {}, {}, {}
+         self.exit_order = []
+         self.exit_intents = {}
++        self.exit_completion = None
+         self.clone_entries = set()
+         self.c, self.installed, self.init_active = None, False, False
+         self.bootstrap = None
+@@ -1215,7 +1216,8 @@
+         # final child's real reparent. A later GDB exit event must still give0.
+         inf = self.g.selected_inferior()
+         need(self.c is not None and self.c.current is not None and inf.num > 3
+-             and inf.num not in self.exit_intents and self.reg('rdi') == 0,
++             and self.exit_completion is None and inf.num not in self.exit_intents
++             and self.reg('rdi') == 0,
+              'gpgme_unknown_duplicate_or_nonzero_exit_intent')
+         context, snap = self.context(role='exiting_child')
+         self.flush_exits(context, snap)
+@@ -1234,6 +1236,89 @@
+         need(len(matches) == 1 and matches[0]['identity'] == child,
+              'gpgme_exit_intent_actual_identity')
+         self.exit_intents[inf.num] = copy.deepcopy(child)
++        # Do not resume the original with this child disappearing in parallel.
++        # GNU17.1 may defer its ExitedEvent behind another inferior's stop.
++        # Dispatch completes exactly this syscall before ordinary read-return.
++        self.exit_completion = dict(inferior=inf.num, identity=copy.deepcopy(child),
++                                    selected=self._selection(), attempted=False)
++
++    def complete_exit_intent(self):
++        """One sole-child completion, outside callbacks, on the existing clock.
++
++        The normal synchronous GNU17.1 all-stop command boundary clears the
++        global step-over queue and resumed intents (same source proof as drain).
++        Settings alone do not establish that proof. No absence substitutes for
++        the actual zero ExitedEvent. A refusal never retries this command.
++        """
++        token = self.exit_completion
++        need(type(token) is dict and not token['attempted']
++             and self.n['STATE'].get('helper_event_depth', 0) == 0
++             and self.n['STATE']['error'] is None and self.init_active
++             and self.fork_pending is None and self.pending_stop is None
++             and not self.to_create and not self.to_retire,
++             'gpgme_exit_completion_unavailable')
++        need(self._selection() == token['selected']
++             and self.collector.proc(token['identity']['pid']) == token['identity']
++             and token['inferior'] in self.exit_intents
++             and self.exit_intents[token['inferior']] == token['identity'],
++             'gpgme_exit_completion_custody_changed')
++        settings = {key: self.g.parameter(key) for key in
++                    ('follow-fork-mode', 'schedule-multiple', 'scheduler-locking')}
++        # During the existing held-original drain the sole-child settings
++        # already hold; otherwise require the unchanged launch baseline.
++        baseline = {'follow-fork-mode': 'parent', 'schedule-multiple': True,
++                    'scheduler-locking': 'off'}
++        sole = {'follow-fork-mode': 'parent', 'schedule-multiple': False,
++                'scheduler-locking': 'on'}
++        need(settings == (sole if self.n['STATE'].get('gpgme_drain_active', False) else baseline),
++             'gpgme_exit_completion_runcontrol_changed')
++        need(self.paper.original_selected(thread=self.init_thread),
++             'gpgme_exit_completion_original_unavailable')
++        held = self._selection()
++        failure = None
++        prior_drain = self.n['STATE'].get('gpgme_drain_active', False)
++        self.n['STATE']['gpgme_drain_active'] = True
++        token['attempted'] = True
++        try:
++            self.context(thread=self.init_thread)
++            self._restore_selection(token['selected'])
++            self.context(role='exiting_child')
++            for key, value in (('schedule-multiple', 'off'), ('scheduler-locking', 'on')):
++                self.g.execute('set ' + key + ' ' + value, to_string=True)
++            need({key: self.g.parameter(key) for key in sole} == sole,
++                 'gpgme_exit_completion_runcontrol_readback')
++            self.context(role='exiting_child')
++            self.g.execute('continue', to_string=True)
++            need(self.n['STATE']['error'] is None and self.pending_stop is None
++                 and self.fork_pending is None and self.exit_completion is token
++                 and self.exits.get(token['inferior']) == 0
++                 and token['inferior'] in self.process_guard_retire_queue,
++                 'gpgme_exit_completion_actual_event_missing')
++            need(not any(i.is_valid() and i.num == token['inferior'] and i.pid
++                         for i in self.g.inferiors()),
++                 'gpgme_exit_completion_debugger_not_retired')
++            self._restore_selection(held)
++            self.context(thread=self.init_thread)
++            self.exit_completion = None
++        except Exception as exc:
++            failure = exc
++        finally:
++            self.n['STATE']['gpgme_drain_active'] = prior_drain
++            for key, value in settings.items():
++                try:
++                    text = ('on' if value else 'off') if type(value) is bool else value
++                    self.g.execute('set ' + key + ' ' + text, to_string=True)
++                    need(self.g.parameter(key) == value, 'gpgme_exit_completion_restore_settings')
++                except Exception as exc:
++                    failure = failure or exc
++            try:
++                self._restore_selection(held)
++            except Exception as exc:
++                failure = failure or exc
++        if failure is not None:
++            self.clear_pending()
++            raise failure
++        self.pending = 'CONTINUE'
+ 
+     def exited(self, event):
+         inf = getattr(event, 'inferior', None)
+@@ -1260,6 +1345,8 @@
+         if self.n['STATE']['error'] is not None:
+             self.clear_pending()
+             return None
++        if self.exit_completion is not None:
++            self.complete_exit_intent()
+         for owner in tuple(self.process_guard_retire_queue):
+             self.retire_process_guards(owner)
+         if self.fork_pending is not None:
+@@ -1438,6 +1525,7 @@
+         if self.fork_pending is not None:
+             self.fork_terminal = True
+         self.fork_pending = None
++        self.exit_completion = None
+         self.pending = self.pending_stop = None
+         self.to_create.clear()
+         self.to_retire.clear()
+@@ -1564,6 +1652,35 @@
+         self.paper.to_create.clear()
+         self.gpgme.clear_pending()
+ 
++    def cleanup_identity(self, inferior):
++        """Read-only birth CAS for native finally, even after collector refusal.
++
++        Terminal observation state is never reset. The raw paper parser is
++        used solely against the disjoint, previously accepted launch registry.
++        Unknown inferiors and vanished processes confer no kill permission.
++        """
++        need(inferior.is_valid() and type(inferior.pid) is int and inferior.pid > 0,
++             'gpgme_cleanup_inferior_unknown')
++        pid = inferior.pid
++        native = self.paper.n['STATE']['process']
++        if inferior.num == 1:
++            need(native is not None and pid == native['pid'], 'gpgme_cleanup_original_unknown')
++            expected = dict(pid=pid, ppid=native['gdb_pid'], start_ticks=native['start_ticks'])
++        elif pid in self.paper.known:
++            matches = [] if self.paper.c is None else [v for v in self.paper.c.e['children']
++                if v['pid'] == pid and v['inferior'] == inferior.num]
++            need(len(matches) == 1 and self.paper.c.e['state'] != 'CLOSED',
++                 'gpgme_cleanup_paper_owner_unknown')
++            expected = self.paper.known[pid]
++        else:
++            known = self.gpgme.known.get(pid)
++            need(known is not None and known['inferior'] == inferior.num,
++                 'gpgme_cleanup_foreign_inferior')
++            expected = known['identity']
++        actual = self.paper.proc(pid)
++        need(actual == expected, 'gpgme_cleanup_birth_or_parent_changed')
++        return actual
++
+     def cleanup_inferiors(self):
+         # Cleanup is the native launch owner's operation, never an adapter's
+         # permission to kill a foreign process.  Preserve the first refusal.
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-HELPER-STOP-COMPOSITION-20261115/R2/candidate/outer/deps/native_return_observer.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-PENDING-EXIT-CUSTODY-SOURCE-20261115/candidate/outer/deps/native_return_observer.py
+@@ -725,6 +725,8 @@
+             (STATE['process'] is None or not Path('/proc/' + str(STATE['process']['pid'])).exists()))
+     else:
+         cleanup_pids = set(helper.known)
++        if STATE['process'] is not None:
++            cleanup_pids.add(STATE['process']['pid'])
+         if hasattr(helper, 'gpgme'):
+             cleanup_pids.update(helper.gpgme.known)
+             helper.clear_pending()
+@@ -732,17 +734,25 @@
+             if not inf.pid:
+                 continue
+             try:
+-                before = helper.proc(inf.pid)
++                before = (helper.cleanup_identity(inf) if hasattr(helper, 'gpgme')
++                          else helper.proc(inf.pid))
+                 cleanup_pids.add(inf.pid)
+                 gdb.execute('inferior ' + str(inf.num), to_string=True)
+-                require(helper.proc(inf.pid) == before, 'cleanup_process_birth_changed')
++                require((helper.cleanup_identity(inf) if hasattr(helper, 'gpgme')
++                         else helper.proc(inf.pid)) == before, 'cleanup_process_birth_changed')
+                 gdb.execute('kill', to_string=True)
+             except Exception:
+                 STATE['cleanup_error'] = 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+                 STATE['error'] = STATE['error'] or 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+                 STATE['status'] = 'REFUSED'
+-        STATE['own_inferior_absent'] = (all(i.pid == 0 for i in gdb.inferiors()) and
+-            all(not Path('/proc/' + str(pid)).exists() for pid in cleanup_pids))
++        # Kernel absence and debugger retirement are separate facts. An
++        # already absent cached child is never killed without a birth CAS;
++        # unresolved bookkeeping stays REFUSED for outer owner containment.
++        STATE['own_processes_absent'] = all(not Path('/proc/' + str(pid)).exists()
++                                            for pid in cleanup_pids)
++        STATE['own_debugger_inferiors_empty'] = all(i.pid == 0 for i in gdb.inferiors())
++        STATE['own_inferior_absent'] = (STATE['own_debugger_inferiors_empty'] and
++                                        STATE['own_processes_absent'])
+         if not STATE['own_inferior_absent']:
+             STATE['cleanup_error'] = 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+             STATE['error'] = STATE['error'] or 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-ACTUAL-READ-BOUNDARY-SOURCE-20261115/driver/ownc_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-PENDING-EXIT-CUSTODY-SOURCE-20261115/driver/ownc_gdb.py
+@@ -56,20 +56,27 @@
+ 
+ 
+ def private_exception_origin(exc, source_roles):
+-    """Python origin metadata only; never exception text, locals or payload."""
+-    frames=[];tb=exc.__traceback__
+-    while tb is not None:
+-        code=tb.tb_frame.f_code
+-        name=code.co_name
+-        frames.append(dict(source_role=source_roles.get(code.co_filename,'OTHER_SOURCE'),
+-            function=name if re.fullmatch(r'[A-Za-z0-9_<>]{1,80}',name) else 'OTHER_FUNCTION',
+-            line=tb.tb_lineno))
+-        if len(frames)>16:frames.pop(0)
+-        tb=tb.tb_next
+-    name=type(exc).__name__
+-    return dict(schema='frw.ownc.private-exception-origin.v1',
+-        exception_class=name if re.fullmatch(r'[A-Za-z0-9_]{1,80}',name) else 'OTHER_EXCEPTION',
+-        frames=frames,scope='PYTHON_ORIGIN_ONLY_NO_MESSAGE_LOCALS_OR_GDB_INTERNAL_CALLSITE')
++    """Bounded exception/context origins; never text, locals, paths or payload."""
++    def token(value, pattern, fallback):
++        return value if re.fullmatch(pattern,value) else fallback
++    chain=[];seen=set();current=exc
++    while current is not None and len(chain)<4 and id(current) not in seen:
++        seen.add(id(current));frames=[];tb=current.__traceback__
++        while tb is not None:
++            code=tb.tb_frame.f_code
++            frames.append(dict(source_role=source_roles.get(code.co_filename,'OTHER_SOURCE'),
++                function=token(code.co_name,r'[A-Za-z0-9_<>]{1,80}','OTHER_FUNCTION'),line=tb.tb_lineno))
++            if len(frames)>16:frames.pop(0)
++            tb=tb.tb_next
++        cause=current.__cause__
++        context=current.__context__
++        link='cause' if cause is not None else 'context' if context is not None else None
++        chain.append(dict(exception_class=token(type(current).__name__,r'[A-Za-z0-9_]{1,80}',
++            'OTHER_EXCEPTION'),frames=frames,next_origin=link))
++        current=cause if cause is not None else context
++    return dict(schema='frw.ownc.private-exception-origin.v2',
++        exception_class=chain[0]['exception_class'],frames=chain[0]['frames'],origins=chain,
++        truncated=current is not None,scope='PYTHON_ORIGIN_ONLY_NO_MESSAGE_LOCALS_OR_GDB_INTERNAL_CALLSITE')
+ 
+ 
+ def private_failure_capture(native_fail, publish):
+@@ -85,6 +92,7 @@
+                 if helper is not None:
+                     roles[helper.paper.b['adapter_ref']['path']]='paper_adapter'
+                     roles[helper.gpgme.b['adapter_ref']['path']]='gpgme_adapter'
++                    roles[helper.gpgme.b['collector_ref']['path']]='gpgme_collector'
+                 publish(private_exception_origin(exc,roles))
+             except Exception:pass # Diagnostic failure must preserve first refusal.
+         return native_fail(reason)
