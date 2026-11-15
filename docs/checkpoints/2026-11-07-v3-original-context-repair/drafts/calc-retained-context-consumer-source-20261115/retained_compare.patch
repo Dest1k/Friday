@@ -1,0 +1,51 @@
+--- /dev/null
++++ retained_compare.py
+@@ -0,0 +1,48 @@
++"""Root-only pure comparison of retained bytes with an existing INTERNAL context.
++
++The caller independently verifies context facts/applicability before this call.
++Type/hash checks below correlate inputs; they authenticate no fact. No JSON
++loader, context constructor, metric default, renderer or admission is provided.
++Import once with the pinned tools package in a fresh isolated interpreter.
++"""
++from hashlib import sha256
++from tools import scoped_spreadsheet_conversion as conversion
++from tools import scoped_spreadsheet_rich as rich
++from tools import scoped_spreadsheet_calc_metric as metric
++
++# Construct the externally verified object through this SAME canonical class.
++CalcReferenceMetricContext = metric.CalcReferenceMetricContext
++
++
++class RetainedComparisonRefused(ValueError):
++    """Adapter input/correlation refusal; consumer refusals propagate unchanged."""
++
++
++def compare_retained(source_bytes, destination_bytes, ctx=None, *, checkpoint=None):
++    """Return (source_inventory, destination_inventory, original_fidelity).
++
++    Inputs are immutable explicit bytes, never file paths. Inventory's API has
++    no context keyword; the one ctx object reaches validation and fidelity.
++    This is algorithm/plumbing only. The return value does not assert current
++    M, historical applicability, physical fidelity, runtime or user success.
++    """
++    if type(source_bytes) is not bytes or type(destination_bytes) is not bytes:
++        raise RetainedComparisonRefused('retained_immutable_bytes_required')
++    if type(ctx) is not CalcReferenceMetricContext:
++        raise RetainedComparisonRefused('retained_internal_context_type_unbound')
++    if ((sha256(source_bytes).hexdigest(), len(source_bytes),
++         sha256(destination_bytes).hexdigest(), len(destination_bytes)) !=
++        (ctx.source_sha256, ctx.source_bytes,
++         ctx.destination_sha256, ctx.destination_bytes)):
++        raise RetainedComparisonRefused('retained_context_bytes_mismatch')
++    source = conversion.inventory(source_bytes, 'ods', checkpoint=checkpoint)
++    if (source.destination_profile != metric.PROFILE
++            or getattr(source.rich_signature, 'native_calc_profile', False) is not True):
++        raise RetainedComparisonRefused('retained_metric_source_profile_unsupported')
++    destination = conversion.validate_destination(
++        source, destination_bytes, 'xlsx', checkpoint=checkpoint,
++        _calc_metric_context=ctx)
++    fidelity = rich.fidelity_report(
++        source.rich_signature, destination.rich_signature,
++        source_kind='ods', target_kind='xlsx', _calc_metric_context=ctx)
++    return source, destination, fidelity
