@@ -1,0 +1,43 @@
+--- before/paper_helper_gdb.py
++++ candidate/paper_helper_gdb.py
+@@ -501,7 +501,8 @@
+ 
+     def queue_stop(self, event):
+         """Queue only a real helper BreakpointEvent, never a stop predicate."""
+-        hits = [b for b in getattr(event, 'breakpoints', ()) if b.number in self.stop_handlers]
++        hits = [b for b in getattr(event, 'breakpoints', ())
++                if b.number in self.stop_handlers or b.number in self.retired_breakpoints]
+         if not hits:
+             return False
+         if self.n['STATE']['error'] is not None:
+@@ -509,8 +510,9 @@
+         require(len(hits) == 1 and len(event.breakpoints) == 1 and self.pending_stop is None,
+                 'helper_ambiguous_or_duplicate_stop_event')
+         inf = self.g.selected_inferior()
+-        bp, fn, one_shot = self.stop_handlers[hits[0].number]
+-        require(bp.number not in self.retired_breakpoints, 'helper_retired_breakpoint_event')
++        number = hits[0].number
++        require(number not in self.retired_breakpoints, 'helper_retired_breakpoint_event')
++        bp, fn, one_shot = self.stop_handlers[number]
+         require(bp.is_valid() and bp.enabled is True, 'helper_disabled_breakpoint_event')
+         require(inf.num == bp.inferior and inf.pid > 0, 'helper_stop_event_inferior')
+         self.pending_stop = (bp, fn, one_shot, inf.num, inf.pid, self.tid(), int(self.g.newest_frame().pc()))
+@@ -725,9 +727,15 @@
+                     # both helper entries are one-shot too. Retire only AFTER
+                     # its exact value/context checks succeed, outside stop().
+                     # All-stop helper exits can leave original at this same PC.
+-                    bp.enabled = False
+-                    require(bp.enabled is False, 'helper_breakpoint_retirement_failed')
+-                    self.retired_breakpoints.add(bp.number)
++                    # A disabled inferior-specific breakpoint still participates
++                    # in GDB's solib re-set. Its child inferior can disappear on
++                    # exit, so destroy the consumed one-shot outside callbacks.
++                    retired_number = bp.number
++                    bp.delete()
++                    require(not bp.is_valid(), 'helper_breakpoint_retirement_failed')
++                    self.stop_handlers.pop(retired_number)
++                    self.breakpoints.remove(bp)
++                    self.retired_breakpoints.add(retired_number)
+                 self.pending = 'CONTINUE'
+                 self.publish()
+             except Exception as e:
