@@ -1,0 +1,668 @@
+--- before/inner/inner_client.py
++++ candidate/inner/inner_client.py
+@@ -304,6 +304,42 @@
+     def closed(self):
+         need(self.active is None and len(self.responses) == 10, 'ten_completed_calls_before_CLOSED_required')
+         self.write(self.c['paths']['phase'], dict(nonce=self.c['nonce'], phase='CLOSED', index=None, digit=None))
++        dependency = self.c.get('load_dependency')
++        need(dependency is not None, 'current_font_runtime_close_release_required')
++        deadline = dependency['operation_deadline_monotonic']
++        need(time.monotonic() < deadline, 'current_font_runtime_original_deadline')
++        accepted_path = str(Path(WORK) / 'font-runtime-closed-accepted.json')
++        def accepted(ack):
++            exact(ack, ('schema', 'operation_id', 'nonce', 'boundary', 'sequence', 'process', 'release_ref', 'status'),
++                  'font_runtime_close_acceptance_schema')
++            need(ack['schema'] == 'frw.calc.font-runtime-accepted.v1'
++                 and ack['status'] == 'HELD_STOP_RELEASE_VALIDATED_NO_RESUME_CLAIM'
++                 and ack['operation_id'] == self.c['operation_id'] and ack['nonce'] == self.c['nonce']
++                 and ack['boundary'] == 'AFTER_READONLY_CLOSE' and type(ack['sequence']) is int and ack['sequence'] == 1,
++                 'font_runtime_close_acceptance_binding')
++            exact(ack['release_ref'], ('path', 'sha256'), 'font_runtime_close_acceptance_ref')
++            need(ack['release_ref']['path'] == str(Path(WORK) / 'font-runtime-closed-release.json')
++                 and digest(ack['release_ref']['sha256']), 'font_runtime_close_acceptance_path')
++            value = decode(read_ref(ack['release_ref'], limit=32768))
++            exact(value, ('schema', 'operation_id', 'nonce', 'boundary', 'sequence', 'process',
++                          'request_ref', 'proof_ref', 'font_view_ref'), 'font_runtime_close_release_schema')
++            need(value['schema'] == 'frw.calc.font-runtime-release.v1'
++                 and value['operation_id'] == self.c['operation_id'] and value['nonce'] == self.c['nonce']
++                 and value['boundary'] == 'AFTER_READONLY_CLOSE' and type(value['sequence']) is int
++                 and value['sequence'] == 1 and value['process']['pid'] == self.c['office_process']['namespace_pid']
++                 and value['process']['start_ticks'] == self.c['office_process']['start_ticks']
++                 and value['process']['inferior'] == 1 and value['process'] == ack['process']
++                 and time.monotonic() < deadline,
++                 'font_runtime_close_release_binding')
++            for key, name in (('request_ref', 'font-runtime-closed-request.json'),
++                              ('proof_ref', 'font-runtime-closed-proof.json'),
++                              ('font_view_ref', 'font-view-after-close.json')):
++                exact(value[key], ('path', 'sha256'), 'font_runtime_close_release_ref')
++                need(value[key]['path'] == str(Path(WORK) / name) and digest(value[key]['sha256']),
++                     'font_runtime_close_release_path')
++                read_ref(value[key], limit=32768)
++            return True
++        wait_json(accepted_path, min(self.c['timeouts']['loaded_seconds'], deadline - time.monotonic()), accepted)
+ 
+ 
+ def abort_interaction(handler, request, abort_type):
+@@ -399,6 +435,9 @@
+ 
+ def claim_started(c):
+     need(not os.path.lexists(c['paths']['loaded_envelope']), 'prefilled_future_loaded_facts_refused')
++    need(not any(os.path.lexists(Path(WORK) / ('font-runtime-' + tag + '-' + kind + '.json'))
++                 for tag in ('loaded', 'closed') for kind in ('request', 'proof', 'release', 'accepted')),
++         'prefilled_future_font_runtime_facts_refused')
+     fd = os.open(c['paths']['started'], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+     try:
+         data = canonical(dict(operation_id=c['operation_id'], nonce=c['nonce']))
+--- before/outer/deps/native_return_observer.py
++++ candidate/outer/deps/native_return_observer.py
+@@ -6,6 +6,9 @@
+ import hashlib
+ import json
+ import os
++import math
++import stat
++import time
+ from pathlib import Path
+ 
+ CFG = json.loads(Path(os.environ['FRW_NATIVE_OBSERVER_CONFIG']).read_text())
+@@ -20,6 +23,138 @@
+ pending_action = None
+ helper = None
+ catchpoints = {}
++font_runtime_boundaries = []
++
++
++def font_file(boundary, kind):
++    require(boundary in ('AFTER_LOAD_BEFORE_QUERY', 'AFTER_READONLY_CLOSE'), 'font_runtime_boundary')
++    require(kind in ('request', 'proof', 'release', 'accepted', 'view'), 'font_runtime_file_kind')
++    tag = 'loaded' if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 'closed'
++    name = ('font-view-after-load.json' if tag == 'loaded' else 'font-view-after-close.json') if kind == 'view' else (
++        'font-runtime-' + tag + '-' + kind + '.json')
++    require(Path(CFG['phase_path']).parent == Path('/tmp/friday-metric-work'), 'font_runtime_work')
++    return Path(CFG['phase_path']).with_name(name)
++
++
++def font_read(path):
++    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
++    try:
++        before = os.fstat(fd)
++        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and before.st_nlink == 1
++                and stat.S_IMODE(before.st_mode) == 0o600 and before.st_size <= 32768,
++                'font_runtime_file_rights_bound')
++        raw = os.read(fd, 32769)
++        after = os.fstat(fd)
++        stamp = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
++        require(len(raw) <= 32768 and stamp(before) == stamp(after) == stamp(path.lstat()),
++                'font_runtime_file_changed')
++    finally:
++        os.close(fd)
++    return raw
++
++
++def font_write(path, value):
++    raw = (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
++    require(len(raw) <= 32768 and not os.path.lexists(path), 'font_runtime_future_or_duplicate_proof')
++    temporary = path.with_name(path.name + '.pending')
++    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
++    with os.fdopen(fd, 'wb') as out:
++        out.write(raw)
++        out.flush()
++        os.fsync(out.fileno())
++    require(not os.path.lexists(path), 'font_runtime_future_or_duplicate_proof')
++    os.replace(temporary, path)
++    return {'path': str(path), 'sha256': hashlib.sha256(raw).hexdigest()}
++
++
++def capture_font_runtime():
++    """One requested all-stop point; never claim stability between points.
++
++    The sole namespace supervisor sends SIGSTOP through a birth-bound pidfd.
++    GDB suppresses delivery. No inferior function/write/step/thread change occurs.
++    Hold this stop through the namespace font CAS, then accept its exact release.
++    Technical signal behavior still requires a real owned fixture before Office.
++    """
++    require(helper is not None and CFG['kind'] in ('OFFICE_UNADMITTED', 'OWN_POPEN_FIXTURE_ONLY')
++            and active is None and len(font_runtime_boundaries) < 2, 'font_runtime_observer_scope')
++    identity()
++    helper.metric_ready()
++    sequence = len(font_runtime_boundaries)
++    boundary = ('AFTER_LOAD_BEFORE_QUERY', 'AFTER_READONLY_CLOSE')[sequence]
++    phase_value = {'nonce': CFG['nonce'], 'phase': 'IDLE' if sequence == 0 else 'CLOSED',
++                   'index': None, 'digit': None}
++    require(phase() == phase_value and len(STATE['records']) == sequence * 10,
++            'font_runtime_phase_or_call_count')
++    request_path = font_file(boundary, 'request')
++    request_raw = font_read(request_path)
++    request = json.loads(request_raw)
++    keys = {'schema', 'operation_id', 'nonce', 'boundary', 'sequence', 'process', 'supervisor',
++            'deadline_monotonic', 'requested_monotonic'}
++    require(type(request) is dict and set(request) == keys
++            and request['schema'] == 'frw.calc.font-runtime-request.v1'
++            and request['operation_id'] == helper.b['runtime']['operation_id']
++            and request['nonce'] == CFG['nonce'] and request['boundary'] == boundary
++            and type(request['sequence']) is int and request['sequence'] == sequence
++            and request['process'] == STATE['process'], 'font_runtime_request_binding')
++    deadline = helper.b['runtime']['operation_deadline_monotonic']
++    require(type(request['deadline_monotonic']) in (int, float)
++            and math.isfinite(request['deadline_monotonic']) and request['deadline_monotonic'] == deadline
++            and type(request['requested_monotonic']) in (int, float) and math.isfinite(request['requested_monotonic'])
++            and 0 < request['requested_monotonic'] <= time.monotonic() < deadline,
++            'font_runtime_original_deadline')
++    supervisor = boundary_proc_identity(os.getppid())
++    require(request['supervisor'] == supervisor, 'font_runtime_request_supervisor_birth')
++    # These are GDB's kernel signal metadata, not inferior code evaluation.
++    sig = lambda expression: int(gdb.parse_and_eval('$_siginfo.' + expression))
++    require(sig('si_signo') == 19 and sig('si_code') == 0
++            and sig('_sifields._kill.si_pid') == supervisor['pid']
++            and sig('_sifields._kill.si_uid') == os.getuid(), 'font_runtime_signal_sender')
++    release_path = font_file(boundary, 'release')
++    require(not os.path.lexists(release_path), 'font_runtime_future_release')
++    inf = identity()
++    threads = list(inf.threads())
++    require(0 < len(threads) <= 512 and all(t.is_valid() and t.is_stopped() for t in threads),
++            'font_runtime_all_threads_stopped')
++    env = helper.current_environment(inf.pid)
++    request_ref = {'path': str(request_path), 'sha256': hashlib.sha256(request_raw).hexdigest()}
++    keys15 = (b'HOME', b'TMPDIR', b'XDG_CACHE_HOME', b'XDG_CONFIG_HOME', b'XDG_DATA_HOME',
++        b'FONTCONFIG_FILE', b'FONTCONFIG_PATH', b'FONTCONFIG_SYSROOT', b'FC_LANG', b'LANG', b'LC_ALL',
++        b'SAL_FONTPATH', b'SAL_USE_VCLPLUGIN', b'LD_LIBRARY_PATH', b'URE_BOOTSTRAP')
++    proof = {'schema': 'frw.calc.current-font-environment.v1', 'operation_id': request['operation_id'],
++        'nonce': CFG['nonce'], 'boundary': boundary, 'sequence': sequence, 'process': STATE['process'],
++        'supervisor': supervisor, 'request_ref': request_ref, 'phase': phase_value,
++        'records_count': len(STATE['records']), 'stopped_thread_count': len(threads),
++        'source_class': 'PINNED_LIBC_GOT_TO_ZERO_FILL_ENVIRON',
++        'adapter_ref': helper.b['adapter_ref'], 'libc_sha256': helper.m['images']['libc']['sha256'],
++        'font_environment': [{'key': key.decode('ascii'), 'value_sha256':
++            hashlib.sha256(env[key]).hexdigest() if key in env else None} for key in keys15],
++        'scope': 'THIS_ALL_STOP_POINT_ONLY_NO_CONTINUOUS_ENVIRONMENT_CLAIM',
++        'actual_M': None, 'runtime_attested': False}
++    # The projection must remain the exact fixed 15 keys, independent of audit metadata limits.
++    require([row['key'] for row in proof['font_environment']] == [key.decode('ascii') for key in keys15],
++            'font_runtime_exact_projection')
++    proof_ref = font_write(font_file(boundary, 'proof'), proof)
++    while not os.path.lexists(release_path):
++        require(time.monotonic() < deadline, 'font_runtime_release_original_deadline')
++        time.sleep(min(0.02, max(0, deadline - time.monotonic())))
++    release = json.loads(font_read(release_path))
++    expected = {'schema': 'frw.calc.font-runtime-release.v1', 'operation_id': request['operation_id'],
++        'nonce': CFG['nonce'], 'boundary': boundary, 'sequence': sequence, 'process': STATE['process'],
++        'request_ref': request_ref, 'proof_ref': proof_ref, 'font_view_ref': release.get('font_view_ref')}
++    require(release == expected and time.monotonic() < deadline, 'font_runtime_release_binding_or_deadline')
++    view = expected['font_view_ref']
++    require(type(view) is dict and set(view) == {'path', 'sha256'}
++            and view['path'] == str(font_file(boundary, 'view'))
++            and hashlib.sha256(font_read(font_file(boundary, 'view'))).hexdigest() == view['sha256'],
++            'font_runtime_release_view_pin')
++    require(font_read(request_path) == request_raw and phase() == phase_value
++            and identity().pid == inf.pid and helper.current_environment(inf.pid) == env,
++            'font_runtime_held_stop_changed')
++    font_runtime_boundaries.append(proof_ref)
++    font_write(font_file(boundary, 'accepted'), dict(schema='frw.calc.font-runtime-accepted.v1',
++        **{key: request[key] for key in ('operation_id', 'nonce', 'boundary', 'sequence', 'process')},
++        release_ref={'path': str(release_path), 'sha256': hashlib.sha256(font_read(release_path)).hexdigest()},
++        status='HELD_STOP_RELEASE_VALIDATED_NO_RESUME_CLAIM'))
+ 
+ 
+ def require(ok, reason):
+@@ -68,6 +203,7 @@
+     require(value['phase'] in ('IDLE', 'METRIC', 'CLOSED'), 'unknown_phase')
+     if value['phase'] == 'METRIC':
+         if helper is not None:
++            require(len(font_runtime_boundaries) == 1, 'font_runtime_loaded_proof_before_metric')
+             helper.metric_ready()
+         require(type(value['index']) is int and 0 <= value['index'] <= 9
+                 and value['digit'] == str(value['index']), 'phase_digit')
+@@ -341,8 +477,13 @@
+ 
+ 
+ def stopped(event):
++    global pending_action
+     if isinstance(event, gdb.SignalEvent):
+-        fail('unexpected_signal')
++        if (getattr(event, 'stop_signal', None) == 'SIGSTOP' and helper is not None
++                and pending_action is None):
++            pending_action = 'FONT_RUNTIME'
++        else:
++            fail('unexpected_signal')
+     elif helper is not None and isinstance(event, gdb.BreakpointEvent):
+         try:
+             if helper.queue_stop(event):
+@@ -429,6 +570,7 @@
+         helper.catchpoints = dict(catchpoints)
+         gdb.execute('set schedule-multiple on', to_string=True)
+         gdb.execute('handle SIGCHLD nostop noprint pass', to_string=True)
++        gdb.execute('handle SIGSTOP noprint nopass stop', to_string=True)
+     gdb.events.new_objfile.connect(install)
+     gdb.events.exited.connect(exited)
+     gdb.events.stop.connect(stopped)
+@@ -454,7 +596,7 @@
+             break
+         require(helper_action is None or pending_action is None, 'helper_metric_stop_collision')
+         action, pending_action = helper_action or pending_action, None
+-        require(action in ('START_CALL', 'END_CALL', 'CONTINUE'), 'unrecognized_stop')
++        require(action in ('START_CALL', 'END_CALL', 'CONTINUE', 'FONT_RUNTIME'), 'unrecognized_stop')
+         # GDB documents that Breakpoint.stop must not mutate breakpoints. All
+         # finish creation and enabling/disabling occur here, outside callbacks.
+         if action == 'START_CALL':
+@@ -464,10 +606,13 @@
+             entry_bp.enabled = return_bp.enabled = True
+         elif action == 'END_CALL':
+             entry_bp.enabled = return_bp.enabled = False
++        elif action == 'FONT_RUNTIME':
++            capture_font_runtime()
+     require(STATE['error'] is None, 'trace_refused')
+     require(gdb.selected_inferior().pid == 0 and STATE['exit_code'] == 0, 'unknown_stop_or_exit')
+     require(installed and active is None and len(STATE['records']) == 10, 'incomplete_trace')
+     require(phase()['phase'] == 'CLOSED', 'phase_not_closed')
++    require(helper is None or len(font_runtime_boundaries) == 2, 'font_runtime_both_boundaries_required')
+     require(not Path('/proc/' + str(STATE['process']['pid'])).exists(), 'process_cleanup_unknown')
+     STATE['status'] = 'COMPLETE_FIXTURE_ONLY' if CFG['kind'] == 'ABI_FIXTURE_ONLY' else 'COMPLETE_UNATTESTED'
+     save()
+--- before/outer/namespace_entry.py
++++ candidate/outer/namespace_entry.py
+@@ -13,6 +13,8 @@
+ import os
+ import resource
+ import re
++import math
++import signal
+ import stat
+ import subprocess
+ import time
+@@ -21,6 +23,119 @@
+ 
+ WORK = Path('/tmp/friday-metric-work')
+ PROGRAM = '/opt/friday-document-toolchain/root/usr/lib/libreoffice/program'
++FONT_ENV_KEYS = ('HOME', 'TMPDIR', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
++    'FONTCONFIG_FILE', 'FONTCONFIG_PATH', 'FONTCONFIG_SYSROOT', 'FC_LANG', 'LANG', 'LC_ALL',
++    'SAL_FONTPATH', 'SAL_USE_VCLPLUGIN', 'LD_LIBRARY_PATH', 'URE_BOOTSTRAP')
++
++
++def font_runtime_paths(boundary):
++    need(boundary in ('AFTER_LOAD_BEFORE_QUERY', 'AFTER_READONLY_CLOSE'), 'font_runtime_boundary')
++    tag = 'loaded' if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 'closed'
++    return {kind: WORK / ('font-runtime-' + tag + '-' + kind + '.json')
++            for kind in ('request', 'proof', 'release', 'accepted')}
++
++
++def font_runtime_read(path):
++    path = Path(path)
++    need(path.parent == WORK and not path.is_symlink(), 'font_runtime_exact_work_file')
++    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
++    try:
++        before = os.fstat(fd)
++        need(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and before.st_nlink == 1
++             and stat.S_IMODE(before.st_mode) == 0o600 and before.st_size <= 32768,
++             'font_runtime_file_rights_bound')
++        raw = os.read(fd, 32769)
++        stamp = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
++        need(len(raw) <= 32768 and stamp(before) == stamp(os.fstat(fd)) == stamp(path.lstat()),
++             'font_runtime_file_changed')
++    finally:
++        os.close(fd)
++    return raw
++
++
++def validate_font_projection(rows, environment, *, helper=False):
++    need(type(environment) is dict and set(environment) == set(FONT_ENV_KEYS)
++         and all(v is None or type(v) is str for v in environment.values()), 'font_runtime_baseline_exact15')
++    need(type(rows) is list and len(rows) == 15 and [r.get('key') for r in rows if type(r) is dict]
++         == list(FONT_ENV_KEYS), 'font_runtime_projection_exact15')
++    for row in rows:
++        expected = sha(environment[row['key']].encode()) if environment[row['key']] is not None else None
++        fields = ('initial_value_sha256', 'runtime_value_sha256') if helper else ('value_sha256',)
++        need(set(row) == {'key', *fields} and all(row[field] == expected for field in fields),
++             'font_runtime_projection_changed')
++
++
++def validate_font_runtime_proof(proof, request, *, plan, native, environment):
++    need(type(request) is dict and set(request) == {'schema', 'operation_id', 'nonce', 'boundary', 'sequence',
++         'process', 'supervisor', 'deadline_monotonic', 'requested_monotonic'}
++         and request['schema'] == 'frw.calc.font-runtime-request.v1', 'font_runtime_request_schema')
++    boundary = request['boundary']
++    paths = font_runtime_paths(boundary)
++    sequence = 0 if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 1
++    need(type(request['sequence']) is int and request['sequence'] == sequence
++         and type(request['supervisor']) is dict and set(request['supervisor']) == {'pid', 'ppid', 'start_ticks'}
++         and all(type(v) is int for v in request['supervisor'].values())
++         and request['supervisor']['pid'] > 0 and request['supervisor']['start_ticks'] > 0
++         and request['supervisor']['ppid'] >= 0
++         and all(type(request[k]) in (int, float) and math.isfinite(request[k])
++                 for k in ('deadline_monotonic', 'requested_monotonic'))
++         and 0 < request['requested_monotonic'] < request['deadline_monotonic'], 'font_runtime_request_values')
++    need(type(proof) is dict and set(proof) == {'schema', 'operation_id', 'nonce', 'boundary', 'sequence',
++         'process', 'supervisor', 'request_ref', 'phase', 'records_count', 'stopped_thread_count',
++         'source_class', 'adapter_ref', 'libc_sha256', 'font_environment', 'scope', 'actual_M', 'runtime_attested'},
++         'font_runtime_proof_schema')
++    binding = plan['observer']['load_dependency']
++    manifest = json.loads(read_ref(binding['manifest']))
++    expected_phase = dict(nonce=plan['nonce'], phase='IDLE' if sequence == 0 else 'CLOSED', index=None, digit=None)
++    need(proof['schema'] == 'frw.calc.current-font-environment.v1'
++         and proof['operation_id'] == request['operation_id'] == plan['operation_id']
++         and proof['nonce'] == request['nonce'] == plan['nonce']
++         and proof['boundary'] == boundary and type(proof['sequence']) is int and proof['sequence'] == sequence
++         and proof['process'] == request['process'] == native
++         and proof['supervisor'] == request['supervisor'] and proof['phase'] == expected_phase
++         and type(proof['records_count']) is int and proof['records_count'] == sequence * 10
++         and type(proof['stopped_thread_count']) is int and 1 <= proof['stopped_thread_count'] <= 512
++         and proof['source_class'] == 'PINNED_LIBC_GOT_TO_ZERO_FILL_ENVIRON'
++         and proof['adapter_ref'] == binding['adapter']
++         and proof['libc_sha256'] == manifest['images']['libc']['sha256']
++         and proof['scope'] == 'THIS_ALL_STOP_POINT_ONLY_NO_CONTINUOUS_ENVIRONMENT_CLAIM'
++         and proof['actual_M'] is None and proof['runtime_attested'] is False, 'font_runtime_proof_binding')
++    need(type(proof['request_ref']) is dict and set(proof['request_ref']) == {'path', 'sha256'}
++         and proof['request_ref']['path'] == str(paths['request'])
++         and type(proof['request_ref']['sha256']) is str
++         and re.fullmatch('[0-9a-f]{64}', proof['request_ref']['sha256']), 'font_runtime_request_ref')
++    validate_font_projection(proof['font_environment'], environment)
++    return proof
++
++
++def validate_font_runtime_pair(request_raw, proof_raw, release_raw, accepted_raw, view_raw, *, plan, native,
++                               environment, boundary, deadline=None, supervisor=None):
++    need(all(type(raw) is bytes and len(raw) <= 32768 for raw in
++             (request_raw, proof_raw, release_raw, accepted_raw, view_raw)), 'font_runtime_pair_bound')
++    request, proof, release, accepted, view = map(json.loads, (request_raw, proof_raw, release_raw, accepted_raw, view_raw))
++    validate_font_runtime_proof(proof, request, plan=plan, native=native, environment=environment)
++    paths = font_runtime_paths(boundary)
++    proof_ref = {'path': str(paths['proof']), 'sha256': sha(proof_raw)}
++    request_ref = {'path': str(paths['request']), 'sha256': sha(request_raw)}
++    view_path = WORK / ('font-view-after-load.json' if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 'font-view-after-close.json')
++    expected_release = dict(schema='frw.calc.font-runtime-release.v1',
++        **{k: request[k] for k in ('operation_id', 'nonce', 'boundary', 'sequence', 'process')},
++        request_ref=request_ref, proof_ref=proof_ref, font_view_ref={'path': str(view_path), 'sha256': sha(view_raw)})
++    expected_accepted = dict(schema='frw.calc.font-runtime-accepted.v1',
++        **{key: request[key] for key in ('operation_id', 'nonce', 'boundary', 'sequence', 'process')},
++        release_ref={'path': str(paths['release']), 'sha256': sha(release_raw)},
++        status='HELD_STOP_RELEASE_VALIDATED_NO_RESUME_CLAIM')
++    office = view.get('office_process')
++    need(request['boundary'] == boundary and proof['request_ref'] == request_ref and release == expected_release
++         and accepted == expected_accepted
++         and view['phase'] == boundary and view['view_sha256'] == plan['font_view']['expected_view_sha256']
++         and view['base_static_view_sha256'] == plan['font_view']['base_view_sha256']
++         and view['office_font_environment'] == environment and view['office_font_environment_proof'] == proof_ref
++         and type(office) is dict and office['namespace_pid'] == native['pid']
++         and office['start_ticks'] == native['start_ticks'] and office['ppid'] == native['gdb_pid']
++         and (deadline is None or request['deadline_monotonic'] == deadline)
++         and (supervisor is None or request['supervisor'] == supervisor), 'font_runtime_pair_CAS_binding')
++    return proof_ref
+ 
+ 
+ class Refused(RuntimeError):
+@@ -119,7 +234,79 @@
+     def process(self, pid):
+         return process_snapshot(pid)
+ 
+-    def font_view_observation(self, plan, *, phase, office_pid=None):
++    def acquire_font_runtime(self, plan, native, *, boundary, deadline, child):
++        """Exact owned pidfd only; no fallback to kill(PID), attach or a later clock."""
++        paths = font_runtime_paths(boundary)
++        need(all(not os.path.lexists(path) for path in paths.values()), 'font_runtime_prefilled_or_duplicate')
++        view_path = WORK / ('font-view-after-load.json' if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 'font-view-after-close.json')
++        need(not os.path.lexists(view_path), 'font_runtime_prefilled_future_view')
++        expected_phase = dict(nonce=plan['nonce'], phase='IDLE' if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 'CLOSED',
++                              index=None, digit=None)
++        need(json.loads(runtime_read(WORK / 'phase.json')) == expected_phase, 'font_runtime_request_phase')
++        runtime = json.loads(runtime_read(WORK / 'helper-runtime.json'))['runtime']
++        need(runtime['operation_id'] == plan['operation_id'] and runtime['nonce'] == plan['nonce']
++             and runtime['operation_deadline_monotonic'] == deadline and self.now() < deadline,
++             'font_runtime_request_original_deadline')
++        before = self.process(native['pid'])
++        need(before['namespace_pid'] == native['pid'] and before['start_ticks'] == native['start_ticks']
++             and before['ppid'] == native['gdb_pid'] == child.pid
++             and before['executable_sha256'] == plan['observer']['config']['target_sha256'],
++             'font_runtime_request_owned_process')
++        # pidfd prevents PID reuse between the fresh birth checks and signal.
++        fd = os.pidfd_open(native['pid'], 0)
++        try:
++            need(self.process(native['pid']) == before and child.poll() is None, 'font_runtime_pidfd_birth_changed')
++            fields = (Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split())
++            supervisor = {'pid': os.getpid(), 'ppid': int(fields[1]), 'start_ticks': int(fields[19])}
++            request = dict(schema='frw.calc.font-runtime-request.v1', operation_id=plan['operation_id'],
++                nonce=plan['nonce'], boundary=boundary, sequence=0 if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 1,
++                process=native, supervisor=supervisor, deadline_monotonic=deadline, requested_monotonic=self.now())
++            request_ref = atomic(paths['request'], request)
++            need(self.now() < deadline and self.process(native['pid']) == before,
++                 'font_runtime_pre_signal_birth_or_deadline')
++            signal.pidfd_send_signal(fd, signal.SIGSTOP, None, 0)
++        finally:
++            os.close(fd)
++        while not paths['proof'].exists():
++            need(self.now() < deadline and child.poll() is None, 'font_runtime_proof_deadline_or_GDB_exit')
++            trace = json.loads(runtime_read(WORK / 'native-trace.json'))
++            need(trace['error'] is None and trace['process'] == native, 'font_runtime_observer_refused')
++            self.sleep(min(0.02, max(0, deadline - self.now())))
++        raw = font_runtime_read(paths['proof'])
++        need(sha(font_runtime_read(paths['request'])) == request_ref['sha256'],
++             'font_runtime_proof_bound_or_request_changed')
++        proof = json.loads(raw)
++        baseline = json.loads(read_ref(plan['font_view']['baseline']))
++        validate_font_runtime_proof(proof, request, plan=plan, native=native,
++                                    environment=baseline['view']['environment'])
++        need(proof['request_ref'] == request_ref and self.process(native['pid']) == before,
++             'font_runtime_proof_request_or_birth_changed')
++        return dict(request=request, request_ref=request_ref, proof=proof,
++                    proof_ref={'path': str(paths['proof']), 'sha256': sha(raw)}, office_process=before)
++
++    def release_font_runtime(self, plan, held, *, view_ref, deadline):
++        request = held['request']
++        paths = font_runtime_paths(request['boundary'])
++        need(self.now() < deadline == request['deadline_monotonic']
++             and self.process(request['process']['pid']) == held['office_process']
++             and sha(font_runtime_read(paths['request'])) == held['request_ref']['sha256']
++             and sha(font_runtime_read(paths['proof'])) == held['proof_ref']['sha256']
++             and not os.path.lexists(paths['release']), 'font_runtime_release_CAS_or_deadline')
++        release_ref = atomic(paths['release'], dict(schema='frw.calc.font-runtime-release.v1',
++            **{key: request[key] for key in ('operation_id', 'nonce', 'boundary', 'sequence', 'process')},
++            request_ref=held['request_ref'], proof_ref=held['proof_ref'], font_view_ref=view_ref))
++        while not paths['accepted'].exists():
++            need(self.now() < deadline, 'font_runtime_release_acceptance_original_deadline')
++            trace = json.loads(runtime_read(WORK / 'native-trace.json'))
++            need(trace['error'] is None and trace['process'] == request['process'], 'font_runtime_release_observer_refused')
++            self.sleep(min(0.02, max(0, deadline - self.now())))
++        accepted = json.loads(font_runtime_read(paths['accepted']))
++        expected = dict(schema='frw.calc.font-runtime-accepted.v1',
++            **{key: request[key] for key in ('operation_id', 'nonce', 'boundary', 'sequence', 'process')},
++            release_ref=release_ref, status='HELD_STOP_RELEASE_VALIDATED_NO_RESUME_CLAIM')
++        need(accepted == expected and self.now() < deadline, 'font_runtime_release_acceptance_binding')
++
++    def font_view_observation(self, plan, *, phase, office_pid=None, font_runtime=None):
+         """Pinned Root CAS in THIS namespace; no catalog rebuild or subprocess.
+ 
+         Existing outer loop observes the explicit finite phase marker and owns
+@@ -141,11 +328,13 @@
+             office = self.process(office_pid)
+             need(office['namespaces'] == me['namespaces'] and office['boot_id'] == me['boot_id'],
+                  'font_CAS_must_share_actual_Office_namespace')
+-            items = (Path('/proc') / str(office_pid) / 'environ').read_bytes().split(b'\0')
+-            env = dict(item.split(b'=', 1) for item in items if b'=' in item)
+-            font_environment = {key: env[key.encode()].decode() if key.encode() in env else None
+-                                for key in baseline['view']['environment']}
+-            need(font_environment == baseline['view']['environment'], 'actual_Office_font_environment_changed')
++            need(font_runtime is not None and font_runtime['office_process'] == office
++                 and font_runtime['request']['boundary'] == phase, 'actual_runtime_font_environment_required')
++            validate_font_runtime_proof(font_runtime['proof'], font_runtime['request'], plan=plan,
++                native=font_runtime['request']['process'], environment=baseline['view']['environment'])
++            need(sha(font_runtime_read(font_runtime_paths(phase)['proof'])) == font_runtime['proof_ref']['sha256']
++                 and not os.path.lexists(font_runtime_paths(phase)['release']), 'font_runtime_CAS_not_held')
++            font_environment = baseline['view']['environment']
+         before_wall = self.now()
+         before_cpu = time.process_time()
+         ticks = (Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split())
+@@ -178,6 +367,7 @@
+                 'base_static_view_sha256': binding['base_view_sha256'], 'derived_cache': binding['derived_cache'],
+                 'digest_kind': 'ROOT_CANONICAL_NAMESPACE_VIEW_NOT_BASELINE_FILE_SHA',
+                 'namespace_process': me, 'office_process': office, 'office_font_environment': font_environment,
++                'office_font_environment_proof': None if font_runtime is None else font_runtime['proof_ref'],
+                 'observation': current['observation'], 'actual_wall_seconds': elapsed,
+                 'actual_process_CPU_seconds': used_cpu, 'current_address_space_peak_RSS_bytes': rss_peak,
+                 'current_address_space_RSS_bytes': memory['VmRSS'],
+@@ -206,7 +396,7 @@
+                 continue
+             need(target != PROGRAM + '/soffice.bin', 'bootstrap_Office_process_still_present')
+ 
+-    def loaded_observations(self, plan, native):
++    def loaded_observations(self, plan, native, *, font_runtime=None):
+         pid = native['pid']
+         before = self.process(pid)
+         root = Path('/proc') / str(pid)
+@@ -227,7 +417,8 @@
+             hashes[role] = {'path': path, 'sha256': sha(target.read_bytes()),
+                             'observation': 'ACTUAL_MAPPED_COMPONENT',
+                             'mapped': path in mapped}
+-        font_view = self.font_view_observation(plan, phase='AFTER_LOAD_BEFORE_QUERY', office_pid=pid)
++        font_view = self.font_view_observation(plan, phase='AFTER_LOAD_BEFORE_QUERY', office_pid=pid,
++                                               font_runtime=font_runtime)
+         hashes['font_config_view'] = {'path': plan['font_view']['baseline']['path'],
+             'sha256': font_view['view_sha256'], 'observation': 'ACTUAL_NAMESPACE_FONT_CONFIG_CAS',
+             'mapped': False, 'digest_kind': 'ROOT_CANONICAL_NAMESPACE_VIEW_NOT_BASELINE_FILE_SHA'}
+@@ -378,6 +569,11 @@
+                  and f['base_static_view_sha256'] == plan['font_view']['base_view_sha256']
+                  and f['derived_cache'] == plan['font_view']['derived_cache']
+                  and f['phase'] == 'AFTER_LOAD_BEFORE_QUERY'
++                 and type(f.get('office_font_environment_proof')) is dict
++                 and set(f['office_font_environment_proof']) == {'path', 'sha256'}
++                 and f['office_font_environment_proof']['path'] == str(font_runtime_paths('AFTER_LOAD_BEFORE_QUERY')['proof'])
++                 and type(f['office_font_environment_proof']['sha256']) is str
++                 and re.fullmatch('[0-9a-f]{64}', f['office_font_environment_proof']['sha256'])
+                  and f['office_process'] == p
+                  and f['namespace_process']['namespaces'] == p['namespaces']
+                  and f['namespace_process']['boot_id'] == p['boot_id'],
+@@ -491,7 +687,7 @@
+     return value
+ 
+ 
+-def output_inventory(*, helper_runtime=None, original=None):
++def output_inventory(*, helper_runtime=None, original=None, plan=None):
+     allowed_files = {'namespace-job.json', 'unit-release.json', 'office-ready.json', 'office-release.json',
+                      'observer-config.json', 'phase.json', 'native-trace.json', 'gdb.log', 'inner.log',
+                      'helper-runtime.json', 'load-dependency.json',
+@@ -503,6 +699,16 @@
+     if helper_runtime is not None:
+         allowed_files.add('paper-helper-boundary.json')
+         need((WORK / 'paper-helper-boundary.json').is_file(), 'helper_metadata_missing')
++        need(plan is not None, 'font_runtime_inventory_requires_plan')
++        baseline = json.loads(read_ref(plan['font_view']['baseline']))['view']['environment']
++        allowed_files.add('font-view-after-load.json')
++        for boundary in ('AFTER_LOAD_BEFORE_QUERY', 'AFTER_READONLY_CLOSE'):
++            paths = font_runtime_paths(boundary)
++            allowed_files.update(p.name for p in paths.values())
++            view_path = WORK / ('font-view-after-load.json' if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 'font-view-after-close.json')
++            validate_font_runtime_pair(*(font_runtime_read(paths[k]) for k in ('request', 'proof', 'release', 'accepted')),
++                font_runtime_read(view_path), plan=plan, native=original, environment=baseline,
++                boundary=boundary, deadline=helper_runtime['operation_deadline_monotonic'])
+     files = []
+     for path in WORK.rglob('*'):
+         relative = path.relative_to(WORK)
+@@ -533,7 +739,12 @@
+                 need([s['stage'] for s in metadata['stages']] == ['popen', 'spawn']
+                      and all(s['refusal'] is None and s.get('font_runtime_equals_initial') is True for s in metadata['stages']),
+                      'helper_metadata_parent_boundaries_not_complete')
++                for stage in metadata['stages']:
++                    validate_font_projection(stage.get('font_environment'), baseline, helper=True)
+                 record.update(bytes=len(raw), sha256=sha(raw), scope='HASHED_ENV_NUMERIC_FD_ONLY_NO_RUNTIME_ADMISSION')
++            elif len(relative.parts) == 1 and (path.name.startswith('font-runtime-') or path.name == 'font-view-after-load.json'):
++                raw = font_runtime_read(path)
++                record.update(bytes=len(raw), sha256=sha(raw), scope='BOUND_CURRENT_FONT_ENVIRONMENT_POINT_ONLY')
+             files.append(record)
+     return files
+ 
+@@ -589,6 +800,7 @@
+         atomic(WORK / 'namespace-journal.json', {'schema': 'frw.calc.namespace-journal.v1',
+             'operation_id': plan['operation_id'], 'nonce': plan['nonce'], 'events': events, 'actual_M': None})
+     gdb = client = None
++    after_view = None
+     result = {'schema': 'frw.calc.namespace-result.v1', 'nonce': plan['nonce'],
+               'status': 'REFUSED_NEEDS_OUTER_CGROUP_CLEANUP', 'actual_M': None, 'runtime_attested': False}
+     def wait_file(path, *, limit, child=None):
+@@ -685,7 +897,13 @@
+                 helper_evidence = check_load_dependency_closed(trace, helper_bundle['runtime'], helper_policy, native)
+             else:
+                 need('load_dependency' not in trace, 'unexpected_helper_evidence')
+-            observations = services.loaded_observations(plan, native)
++            need(helper_bundle is not None, 'current_font_runtime_getter_requires_pinned_helper_bundle')
++            loaded_held = services.acquire_font_runtime(plan, native, boundary='AFTER_LOAD_BEFORE_QUERY',
++                                                        deadline=deadline, child=gdb)
++            observations = services.loaded_observations(plan, native, font_runtime=loaded_held)
++            need(observations['font_view']['office_font_environment_proof'] == loaded_held['proof_ref'],
++                 'loaded_actual_font_runtime_proof_join')
++            loaded_view_ref = atomic(WORK / 'font-view-after-load.json', observations['font_view'])
+             if helper_evidence is not None:
+                 observations['load_dependency'] = helper_evidence
+             need(services.now() < deadline, 'global_deadline_before_qualifier_query_release')
+@@ -693,12 +911,23 @@
+             record = build_loaded_record(plan, trace, checkpoint, observations, evidence)
+             record_ref = atomic(WORK / 'loaded-record.json', record)
+             need(not (WORK / 'loaded-envelope.json').exists(), 'future_or_duplicate_loaded_envelope')
++            services.release_font_runtime(plan, loaded_held, view_ref=loaded_view_ref, deadline=deadline)
+             atomic(WORK / 'loaded-envelope.json', {'schema': 'frw.calc.inner.loaded-envelope.v1',
+                 'operation_id': plan['operation_id'], 'nonce': plan['nonce'], 'record': record_ref})
+             emit('ACTUAL_LOADED_RECORD_RELEASED', process=record['process'], record_ref=record_ref)
+             while client.poll() is None or gdb.poll() is None:
+                 need(services.now() < deadline, 'metric_close_global_deadline')
+                 need(client.poll() in (None, 0) and gdb.poll() in (None, 0), 'own_child_failed')
++                current_phase = json.loads(runtime_read(WORK / 'phase.json'))
++                if current_phase == dict(nonce=plan['nonce'], phase='CLOSED', index=None, digit=None) and after_view is None:
++                    need(client.poll() is None and gdb.poll() is None, 'postclose_boundary_before_termination_required')
++                    closed_held = services.acquire_font_runtime(plan, native, boundary='AFTER_READONLY_CLOSE',
++                                                                deadline=deadline, child=gdb)
++                    after_view = services.font_view_observation(plan, phase='AFTER_READONLY_CLOSE',
++                                                               office_pid=native['pid'], font_runtime=closed_held)
++                    need(after_view['view_sha256'] == before_view['view_sha256'], 'postclose_font_CAS_drift')
++                    after_ref = atomic(WORK / 'font-view-after-close.json', after_view)
++                    services.release_font_runtime(plan, closed_held, view_ref=after_ref, deadline=deadline)
+                 services.sleep(0.02)
+             need(client.returncode == 0 and gdb.returncode == 0, 'actual_child_exit_nonzero')
+         inner = json.loads(runtime_read(WORK / 'inner-result.json'))
+@@ -730,12 +959,11 @@
+         working_refs = [r for r in plan['source_files'] if r['path'] == working_path]
+         need(len(working_refs) == 1, 'exact_readonly_working_source_pin')
+         read_ref(working_refs[0])
+-        after_view = services.font_view_observation(plan, phase='AFTER_READONLY_CLOSE')
+-        need(after_view['view_sha256'] == plan['font_view']['expected_view_sha256']
++        need(after_view is not None and after_view['office_process'] == office
++             and after_view['view_sha256'] == plan['font_view']['expected_view_sha256']
+              == before_view['view_sha256'], 'postclose_font_CAS_drift')
+-        atomic(WORK / 'font-view-after-close.json', after_view)
+         inventory = output_inventory(helper_runtime=helper_bundle['runtime'] if helper_bundle is not None else None,
+-                                     original=native if helper_bundle is not None else None)
++                                     original=native if helper_bundle is not None else None, plan=plan)
+         result.update(status='CLOSED_UNRELEASED', bootstrap=bootstrap, native_process=trace['process'], native_symbols=trace['symbols'],
+                       uno_widths=widths, office_identity=office, output_inventory=inventory,
+                       gdb_identity=gdb_identity, inner_client_identity=client_identity,
+--- before/outer/outer_runner.py
++++ candidate/outer/outer_runner.py
+@@ -976,6 +976,33 @@
+                      and type(view['output_bytes']) is int and 0 <= view['output_bytes'] <= 4 * 1024**2
+                      and view['observation']['status'] == 'metadata_cas_pass_with_critical_rehash',
+                      'final_font_CAS_per_call_resource_or_actual_status_unbound')
++            # Actual stopped current ENV is distinct from startup /proc bytes.
++            # Join the exact two protocol transcripts to the canonical/effective
++            # view and original Root-bound process after whole-cgroup closure.
++            font_checker = load_module('frw_Root_current_font_runtime_checker', plan['namespace_entry'])
++            font_environment = json.loads(read_pinned(plan['font_view']['baseline'], private=True))['view']['environment']
++            font_deadline = operation_started + plan['budgets']['wall_seconds'] - plan['budgets']['cleanup_seconds']
++            supervisor = {'pid': supervisor_binding['nspid'][-1], 'ppid': cas_observations[0]['namespace_process']['ppid'],
++                          'start_ticks': supervisor_binding['start_ticks']}
++            # Host and namespace PPID can differ; the pinned namespace CAS already
++            # records its actual inside PPID. Bind it to that same supervisor.
++            for boundary, view in zip(('AFTER_LOAD_BEFORE_QUERY', 'AFTER_READONLY_CLOSE'), cas_observations[2:]):
++                tag = 'loaded' if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 'closed'
++                names = ['font-runtime-' + tag + '-' + kind + '.json' for kind in ('request', 'proof', 'release', 'accepted')]
++                names.append('font-view-after-load.json' if tag == 'loaded' else 'font-view-after-close.json')
++                transcripts = []
++                for name in names:
++                    path = Path(plan['work_dir']) / name
++                    st = path.lstat()
++                    need(stat.S_ISREG(st.st_mode) and st.st_size <= 32768, 'final_font_runtime_file_bound')
++                    raw = read_pinned({'path': str(path), 'sha256': digest(path.read_bytes())}, private=True)
++                    need(len(raw) <= 32768, 'final_font_runtime_read_bound')
++                    transcripts.append(raw)
++                proof_ref = font_checker.validate_font_runtime_pair(*transcripts, plan=plan,
++                    native=host_binding['native_process'], environment=font_environment, boundary=boundary,
++                    deadline=font_deadline, supervisor=supervisor)
++                need(json.loads(transcripts[-1]) == view and view['office_font_environment_proof'] == proof_ref,
++                     'final_font_runtime_view_transcript_differs')
+             # Native checker is deliberately invoked ONLY here, after process,
+             # cgroup, source, readonlyclose and no-output terminal confirmation.
+             trace_raw = (Path(plan['work_dir']) / 'native-trace.json').read_bytes()
