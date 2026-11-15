@@ -1,0 +1,152 @@
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-HELPER-STOP-COMPOSITION-20261115/candidate/outer/deps/gpgme_engine_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-ACTUAL-READ-BOUNDARY-SOURCE-20261115/candidate/outer/deps/gpgme_engine_gdb.py
+@@ -634,14 +634,73 @@
+         return self.c
+ 
+     def breakpoint(self, address, fn, inferior=1, one_shot=False):
+-        adapter = self
++        # GNU17.1's numeric-address decoder uses CURRENT progspace even when
++        # the inferior setter supplies a different search_pspace.  Deferred
++        # child sites must therefore be created and restricted while that
++        # exact stopped owner is selected, not under the restored fork parent.
++        saved = self._selection()
++        targets = [i for i in self.g.inferiors() if i.is_valid()
++                   and i.num == inferior and i.pid > 0]
++        need(len(targets) == 1, 'gpgme_breakpoint_owner_unavailable')
++        target = targets[0]
++        if inferior == 1:
++            need(self.original()['pid'] == target.pid, 'gpgme_breakpoint_original_changed')
++        else:
++            known = self.known.get(target.pid)
++            need(known is not None and known['inferior'] == inferior
++                 and self.collector.proc(target.pid) == known['identity']
++                 and self.c is not None and self.c.current is not None
++                 and any(c['inferior'] == inferior and c['identity'] == known['identity']
++                         for c in self.c.current['children']), 'gpgme_breakpoint_child_birth_changed')
++        threads = list(target.threads())
++        need(threads and all(t.is_valid() and t.is_stopped() for t in threads),
++             'gpgme_breakpoint_owner_not_stopped')
++        selected = [t for t in threads if tuple(t.ptid) == saved[2]]
++        if not selected:
++            expected = self.init_thread if inferior == 1 else [target.pid, target.pid, 0]
++            selected = [t for t in threads if list(t.ptid) == expected]
++        need(len(selected) == 1, 'gpgme_breakpoint_owner_thread_unknown')
+         class ObservationBreakpoint(self.g.Breakpoint):
+             def stop(self):
+                 # GDB predicates may run more than once: no protocol mutation.
+                 return True
+-        bp = ObservationBreakpoint('*' + hex(address), internal=True)
+-        bp.inferior = inferior
+-        need(bp.inferior == inferior, 'gpgme_breakpoint_inferior')
++        bp, failure = None, None
++        try:
++            selected[0].switch()
++            need(self.g.selected_inferior() is target, 'gpgme_breakpoint_owner_selection_changed')
++            bp = ObservationBreakpoint('*' + hex(address), internal=True)
++            bp.inferior = inferior
++            need(bp.inferior == inferior, 'gpgme_breakpoint_inferior')
++            locations = list(bp.locations)
++            groups = {i.num for i in self.g.inferiors() if i.is_valid()
++                      and i.progspace == target.progspace}
++            need(len(locations) == 1 and locations[0].owner is bp
++                 and locations[0].enabled is True and locations[0].address == address
++                 and set(locations[0].thread_groups) == groups and inferior in groups,
++                 'gpgme_breakpoint_location_owner_or_address')
++        except Exception as exc:
++            failure = exc
++        finally:
++            try:
++                self._restore_selection(saved)
++            except Exception as exc:
++                failure = failure or exc
++        if failure is not None:
++            # No partial breakpoint may become an untracked continuation.
++            # Keep the true exception active for OwnC's private origin capture.
++            try:
++                raise failure
++            except Exception as exc:
++                self.n['fail'](str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++                if bp is not None and bp.is_valid():
++                    try:
++                        bp.delete()
++                        need(not bp.is_valid(), 'gpgme_breakpoint_failed_creation_still_valid')
++                    except Exception:
++                        # First refusal stays fixed; native finally owns process
++                        # cleanup and no further resume is allowed.
++                        pass
++                raise
+         self.breakpoints.append(bp)
+         self.handlers[bp.number] = (bp, fn, one_shot)
+         return bp
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-HELPER-STOP-COMPOSITION-20261115/driver/ownc_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-ACTUAL-READ-BOUNDARY-SOURCE-20261115/driver/ownc_gdb.py
+@@ -11,6 +11,7 @@
+ from pathlib import Path
+ import re
+ import stat
++import sys
+ import time
+ 
+ WORK=Path('/tmp/friday-metric-work')
+@@ -52,6 +53,42 @@
+     fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+     with os.fdopen(fd,'wb') as out:out.write(raw);out.flush();os.fsync(out.fileno())
+     os.replace(tmp,path)
++
++
++def private_exception_origin(exc, source_roles):
++    """Python origin metadata only; never exception text, locals or payload."""
++    frames=[];tb=exc.__traceback__
++    while tb is not None:
++        code=tb.tb_frame.f_code
++        name=code.co_name
++        frames.append(dict(source_role=source_roles.get(code.co_filename,'OTHER_SOURCE'),
++            function=name if re.fullmatch(r'[A-Za-z0-9_<>]{1,80}',name) else 'OTHER_FUNCTION',
++            line=tb.tb_lineno))
++        if len(frames)>16:frames.pop(0)
++        tb=tb.tb_next
++    name=type(exc).__name__
++    return dict(schema='frw.ownc.private-exception-origin.v1',
++        exception_class=name if re.fullmatch(r'[A-Za-z0-9_]{1,80}',name) else 'OTHER_EXCEPTION',
++        frames=frames,scope='PYTHON_ORIGIN_ONLY_NO_MESSAGE_LOCALS_OR_GDB_INTERNAL_CALLSITE')
++
++
++def private_failure_capture(native_fail, publish):
++    captured=False
++    def capture(reason):
++        nonlocal captured
++        exc=sys.exception()
++        if exc is not None and not captured and STATE['error'] is None:
++            captured=True
++            try:
++                roles={private_failure_capture.__code__.co_filename:'OwnC_driver',
++                    CFG['native_observer_ref']['path']:'native_observer'}
++                if helper is not None:
++                    roles[helper.paper.b['adapter_ref']['path']]='paper_adapter'
++                    roles[helper.gpgme.b['adapter_ref']['path']]='gpgme_adapter'
++                publish(private_exception_origin(exc,roles))
++            except Exception:pass # Diagnostic failure must preserve first refusal.
++        return native_fail(reason)
++    return capture
+ 
+ 
+ def load_window(state):
+@@ -250,7 +287,7 @@
+ 
+ 
+ def run():
+-    global gdb,CFG,STATE,active,helper,pending_action,font_runtime_boundaries
++    global gdb,CFG,STATE,active,helper,pending_action,font_runtime_boundaries,fail
+     import gdb
+     os.umask(0o077)
+     cfg_path=Path(os.environ['FRW_HELD_FIXTURE_CONFIG'])
+@@ -269,6 +306,9 @@
+         native_observer_ref=CFG['native_observer_ref'],paper_closed_before_gpgme=False)
+     active=None;helper=None;pending_action=None;font_runtime_boundaries=[]
+     exec(compile(definitions,CFG['native_observer_ref']['path'],'exec'),globals())
++    # Only this owned fixture writes a separate private diagnostic. Production
++    # trace schemas and the reviewed native fail/finally bodies stay exact.
++    fail=private_failure_capture(fail,lambda value:atomic_replace(WORK/'ownc-private-exception-origin.json',value))
+     try:
+         require(len(gdb.inferiors())==1 and gdb.selected_inferior().pid==0,'fixture_fresh_own_inferior')
+         require(gdb.current_progspace().filename==CFG['target_path'],'fixture_target')
