@@ -1,0 +1,286 @@
+--- a/candidate/inner/inner_client.py
++++ b/candidate/inner/inner_client.py
+@@ -100,6 +100,85 @@
+ def read_ref(ref, *, limit=1048576):
+     exact(ref, ('path', 'sha256'), 'exact_file_ref_required')
+     return protected_bytes(ref['path'], ref['sha256'], limit=limit)
++
++
++def active_trace_bytes(path, *, deadline, limit=1048576):
++    """Read only the active trace, discarding a verified unlinked predecessor.
++
++    Immutable refs keep protected_bytes' strict behavior. Every attempt and
++    accepted read uses the caller's one absolute metadata deadline. An old FD
++    with zero links is never accepted, even if its bytes are otherwise valid.
++    """
++    p = safe_path(path)
++    need(str(p) == WORK + '/native-trace.json', 'active_native_trace_path_required')
++    need(type(deadline) in (int, float) and math.isfinite(deadline) and deadline > 0,
++         'absolute_metadata_deadline_required')
++
++    def private(s, *, unlinked=False):
++        need(stat.S_ISREG(s.st_mode) and s.st_uid == os.getuid()
++             and s.st_nlink in ((0, 1) if unlinked else (1,))
++             and not (s.st_mode & 0o077) and s.st_size <= limit,
++             'protected_file_required')
++
++    def stamp(s):
++        return (s.st_dev, s.st_ino, s.st_mode, s.st_uid, s.st_nlink,
++                s.st_size, s.st_mtime_ns, s.st_ctime_ns)
++
++    def current():
++        try:
++            s = p.stat(follow_symlinks=False)
++        except FileNotFoundError:
++            raise Refused('native_trace_path_missing_during_read') from None
++        private(s)
++        return s
++
++    def replaced(before, after, successor):
++        # Unlink changes ctime/nlink; it must not conceal a content, ownership,
++        # mode or type change. A different protected current inode is required.
++        private(after, unlinked=True)
++        need((before.st_dev, before.st_ino, before.st_mode, before.st_uid,
++              before.st_size, before.st_mtime_ns)
++             == (after.st_dev, after.st_ino, after.st_mode, after.st_uid,
++                 after.st_size, after.st_mtime_ns)
++             and after.st_nlink == 0
++             and (after.st_dev, after.st_ino) != (successor.st_dev, successor.st_ino),
++             'file_changed_during_read')
++
++    for attempt in range(8):
++        need(time.monotonic() < deadline, 'bounded_metadata_wait_expired')
++        try:
++            fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
++        except FileNotFoundError:
++            if attempt:
++                raise Refused('native_trace_path_missing_during_read') from None
++            raise
++        try:
++            before = os.fstat(fd)
++            private(before, unlinked=True)
++            linked_before = current()
++            if stamp(before) != stamp(linked_before):
++                replaced(before, os.fstat(fd), current())
++                continue
++            chunks = []
++            remaining = limit + 1
++            while remaining:
++                need(time.monotonic() < deadline, 'bounded_metadata_wait_expired')
++                b = os.read(fd, min(65536, remaining))
++                if not b:
++                    break
++                chunks.append(b)
++                remaining -= len(b)
++            raw = b''.join(chunks)
++            after = os.fstat(fd)
++            linked_after = current()
++            need(len(raw) == before.st_size and len(raw) <= limit, 'file_changed_during_read')
++            if stamp(before) == stamp(after) == stamp(linked_after):
++                need(time.monotonic() < deadline, 'bounded_metadata_wait_expired')
++                return raw
++            replaced(before, os.fstat(fd), linked_after)
++        finally:
++            os.close(fd)
++    raise Refused('native_trace_replacement_retry_limit')
+ 
+ 
+ def atomic_json(path, value):
+@@ -251,17 +330,25 @@
+                 observed_parent_namespace_pid=int(raw[1]))
+ 
+ 
+-def wait_json(path, timeout, predicate):
+-    deadline = time.monotonic() + timeout
++def wait_json(path, timeout, predicate, *, active_trace=False, deadline=None):
++    metadata_deadline = time.monotonic() + timeout
++    if deadline is not None:
++        need(type(deadline) in (int, float) and math.isfinite(deadline) and deadline > 0,
++             'absolute_metadata_deadline_required')
++        metadata_deadline = min(metadata_deadline, deadline)
+     while True:
+         try:
+-            value = decode(protected_bytes(path))
++            raw = (active_trace_bytes(path, deadline=metadata_deadline) if active_trace
++                   else protected_bytes(path))
++            value = decode(raw)
+         except FileNotFoundError:
+             value = None
+         if value is not None and predicate(value):
++            if active_trace:
++                need(time.monotonic() < metadata_deadline, 'bounded_metadata_wait_expired')
+             return value
+-        need(time.monotonic() < deadline, 'bounded_metadata_wait_expired')
+-        time.sleep(min(0.025, max(0, deadline - time.monotonic())))
++        need(time.monotonic() < metadata_deadline, 'bounded_metadata_wait_expired')
++        time.sleep(min(0.025, max(0, metadata_deadline - time.monotonic())))
+ 
+ 
+ def verify_ready(value, c):
+@@ -467,7 +554,8 @@
+         modules['qualifier']['validate_preload_inputs'](pre, pre_sha)
+     claim(c)  # A future loaded record may NOT exist before this real load.
+     observe_ready = readiness or (lambda: wait_json(c['paths']['trace'], c['timeouts']['ready_seconds'],
+-                                                    lambda value: verify_ready(value, c)))
++        lambda value: verify_ready(value, c), active_trace=True,
++        deadline=c.get('load_dependency', {}).get('operation_deadline_monotonic')))
+     observe_ready()
+     identity = identity_observer(c)
+     phases = phase_callbacks or PhaseCallbacks(c, write=write)
+--- a/candidate/outer/namespace_entry.py
++++ b/candidate/outer/namespace_entry.py
+@@ -164,15 +164,63 @@
+     return {'path': str(path), 'sha256': sha(raw)}
+ 
+ 
+-def runtime_read(path):
++def runtime_read(path, *, deadline=None):
++    """Private work record with linked FD/path custody at acceptance.
++
++    Only the two concurrently replaced publications may reopen a verified
++    retired inode. Immutable/default reads refuse that race. The caller supplies
++    its existing absolute deadline; retries neither extend nor reset it.
++    """
+     path = Path(path)
+     need(path.parent == WORK and path.name and not path.is_symlink(), 'exact_work_file_required')
+-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+-    with os.fdopen(fd, 'rb') as f:
+-        st = os.fstat(f.fileno())
+-        need(stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid() and st.st_nlink == 1
+-             and not st.st_mode & 0o077, 'runtime_file_rights')
+-        return f.read()
++    mutable = deadline is not None
++    if mutable:
++        need(path.name in ('native-trace.json', 'phase.json') and type(deadline) in (int, float)
++             and math.isfinite(deadline), 'runtime_publication_deadline_or_path')
++    limit = 1048576
++    def rights(s):
++        return (stat.S_ISREG(s.st_mode) and s.st_uid == os.getuid()
++                and not s.st_mode & 0o077 and s.st_size <= limit)
++    def identity(s):
++        return s.st_dev, s.st_ino
++    def content(s):
++        return identity(s) + (s.st_mode, s.st_uid, s.st_size, s.st_mtime_ns)
++    def stamp(s):
++        return content(s) + (s.st_ctime_ns, s.st_nlink)
++    for _ in range(8 if mutable else 1):
++        if mutable:
++            need(time.monotonic() < deadline, 'runtime_publication_deadline')
++        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
++        try:
++            before = os.fstat(fd)
++            need(rights(before) and (before.st_nlink == 1 or (mutable and before.st_nlink == 0)),
++                 'runtime_file_rights')
++            raw = None
++            after = before
++            if before.st_nlink == 1:
++                with os.fdopen(os.dup(fd), 'rb') as stream:
++                    raw = stream.read(limit + 1)
++                after = os.fstat(fd)
++                need(rights(after) and len(raw) == before.st_size <= limit
++                     and content(before) == content(after), 'runtime_file_changed')
++            current = path.lstat()
++            need(rights(current) and current.st_nlink == 1, 'runtime_file_rights')
++            if mutable and not (stamp(before) == stamp(after) == stamp(current)):
++                # Replacement may occur between fstat and pathname lstat too.
++                retired, successor = os.fstat(fd), path.lstat()
++                need(rights(retired) and content(before) == content(retired), 'runtime_file_changed')
++                need(rights(successor) and successor.st_nlink == 1, 'runtime_file_rights')
++                if retired.st_nlink == 0 and identity(successor) != identity(retired):
++                    # Never accept this retired descriptor's bytes.
++                    continue
++            need(raw is not None and stamp(before) == stamp(after) == stamp(current),
++                 'runtime_file_changed')
++            if mutable:
++                need(time.monotonic() < deadline, 'runtime_publication_deadline')
++            return raw
++        finally:
++            os.close(fd)
++    raise Refused('runtime_publication_replacement_limit')
+ 
+ 
+ def read_ref(ref):
+@@ -242,7 +290,8 @@
+         need(not os.path.lexists(view_path), 'font_runtime_prefilled_future_view')
+         expected_phase = dict(nonce=plan['nonce'], phase='IDLE' if boundary == 'AFTER_LOAD_BEFORE_QUERY' else 'CLOSED',
+                               index=None, digit=None)
+-        need(json.loads(runtime_read(WORK / 'phase.json')) == expected_phase, 'font_runtime_request_phase')
++        need(self.now() < deadline, 'font_runtime_request_original_deadline')
++        need(json.loads(runtime_read(WORK / 'phase.json', deadline=deadline)) == expected_phase, 'font_runtime_request_phase')
+         runtime = json.loads(runtime_read(WORK / 'helper-runtime.json'))['runtime']
+         need(runtime['operation_id'] == plan['operation_id'] and runtime['nonce'] == plan['nonce']
+              and runtime['operation_deadline_monotonic'] == deadline and self.now() < deadline,
+@@ -269,7 +318,7 @@
+             os.close(fd)
+         while not paths['proof'].exists():
+             need(self.now() < deadline and child.poll() is None, 'font_runtime_proof_deadline_or_GDB_exit')
+-            trace = json.loads(runtime_read(WORK / 'native-trace.json'))
++            trace = json.loads(runtime_read(WORK / 'native-trace.json', deadline=deadline))
+             need(trace['error'] is None and trace['process'] == native, 'font_runtime_observer_refused')
+             self.sleep(min(0.02, max(0, deadline - self.now())))
+         raw = font_runtime_read(paths['proof'])
+@@ -297,7 +346,7 @@
+             request_ref=held['request_ref'], proof_ref=held['proof_ref'], font_view_ref=view_ref))
+         while not paths['accepted'].exists():
+             need(self.now() < deadline, 'font_runtime_release_acceptance_original_deadline')
+-            trace = json.loads(runtime_read(WORK / 'native-trace.json'))
++            trace = json.loads(runtime_read(WORK / 'native-trace.json', deadline=deadline))
+             need(trace['error'] is None and trace['process'] == request['process'], 'font_runtime_release_observer_refused')
+             self.sleep(min(0.02, max(0, deadline - self.now())))
+         accepted = json.loads(font_runtime_read(paths['accepted']))
+@@ -848,7 +897,7 @@
+             while True:
+                 need(services.now() < end and gdb.poll() is None, 'native_readiness_deadline_or_exit')
+                 if (WORK / 'native-trace.json').exists():
+-                    trace = json.loads(runtime_read(WORK / 'native-trace.json'))
++                    trace = json.loads(runtime_read(WORK / 'native-trace.json', deadline=end))
+                     need(trace['nonce'] == plan['nonce'] and trace['error'] is None, 'native_readiness_refused')
+                     if trace['status'] == 'READY_UNRELEASED':
+                         break
+@@ -889,7 +938,7 @@
+             emit('INNER_CLIENT_STARTED', process=client_identity)
+             checkpoint = wait_file(WORK / 'inner-checkpoint.json', limit=cfg['timeouts']['loaded_seconds'], child=client)
+             # Refresh actual trace after LOAD; startup READY is not closure.
+-            trace = json.loads(runtime_read(WORK / 'native-trace.json'))
++            trace = json.loads(runtime_read(WORK / 'native-trace.json', deadline=deadline))
+             need(trace['error'] is None and trace['process'] == native
+                  and trace['symbols'] == initial_symbols and trace['records'] == [], 'loaded_trace_original_binding')
+             helper_evidence = None
+@@ -918,7 +967,7 @@
+             while client.poll() is None or gdb.poll() is None:
+                 need(services.now() < deadline, 'metric_close_global_deadline')
+                 need(client.poll() in (None, 0) and gdb.poll() in (None, 0), 'own_child_failed')
+-                current_phase = json.loads(runtime_read(WORK / 'phase.json'))
++                current_phase = json.loads(runtime_read(WORK / 'phase.json', deadline=deadline))
+                 if current_phase == dict(nonce=plan['nonce'], phase='CLOSED', index=None, digit=None) and after_view is None:
+                     need(client.poll() is None and gdb.poll() is None, 'postclose_boundary_before_termination_required')
+                     closed_held = services.acquire_font_runtime(plan, native, boundary='AFTER_READONLY_CLOSE',
+@@ -931,7 +980,7 @@
+                 services.sleep(0.02)
+             need(client.returncode == 0 and gdb.returncode == 0, 'actual_child_exit_nonzero')
+         inner = json.loads(runtime_read(WORK / 'inner-result.json'))
+-        trace = json.loads(runtime_read(WORK / 'native-trace.json'))
++        trace = json.loads(runtime_read(WORK / 'native-trace.json', deadline=deadline))
+         phase = json.loads(runtime_read(WORK / 'phase.json'))
+         need(phase == {'nonce': plan['nonce'], 'phase': 'CLOSED', 'index': None, 'digit': None}, 'actual_CLOSED_required')
+         need(trace['status'] == 'COMPLETE_UNATTESTED' and trace['error'] is None
+--- a/fixture-source/held_fixture_supervisor.py
++++ b/fixture-source/held_fixture_supervisor.py
+@@ -58,7 +58,7 @@
+         require(time.monotonic() < deadline and child.poll() is None, 'fixture_boundary_deadline_or_exit')
+         path = WORK / 'native-trace.json'
+         if path.exists():
+-            trace = json.loads(ns.runtime_read(path))
++            trace = json.loads(ns.runtime_read(path, deadline=deadline))
+             require(trace['error'] is None, 'fixture_observer_refused_before_hold')
+             if trace.get('fixture_boundary') == boundary:
+                 require(trace['record_semantics'] == 'FIXTURE_MARKER_ONLY'
+@@ -192,7 +192,7 @@
+             while child.poll() is None:
+                 require(time.monotonic() < deadline, 'fixture_original_completion_deadline')
+                 time.sleep(.005)
+-            trace = json.loads(ns.runtime_read(WORK / 'native-trace.json'))
++            trace = json.loads(ns.runtime_read(WORK / 'native-trace.json', deadline=deadline))
+             require(prepared['expected_refusal'] is None and child.returncode == 0
+                     and trace['status'] == 'COMPLETE_HELD_ENV_FIXTURE_ONLY' and trace['error'] is None
+                     and trace['own_inferior_absent'] is True and len(observations) == 2,
