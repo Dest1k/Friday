@@ -1,0 +1,547 @@
+--- a/outer/outer_runner.py
++++ b/outer/outer_runner.py
+@@ -184,7 +184,7 @@
+     need(type(plan) is dict and set(plan) == {'schema', 'operation_id', 'nonce', 'operation_dir',
+          'work_dir', 'readonly_dirs', 'binding_root', 'namespace_builder', 'namespace_entry',
+          'inner_client', 'inner_input', 'preload', 'component_paths', 'source_files', 'tools',
+-         'observer', 'budgets', 'startup_basis', 'font_view'}, 'outer_plan_schema')
++         'observer', 'budgets', 'startup_basis', 'font_view', 'bootstrap'}, 'outer_plan_schema')
+     need(plan['schema'] == SCHEMA and type(plan['operation_id']) is str
+          and re.fullmatch('[a-zA-Z0-9_.-]{1,128}', plan['operation_id'])
+          and type(plan['nonce']) is str and re.fullmatch('[0-9a-f]{32}', plan['nonce']),
+@@ -239,7 +239,7 @@
+     need(pre['operation_id'] == plan['operation_id'], 'same_preload_operation')
+     source_observations = observe_sources(plan, pre)
+     font = plan['font_view']
+-    need(type(font) is dict and set(font) == {'consumer', 'baseline', 'expected_view_sha256', 'provenance_ref'}
++    need(type(font) is dict and set(font) == {'consumer', 'baseline', 'expected_view_sha256', 'provenance_ref', 'base_view_sha256', 'derived_cache'}
+          and sha(font['expected_view_sha256']), 'Root_font_view_input_UNBOUND')
+     baseline_raw = None
+     for ref in (font['consumer'], font['baseline'], font['provenance_ref']):
+@@ -251,12 +251,23 @@
+     baseline = json.loads(baseline_raw)
+     consumer = load_module('frw_static_font_CAS_preparation_only', font['consumer'])
+     try:
+-        consumer.checked_baseline(baseline, font['expected_view_sha256'])  # Pure digest check, no CAS here.
++        consumer.checked_baseline(baseline, font['base_view_sha256'])
++        derived = json.loads(read_pinned(font['derived_cache'], private=True))
++        need(any(Path(font['derived_cache']['path']).is_relative_to(p) for p in readonly),
++             'derived_cache_manifest_not_readonly_mounted')
++        need(any(Path(derived['closed_origin']['path']).is_relative_to(p) for p in readonly),
++             'derived_closed_origin_not_readonly_mounted')
++        need(not Path(derived['source_directory']).is_relative_to(work)
++             and not work.is_relative_to(derived['source_directory']), 'derived_cache_work_overlap')
++        consumer.observe_derived_cache(derived, baseline)  # Only six actual input files, not a font inventory.
++        need(consumer.digest(consumer.effective_expected_view(baseline, derived)) == font['expected_view_sha256'],
++             'effective_font_view_UNBOUND')
+     except Exception:
+         raise Refused('Root_font_view_canonical_baseline_UNBOUND')
+     provenance = json.loads(read_pinned(font['provenance_ref'], private=True))
+     need(provenance['schema'] == 'frw.Astra.static-font-view-namespace-provenance.v1'
+-         and provenance['namespace_helper']['sha256'] == plan['namespace_builder']['sha256'],
++         and provenance['namespace_helper']['sha256'] == derived['base_namespace_helper_sha256']
++         and derived['namespace_helper_sha256'] == plan['namespace_builder']['sha256'],
+          'Root_font_view_namespace_source_provenance_mismatch')
+     need(pre['expected_components']['font_config_view'] == font['expected_view_sha256']
+          and plan['component_paths']['font_config_view'] == font['baseline']['path'],
+@@ -283,7 +294,19 @@
+     need(callable(inspect), 'inner_prelaunch_inspection_API_required')
+     inspect(base)
+     builder = load_module('frw_root_namespace_builder', plan['namespace_builder'])
+-    argv = builder.build_namespace(writable=work, readonly=readonly,
++    bootstrap = plan['bootstrap']
++    need(type(bootstrap) is dict and set(bootstrap) == {'basis', 'versionrc'}, 'bootstrap_binding_schema')
++    basis = json.loads(read_pinned(bootstrap['basis'], private=True))
++    need(any(Path(bootstrap['basis']['path']).is_relative_to(p) for p in readonly), 'bootstrap_basis_not_readonly_mounted')
++    need(basis['schema'] == 'frw.calc.fresh-profile-bootstrap-basis.v1'
++         and basis['stock_commit'] == 'cd7284b4cbbfeb507e630c1aac019f4157393acb'
++         and basis['sequence'] == ['FRESH_ORDINARY_REQUIRE_81', 'SAME_PROFILE_TERMINATE_AFTER_INIT_REQUIRE_0']
++         and basis['max_children'] == 2, 'exact_source_bootstrap_sequence_required')
++    need(bootstrap['versionrc']['path'] == str(builder.TOOLCHAIN / 'root/usr/lib/libreoffice/program/versionrc'),
++         'stock_versionrc_path_required')
++    version_raw = read_pinned(bootstrap['versionrc'])
++    need(len(version_raw) <= 65536, 'stock_versionrc_bound')
++    argv = builder.build_namespace(writable=work, readonly=readonly, derived_cache=derived['source_directory'],
+         binding_root=plan['binding_root'], command=['/usr/bin/python3', '-I', '-B', '-S',
+         plan['namespace_entry']['path'], '--job', WORK + '/namespace-job.json'])
+     need('--unshare-all' in argv and '--clearenv' in argv and '--die-with-parent' in argv
+@@ -364,15 +387,67 @@
+             'mapped_image_path': config['symbol_file_path'], 'maps_sha256': digest(maps_text.encode())}
+ 
+ 
++def image_file_identity(st):
++    return (st.st_dev, st.st_ino, st.st_mode, st.st_nlink, st.st_uid, st.st_gid,
++            st.st_size, st.st_mtime_ns, st.st_ctime_ns)
++
++def stream_image_digest(path):
++    """Hash one stable regular image through its FD with at most 1 MiB reads."""
++    fd = None
++    try:
++        path_before = path.stat()
++        need(stat.S_ISREG(path_before.st_mode), 'actual_host_image_not_regular')
++        # NONBLOCK prevents a replacement FIFO from blocking before fstat.
++        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
++        before = os.fstat(fd)
++        need(stat.S_ISREG(before.st_mode), 'actual_host_image_not_regular')
++        identity = image_file_identity(before)
++        need(image_file_identity(path_before) == identity, 'actual_host_image_replaced')
++        hasher = hashlib.sha256()
++        remaining = before.st_size
++        while remaining:
++            block = os.read(fd, min(1024 * 1024, remaining))
++            need(block, 'actual_host_image_changed_during_hash')
++            hasher.update(block)
++            remaining -= len(block)
++        need(not os.read(fd, 1), 'actual_host_image_changed_during_hash')
++        need(image_file_identity(os.fstat(fd)) == identity
++             and image_file_identity(path.stat()) == identity,
++             'actual_host_image_changed_during_hash')
++        return hasher.hexdigest(), before
++    except OSError as exc:
++        raise Refused('actual_host_image_unreadable_or_replaced') from exc
++    finally:
++        if fd is not None:
++            os.close(fd)
++
++def mapped_image_records(maps_text, image_path):
++    records = []
++    for line in maps_text.splitlines():
++        parts = line.split(maxsplit=5)
++        if len(parts) == 6 and parts[5] == image_path:
++            records.append(parts[:5])
++    return records
++
+ def observe_native_symbols(host_pid, plan):
+     """Root independent early live mapping/hash observation, before client load."""
+     before = proc_identity(host_pid)
+     root = Path('/proc') / str(host_pid)
+     config = plan['observer']['config']
+-    binding = bind_symbols_from_maps((root / 'maps').read_text(), config)
+-    need(digest((root / 'exe').read_bytes()) == config['target_sha256'], 'actual_host_target_pin_mismatch')
++    maps_before = (root / 'maps').read_text()
++    binding = bind_symbols_from_maps(maps_before, config)
++    target_hash, _ = stream_image_digest(root / 'exe')
++    need(target_hash == config['target_sha256'], 'actual_host_target_pin_mismatch')
+     image = root / 'root' / config['symbol_file_path'].lstrip('/')
+-    need(digest(image.read_bytes()) == config['symbol_file_sha256'], 'actual_host_mapped_library_pin_mismatch')
++    image_hash, image_stat = stream_image_digest(image)
++    need(image_hash == config['symbol_file_sha256'], 'actual_host_mapped_library_pin_mismatch')
++    mappings = mapped_image_records(maps_before, config['symbol_file_path'])
++    need(all(tuple(int(part, 16) for part in row[3].split(':'))
++             == (os.major(image_stat.st_dev), os.minor(image_stat.st_dev))
++             and int(row[4]) == image_stat.st_ino for row in mappings),
++         'actual_host_mapped_library_file_identity_mismatch')
++    need(mapped_image_records((root / 'maps').read_text(), config['symbol_file_path']) == mappings,
++         'actual_host_mapped_library_changed_during_symbol_binding')
+     need(proc_identity(host_pid) == before, 'actual_host_process_changed_during_symbol_binding')
+     return dict(binding, symbol_file_sha256=config['symbol_file_sha256'],
+                 target_sha256=config['target_sha256'], process_identity=before)
+@@ -399,7 +474,7 @@
+     """Existing finite unit sampler's per-CAS guard, never a new watcher/unit."""
+     need(marker['schema'] == 'frw.calc.font-CAS-phase.v1'
+          and marker['operation_id'] == plan['operation_id'] and marker['nonce'] == plan['nonce']
+-         and marker['phase'] in ('BEFORE_OFFICE', 'AFTER_LOAD_BEFORE_QUERY', 'AFTER_READONLY_CLOSE'),
++         and marker['phase'] in ('BEFORE_OFFICE', 'AFTER_BOOTSTRAP_BEFORE_GDB', 'AFTER_LOAD_BEFORE_QUERY', 'AFTER_READONLY_CLOSE'),
+          'font_CAS_phase_binding')
+     need(marker['state'] in ('RUNNING', 'COMPLETE_UNRELEASED', 'REFUSED'), 'font_CAS_phase_state')
+     need(marker['state'] != 'REFUSED', 'Root_font_CAS_refused_no_release')
+@@ -744,6 +819,8 @@
+         backend.absent(unit)
+         for name in ('tmp', 'cache', 'config', 'runtime'):
+             (Path(plan['work_dir']) / name).mkdir(mode=0o700)
++        # Empty private mountpoint only, never copy/cache-delete/rebaseline.
++        (Path(plan['work_dir']) / 'cache/fontconfig').mkdir(mode=0o700)
+         operation_started = now()
+         job = dict(plan=plan, plan_sha256=plan_ref['sha256'],
+                    deadline_monotonic=operation_started + plan['budgets']['wall_seconds'] - plan['budgets']['cleanup_seconds'])
+@@ -849,14 +926,16 @@
+                  and ns['actual_M'] is None and ns['runtime_attested'] is False,
+                  'namespace_closure_unconfirmed')
+             loaded_observations = json.loads((Path(plan['work_dir']) / 'loaded-observations.json').read_bytes())
+-            cas_observations = [ns['font_view_before_office'], loaded_observations['font_view'],
++            cas_observations = [ns['font_view_before_office'], ns['font_view_after_bootstrap'], loaded_observations['font_view'],
+                                 ns['font_view_after_close']]
+-            for phase, view in zip(('BEFORE_OFFICE', 'AFTER_LOAD_BEFORE_QUERY', 'AFTER_READONLY_CLOSE'), cas_observations):
++            for phase, view in zip(('BEFORE_OFFICE', 'AFTER_BOOTSTRAP_BEFORE_GDB', 'AFTER_LOAD_BEFORE_QUERY', 'AFTER_READONLY_CLOSE'), cas_observations):
+                 source = view['namespace_process']
+                 need(view['phase'] == phase and view['view_sha256'] == plan['font_view']['expected_view_sha256']
+                      and view['consumer'] == plan['font_view']['consumer']
+                      and view['baseline'] == plan['font_view']['baseline']
+                      and view['provenance_ref'] == plan['font_view']['provenance_ref']
++                     and view['base_static_view_sha256'] == plan['font_view']['base_view_sha256']
++                     and view['derived_cache'] == plan['font_view']['derived_cache']
+                      and source['namespace_pid'] == supervisor_binding['nspid'][-1]
+                      and source['start_ticks'] == supervisor_binding['start_ticks']
+                      and source['namespaces'] == supervisor_binding['namespaces']
+--- a/outer/namespace_entry.py
++++ b/outer/namespace_entry.py
+@@ -12,6 +12,7 @@
+ import json
+ import os
+ import resource
++import re
+ import stat
+ import subprocess
+ import time
+@@ -153,8 +154,9 @@
+                   'limits': {'wall_seconds': 60, 'cpu_seconds': 30, 'rss_bytes': 512 * 1024**2}}
+         atomic(WORK / 'font-CAS-phase.json', marker)
+         try:
+-            current = namespace['validate_static_font_config_view'](baseline,
+-                            expected_view_digest=binding['expected_view_sha256'])
++            derived = json.loads(read_ref(binding['derived_cache']))
++            current = namespace['validate_effective_font_config_view'](baseline,
++                            expected_view_digest=binding['expected_view_sha256'], derived_cache=derived)
+             encoded = json.dumps(current, sort_keys=True, separators=(',', ':')).encode()
+             memory = address_space_memory(os.getpid())
+             rss_peak = memory['VmHWM']
+@@ -170,6 +172,7 @@
+             result = {'schema': 'frw.calc.actual-font-view-CAS.v1', 'phase': phase,
+                 'view_sha256': current['view_sha256'], 'consumer': binding['consumer'],
+                 'baseline': binding['baseline'], 'provenance_ref': binding['provenance_ref'],
++                'base_static_view_sha256': binding['base_view_sha256'], 'derived_cache': binding['derived_cache'],
+                 'digest_kind': 'ROOT_CANONICAL_NAMESPACE_VIEW_NOT_BASELINE_FILE_SHA',
+                 'namespace_process': me, 'office_process': office, 'office_font_environment': font_environment,
+                 'observation': current['observation'], 'actual_wall_seconds': elapsed,
+@@ -188,6 +191,17 @@
+             raise
+         finally:
+             atomic(WORK / 'font-CAS-phase.json', marker)
++
++    def bootstrap_absent(self, pid):
++        need(not (Path('/proc') / str(pid)).exists(), 'bootstrap_child_not_absent')
++        for entry in Path('/proc').iterdir():
++            if not entry.name.isdigit():
++                continue
++            try:
++                target = os.readlink(entry / 'exe')
++            except (FileNotFoundError, ProcessLookupError, PermissionError):
++                continue
++            need(target != PROGRAM + '/soffice.bin', 'bootstrap_Office_process_still_present')
+ 
+     def loaded_observations(self, plan, native):
+         pid = native['pid']
+@@ -218,9 +232,76 @@
+         need(before == after, 'loaded_process_changed_during_observation')
+         return {'schema': 'frw.calc.actual-loaded-observations.v1', 'process': before,
+                 'components': hashes, 'mapped_paths': mapped,
+-                'font_view': font_view,
++                'font_view': font_view, 'bootstrap': json.loads(runtime_read(WORK / 'bootstrap-result.json')),
+                 'startup_environment': {k: env.get(k.encode(), b'').decode() for k in ('LANG', 'LC_ALL')},
+                 'observed_after': 'MODEL_LOADED'}
++
++
++def bootstrap_argv(plan, *, finalize=False):
++    pre = json.loads(read_ref(plan['preload']))
++    args = [PROGRAM + '/soffice.bin', '-env:UserInstallation=' + pre['private_profile_url'],
++            '--headless', '--invisible', '--nologo', '--norestore', '--nodefault',
++            '--nofirststartwizard', '--quickstart=no']
++    return args + (['--terminate_after_init'] if finalize else [])
++
++
++def bootstrap_profile(plan, *, services, deadline, emit):
++    """Exactly two direct own children, with first81 then profile-finalizer0.
++
++    The first ordinary fresh startup reaches extension synchronization; source's
++    restart gate skips OpenClients/event loop on the required81 path. The second
++    flag returns earlier at profile finalization and is NOT a claim that it
++    reaches extension synchronization. No unknown status or third child retries.
++    """
++    basis = json.loads(read_ref(plan['bootstrap']['basis']))
++    need(basis['schema'] == 'frw.calc.fresh-profile-bootstrap-basis.v1'
++         and basis['sequence'] == ['FRESH_ORDINARY_REQUIRE_81', 'SAME_PROFILE_TERMINATE_AFTER_INIT_REQUIRE_0']
++         and basis['max_children'] == 2, 'bootstrap_source_basis_UNBOUND')
++    end = min(deadline, services.now() + plan['budgets']['startup_seconds'])
++    pre = json.loads(read_ref(plan['preload']))
++    need(pre['private_profile_url'] == (WORK / 'profile').as_uri(), 'bootstrap_exact_fresh_operation_profile')
++    need(list((WORK / 'profile').iterdir()) == [], 'bootstrap_profile_must_start_empty')
++    need(not (WORK / 'profile/user/extensions/buildid').exists(), 'bootstrap_buildid_must_start_absent')
++    version_ref = {'path': PROGRAM + '/versionrc', 'sha256': plan['bootstrap']['versionrc']['sha256']}
++    version = read_ref(version_ref)
++    ids = re.findall(rb'^buildid=([^\r\n]+)', version, re.M)
++    need(len(ids) == 1 and 0 < len(ids[0]) <= 256, 'bootstrap_stock_buildid_bound')
++    steps = []
++    with (WORK / 'bootstrap.log').open('xb') as log:
++        os.chmod(WORK / 'bootstrap.log', 0o600)
++        for index, expected in enumerate((81, 0)):
++            need(services.now() < end, 'bootstrap_total_startup_deadline')
++            emit('PROFILE_BOOTSTRAP_CHILD_STARTING', index=index, expected_exit=expected)
++            child = services.spawn(bootstrap_argv(plan, finalize=index == 1), env=dict(os.environ), stdout=log)
++            identity = services.process(child.pid)
++            need(identity['namespace_pid'] == child.pid and identity['ppid'] == os.getpid()
++                 and identity['executable_path'] == PROGRAM + '/soffice.bin'
++                 and identity['executable_sha256'] == plan['observer']['config']['target_sha256'],
++                 'bootstrap_actual_direct_child_identity')
++            while child.poll() is None:
++                need(services.now() < end, 'bootstrap_total_startup_deadline')
++                services.sleep(0.02)
++            need(child.returncode == expected, 'bootstrap_unknown_exit_or_wrong_stage')
++            services.bootstrap_absent(child.pid)
++            path = WORK / 'profile/user/extensions/buildid'
++            need(str(path.resolve()) == str(path) and not path.is_symlink() and path.is_file(), 'bootstrap_stock_buildid_not_regular')
++            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
++            with os.fdopen(fd, 'rb') as stream:
++                st = os.fstat(stream.fileno())
++                need(stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid() and st.st_nlink == 1
++                     and not st.st_mode & 0o077 and st.st_size <= 257, 'bootstrap_buildid_rights')
++                raw = stream.read(258)
++            need(raw == ids[0], 'bootstrap_buildid_mismatch')
++            steps.append({'index': index, 'process': identity, 'exit_code': child.returncode,
++                          'reaped_and_Office_absent': True, 'profile_buildid_sha256': sha(raw)})
++            emit('PROFILE_BOOTSTRAP_CHILD_REAPED', **steps[-1])
++    result = {'schema': 'frw.calc.own-fresh-profile-bootstrap.v1', 'operation_id': plan['operation_id'],
++        'nonce': plan['nonce'], 'profile_origin': 'CREATED_EMPTY_FOR_THIS_OPERATION',
++        'profile_url': pre['private_profile_url'], 'source_basis': plan['bootstrap']['basis'],
++        'steps': steps, 'document_or_model_request': False, 'actual_M': None,
++        'scope': 'ordinary81 extension-sync restart then early profile-finalizer0; final measured Office remains separate exact direct GDB child'}
++    atomic(WORK / 'bootstrap-result.json', result)
++    return result
+ 
+ 
+ def gdb_argv(plan):
+@@ -240,6 +321,13 @@
+ def build_loaded_record(plan, trace, checkpoint, observations, evidence_ref):
+     """Actual-shaped pure join; callers cannot pass a future loaded template."""
+     pre = json.loads(read_ref(plan['preload']))
++    bootstrap = observations['bootstrap']
++    need(bootstrap['operation_id'] == plan['operation_id'] and bootstrap['nonce'] == plan['nonce']
++         and bootstrap['profile_origin'] == 'CREATED_EMPTY_FOR_THIS_OPERATION'
++         and bootstrap['profile_url'] == pre['private_profile_url']
++         and [s['exit_code'] for s in bootstrap['steps']] == [81, 0]
++         and all(s['reaped_and_Office_absent'] is True for s in bootstrap['steps'])
++         and bootstrap['source_basis'] == plan['bootstrap']['basis'], 'actual_same_operation_bootstrap_required')
+     need(evidence_ref['path'] == str(WORK / 'loaded-observations.json'),
+          'actual_namespace_observation_file_required')
+     # Accepted100/R3 external evidence refs are honest cache refs. This is the
+@@ -284,6 +372,8 @@
+                  and f['consumer'] == plan['font_view']['consumer']
+                  and f['baseline'] == plan['font_view']['baseline']
+                  and f['provenance_ref'] == plan['font_view']['provenance_ref']
++                 and f['base_static_view_sha256'] == plan['font_view']['base_view_sha256']
++                 and f['derived_cache'] == plan['font_view']['derived_cache']
+                  and f['phase'] == 'AFTER_LOAD_BEFORE_QUERY'
+                  and f['office_process'] == p
+                  and f['namespace_process']['namespaces'] == p['namespaces']
+@@ -318,7 +408,7 @@
+                      'inner-input.json', 'inner-result.json', 'inner-checkpoint.json', 'inner-started.json',
+                      'loaded-envelope.json', 'loaded-record.json', 'loaded-observations.json',
+                      'namespace-journal.json', 'namespace-result.json', 'font-CAS-phase.json',
+-                     'font-view-before-office.json', 'font-view-after-close.json'}
++                     'font-view-before-office.json', 'font-view-after-close.json', 'font-view-after-bootstrap.json', 'bootstrap.log', 'bootstrap-result.json'}
+     allowed_dirs = {'profile', 'tmp', 'cache', 'config', 'runtime'}
+     files = []
+     for path in WORK.rglob('*'):
+@@ -332,7 +422,9 @@
+             if relative.parts[0] in allowed_dirs:
+                 need(path.suffix.lower() not in ('.ods', '.xlsx', '.xls', '.csv', '.pdf', '.odt', '.docx'),
+                      'unexpected_document_output')
+-            files.append({'path': str(relative), 'bytes': path.stat().st_size})
++            files.append({'path': str(relative), 'bytes': path.stat().st_size,
++                          'scope': 'READONLY_DERIVED_FONTCONFIG_INPUT' if relative.parts[:2] == ('cache', 'fontconfig')
++                                   else 'OWN_OPERATION_OUTPUT'})
+     return files
+ 
+ 
+@@ -374,6 +466,12 @@
+         emit('FONT_VIEW_BEFORE_OFFICE_CAS', view_sha256=before_view['view_sha256'])
+         need(not (WORK / 'profile').exists(), 'profile_must_be_fresh_absent')
+         (WORK / 'profile').mkdir(mode=0o700)
++        bootstrap = bootstrap_profile(plan, services=services, deadline=deadline, emit=emit)
++        # The same operation owns the newly initialized profile. Never import
++        # the closed first operation's profile or describe this one as still empty.
++        after_bootstrap_view = services.font_view_observation(plan, phase='AFTER_BOOTSTRAP_BEFORE_GDB')
++        need(after_bootstrap_view['view_sha256'] == before_view['view_sha256'], 'bootstrap_font_view_drift')
++        atomic(WORK / 'font-view-after-bootstrap.json', after_bootstrap_view)
+         atomic(WORK / 'phase.json', {'nonce': plan['nonce'], 'phase': 'IDLE', 'index': None, 'digit': None})
+         atomic(WORK / 'observer-config.json', plan['observer']['config'])
+         env = dict(os.environ, FRW_NATIVE_OBSERVER_CONFIG=str(WORK / 'observer-config.json'))
+@@ -473,10 +571,10 @@
+              == before_view['view_sha256'], 'postclose_font_CAS_drift')
+         atomic(WORK / 'font-view-after-close.json', after_view)
+         inventory = output_inventory()
+-        result.update(status='CLOSED_UNRELEASED', native_process=trace['process'], native_symbols=trace['symbols'],
++        result.update(status='CLOSED_UNRELEASED', bootstrap=bootstrap, native_process=trace['process'], native_symbols=trace['symbols'],
+                       uno_widths=widths, office_identity=office, output_inventory=inventory,
+                       gdb_identity=gdb_identity, inner_client_identity=client_identity,
+-                      font_view_before_office=before_view, font_view_after_close=after_view,
++                      font_view_before_office=before_view, font_view_after_bootstrap=after_bootstrap_view, font_view_after_close=after_view,
+                       readonly_close_confirmed=True, readonly_copy_hash_unchanged=True,
+                       no_unexpected_writable_output=True, child_exit={'gdb': gdb.returncode, 'inner': client.returncode})
+         emit('READONLY_CLOSE_CHILD_EXIT_SOURCE_NO_OUTPUT_CONFIRMED')
+--- a/outer/deps/metric_namespace.py
++++ b/outer/deps/metric_namespace.py
+@@ -30,7 +30,7 @@
+     return path
+ 
+ 
+-def build_namespace(*, writable, readonly, binding_root, command):
++def build_namespace(*, writable, readonly, binding_root, command, derived_cache=None):
+     """Build a finite executor argv; caller owns budget, process and evidence.
+ 
+     There is deliberately no default operation, execution flag, source/case
+@@ -64,6 +64,13 @@
+         args += ['--ro-bind', str(path), str(path)]
+     args += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/run', '--tmpfs', '/sys',
+              '--tmpfs', '/tmp', '--bind', str(writable), INNER_WORK, '--chdir', INNER_WORK, '--clearenv']
++    if derived_cache is not None:
++        derived_cache = owned_directory(derived_cache)
++        if derived_cache.is_relative_to(writable) or writable.is_relative_to(derived_cache):
++            raise ValueError('derived_cache_must_be_separate_readonly_input')
++        # Overlay only this explicit cache directory; HOME/config/font paths keep
++        # their original masked empty conditions and environment is unchanged.
++        args += ['--ro-bind', str(derived_cache), INNER_WORK + '/cache/fontconfig']
+     environment = {
+         'HOME': INNER_WORK + '/tmp', 'TMPDIR': INNER_WORK + '/tmp',
+         'XDG_CACHE_HOME': INNER_WORK + '/cache', 'XDG_CONFIG_HOME': INNER_WORK + '/config',
+--- a/outer/font_view/font_view.py
++++ b/outer/font_view/font_view.py
+@@ -5,7 +5,7 @@
+ not a new byte proof against hostile kernel/metadata rollback. Critical config,
+ cache and engine inputs are rehashed. Any metadata/set/topology drift refuses.
+ """
+-import argparse, collections, hashlib, json, os, pathlib, resource, stat, struct, sys, time
++import argparse, collections, copy, hashlib, json, os, pathlib, re, resource, stat, struct, sys, time
+ import xml.etree.ElementTree as ET
+ 
+ PREFIX='/opt/friday-document-toolchain'
+@@ -59,11 +59,104 @@
+         if fd is not None:os.close(fd)
+         os.close(current)
+ 
++# Narrow explicit overlay for the six caches generated by the closed first stock
++# startup. The old v1 validator remains strict, including cache absence.
++DERIVED_TARGET='/tmp/friday-metric-work/cache/fontconfig'
++DERIVED_ORIGIN='root-calc-reference-20261115-cacd51e42073'
++DERIVED_CLOSED_SHA='6ef7660a4a476115efef4a1f912c8606880ef0b5604af65744548a976e3e6593'
++ADDITIONAL_EMPTY_FONTDIR=PROGRAM+'/resource/common/fonts'
++def private_open(path,directory=False):
++    path=pathlib.Path(path)
++    if not path.is_absolute() or '..' in path.parts:raise Refusal('derived_path_alias')
++    fd=os.open('/',os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC)
++    try:
++        for i,part in enumerate(path.parts[1:]):
++            last=i==len(path.parts)-2
++            flags=os.O_NOFOLLOW|os.O_CLOEXEC|((os.O_RDONLY|os.O_DIRECTORY if directory else os.O_RDONLY) if last else os.O_PATH|os.O_DIRECTORY)
++            nxt=os.open(part,flags,dir_fd=fd);os.close(fd);fd=nxt
++        result=fd;fd=None;return result
++    finally:
++        if fd is not None:os.close(fd)
++def pinned_small(ref):
++    if type(ref) is not dict or set(ref)!={'path','sha256'}:raise Refusal('derived_reference_schema')
++    fd=private_open(ref['path'])
++    try:
++        st=os.fstat(fd)
++        if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.getuid() or st.st_nlink!=1 or st.st_mode&0o077 or st.st_size>65536:raise Refusal('derived_reference_rights_or_bound')
++        raw=os.read(fd,65537)
++        if metadata(os.fstat(fd))!=metadata(st):raise Refusal('derived_reference_changed')
++    finally:os.close(fd)
++    if hashlib.sha256(raw).hexdigest()!=ref['sha256']:raise Refusal('derived_reference_digest_mismatch')
++    return raw
++
++def checked_derived_binding(binding,baseline):
++    if type(binding) is not dict or set(binding)!={'schema','base_view_sha256','base_namespace_helper_sha256','namespace_helper_sha256','namespace_target','source_directory','source_directory_metadata','files','closed_origin','additional_empty_font_directory'}:raise Refusal('derived_binding_schema')
++    if binding['schema']!='frw.calc.closed-startup-derived-font-cache.v1' or binding['namespace_target']!=DERIVED_TARGET or binding['base_view_sha256']!=baseline['view_sha256']:raise Refusal('derived_binding_base_or_target')
++    checked_baseline(baseline,binding['base_view_sha256'])
++    if binding['closed_origin']['sha256']!=DERIVED_CLOSED_SHA:raise Refusal('derived_origin_not_exact_closed_observation')
++    origin=json.loads(pinned_small(binding['closed_origin']))
++    if origin['schema']!='frw.Root.first-current-observation-closed-reconciled.v1' or origin['operation_id']!=DERIVED_ORIGIN or origin['state']!='CLOSED_REFUSED_NO_MODEL_LOAD_OR_METRIC' or origin['documents']['real_runtime_called'] is not False or origin['documents']['MODEL_LOADED_checkpoint_absent'] is not True or origin['native_width_records']!=0 or origin['owned_cgroup_absent'] is not True:raise Refusal('derived_origin_unverified_or_model_loaded')
++    rows=binding['files'];original=origin['generated_cache_snapshot']
++    if len(rows)!=6 or sum(x['metadata']['size'] for x in rows)!=3968 or len({r['name'] for r in rows})!=6:raise Refusal('derived_cache_exact_six_bound')
++    old={pathlib.Path(r['path']).name:r for r in original}
++    for row in rows:
++        if set(row)!={'name','metadata','sha256'} or not re.fullmatch(r'(?:[0-9a-f]{32}-le64\.cache-9|CACHEDIR\.TAG)',row['name']):raise Refusal('derived_cache_name_or_escape')
++        prior=old.get(row['name'])
++        if prior is None or prior['sha256']!=row['sha256'] or prior['bytes']!=row['metadata']['size']:raise Refusal('derived_cache_provenance_mismatch')
++    source=pathlib.Path(binding['source_directory'])
++    if not source.is_relative_to('/home/jericho/.cache') or source==pathlib.Path('/home/jericho/.cache') or source.name!='derived-fontconfig':raise Refusal('derived_cache_source_scope')
++    extra=binding['additional_empty_font_directory']
++    if set(extra)!={'path','metadata','children'} or extra['path']!=ADDITIONAL_EMPTY_FONTDIR or extra['children']!=[]:raise Refusal('derived_cache_extra_font_directory')
++    return binding
++
++def observe_derived_cache(binding,baseline,*,namespace=False,mountinfo=None):
++    checked_derived_binding(binding,baseline)
++    path=DERIVED_TARGET if namespace else binding['source_directory']
++    fd=private_open(path,True)
++    try:
++        ds=os.fstat(fd)
++        if metadata(ds)!=binding['source_directory_metadata'] or ds.st_uid!=os.getuid() or ds.st_mode&0o077:raise Refusal('derived_cache_directory_replaced')
++        if sorted(os.listdir(fd))!=sorted(r['name'] for r in binding['files']):raise Refusal('derived_cache_file_set_changed')
++        for row in binding['files']:
++            child=os.open(row['name'],os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=fd)
++            try:
++                st=os.fstat(child)
++                if metadata(st)!=row['metadata'] or not stat.S_ISREG(st.st_mode) or st.st_nlink!=1 or st.st_uid!=os.getuid() or st.st_mode&0o077:raise Refusal('derived_cache_file_replaced')
++                raw=os.read(child,65537)
++                if hashlib.sha256(raw).hexdigest()!=row['sha256'] or metadata(os.fstat(child))!=row['metadata']:raise Refusal('derived_cache_content_changed')
++            finally:os.close(child)
++        if metadata(os.fstat(fd))!=binding['source_directory_metadata']:raise Refusal('derived_cache_directory_changed')
++    finally:os.close(fd)
++    if namespace:
++        # Require this exact mountpoint to be a read-only bind in the actual
++        # process namespace. Path equality alone never attests read-only state.
++        text=pathlib.Path('/proc/self/mountinfo').read_text() if mountinfo is None else mountinfo
++        rows=[line.split() for line in text.splitlines()]
++        mounts=[r for r in rows if len(r)>6 and r[4]==DERIVED_TARGET]
++        if len(mounts)!=1 or 'ro' not in mounts[0][5].split(','):raise Refusal('derived_cache_not_exact_readonly_mount')
++        extra=binding['additional_empty_font_directory'];d=private_open(extra['path'],True)
++        try:
++            if metadata(os.fstat(d))!=extra['metadata'] or os.listdir(d)!=[]:raise Refusal('derived_cache_extra_font_directory_changed')
++        finally:os.close(d)
++    return {'path':DERIVED_TARGET,'condition':'present_exact_readonly_derived_cache','binding_sha256':digest(binding),'source_directory_metadata':binding['source_directory_metadata'],'files':binding['files']}
++
++def effective_expected_view(baseline,binding):
++    checked_derived_binding(binding,baseline)
++    view=copy.deepcopy(baseline['view'])
++    view['format']='friday-static-font-config-view-with-derived-cache-v2'
++    view['base_static_view_sha256']=baseline['view_sha256']
++    view['derived_cache']={'binding_sha256':digest(binding),'closed_origin':binding['closed_origin'],'additional_empty_font_directory':binding['additional_empty_font_directory']}
++    matches=[i for i,r in enumerate(view['empty_user_conditions']) if r['path']==DERIVED_TARGET]
++    if len(matches)!=1 or view['empty_user_conditions'][matches[0]]!={'path':DERIVED_TARGET,'condition':'absent'}:raise Refusal('derived_base_absence_guard_not_exact')
++    view['empty_user_conditions'][matches[0]]={'path':DERIVED_TARGET,'condition':'present_exact_readonly_derived_cache','binding_sha256':digest(binding),'source_directory_metadata':binding['source_directory_metadata'],'files':binding['files']}
++    return view
++
+ class Scanner:
+-    def __init__(self,baseline=None):
++    def __init__(self,baseline=None,derived_cache=None):
+         self.entries={};self.links={};self.hashes={};self.read=0;self.hashed=0;self.reused=0
+         self.directives=[];self.subtrees=[];self.registry_nonconfig=[];self.baseline=baseline
+         self.oldentries={e['path']:e for e in baseline['view']['entries']} if baseline else {}
++        self.derived_cache=derived_cache
+         self.start=time.monotonic()
+     def check(self):
+         if len(self.entries)+len(self.links)>MAX_ENTRIES:raise Refusal('entry_limit')
+@@ -262,7 +355,11 @@
+         empty=self.empty_user_conditions()
+         self.final_metadata_revalidation()
+         view={'format':'friday-static-font-config-view-v1','scope':'actual namespace static dependency view; no selected runtime face, M, physical or historical applicability','roots':ROOTS,'static_configuration_layers':STATIC_LAYERS,'trusted_resolution_roots':TRUSTED,'environment':{k:os.environ.get(k) for k in ENV_KEYS},'entries':[self.entries[p] for p in sorted(self.entries)],'symlink_topology':{p:self.links[p] for p in sorted(self.links)},'fontconfig_static_directives':self.directives,'lo_font_substitution_subtrees':self.subtrees,'registry_nonconfiguration_entries':self.registry_nonconfig,'engine_candidates':candidates,'libmergedlo_DT_NEEDED':needed,'empty_user_conditions':empty}
+-        if self.baseline:assert_view_matches(view,self.baseline)
++        if self.derived_cache:
++            expected=effective_expected_view(self.baseline,self.derived_cache)
++            view.update(format=expected['format'],base_static_view_sha256=expected['base_static_view_sha256'],derived_cache=expected['derived_cache'])
++            assert_view_matches(view,{'view':expected})
++        elif self.baseline:assert_view_matches(view,self.baseline)
+         usage=resource.getrusage(resource.RUSAGE_SELF)
+         return {'view':view,'view_sha256':digest(view),'observation':{'status':'metadata_cas_pass_with_critical_rehash' if self.baseline else 'streamed_byte_inventory','read_bytes':self.read,'hashed_unique_files':self.hashed,'reused_font_digests':self.reused,'entry_count':len(self.entries),'symlink_count':len(self.links),'wall_seconds':time.monotonic()-self.start,'cpu_seconds':usage.ru_utime+usage.ru_stime,'max_rss_kib':usage.ru_maxrss},'limits':{'wall_seconds':60,'cpu_seconds':30,'rss_bytes':512*1024**2,'entries_plus_links':4096,'read_bytes':MAX_READ,'output_bytes':MAX_OUTPUT},'limitations':['No Office process, selected runtime face, FcConfig evaluation, M or fidelity claim.','ELF DT_NEEDED and candidate identities are static coverage, not evidence of actual dynamic loading.','Font CAS reuses byte digests only on exact metadata/set/topology equality in unchanged trusted RO software view; hostile privileged metadata rollback is outside this check.','User HOME/XDG font/config/cache absence must be revalidated for each future actual runtime scratch; this evidence does not attest an Office profile or its user extensions/registry.']}
+     def empty_user_conditions(self):
+@@ -271,6 +368,8 @@
+         out=[]
+         for p in sorted(set(paths)):
+             if not inroot(p,'/tmp/friday-metric-work'):raise Refusal('user_condition_outside_own_scratch')
++            if self.derived_cache and p==DERIVED_TARGET:
++                out.append(observe_derived_cache(self.derived_cache,self.baseline,namespace=True));continue
+             if os.path.lexists(p):raise Refusal('user_font_config_cache_present:'+p)
+             out.append({'path':p,'condition':'absent'})
+         return out
+@@ -288,6 +387,12 @@
+     current_environment={k:os.environ.get(k) for k in ENV_KEYS}
+     if current_environment!=baseline['view']['environment']:raise Refusal('namespace_environment_changed_before_scan')
+     return Scanner(baseline).run()
++
++def validate_effective_font_config_view(baseline,*,expected_view_digest,derived_cache):
++    expected=effective_expected_view(baseline,derived_cache)
++    if digest(expected)!=expected_view_digest:raise Refusal('effective_view_digest_mismatch')
++    if {k:os.environ.get(k) for k in ENV_KEYS}!=baseline['view']['environment']:raise Refusal('namespace_environment_changed_before_scan')
++    return Scanner(baseline,derived_cache).run()
+ 
+ def main():
+     parser=argparse.ArgumentParser();parser.add_argument('--baseline');parser.add_argument('--expected-view-sha256');args=parser.parse_args()
