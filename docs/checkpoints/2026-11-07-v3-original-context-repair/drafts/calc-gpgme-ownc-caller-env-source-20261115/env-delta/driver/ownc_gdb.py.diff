@@ -1,0 +1,99 @@
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-OWNC-CALLER-SOURCE-20261115/driver/ownc_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-OWNC-ENV-DELTA-SOURCE-20261115/driver/ownc_gdb.py
+@@ -9,6 +9,7 @@
+ import math
+ import os
+ from pathlib import Path
++import re
+ import stat
+ import time
+ 
+@@ -133,16 +134,64 @@
+     return gns['MultiCustody'](paper,engine)
+ 
+ 
+-def validate_inferior_environment(text, expected):
+-    require(type(expected) is dict and all(type(k) is str and type(v) is str and '\n' not in v
++def declared_environment(expected):
++    require(type(expected) is dict and all(type(k) is str and type(v) is str
++            and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',k)
++            and not any(c in v for c in ('\0','\n','\r')) and v==v.strip()
+             for k,v in expected.items()),'fixture_declared_target_environment')
++    require(not any(k.startswith('FRW_NATIVE_') or k=='FRW_HELD_FIXTURE_CONFIG' for k in expected),
++            'fixture_no_debug_controls_in_target_environment')
++    return expected
++
++
++def construct_inferior_environment(debugger, expected):
++    # GDB CLI receives one validated command at a time, with startup shell off
++    # before execution. Python's os.environ (including loader/refs) is untouched.
++    declared_environment(expected)
++    debugger.execute('set confirm off',to_string=True)
++    debugger.execute('unset environment',to_string=True)
++    for key,value in sorted(expected.items()):
++        debugger.execute('set environment '+key+'='+value,to_string=True)
++
++
++def environment_diagnostic(actual, expected, *, phase, nonce, exception_class):
++    """Bounded key names/counts/digests only; never emit an ENV value."""
++    keys = lambda names: [name if len(name) <= 128 else 'sha256:' + hashlib.sha256(
++        name.encode('utf-8', 'surrogatepass')).hexdigest() for name in sorted(names)[:32]]
++    missing, extra = set(expected) - set(actual), set(actual) - set(expected)
++    changed = {key for key in set(actual) & set(expected) if actual[key] != expected[key]}
++    digest = lambda env: hashlib.sha256(json.dumps(env, sort_keys=True,
++        separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
++    return dict(schema='frw.ownc.environment-check-metadata.v1', phase=phase, nonce=nonce,
++        exception_class=exception_class, actual_count=len(actual), expected_count=len(expected),
++        actual_sha256=digest(actual), expected_sha256=digest(expected),
++        missing_count=len(missing), extra_count=len(extra), changed_count=len(changed),
++        missing_keys=keys(missing), extra_keys=keys(extra), changed_keys=keys(changed))
++
++
++def validate_inferior_environment(text, expected, *, publish=None, nonce=None):
++    declared_environment(expected)
+     actual={}
+-    for line in text.splitlines():
+-        require('=' in line,'fixture_inferior_environment_encoding')
+-        key,value=line.split('=',1)
+-        require(key not in actual,'fixture_inferior_environment_duplicate')
+-        actual[key]=value
+-    require(actual==expected,'fixture_complete_startup_environment_mismatch')
++    error=None
++    try:
++        for line in text.splitlines():
++            require('=' in line,'fixture_inferior_environment_encoding')
++            key,value=line.split('=',1)
++            require(key not in actual,'fixture_inferior_environment_duplicate')
++            actual[key]=value
++        require(actual==expected,'fixture_complete_startup_environment_mismatch')
++    except RuntimeError as exc:
++        error=exc
++    if publish is not None:
++        try:
++            diagnostic=environment_diagnostic(actual,expected,phase='GDB_INFERIOR_BEFORE_STARTI',
++                nonce=nonce,exception_class='RuntimeError' if error is not None else None)
++            diagnostic['observed_text_sha256']=hashlib.sha256(text.encode('utf-8','surrogatepass')).hexdigest()
++            publish(diagnostic)
++        except Exception:
++            if error is not None:raise error from None
++            raise
++    if error is not None:raise error
+     return actual
+ 
+ 
+@@ -215,10 +264,11 @@
+         require(len(gdb.inferiors())==1 and gdb.selected_inferior().pid==0,'fixture_fresh_own_inferior')
+         require(gdb.current_progspace().filename==CFG['target_path'],'fixture_target')
+         pin(CFG['target_path'],CFG['target_sha256']);helper=load_custodies()
+-        # Debugger refs remain in Python's own environ; target startup ENV is the
+-        # complete declared dictionary after only these five controls are removed.
+-        for name in CONTROLS:gdb.execute('unset environment '+name,to_string=True)
+-        validate_inferior_environment(gdb.execute('show environment',to_string=True),CFG['target_environment'])
++        # Clear the entire inherited inferior ENV and construct the complete
++        # declaration. All five debugger-only controls remain solely in Python.
++        construct_inferior_environment(gdb,CFG['target_environment'])
++        validate_inferior_environment(gdb.execute('show environment',to_string=True),CFG['target_environment'],
++            nonce=CFG['nonce'],publish=lambda value:atomic_replace(WORK/'ownc-gdb-environment-check.json',value))
+         for setting in ('set pagination off','set confirm off','set startup-with-shell off','set non-stop off',
+                 'set auto-load off','set debuginfod enabled off','set disable-randomization off',
+                 'set follow-fork-mode parent','set detach-on-fork off','set follow-exec-mode same',

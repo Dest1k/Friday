@@ -1,0 +1,157 @@
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-OWNC-ENV-DELTA-SOURCE-20261115/host/ownc_namespace_supervisor.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-OWNC-READER-JOIN-SOURCE-20261115/host/ownc_namespace_supervisor.py
+@@ -88,7 +88,7 @@
+         require(time.monotonic() < deadline and child.poll() is None, 'fixture_boundary_deadline_or_exit')
+         path = WORK / 'native-trace.json'
+         if path.exists():
+-            trace = json.loads(ns.runtime_read(path, deadline=deadline))
++            trace = json_load(ns.runtime_read(path, deadline=deadline))
+             require(trace['error'] is None, 'fixture_observer_refused_before_hold')
+             if trace.get('fixture_boundary') == boundary:
+                 require(trace['record_semantics'] == 'FIXTURE_MARKER_ONLY'
+@@ -99,12 +99,32 @@
+ 
+ 
+ 
++def json_load(raw):
++    def pairs(items):
++        value = dict(items)
++        require(len(value) == len(items), 'fixture_duplicate_json_key')
++        return value
++    return json.loads(raw, object_pairs_hook=pairs)
++
++
++def read_immutable(ns, path, *, deadline, child=None, font=False):
++    """Bracket strict immutable guarded reads with the same absolute clock."""
++    def current():
++        require(time.monotonic() < deadline and (child is None or child.poll() is None),
++                'fixture_existing_deadline_or_exit:' + path.name)
++    current()
++    raw = ns.font_runtime_read(path) if font else ns.runtime_read(path)
++    value = json_load(raw)
++    current()
++    return raw if font else value
++
++
+ def wait_file(ns, path, *, deadline, child=None):
+     while not path.exists():
+         require(time.monotonic() < deadline and (child is None or child.poll() is None),
+                 'fixture_existing_deadline_or_exit:' + path.name)
+         time.sleep(min(.005, max(0, deadline - time.monotonic())))
+-    return json.loads(ns.runtime_read(path, deadline=deadline))
++    return read_immutable(ns, path, deadline=deadline, child=child)
+ 
+ 
+ def validate_release(release, unit, cfg, native, office, gdb_identity, deadline):
+@@ -197,8 +217,7 @@
+     require(type(cfg['startup_deadline_monotonic']) in (int, float)
+             and math.isfinite(cfg['startup_deadline_monotonic'])
+             and time.monotonic() < cfg['startup_deadline_monotonic'] <= deadline, 'fixture_startup_budget')
+-    wait_file(ns, WORK / 'unit-release.json', deadline=cfg['startup_deadline_monotonic'])
+-    unit_release = json.loads(ns.runtime_read(WORK / 'unit-release.json', deadline=deadline))
++    unit_release = wait_file(ns, WORK / 'unit-release.json', deadline=cfg['startup_deadline_monotonic'])
+     require(unit_release['operation_id'] == cfg['operation_id'] and unit_release['nonce'] == cfg['nonce']
+             and unit_release['stage'] == 'ACTUAL_OWN_UNIT_PROPERTIES_VERIFIED', 'fixture_actual_unit_release')
+     supervisor_now = services.process(os.getpid())
+@@ -246,6 +265,7 @@
+     try:
+         with (WORK / 'gdb.log').open('xb') as log:
+             os.chmod(log.name, 0o600)
++            require(time.monotonic() < cfg['startup_deadline_monotonic'], 'fixture_original_startup_before_gdb')
+             child = services.spawn(argv, env=child_env, stdout=log)
+             child_identity = services.process(child.pid)
+             ready_deadline = cfg['startup_deadline_monotonic']
+@@ -253,7 +273,7 @@
+                 require(time.monotonic() < ready_deadline and child.poll() is None,
+                         'fixture_ready_deadline_or_gdb_exit')
+                 if (WORK / 'native-trace.json').exists():
+-                    ready_trace = json.loads(ns.runtime_read(WORK / 'native-trace.json', deadline=deadline))
++                    ready_trace = json_load(ns.runtime_read(WORK / 'native-trace.json', deadline=ready_deadline))
+                     require(ready_trace['nonce'] == cfg['nonce'] and ready_trace['error'] is None,
+                             'fixture_ready_driver_refusal')
+                     if ready_trace['status'] == 'READY_UNRELEASED':
+@@ -272,14 +292,15 @@
+                 operation_id=cfg['operation_id'], nonce=cfg['nonce'], native_process=original,
+                 native_symbols=None, office_identity=office, gdb_identity=child_identity,
+                 scope='OWN_C_FIXTURE_ONLY'))
+-            wait_file(ns, WORK / 'office-release.json', deadline=ready_deadline, child=child)
+-            release = json.loads(ns.runtime_read(WORK / 'office-release.json', deadline=deadline))
++            release = wait_file(ns, WORK / 'office-release.json', deadline=ready_deadline, child=child)
+             validate_release(release, unit_release, cfg, original, office, child_identity, deadline)
+             require(services.process(original['pid']) == office
+                     and services.process(child.pid) == child_identity, 'fixture_ready_birth_changed_before_go')
+             # The driver is stopped inside fixture_ready. This is the only
+             # release marker, and LOAD_OPEN is still absent until this go.
+             require(not (WORK / 'load-dependency.json').exists(), 'fixture_load_started_before_host_witness')
++            require(time.monotonic() < ready_deadline and child.poll() is None,
++                    'fixture_original_startup_before_ready_go')
+             new_json(WORK / 'own-fixture-ready-go', dict(nonce=cfg['nonce'], boundary='BEFORE_LOAD_READY'))
+             result['actual_host_release_validated'] = True
+             native = None
+@@ -289,14 +310,17 @@
+                 native = current
+                 # The second point follows the selected worker-cached getter;
+                 # validate that changed trace at its own nearest consumer too.
+-                current_trace = json.loads(ns.runtime_read(WORK / 'native-trace.json', deadline=deadline))
++                current_trace = json_load(ns.runtime_read(WORK / 'native-trace.json', deadline=deadline))
++                require(time.monotonic() < deadline, 'fixture_original_closure_deadline')
+                 ns.check_load_dependency_closed(current_trace, bundle['runtime'], paper_policy, current)
+                 reaper_now = services.process(1)
+                 require(reaper_now['namespace_pid'] != os.getpid(), 'fixture_namespace_reaper_not_supervisor')
+                 ns.check_gpgme_engine_init_closed(current_trace, gpgme_bundle, validator, gpgme_manifest,
+                                                   current, current_reaper=reaper_now)
+                 result.setdefault('actual_combined_load_closure_checked_at', []).append(boundary)
++                require(time.monotonic() < deadline, 'fixture_original_closure_deadline')
+                 held = services.acquire_font_runtime(plan, native, boundary=boundary, deadline=deadline, child=child)
++                require(time.monotonic() < deadline, 'fixture_original_proof_deadline')
+                 ns.validate_font_runtime_proof(held['proof'], held['request'], plan=plan,
+                                                native=native, environment=environment)
+                 view_path = WORK / ('font-view-after-load.json' if boundary == 'AFTER_LOAD_BEFORE_QUERY'
+@@ -306,12 +330,16 @@
+                     office_process=held['office_process'], office_font_environment=environment,
+                     office_font_environment_proof=held['proof_ref'], actual_M=None,
+                     semantics='FIXTURE_ONLY_KNOWN_ENV_PROJECTION_NO_ACTUAL_CANONICAL_OR_EFFECTIVE_FONT_CAS'))
++                require(time.monotonic() < deadline, 'fixture_original_release_deadline')
+                 services.release_font_runtime(plan, held, view_ref=view_ref, deadline=deadline)
++                require(time.monotonic() < deadline, 'fixture_original_release_deadline')
+                 paths = ns.font_runtime_paths(boundary)
+-                ns.validate_font_runtime_pair(*(ns.font_runtime_read(paths[key]) for key in
+-                    ('request', 'proof', 'release', 'accepted')), ns.font_runtime_read(view_path),
++                ns.validate_font_runtime_pair(*(read_immutable(ns, paths[key], deadline=deadline, child=child, font=True)
++                    for key in ('request', 'proof', 'release', 'accepted')),
++                    read_immutable(ns, view_path, deadline=deadline, child=child, font=True),
+                     plan=plan, native=native, environment=environment, boundary=boundary,
+                     deadline=deadline, supervisor=held['request']['supervisor'])
++                require(time.monotonic() < deadline, 'fixture_original_pair_deadline')
+                 observations.append(dict(boundary=boundary, proof_ref=held['proof_ref'], view_ref=view_ref,
+                     exact_namespace_consumer_pair_pass=True, canonical_font_CAS_exercised=False))
+                 # Advance only after exact release acceptance and pair validation.
+@@ -320,7 +348,7 @@
+             while child.poll() is None:
+                 require(time.monotonic() < deadline, 'fixture_original_completion_deadline')
+                 time.sleep(.005)
+-            trace = json.loads(ns.runtime_read(WORK / 'native-trace.json', deadline=deadline))
++            trace = json_load(ns.runtime_read(WORK / 'native-trace.json', deadline=deadline))
+             require(prepared.get('expected_refusal') is None and child.returncode == 0
+                     and trace['status'] == 'COMPLETE_HELD_ENV_FIXTURE_ONLY' and trace['error'] is None
+                     and trace['own_inferior_absent'] is True and len(observations) == 2,
+@@ -336,7 +364,7 @@
+         # SIGTERM below, with Root whole-cgroup cleanup still authoritative.
+         native_refused = False
+         try:
+-            refusal_trace = json.loads(ns.runtime_read(WORK / 'native-trace.json', deadline=deadline))
++            refusal_trace = json_load(ns.runtime_read(WORK / 'native-trace.json', deadline=deadline))
+             native_refused = native_refusal_trace(refusal_trace, cfg['nonce'])
+         except Exception:
+             pass  # Unknown/stale trace cannot authorize delaying owned cleanup.
+@@ -349,7 +377,9 @@
+         # Root's separate negative-control assessment. Arbitrary refusal is no PASS.
+         if (WORK / 'native-trace.json').exists():
+             try:
+-                failed_trace = json.loads(ns.runtime_read(WORK / 'native-trace.json'))
++                failed_trace = json_load(ns.runtime_read(WORK / 'native-trace.json', deadline=deadline))
++                require(failed_trace['kind'] == 'OWN_POPEN_FIXTURE_ONLY' and failed_trace['nonce'] == cfg['nonce'],
++                        'fixture_refusal_trace_operation_join')
+                 result['observed_driver_error'] = failed_trace.get('error')
+                 result['observed_driver_status'] = failed_trace.get('status')
+                 result['observed_paper_evidence'] = failed_trace.get('load_dependency')

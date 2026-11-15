@@ -1,0 +1,48 @@
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-OWNC-CALLER-SOURCE-20261115/host/ownc_namespace_supervisor.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-OWNC-ENV-DELTA-SOURCE-20261115/host/ownc_namespace_supervisor.py
+@@ -51,6 +51,36 @@
+         stream.flush()
+         os.fsync(stream.fileno())
+     return dict(path=str(path), sha256=hashlib.sha256(raw).hexdigest())
++
++
++def environment_diagnostic(actual, expected, *, phase, nonce, exception_class):
++    """Bounded key names/counts/digests only; never emit an ENV value."""
++    keys = lambda names: [name if len(name) <= 128 else 'sha256:' + hashlib.sha256(
++        name.encode('utf-8', 'surrogatepass')).hexdigest() for name in sorted(names)[:32]]
++    missing, extra = set(expected) - set(actual), set(actual) - set(expected)
++    changed = {key for key in set(actual) & set(expected) if actual[key] != expected[key]}
++    digest = lambda env: hashlib.sha256(json.dumps(env, sort_keys=True,
++        separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
++    return dict(schema='frw.ownc.environment-check-metadata.v1', phase=phase, nonce=nonce,
++        exception_class=exception_class, actual_count=len(actual), expected_count=len(expected),
++        actual_sha256=digest(actual), expected_sha256=digest(expected),
++        missing_count=len(missing), extra_count=len(extra), changed_count=len(changed),
++        missing_keys=keys(missing), extra_keys=keys(extra), changed_keys=keys(changed))
++
++
++def validate_supervisor_environment(actual, expected, nonce):
++    mismatch = actual != expected
++    try:
++        new_json(WORK / 'ownc-namespace-environment-check.json', environment_diagnostic(
++            actual, expected, phase='NAMESPACE_SUPERVISOR_BEFORE_GDB', nonce=nonce,
++            exception_class='RuntimeError' if mismatch else None))
++    except Exception:
++        # A diagnostic failure cannot replace the first ENV refusal. No child
++        # exists at this boundary; Root still owns the original unit cleanup.
++        if mismatch:
++            raise RuntimeError('fixture_supervisor_complete_environment') from None
++        raise
++    require(not mismatch, 'fixture_supervisor_complete_environment')
+ 
+ 
+ def wait_boundary(ns, child, boundary, deadline):
+@@ -146,7 +176,7 @@
+     exec(compile(read_ref(prepared['namespace_ref']), prepared['namespace_ref']['path'], 'exec'), ns.__dict__)
+     require(ns.WORK == WORK, 'fixture_namespace_work')
+     services = ns.LocalServices()
+-    require(dict(os.environ) == cfg['target_environment'], 'fixture_supervisor_complete_environment')
++    validate_supervisor_environment(dict(os.environ), cfg['target_environment'], cfg['nonce'])
+     gpgme_bundle = json.loads(read_ref(cfg['gpgme_bundle_ref']))
+     modules = ns.gpgme_sources(prepared['gpgme_binding'])
+     validator = modules['validator']
