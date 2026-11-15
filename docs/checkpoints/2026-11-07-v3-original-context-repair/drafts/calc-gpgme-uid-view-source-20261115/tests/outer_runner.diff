@@ -1,0 +1,41 @@
+--- /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M2-REVIEWED-ROOT-20261115/candidate/outer/outer_runner.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-UID-WITNESS-SOURCE-20261115/candidate/outer/outer_runner.py
+@@ -560,11 +560,23 @@
+             os.close(fd)
+     original_root = Path('/proc') / str(office['pid'])
+     gdb_root = Path('/proc') / str(gdb_process['pid'])
++    collector_userns = ns(gdb_root / 'ns/user')
++    host_userns = ns(Path('/proc/self/ns/user'))
+     uid_map = kernel_read(gdb_root / 'uid_map', 32768)
+     need(uid_map == kernel_read(original_root / 'uid_map', 32768), 'gpgme_host_witness_uid_map_differs')
+-    projection = dict(uid_map_sha256=digest(uid_map), root_host_uid_map_sha256=digest(uid_map),
+-        overflowuid=int(kernel_read(Path('/proc/sys/kernel/overflowuid'), 32)),
+-        collector_userns=ns(gdb_root / 'ns/user'), host_userns=ns(Path('/proc/self/ns/user')))
++    # This reader remains in Root's HOST namespace. /proc/target/uid_map
++    # column2 therefore names Root UIDs when target userns differs; collector's
++    # own read instead names its parent namespace. Do not equate those bytes.
++    overflow_raw = kernel_read(Path('/proc/sys/kernel/overflowuid'), 32)
++    need(re.fullmatch(rb'[0-9]+\n', overflow_raw), 'gpgme_host_witness_overflow_encoding')
++    projection = dict(schema='frw.calc.host-uid-map-witness.v2',
++        host_map_view='TARGET_TO_ROOT_READER_USERNS', self_map_view='SELF_TO_PARENT_USERNS',
++        mapping_basis='KERNEL_WRITE_ONCE_UID_MAP_EXACT_USERNS',
++        host_uid_map_ascii=uid_map.decode('ascii'), root_host_uid_map_sha256=digest(uid_map),
++        overflowuid=int(overflow_raw), collector_userns=collector_userns, host_userns=host_userns)
++    validator = load_module('frw_Root_current_uid_witness_validator', binding['validator'])
++    modules = validator.load_sources(binding, read_pinned)
++    modules['collector']._validate_projection_pin(projection)
+     env = expected['environment']
+     roots = sorted({WORK, *(v for k, v in env.items() if k in
+         ('HOME', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME'))})
+@@ -595,6 +607,11 @@
+         cgroup=dict(mount_path=str(cgroup_path), directory_host_stamp=before_cgroup, **controls,
+                     cpu_usage_origin_usec=0))  # Count all CPU of this new unit, never reset at release.
+     need(proc_identity(office['pid']) == office and proc_identity(gdb_process['pid']) == gdb_process
++         and ns(gdb_root / 'ns/user') == ns(original_root / 'ns/user') == projection['collector_userns']
++         and ns(Path('/proc/self/ns/user')) == projection['host_userns']
++         and uid_map == kernel_read(gdb_root / 'uid_map', 32768)
++         == kernel_read(original_root / 'uid_map', 32768)
++         and overflow_raw == kernel_read(Path('/proc/sys/kernel/overflowuid'), 32)
+          and time.monotonic() < deadline, 'gpgme_host_witness_process_or_deadline_changed')
+     return witness
+ 

@@ -1,0 +1,301 @@
+--- /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M2-REVIEWED-ROOT-20261115/candidate/outer/deps/gpgme_boundary_collector.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-UID-WITNESS-SOURCE-20261115/candidate/outer/deps/gpgme_boundary_collector.py
+@@ -21,10 +21,14 @@
+ map witness for the exact collector user namespace. They are future runtime
+ inputs, never fabricated by this source package. Root must read the UID map
+ from its HOST user namespace and bind that witness to collector_userns. The
+-inside read must byte-hash identically; mappings that differ across viewpoints
+-or whose provenance is unknown are unsupported and refused. This supports a
+-direct or observationally identical host mapping without equating overflowuid
+-with host root. Both the actual namespace stamp and Root stamp are retained.
++inside read is a SELF_TO_PARENT_USERNS view, not the Root reader's view.
++The protected Root TARGET_TO_ROOT_READER_USERNS bytes alone translate host
++owners; both maps are parsed and must have identical inside domains. Nonempty
++kernel uid_map is write-once: the exact live collector userns ties both views
++to that one immutable map. The self-view digest is frozen at first successful
++join and checked with namespace/map/overflow CAS on every later join. Unknown
++provenance, unmapped second-field sentinels, domain changes and overflow aliases
++are refused; raw cross-view equality is diagnostic only, never authority. Both the actual namespace stamp and Root stamp are retained.
+ operation/original/reaper/private_roots/cgroup/uid_projection may be None in a
+ source template. They are bound exactly once to actual native birth, original
+ runtime clock, and the existing Root office-release/unit-release witness.
+@@ -205,12 +209,25 @@
+     return c
+ 
+ 
++UID_WITNESS_SCHEMA = 'frw.calc.host-uid-map-witness.v2'
++HOST_MAP_VIEW = 'TARGET_TO_ROOT_READER_USERNS'
++SELF_MAP_VIEW = 'SELF_TO_PARENT_USERNS'
++UID_MAP_BASIS = 'KERNEL_WRITE_ONCE_UID_MAP_EXACT_USERNS'
++UID_WITNESS_KEYS = ('schema', 'host_map_view', 'self_map_view', 'mapping_basis',
++    'host_uid_map_ascii', 'root_host_uid_map_sha256', 'overflowuid', 'collector_userns', 'host_userns')
++
++
+ def _validate_projection_pin(u):
+-    exact(u, ('uid_map_sha256', 'root_host_uid_map_sha256', 'overflowuid', 'collector_userns', 'host_userns'),
+-          'gpgme_collector_uid_projection_schema')
+-    need(policy.sha(u['uid_map_sha256']) and u['uid_map_sha256'] == u['root_host_uid_map_sha256']
+-         and integer(u['overflowuid']) and u['overflowuid'] < 2 ** 32,
++    exact(u, UID_WITNESS_KEYS, 'gpgme_collector_uid_projection_schema')
++    need(u['schema'] == UID_WITNESS_SCHEMA and u['host_map_view'] == HOST_MAP_VIEW
++         and u['self_map_view'] == SELF_MAP_VIEW and u['mapping_basis'] == UID_MAP_BASIS
++         and type(u['host_uid_map_ascii']) is str and u['host_uid_map_ascii'].isascii()
++         and 0 < len(u['host_uid_map_ascii']) <= 32768
++         and policy.sha(u['root_host_uid_map_sha256'])
++         and digest(u['host_uid_map_ascii'].encode('ascii')) == u['root_host_uid_map_sha256']
++         and integer(u['overflowuid']) and u['overflowuid'] < 2 ** 32 - 1,
+          'gpgme_collector_host_view_mapping_witness')
++    parse_uid_map(u['host_uid_map_ascii'].encode('ascii'))
+     validate_ns(u['collector_userns'])
+     validate_ns(u['host_userns'])
+     return u
+@@ -236,7 +253,10 @@
+     need(type(raw) is bytes and 0 < len(raw) <= 32768, 'gpgme_collector_uid_map_bound')
+     rows = []
+     try:
+-        for line in raw.splitlines():
++        need(raw.endswith(b'\n'), 'gpgme_collector_uid_map_encoding')
++        for line in raw.splitlines(keepends=True):
++            need(re.fullmatch(rb'[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+[0-9]+[ \t]*\n', line),
++                 'gpgme_collector_uid_map_encoding')
+             parts = line.split()
+             need(len(parts) == 3 and all(p.isdigit() for p in parts), 'gpgme_collector_uid_map_encoding')
+             inside, outside, count = map(int, parts)
+@@ -253,31 +273,93 @@
+     return rows
+ 
+ 
+-def project_host_root(raw, overflow, witness, current_userns):
+-    """Pure join of actual map+overflow+namespace to protected HOST witness."""
+-    exact(witness, ('uid_map_sha256', 'root_host_uid_map_sha256', 'overflowuid', 'collector_userns', 'host_userns'),
+-          'gpgme_collector_uid_projection_schema')
++def project_host_owner(host_rows, host_uid, overflow):
++    """Translate only protected ROOT-reader rows, never self-parent rows."""
++    need(integer(host_uid) and host_uid < 2 ** 32 - 1 and integer(overflow)
++         and overflow < 2 ** 32 - 1, 'gpgme_collector_host_owner_type')
++    found = [inside + host_uid - outside for inside, outside, count in host_rows
++             if outside <= host_uid < outside + count]
++    need(len(found) <= 1, 'gpgme_collector_host_owner_map_ambiguous')
++    if found:
++        return found[0]
++    need(not any(inside <= overflow < inside + count for inside, outside, count in host_rows),
++         'gpgme_collector_overflow_aliases_mapped_uid')
++    return overflow
++
++
++def project_host_root(raw, overflow, witness, current_userns, *, self_map_sha256=None):
++    """Join two labeled views of the same write-once, exact kernel userns.
++
++    The protected Root release authorizes HOST rows; the actual /proc/self read
++    supplies parent-relative rows, independently parsed and frozen by caller.
++    A pure caller cannot turn an untrusted mapping/hash/boolean into authority:
++    the real collector accepts this witness only from its birth/cgroup/nonce/
++    clock-bound protected release and obtains raw/ns directly from the kernel.
++    """
++    _validate_projection_pin(witness)
+     validate_ns(current_userns)
+-    validate_ns(witness['collector_userns'])
+-    validate_ns(witness['host_userns'])
+-    need(integer(overflow) and overflow < 2 ** 32 and overflow == witness['overflowuid']
+-         and digest(raw) == witness['uid_map_sha256'] == witness['root_host_uid_map_sha256']
+-         and current_userns == witness['collector_userns'], 'gpgme_collector_uid_map_or_namespace_changed')
+-    rows = parse_uid_map(raw)
+-    mapped = [inside for inside, outside, count in rows if outside == 0]
+-    need(len(mapped) <= 1, 'gpgme_collector_host_root_projection_ambiguous')
++    need(self_map_sha256 is None or policy.sha(self_map_sha256),
++         'gpgme_collector_self_map_baseline_type')
++    need(integer(overflow) and overflow < 2 ** 32 - 1 and overflow == witness['overflowuid']
++         and current_userns == witness['collector_userns']
++         and (self_map_sha256 is None or digest(raw) == self_map_sha256),
++         'gpgme_collector_uid_map_or_namespace_changed')
++    self_rows = parse_uid_map(raw)
++    host_raw = witness['host_uid_map_ascii'].encode('ascii')
++    host_rows = parse_uid_map(host_raw)
++    need(sorted((a, n) for a, b, n in self_rows) == sorted((a, n) for a, b, n in host_rows),
++         'gpgme_collector_uid_map_or_namespace_changed')
+     if current_userns == witness['host_userns']:
+-        need(rows == [(0, 0, 2 ** 32 - 1)], 'gpgme_collector_host_userns_identity_map')
+-    projected = mapped[0] if mapped else overflow
+-    # An overflow value that is itself mapped can alias a real host owner.
+-    # Refuse instead of treating its numerical uid as a root attestation.
+-    need(mapped or not any(a <= overflow < a + n for a, b, n in rows),
+-         'gpgme_collector_overflow_aliases_mapped_uid')
+-    return dict(schema='frw.calc.host-root-uid-projection.v1', actual_uid=projected,
++        need(self_rows == host_rows == [(0, 0, 2 ** 32 - 1)],
++             'gpgme_collector_host_userns_identity_map')
++    projected = project_host_owner(host_rows, 0, overflow)
++    mapped = any(outside == 0 for inside, outside, count in host_rows)
++    return dict(schema='frw.calc.host-root-uid-projection.v2', actual_uid=projected,
+         source='EXACT_HOST_ROOT_MAP' if mapped else 'ACTUAL_UNMAPPED_HOST_ROOT_OVERFLOW',
+-        uid_map_sha256=digest(raw), overflowuid=overflow,
+-        collector_userns=copy.deepcopy(current_userns), host_userns=copy.deepcopy(witness['host_userns']),
+-        root_host_uid_map_sha256=witness['root_host_uid_map_sha256'])
++        self_map_sha256=digest(raw), root_host_uid_map_sha256=digest(host_raw), overflowuid=overflow,
++        self_map_view=SELF_MAP_VIEW, host_map_view=HOST_MAP_VIEW, mapping_basis=UID_MAP_BASIS,
++        collector_userns=copy.deepcopy(current_userns), host_userns=copy.deepcopy(witness['host_userns']))
++
++
++def projection_failure_metadata(raw, overflow, witness, current_userns, baseline, exc, *, after=None):
++    """Bounded types/numbers/digests/flags only. No raw maps, paths or values."""
++    u = witness if type(witness) is dict else {}
++    def ns(value):
++        return {k: value.get(k) if type(value) is dict and integer(value.get(k), 1) else None
++                for k in ('dev', 'ino')}
++    def rows(value):
++        try:
++            return parse_uid_map(value)
++        except Exception:
++            return None
++    actual = rows(raw)
++    host_text = u.get('host_uid_map_ascii')
++    host_raw = host_text.encode('ascii') if type(host_text) is str and host_text.isascii() and len(host_text) <= 32768 else None
++    host = rows(host_raw)
++    actual_sha = digest(raw) if type(raw) is bytes and len(raw) <= 32768 else None
++    host_sha = digest(host_raw) if host_raw is not None else None
++    pinned_sha = u.get('root_host_uid_map_sha256')
++    pinned_sha = pinned_sha if policy.sha(pinned_sha) else None
++    safe_int = lambda v: v if integer(v) and v < 2 ** 32 else None
++    return dict(schema='frw.calc.uid-projection-refusal-metadata.v1',
++        phase='UID_PROJECTION', exception_class=type(exc).__name__[:64],
++        raw_is_bytes=type(raw) is bytes, overflow_is_int=type(overflow) is int,
++        witness_is_dict=type(witness) is dict, namespace_is_dict=type(current_userns) is dict,
++        self_map_bytes=len(raw) if type(raw) is bytes and len(raw) <= 32768 else None,
++        self_map_rows=None if actual is None else len(actual),
++        host_map_rows=None if host is None else len(host),
++        self_map_sha256=actual_sha, actual_host_map_sha256=host_sha, root_host_map_sha256=pinned_sha,
++        self_baseline_sha256=baseline if policy.sha(baseline) else None,
++        cross_view_raw_digest_equal=actual_sha is not None and actual_sha == host_sha,
++        host_digest_matches_pin=host_sha is not None and host_sha == pinned_sha,
++        self_map_matches_baseline=baseline is None or actual_sha == baseline,
++        inside_domains_equal=actual is not None and host is not None and
++            sorted((a, n) for a, b, n in actual) == sorted((a, n) for a, b, n in host),
++        current_userns=ns(current_userns), collector_userns=ns(u.get('collector_userns')),
++        host_userns=ns(u.get('host_userns')), namespace_matches=current_userns == u.get('collector_userns'),
++        actual_overflowuid=safe_int(overflow), expected_overflowuid=safe_int(u.get('overflowuid')),
++        overflow_matches=type(overflow) is int and type(u.get('overflowuid')) is int and overflow == u['overflowuid'],
++        post_read_cas=after)
+ 
+ 
+ def parse_environment(raw):
+@@ -395,6 +477,9 @@
+         self._unit_digest = None
+         self._entry_verified = set()
+         self._current_environment = None
++        self._self_uid_map_sha256 = None
++        self._uid_projection_failure = None
++        self._uid_projection_failure_attempted = False
+ 
+     def _read(self, path, limit):
+         need(canonical(path) and integer(limit, 1) and limit <= MAX_FILE, 'gpgme_collector_read_bound')
+@@ -456,15 +541,78 @@
+         return result
+ 
+     def _projection(self):
+-        if self.host_witness is None:
+-            need(self.p['operation'] is not None and self.p['original'] is not None
+-                 and self.p['reaper'] is not None, 'gpgme_collector_native_identities_unbound')
+-            self._bind_host_witness()
+-        need(self.p['uid_projection'] is not None, 'gpgme_collector_host_uid_witness_unbound')
+-        raw = self._read('/proc/%d/uid_map' % os.getpid(), 32768)
+-        overflow_raw = self._read('/proc/sys/kernel/overflowuid', 64)
+-        need(re.fullmatch(b'[0-9]+\n', overflow_raw), 'gpgme_collector_overflowuid_encoding')
+-        return project_host_root(raw, int(overflow_raw), self.p['uid_projection'], self._ns(os.getpid())['user'])
++        raw = overflow = current_userns = after = None
++        try:
++            if self.host_witness is None:
++                need(self.p['operation'] is not None and self.p['original'] is not None
++                     and self.p['reaper'] is not None, 'gpgme_collector_native_identities_unbound')
++                self._bind_host_witness()
++            need(self.p['uid_projection'] is not None, 'gpgme_collector_host_uid_witness_unbound')
++            current_userns = self._ns(os.getpid())['user']
++            raw = self._read('/proc/%d/uid_map' % os.getpid(), 32768)
++            overflow_raw = self._read('/proc/sys/kernel/overflowuid', 64)
++            need(re.fullmatch(b'[0-9]+\n', overflow_raw), 'gpgme_collector_overflowuid_encoding')
++            overflow = int(overflow_raw)
++            result = project_host_root(raw, overflow, self.p['uid_projection'], current_userns,
++                                       self_map_sha256=self._self_uid_map_sha256)
++            raw_after = self._read('/proc/%d/uid_map' % os.getpid(), 32768)
++            overflow_after = self._read('/proc/sys/kernel/overflowuid', 64)
++            namespace_after = self._ns(os.getpid())['user']
++            validate_ns(namespace_after)
++            after = dict(self_map_sha256=digest(raw_after), current_userns=namespace_after,
++                overflow_sha256=digest(overflow_after), self_map_equal=raw == raw_after,
++                overflow_equal=overflow_raw == overflow_after, namespace_equal=current_userns == namespace_after)
++            need(all(after[k] for k in ('self_map_equal', 'overflow_equal', 'namespace_equal')),
++                 'gpgme_collector_uid_map_or_namespace_changed')
++            self._self_uid_map_sha256 = result['self_map_sha256']
++            return result
++        except Exception as exc:
++            # Preserve the first real guard even if metadata construction or
++            # protected publication fails. No retry/rearm/clock change.
++            if not self._uid_projection_failure_attempted:
++                self._uid_projection_failure_attempted = True
++                try:
++                    self._uid_projection_failure = projection_failure_metadata(raw, overflow,
++                        self.p['uid_projection'], current_userns, self._self_uid_map_sha256, exc, after=after)
++                    self._publish_projection_failure(self._uid_projection_failure)
++                except Exception:
++                    pass
++            raise
++
++    def _publish_projection_failure(self, metadata):
++        import json
++        raw = (json.dumps(metadata, sort_keys=True, separators=(',', ':')) + '\n').encode()
++        need(len(raw) <= 8192, 'gpgme_collector_uid_diagnostic_bound')
++        directory = self._secure_open(self.p['cwd'])
++        try:
++            before = stamp(os.fstat(directory))
++            need(stat.S_ISDIR(before['mode']) and before['uid'] == os.geteuid()
++                 and stat.S_IMODE(before['mode']) == 0o700
++                 and before == stamp(os.stat(self.p['cwd'], follow_symlinks=False)),
++                 'gpgme_collector_uid_diagnostic_private_directory')
++            fd = os.open('gpgme-uid-projection-refusal.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL
++                         | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory)
++            try:
++                st = os.fstat(fd)
++                need(stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and st.st_uid == os.geteuid()
++                     and stat.S_IMODE(st.st_mode) == 0o600, 'gpgme_collector_uid_diagnostic_rights')
++                view = memoryview(raw)
++                while view:
++                    written = os.write(fd, view)
++                    need(written > 0, 'gpgme_collector_uid_diagnostic_write')
++                    view = view[written:]
++                os.fsync(fd)
++                need(stamp(os.fstat(fd)) == stamp(os.stat('gpgme-uid-projection-refusal.json',
++                    dir_fd=directory, follow_symlinks=False)), 'gpgme_collector_uid_diagnostic_cas')
++            finally:
++                os.close(fd)
++            need(all(stamp(os.fstat(directory))[k] == before[k] for k in
++                     ('dev_major', 'dev_minor', 'ino', 'mode', 'uid'))
++                 and all(stamp(os.stat(self.p['cwd'], follow_symlinks=False))[k] == before[k]
++                         for k in ('dev_major', 'dev_minor', 'ino', 'mode', 'uid')),
++                 'gpgme_collector_uid_diagnostic_directory_changed')
++        finally:
++            os.close(directory)
+ 
+     def _all_stop(self, pid, expected_thread=None):
+         need(self.refusal is None, self.refusal or 'gpgme_collector_terminal_refusal')
+@@ -1059,19 +1207,12 @@
+         self.p['uid_projection'] = copy.deepcopy(witness['uid_projection'])
+         self.host_witness = copy.deepcopy(witness)
+         self._projection()
+-        raw_map = self._read('/proc/%d/uid_map' % os.getpid(), 32768)
+-        mapping = parse_uid_map(raw_map)
++        # The protected Root map is in host-owner coordinates. The self map
++        # checked above is parent-relative and must never translate these UIDs.
++        mapping = parse_uid_map(witness['uid_projection']['host_uid_map_ascii'].encode('ascii'))
+ 
+         def actual_owner(host_uid):
+-            found = [inside + host_uid - outside for inside, outside, count in mapping
+-                     if outside <= host_uid < outside + count]
+-            need(len(found) <= 1, 'gpgme_collector_host_owner_map_ambiguous')
+-            if found:
+-                return found[0]
+-            overflow = witness['uid_projection']['overflowuid']
+-            need(not any(inside <= overflow < inside + count for inside, outside, count in mapping),
+-                 'gpgme_collector_unmapped_owner_alias')
+-            return overflow
++            return project_host_owner(mapping, host_uid, witness['uid_projection']['overflowuid'])
+ 
+         roots = witness['private_roots']
+         wanted = {self.p['cwd']} | {value for key, value in self.p['environment'].items()

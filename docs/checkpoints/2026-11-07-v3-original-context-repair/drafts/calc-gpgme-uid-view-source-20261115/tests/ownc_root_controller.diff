@@ -1,0 +1,106 @@
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-OWNC-READER-JOIN-SOURCE-20261115/host/ownc_root_controller.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-UID-WITNESS-SOURCE-20261115/host/ownc_root_controller.py
+@@ -24,7 +24,7 @@
+ SCHEMA = 'frw.ownc.gpgme-static-plan.v1'
+ INVOCATION = 'frw.ownc.gpgme-root-invocation.v1'
+ SCOPE = 'ONE_HARMLESS_OWN_C_GPGME_QUALIFICATION_ONLY'
+-PINNED_OUTER_SHA = '756766d2a670d8c8b01c921a339fbd98ccf09928a1c4923dfe369d45c9027b57'
++PINNED_OUTER_SHA = '8f162630ab2922a75a93c79476730a7a34e34e869aa4b1eaa587b6c8d01933a1'
+ PINNED_NAMESPACE_SHA = '398c3b883a4d0fcd31032709e71c8e15163cfeaeea4dc999262260047aa2e8bb'
+ PINNED_BUILDER_SHA = '2223ffcee689611fa1ee8f19cb62e80a2a417f93affa7a28b4d3dc15acddea4b'
+ MAX_SOURCE_BYTES = 4 * 1024**2
+@@ -134,10 +134,12 @@
+     Ready is immutable. Terminal records are read only after Root confirms the
+     whole cgroup empty. No replacement retry or fresh clock is permitted.
+     """
+-    need(name in ('office-ready.json', 'held-fixture-supervisor-result.json', 'native-trace.json'),
++    need(name in ('office-ready.json', 'held-fixture-supervisor-result.json', 'native-trace.json',
++                  'gpgme-uid-projection-refusal.json'),
+          'ownc_host_record_role')
+     need(type(deadline) in (int, float) and math.isfinite(deadline)
+          and time.monotonic() < deadline, 'ownc_host_original_deadline')
++    limit = 8192 if name == 'gpgme-uid-projection-refusal.json' else 1048576
+     work = Path(scope['path'])
+     need(host_work_scope(work) == scope, 'ownc_host_work_changed')
+     directory = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+@@ -150,17 +152,17 @@
+             before = os.fstat(fd)
+             need(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
+                  and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1
+-                 and 0 <= before.st_size <= 1048576, 'ownc_host_record_rights_bound')
++                 and 0 <= before.st_size <= limit, 'ownc_host_record_rights_bound')
+             need(stamp(before) == stamp(os.stat(name, dir_fd=directory, follow_symlinks=False)),
+                  'ownc_host_record_changed')
+             parts, count = [], 0
+             while True:
+-                part = os.read(fd, min(65536, 1048577 - count))
++                part = os.read(fd, min(65536, limit + 1 - count))
+                 if not part:
+                     break
+                 parts.append(part)
+                 count += len(part)
+-                need(count <= 1048576, 'ownc_host_record_bound')
++                need(count <= limit, 'ownc_host_record_bound')
+             raw = b''.join(parts)
+             need(len(raw) == before.st_size and stamp(before) == stamp(os.fstat(fd))
+                  == stamp(os.stat(name, dir_fd=directory, follow_symlinks=False)),
+@@ -181,6 +183,42 @@
+     office, gdb = map_ready(plan, ready, processes)
+     need(time.monotonic() < deadline, 'ownc_host_original_deadline')
+     return ready, office, gdb
++
++
++def uid_projection_diagnostic(value):
++    """Sanitized optional diagnostic; never runtime authority or a new verdict."""
++    flags = {'raw_is_bytes', 'overflow_is_int', 'witness_is_dict', 'namespace_is_dict',
++        'cross_view_raw_digest_equal', 'host_digest_matches_pin', 'self_map_matches_baseline',
++        'inside_domains_equal', 'namespace_matches', 'overflow_matches'}
++    digests = {'self_map_sha256', 'actual_host_map_sha256', 'root_host_map_sha256', 'self_baseline_sha256'}
++    numbers = {'self_map_bytes': 32768, 'self_map_rows': 340, 'host_map_rows': 340,
++               'actual_overflowuid': 2 ** 32 - 1, 'expected_overflowuid': 2 ** 32 - 1}
++    namespaces = {'current_userns', 'collector_userns', 'host_userns'}
++    need(type(value) is dict and set(value) == flags | digests | set(numbers) | namespaces |
++         {'schema', 'phase', 'exception_class', 'post_read_cas'}, 'ownc_uid_diagnostic_schema')
++    need(value['schema'] == 'frw.calc.uid-projection-refusal-metadata.v1'
++         and value['phase'] == 'UID_PROJECTION' and type(value['exception_class']) is str
++         and re.fullmatch('[A-Za-z_][A-Za-z0-9_]{0,63}', value['exception_class']),
++         'ownc_uid_diagnostic_version_or_class')
++    def sha(v):
++        return v is None or (type(v) is str and re.fullmatch('[0-9a-f]{64}', v))
++    def number(v, maximum):
++        return v is None or (type(v) is int and 0 <= v <= maximum)
++    def namespace(v):
++        return type(v) is dict and set(v) == {'dev', 'ino'} and all(
++            x is None or (type(x) is int and 0 < x < 2 ** 64) for x in v.values())
++    need(all(type(value[k]) is bool for k in flags) and all(sha(value[k]) for k in digests)
++         and all(number(value[k], maximum) for k, maximum in numbers.items())
++         and all(namespace(value[k]) for k in namespaces), 'ownc_uid_diagnostic_types')
++    post = value['post_read_cas']
++    if post is not None:
++        need(type(post) is dict and set(post) == {'self_map_sha256', 'current_userns', 'overflow_sha256',
++            'self_map_equal', 'overflow_equal', 'namespace_equal'}
++            and sha(post['self_map_sha256']) and sha(post['overflow_sha256'])
++            and namespace(post['current_userns'])
++            and all(type(post[k]) is bool for k in ('self_map_equal', 'overflow_equal', 'namespace_equal')),
++            'ownc_uid_diagnostic_post_cas')
++    return value
+ 
+ 
+ def read_terminal(scope, plan, monitored, *, deadline):
+@@ -204,6 +242,16 @@
+                      and value['kind'] == 'OWN_POPEN_FIXTURE_ONLY' and value['nonce'] == plan['nonce'],
+                      'ownc_terminal_trace_operation_join')
+             records[key] = value
++    # Optional fourth exact role, only after confirmed whole-cgroup closure.
++    # Missing/partial/unreadable metadata cannot replace the actual first guard.
++    try:
++        if (Path(scope['path']) / 'gpgme-uid-projection-refusal.json').exists():
++            diagnostic = host_record(scope, 'gpgme-uid-projection-refusal.json', deadline=deadline)
++            records['uid_projection_failure_diagnostic'] = dict(status='PRESENT_VALIDATED_METADATA',
++                metadata=uid_projection_diagnostic(diagnostic))
++    except Exception as diagnostic_error:
++        records['uid_projection_failure_diagnostic'] = dict(status='UNAVAILABLE',
++            exception_class=type(diagnostic_error).__name__[:64])
+     need(time.monotonic() < deadline, 'ownc_host_original_deadline')
+     return records
+ 
