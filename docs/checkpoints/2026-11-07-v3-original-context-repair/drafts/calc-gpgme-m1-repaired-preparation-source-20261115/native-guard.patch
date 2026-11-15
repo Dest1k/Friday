@@ -1,0 +1,36 @@
+--- before/native_return_observer.py
++++ candidate/native_return_observer.py
+@@ -176,6 +176,13 @@
+ 
+ 
+ def fail(reason):
++    global pending_action
++    # A refusal can never leave a latent continuation or queued creation.
++    pending_action = None
++    if helper is not None:
++        helper.pending = None
++        helper.pending_stop = None
++        helper.to_create.clear()
+     if STATE['error'] is None:
+         STATE['error'] = reason
+     STATE['status'] = 'REFUSED'
+@@ -522,6 +529,10 @@
+ 
+ 
+ def load_helper():
++    # This SOURCE preparation is not a GpgME runtime adapter. Reject an
++    # attempted opt-in before starti; never silently ignore its configuration.
++    require(os.environ.get('FRW_NATIVE_GPGME_ENGINE_INIT_REF') is None,
++            'gpgme_engine_init_source_preparation_only')
+     # Optional explicit pinned bundle; absence preserves the original ABI path.
+     raw_ref = os.environ.get('FRW_NATIVE_LOAD_DEPENDENCY_REF')
+     if raw_ref is None:
+@@ -640,7 +651,7 @@
+                 identity()
+                 gdb.execute('kill', to_string=True)
+             except Exception:
+-                STATE['error'] = 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
++                STATE['error'] = STATE['error'] or 'OWN_PROCESS_CLEANUP_UNCONFIRMED'
+                 STATE['status'] = 'REFUSED'
+         STATE['own_inferior_absent'] = (gdb.selected_inferior().pid == 0 and
+             (STATE['process'] is None or not Path('/proc/' + str(STATE['process']['pid'])).exists()))

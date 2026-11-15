@@ -1,0 +1,220 @@
+--- /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-ENGINE-INIT-GUARD-SOURCE-20261115/gpgme_engine_policy.py
++++ /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M1-SOURCE-REVIEW-20261115/repair-copy/gpgme_engine_policy.py
+@@ -38,6 +38,7 @@
+             'XDG_CACHE_HOME': '/tmp/friday-metric-work/cache',
+             'XDG_RUNTIME_DIR': '/tmp/friday-metric-work/runtime',
+             'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'}
++OPTIONAL_ISOLATED = {'XDG_DATA_HOME': '/tmp/friday-metric-work/data'}
+ FORBIDDEN = {'GNUPGHOME', 'GPG_AGENT_INFO', 'GPG_TTY', 'GPGME_DEBUG', 'LD_PRELOAD',
+              'LD_AUDIT', 'ENV', 'BASH_ENV', 'GPGCONF', 'GPG', 'GPGSM'}
+ 
+@@ -63,6 +64,23 @@
+     exact(value, ('pid', 'ppid', 'start_ticks'), 'gpgme_identity_schema')
+     need(all(type(value[k]) is int and value[k] > 0 for k in ('pid', 'start_ticks'))
+          and type(value['ppid']) is int and value['ppid'] >= 0, 'gpgme_identity_values')
++    return value
++
++
++def thread_identity(value):
++    need(type(value) is list and len(value) == 3
++         and all(type(v) is int for v in value)
++         and value[0] > 0 and value[1] > 0 and value[2] == 0, 'gpgme_thread_identity_schema')
++    return value
++
++
++def helper_image(value):
++    exact(value, ('path', 'sha256', 'dev', 'ino'), 'gpgme_helper_pin_schema')
++    path = value['path']
++    need(type(path) is str and path.startswith('/') and '\0' not in path and '\\' not in path
++         and all(v not in ('', '.', '..') for v in path.split('/')[1:])
++         and sha(value['sha256']) and all(type(value[k]) is int and value[k] > 0 for k in ('dev', 'ino')),
++         'gpgme_helper_identity_pin')
+     return value
+ 
+ 
+@@ -100,6 +118,10 @@
+              and type(v) is str and '\0' not in v for k, v in env.items()), 'gpgme_environment_encoding')
+     need(all(env.get(k) == v for k, v in ISOLATED.items()) and not (set(env) & FORBIDDEN),
+          'gpgme_environment_isolation_or_override')
++    # An unset XDG_DATA_HOME falls back beneath the already isolated HOME.
++    # If explicitly present, require the exact private location, never a prefix.
++    need(all(k not in env or env[k] == v for k, v in OPTIONAL_ISOLATED.items()),
++         'gpgme_data_home_isolation_or_override')
+ 
+ 
+ def fd(value):
+@@ -114,6 +136,13 @@
+     need(value['type'] == stat.S_IFIFO and value['ino'] > 0 and value['access'] == access,
+          'gpgme_stdout_pipe_access')
+     return {k: value[k] for k in ('dev', 'ino', 'type', 'rdev')}
++
++
++def pipe_key(value):
++    exact(value, ('dev', 'ino', 'type', 'rdev'), 'gpgme_pipe_identity_schema')
++    need(all(type(value[k]) is int and value[k] >= 0 for k in value)
++         and value['type'] == stat.S_IFIFO and value['ino'] > 0, 'gpgme_pipe_identity_values')
++    return value
+ 
+ 
+ def validate_exec_fds(fds, pipe, *, null_rdev):
+@@ -165,10 +194,7 @@
+         validate_environment(environment, environment)
+         need(type(helpers) is dict and set(helpers) <= {'gpgconf', 'gpg', 'gpgsm', 'g13'}, 'gpgme_helper_roles')
+         for h in helpers.values():
+-            exact(h, ('path', 'sha256', 'dev', 'ino'), 'gpgme_helper_pin_schema')
+-            need(type(h['path']) is str and h['path'].startswith('/') and '..' not in h['path'].split('/')
+-                 and sha(h['sha256']) and all(type(h[k]) is int and h[k] > 0 for k in ('dev', 'ino')),
+-                 'gpgme_helper_identity_pin')
++            helper_image(h)
+         self.original, self.op, self.env = copy.deepcopy((original, operation, environment))
+         self.helpers = copy.deepcopy(helpers)
+         self.reaper = copy.deepcopy(reaper)
+@@ -192,7 +218,8 @@
+                     'environment_current_bound', 'configuration_isolated', 'resource_custody_bound'}
+         self._need(type(context) is dict and set(context) == expected, 'gpgme_context_schema')
+         identity(context['original'])
+-        self._need(all(context[k] == self.op[k] for k in self.op) and context['original'] == self.original,
++        self._need(all(type(context[k]) is type(self.op[k]) and context[k] == self.op[k] for k in self.op)
++                   and context['original'] == self.original,
+                    'gpgme_context_identity_or_clock_changed')
+         self._need(positive(context['now']) and context['now'] < self.op['deadline_monotonic'],
+                    'gpgme_original_deadline_expired')
+@@ -212,11 +239,13 @@
+             self._need(branch == BRANCHES[len(self.invocations)], 'gpgme_discovery_pair_order')
+         else:
+             self._need(branch in VERSIONS and ordinal > self.last_ordinal, 'gpgme_version_branch_order')
+-        self._need(type(thread) is list and len(thread) == 3 and all(type(v) is int for v in thread)
+-                   and thread[0] == self.original['pid'] and thread[1] > 0 and thread[2] == 0,
++        thread_identity(thread)
++        self._need(thread[0] == self.original['pid'],
+                    'gpgme_calling_thread')
+         h = self.helpers.get(ROLES[branch])
+-        self._need(h is not None and selected_image == h and command == [h['path'], OPTIONS[branch]],
++        helper_image(selected_image)
++        self._need(h is not None and selected_image == h and type(command) is list
++                   and all(type(v) is str for v in command) and command == [h['path'], OPTIONS[branch]],
+                    'gpgme_selected_executable_or_argv')
+         self._need(source_route == branch, 'gpgme_exact_source_branch_unproved')
+         p = pipe_identity(read_fd, access=0)
+@@ -235,8 +264,11 @@
+         identity(child)
+         expected_parent = self.original if n == 0 else c['children'][0]['identity']
+         identity(parent)
++        thread_identity(thread)
++        self._need(n == 0 or (c['children'][0]['exit_code'] is None and c['children'][0]['absent'] is False),
++                   'gpgme_second_fork_after_parent_exit')
+         self._need(parent == expected_parent and return_offset == (FIRST_FORK_RETURN, SECOND_FORK_RETURN)[n]
+-                   and type(return_offset) is int and type(thread) is list and all(type(v) is int for v in thread)
++                   and type(return_offset) is int
+                    and thread == (c['thread'] if n == 0 else [parent['pid'], parent['pid'], 0]),
+                    'gpgme_fork_parent_thread_route')
+         self._need(child['ppid'] == parent['pid'] and child['pid'] not in self.all_pids
+@@ -251,6 +283,7 @@
+     def reparent(self, context, final_identity, *, exact_reaper_identity, old_parent_absent):
+         self._boundary(context)
+         c = self.current
++        identity(exact_reaper_identity)
+         self._need(c is not None and len(c['children']) == 2 and c['children'][0]['exit_code'] == 0
+                    and old_parent_absent is True and exact_reaper_identity == self.reaper,
+                    'gpgme_reparent_without_observed_parent_exit_or_reaper')
+@@ -268,7 +301,9 @@
+         self._need(c is not None and len(c['children']) == 2 and not c['exec_seen']
+                    and event == 'exec_before_first_instruction', 'gpgme_exec_order_or_boundary')
+         identity(child)
++        helper_image(image)
+         self._need(child == c['children'][1]['identity'] and image == c['helper_identity']
++                   and type(command) is list and all(type(v) is str for v in command)
+                    and command == [image['path'], OPTIONS[c['branch']]], 'gpgme_exec_identity_argv')
+         validate_environment(env, self.env)
+         validate_exec_fds(fds, c['pipe'], null_rdev=null_rdev)
+@@ -287,6 +322,7 @@
+     @transition
+     def spawn_return(self, context, thread, status):
+         self._boundary(context)
++        thread_identity(thread)
+         c = self.current
+         self._need(c is not None and len(c['children']) == 2 and thread == c['thread']
+                    and not c['spawn_returned'] and type(status) is int and status == 0,
+@@ -297,8 +333,11 @@
+     @transition
+     def pipe_terminal(self, context, thread, pipe, *, read_closed, terminal):
+         self._boundary(context)
+-        c = self.current
+-        self._need(c is not None and c['spawn_returned'] and thread == c['thread'] and pipe == c['pipe']
++        thread_identity(thread)
++        pipe_key(pipe)
++        c = self.current
++        self._need(c is not None and c['entry_seen'] and c['spawn_returned']
++                   and thread == c['thread'] and pipe == c['pipe']
+                    and not c['parent_read_closed'] and read_closed is True, 'gpgme_pipe_terminal_binding')
+         allowed = ('OBSERVED_READ_EOF', 'OBSERVED_NEWLINE_THEN_READ_CLOSE') if c['branch'] in VERSIONS else ('OBSERVED_READ_EOF',)
+         self._need(terminal in allowed, 'gpgme_stdout_not_proved_terminal')
+@@ -308,12 +347,15 @@
+     def exit(self, context, identity_value, inferior, code, *, absent):
+         self._boundary(context)
+         identity(identity_value)
++        self._need(type(inferior) is int and inferior > 1, 'gpgme_exit_inferior_schema')
+         c = self.current
+         matches = [] if c is None else [v for v in c['children']
+             if v['identity'] == identity_value and v['inferior'] == inferior]
+         self._need(len(matches) == 1 and matches[0]['exit_code'] is None and type(code) is int
+                    and code == 0 and absent is True, 'gpgme_exit_not_zero_observed_absent')
+         self._need(matches[0] is c['children'][0] or c['entry_seen'], 'gpgme_final_exit_before_entry')
++        self._need(matches[0] is not c['children'][0] or len(c['children']) == 2,
++                   'gpgme_intermediate_exit_before_second_birth')
+         matches[0].update(exit_code=code, absent=True)
+ 
+     @transition
+--- /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-ENGINE-INIT-GUARD-SOURCE-20261115/gpgme_mapped_image.py
++++ /home/jericho/.cache/FRW-ASTRA-CALC-GPGME-M1-SOURCE-REVIEW-20261115/repair-copy/gpgme_mapped_image.py
+@@ -34,7 +34,9 @@
+              and ino.isdecimal(), 'gpgme_maps_numeric_encoding')
+         start, end = (int(v, 16) for v in address.split('-'))
+         major, minor = (int(v, 16) for v in dev.split(':'))
+-        need(0 < start < end < 1 << 63 and start >= previous_end, 'gpgme_maps_ranges')
++        need(0 < start < end <= 1 << 64 and start >= previous_end, 'gpgme_maps_ranges')
++        need(start % 4096 == end % 4096 == int(offset, 16) % 4096 == 0,
++             'gpgme_maps_page_alignment')
+         previous_end = end
+         rows.append(dict(start=start, end=end, perms=perms, offset=int(offset, 16),
+                          dev_major=major, dev_minor=minor, ino=int(ino),
+@@ -81,8 +83,12 @@
+ def bind_current_image(maps_before, maps_after, file_before, file_after, raw, image, pc):
+     """Return sanitized numerical binding; never accept a basename-only owner.
+ 
+-    file_before/file_after are fstat of the SAME already opened backing FD;
+-    the collector must also compare that FD to final current namespace path
++    file_before/file_after are HOST-side fstat of the SAME already opened
++    backing FD, with host uid0. An inside-namespace overflow uid is deliberately
++    refused here, not equated to host root. A future namespace collector must
++    independently bind its actual uid_map/overflow policy and the Root-pinned
++    host owner/device/inode/hash/metadata before supplying a host-view stamp.
++    The collector must also compare that FD to final current namespace path
+     identity and to original process/thread before returning observations.
+     This pure join alone is deliberately insufficient for runtime admission.
+     """
+@@ -90,9 +96,12 @@
+     path = image['path']
+     need(type(path) is str and path.startswith('/') and '\\' not in path
+          and all(v not in ('', '.', '..') for v in path.split('/')[1:]), 'gpgme_image_canonical_path')
+-    need(maps_before == maps_after, 'gpgme_current_maps_changed')
++    need(type(maps_before) is bytes and type(maps_after) is bytes
++         and maps_before == maps_after, 'gpgme_current_maps_changed')
+     keys = {'dev_major', 'dev_minor', 'ino', 'size', 'mtime_ns', 'ctime_ns', 'mode', 'uid', 'nlink'}
+-    need(type(file_before) is dict and set(file_before) == keys and file_before == file_after,
++    need(type(file_before) is dict and type(file_after) is dict and set(file_before) == set(file_after) == keys
++         and all(type(v) is int and v >= 0 for stamp in (file_before, file_after) for v in stamp.values())
++         and file_before == file_after,
+          'gpgme_backing_file_changed')
+     need(all(type(v) is int and v >= 0 for v in file_before.values())
+          and file_before['ino'] > 0 and file_before['size'] == len(raw)
+@@ -120,7 +129,8 @@
+         for segment in meta['loads']:
+             if (down(segment['offset']) <= row['offset'] < up(segment['offset'] + segment['filesz'])
+                     and row['offset'] + row['end'] - row['start'] <= up(segment['offset'] + segment['filesz'])
+-                    and ('x' not in row['perms'] or segment['flags'] & 1)):
++                    and all(p == '-' or segment['flags'] & flag
++                            for p, flag in zip(row['perms'][:3], (4, 2, 1)))):
+                 bias = row['start'] - (down(segment['vaddr']) + row['offset'] - down(segment['offset']))
+                 if bias >= 0 and bias % 4096 == 0:
+                     offsets.add(bias)
