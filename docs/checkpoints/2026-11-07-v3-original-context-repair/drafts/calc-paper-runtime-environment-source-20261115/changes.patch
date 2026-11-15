@@ -1,0 +1,493 @@
+--- before/outer/deps/paper_helper_gdb.py
++++ candidate/outer/deps/paper_helper_gdb.py
+@@ -8,8 +8,21 @@
+ import json
+ import os
+ from pathlib import Path
++import re
+ import stat
+ import time
++
++
++# Exact installed ELF, relocation and instructions verified against the pinned
++# glibc 2.43 iopopen source. Refuse interposition/copy relocations; never guess a
++# GDB symbol owner or call getenv in the inferior. The call passes envp in r9.
++ENV_SOURCE = dict(libc_sha256='9941dc28e68bc5fd788d9cd024c69e68c791d63799e7538a97b6040dd9f50fb6',
++    load_offset=0x8e21b, load_bytes='488b058e3d1800', got_offset=0x211fb0,
++    storage_offset=0x219de8, dereference_offset=0x8e238, dereference_bytes='4c8b08',
++    call_offset=0x8e242, call_bytes='e879cc0800', zero_fill_start=0x214000, data_memory_end=0x220d90)
++FONT_ENV_KEYS = (b'HOME', b'TMPDIR', b'XDG_CACHE_HOME', b'XDG_CONFIG_HOME', b'XDG_DATA_HOME',
++    b'FONTCONFIG_FILE', b'FONTCONFIG_PATH', b'FONTCONFIG_SYSROOT', b'FC_LANG', b'LANG', b'LC_ALL',
++    b'SAL_FONTPATH', b'SAL_USE_VCLPLUGIN', b'LD_LIBRARY_PATH', b'URE_BOOTSTRAP')
+ 
+ 
+ def require(ok, reason):
+@@ -73,6 +86,9 @@
+         self.stream = None
+         self.pipe = None
+         self.original_env = None
++        self.spawn_env_verified = False
++        self.environment_proof = []
++        self.metadata_keys = list(FONT_ENV_KEYS)
+         self.original_stderr = None
+         self.original_stdin = None
+         self.known = {}
+@@ -186,26 +202,214 @@
+                  self.n['STATE']['records'], self.n['get_active']())
+         self.original_check()
+ 
+-    def environment(self, pid, *, initial=False):
+-        raw = self.bounded(Path('/proc') / str(pid) / 'environ', 128 * 1024)
+-        require(os.readlink(Path('/proc') / str(pid) / 'cwd') == '/tmp/friday-metric-work', 'helper_child_cwd_changed')
+-        items = raw.rstrip(b'\0').split(b'\0')
+-        require(all(b'=' in v for v in items), 'helper_environment_encoding')
++    def parse_environment(self, raw):
++        require(raw.endswith(b'\0') and len(raw) <= 128 * 1024, 'helper_environment_bound_or_termination')
++        items = raw[:-1].split(b'\0') if raw != b'\0' else []
++        require(len(items) <= 512 and all(b'=' in v and v.split(b'=', 1)[0] for v in items),
++                'helper_environment_encoding')
+         pairs = [v.split(b'=', 1) for v in items]
+         env = dict(pairs)
+         require(len(env) == len(pairs), 'helper_environment_duplicates')
++        return env
++
++    def current_environment(self, pid, *, expected_pointer=None):
++        """Observe effective __environ from this stopped owned parent only.
++
++        /proc/PID/environ retains the exec-time memory range, whereas setenv can
++        replace both vector and strings. At the exact spawn call, also bind r9
++        to this vector. No DWARF availability or symbol-name resolution assumed.
++        """
++        original = self.n['STATE']['process']
++        inf = self.g.selected_inferior()
++        require(original is not None and inf.num == 1 and inf.pid == pid == original['pid'],
++                'helper_runtime_environment_original_only')
++        before = self.original_check()
++        require(all(t.is_valid() and t.is_stopped() for t in inf.threads()), 'helper_runtime_environment_all_stop')
++        libc = self.m['images']['libc']
++        require(libc['sha256'] == ENV_SOURCE['libc_sha256'], 'helper_runtime_environment_source_pin')
++        self.pin(libc)
++        base = self.base(pid, libc['path'])
++        regions = []
++        for line in self.bounded(Path('/proc') / str(pid) / 'maps', 512 * 1024).decode('ascii').splitlines():
++            f = line.split(None, 5)
++            start, end = (int(v, 16) for v in f[0].split('-'))
++            regions.append((start, end, f[1], f[5] if len(f) == 6 else ''))
++
++        def read(address, count, *, owner=None):
++            require(type(address) is int and 0 < address < 1 << 47 and 0 < count <= 64,
++                    'helper_runtime_environment_memory_bound')
++            matches = [r for r in regions if r[0] <= address and address + count <= r[1] and 'r' in r[2]
++                       and (owner is None or r[3] == owner)]
++            require(len(matches) == 1, 'helper_runtime_environment_readable_mapping')
++            return self.memory(address, count)
++
++        for prefix in ('load', 'dereference', 'call'):
++            data = bytes.fromhex(ENV_SOURCE[prefix + '_bytes'])
++            require(read(base + ENV_SOURCE[prefix + '_offset'], len(data), owner=libc['path']) == data,
++                    'helper_runtime_environment_instruction')
++        storage = int.from_bytes(read(base + ENV_SOURCE['got_offset'], 8, owner=libc['path']), 'little')
++        require(storage == base + ENV_SOURCE['storage_offset'], 'helper_runtime_environment_symbol_interposition')
++        # __environ is in the anonymous zero-fill tail of this exact libc's
++        # final PT_LOAD, not in a pathname-bearing /proc mapping.
++        require(any(r[0] == base + ENV_SOURCE['zero_fill_start'] and r[0] <= storage and storage + 8 <= r[1]
++                    and r[2] == 'rw-p' and r[3] == '' for r in regions)
++                and any(r[1] == base + ENV_SOURCE['zero_fill_start'] and r[3] == libc['path'] for r in regions)
++                and storage + 8 <= base + ENV_SOURCE['data_memory_end'],
++                'helper_runtime_environment_libc_zero_fill')
++
++        def snapshot():
++            vector = int.from_bytes(read(storage, 8, owner=''), 'little')
++            require(vector > 0 and vector % 8 == 0 and (expected_pointer is None or vector == expected_pointer),
++                    'helper_runtime_environment_spawn_pointer')
++            items = []
++            total = 0
++            for index in range(513):
++                address = int.from_bytes(read(vector + index * 8, 8), 'little')
++                if address == 0:
++                    return vector, self.parse_environment(b'\0'.join(items) + b'\0')
++                require(index < 512, 'helper_runtime_environment_vector_bound')
++                item = bytearray()
++                for _ in range(32769):
++                    byte = read(address + len(item), 1)
++                    total += 1
++                    require(total <= 128 * 1024, 'helper_runtime_environment_total_bound')
++                    if byte == b'\0':
++                        break
++                    item.extend(byte)
++                    require(len(item) <= 32768, 'helper_runtime_environment_item_bound')
++                else:
++                    raise RuntimeError('helper_runtime_environment_item_bound')
++                items.append(bytes(item))
++            raise RuntimeError('helper_runtime_environment_vector_bound')
++
++        pointer, env = snapshot()
++        require((pointer, env) == snapshot() and self.original_check() == before
++                and inf.pid == pid, 'helper_runtime_environment_snapshot_changed')
++        return env
++
++    def environment(self, pid, *, initial=False, expected_pointer=None):
++        env = (self.current_environment(pid, expected_pointer=expected_pointer) if initial else
++               self.parse_environment(self.bounded(Path('/proc') / str(pid) / 'environ', 128 * 1024)))
++        self.audit_actual_env = env
++        require(os.readlink(Path('/proc') / str(pid) / 'cwd') == '/tmp/friday-metric-work', 'helper_child_cwd_changed')
++        expected = {k.encode(): v.encode() for k, v in self.m['environment'].items()} if initial else dict(self.original_env)
++        if not initial and b'PWD' not in expected and b'PWD' in env:
++            expected[b'PWD'] = b'/tmp/friday-metric-work'
++        self.audit_expected_env = expected
+         require(all(env.get(k.encode()) == v.encode() for k, v in self.m['environment'].items()), 'helper_environment_changed')
+         require(not any(k in env for k in (b'PAPERSIZE', b'LC_PAPER', b'LD_PRELOAD', b'LD_AUDIT', b'ENV', b'BASH_ENV')),
+                 'helper_environment_override')
+         require(all(not os.path.lexists(p) for p in self.m['absent_paths']), 'helper_paper_config_present')
+         if initial:
++            initial_env = self.parse_environment(self.bounded(Path('/proc') / str(pid) / 'environ', 128 * 1024))
++            self.audit_font_initial = initial_env
++            self.audit_initial_env = initial_env
++            # Existing font CAS observes initial /proc. This proves equivalence
++            # for its selected keys at THIS stopped boundary, not a later CAS.
++            require(all(env.get(k) == initial_env.get(k) for k in FONT_ENV_KEYS),
++                    'helper_font_runtime_environment_changed')
+             self.original_env = env
+         else:
+-            # dash may export its actual fixed PWD. No other additions/changes.
+-            expected = dict(self.original_env)
+-            if b'PWD' not in expected and b'PWD' in env:
+-                expected[b'PWD'] = b'/tmp/friday-metric-work'
+             require(env == expected, 'helper_inherited_environment_changed')
++        return True
++
++    def boundary_metadata(self, pid, stage, role, *, refusal=None):
++        """Bounded sanitized sidecar; never raw values, argv, mapped paths/data.
++
++        It does not expand the native trace schema or confer runtime admission.
++        A failed diagnostic write cannot replace the first underlying refusal.
++        """
++        allowed = ('popen', 'spawn', 'dash_exec', 'dash_entry', 'dash_birth', 'paperconf_exec', 'paperconf_entry', 'metric')
++        require(stage in allowed and role in ('parent', 'dash', 'paperconf'), 'helper_diagnostic_stage')
++        rows = []
++        actual = getattr(self, 'audit_actual_env', None)
++        expected = getattr(self, 'audit_expected_env', None)
++        value_hash = lambda value: None if value is None else hashlib.sha256(value).hexdigest()
++        keys = sorted(set(expected or {}) | set(actual or {}))
++        retained = list(getattr(self, 'metadata_keys', FONT_ENV_KEYS))
++        for key in keys:
++            if key not in retained and len(retained) < 64:
++                retained.append(key)
++        self.metadata_keys = retained
++        selected = [key for key in keys if key in retained]
++        for key in selected:
++            label = {'key': key.decode('ascii')} if re.fullmatch(rb'[A-Za-z_][A-Za-z0-9_]{0,63}', key) else {'key_sha256': value_hash(key)}
++            rows.append(dict(label, expected_value_sha256=value_hash((expected or {}).get(key)),
++                             actual_value_sha256=value_hash((actual or {}).get(key))))
++        entry = dict(stage=stage, role=role, pid=pid, refusal=refusal, environment_key_count=len(keys),
++                     environment_keys_truncated=len(selected) < len(keys))
++        entry['environment_source_class'] = ('PINNED_LIBC_GOT_TO_ZERO_FILL_ENVIRON' if role == 'parent'
++                                             else 'KERNEL_EXEC_ENVIRON')
++        entry['inheritance_reference_class'] = ('EXACT_POSIX_SPAWN_R9' if stage == 'spawn'
++                                                else 'PARENT_RUNTIME_SNAPSHOT')
++        if refusal is not None:
++            entry['environment'] = rows
++        if actual is not None:
++            entry['environment_sha256'] = hashlib.sha256(b'\0'.join(k + b'=' + actual[k] for k in sorted(actual)) + b'\0').hexdigest()
++        initial = getattr(self, 'audit_font_initial', None)
++        if initial is not None and actual is not None:
++            entry['font_environment'] = [dict(key=k.decode('ascii'), initial_value_sha256=value_hash(initial.get(k)),
++                runtime_value_sha256=value_hash(actual.get(k))) for k in FONT_ENV_KEYS]
++            entry['font_runtime_equals_initial'] = all(initial.get(k) == actual.get(k) for k in FONT_ENV_KEYS)
++            entry['font_scope'] = 'THIS_STOPPED_BOUNDARY_ONLY_NOT_FONT_CAS_POSTCONDITION'
++            changed = sorted(k for k in set(initial) | set(actual) if initial.get(k) != actual.get(k))
++            entry['exec_initial_to_runtime_changed_key_count'] = len(changed)
++            entry['exec_initial_to_runtime_changed_keys'] = [
++                dict({'key': k.decode('ascii')} if re.fullmatch(rb'[A-Za-z_][A-Za-z0-9_]{0,63}', k)
++                     else {'key_sha256': value_hash(k)}, initial_value_sha256=value_hash(initial.get(k)),
++                     runtime_value_sha256=value_hash(actual.get(k))) for k in changed if k in retained]
++            entry['exec_initial_to_runtime_keys_truncated'] = any(k not in retained for k in changed)
++        fds = []
++        try:
++            numbers = sorted(int(p.name) for p in (Path('/proc') / str(pid) / 'fd').iterdir())
++            entry['fd_count'] = len(numbers)
++            for number in numbers[:8]:
++                try:
++                    fds.append(dict(number=number, **self.fd(pid, number)))
++                except Exception as exc:
++                    fds.append(dict(number=number, observation_error_class=type(exc).__name__))
++            entry['fds_truncated'] = len(numbers) > 8
++        except Exception as exc:
++            entry['fd_observation_error_class'] = type(exc).__name__
++        entry['fds'] = fds
++        for name, value in (('stdin', self.original_stdin), ('stderr', self.original_stderr), ('stdout_pipe', self.pipe)):
++            entry['expected_' + name] = value
++        prior = list(getattr(self, 'environment_proof', ()))
++        require(len(prior) < 8, 'helper_diagnostic_stage_bound')
++        prior.append(entry)
++        value = dict(schema='frw.calc.paper-helper-boundary-metadata.v1',
++            operation_id=self.b['runtime']['operation_id'], nonce=self.b['runtime']['nonce'],
++            source_sha256=self.b['runtime']['source_sha256'], manifest_ref=self.b['runtime']['manifest_ref'],
++            original=self.n['STATE']['process'], scope='HASHED_ENV_NUMERIC_FD_ONLY_NO_RUNTIME_ADMISSION', stages=prior)
++        raw = (json.dumps(value, sort_keys=True) + '\n').encode()
++        require(len(raw) <= 32768, 'helper_diagnostic_output_bound')
++        path = Path('/tmp/friday-metric-work/paper-helper-boundary.json')
++        tmp = path.with_suffix('.pending')
++        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
++        with os.fdopen(fd, 'wb') as f:
++            f.write(raw)
++            f.flush()
++            os.fsync(f.fileno())
++        os.replace(tmp, path)
++        self.environment_proof = prior
++
++    def custody_boundary(self, pid, stage, role, *, initial=False, redirection=False, expected_pointer=None):
++        self.audit_actual_env = self.audit_expected_env = self.audit_font_initial = self.audit_initial_env = None
++        try:
++            self.environment(pid, initial=initial, expected_pointer=expected_pointer)
++            if role == 'parent':
++                self.parent_fds(pid)
++            else:
++                self.fds(pid, role, redirection=redirection)
++        except Exception as exc:
++            try:
++                self.boundary_metadata(pid, stage, role, refusal=str(exc) if type(exc) is RuntimeError else type(exc).__name__)
++            except Exception:
++                pass  # Preserve the original terminal refusal, never resume.
++            raise
++        # Keep successful runtime getter/font projection proofs for Root's join.
++        if initial:
++            self.boundary_metadata(pid, stage, role)
+         return True
+ 
+     def fd(self, pid, number):
+@@ -327,6 +531,7 @@
+         # Keep the popen entry armed for the entire launch: any second invocation
+         # or invocation outside this LOAD still reaches the unchanged refusal.
+         self.breakpoint(libc_base + self.m['images']['libc']['entry'], self.popen, one_shot=False)
++        self.breakpoint(libc_base + ENV_SOURCE['call_offset'], self.spawn_environment)
+         for name, fn in (('popen_return', self.popen_return), ('fgets_return', self.eof), ('pclose_return', self.pclose_return)):
+             self.breakpoint(caller_base + self.m['caller']['sites'][name]['offset'], fn)
+         self.installed = True
+@@ -342,11 +547,19 @@
+         command = self.memory(self.register('rdi'), len(b'paperconf 2>/dev/null\0')) == b'paperconf 2>/dev/null\0'
+         mode = self.memory(self.register('rsi'), 2) == b'r\0'
+         self.c.arm(self.tid(), exact_entry=entry, exact_caller=caller, command_equal=command, mode_equal=mode)
+-        self.environment(self.g.selected_inferior().pid, initial=True)
+-        self.original_stdin = self.fd(self.g.selected_inferior().pid, 0)
++        self.custody_boundary(self.g.selected_inferior().pid, 'popen', 'parent', initial=True)
++
++    def parent_fds(self, pid):
++        current_stdin = self.fd(pid, 0)
++        current_stderr = self.fd(pid, 2)
++        require(self.original_stdin is None or self.same_fd(current_stdin, self.original_stdin),
++                'helper_parent_stdin_changed')
++        require(self.original_stderr is None or self.same_fd(current_stderr, self.original_stderr),
++                'helper_parent_stderr_changed')
++        self.original_stdin = current_stdin
+         require(self.null(self.original_stdin) and self.original_stdin['access'] == os.O_RDONLY,
+                 'helper_parent_stdin_custody')
+-        self.original_stderr = self.fd(self.g.selected_inferior().pid, 2)
++        self.original_stderr = current_stderr
+         require(self.original_stderr['type'] == stat.S_IFREG and self.original_stderr['access'] == os.O_WRONLY,
+                 'helper_parent_stderr_custody')
+         log = Path('/tmp/friday-metric-work/gdb.log')
+@@ -357,6 +570,19 @@
+         require((self.original_stderr['dev'], self.original_stderr['ino']) == (s.st_dev, s.st_ino),
+                 'helper_parent_stderr_not_owned_log')
+ 
++    def spawn_environment(self):
++        self.window()
++        require(self.g.selected_inferior().num == 1 and self.tid() == self.c.thread
++                and self.c.e['state'] == 'ARMED' and not self.spawn_env_verified,
++                'helper_spawn_environment_order')
++        libc = self.m['images']['libc']
++        require(self.offset(self.g.newest_frame(), libc) == ENV_SOURCE['call_offset']
++                and self.memory(int(self.g.newest_frame().pc()), 5).hex() == ENV_SOURCE['call_bytes'],
++                'helper_spawn_environment_callsite')
++        self.custody_boundary(self.g.selected_inferior().pid, 'spawn', 'parent', initial=True,
++                              expected_pointer=self.register('r9'))
++        self.spawn_env_verified = True
++
+     def birth(self):
+         self.window()
+         inf = self.g.selected_inferior()
+@@ -364,6 +590,7 @@
+         role = 'dash' if len(self.c.e['children']) == 0 else 'paperconf'
+         if role == 'dash':
+             require(inf.num == 1 and self.tid() == self.c.thread, 'helper_parent_thread')
++            require(self.spawn_env_verified, 'helper_spawn_environment_unbound')
+             frames = []
+             f = self.g.newest_frame()
+             for _ in range(16):
+@@ -386,8 +613,7 @@
+             f = self.g.newest_frame().older()
+             require(self.offset(f, self.m['images']['dash']) == self.m['dash_vfork_return']
+                     and self.memory(int(f.pc()) - 5, 5).hex() == 'e800a4ffff', 'helper_shell_vfork_callsite')
+-            self.environment(inf.pid)
+-            self.fds(inf.pid, 'dash', redirection=True)
++            self.custody_boundary(inf.pid, 'dash_birth', 'dash', redirection=True)
+         tid = self.tid()
+         text = self.bounded(Path('/proc') / str(inf.pid) / 'task' / str(tid[1]) / 'children', 256).decode('ascii')
+         numbers = text.split()
+@@ -407,8 +633,7 @@
+         role = 'dash' if len(self.c.e['execs']) == 0 else 'paperconf'
+         child = self.child(role)
+         self.image(role, child['pid'])
+-        self.environment(child['pid'])
+-        self.fds(child['pid'], role)
++        self.custody_boundary(child['pid'], role + '_exec', role)
+         self.loaded_images(role, child['pid'], entry=False)
+         self.c.exec(role, child, exact_image=True, exact_argv=True, custody_ok=True)
+         address = self.base(child['pid'], self.m['images'][role]['path']) + self.m['images'][role]['entry']
+@@ -421,8 +646,7 @@
+         require(self.offset(self.g.newest_frame(), image) == image['entry']
+                 and self.memory(int(self.g.newest_frame().pc()), 16).hex() == image['entry_bytes'], 'helper_image_entry_bytes')
+         self.image(role, child['pid'])
+-        self.environment(child['pid'])
+-        self.fds(child['pid'], role)
++        self.custody_boundary(child['pid'], role + '_entry', role)
+         self.loaded_images(role, child['pid'], entry=True)
+         self.c.entry(role, child, images_ok=True, custody_ok=True)
+ 
+--- before/outer/namespace_entry.py
++++ candidate/outer/namespace_entry.py
+@@ -405,7 +405,93 @@
+             'evidence_ref': host_evidence_ref, 'startup_locale_environment': {'LC_ALL': 'C.UTF-8'}}
+ 
+ 
+-def output_inventory():
++def validate_helper_boundary_metadata(raw, runtime, original):
++    """Sanitized diagnostic sidecar, never a substitute for native/Root gates."""
++    need(len(raw) <= 32768, 'helper_metadata_bound')
++    value = json.loads(raw)
++    need(type(value) is dict and set(value) == {'schema', 'operation_id', 'nonce', 'source_sha256',
++         'manifest_ref', 'original', 'scope', 'stages'}
++         and value['schema'] == 'frw.calc.paper-helper-boundary-metadata.v1'
++         and value['scope'] == 'HASHED_ENV_NUMERIC_FD_ONLY_NO_RUNTIME_ADMISSION', 'helper_metadata_schema')
++    need(all(value[k] == runtime[k] for k in ('operation_id', 'nonce', 'source_sha256', 'manifest_ref'))
++         and value['original'] == original, 'helper_metadata_binding')
++    is_hash = lambda v: type(v) is str and re.fullmatch('[0-9a-f]{64}', v) is not None
++    is_count = lambda v: type(v) is int and v >= 0
++    labels = set()
++    def rows(items, hash_names):
++        need(type(items) is list and len(items) <= 64, 'helper_metadata_key_bound')
++        for row in items:
++            need(type(row) is dict and (set(row) == {'key', *hash_names} or
++                 set(row) == {'key_sha256', *hash_names}), 'helper_metadata_key_schema')
++            if 'key' in row:
++                need(type(row['key']) is str and re.fullmatch('[A-Za-z_][A-Za-z0-9_]{0,63}', row['key']),
++                     'helper_metadata_key_name')
++                labels.add(('name', row['key']))
++            else:
++                need(is_hash(row['key_sha256']), 'helper_metadata_key_hash')
++                labels.add(('sha256', row['key_sha256']))
++            need(all(row[k] is None or is_hash(row[k]) for k in hash_names), 'helper_metadata_value_hash')
++    fd_keys = {'dev', 'ino', 'type', 'rdev', 'access', 'cloexec'}
++    def fd(item):
++        need(type(item) is dict and set(item) == fd_keys and type(item['cloexec']) is bool
++             and all(is_count(item[k]) for k in fd_keys - {'cloexec'}), 'helper_metadata_fd_schema')
++    stages = value['stages']
++    need(type(stages) is list and 1 <= len(stages) <= 8, 'helper_metadata_stage_bound')
++    required = {'stage', 'role', 'pid', 'refusal', 'environment_key_count', 'environment_keys_truncated',
++                'environment_source_class', 'inheritance_reference_class', 'fds', 'expected_stdin',
++                'expected_stderr', 'expected_stdout_pipe'}
++    optional = {'environment', 'environment_sha256', 'font_environment', 'font_runtime_equals_initial',
++                'font_scope', 'exec_initial_to_runtime_changed_key_count', 'exec_initial_to_runtime_changed_keys',
++                'exec_initial_to_runtime_keys_truncated', 'fd_count', 'fds_truncated', 'fd_observation_error_class'}
++    known_roles = {'popen': 'parent', 'spawn': 'parent', 'metric': 'parent', 'dash_birth': 'dash',
++                   'dash_exec': 'dash', 'dash_entry': 'dash', 'paperconf_exec': 'paperconf', 'paperconf_entry': 'paperconf'}
++    identifier = lambda v: type(v) is str and re.fullmatch('[A-Za-z_][A-Za-z0-9_]{0,127}', v)
++    for stage in stages:
++        need(type(stage) is dict and required <= set(stage) <= required | optional
++             and stage['stage'] in known_roles and stage['role'] == known_roles[stage['stage']]
++             and type(stage['pid']) is int and stage['pid'] > 0
++             and (stage['refusal'] is None or identifier(stage['refusal']))
++             and is_count(stage['environment_key_count']) and type(stage['environment_keys_truncated']) is bool,
++             'helper_metadata_stage_schema')
++        need(stage['environment_source_class'] == ('PINNED_LIBC_GOT_TO_ZERO_FILL_ENVIRON' if stage['role'] == 'parent' else 'KERNEL_EXEC_ENVIRON')
++             and stage['inheritance_reference_class'] == ('EXACT_POSIX_SPAWN_R9' if stage['stage'] == 'spawn' else 'PARENT_RUNTIME_SNAPSHOT'),
++             'helper_metadata_mapping_class')
++        need(stage['role'] != 'parent' or stage['pid'] == original['pid'], 'helper_metadata_parent_identity')
++        if 'environment' in stage:
++            rows(stage['environment'], ('expected_value_sha256', 'actual_value_sha256'))
++        if 'environment_sha256' in stage:
++            need(is_hash(stage['environment_sha256']), 'helper_metadata_environment_hash')
++        if 'font_environment' in stage:
++            rows(stage['font_environment'], ('initial_value_sha256', 'runtime_value_sha256'))
++            need(type(stage.get('font_runtime_equals_initial')) is bool
++                 and stage.get('font_scope') == 'THIS_STOPPED_BOUNDARY_ONLY_NOT_FONT_CAS_POSTCONDITION', 'helper_metadata_font_scope')
++        if 'exec_initial_to_runtime_changed_keys' in stage:
++            rows(stage['exec_initial_to_runtime_changed_keys'], ('initial_value_sha256', 'runtime_value_sha256'))
++            need(is_count(stage.get('exec_initial_to_runtime_changed_key_count'))
++                 and type(stage.get('exec_initial_to_runtime_keys_truncated')) is bool, 'helper_metadata_changed_keys')
++        for key in ('expected_stdin', 'expected_stderr', 'expected_stdout_pipe'):
++            if stage[key] is not None:
++                fd(stage[key])
++        need(type(stage['fds']) is list and len(stage['fds']) <= 8, 'helper_metadata_fd_bound')
++        for item in stage['fds']:
++            need(type(item) is dict and is_count(item.get('number')), 'helper_metadata_fd_number')
++            if 'observation_error_class' in item:
++                need(set(item) == {'number', 'observation_error_class'} and identifier(item['observation_error_class']),
++                     'helper_metadata_fd_error_class')
++            else:
++                fd({k: v for k, v in item.items() if k != 'number'})
++        for key in ('fd_count',):
++            if key in stage:
++                need(is_count(stage[key]), 'helper_metadata_fd_count')
++        if 'fds_truncated' in stage:
++            need(type(stage['fds_truncated']) is bool, 'helper_metadata_fd_truncated')
++        if 'fd_observation_error_class' in stage:
++            need(identifier(stage['fd_observation_error_class']), 'helper_metadata_fd_error_class')
++    need(len(labels) <= 64, 'helper_metadata_total_key_bound')
++    return value
++
++
++def output_inventory(*, helper_runtime=None, original=None):
+     allowed_files = {'namespace-job.json', 'unit-release.json', 'office-ready.json', 'office-release.json',
+                      'observer-config.json', 'phase.json', 'native-trace.json', 'gdb.log', 'inner.log',
+                      'helper-runtime.json', 'load-dependency.json',
+@@ -414,6 +500,9 @@
+                      'namespace-journal.json', 'namespace-result.json', 'font-CAS-phase.json',
+                      'font-view-before-office.json', 'font-view-after-close.json', 'font-view-after-bootstrap.json', 'bootstrap.log', 'bootstrap-result.json'}
+     allowed_dirs = {'profile', 'tmp', 'cache', 'config', 'runtime'}
++    if helper_runtime is not None:
++        allowed_files.add('paper-helper-boundary.json')
++        need((WORK / 'paper-helper-boundary.json').is_file(), 'helper_metadata_missing')
+     files = []
+     for path in WORK.rglob('*'):
+         relative = path.relative_to(WORK)
+@@ -426,9 +515,26 @@
+             if relative.parts[0] in allowed_dirs:
+                 need(path.suffix.lower() not in ('.ods', '.xlsx', '.xls', '.csv', '.pdf', '.odt', '.docx'),
+                      'unexpected_document_output')
+-            files.append({'path': str(relative), 'bytes': path.stat().st_size,
++            record = {'path': str(relative), 'bytes': path.stat().st_size,
+                           'scope': 'READONLY_DERIVED_FONTCONFIG_INPUT' if relative.parts[:2] == ('cache', 'fontconfig')
+-                                   else 'OWN_OPERATION_OUTPUT'})
++                                   else 'OWN_OPERATION_OUTPUT'}
++            if relative == Path('paper-helper-boundary.json'):
++                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
++                with os.fdopen(fd, 'rb') as source:
++                    before = os.fstat(source.fileno())
++                    need(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_uid == os.getuid()
++                         and stat.S_IMODE(before.st_mode) == 0o600 and before.st_size <= 32768,
++                         'helper_metadata_rights_bound')
++                    raw = source.read(32769)
++                    after = os.fstat(source.fileno())
++                identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
++                need(identity(before) == identity(after) == identity(path.lstat()), 'helper_metadata_changed')
++                metadata = validate_helper_boundary_metadata(raw, helper_runtime, original)
++                need([s['stage'] for s in metadata['stages']] == ['popen', 'spawn']
++                     and all(s['refusal'] is None and s.get('font_runtime_equals_initial') is True for s in metadata['stages']),
++                     'helper_metadata_parent_boundaries_not_complete')
++                record.update(bytes=len(raw), sha256=sha(raw), scope='HASHED_ENV_NUMERIC_FD_ONLY_NO_RUNTIME_ADMISSION')
++            files.append(record)
+     return files
+ 
+ 
+@@ -628,7 +734,8 @@
+         need(after_view['view_sha256'] == plan['font_view']['expected_view_sha256']
+              == before_view['view_sha256'], 'postclose_font_CAS_drift')
+         atomic(WORK / 'font-view-after-close.json', after_view)
+-        inventory = output_inventory()
++        inventory = output_inventory(helper_runtime=helper_bundle['runtime'] if helper_bundle is not None else None,
++                                     original=native if helper_bundle is not None else None)
+         result.update(status='CLOSED_UNRELEASED', bootstrap=bootstrap, native_process=trace['process'], native_symbols=trace['symbols'],
+                       uno_widths=widths, office_identity=office, output_inventory=inventory,
+                       gdb_identity=gdb_identity, inner_client_identity=client_identity,
