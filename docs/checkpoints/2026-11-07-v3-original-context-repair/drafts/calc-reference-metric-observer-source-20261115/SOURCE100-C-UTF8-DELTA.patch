@@ -1,0 +1,174 @@
+--- a/runtime_qualifier.py
++++ b/runtime_qualifier.py
+@@ -13,6 +13,7 @@
+ SOURCE_BYTES = 16538
+ VERSION = '26.2.5.2'
+ COMMIT = 'cd7284b4cbbfeb507e630c1aac019f4157393acb'
++C_UTF8_STOCK_LOCALE_LIFECYCLE = 'DESKTOP_PREPARE_LOCALE_COMPLETED_NO_LATER_LANGUAGE_MUTATION'
+ ROLES = {'calc_document','calc_xlsx_filter','vcl','toolkit','sal','font_config_view'}
+ LOAD_POLICY = dict(read_only=True, hidden=True, macros='NEVER_EXECUTE', links='NO_UPDATE',
+                    interaction='ABORT_ONLY', network='OS_NAMESPACE_DENY',
+@@ -152,7 +153,18 @@
+     need(h['argument_name']=='InteractionHandler' and h['kind']=='ABORT_ONLY'
+          and type(h['instance_token']) is str and 1<=len(h['instance_token'])<=128, 'actual_abort_handler_instance_UNBOUND')
+     ref(h['source_ref'])
+-    l=v['lifecycle']; shape(l,('exclusive_owner_operation_id','profile_origin','application_settings','reference_operations'), 'actual_lifecycle_basis_required')
++    env=v['startup_locale_environment']
++    need(env is None or (type(env) is dict and set(env)=={'LC_ALL'}
++         and all(type(x) is str and len(x)<=256 for x in env.values())),
++         'actual_startup_locale_environment_schema_required')
++    c_utf8 = env == {'LC_ALL':'C.UTF-8'}
++    lifecycle_keys=('exclusive_owner_operation_id','profile_origin','application_settings','reference_operations')
++    if c_utf8:
++        lifecycle_keys += ('stock_locale_initialization',)
++    l=v['lifecycle']; shape(l,lifecycle_keys, 'actual_lifecycle_basis_required')
++    if c_utf8:
++        need(l['stock_locale_initialization']==C_UTF8_STOCK_LOCALE_LIFECYCLE,
++             'C_UTF8_stock_startup_language_lifecycle_UNBOUND')
+     need(l['exclusive_owner_operation_id']==pre['operation_id'] and l['profile_origin']=='CREATED_EMPTY_FOR_THIS_OPERATION'
+          and l['application_settings']=='STARTUP_CONFIG_UNMODIFIED'
+          and l['reference_operations']==['LOAD_CALC_WORKING_COPY'], 'fresh_exclusive_unmodified_lifecycle_UNBOUND')
+@@ -173,10 +185,6 @@
+         ref(t['observer_plan_ref'])  # reviewed SOURCE plan, not future result/pre-PASS
+     else:
+         raise Unsupported('explicit_native_transport_mode_UNBOUND')
+-    env=v['startup_locale_environment']
+-    need(env is None or (type(env) is dict and set(env)=={'LC_ALL'}
+-         and all(type(x) is str and len(x)<=256 for x in env.values())),
+-         'actual_startup_locale_environment_schema_required')
+     ref(v['evidence_ref'])
+     return v
+ 
+@@ -234,8 +242,11 @@
+     need(loaded['native_transport']['mode']!='RAW32_POSTQUERY_NATIVE_JOIN' or paired_callbacks,
+          'raw32_query_requires_Root_phase_callbacks')
+     device, model_obs=model_observations(doc,pre)
+-    font=resolve_font_recipe(doc,component_context,property_value_factory=property_value_factory,
+-                             startup_locale_environment=loaded['startup_locale_environment'])
++    resolver_inputs=dict(property_value_factory=property_value_factory,
++                         startup_locale_environment=loaded['startup_locale_environment'])
++    if loaded['startup_locale_environment'] == {'LC_ALL':'C.UTF-8'}:
++        resolver_inputs['stock_startup_locale_lifecycle']=loaded['lifecycle']['stock_locale_initialization']
++    font=resolve_font_recipe(doc,component_context,**resolver_inputs)
+     need(type(font) is dict and {'recipe','source_nominal_font','observations'}<=set(font), 'real_font_resolver_contract_required')
+     # Source derivation from live config plus Root's fresh unmodified startup
+     # lifecycle is conditional, not a direct native Application settings getter.
+@@ -247,6 +258,10 @@
+        ('source_profile','default_script','ms_name_transform','charset_roundtrip','reference_state')}
+     e.update({k:dict(basis='ROOT_EXTERNAL_RECORD',sha256=loaded_sha256) for k in
+              ('producer_instance','private_load_policy','native_width_transport')})
++    if loaded['startup_locale_environment'] == {'LC_ALL':'C.UTF-8'}:
++        # Config observations alone do not establish native Application state.
++        # C.UTF-8 additionally uses the independently bound stock-startup fact.
++        e['default_script']=dict(basis='ROOT_EXTERNAL_RECORD',sha256=loaded_sha256)
+     t=loaded['native_transport']
+     ctx=dict(schema='frw.Root.calc-reference-metric-qualified-context.v2',
+              source_sha256=SOURCE_SHA256,source_bytes=SOURCE_BYTES,
+@@ -265,8 +280,7 @@
+     # Repeat public model/config observations after leaf restoration. A changed
+     # setting invalidates the candidate, even if a width looked plausible.
+     _, after_model=model_observations(doc,pre)
+-    after_font=resolve_font_recipe(doc,component_context,property_value_factory=property_value_factory,
+-                             startup_locale_environment=loaded['startup_locale_environment'])
++    after_font=resolve_font_recipe(doc,component_context,**resolver_inputs)
+     need(after_model==model_obs and after_font==font, 'model_or_config_changed_during_metric_no_release')
+     return dict(schema='frw.calc.reference-qualifier.candidate.v1',status='ROOT_POSTCLOSE_ATTESTATION_REQUIRED',
+                 pre_record_sha256=pre_sha256,loaded_record_sha256=loaded_sha256,
+--- a/font-resolver/runtime_font_resolver.py
++++ b/font-resolver/runtime_font_resolver.py
+@@ -22,6 +22,7 @@
+ 
+ SOURCE_COMMIT = "cd7284b4cbbfeb507e630c1aac019f4157393acb"
+ VERSION = "26.2.5.2"
++C_UTF8_STOCK_LOCALE_LIFECYCLE = "DESKTOP_PREPARE_LOCALE_COMPLETED_NO_LATER_LANGUAGE_MUTATION"
+ DEFAULT_PROVIDER = "/singletons/com.sun.star.configuration.theDefaultProvider"
+ CONFIG_SERVICE = "com.sun.star.configuration.ConfigurationAccess"
+ SETUP_NODE = "/org.openoffice.Setup/L10N"
+@@ -142,7 +143,7 @@
+ 
+ 
+ def resolve_font_recipe(model, component_context, *, property_value_factory,
+-                        startup_locale_environment=None):
++                        startup_locale_environment=None, stock_startup_locale_lifecycle=None):
+     """Read actual APIs/config and return the five-field clean-font recipe.
+ 
+     property_value_factory(name, value) must create a real UNO beans.PropertyValue
+@@ -152,8 +153,10 @@
+ 
+     Current supported source profile: builtin Default/Standard Calibri 11pt,
+     Swiss, normal, no posture; RTL charset 0 or 1; explicit en-US locale config,
+-    or empty locale with Root-supplied {'LC_ALL':'en_US.UTF-8'} actual startup
+-    environment binding. That external input is neither API-observed nor an
++    or empty locale with Root-supplied exact LC_ALL en_US.UTF-8 or C.UTF-8
++    actual startup environment binding. C.UTF-8 additionally requires the exact
++    Root stock_startup_locale_lifecycle token: successful stock Desktop locale
++    initialization and no subsequent native language mutation, not a config ref. That external input is neither API-observed nor an
+     assertion that the host's libc has this locale installed: the pinned Linux
+     native source parses the string directly. Unknown/additional keys refuse.
+     Export font name is resolved from the observed MS substitution configuration.
+@@ -190,18 +193,30 @@
+     # No inference from source text language, UI ooLocale, or available fonts.
+     external_binding = None
+     startup_conditions = list(EXTERNAL_STARTUP_CONDITIONS)
+-    if locale == "":
+-        _require(startup_locale_environment is not None,
+-                 "empty_system_locale_requires_unexposed_host_fallback")
++    selected_lc_all = None
++    if startup_locale_environment is not None:
+         _require(type(startup_locale_environment) is dict
+                  and set(startup_locale_environment) == {"LC_ALL"},
+                  "startup_locale_environment_schema_unsupported")
+-        _require(type(startup_locale_environment["LC_ALL"]) is str
+-                 and startup_locale_environment["LC_ALL"] == "en_US.UTF-8",
+-                 "startup_LC_ALL_outside_supported_en_US_branch")
++        selected_lc_all = startup_locale_environment["LC_ALL"]
++        _require(type(selected_lc_all) is str
++                 and selected_lc_all in ("en_US.UTF-8", "C.UTF-8"),
++                 "startup_LC_ALL_outside_supported_en_US_or_C_UTF8_branch")
++    if selected_lc_all == "C.UTF-8":
++        _require(stock_startup_locale_lifecycle == C_UTF8_STOCK_LOCALE_LIFECYCLE,
++                 "C_UTF8_stock_startup_language_lifecycle_UNBOUND")
++    else:
++        _require(stock_startup_locale_lifecycle is None,
++                 "stock_startup_language_lifecycle_without_C_UTF8_branch")
++    if locale == "":
++        _require(selected_lc_all is not None,
++                 "empty_system_locale_requires_unexposed_host_fallback")
++        # Linux inunx uses LC_ALL first; isolang splits C.UTF-8 at '.',
++        # lowercases C and maps the exact 'c' other-name to ENGLISH_US.
++        # This is not SAL's osl_getProcessLocale/rtl_Locale parser.
+         external_binding = {
+             "kind": "EXTERNAL_ROOT_INPUT_NOT_API_OBSERVED",
+-            "process_start_environment": {"LC_ALL": "en_US.UTF-8"},
++            "process_start_environment": {"LC_ALL": selected_lc_all},
+             "usage": "USED_EMPTY_CONFIGURATION_HOST_FALLBACK",
+             "source_derived_effective_language_tag": "en-US",
+             "scope": "native_Linux_environment_string_parse_not_libc_locale_availability",
+@@ -210,18 +225,19 @@
+             "actual_Root_bound_process_start_LC_ALL_unchanged_and_no_native_configured_system_language_override")
+     else:
+         _require(locale == "en-US", "application_script_locale_outside_supported_en_US_branch")
+-        if startup_locale_environment is not None:
+-            _require(type(startup_locale_environment) is dict
+-                     and set(startup_locale_environment) == {"LC_ALL"},
+-                     "startup_locale_environment_schema_unsupported")
+-            _require(type(startup_locale_environment["LC_ALL"]) is str
+-                     and startup_locale_environment["LC_ALL"] == "en_US.UTF-8",
+-                     "startup_LC_ALL_outside_supported_en_US_branch")
++        if selected_lc_all is not None:
+             external_binding = {
+                 "kind": "EXTERNAL_ROOT_INPUT_NOT_API_OBSERVED",
+-                "process_start_environment": {"LC_ALL": "en_US.UTF-8"},
++                "process_start_environment": {"LC_ALL": selected_lc_all},
+                 "usage": "UNUSED_EXPLICIT_CONFIGURATION_PRECEDENCE",
+             }
++    if selected_lc_all == "C.UTF-8":
++        # The token is an externally bound Root lifecycle fact, not API proof
++        # or a conclusion from ooSetupSystemLocale. Pinned stock prepareLocale
++        # selects the configured system language from this same config/env.
++        external_binding["stock_startup_locale_lifecycle"] = stock_startup_locale_lifecycle
++        startup_conditions.append(
++            "Root_observed_successful_stock_Desktop_prepareLocale_and_no_later_native_language_mutation")
+     substitutions = _config_access(provider, SUBSTITUTION_NODE, property_value_factory)
+     export_name, ms_observation = _resolve_ms_name(values["CharFontName"], substitutions)
+     settings = component_context.getServiceManager().createInstanceWithContext(
