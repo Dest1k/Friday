@@ -1,0 +1,169 @@
+--- /home/jericho/.cache/FRW-SOL-V3-GPGME-PENDING-FORK-PROTOCOL-CORE-20261115/r3/candidate/outer/deps/gpgme_boundary_collector.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-EXIT-DEPENDENCY-SOURCE-20261115/candidate/outer/deps/gpgme_boundary_collector.py
+@@ -126,10 +126,75 @@
+     need(all(integer(v, 1) for v in value.values()), 'gpgme_collector_namespace_values')
+ 
+ 
++# Finite exact post-main C.UTF-8 profile. These are data mappings, not
++# ELF dependency images. No path prefix, optional file or arbitrary superset
++# is accepted. Source/package proof is bound by this immutable collector.
++EXIT_LOCALE_PROFILE = 'GNUPG_C_UTF8_GLIBC_2_43_EXIT_INTENT_V1'
++EXIT_HELPERS = {
++    'gpgconf': ('/usr/bin/gpgconf', 'fba79b5d1b14100b0696bc93bd47bb4d1816a32619c8de8f3094cf430c1db5f9',
++                ('list_dirs', 'list_components', 'gpgconf_version')),
++    'gpg': ('/usr/bin/gpg', 'c8f3dc07a34ab0a0a081368b482724b79a2a6d6b7aa856741c09edf7af854754',
++            ('gpg_version',)),
++    'gpgsm': ('/usr/bin/gpgsm', '1181239ec3a7a41a586f7c66aebb6b24cc5855dc3c020a3c8fd290dcac79e270',
++              ('gpgsm_version',)),
++}
++EXIT_LOCALE_FILES = tuple(('/usr/lib/locale/C.utf8/' + name, 'r--p') for name in (
++    'LC_ADDRESS', 'LC_COLLATE', 'LC_CTYPE', 'LC_IDENTIFICATION', 'LC_MEASUREMENT',
++    'LC_MESSAGES/SYS_LC_MESSAGES', 'LC_MONETARY', 'LC_NAME', 'LC_NUMERIC',
++    'LC_PAPER', 'LC_TELEPHONE', 'LC_TIME')) + (
++    ('/usr/lib/locale/locale-archive', 'r--p'),
++    ('/usr/lib/x86_64-linux-gnu/gconv/gconv-modules.cache', 'r--s'))
++EXIT_LOCALE_SOURCE_SHA256 = {
++    'source_package': '8da6cfd185aebbc3631cb5278763250c965d5e3d626e3d92adb926ad270eb4b4',
++    'setlocale.c': '8b2370a4245679bfdaf02fa2bd2978e5611ddbb6b0234c9f59a19490273ca0fa',
++    'findlocale.c': '813a8d07433d82a26d56b709a4c137d717b58053b94eca734bbc0c70fdc31e30',
++    'loadlocale.c': 'd870b2d7064be7813f88faac4996ede36ebc6ebf12c564d4f8d9818d74a110af',
++    'loadarchive.c': '1c475382c5f8cc7faaee13bbbd2aa8a3298db888de2c79e31c9833293acea841',
++    'gconv_cache.c': '69f6b7a710e286a6a85aa34722e3cc1684b31da9710a1aff60e8abf4312c9ddf',
++}
++
++
++def validate_passive_file(image):
++    exact(image, ('path', 'sha256', 'host_stamp', 'perms'), 'gpgme_collector_passive_schema')
++    need((image['path'], image['perms']) in EXIT_LOCALE_FILES and policy.sha(image['sha256']),
++         'gpgme_collector_passive_exact_path_or_permissions')
++    host = validate_stamp(image['host_stamp'])
++    need(host['uid'] == 0 and stat.S_ISREG(host['mode']) and not host['mode'] & 0o022
++         and host['nlink'] == 1 and 1 <= host['size'] <= MAX_FILE,
++         'gpgme_collector_passive_host_root_file_pin')
++    return image
++
++
++def validate_exit_profile(value, pins):
++    exact(value, ('profile', 'phase', 'locale', 'source_sha256', 'files'),
++          'gpgme_collector_exit_profile_schema')
++    need(value['profile'] == EXIT_LOCALE_PROFILE and value['phase'] == 'exit_intent'
++         and value['locale'] == 'C.UTF-8' and value['source_sha256'] == EXIT_LOCALE_SOURCE_SHA256,
++         'gpgme_collector_exit_profile_source_phase_locale')
++    need(pins['environment'].get('LC_ALL') == pins['environment'].get('LANG') == 'C.UTF-8'
++         and not any(key in pins['environment'] for key in ('LOCPATH', 'GCONV_PATH', 'LANGUAGE')),
++         'gpgme_collector_exit_profile_environment')
++    files = value['files']
++    need(type(files) is list and len(files) == len(EXIT_LOCALE_FILES),
++         'gpgme_collector_exit_profile_file_bound')
++    for image in files:
++        validate_passive_file(image)
++    need([(image['path'], image['perms']) for image in files] == list(EXIT_LOCALE_FILES),
++         'gpgme_collector_exit_profile_exact_files')
++    for role, (path, sha256, branches) in EXIT_HELPERS.items():
++        if role not in pins['dependencies']:
++            continue
++        matches = [image for image in pins['dependencies'][role] if image['path'] == path]
++        need(len(matches) == 1 and matches[0]['sha256'] == sha256,
++             'gpgme_collector_exit_profile_exact_helper')
++    return value
++
++
+ def validate_pins(pins):
+     """Pure strict validation; it does not demand any future process exists."""
+     exact(pins, ('operation', 'original', 'reaper', 'library', 'libc', 'environment', 'cwd',
+-                 'absent_paths', 'private_roots', 'cgroup', 'uid_projection', 'dependencies'),
++                 'absent_paths', 'private_roots', 'cgroup', 'uid_projection', 'dependencies',
++                 'exit_intent_mappings'),
+           'gpgme_collector_pins_schema')
+     if pins['operation'] is not None:
+         exact(pins['operation'], ('operation_id', 'nonce', 'deadline_monotonic'),
+@@ -191,6 +256,7 @@
+         paths = [image['path'] for image in images]
+         need(len(set(paths)) == len(paths) and pins['libc'] in images
+              and (role != 'original' or pins['library'] in images), 'gpgme_collector_dependency_pins')
++    validate_exit_profile(pins['exit_intent_mappings'], pins)
+     return pins
+ 
+ 
+@@ -845,8 +911,9 @@
+         finally:
+             os.close(directory)
+ 
+-    def _file(self, image):
+-        validate_image(image)
++    def _file(self, image, *, passive=False):
++        need(type(passive) is bool, 'gpgme_collector_file_kind')
++        (validate_passive_file if passive else validate_image)(image)
+         projection = self._projection()
+         descriptor = self._secure_open(image['path'])
+         try:
+@@ -1566,7 +1633,24 @@
+              'gpgme_collector_gdb_fd_table_changed')
+         return result
+ 
+-    def dependencies(self, pid, role, *, entry=True):
++    def _passive_binding(self, pid, image, rows):
++        validate_passive_file(image)
++        need(self._ns(pid) == self._ns(os.getpid()), 'gpgme_collector_passive_cross_namespace')
++        raw, first, last, projection = self._file(image, passive=True)
++        host = image['host_stamp']
++        own = [row for row in rows if row['path'] == image['path']]
++        same = [row for row in rows if (row['dev_major'], row['dev_minor'], row['ino']) ==
++                (host['dev_major'], host['dev_minor'], host['ino'])]
++        need(len(own) == 1 and same == own and own[0]['perms'] == image['perms']
++             and own[0]['offset'] == 0
++             and own[0]['end'] - own[0]['start'] == (len(raw) + 4095) & ~4095,
++             'gpgme_collector_passive_exact_mapping')
++        return dict(path=image['path'], kind='PASSIVE_LOCALE_DATA', sha256=digest(raw),
++                    actual_namespace_stamp=first, actual_namespace_stamp_after=last,
++                    root_host_stamp=host, uid_projection=projection,
++                    mapping=copy.deepcopy(own[0]), runtime_attested=False)
++
++    def dependencies(self, pid, role, *, entry=True, phase='load_boundary', branch=None):
+         need(type(role) is str and role in self.p['dependencies'], 'gpgme_collector_dependency_role')
+         identity = self.proc(pid)
+         stop = self._all_stop(pid)
+@@ -1575,7 +1659,22 @@
+         actual = {r['path'] for r in rows if r['path'].startswith('/')}
+         images = self.p['dependencies'][role]
+         need(type(entry) is bool, 'gpgme_collector_dependency_stage_type')
+-        expected = {i['path'] for i in images}
++        need(phase in ('load_boundary', 'exit_intent') and
++             ((phase == 'load_boundary' and branch is None) or (phase == 'exit_intent' and entry)),
++             'gpgme_collector_dependency_phase')
++        passive = []
++        if phase == 'exit_intent':
++            need(role in EXIT_HELPERS and branch in EXIT_HELPERS[role][2]
++                 and pid in self._entry_verified, 'gpgme_collector_exit_profile_role_branch_or_entry')
++            image = self._role_image(pid, role)
++            need((image['path'], image['sha256']) == EXIT_HELPERS[role][:2],
++                 'gpgme_collector_exit_profile_current_image')
++            environment = self.current_environment(pid)
++            need(environment.get('LANG') == environment.get('LC_ALL') == 'C.UTF-8'
++                 and not any(key in environment for key in ('LOCPATH', 'GCONV_PATH', 'LANGUAGE')),
++                 'gpgme_collector_exit_profile_current_environment')
++            passive = self.p['exit_intent_mappings']['files']
++        expected = {i['path'] for i in images} | {i['path'] for i in passive}
+         need(actual <= expected and (not entry or actual == expected),
+              'gpgme_collector_exact_mapped_dependency_set')
+         need(os.readlink('/proc/%d/exe' % pid) in actual,
+@@ -1587,6 +1686,7 @@
+             executable = [r for r in rows if r['path'] == image['path'] and 'x' in r['perms']]
+             need(len(executable) == 1, 'gpgme_collector_dependency_executable_mapping')
+             result.append(dict(path=image['path'], binding=self.image_binding(pid, image, executable[0]['start'])))
++        result.extend(self._passive_binding(pid, image, rows) for image in passive)
+         need(self._read('/proc/%d/maps' % pid, 524288) == before and self.proc(pid) == identity
+              and self._all_stop(pid) == stop, 'gpgme_collector_dependency_boundary_changed')
+         return result
+--- /home/jericho/.cache/FRW-ASTRA-GPGME-ACTUAL-READ-BOUNDARY-SOURCE-20261115/candidate/outer/deps/gpgme_engine_gdb.py
++++ /home/jericho/.cache/FRW-ASTRA-GPGME-EXIT-DEPENDENCY-SOURCE-20261115/candidate/outer/deps/gpgme_engine_gdb.py
+@@ -1228,7 +1228,8 @@
+             self.p['validate_exec_fds'](self.collector.fds(inf.pid), c['pipe'],
+                 null_rdev=Path('/dev/null').stat().st_rdev)
+             self.p['validate_environment'](self.collector.exec_environment(inf.pid), self.c.env)
+-            self.collector.dependencies(inf.pid, c['role'], entry=True)
++            self.collector.dependencies(inf.pid, c['role'], entry=True,
++                phase='exit_intent', branch=c['branch'])
+         matches = [v for v in self.c.current['children'] if v['inferior'] == inf.num]
+         need(len(matches) == 1 and matches[0]['identity'] == child,
+              'gpgme_exit_intent_actual_identity')
