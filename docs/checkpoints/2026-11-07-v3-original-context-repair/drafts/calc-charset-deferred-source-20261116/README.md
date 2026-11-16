@@ -16,3 +16,11 @@ Root's closed3ed5 operation still refused `source_charset_roundtrip_unsupported`
 Only exact Source bodies/diff hunks retain their historical fixed local source/install/control/lock paths, thread/goal identifiers, historical retired-unit guard constants and inert fixture pathname. They are code constants, not copied operational records or bearer authority. All newly written public metadata uses archive-relative code links or proof names/hashes. No original document, profile/userdata, oracle/bank, prepared input/plan/preload, cap/grant/nonce/receipt, raw operation result, ENV/process payload, credential or upstream body is included.
 
 Historical checkers and table deriver are review material with omitted old dependencies. They are not portable commands: checkers write historical CHECKS.json, and the deriver can fetch pinned upstream sources. They were never executed for this archive. No accepted suite, Office/UNO/GDB/namespace/actor/API/model/render/send/service/install/admission or paid operation was run. Root alone owns copying the allowlisted files to the repository and any later publication/integration.
+
+## Сохранённый первый отказ и минимальные error-facts
+
+Сол завершил same-saved разбор `cb455841`: точная внутренняя причина не сохранена;
+не восстанавливать её из шаблона Source или ошибки другого interpreter.
+[Изолированный leaf](renderer-error-facts/SOURCE-AND-REVIEW.json) независимо проверен,
+но не включён в Source79/80, установочный состав или провайдер. Старый once/40–35
+не запускать повторно. F04runtime остаётся P1 deferred; независимый core продолжается.

@@ -1,0 +1,74 @@
+--- native/hermes_cli/friday_workspace_pdf.py.before
++++ native/hermes_cli/friday_workspace_pdf.py.proposed
+@@ -205,6 +205,55 @@
+         self.returncode, self.authority = process.returncode, authority
+ 
+ 
++def _renderer_failure_facts(argv, returncode):
++    # Correlation of bounded SUPPLIED argv lengths only: neither argv contents,
++    # unique invocation/actual exec/custody proof, nor a completion/permission receipt.
++    correlation = None
++    if type(argv) in (list, tuple) and 0 < len(argv) <= 256:
++        if all(type(part) is str and len(part) <= 4096 for part in argv):
++            lengths = [len(part) for part in argv]
++            if sum(lengths) <= 32768:
++                metadata = json.dumps(lengths, separators=(',', ':')).encode('ascii')
++                correlation = hashlib.sha256(b'supplied-argv-lengths-v1:' + metadata).hexdigest()
++    return {'exception_class': 'ExportRefused', 'phase': 'child_exit',
++            'place': 'friday_workspace_pdf._run',
++            'returncode': returncode if (type(returncode) is int
++                and -(1 << 31) <= returncode < (1 << 31) and returncode != 0) else None,
++            'argv_shape_sha256': correlation}
++
++
++def renderer_error_facts(error):
++    """Pure bounded copy for a private Root catcher; never execution authority."""
++    try:
++        if type(error) is not ExportRefused:
++            return None
++        args = error.args
++        if (type(args) is not tuple or len(args) != 1 or type(args[0]) is not str
++                or args[0] != 'renderer_failed'):
++            return None
++        facts = error.__dict__.get('_friday_renderer_error_facts')
++        keys = ('exception_class', 'phase', 'place', 'returncode', 'argv_shape_sha256')
++        if (type(facts) is not dict or len(facts) != len(keys)
++                or any(type(key) is not str for key in facts) or set(facts) != set(keys)):
++            return None
++        for key, expected in (('exception_class', 'ExportRefused'), ('phase', 'child_exit'),
++                              ('place', 'friday_workspace_pdf._run')):
++            if type(facts[key]) is not str or facts[key] != expected:
++                return None
++        returncode = facts['returncode']
++        if returncode is not None and (type(returncode) is not int
++                or not -(1 << 31) <= returncode < (1 << 31) or returncode == 0):
++            return None
++        digest = facts['argv_shape_sha256']
++        if digest is not None and (type(digest) is not str or len(digest) != 64
++                or any(char not in '0123456789abcdef' for char in digest)):
++            return None
++        return {key: facts[key] for key in keys}
++    except Exception:
++        # Optional diagnostic data must never replace the original failure.
++        return None
++
++
+ def _run(cap, argv, work, *, _absolute_deadline=None):
+     from agent.web_call_context import _current, same_web_authority
+     from hermes_cli.friday_workspace_revision import check
+@@ -250,7 +299,14 @@
+                 custody.process.wait(timeout=wait)
+             except subprocess.TimeoutExpired: pass
+         check(cap)
+-        if custody.process.returncode != 0: raise ExportRefused('renderer_failed')
++        returncode = custody.process.returncode
++        if returncode != 0:
++            error = ExportRefused('renderer_failed')
++            try:
++                error._friday_renderer_error_facts = _renderer_failure_facts(argv, returncode)
++            except Exception:
++                pass  # best-effort private facts cannot weaken the original stop fence
++            raise error
+     finally:
+         receipt = custody.stop()
+         with (call.turn.lock if _absolute_deadline is None
