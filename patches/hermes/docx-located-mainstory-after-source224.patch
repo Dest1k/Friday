@@ -1,0 +1,27 @@
+--- a/tools/scoped_word_located.py
++++ b/tools/scoped_word_located.py
+@@ -31,6 +31,13 @@
+         parents={child:parent for parent in root.iter()for child in parent}
+         if parents.get(target) is None or parents[target].tag not in (_q(W,'body'),_q(W,'tc')):
+             raise WordProfileError('unsupported_structure')
++        # A table cell can belong to a textbox's separate story. Bind the
++        # selected paragraph to the validated main body without crossing it.
++        ancestor=target
++        while ancestor is not body:
++            if ancestor is None or ancestor.tag==_q(W,'txbxContent'):
++                raise WordProfileError('unsupported_structure')
++            ancestor=parents.get(ancestor)
+         if any(n.tag in (_q(W,'fldChar'),_q(W,'instrText'),_q(W,'fldSimple'))for n in target.iter()):
+             raise WordProfileError('field_owned_text')
+         texts=list(target.iter(_q(W,'t')));value=''.join(n.text or ''for n in texts)
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -512,6 +512,8 @@
+         if paragraphs > MAX_PARAGRAPHS:
+             _fail('paragraph_count_limit')
+         guide = {child for ruby in node.iter(_q(W, 'rt')) for child in ruby.iter()}
++        guide.update(child for properties in node.iter(_q(W, 'pPr'))
++                     for child in properties.iter())
+         value = ''.join((item.text or '') if item.tag == _q(W, 't')
+                         else '\t' if item.tag == _q(W, 'tab')
+                         else '\n' if item.tag in (_q(W, 'br'), _q(W, 'cr')) else ''
