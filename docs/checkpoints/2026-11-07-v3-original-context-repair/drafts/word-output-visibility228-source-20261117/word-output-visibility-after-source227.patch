@@ -1,0 +1,242 @@
+diff --git a/hermes_cli/friday_workspace_word_conversion.py b/hermes_cli/friday_workspace_word_conversion.py
+--- a/hermes_cli/friday_workspace_word_conversion.py
++++ b/hermes_cli/friday_workspace_word_conversion.py
+@@ -109,7 +109,7 @@
+ def render(cap, data, operation):
+     from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
+     from hermes_cli.friday_workspace_revision import check
+-    from tools.scoped_word_conversion import inventory, validate_conversion, restore_odt_docx_output, WordConversionError
++    from tools.scoped_word_conversion import inventory, validate_conversion, restore_odt_docx_output, restore_docx_odt_output, WordConversionError
+     if operation not in OPERATIONS:
+         raise ValueError('unsupported_conversion')
+     spec = OPERATIONS[operation]
+@@ -135,6 +135,8 @@
+         repair = {}
+         if operation == 'odt_docx':
+             output, repair = restore_odt_docx_output(data, output, checkpoint=lambda: check(cap))
++        elif operation == 'docx_odt':
++            output, repair = restore_docx_odt_output(data, output, checkpoint=lambda: check(cap))
+         details = validate_conversion(data, spec['source'][1:], output, spec['output'][1:],
+                                       checkpoint=lambda: check(cap))
+         details.update(repair)
+diff --git a/tools/scoped_word_conversion.py b/tools/scoped_word_conversion.py
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -1337,6 +1337,31 @@
+         allowed = {q(FO, n) for n in fo} | {q(S, n) for n in style} | {q(T, n) for n in text}
+         if node.tag == q(S, 'table-properties'):
+             allowed |= {q(TB, 'align'), q(TB, 'border-model')}
++        if self.native_output:
++            # Recognize only these fixed passive Writer scalar properties.
++            # Opacity is never admitted here. Keep the stricter ODT input profile;
++            # this does not attest rendered layout or arbitrary extensions.
++            lo = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
++            defaults = {}
++            if node.tag == q(S, 'paragraph-properties'):
++                defaults = {q(FO, 'hyphenation-keep'): 'auto',
++                            q(lo, 'hyphenation-keep-line'): 'false',
++                            q(lo, 'hyphenation-keep-type'): 'column',
++                            q(lo, 'tab-stop-distance'): '0in'}
++            elif node.tag == q(S, 'text-properties'):
++                defaults = {q(lo, 'hyphenation-no-caps'): 'false',
++                            q(lo, 'hyphenation-no-last-word'): 'false',
++                            q(lo, 'hyphenation-word-char-count'): '5',
++                            q(lo, 'hyphenation-zone'): 'no-limit'}
++            elif node.tag == q(S, 'page-layout-properties'):
++                defaults = {q(S, 'num-format'): '1',
++                            q(S, 'layout-grid-snap-to'): 'true',
++                            q(lo, 'margin-gutter'): '0in'}
++            for name, expected in defaults.items():
++                if name in node.attrib:
++                    if node.get(name) != expected:
++                        _fail('unsupported_odt_style')
++                    allowed.add(name)
+         if set(node.attrib) - allowed:
+             _fail('unsupported_odt_style')
+         if node.get(q(T, 'display')) not in (None, 'true'):
+@@ -1394,8 +1419,29 @@
+                 else:
+                     _fail('unsupported_odt_master')
+         for identity, node in self.masters.items():
+-            if set(node.attrib) - {q(S, 'name'), q(S, 'display-name'), q(S, 'page-layout-name')}:
++            draw = 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0'
++            allowed_master = {q(S, 'name'), q(S, 'display-name'), q(S, 'page-layout-name')}
++            if self.native_output:
++                allowed_master.add(q(draw, 'style-name'))
++            if set(node.attrib) - allowed_master:
+                 _fail('unsupported_odt_master')
++            background = node.get(q(draw, 'style-name'))
++            if background is not None:
++                # A native Writer master may reference an otherwise empty page
++                # background style. No fill, URI, inheritance or content admitted.
++                passive = self.styles.get(('drawing-page', self.identity(background)))
++                # A family default is an implicit parent even when the named
++                # style carries no parent-style-name. The observed passive
++                # Writer page has no such default; refuse that extra path.
++                if (not self.native_output or 'drawing-page' in self.default_styles
++                        or passive is None
++                        or set(passive.attrib) != {q(S, 'name'), q(S, 'family')}
++                        or len(passive) != 1 or passive[0].tag != q(S, 'drawing-page-properties')
++                        or passive[0].attrib != {q(draw, 'background-size'): 'full'}
++                        or len(passive[0])):
++                    _fail('unsupported_odt_master')
++                _white(passive)
++                _white(passive[0])
+             layout = node.get(q(S, 'page-layout-name'))
+             if layout not in self.layouts or set(self.layouts) != {layout}:
+                 _fail('ambiguous_odt_master')
+@@ -1638,11 +1684,17 @@
+                     expected = {q(S, 'text-properties')}
+                     if family != 'text':
+                         expected.add(q(S, family + '-properties'))
++                    native_graphic_default = (self.native_output and default_node
++                                              and family == 'graphic')
++                    if native_graphic_default:
++                        expected.add(q(S, 'paragraph-properties'))
+                     if prop.tag not in expected:
+                         _fail('unsupported_odt_style')
+                     # Unused nontext families cannot supply visible content;
+                     # selected table styles are checked by table() too.
+-                    if family in ('paragraph', 'text', 'table', 'table-cell', 'table-row', 'table-column'):
++                    if (family in ('paragraph', 'text', 'table', 'table-cell', 'table-row', 'table-column')
++                            or (native_graphic_default and prop.tag in (
++                                q(S, 'paragraph-properties'), q(S, 'text-properties')))):
+                         self.visual_properties(prop)
+                     else:
+                         _white(prop)
+@@ -2110,6 +2162,135 @@
+     return b''.join(result)
+ 
+ 
++
++def restore_docx_odt_output(source, output, *, checkpoint=None):
++    """Remove two narrowly source-bound native default-opacity extras.
++
++    Raw native opacity remains unsupported, including on named/used styles.
++    Only 0% on paragraph/graphic default text properties is eligible, and only
++    for an admitted source with no hidden/transparency extension path. This
++    is not a general visibility, theme, rendering or formatting-fidelity claim.
++    Every other byte in the XML and every other package member is retained;
++    the complete derived native inventory must still equal the source.
++    """
++    try:
++        inventory(source, 'docx', checkpoint=checkpoint)
++    except WordConversionError as error:
++        raise WordConversionError(error.code, 'source_inventory') from None
++
++    opacity = q('urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0', 'opacity')
++    try:
++        package = _editable_package(output, 'odt', checkpoint)
++    except (ODFProfileError, ODTError, PresentationError) as error:
++        raise WordConversionError(str(error), 'output_inventory') from None
++    targets = []
++    for name, root in package.xml.items():
++        parents = {child: parent for parent in root.iter() for child in parent}
++        for node in root.iter():
++            _tick(checkpoint)
++            if opacity not in node.attrib:
++                continue
++            parent = parents.get(node)
++            container = parents.get(parent)
++            if (name != 'styles.xml' or root.tag != q(O, 'document-styles')
++                    or node.tag != q(S, 'text-properties') or node.get(opacity) != '0%'
++                    or parent is None or parent.tag != q(S, 'default-style')
++                    or parent.attrib not in ({q(S, 'family'): 'paragraph'}, {q(S, 'family'): 'graphic'})
++                    or container is None or container.tag != q(O, 'styles')
++                    or parents.get(container) is not root):
++                raise WordConversionError('unsupported_output_restoration', 'output_inventory')
++            targets.append((name, node))
++    if not targets:
++        validate_conversion(source, 'docx', output, 'odt', checkpoint=checkpoint)
++        return output, {}
++    if len(targets) > 2:
++        raise WordConversionError('unsupported_output_restoration', 'output_inventory')
++
++    try:
++        word = _Word(source, _Inventory(checkpoint))
++        # An implicit/unused character style can affect native rendering even
++        # though it is not in the semantic paragraph-style chain. Validate all
++        # run-property containers, not just those selected by the inventory.
++        # This extra source restriction is needed only when deriving new bytes;
++        # an already valid native package keeps the existing conversion path.
++        for name, root in word.pkg.xml.items():
++            if not name.startswith('word/') or not name.endswith('.xml'):
++                continue
++            if name.startswith('word/theme/'):
++                _fail('unsupported_output_restoration')
++            for node in root.iter():
++                _tick(checkpoint)
++                if not node.tag.startswith(q(W, '')):
++                    _fail('unsupported_output_restoration')
++                for attr in node.attrib:
++                    inert_marker = (node is root and attr == q(
++                        'http://schemas.openxmlformats.org/markup-compatibility/2006', 'Ignorable'))
++                    if not inert_marker and not any(attr.startswith(q(ns, '')) for ns in (
++                            W, R, 'http://www.w3.org/XML/1998/namespace')):
++                        _fail('unsupported_output_restoration')
++                if node.tag in {q(W, n) for n in ('vanish', 'webHidden', 'specVanish')}:
++                    _fail('unsupported_output_restoration')
++                if node.tag == q(W, 'rPr'):
++                    if node.attrib:
++                        _fail('unsupported_output_restoration')
++                    _word_properties(node, _RUN_PROPERTIES)
++    except WordConversionError as error:
++        raise WordConversionError(error.code, 'source_inventory') from None
++    except WordProfileError as error:
++        raise WordConversionError(str(error), 'source_inventory') from None
++
++    ranges = _native_xml_ranges(package.parts['styles.xml'], package.xml['styles.xml'], checkpoint)
++    edits = []
++    for name, node in targets:
++        start, opening_end, _, _ = ranges[id(node)]
++        opening = package.parts[name][start:opening_end]
++        # Deliberately limited native UTF-8 spelling. Unsupported prefixes or
++        # escaped/ambiguous values fail closed rather than reserialize XML.
++        pattern = rb'''\s+[A-Za-z_][A-Za-z0-9_.-]*:opacity\s*=\s*(["'])0%\1'''
++        matches = list(re.finditer(pattern, opening))
++        if len(matches) != 1:
++            raise WordConversionError('unsupported_output_restoration', 'output_inventory')
++        match = matches[0]
++        edits.append((start + match.start(), start + match.end(), b''))
++    changed = _native_xml_edits(package.parts['styles.xml'], edits, checkpoint)
++    buffer = BytesIO()
++    with ZipFile(BytesIO(output)) as original, ZipFile(buffer, 'w') as derived:
++        derived.comment = original.comment
++        for info in original.infolist():
++            _tick(checkpoint)
++            record = copy(info)
++            derived.writestr(record, changed if info.filename == 'styles.xml' else package.parts.get(info.filename, b''))
++            record.external_attr = info.external_attr
++            if buffer.tell() > 1_000_000:
++                _fail('output_limit')
++    candidate = buffer.getvalue()
++    if len(candidate) > 1_000_000:
++        _fail('output_limit')
++    # Bind the textual removal to exactly the intended expanded-name delta.
++    # This catches deceptive lexical prefixes or a changed namespace binding.
++    try:
++        proposed = _editable_package(candidate, 'odt', checkpoint)
++    except (ODFProfileError, ODTError, PresentationError) as error:
++        raise WordConversionError(str(error), 'output_inventory') from None
++    wanted = deepcopy(package.xml['styles.xml'])
++    for node in wanted.iter():
++        node.attrib.pop(opacity, None)
++    def same_tree(left, right):
++        _tick(checkpoint)
++        return (left.tag == right.tag and left.attrib == right.attrib
++                and left.text == right.text and left.tail == right.tail
++                and len(left) == len(right)
++                and all(same_tree(a, b) for a, b in zip(left, right)))
++    if not same_tree(wanted, proposed.xml['styles.xml']):
++        raise WordConversionError('unsupported_output_restoration', 'output_inventory')
++    validate_conversion(source, 'docx', candidate, 'odt', checkpoint=checkpoint)
++    return candidate, {'source_bound_output_repair': {
++        'profile': 'docx_odt_default_opacity_v1',
++        'raw_office_output_sha256': hashlib.sha256(output).hexdigest(),
++        'derived_output_sha256': hashlib.sha256(candidate).hexdigest(),
++        'default_text_opacity_attributes_removed': len(targets)}}
++
++
+ def restore_odt_docx_output(source, output, *, checkpoint=None):
+     """Derive a source-bound DOCX for two exact, fully observed Office extras.
+ 
