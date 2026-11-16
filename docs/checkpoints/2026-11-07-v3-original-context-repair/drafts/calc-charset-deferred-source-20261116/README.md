@@ -1,6 +1,6 @@
 # Deferred Calc charset Source — 16 November 2026
 
-**DEFERRED_NOT_INSTALLED_NOT_RUNTIME_ACCEPTED.** This small archive preserves already finished F04 Source work. Rich F04/P1 is deferred; full170/120/B00 and all old effects/clocks remain unchanged. It is not an execution generation or a return to F04. Independent DOCX core work remains ahead.
+**ARCHIVED SOURCE / NOT INSTALLED / NOT RUNTIME ACCEPTED.** This small archive preserves finished F04 Source work. At the 16 November15:50MSK ODP render milestone Root resumed only a finite complete32→ordinary Source composition, assigned to Sol in a separate private output; the archived code and old generation remain unchanged. Root's independent DOCX summary/recall continues. Full170/120/B00, all old effects/clocks and the old ordinary generation NOT_READY remain unchanged. No Office/ordinary qualification, installation or user effect is authorized by this archive; see [STATUS.json](STATUS.json) and [ASTRA-CURRENT.md](../../ASTRA-CURRENT.md).
 
 [SOURCE-MAP.json](SOURCE-MAP.json) maps exact code, preimages and patches. [CHECKS-AND-REVIEWS.json](CHECKS-AND-REVIEWS.json) separates accepted Source evidence; [PROVENANCE.json](PROVENANCE.json) records retained proof hashes and existing public references. [STATUS.json](STATUS.json) governs current limits.
 
