@@ -1,0 +1,115 @@
+--- production15/outer/deps/gpgme_engine_gdb.py
++++ R2/candidate/outer/deps/gpgme_engine_gdb.py
+@@ -753,6 +753,16 @@
+             # Missing late-DSO symbols raise gdb.error before a breakpoint is
+             # created; the existing load/new_objfile path can retry safely.
+             address = int(self.g.parse_and_eval('&gpgme_get_engine_info'))
++            # An earlier objfile can expose an importing DSO's PLT. Never
++            # retain that address: an internal check_version -> getter call
++            # bypasses the import PLT. Retry only through existing load hooks.
++            # Full backing-file/relative-PC/release proof stays at the hit.
++            owner = self.g.solib_name(address)
++            if owner is None or str(Path(owner).resolve()) != self.m['collector_pins']['library']['path']:
++                return
++            expected = bytes.fromhex(SITE_BYTES['engine_entry'])
++            need(self.memory(address, len(expected)) == expected,
++                 'gpgme_bootstrap_install_site_bytes')
+             bp = Bootstrap('*' + hex(address), internal=True)
+             bp.inferior = 1
+             need(bp.inferior == 1, 'gpgme_bootstrap_original_inferior')
+@@ -761,6 +771,51 @@
+             self.handlers[bp.number] = (bp, self.bootstrap_entry, False)
+         except self.g.error:
+             return  # Exact symbol not loaded yet; no numeric fallback.
++
++    def install_after_paper(self):
++        """Prove the exact getter at the existing CLOSED paper dispatch stop.
++
++        The original Root release already exists in this LOAD_OPEN window.
++        This is an observer breakpoint, outside all GDB callbacks; it neither
++        executes the getter nor supplies an initialization/continuation grant.
++        Global symbol lookup and debug-symbol availability are irrelevant here.
++        """
++        need(self.n['STATE']['error'] is None and not self.installed
++             and not self.init_active and not self.finished_initialization
++             and self.c is None and self.g.selected_inferior().num == 1,
++             'gpgme_postpaper_install_state')
++        self.paper_closed()
++        self.paper.window()
++        original = self.original()
++        image = self.m['collector_pins']['library']
++        rows = self.collector.maps(original['pid'])
++        executable = [row for row in rows if row['path'] == image['path']
++                      and 'x' in row['perms']]
++        need(len(executable) == 1, 'gpgme_postpaper_executable_mapping')
++        mapped = self.collector.image_binding(original['pid'], image, executable[0]['start'])
++        address = mapped['load_bias'] + SITE_OFFSETS['engine_entry']
++        entry = self.collector.image_binding(original['pid'], image, address)
++        need(entry['relative_pc'] == SITE_OFFSETS['engine_entry']
++             and entry['load_bias'] == mapped['load_bias']
++             and entry['maps_sha256'] == mapped['maps_sha256'],
++             'gpgme_postpaper_exact_entry_binding')
++        owner = self.g.solib_name(address)
++        need(owner is not None and str(Path(owner).resolve()) == image['path'],
++             'gpgme_postpaper_entry_owner')
++        expected = bytes.fromhex(SITE_BYTES['engine_entry'])
++        need(self.memory(address, len(expected)) == expected,
++             'gpgme_postpaper_entry_bytes')
++        if self.bootstrap is None:
++            # Reuse the existing scoped-location/partial-creation cleanup path.
++            self.bootstrap = self.breakpoint(address, self.bootstrap_entry)
++        else:
++            bp = self.bootstrap
++            need(bp.is_valid() and bp.enabled is True and bp.inferior == 1,
++                 'gpgme_postpaper_existing_bootstrap_state')
++            locations = list(bp.locations)
++            need(len(locations) == 1 and locations[0].owner is bp
++                 and locations[0].enabled is True and locations[0].address == address,
++                 'gpgme_postpaper_existing_bootstrap_location')
+ 
+     def bootstrap_entry(self):
+         # Any interposed/different owner is refused before a helper can fork.
+@@ -2001,7 +2056,14 @@
+         return self.gpgme.exited(event)
+ 
+     def dispatch(self):
+-        a, b = self.paper.dispatch(), self.gpgme.dispatch()
++        before_closed = self.paper.c is not None and self.paper.c.e['state'] == 'CLOSED'
++        a = self.paper.dispatch()
++        if (self.gpgme.n['STATE']['error'] is None and not before_closed
++                and self.paper.c is not None and self.paper.c.e['state'] == 'CLOSED'):
++            # Only the real pclose dispatch transition can establish this stop.
++            # Arm before the existing CONTINUE reaches check_version/getter.
++            self.gpgme.install_after_paper()
++        b = self.gpgme.dispatch()
+         need(a is None or b is None, 'gpgme_multi_custody_dispatch_collision')
+         return a or b
+ 
+--- production15/outer/deps/native_return_observer.py
++++ R2/candidate/outer/deps/native_return_observer.py
+@@ -446,6 +446,25 @@
+     result = {'schema': 'frw.process-boundary-symbols.v1',
+               'purpose': 'REFUSAL_DIAGNOSTIC_ONLY', 'gdb_pid': os.getpid(),
+               'known_process': STATE['process'], 'frames': []}
++    try:
++        adapter = getattr(helper, 'gpgme', None) if helper is not None else None
++        if adapter is not None:
++            bp = adapter.bootstrap
++            bootstrap = {'present': bp is not None, 'installed': adapter.installed,
++                         'init_active': adapter.init_active,
++                         'finished_initialization': adapter.finished_initialization}
++            if bp is not None:
++                bootstrap.update(number=bp.number, valid=bp.is_valid())
++                if bp.is_valid():
++                    locations = list(bp.locations)
++                    bootstrap.update(enabled=bp.enabled, inferior=bp.inferior,
++                        locations=[{'address': loc.address, 'enabled': loc.enabled,
++                            'module_basename': boundary_symbol(Path(gdb.solib_name(loc.address)).name, 128)
++                                if loc.address is not None and gdb.solib_name(loc.address) else None}
++                            for loc in locations[:4]], locations_truncated=len(locations) > 4)
++            result['gpgme_bootstrap'] = bootstrap
++    except Exception as exc:
++        result['gpgme_bootstrap'] = {'exception_class': type(exc).__name__}
+     try:
+         inferiors = gdb.inferiors()
+         result['inferiors'] = [{'number': i.num, 'pid': i.pid} for i in inferiors[:4]]
