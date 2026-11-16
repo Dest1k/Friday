@@ -1,0 +1,61 @@
+--- before/namespace_entry.py
++++ after/namespace_entry.py
+@@ -181,6 +181,10 @@
+     def rights(s):
+         return (stat.S_ISREG(s.st_mode) and s.st_uid == os.getuid()
+                 and not s.st_mode & 0o077 and s.st_size <= limit)
++    def linked_or_retired(s):
++        # Path stat can resolve a publication just before os.replace retires
++        # that inode too. Zero links is a retry observation, never acceptance.
++        return rights(s) and (s.st_nlink == 1 or (mutable and s.st_nlink == 0))
+     def identity(s):
+         return s.st_dev, s.st_ino
+     def content(s):
+@@ -193,7 +197,7 @@
+         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+         try:
+             before = os.fstat(fd)
+-            need(rights(before) and (before.st_nlink == 1 or (mutable and before.st_nlink == 0)),
++            need(linked_or_retired(before),
+                  'runtime_file_rights')
+             raw = None
+             after = before
+@@ -201,17 +205,20 @@
+                 with os.fdopen(os.dup(fd), 'rb') as stream:
+                     raw = stream.read(limit + 1)
+                 after = os.fstat(fd)
+-                need(rights(after) and len(raw) == before.st_size <= limit
++                need(linked_or_retired(after) and len(raw) == before.st_size <= limit
+                      and content(before) == content(after), 'runtime_file_changed')
+             current = path.lstat()
+-            need(rights(current) and current.st_nlink == 1, 'runtime_file_rights')
+-            if mutable and not (stamp(before) == stamp(after) == stamp(current)):
++            need(linked_or_retired(current), 'runtime_file_rights')
++            if mutable and (raw is None or not (stamp(before) == stamp(after) == stamp(current))):
+                 # Replacement may occur between fstat and pathname lstat too.
+                 retired, successor = os.fstat(fd), path.lstat()
+-                need(rights(retired) and content(before) == content(retired), 'runtime_file_changed')
+-                need(rights(successor) and successor.st_nlink == 1, 'runtime_file_rights')
+-                if retired.st_nlink == 0 and identity(successor) != identity(retired):
+-                    # Never accept this retired descriptor's bytes.
++                need(linked_or_retired(retired) and content(before) == content(retired), 'runtime_file_changed')
++                need(linked_or_retired(successor), 'runtime_file_rights')
++                if retired.st_nlink == 0 and (successor.st_nlink == 0
++                        or identity(successor) != identity(retired)):
++                    # Even successive pathname stats may resolve the same
++                    # retired inode during replacement. Reopen; never accept
++                    # that retired descriptor's bytes.
+                     continue
+             need(raw is not None and stamp(before) == stamp(after) == stamp(current),
+                  'runtime_file_changed')
+--- before/ownc_root_controller.py
++++ after/ownc_root_controller.py
+@@ -25,7 +25,7 @@
+ INVOCATION = 'frw.ownc.gpgme-root-invocation.v1'
+ SCOPE = 'ONE_HARMLESS_OWN_C_GPGME_QUALIFICATION_ONLY'
+ PINNED_OUTER_SHA = '8f162630ab2922a75a93c79476730a7a34e34e869aa4b1eaa587b6c8d01933a1'
+-PINNED_NAMESPACE_SHA = 'ff730c4c207f430fae0b587326b341ca1dfd8403545806b06f6dad52396103cc'
++PINNED_NAMESPACE_SHA = 'c6cc5dd7bf6130c7a8e2b20e0962a211a2e7f20c42f3242828d95589c22e5c24'
+ PINNED_BUILDER_SHA = '2223ffcee689611fa1ee8f19cb62e80a2a417f93affa7a28b4d3dc15acddea4b'
+ MAX_SOURCE_BYTES = 4 * 1024**2
+ 
