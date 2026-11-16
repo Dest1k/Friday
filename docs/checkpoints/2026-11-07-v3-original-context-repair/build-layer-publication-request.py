@@ -47,7 +47,7 @@ CURRENT_SOURCE_TWENTY_SIXTH_LAYER = 'presentation-final-native-guidance-after-so
 CURRENT_SOURCE_TWENTY_SEVENTH_LAYER = 'docx-located-mainstory-after-source224'
 CURRENT_SOURCE_TWENTY_EIGHTH_LAYER = 'docx-required-stored-stories-after-source225'
 CURRENT_SOURCE_TWENTY_NINTH_LAYER = 'core-communication-memory-after-source226'
-CURRENT_SOURCE_THIRTIETH_LAYER = 'communication-create-contract-after-source227'
+CURRENT_SOURCE_THIRTIETH_LAYER = 'word-output-visibility-after-source227'
 
 
 def sha(path):

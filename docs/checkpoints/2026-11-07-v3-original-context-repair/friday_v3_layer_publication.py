@@ -89,7 +89,7 @@ LAYER_NAMES = (
     'docx-located-mainstory-after-source224',
     'docx-required-stored-stories-after-source225',
     'core-communication-memory-after-source226',
-    'communication-create-contract-after-source227',
+    'word-output-visibility-after-source227',
 )
 # Draft binding barrier: no request generation or publication may read the installed
 # home for this selected edge until the exact frozen manifest and patch are supplied.
@@ -118,11 +118,12 @@ CURRENT_SOURCE_TWENTY_NINTH_LAYER = 'core-communication-memory-after-source226'
 CURRENT_SOURCE_TWENTY_NINTH_MANIFEST_SHA256 = 'f3206ed54fcdcea18dc2bff83e792c5b422ec8d86991b0748be70a3708be1969'
 CURRENT_SOURCE_TWENTY_NINTH_PATCH_SHA256 = '3c0463144860c0ec25d30897c9e24757c7c2e0c8a7564129554ef36731124b2b'
 
-# Exact228 reviewed Source union fingerprints; no current or runtime admission.
+# Selected228 Word source only; the independent communication pair stays archived
+# and deferred. The exact frozen pair below grants no current or runtime admission.
 # These Source fingerprints do not confer current or runtime admission.
-CURRENT_SOURCE_THIRTIETH_LAYER = 'communication-create-contract-after-source227'
-CURRENT_SOURCE_THIRTIETH_MANIFEST_SHA256 = '7376080ed7b4c49bf2af9dd26d89e000e194d31ca110be553e1c57c8613df07e'
-CURRENT_SOURCE_THIRTIETH_PATCH_SHA256 = '36fff704a81cbce1098f81ce376eb5128264c8b35ea618accdab527acadb6a55'
+CURRENT_SOURCE_THIRTIETH_LAYER = 'word-output-visibility-after-source227'
+CURRENT_SOURCE_THIRTIETH_MANIFEST_SHA256 = 'f4e2806261378841508d000d485f613a9103b103fd0a19694af993990c0655ae'
+CURRENT_SOURCE_THIRTIETH_PATCH_SHA256 = '73b4881b15d70aec053d0ff482a18141d95fdb6218b0e0a4cb6c41912097f024'
 
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to

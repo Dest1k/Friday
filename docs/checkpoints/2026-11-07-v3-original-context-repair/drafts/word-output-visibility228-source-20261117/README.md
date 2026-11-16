@@ -4,9 +4,12 @@ Root baseline `d3ce13030f9b889adfdf352371f5bef2bf078a70`; обслуживает
 Это точный кандидат следующего приращения от227, а не ещё одна установка и
 не приёмка исторической F04-операции2828→2830. Два MOD и ноль ADD в Hermes:
 `tools/scoped_word_conversion.py`, `hermes_cli/friday_workspace_word_conversion.py`.
-Manifest/patch лежат рядом; внутренние `patches/hermes/` — их будущие продуктовые
-пути. Кандидат пока не подключён в каталог/consumer. Исторический default4
-builder не меняется; будущая операция только с явным `--layer`.
+Manifest/patch лежат рядом и подключены в исходниках как `patches/hermes/`
+для выбранного следующего Word-перехода227→228. Runtime пока227; Root bindings,
+current и установка ещё не выполнены. Исторический default4 builder не меняется;
+будущая операция только с явным `--layer`.
+
+[Интеграция Source/остаток до установки](../../evidence/astra-20261117/word228-public-source-integrated-before-install.json).
 
 Исходный whitelist `loext:opacity=0%` отклонён независимым review до установки.
 В официальном LibreOffice26.2.5.2 это не доказанный neutral default: свойство

@@ -2555,10 +2555,10 @@ CURRENT_SOURCE_SIXTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.
 # Selected SOURCE228 communication CREATE contract delta; public actual227 predecessor bindings remain UNBOUND.
 # Immutable Source provenance is not fresh current admission or an installation grant.
 CURRENT_SOURCE_THIRTIETH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v30'
-CURRENT_SOURCE_THIRTIETH_LAYER = 'communication-create-contract-after-source227'
-CURRENT_SOURCE_THIRTIETH_MANIFEST = '7376080ed7b4c49bf2af9dd26d89e000e194d31ca110be553e1c57c8613df07e'
-CURRENT_SOURCE_THIRTIETH_PATCH = '36fff704a81cbce1098f81ce376eb5128264c8b35ea618accdab527acadb6a55'
-CURRENT_SOURCE_THIRTIETH_NATIVE = {'hermes_cli/friday_workspace_communication.py': ('02b50dce57b6fbb42bd999bb7c49214408fa01210c25af74e1966b7780c24e63', '9836481a3d493e349fdc5ada2b89991bd13324b832e716b40e7520cc56edb725', 11312, False), 'tools/file_tools.py': ('cf72649df9e5144edcacc94f92dde6bdf5cbd10054ef795755822944889d1bb1', 'dd5276e7595d1fe1ede29ec8ef5388dfef784cef93a9eb77c4a1eecde668513d', 193181, False), 'tools/scoped_communication.py': ('bdba918298bd5f187bc18f5baa887ef1bb07736a7f4887dae39b77dee35df73f', '84e7fcb33873b9d6008bf28c505b57a1f1a285bd6552da3913062ede5bea23f4', 35820, False)}
+CURRENT_SOURCE_THIRTIETH_LAYER = 'word-output-visibility-after-source227'
+CURRENT_SOURCE_THIRTIETH_MANIFEST = 'f4e2806261378841508d000d485f613a9103b103fd0a19694af993990c0655ae'
+CURRENT_SOURCE_THIRTIETH_PATCH = '73b4881b15d70aec053d0ff482a18141d95fdb6218b0e0a4cb6c41912097f024'
+CURRENT_SOURCE_THIRTIETH_NATIVE = {'hermes_cli/friday_workspace_word_conversion.py': ('cb2ba1c7cf8ac34f816bfca012e918acbee5ca06050fed26885100cfd8fcc8bd', 'd9de55e7ec7da21c7c56db8460c38d0696ad3a69986cc0906647f37e10015e11', 11498, False), 'tools/scoped_word_conversion.py': ('ea66c4f59e5daec409f359adf25dfcdf39b06c7716fe74d30388bcf93952a973', '6dd133c4d9572eec1c3e0e24bd025092ab21f1466cbab48bc33d9f3dbed7e910', 131713, False)}
 CURRENT_SOURCE_THIRTIETH_PREVIOUS_COMMITTED = 'UNBOUND'
 CURRENT_SOURCE_THIRTIETH_PREVIOUS_HELPER = 'UNBOUND'
 CURRENT_SOURCE_THIRTIETH_PREVIOUS_INPUT = 'UNBOUND'
@@ -3515,11 +3515,11 @@ def _current_source_thirtieth_source_bindings_checked():
     def sha(value):
         return type(value) is str and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
     name = CURRENT_SOURCE_THIRTIETH_LAYER
-    f.require(name == 'communication-create-contract-after-source227'
+    f.require(name == 'word-output-visibility-after-source227'
         and sha(CURRENT_SOURCE_THIRTIETH_MANIFEST) and sha(CURRENT_SOURCE_THIRTIETH_PATCH),
         'ordinary_current_successor_thirtieth_final_layer_binding_required')
     native = CURRENT_SOURCE_THIRTIETH_NATIVE
-    f.require(type(native) is dict and set(native) == {'hermes_cli/friday_workspace_communication.py', 'tools/file_tools.py', 'tools/scoped_communication.py'},
+    f.require(type(native) is dict and set(native) == {'hermes_cli/friday_workspace_word_conversion.py', 'tools/scoped_word_conversion.py'},
         'ordinary_current_successor_exact_thirtieth_native_scope_required')
     for name,pin in native.items():
         path = Path(name) if type(name) is str else None
@@ -3529,8 +3529,8 @@ def _current_source_thirtieth_source_bindings_checked():
             and type(pin[3]) is bool and (pin[0] is None if pin[3] else sha(pin[0]))
             and sha(pin[1]) and pin[0] != pin[1] and type(pin[2]) is int and pin[2] >= 0,
             'ordinary_current_successor_thirtieth_final_native_binding_required')
-    f.require(native == {'hermes_cli/friday_workspace_communication.py': ('02b50dce57b6fbb42bd999bb7c49214408fa01210c25af74e1966b7780c24e63', '9836481a3d493e349fdc5ada2b89991bd13324b832e716b40e7520cc56edb725', 11312, False), 'tools/file_tools.py': ('cf72649df9e5144edcacc94f92dde6bdf5cbd10054ef795755822944889d1bb1', 'dd5276e7595d1fe1ede29ec8ef5388dfef784cef93a9eb77c4a1eecde668513d', 193181, False), 'tools/scoped_communication.py': ('bdba918298bd5f187bc18f5baa887ef1bb07736a7f4887dae39b77dee35df73f', '84e7fcb33873b9d6008bf28c505b57a1f1a285bd6552da3913062ede5bea23f4', 35820, False)},
-        'ordinary_current_successor_thirtieth_exact_communication_create_contract_binding_required')
+    f.require(native == {'hermes_cli/friday_workspace_word_conversion.py': ('cb2ba1c7cf8ac34f816bfca012e918acbee5ca06050fed26885100cfd8fcc8bd', 'd9de55e7ec7da21c7c56db8460c38d0696ad3a69986cc0906647f37e10015e11', 11498, False), 'tools/scoped_word_conversion.py': ('ea66c4f59e5daec409f359adf25dfcdf39b06c7716fe74d30388bcf93952a973', '6dd133c4d9572eec1c3e0e24bd025092ab21f1466cbab48bc33d9f3dbed7e910', 131713, False)},
+        'ordinary_current_successor_thirtieth_exact_word_output_visibility_binding_required')
     return True
 
 
