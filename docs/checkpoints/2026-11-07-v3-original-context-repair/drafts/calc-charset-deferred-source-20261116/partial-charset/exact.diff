@@ -1,0 +1,55 @@
+--- before/runtime_font_resolver.py
++++ candidate/qualifier/runtime_font_resolver.py
+@@ -39,10 +39,11 @@
+     "CharFontFamily": "short", "CharFontCharSet": "short",
+     "CharWeight": "float", "CharPosture": "com.sun.star.awt.FontSlant",
+ }
+-# This is an explicit supported branch, not a guess from Calibri or a locale.
++# Explicit UNO-short branches, not guesses from Calibri or a locale.
++# API -1 is RTL UNICODE/UCS2 65535; no encoding table -> Windows 1 -> RTL 0.
+ # RTL 0 has no encoding table -> best Windows byte 1 -> RTL 0 (default case).
+ # RTL 1 table has best Windows byte 0 -> RTL 1 (ANSI).
+-CHARSET_ROUNDTRIPS = {0: (1, 0), 1: (0, 1)}
++CHARSET_ROUNDTRIPS = {-1: (1, 0), 0: (1, 0), 1: (0, 1)}
+ _SAFE_NAME = re.compile(r"[A-Za-z0-9 ._()+-]{1,128}\Z")
+ # These canonical forms cannot alias bare English except exact 'en'. This narrow
+ # check avoids pretending to reimplement native LanguageTag canonicalization for
+@@ -156,7 +157,8 @@
+     fonts, measure text, close the model, or authenticate external Root facts.
+ 
+     Current supported source profile: builtin Default/Standard Calibri 11pt,
+-    Swiss, normal, no posture; RTL charset 0 or 1; explicit en-US locale config,
++    Swiss, normal, no posture; UNO charset short -1 (RTL Unicode), 0 or 1;
++    explicit en-US locale config,
+     or empty locale with Root-supplied exact LC_ALL en_US.UTF-8 or C.UTF-8
+     actual startup environment binding. C.UTF-8 additionally requires the exact
+     Root stock_startup_locale_lifecycle token: successful stock Desktop locale
+@@ -261,7 +263,8 @@
+             "property": "ooSetupSystemLocale", "value": locale},
+         "application_locale_external_binding": external_binding,
+         "ms_name_transform": ms_observation,
+-        "charset_roundtrip": {"observed_source_RTL_encoding": charset,
++        "charset_roundtrip": {"observed_source_UNO_short": charset,
++            "source_derived_RTL_encoding": 65535 if charset == -1 else charset,
+             "source_derived_Windows_charset_byte": windows_charset,
+             "source_derived_export_RTL_encoding": export_charset},
+         "global_sheet_settings": {"service": GLOBAL_SETTINGS_SERVICE,
+--- before/reference_metric_leaf_r2.py
++++ candidate/qualifier/reference_metric_leaf_r2.py
+@@ -99,11 +99,15 @@
+             network='OS_NAMESPACE_DENY', profile='FRESH_PRIVATE_NO_RESTORE',
+             store_render_draw_conversion=False), 'qualified_private_no_effect_load_policy_required')
+     require(value['source_style_name'] == 'Default', 'recognized_Default_style_required')
++    # Preserve the observed UNO short: -1 represents RTL Unicode 65535.
++    # Native encoding reconstruction belongs to the resolver derivation; the
++    # later actual style re-read must compare the same observed short value.
+     nominal = value['source_font']
+     require(type(nominal) is dict and set(nominal) == {'Name', 'HeightPt', 'Family', 'CharSet', 'Weight', 'Posture'}
+             and nominal['Name'] == 'Calibri' and nominal['HeightPt'] == 11
+             and nominal['Family'] == 5 and nominal['Weight'] == 100 and nominal['Posture'] == 'NONE'
+-            and type(nominal['CharSet']) is int and 0 <= nominal['CharSet'] < 65536,
++            and type(nominal['CharSet']) is int
++            and (nominal['CharSet'] == -1 or 0 <= nominal['CharSet'] < 65536),
+             'qualified_source_Normal_font_required')
+     recipe = value['export_descriptor']
+     require(type(recipe) is dict and set(recipe) == set(DEFAULTS) | {'Name', 'Height', 'Family', 'CharSet', 'Weight'},
