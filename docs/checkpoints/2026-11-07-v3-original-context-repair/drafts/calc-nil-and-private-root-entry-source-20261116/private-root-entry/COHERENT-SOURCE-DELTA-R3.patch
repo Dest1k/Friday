@@ -1,0 +1,1547 @@
+--- a/native/hermes_cli/friday_workspace_pdf.py
++++ b/native/hermes_cli/friday_workspace_pdf.py
+@@ -6,6 +6,7 @@
+ from io import BytesIO
+ import hashlib
+ import json
++import math
+ import os
+ from pathlib import Path
+ import pwd
+@@ -120,16 +121,43 @@
+     return argv
+ 
+ 
++class _RenderTurnLock:
++    """Root-only bounded acquisition of the existing original turn lock."""
++
++    def __init__(self, call, deadline, *, settling=False):
++        self.call, self.lock, self.deadline = call, call.turn.lock, deadline
++        self.settling = settling
++
++    def __enter__(self):
++        if not self.lock.acquire(timeout=max(0., min(2., self.deadline-time.monotonic()))):
++            if self.settling:
++                # No lock ownership: leave all original registry/custody state
++                # untouched, and do not manufacture a cleanup or run receipt.
++                if hasattr(self.call, 'agent'):
++                    self.call.agent._friday_reply_effect_unknown = True
++                raise ExportRefused('renderer_cleanup_unconfirmed')
++            raise TimeoutError()
++        return self.lock
++
++    def __exit__(self, *args):
++        self.lock.release()  # entered only after this invocation acquired it
++
++
+ class _RenderCustody:
+     """Finite child registered in the existing native turn's synchronous stop fence."""
+     uses_web = False
+ 
+     def __init__(self, call):
+         self.call, self.process = call, None
++        self._close_deadline = None  # optional private original absolute ceiling
+         self.lock = threading.RLock()
+ 
+     def stop(self):
+-        with self.lock:
++        if self._close_deadline is None:
++            self.lock.acquire()  # preserve the ordinary unlimited lock semantics
++        elif not self.lock.acquire(timeout=max(0., min(2., self._close_deadline-time.monotonic()))):
++            return {'status': 'STOP_UNCONFIRMED', 'reason': 'document_renderer_unsettled'}
++        try:
+             process = self.process
+             if process is not None:
+                 try:
+@@ -137,10 +165,17 @@
+                     if process.poll() is None:
+                         try: os.killpg(process.pid, signal.SIGKILL)
+                         except ProcessLookupError: pass
+-                    process.wait(timeout=2)
++                    if self._close_deadline is None:
++                        process.wait(timeout=2)
++                    else:
++                        # No appended grace: an expired budget still kills the
++                        # owned group but permits only a nonblocking reap.
++                        process.wait(timeout=max(0., min(2., self._close_deadline-time.monotonic())))
+                 except (OSError, subprocess.TimeoutExpired):
+                     return {'status': 'STOP_UNCONFIRMED', 'reason': 'document_renderer_unsettled'}
+             return {'status': 'QUIESCENT'}
++        finally:
++            self.lock.release()  # this invocation acquired exactly one lock level
+ 
+ 
+ class _RenderRegistry:
+@@ -170,23 +205,34 @@
+         self.returncode, self.authority = process.returncode, authority
+ 
+ 
+-def _run(cap, argv, work):
++def _run(cap, argv, work, *, _absolute_deadline=None):
+     from agent.web_call_context import _current, same_web_authority
+     from hermes_cli.friday_workspace_revision import check
+     call = _current.get()
+     if call is None or not same_web_authority(call): raise ExportRefused('native_deadline_required')
++    if (_absolute_deadline is not None
++            and (type(_absolute_deadline) not in (int, float) or not math.isfinite(_absolute_deadline))):
++        raise ExportRefused('document_run_absolute_deadline_invalid')
+     custody = _RenderCustody(call)
+     registry = _RenderRegistry(custody)
+     bound = False
+     prior = None
+     deadline = min(call.deadline(), time.monotonic()+RENDER_SECONDS)
++    active_deadline = deadline
++    if _absolute_deadline is not None:
++        deadline = min(deadline, _absolute_deadline)
++        # Reserve cleanup1 INSIDE the caller's original child deadline. The
++        # typed receipt retains the close ceiling, as required by the factory.
++        active_deadline = deadline-1.
++        custody._close_deadline = deadline
+     started = time.monotonic()
+     try:
+-        with call.turn.lock:
++        with (call.turn.lock if _absolute_deadline is None
++              else _RenderTurnLock(call, active_deadline)):
+             check(cap)
+             if call.session is not None or call.registry is not None:
+                 raise ExportRefused('native_custody_busy')
+-            if time.monotonic() >= deadline: raise TimeoutError()
++            if time.monotonic() >= active_deadline: raise TimeoutError()
+             prior = call.session, call.registry
+             call.session, call.registry = custody, registry
+             bound = True
+@@ -197,14 +243,18 @@
+                 start_new_session=True, env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
+         while custody.process.poll() is None:
+             check(cap)
+-            if time.monotonic() >= deadline: raise TimeoutError()
+-            try: custody.process.wait(timeout=min(.05, max(.001, deadline-time.monotonic())))
++            if time.monotonic() >= active_deadline: raise TimeoutError()
++            try:
++                wait = (min(.05, max(.001, deadline-time.monotonic())) if _absolute_deadline is None
++                        else min(.05, max(0., active_deadline-time.monotonic())))
++                custody.process.wait(timeout=wait)
+             except subprocess.TimeoutExpired: pass
+         check(cap)
+         if custody.process.returncode != 0: raise ExportRefused('renderer_failed')
+     finally:
+         receipt = custody.stop()
+-        with call.turn.lock:
++        with (call.turn.lock if _absolute_deadline is None
++              else _RenderTurnLock(call, deadline, settling=True)):
+             if receipt['status'] == 'QUIESCENT':
+                 if bound and (call.session is not custody or call.registry is not registry):
+                     receipt = {'status': 'STOP_UNCONFIRMED', 'reason': 'document_custody_mismatch'}
+@@ -217,6 +267,11 @@
+             raise ExportRefused('renderer_cleanup_unconfirmed')
+     # Reached only after successful actual Popen/wait AND the original finally
+     # confirmed cleanup/registry restoration. Existing callers may ignore it.
++    if _absolute_deadline is not None:
++        completion = _RenderReceipt(argv, work, custody.process, started, deadline, _RUN_COMPLETION_AUTHORITY)
++        if completion.finished > deadline:
++            raise TimeoutError()
++        return completion
+     return _RenderReceipt(argv, work, custody.process, started, deadline, _RUN_COMPLETION_AUTHORITY)
+ 
+ 
+--- a/bridge/hermes_cli/friday_user_scope.py
++++ b/bridge/hermes_cli/friday_user_scope.py
+@@ -376,6 +376,12 @@
+ 
+ 
+ def current(required=False):
++    # A private Root qualification must never fall through legacy cap=None
++    # behavior and acquire ordinary user/file/memory/delegation authority.
++    # Pure context presence only: no Root API query or authority issuance.
++    from hermes_cli.friday_root_qualification import root_context_active
++    if root_context_active():
++        raise ScopeDenied()
+     cap = _CURRENT.get()
+     if cap is not None:
+         return cap.check()
+--- a/bridge/agent/web_call_context.py
++++ b/bridge/agent/web_call_context.py
+@@ -79,6 +79,17 @@
+     return [dict(record) for record in records]
+ 
+ 
++def _stop_lock_timeout(owner, absolute_deadline):
++    if absolute_deadline is None:
++        return 2
++    # Owned stop remains possible after revocation/deadline. This validates
++    # only the original retained Root owner and clock; no authority is minted
++    # or rechecked, and no current API can delay cancellation.
++    from hermes_cli.friday_root_qualification import _bounded_root_stop_deadline
++    ceiling = _bounded_root_stop_deadline(owner, absolute_deadline)
++    return max(0, min(2, ceiling - time.monotonic()))
++
++
+ class WebTurn:
+     def __init__(self):
+         self.lock = threading.RLock()
+@@ -88,15 +99,18 @@
+         self.failure = None
+         self.receipt = {'status': 'QUIESCENT', 'sessions': []}
+ 
+-    def stop(self):
++    def stop(self, *, _absolute_deadline=None):
+         # Admission sees the latch even while launch holds the lock. Neither a
+         # reused thread id nor clear_interrupt() can clear this turn's intent.
++        lock_timeout = _stop_lock_timeout(self, _absolute_deadline)
+         self.stopped.set()
+-        if not self.lock.acquire(timeout=2):
++        if not self.lock.acquire(timeout=lock_timeout):
+             self.receipt = {'status': 'STOP_UNCONFIRMED', 'reason': 'web_launch_unsettled'}
+             return self.receipt
+         try:
+-            receipts = [call.stop() for call in list(self.calls)]
++            receipts = [call.stop(_absolute_deadline=_absolute_deadline)
++                        if _absolute_deadline is not None and type(call) is WebCall
++                        else call.stop() for call in list(self.calls)]
+             self.receipt = {'status': 'QUIESCENT' if all(r['status']=='QUIESCENT' for r in receipts)
+                             else 'STOP_UNCONFIRMED', 'sessions': receipts}
+             return self.receipt
+@@ -130,11 +144,22 @@
+         return final
+ 
+ 
++def _native_call_authority():
++    # Root is an explicit isolated native kind. Context presence only selects
++    # the lane; retained_authority performs its live actual Root admission
++    # check. Ordinary user principal issuance remains unchanged.
++    from hermes_cli.friday_root_qualification import root_context_active, retained_authority
++    if root_context_active():
++        return retained_authority()
++    from hermes_cli.friday_user_scope import delegation_authority
++    return delegation_authority()
++
++
+ def same_web_authority(call):
+     """Compare the existing retained native principal pin; never adopt a foreign call."""
+-    from hermes_cli.friday_user_scope import delegation_authority, ScopeDenied
++    from hermes_cli.friday_user_scope import ScopeDenied
+     try:
+-        return getattr(call, 'user_authority', None) == delegation_authority()
++        return getattr(call, 'user_authority', None) == _native_call_authority()
+     except ScopeDenied:
+         return False
+ 
+@@ -186,9 +211,10 @@
+         if time.monotonic() >= self.deadline():
+             raise TimeoutError('web_original_deadline')
+ 
+-    def stop(self):
++    def stop(self, *, _absolute_deadline=None):
++        lock_timeout = _stop_lock_timeout(self, _absolute_deadline)
+         self.stopped.set()
+-        if not self.turn.lock.acquire(timeout=2):
++        if not self.turn.lock.acquire(timeout=lock_timeout):
+             self.receipt = {'status':'STOP_UNCONFIRMED','reason':'web_launch_unsettled'}
+             return self.receipt
+         try:
+@@ -215,8 +241,7 @@
+     from tools.approval_context import get_current_session_key
+     call.session_key = get_current_session_key(default='') or call.session_id
+     call.turn_id = getattr(agent,'_current_turn_id','') or ''
+-    from hermes_cli.friday_user_scope import delegation_authority
+-    call.user_authority = delegation_authority()
++    call.user_authority = _native_call_authority()
+     stamp = (call.session_id, call.turn_id, call.run_deadline)
+     if getattr(agent, '_tool_result_call_stamp', None) != stamp:
+         agent._tool_result_calls = {}
+--- a/bridge/tools/approval_context.py
++++ b/bridge/tools/approval_context.py
+@@ -9,7 +9,13 @@
+ import logging
+ import os
+ from agent.i18n import t
+-from hermes_cli.config import cfg_get
++# Private fresh Root namespace: Root only uses the native contextvar setters.
++# Defer unrelated profile/plugin config initialization until a config accessor
++# is actually called. This is import isolation, never operation authority.
++def cfg_get(*args, **kwargs):
++    from hermes_cli.config import cfg_get as _native_cfg_get
++    return _native_cfg_get(*args, **kwargs)
++
+ from utils import env_var_enabled, is_truthy_value
+ 
+ logger = logging.getLogger("tools.approval")
+--- a/bridge/frw_root_first_qualifier.py
++++ b/bridge/frw_root_first_qualifier.py
+@@ -28,11 +28,11 @@
+ # This does not admit a Root operation, qualify production or create authority.
+ # No CLI option, environment, JSON, cap argument or prior PASS sets this value.
+ SELECTED_SOURCE = (
+-    Path('/home/jericho/.cache/FRW-SOL-V3-ORDINARY-LOCALE-COMPOSITION-CORE-20261116/final/native'),
++    Path('/home/jericho/.cache/FRW-SOL-V3-ORDINARY-ROOT-ENTRY-CORE-20261116/final/native'),
+     '4fd7446398e6ffc92d4e63b7c4be39dfa282d183f7d6e5d7ddff76522a627112',
+-    Path('/home/jericho/.cache/FRW-SOL-V3-ORDINARY-LOCALE-COMPOSITION-CORE-20261116/future-runtime-work'),
+-    Path('/home/jericho/.cache/FRW-SOL-V3-ORDINARY-LOCALE-COMPOSITION-CORE-20261116/SELECTED-SOURCE-PINS.json'),
+-    '0e62e194fcde452ad4bdf6c398fed82dbdcad5a94252343ae869b167302a72ab',
++    Path('/home/jericho/.cache/FRW-SOL-V3-ORDINARY-ROOT-ENTRY-CORE-20261116/future-runtime-work'),
++    Path('/home/jericho/.cache/FRW-SOL-V3-ORDINARY-ROOT-ENTRY-CORE-20261116/SELECTED-NATIVE58-PINS.json'),
++    'ab66dd4aeacf98e39ddc9bbf7db8a7e3be1bab66988044dd9962274e8d76bc89',
+ )
+ INDEX_RELATIVE = 'hermes_cli/_calc_native_assets/index.json'
+ HOST_PIN_RELATIVE = 'hermes_cli/friday_workspace_calc_native_pin.py'
+@@ -102,7 +102,7 @@
+                 selected_source_prefix=str(root), selected_files=58, staged_files=35,
+                 selected_index_sha256=generation, input_sha256=sha(data), input_bytes=len(data),
+                 provenance='PRIVATE_SOURCE_DERIVED_PASSIVE_SCAFFOLD_INVENTED_SEMANTICS',
+-                selected_execution_source=True, Root_entry='UNIMPLEMENTED',
++                selected_execution_source=True, Root_entry='PRIVATE_ROOT_KIND_SOURCE_BOUND',
+                 execution_ready=False, actual_M=None, runtime_executed=False,
+                 production_enabled=False)
+ 
+@@ -216,8 +216,17 @@
+ 
+ 
+ def _require_root_qualifier_entry():
+-    """Exact Root admission/once/current/clock integration is not supplied here."""
+-    raise QualifierRefused('qualifier_Root_entry_UNIMPLEMENTED')
++    """Require the actual trusted issuer's current private Root lease.
++
++    The separate native scope validates its real Root admission/once/current
++    binding. Neither a record nor construction/ContextVar binding grants entry.
++    """
++    from hermes_cli.friday_root_qualification import RootQualificationScope, current
++    cap = current(required=True)
++    need(type(cap) is RootQualificationScope and cap.principal[0] == 'root-qualification',
++         'qualifier_actual_Root_qualification_scope_required')
++    cap.check()
++    return cap
+ 
+ 
+ def _qualify_current_native_call():
+@@ -228,24 +237,30 @@
+     behalf. No model-visible tool is added. Root must separately bind its exact
+     authorization entry before calling this code; fixed Source is not admission.
+     """
+-    _require_root_qualifier_entry()
++    cap = _require_root_qualifier_entry()
++    # The trusted Root boundary captured these BEFORE current/admission/once.
++    # Consume its original immutable clock; never restamp a later local entry.
++    entered, parent_deadline = cap.entered_monotonic, cap.deadline
++    need(type(entered) is float and math.isfinite(entered)
++         and type(parent_deadline) is float and math.isfinite(parent_deadline)
++         and entered < parent_deadline <= entered+40,
++         'qualifier_original_Root_entry_clock_required')
++    cap.check()
+     root, generation, work_parent = _selected()
+-    entered = time.monotonic()  # exactly once, before inventory/allocation
+     from agent.web_call_context import _current, same_web_authority, WebCall
+-    from hermes_cli.friday_user_scope import current, UserScope, check_agent
++    from hermes_cli.friday_root_qualification import current, RootQualificationScope, check_agent
+     from tools.approval_context import get_current_session_key
+-    from hermes_cli.friday_workspace_revision import check
+     from hermes_cli import friday_workspace_pdf as pdf
+     from hermes_cli import friday_workspace_spreadsheet_conversion as renderer
+     from hermes_cli import friday_workspace_calc_measured as measured
+     from hermes_cli import friday_workspace_calc_native_factory as factory
+     from tools.scoped_spreadsheet_conversion import inventory, validate_destination
+     from tools.scoped_spreadsheet_rich import fidelity_report
+-    cap = current(required=True)
++    need(current(required=True) is cap, 'qualifier_original_Root_scope_changed')
+     call = _current.get()
+-    need(type(cap) is UserScope and type(call) is WebCall and same_web_authority(call),
++    need(type(cap) is RootQualificationScope and type(call) is WebCall and same_web_authority(call),
+          'qualifier_actual_native_cap_and_web_call_required')
+-    need(cap.principal[0] != 'cli', 'qualifier_native_nonCLI_entry_required')
++    need(cap.principal[0] == 'root-qualification', 'qualifier_private_Root_kind_required')
+     agent = getattr(call, 'agent', None)
+     need(agent is not None, 'qualifier_existing_agent_required')
+     original_gate = call.authorization_gate  # preserve the native gate, never clear it
+@@ -258,7 +273,7 @@
+         check_agent(agent)
+         session_key = get_current_session_key(default='') or agent.session_id
+         need(getattr(call, 'agent', None) is agent
+-             and getattr(agent, '_friday_user_scope', None) is cap
++             and getattr(agent, '_friday_root_qualification_scope', None) is cap
+              and getattr(agent, '_web_turn', None) is call.turn
+              and type(call.task_id) is str and bool(call.task_id)
+              and type(call.call_id) is str and bool(call.call_id)
+@@ -277,6 +292,7 @@
+     registered_current_call()
+     original_deadline = call.deadline()
+     need(type(original_deadline) in (int, float) and math.isfinite(original_deadline)
++         and original_deadline == parent_deadline
+          and entered < original_deadline <= entered + 40,
+          'qualifier_original_native_deadline_outside_parent40')
+     parent_deadline = original_deadline
+@@ -284,9 +300,10 @@
+ 
+     def checkpoint():
+         need(_current.get() is call and current(required=True) is cap
+-             and same_web_authority(call) and call.deadline() == original_deadline,
++             and same_web_authority(call) and call.deadline() == original_deadline
++             and cap.entered_monotonic == entered and cap.deadline == parent_deadline,
+              'qualifier_original_call_or_cap_changed')
+-        check(cap)
++        cap.check()
+         registered_current_call()
+         need(not getattr(getattr(call, 'agent', None), '_friday_reply_effect_unknown', False),
+              'qualifier_prior_or_current_unknown_effect')
+@@ -326,7 +343,10 @@
+         need(operation.generation_sha256 == generation, 'qualifier_prepared_generation')
+         checkpoint()
+         try:
+-            completion = pdf._run(cap, operation.argv, work)  # original custody ONLY
++            # Live Root guards share child active time; original entry/Dp do
++            # not change. The guard exits only after _run's own stop finally.
++            with cap.child_execution_ceiling(child_deadline):
++                completion = pdf._run(cap, operation.argv, work, _absolute_deadline=child_deadline)  # original custody ONLY
+         except BaseException as exc:
+             # The existing stop fence owns cancellation. Do not delete work
+             # beneath live or unconfirmed custody and never retry a launch.
+@@ -335,6 +355,10 @@
+                        or (isinstance(exc, pdf.ExportRefused)
+                            and exc.args == ('renderer_cleanup_unconfirmed',)))
+             raise
++        need(type(completion) is pdf._RenderReceipt
++             and completion.authority is pdf._RUN_COMPLETION_AUTHORITY
++             and completion.finished <= child_deadline,
++             'qualifier_original_typed_receipt_child35_close_required')
+         child_closed = time.monotonic()
+         need(child_closed <= child_deadline, 'qualifier_child35_closure_overrun')
+         operation.execution.append(completion)  # genuine typed _run output only
+--- /dev/null
++++ b/bridge/frw_root_qualification_entry.py
+@@ -0,0 +1,429 @@
++"""Private administrative Root entry, never a model tool or public CLI.
++
++This is the same trust boundary as the supplied Root runner: explicit owner
++delegation and trusted Root execution authorize the administrative decision.
++Live sole-writer/goal/current/source/slot/ONCE checks enforce its finite scope.
++Neither a JSON record nor a constructor authenticates a third-party caller.
++Run this only from the reviewed Root-owned runner, in a fresh native runtime.
++"""
++from pathlib import Path
++import asyncio
++import fcntl
++import hashlib
++import importlib.util
++import json
++import math
++import os
++import secrets
++import stat
++import subprocess
++import sys
++import time
++from types import MappingProxyType
++from dataclasses import asdict, is_dataclass
++from decimal import Decimal
++
++BASE = Path(__file__).resolve().parent
++ROOT_THREAD = '01a1c688-e36d-7021-8df4-9c5644a4d75b'
++ROOT_GOAL_CREATED = 1794332322
++CONTROL = Path('/home/jericho/.jericho/runtime/sol-link-native-control.py')
++CONTROL_SHA = '7b616fe144e0641dc402f2051ef0226ff59fe132c36885474939623ba428da68'
++H = Path('/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032')
++MARKER = '1abce3b2307212c9c03d1494e09ed037ddc55903561ce5c66de06dceafb21f80'
++STAMP = '6a40da2f2b5041a33dc998d7ce659a9c599a883b9eadf6c1b16eda7a319606be'
++SLOT = Path('/home/jericho/.jericho/runtime/locks/synthetic-live-acceptance.lock')
++_ISSUER = object()
++_LIVE = {}
++_RETAINED = {}  # exact failed owned operation; not a queue or retry controller
++
++
++class RootEntryRefused(RuntimeError):
++    """Finite local codes, without user bodies or arbitrary exception messages."""
++
++
++def need(value, code):
++    if not value:
++        raise RootEntryRefused(code)
++
++
++def sha(raw):
++    return hashlib.sha256(raw).hexdigest()
++
++
++def remaining(deadline):
++    left = deadline - time.monotonic()
++    need(math.isfinite(left) and left > 0, 'root_original_deadline')
++    return left
++
++
++def stamp(info):
++    return tuple(getattr(info, name) for name in ('st_dev', 'st_ino', 'st_uid',
++        'st_gid', 'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns'))
++
++
++def private_bytes(path, *, expected=None, limit=1048576, modes=(0o400, 0o600)):
++    path = Path(path)
++    need(path.is_absolute() and path.resolve() == path, 'root_exact_source_path')
++    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
++    try:
++        before = os.fstat(fd)
++        need(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
++             and before.st_nlink == 1 and stat.S_IMODE(before.st_mode) in modes
++             and 0 <= before.st_size <= limit, 'root_source_file_rights')
++        chunks, size = [], 0
++        while True:
++            part = os.read(fd, min(65536, limit + 1 - size))
++            if not part:
++                break
++            chunks.append(part); size += len(part)
++            need(size <= limit, 'root_source_file_limit')
++        raw = b''.join(chunks)
++        need(stamp(before) == stamp(os.fstat(fd)) == stamp(path.lstat())
++             and len(raw) == before.st_size and (expected is None or sha(raw) == expected),
++             'root_source_file_CAS')
++        return raw
++    finally:
++        os.close(fd)
++
++
++def private_directory(path):
++    s = path.lstat()
++    need(path.is_absolute() and path.resolve() == path and stat.S_ISDIR(s.st_mode)
++         and s.st_uid == os.getuid() and stat.S_IMODE(s.st_mode) == 0o700,
++         'root_private_directory')
++
++
++def put(path, value):
++    raw = (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + '\n').encode()
++    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
++    with os.fdopen(fd, 'wb') as stream:
++        stream.write(raw); stream.flush(); os.fsync(stream.fileno())
++    return sha(raw)
++
++
++def _json_facts(value):
++    if is_dataclass(value):
++        return _json_facts(asdict(value))
++    if isinstance(value, Decimal):
++        return str(value)
++    if isinstance(value, (tuple, list)):
++        return [_json_facts(item) for item in value]
++    if type(value) is dict:
++        return {key: _json_facts(item) for key, item in value.items()}
++    if value is None or type(value) in (str, int, float, bool):
++        return value
++    raise RootEntryRefused('root_result_fact_shape')
++
++
++def _retain_qualified_bytes(op, result, deadline):
++    """Private durable artifacts inside original40; never a bearer proof/PASS.
++
++    No result depends on a later caller copying transient bytes after work
++    removal. Paths are fixed; no input/evidence-controlled path is accepted.
++    """
++    remaining(deadline)
++    need(type(result) is dict and type(result.get('output')) is bytes
++         and 0 < len(result['output']) <= 1000000 and type(result.get('evidence')) is dict,
++         'root_qualifier_result_shape')
++    evidence = ('ordinary-job.json', 'ordinary-result.json', 'ordinary-inner-result.json',
++                'native-trace.json', 'native-terminal-base.json')
++    need(set(result['evidence']) == set(evidence), 'root_result_evidence_names')
++    refs = {}
++    for name, raw in [('qualified-output.xlsx', result['output'])] + [
++            (name, result['evidence'][name]) for name in evidence]:
++        remaining(deadline)
++        need(type(raw) is bytes and 0 < len(raw) <= 1048576, 'root_result_evidence_bound')
++        fd = os.open(op / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
++        with os.fdopen(fd, 'wb') as stream:
++            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
++        refs[name] = dict(path=str(op / name), sha256=sha(raw), bytes=len(raw))
++    facts = {key: value for key, value in result.items() if key not in ('output', 'evidence')}
++    put(op / 'Root-result.json', dict(status='PRIVATE_FINITE_QUALIFIER_CANDIDATE',
++        artifact_refs=refs, facts=_json_facts(facts), production_enabled=False,
++        admission_or_artifacts_are_bearer_authority=False))
++    remaining(deadline)
++    return refs
++
++
++def _root_current(deadline, *, admission):
++    """Real administrative client, bounded by the ORIGINAL remaining budget.
++
++    Keep the supplied NativeControl constructor/route validation and call
++    protocol. The client uses no appended 5/10/2 second timeout beyond Dp.
++    It does not mutate either TUI/profile/goal/queue and never polls a model.
++    """
++    remaining(deadline)
++    # Existing helper can be0644 under protected Root home; never chmod it.
++    control_raw = private_bytes(CONTROL, expected=CONTROL_SHA,
++                                modes=(0o400, 0o600, 0o644))
++    control_globals = {'__name__': 'frw_verified_native_control',
++                       '__file__': str(CONTROL), '__package__': None}
++    exec(compile(control_raw, str(CONTROL), 'exec'), control_globals)
++    C = control_globals['NativeControl']
++
++    async def observe():
++        from websockets.asyncio.client import unix_connect
++        control = C('astra')  # actual sole visible writer/thread/profile check
++        need(control.thread == ROOT_THREAD, 'root_native_thread')
++        async with asyncio.timeout(remaining(deadline)):
++            async with unix_connect(str(control.endpoint), uri='ws://localhost/',
++                    compression=None, open_timeout=min(5, remaining(deadline)),
++                    close_timeout=0, max_size=8_000_000) as ws:
++                control.ws = ws
++                result = await control.call('initialize', {
++                    'clientInfo': {'name': 'friday_peer_control', 'version': '1'},
++                    'capabilities': {'experimentalApi': True}})
++                need(result.get('codexHome') == control.home, 'root_native_home')
++                await ws.send(json.dumps({'method': 'initialized'}))
++                goal = (await control.call('thread/goal/get', {'threadId': control.thread}))['goal']
++                need(goal['threadId'] == ROOT_THREAD and goal['status'] == 'active'
++                     and goal['createdAt'] == ROOT_GOAL_CREATED, 'root_owner_pause_or_epoch')
++                if admission:
++                    queue = await control.call('thread/queue/list',
++                        {'threadId': control.thread, 'limit': 100})
++                    need(not queue['data'] and queue.get('nextCursor') is None,
++                         'root_admission_queue_not_empty')
++        return dict(threadId=ROOT_THREAD, status='active', createdAt=ROOT_GOAL_CREATED)
++
++    try:
++        result = asyncio.run(observe())
++        remaining(deadline)
++        return result
++    except BaseException:
++        # No child diagnostics/private message is copied to public results.
++        raise RootEntryRefused('root_live_authority_unavailable_or_stopped') from None
++
++
++def _current_install_and_services(deadline):
++    remaining(deadline)
++    need(sha(private_bytes(H / 'FRIDAY-INSTALL.json', expected=MARKER,
++                          modes=(0o400, 0o600, 0o644, 0o664))) == MARKER,
++         'root_installed_marker')
++    private_bytes(H / 'hermes-agent/install-stamp.json', expected=STAMP,
++                  modes=(0o400, 0o600, 0o644, 0o664))
++    services = []
++    for unit in ('hermes-gateway-1b7e7667.service', 'hermes-dashboard.service'):
++        result = subprocess.run(['systemctl', '--user', 'show', unit,
++            '--property=Id,ActiveState,SubState,MainPID,InvocationID,RuntimeMaxUSec,NRestarts'],
++            check=True, capture_output=True, text=True,
++            timeout=min(10, remaining(deadline)))
++        value = dict(row.split('=', 1) for row in result.stdout.splitlines())
++        need(value.get('ActiveState') == 'active' and value.get('SubState') == 'running'
++             and value.get('RuntimeMaxUSec') == 'infinity'
++             and value.get('MainPID', '0').isdigit() and int(value['MainPID']) > 0,
++             'root_services_not_healthy')
++        services.append(value)
++    remaining(deadline)
++    return services
++
++
++def _source_current(binding, deadline):
++    remaining(deadline)
++    raw = private_bytes(binding['manifest_path'], expected=binding['manifest_sha256'], limit=262144)
++    manifest = json.loads(raw)
++    need(manifest['kind'] == 'ROOT_FIRST_ORDINARY_CALC_QUALIFIER'
++         and type(manifest['files']) is list and 1 <= len(manifest['files']) <= 128,
++         'root_source_manifest_kind')
++    names = set()
++    for row in manifest['files']:
++        remaining(deadline)
++        path = Path(row['path'])
++        need(path not in names and (path.is_relative_to(binding['closure_root'])
++             or path.is_relative_to(binding['closure_root'].parent / 'native')),
++             'root_fixed_source_closure_path')
++        names.add(path)
++        private_bytes(path, expected=row['sha256'], limit=160 * 1024 * 1024)
++    callback = binding['closure_root'] / 'frw_root_first_qualifier.py'
++    row = next((r for r in manifest['files'] if Path(r['path']) == callback), None)
++    need(row is not None, 'root_fixed_callback_missing')
++    return manifest
++
++
++class RootAdmission:
++    """Actual administrative decision retained by the native private issuer.
++
++    No JSON loader or public constructor. Its issuer identity is bookkeeping
++    AFTER the live trusted Root decision; check repeats actual authority and
++    owns sticky revocation/stop, rather than trusting an admission-time record.
++    """
++    def __init__(self, *, _issuer, entered, deadline, operation_id, nonce, op,
++                 slot_fd, slot_stamp, source_binding, goal, services, once_sha256):
++        need(_issuer is _ISSUER, 'root_unissued_admission')
++        self._issued_identity = object()
++        self._binding = MappingProxyType(dict(entered=entered, deadline=deadline,
++            operation_id=operation_id, nonce=nonce, op=op, once_sha256=once_sha256,
++            source_binding=MappingProxyType(source_binding)))
++        self._slot_fd, self._slot_stamp = slot_fd, slot_stamp
++        self._pid, self._uid = os.getpid(), os.getuid()
++        self._revoked, self._closed, self._native_agent = False, False, None
++        self._goal, self._services = goal, services
++        _LIVE[self._issued_identity] = self
++
++    @property
++    def entered_monotonic(self): return self._binding['entered']
++    @property
++    def deadline(self): return self._binding['deadline']
++    @property
++    def operation_id(self): return self._binding['operation_id']
++    @property
++    def nonce(self): return self._binding['nonce']
++    @property
++    def source_binding(self): return self._binding['source_binding']
++    @property
++    def work_parent(self): return self.source_binding['work_parent']
++
++    def check(self, *, _deadline_ceiling=None):
++        try:
++            need(_LIVE.get(self._issued_identity) is self and not self._closed
++                 and not self._revoked and os.getpid() == self._pid and os.getuid() == self._uid,
++                 'root_stale_or_foreign_admission')
++            effective = self.deadline
++            if _deadline_ceiling is not None:
++                need(type(_deadline_ceiling) in (float, int)
++                     and math.isfinite(_deadline_ceiling)
++                     and self.entered_monotonic < _deadline_ceiling <= self.deadline,
++                     'root_guard_deadline_ceiling')
++                effective = min(effective, _deadline_ceiling)
++            remaining(effective)
++            need(stamp(os.fstat(self._slot_fd)) == self._slot_stamp
++                 and stamp(SLOT.lstat()) == self._slot_stamp, 'root_slot_CAS')
++            once = self._binding['op'] / 'consumed-once.json'
++            private_bytes(once, expected=self._binding['once_sha256'])
++            _root_current(effective, admission=False)
++            remaining(effective)
++        except BaseException:
++            self._revoked = True
++            if self._native_agent is not None:
++                self._native_agent.interrupt()
++            raise
++
++    def close(self):
++        self._closed = True
++        _LIVE.pop(self._issued_identity, None)
++
++
++def run_root_first_qualification(prepared_path, prepared_sha256, *, _original_entered=None):
++    """Root-owned library call from actual delegated administrative execution.
++
++    Prepared JSON selects exact private SOURCE/configuration only; it is NOT
++    authorization. It cannot replace the actual Root checks before issuance.
++    There is no public CLI, boolean approval, supplied cap/agent/callback/argv.
++    """
++    observed = time.monotonic()
++    entered = observed if _original_entered is None else _original_entered
++    need(type(entered) is float and math.isfinite(entered) and entered <= observed,
++         'root_original_entry_clock')
++    # The trusted bootstrap passes its earlier stamp; this private metadata
++    # cannot authorize an operation and never moves an existing stamp forward.
++    deadline = entered + 40
++    remaining(deadline)
++    need(sys.dont_write_bytecode, 'root_private_source_requires_python_B')
++    prepared_path = Path(prepared_path)
++    private_directory(prepared_path.parent)
++    config = json.loads(private_bytes(prepared_path, expected=prepared_sha256, limit=262144))
++    need(set(config) == {'kind', 'closure_root', 'manifest_path', 'manifest_sha256',
++                        'work_parent', 'operation_parent'}, 'root_prepared_schema')
++    need(config['kind'] == 'ROOT_FIRST_ORDINARY_CALC_QUALIFIER', 'root_fixed_kind')
++    binding = dict(closure_root=Path(config['closure_root']),
++                   manifest_path=Path(config['manifest_path']),
++                   manifest_sha256=config['manifest_sha256'], work_parent=Path(config['work_parent']))
++    # This fixed kind is neither an arbitrary-source nor an arbitrary-path API.
++    need(binding['closure_root'] == BASE and binding['manifest_path'] == BASE / 'ROOT-BRIDGE-PINS.json'
++         and binding['work_parent'] == BASE.parent.parent / 'future-runtime-work'
++         and Path(config['operation_parent']) == BASE.parent.parent / 'operations',
++         'root_fixed_prepared_paths')
++    # Current rights/CAS within the clock; fixed SOURCE inspector also validates
++    # exact58/35/pin when the private callback begins, never before entry T0.
++    for path in (binding['closure_root'], binding['work_parent'], Path(config['operation_parent'])):
++        private_directory(path)
++    manifest = _source_current(binding, deadline)
++    binding['fixedcallback_sha256'] = next(row['sha256'] for row in manifest['files']
++        if Path(row['path']) == BASE / 'frw_root_first_qualifier.py')
++    goal = _root_current(deadline, admission=True)
++    services = _current_install_and_services(deadline)
++    fd = os.open(SLOT, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
++    admission = None
++    result = None
++    retain_slot = False
++    callback_loaded = False
++    callback_module = None
++    completed = False
++    try:
++        info = os.fstat(fd)
++        need(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
++             and not info.st_mode & 0o022, 'root_exclusive_slot_rights')
++        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++        need(stamp(SLOT.lstat()) == stamp(info), 'root_exclusive_slot_identity')
++        need(not (Path(config['operation_parent']) / 'unresolved-root-owned-operation.json').exists(),
++             'root_prior_owned_cleanup_unresolved')
++        _root_current(deadline, admission=False)
++        _source_current(binding, deadline)
++        remaining(deadline)
++        nonce = secrets.token_hex(16)  # only actual future Root admission, never Source checks
++        operation_id = 'root-ordinary-first-qualifier-' + nonce
++        op = Path(config['operation_parent']) / operation_id
++        op.mkdir(mode=0o700)  # exclusive genuinely new Root-owned operation
++        once_sha = put(op / 'consumed-once.json', dict(operation_id=operation_id, nonce=nonce,
++            entered_monotonic=entered, deadline=deadline,
++            scope='ONE_PRIVATE_ORDINARY_ODS_XLSX_QUALIFIER'))
++        admission = RootAdmission(_issuer=_ISSUER, entered=entered, deadline=deadline,
++            operation_id=operation_id, nonce=nonce, op=op, slot_fd=fd, slot_stamp=stamp(info),
++            source_binding=binding, goal=goal, services=services, once_sha256=once_sha)
++        admission.check()
++        # Fixed code loader only; this does not create scope or permission.
++        callback_path = BASE / 'frw_root_first_qualifier.py'
++        need('frw_root_first_qualifier' not in sys.modules, 'root_callback_already_loaded')
++        callback_raw = private_bytes(callback_path,
++            expected=binding['fixedcallback_sha256'], limit=262144, modes=(0o400,))
++        callback_spec = importlib.util.spec_from_file_location('frw_root_first_qualifier', callback_path)
++        callback_module = importlib.util.module_from_spec(callback_spec)
++        sys.modules['frw_root_first_qualifier'] = callback_module
++        callback_loaded = True
++        # Execute retained verified bytes; a path loader would reread mutable
++        # code after CAS and could execute transient unpinned top-level code.
++        exec(compile(callback_raw, str(callback_path), 'exec'), callback_module.__dict__)
++        # Native module must be the exact pinned new private kind from this
++        # prepared SOURCE closure, loaded into a fresh normal native runtime.
++        from hermes_cli.friday_root_qualification import _dispatch_root_ordinary_first_qualification
++        try:
++            result = _dispatch_root_ordinary_first_qualification(admission)
++            completed = True
++        except BaseException as exc:
++            from hermes_cli.friday_root_qualification import RootQualificationCleanupUnknown
++            if isinstance(exc, RootQualificationCleanupUnknown):
++                # Retain exact original state and slot until Root reconciles
++                # these owned children. No new qualification may overwrite it.
++                retain_slot = True
++                _RETAINED[operation_id] = (admission, exc)
++                put(Path(config['operation_parent']) / 'unresolved-root-owned-operation.json',
++                    dict(operation_id=operation_id, nonce=nonce, deadline=deadline,
++                         state='UNKNOWN_OWNED_CLEANUP_NO_RETRY', slot_held=True))
++            raise
++        admission.check()  # includes owner pause between production and release
++        artifacts = _retain_qualified_bytes(op, result, deadline)
++        admission.check()
++        remaining(deadline)
++        result = dict(result, artifact_refs=artifacts)
++        return result
++    finally:
++        # Dispatcher owns same-call stop/context teardown; slot is held through
++        # it and through callback work removal. A failed call is never retried.
++        if admission is not None:
++            admission.close()
++        if callback_loaded and sys.modules.get('frw_root_first_qualifier') is callback_module:
++            sys.modules.pop('frw_root_first_qualifier', None)
++        if retain_slot:
++            # The Root runner owns explicit reconciliation; closing this
++            # descriptor here would falsely release a still-owned live slot.
++            return_slot = False
++        else:
++            return_slot = True
++        try:
++            if return_slot:
++                fcntl.flock(fd, fcntl.LOCK_UN)
++        finally:
++            if return_slot:
++                os.close(fd)
++        if completed:
++            remaining(deadline)  # total includes native teardown and slot release
++
+--- /dev/null
++++ b/bridge/root_private_bootstrap.py
+@@ -0,0 +1,85 @@
++"""Root-owned SOURCE loader, not admission and not a public actor CLI.
++
++Call only under the existing explicit owner delegation to the trusted Root
++runner. This configures a fresh normal native module search path; the entry
++itself stamps the one clock before mutable/current checks and any native
++imports. Namespace setup grants no scope, principal or operation permission.
++"""
++from pathlib import Path
++import importlib.util
++import hashlib
++import json
++import os
++import stat
++import sys
++import time
++from types import ModuleType
++
++HERE = Path(__file__).resolve().parent
++RUNTIME = Path('/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032/hermes-agent')
++
++
++def _verified_bytes(path, expected, *, mode, limit):
++    if path.resolve() != path or not path.is_absolute():
++        raise RuntimeError('root_source_exact_path')
++    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
++    try:
++        before = os.fstat(fd)
++        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
++                or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) not in mode
++                or not 0 < before.st_size <= limit):
++            raise RuntimeError('root_source_rights')
++        raw = bytearray()
++        while part := os.read(fd, min(65536, limit + 1 - len(raw))):
++            raw.extend(part)
++            if len(raw) > limit:
++                raise RuntimeError('root_source_limit')
++        def stamp(info):
++            return tuple(getattr(info, k) for k in ('st_dev','st_ino','st_uid',
++                'st_gid','st_mode','st_nlink','st_size','st_mtime_ns','st_ctime_ns'))
++        if (stamp(before) != stamp(os.fstat(fd)) or stamp(before) != stamp(path.lstat())
++                or len(raw) != before.st_size or hashlib.sha256(raw).hexdigest() != expected):
++            raise RuntimeError('root_source_CAS')
++        return bytes(raw)
++    finally:
++        os.close(fd)
++
++
++def run_fixed_root_qualification(prepared_path, prepared_sha256):
++    entered = time.monotonic()  # same one clock also covers code loading/CAS
++    if not sys.dont_write_bytecode:
++        raise RuntimeError('root_private_source_requires_python_B')
++    config = json.loads(_verified_bytes(Path(prepared_path), prepared_sha256,
++        mode=(0o400, 0o600), limit=262144))
++    manifest_path = Path(config['manifest_path'])
++    if manifest_path != HERE / 'ROOT-BRIDGE-PINS.json' or config['closure_root'] != str(HERE):
++        raise RuntimeError('root_fixed_source_config')
++    manifest = json.loads(_verified_bytes(manifest_path, config['manifest_sha256'],
++        mode=(0o400, 0o600), limit=262144))
++    # This only constructs import namespaces from immutable reviewed SOURCE.
++    # Refuse hot module replacement in an existing user/model runtime.
++    if any(name == root or name.startswith(root + '.')
++           for name in sys.modules for root in ('hermes_cli', 'agent', 'tools')):
++        raise RuntimeError('root_qualification_fresh_native_runtime_required')
++    native = HERE.parent / 'native'
++    sys.path.insert(0, str(RUNTIME))
++    sys.path.insert(0, str(HERE))
++    for name, paths in (
++        ('hermes_cli', [HERE / 'hermes_cli', native / 'hermes_cli', RUNTIME / 'hermes_cli']),
++        ('agent', [HERE / 'agent', RUNTIME / 'agent']),
++        ('tools', [HERE / 'tools', native / 'tools', RUNTIME / 'tools'])):
++        package = ModuleType(name)
++        package.__path__ = [str(path) for path in paths]
++        sys.modules[name] = package
++    path = HERE / 'frw_root_qualification_entry.py'
++    expected = next(row['sha256'] for row in manifest['files'] if row['path'] == str(path))
++    raw = _verified_bytes(path, expected, mode=(0o400,), limit=262144)
++    spec = importlib.util.spec_from_file_location('frw_root_qualification_entry', path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules['frw_root_qualification_entry'] = module
++    # The bootstrap/entry are immutable reviewed Root code. Actual byte/CAS and
++    # every mutable/code/current action inside run are charged to its one T0.
++    exec(compile(raw, str(path), 'exec'), module.__dict__)
++    return module.run_root_first_qualification(prepared_path, prepared_sha256,
++                                              _original_entered=entered)
++
+--- /dev/null
++++ b/bridge/hermes_cli/friday_root_qualification.py
+@@ -0,0 +1,427 @@
++"""Private Root qualification principal at the trusted native dispatch seam.
++
++This module is not an authenticator for arbitrary Python callers. Its sole
++issuer is the genuinely owner-delegated Root executable, whose exact
++RootAdmission.check performs the actual current authority checks. Constructors,
++registries, projected pins and ContextVars below only retain that decision.
++No ordinary user, CLI, model tool, history, DB or delegation is admitted here.
++"""
++from contextlib import contextmanager
++from contextvars import ContextVar
++import hashlib
++import math
++import os
++from pathlib import Path
++import stat
++import sys
++import threading
++import time
++from types import MappingProxyType, ModuleType
++
++from hermes_cli.friday_user_scope import ScopeDenied
++
++KIND = 'root-qualification'
++_QUALIFIER_MODULE = 'frw_root_first_qualifier'
++_QUALIFIER_FILE = 'frw_root_first_qualifier.py'
++_CURRENT = ContextVar('friday_private_root_qualification', default=None)
++_ISSUER = object()
++_ISSUED = {}
++_ISSUED_LOCK = threading.RLock()
++
++
++def root_context_active():
++    """Pure presence guard for ordinary UserScope APIs; performs no Root IO."""
++    return _CURRENT.get() is not None
++
++
++class RootQualificationCleanupUnknown(RuntimeError):
++    """Private retained reconciliation state; never serialize as a public reply."""
++
++    def __init__(self, scope, original_failure=None):
++        super().__init__('root_qualification_cleanup_unconfirmed')
++        self.scope = scope
++        self.agent = scope._agent
++        self.call = scope._call
++        self.admission = scope._admission
++        self.original_failure = original_failure
++
++
++class RootQualificationScope:
++    __slots__ = ('_admission', '_admission_identity', '_operation_id', '_nonce',
++                 '_entered_monotonic', '_deadline', '_work_parent',
++                 '_source_binding', '_agent', '_call', '_revoked', '_closed',
++                 '_guard_ceiling')
++
++    def __init__(self, admission, issuer):
++        if issuer is not _ISSUER:
++            raise ScopeDenied()
++        self._admission = admission
++        self._admission_identity = admission._issued_identity
++        self._operation_id, self._nonce = admission.operation_id, admission.nonce
++        self._entered_monotonic, self._deadline = admission.entered_monotonic, admission.deadline
++        self._work_parent, self._source_binding = admission.work_parent, admission.source_binding
++        self._agent = self._call = None
++        self._revoked = self._closed = False
++        self._guard_ceiling = None
++
++    @property
++    def principal(self):
++        return (KIND, self._operation_id, self._nonce)
++
++    @property
++    def entered_monotonic(self):
++        return self._entered_monotonic
++
++    @property
++    def deadline(self):
++        return self._deadline
++
++    @property
++    def operation_id(self):
++        return self._operation_id
++
++    @property
++    def nonce(self):
++        return self._nonce
++
++    @property
++    def work_parent(self):
++        return self._work_parent
++
++    @property
++    def source_binding(self):
++        return self._source_binding
++
++    def _identity_unchanged(self):
++        admission = self._admission
++        return (admission._issued_identity is self._admission_identity
++                and self._admission_identity is not None
++                and admission.operation_id == self._operation_id
++                and admission.nonce == self._nonce
++                and admission.entered_monotonic == self._entered_monotonic
++                and admission.deadline == self._deadline
++                and admission.work_parent == self._work_parent
++                and admission.source_binding is self._source_binding
++                and getattr(admission, '_native_agent', None) is self._agent)
++
++    def _fail(self):
++        self._revoked = True
++        agent = self._agent
++        if agent is not None and not agent._interrupt_requested:
++            # Revocation is sticky; the original turn and its custody are the
++            # only stop target. No replacement call/turn is constructed.
++            try:
++                agent.interrupt()
++            except BaseException:
++                # Failed settlement is retained, never hidden by an authority
++                # exception or followed by a second launch.
++                agent._friday_reply_effect_unknown = True
++
++    def check(self):
++        try:
++            with _ISSUED_LOCK:
++                admitted = _ISSUED.get(id(self)) is self
++            if (not admitted or _CURRENT.get() is not self
++                    or self._revoked or self._closed or not self._identity_unchanged()):
++                raise ScopeDenied()
++            # The exact parent type and active issuer identity were validated
++            # at dispatch. This live check remains the actual Root authority.
++            expected_child_guard = min(self._deadline, self._entered_monotonic + 35) - 1
++            if self._guard_ceiling not in (None, expected_child_guard):
++                raise ScopeDenied()
++            guard_deadline = self._deadline if self._guard_ceiling is None else self._guard_ceiling
++            self._admission.check(_deadline_ceiling=guard_deadline)
++            if not self._identity_unchanged():
++                raise ScopeDenied()
++            now = time.monotonic()
++            if not self._entered_monotonic <= now < guard_deadline:
++                raise ScopeDenied()
++            agent = self._agent
++            if (type(agent) is not NativeRootQualificationAgent
++                    or agent._friday_root_qualification_scope is not self
++                    or getattr(agent, '_friday_user_scope', None) is not None
++                    or agent._interrupt_requested or agent._hard_interrupt_requested.is_set()
++                    or agent._friday_reply_effect_unknown):
++                raise ScopeDenied()
++            call = self._call
++            if call is not None:
++                _check_registered_call(self, agent, call)
++                call.check()
++            return self
++        except BaseException:
++            self._fail()
++            raise ScopeDenied() from None
++
++    @contextmanager
++    def child_execution_ceiling(self, child_deadline):
++        """Bound live guard IO by the child's active time, preserving T0/Dp.
++
++        The existing _run owns actual execution and its cleanup1. This lane
++        merely prevents a current Root API check during that run from waiting
++        beyond its active cutoff. No deadline or permission is renewed.
++        """
++        expected = min(self._deadline, self._entered_monotonic + 35)
++        if (type(child_deadline) not in (int, float) or not math.isfinite(child_deadline)
++                or child_deadline != expected or child_deadline - 1 <= self._entered_monotonic
++                or self._guard_ceiling is not None):
++            self._fail()
++            raise ScopeDenied()
++        self._guard_ceiling = child_deadline - 1
++        try:
++            self.check()
++            yield
++        finally:
++            if (not self._revoked and not self._closed
++                    and self._agent is not None and not self._agent._friday_reply_effect_unknown):
++                self._guard_ceiling = None
++
++    def _authority_pin(self):
++        # Metadata after actual admission, never a bearer credential. Caller
++        # obtains this only after current() has performed the live cap check.
++        return {'kind': KIND, 'operation_id': self._operation_id, 'nonce': self._nonce,
++                'entered_monotonic': self._entered_monotonic, 'deadline': self._deadline,
++                'closure_root': str(self._source_binding['closure_root']),
++                'fixedcallback_sha256': self._source_binding['fixedcallback_sha256']}
++
++
++def current(required=False):
++    cap = _CURRENT.get()
++    if cap is None:
++        if required:
++            raise ScopeDenied()
++        return None
++    if type(cap) is not RootQualificationScope:
++        raise ScopeDenied()
++    return cap.check()
++
++
++def retained_authority():
++    return current(required=True)._authority_pin()
++
++
++def _bounded_root_stop_deadline(owner, absolute_deadline):
++    """Pure stop-only original Root pair/clock check, including revoked scopes.
++
++    These retained objects were bound by the real native issuer after actual
++    Root admission. They permit settlement of that owned call/turn only, never
++    execution, deadline extension, fresh admission or a foreign call's stop.
++    In particular this must not invoke cap.check or admission.check: expired
++    and revoked operations still have an obligation to settle their custody.
++    """
++    from agent.web_call_context import WebCall, WebTurn
++    from frw_root_qualification_entry import RootAdmission
++    cap = getattr(owner, '_friday_root_qualification_scope', None)
++    if (type(absolute_deadline) not in (int, float) or not math.isfinite(absolute_deadline)
++            or type(cap) is not RootQualificationScope
++            or type(cap._agent) is not NativeRootQualificationAgent
++            or cap._agent._friday_root_qualification_scope is not cap
++            or type(cap._admission) is not RootAdmission
++            or cap._admission_identity is None
++            or cap._agent._root_stop_binding != (cap, cap.entered_monotonic, cap.deadline)
++            or not math.isfinite(cap.deadline)
++            or not cap.entered_monotonic < cap.deadline <= cap.entered_monotonic + 40
++            or absolute_deadline > cap.deadline
++            or not ((type(owner) is WebTurn and cap._agent._web_turn is owner)
++                    or (type(owner) is WebCall and cap._call is owner
++                        and owner.turn is cap._agent._web_turn))):
++        raise ValueError('web_root_stop_deadline_refused')
++    return absolute_deadline
++
++
++def _check_registered_call(cap, agent, call):
++    from agent.web_call_context import WebCall, _current
++    from tools.approval_context import get_current_session_key
++    if (type(call) is not WebCall or _current.get() is not call
++            or getattr(call, 'agent', None) is not agent
++            or agent._friday_root_qualification_scope is not cap
++            or call.turn is not agent._web_turn
++            or call.task_id != cap.operation_id or call.call_id != cap.nonce
++            or agent._tool_result_calls.get((call.task_id, call.call_id)) is not call
++            or call.session_id != agent.session_id
++            or call.session_key != get_current_session_key(default='')
++            or call.turn_id != agent._current_turn_id
++            or call.base_deadline != cap.deadline or call.run_deadline != cap.deadline
++            or agent._web_run_deadline != cap.deadline
++            or call.authorization_gate is not agent._root_authorization_gate
++            or call.authorization_gate is None
++            or call.user_authority != cap._authority_pin()
++            or call.deadline() != cap.deadline
++            or call.turn.failure is not None):
++        raise ScopeDenied()
++
++
++def check_agent(agent):
++    cap = current(required=True)
++    call = cap._call
++    if cap._agent is not agent or call is None:
++        cap._fail()
++        raise ScopeDenied()
++    _check_registered_call(cap, agent, call)
++    return cap
++
++
++class NativeRootQualificationAgent:
++    """One genuinely admitted private native kind, with no model/user setup."""
++
++    def __init__(self, cap, gate, issuer):
++        if issuer is not _ISSUER:
++            raise ScopeDenied()
++        from agent.web_call_context import WebTurn
++        self._friday_root_qualification_scope = cap
++        self._friday_user_scope = None
++        self._root_stop_binding = (cap, cap.entered_monotonic, cap.deadline)
++        self._root_authorization_gate = gate
++        self.session_id = 'root-qualification:' + cap.operation_id
++        self._current_turn_id = cap.nonce
++        self._web_run_deadline = cap.deadline
++        self._web_turn = WebTurn()
++        self._web_turn._friday_root_qualification_scope = cap
++        self._tool_result_calls = {}
++        self._interrupt_requested = False
++        self._hard_interrupt_requested = threading.Event()
++        self._friday_reply_effect_unknown = False
++        self._execution_thread_id = None
++        self._tool_interrupt_reason = None
++        self._tool_worker_threads = set()
++        self._tool_worker_threads_lock = threading.Lock()
++        self._web_stop_receipt = {'status': 'QUIESCENT', 'sessions': []}
++
++    def interrupt(self):
++        from agent.friday_root_native_worker import _interrupt_worker_tids
++        self._interrupt_requested = True
++        self._hard_interrupt_requested.set()
++        self._tool_interrupt_reason = 'root qualification revoked'
++        with self._tool_worker_threads_lock:
++            tids = list(self._tool_worker_threads)
++        try:
++            _interrupt_worker_tids(self, tids, reason=self._tool_interrupt_reason)
++        finally:
++            self._web_stop_receipt = self._web_turn.stop(_absolute_deadline=self._friday_root_qualification_scope.deadline)
++        if self._web_stop_receipt.get('status') != 'QUIESCENT':
++            self._friday_reply_effect_unknown = True
++        return self._web_stop_receipt
++
++
++def _fixed_callback(cap):
++    """Parent loads exactly this fixed reviewed file after its Source CAS."""
++    module = sys.modules.get(_QUALIFIER_MODULE)
++    path = cap.source_binding['closure_root'] / _QUALIFIER_FILE
++    if (type(module) is not ModuleType or Path(getattr(module, '__file__', '')) != path
++            or path.resolve() != path):
++        raise ScopeDenied()
++    callback = getattr(module, '_qualify_current_native_call', None)
++    if (not callable(callback) or getattr(callback, '__module__', None) != _QUALIFIER_MODULE
++            or getattr(callback, '__globals__', None) is not module.__dict__
++            or Path(getattr(getattr(callback, '__code__', None), 'co_filename', '')) != path):
++        raise ScopeDenied()
++    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
++    try:
++        before = os.fstat(fd)
++        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
++                or stat.S_IMODE(before.st_mode) != 0o400 or before.st_nlink != 1
++                or not 0 < before.st_size <= 262144):
++            raise ScopeDenied()
++        data = bytearray()
++        while chunk := os.read(fd, min(65536, 262145 - len(data))):
++            data.extend(chunk)
++            if len(data) > 262144:
++                raise ScopeDenied()
++        def stamp(info):
++            return tuple(getattr(info, name) for name in ('st_dev', 'st_ino', 'st_uid',
++                'st_gid', 'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns'))
++        if (stamp(before) != stamp(os.fstat(fd)) or stamp(before) != stamp(path.lstat())
++                or len(data) != before.st_size
++                or hashlib.sha256(data).hexdigest() != cap.source_binding['fixedcallback_sha256']):
++            raise ScopeDenied()
++    finally:
++        os.close(fd)
++    cap.check()
++    return callback
++
++
++def _dispatch_root_ordinary_first_qualification(admission):
++    """Trusted Root-only fixed dispatch, never a public tool/CLI/cap argument."""
++    from frw_root_qualification_entry import RootAdmission
++    if type(admission) is not RootAdmission:
++        raise ScopeDenied()
++    from hermes_cli.friday_user_scope import _CURRENT as user_current, _DELEGATION
++    if root_context_active() or user_current.get() is not None or _DELEGATION.get() is not None:
++        raise ScopeDenied()
++    admission.check()
++    if (admission._issued_identity is None or getattr(admission, '_native_agent', None) is not None
++            or type(admission.operation_id) is not str
++            or not admission.operation_id or type(admission.nonce) is not str or not admission.nonce
++            or type(admission.entered_monotonic) not in (float, int)
++            or type(admission.deadline) not in (float, int)
++            or not math.isfinite(admission.entered_monotonic) or not math.isfinite(admission.deadline)
++            or not admission.entered_monotonic < admission.deadline <= admission.entered_monotonic + 40
++            or not isinstance(admission.work_parent, Path)
++            or type(admission.source_binding) is not MappingProxyType
++            or not isinstance(admission.source_binding.get('closure_root'), Path)
++            or type(admission.source_binding.get('fixedcallback_sha256')) is not str
++            or len(admission.source_binding['fixedcallback_sha256']) != 64
++            or any(c not in '0123456789abcdef' for c in admission.source_binding['fixedcallback_sha256'])):
++        raise ScopeDenied()
++    from agent.friday_root_native_worker import _RootQualificationAuthorizationGate, _registered_tool_worker
++    from agent.web_call_context import make_web_call, bind_web_call
++    from tools.approval_context import (set_current_session_key, reset_current_session_key,
++        set_current_observability_context, reset_current_observability_context)
++    gate = _RootQualificationAuthorizationGate(session_key='root-qualification:' + admission.operation_id,
++        lock_timeout=max(0, min(2, admission.deadline - time.monotonic())),
++        _operation_id=admission.operation_id, _absolute_deadline=admission.deadline)
++    cap = RootQualificationScope(admission, _ISSUER)
++    agent = NativeRootQualificationAgent(cap, gate, _ISSUER)
++    cap._agent = agent
++    admission._native_agent = agent
++    token = session_token = None
++    observability = None
++    call = None
++    original_failure = None
++    cleanup_unknown = False
++    try:
++        with _ISSUED_LOCK:
++            _ISSUED[id(cap)] = cap
++        token = _CURRENT.set(cap)
++        session_token = set_current_session_key(agent.session_id)
++        observability = set_current_observability_context(turn_id=agent._current_turn_id,
++            tool_call_id=cap.nonce, session_id=agent.session_id)
++        cap.check()
++        call = make_web_call(agent, cap.deadline, cap.operation_id, cap.nonce, gate)
++        cap._call = call
++        call._friday_root_qualification_scope = cap
++        with _registered_tool_worker(agent) as tid:
++            agent._execution_thread_id = tid
++            with bind_web_call(call):
++                check_agent(agent)
++                result = _fixed_callback(cap)()
++                cap.check()
++        return result
++    except BaseException as exc:
++        original_failure = exc
++        raise
++    finally:
++        # A stopped/revoked capability never regains execution permission.
++        cap._closed = cap._revoked = True
++        try:
++            if call is not None:
++                receipt = call.stop(_absolute_deadline=cap.deadline)
++                cleanup_unknown = receipt.get('status') != 'QUIESCENT'
++            cleanup_unknown = cleanup_unknown or agent._friday_reply_effect_unknown
++        except BaseException:
++            cleanup_unknown = True
++        finally:
++            with _ISSUED_LOCK:
++                _ISSUED.pop(id(cap), None)
++            resets = ((reset_current_observability_context, observability),
++                      (reset_current_session_key, session_token), (_CURRENT.reset, token))
++            for reset, reset_token in resets:
++                if reset_token is not None:
++                    try:
++                        reset(reset_token)
++                    except BaseException:
++                        cleanup_unknown = True
++        if cleanup_unknown:
++            agent._friday_reply_effect_unknown = True
++            raise RootQualificationCleanupUnknown(cap, original_failure) from None
++        if time.monotonic() >= cap.deadline:
++            raise ScopeDenied() from None
+--- /dev/null
++++ b/bridge/agent/friday_root_native_worker.py
+@@ -0,0 +1,188 @@
++"""Private Root-kind adapter of exact native worker primitive Source.
++
++Gate/register/interrupt bodies and constants are copied without AST changes
++from the granted installed224 Source. Only _ra is bound to the actual canonical
++tools.interrupt.set_interrupt alias rather than importing run_agent, whose
++module initialization performs unrelated recovery and dotenv work.
++This module does not grant Root authority or expose an ordinary model tool.
++"""
++import contextlib
++import logging
++import math
++import time
++import threading
++from tools.interrupt import set_interrupt as _set_interrupt
++
++logger = logging.getLogger(__name__)
++
++
++class _NativeInterruptAlias:
++    _set_interrupt = staticmethod(_set_interrupt)
++
++
++_NATIVE_INTERRUPT_ALIAS = _NativeInterruptAlias()
++
++
++def _ra():
++    """Fixed narrow alias to the same canonical native interrupt function."""
++    return _NATIVE_INTERRUPT_ALIAS
++
++
++_AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
++
++
++def _authorization_gate_lock_timeout() -> float:
++    """Authorization-lock bound = ``tools.approval_human_wait.human_wait_ceiling`` (approval timeout +
++    margin, capped so it can't overflow Lock.acquire): never break serialization while a
++    prompt is answerable, never let a wedged holder park workers forever. Deliberately NOT
++    min()'d with the fallback so the gate never gives up early.
++
++    Delegates to ``tools.approval_human_wait.human_wait_ceiling`` — the same bound that clamps a human-wait window's
++    deadline contribution — so the two can't drift. Long enough that serialization is never broken while a
++    legitimate approval prompt is still answerable; short enough that a wedged holder (hanging
++    ``pre_tool_call`` plugin, dead approval client) cannot park other workers forever (#79719). Resolved
++    once per gate (per batch), so a mid-process ``approvals.timeout`` change applies from the next batch.
++    """
++    try:
++        from tools.approval_human_wait import human_wait_ceiling
++
++        # human_wait_ceiling is platform-safety-capped (agent/deadline.py MAX_SAFE_TIMEOUT_S): a huge
++        # approvals.timeout can no longer overflow Lock.acquire's time_t on macOS (#83220). Deliberately NOT
++        # min()'d with _AUTHORIZATION_GATE_LOCK_TIMEOUT_S — the gate must never give up while a legitimate
++        # approval prompt is still answerable (#79719), so a configured approvals.timeout above 360s must
++        # extend the gate.
++        return human_wait_ceiling()
++    except Exception:
++        return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
++
++
++class _ConcurrentToolAuthorizationGate:
++    """Serialize policy prompts and exclude human approval waits from batch deadlines.
++
++    The acquire is BOUNDED: on expiry the worker prompts unserialized rather than starving
++    the batch behind a wedged plugin/approval client. Exclusion is measured at the SOURCE
++    of the human wait (``tools.approval.human_wait_seconds``), NOT as gate residency —
++    residency-based exclusion let a wedged plugin keep the deadline from ever firing.
++
++    Serialization keeps concurrent approval prompts from interleaving on the user's screen. The acquire is
++    BOUNDED: a worker wedged inside the gate (a hanging ``pre_tool_call`` plugin, or an approval round-trip
++    to a client that went away) must not park every other worker forever. On expiry the worker runs its
++    prompt unserialized — worst case is interleaved prompts, strictly better than permanent starvation (same
++    tradeoff as the start-order gate, #79705).
++    Gate residency is arbitrary code — using it as the exclusion signal let a wedged plugin grow the
++    exclusion 1:1 with wall clock, keeping the batch deadline's ``remaining`` constant so it never fired and
++    the turn hung forever (#79719). A wedged plugin now contributes nothing to the exclusion and the batch
++    times out normally, while a genuine approval wait (which can legitimately exceed any fixed bound) is
++    still excluded in full.
++    """
++
++    def __init__(self, *, lock_timeout: float | None = None, session_key: str | None = None) -> None:
++        self._serialization_lock = threading.Lock()
++        self._lock_timeout = _authorization_gate_lock_timeout() if lock_timeout is None else lock_timeout
++        self._session_key = session_key
++        if self._session_key is None:
++            # Snapshot on the SUBMITTING thread: excluded_seconds() is polled from the
++            # batch wait loop, whose context may differ from the workers'.
++            try:
++                from tools.approval_context import get_current_session_key
++
++                self._session_key = get_current_session_key()
++            except Exception:
++                logger.debug(
++                    "authorization gate could not snapshot the session key; "
++                    "human-wait exclusion will re-resolve it at poll time",
++                    exc_info=True,
++                )
++        self._baseline_wait_seconds = self._human_wait_seconds()
++
++    def _human_wait_seconds(self) -> float:
++        try:
++            from tools.approval_human_wait import human_wait_seconds
++
++            return human_wait_seconds(self._session_key)
++        except Exception:
++            return 0.0
++
++    def run(self, callback):
++        if not self._serialization_lock.acquire(timeout=self._lock_timeout):
++            # Deterministic failure (bad command, non-MCP URL, 401/403): every retry hits the same wall.
++            # Park immediately instead of burning the retry ladder and spamming N identical warnings
++            # (#65673). Auth failures park here too rather than returning. Returning ends the run task, and
++            # with it the only listener on ``_reconnect_event`` — so a 401 on the very first connect left
++            # the server unrevivable for the life of the process, even after the user re-authenticated with
++            # ``hermes mcp login``. Parking keeps the task alive so the 300s self-probe (and an explicit
++            # /mcp refresh) can pick up fresh tokens.
++            logger.warning(
++                "authorization gate lock not acquired after %.1fs "
++                "(holder wedged in a pre_tool_call plugin or approval "
++                "round-trip?); running prompt unserialized",
++                self._lock_timeout,
++            )
++            return callback()
++        try:
++            return callback()
++        finally:
++            self._serialization_lock.release()
++
++    def excluded_seconds(self) -> float:
++        """Return human-approval wait seconds accrued since the batch started."""
++        return max(0.0, self._human_wait_seconds() - self._baseline_wait_seconds)
++
++
++@contextlib.contextmanager
++def _registered_tool_worker(agent):
++    """Track this worker tid for interrupt fan-out (``AIAgent.interrupt()``); on ANY exit
++    (incl. BaseException) discard it and clear its interrupt bit so a recycled tid starts clean."""
++    tid = threading.current_thread().ident
++    with agent._tool_worker_threads_lock:
++        agent._tool_worker_threads.add(tid)
++    try:
++        yield tid
++    finally:
++        with agent._tool_worker_threads_lock:
++            agent._tool_worker_threads.discard(tid)
++        with contextlib.suppress(Exception):
++            _ra()._set_interrupt(False, tid)
++
++
++_NO_REASON = object()
++
++
++def _interrupt_worker_tids(agent, tids, *, reason=_NO_REASON) -> None:
++    """Raise the interrupt bit on each worker tid (best-effort, via ``run_agent``)."""
++    kwargs = {} if reason is _NO_REASON else {"reason": reason}
++    for tid in tids:
++        with contextlib.suppress(Exception):
++            _ra()._set_interrupt(True, tid, **kwargs)
++
++
++
++class _RootQualificationAuthorizationGate(_ConcurrentToolAuthorizationGate):
++    """Scheduling-only Root variant with no human approval/exclusion lane.
++
++    The fixed private Root callback cannot prompt for human approval. Zero
++    grants no scheduling credit, no permission and no extension of original Dp.
++    Ordinary native/user gate methods and behavior remain unchanged.
++    """
++
++    def __init__(self, *, session_key, lock_timeout, _operation_id, _absolute_deadline):
++        if (type(_operation_id) is not str or not _operation_id
++                or type(session_key) is not str
++                or session_key != 'root-qualification:' + _operation_id
++                or type(lock_timeout) not in (int, float) or not math.isfinite(lock_timeout)
++                or not 0 <= lock_timeout <= 2
++                or type(_absolute_deadline) not in (int, float)
++                or not math.isfinite(_absolute_deadline)):
++            raise ValueError('root_qualification_gate_schedule_refused')
++        self._root_session_key = session_key
++        # Re-clamp using the same original Dp. Two neighboring construction
++        # checks may consume time; they never renew or extend the operation.
++        bounded_timeout = min(lock_timeout, max(0, _absolute_deadline - time.monotonic()))
++        super().__init__(session_key=session_key, lock_timeout=bounded_timeout)
++
++    def _human_wait_seconds(self):
++        if (type(self._session_key) is not str
++                or self._session_key != self._root_session_key
++                or not self._session_key.startswith('root-qualification:')):
++            raise ValueError('root_qualification_gate_session_refused')
++        return 0.0

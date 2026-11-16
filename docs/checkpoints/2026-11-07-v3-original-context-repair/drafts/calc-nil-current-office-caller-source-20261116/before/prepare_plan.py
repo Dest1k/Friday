@@ -1,0 +1,77 @@
+"""Bind one future actual plan to reviewed static source; no grant or actor."""
+from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import json,hashlib,os,secrets,importlib.util,sys,time,argparse
+os.umask(0o077)
+B=Path(__file__).resolve().parent
+S=Path('/home/jericho/.cache/FRW-ASTRA-LOCALE-CONTRACT-FINAL-COMPOSITION-20261116')
+F=Path('/home/jericho/.cache/FRW-ASTRA-MAPPED-BOOTSTRAP-OFFICE-M-ROOT-20261116')
+L=Path('/home/jericho/.cache/FRW-ASTRA-OWNC-LOCALE-LANGUAGE-ACTUAL-20261116-887c410232d4')
+A=Path('/home/jericho/.cache/FRW-ASTRA-MAPPED-BOOTSTRAP-ROOT-QUALIFICATION-20261116')
+P=Path('/home/jericho/.cache/FRW-ASTRA-CURRENT-OFFICE-M-ROOT-20261116')
+E=Path('/home/jericho/.cache/FRW-ASTRA-EXTRA-FORK-WORKER-ROOT-QUALIFICATION-20261116')
+sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+ref=lambda p:{'path':str(p),'sha256':sha(p)}
+def put(p,value):
+ fd=os.open(p,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+ with os.fdopen(fd,'w') as f:
+  json.dump(value,f,ensure_ascii=False,indent=2,sort_keys=True);f.write('\n');f.flush();os.fsync(f.fileno())
+ return ref(p)
+parser=argparse.ArgumentParser(description='Root-only exact locale Source acceptance and OwnC closure pins; no default approval')
+parser.add_argument('--root-source-accepted',required=True)
+parser.add_argument('--root-source-accepted-sha256',required=True)
+parser.add_argument('--root-locale-closed',required=True)
+parser.add_argument('--root-locale-closed-sha256',required=True)
+args=parser.parse_args()
+for pin in (args.root_source_accepted_sha256,args.root_locale_closed_sha256):assert len(pin)==64 and all(c in '0123456789abcdef' for c in pin)
+source_accepted=Path(args.root_source_accepted);locale_closed=Path(args.root_locale_closed)
+assert sha(source_accepted)==args.root_source_accepted_sha256
+assert sha(locale_closed)==args.root_locale_closed_sha256
+assert sha(S/'RESULT.json')=='5bd9bad045317246ce5d684795169a68dd6e4a5511938ceb67a8c92d23851e13'
+assert sha(S/'FINAL-FREEZE.json')=='4c8e9b3cc0edbd7c709b84f570085c5fe851c695ccc6e9a6be748df1bd082ff8'
+prior_f59e=F/'ROOT-CURRENT-OFFICE-F59E-ENV-PROFILE-REFUSAL-CLOSED.json'
+f59e_partial=F/'ROOT-F59E-PARTIAL-HELPER-EFFECT-CLARIFICATION.json'
+locale_actual=L/'ROOT-RESULT.json'
+assert sha(prior_f59e)=='57dcdd41503479a931a1dc4099cf81997695e1a609ac6e18ac9287891a265b29'
+assert sha(f59e_partial)=='7c168805fbb6f7c44d9cdd0e6069d0baa0f893e4a00df1546223dc70a1a21033'
+assert sha(locale_actual)=='5fe06a4b538a8c6a4ff7b333579c9e2e81606ed2bc38f23ccc4b2e9813d48187'
+assert sha(A/'ROOT-PRODUCTION15-SOURCE-ACCEPTED.json')=='7e8b41e6e2ec48a9b6fa36268ef17849cef5de920c3cf0cedf1fd94a2927b23d'
+qualified=A/'ROOT-MAPPED-POSTPAPER-OWNC-QUALIFIED-CLOSED.json'
+assert sha(qualified)=='c6bc47e38964d65cb92b2a9f2582a2c04fda88bf9ed8934753b536531c533fd7'
+prior_closed=P/'ROOT-CURRENT-OFFICE-LOAD-UNEXPECTED-FORK-50AA-CLOSED.json'
+assert sha(prior_closed)=='0a5b0529f998d66ebb5728e86bd7d92be5f5727c1f2282ec9631438569b11bff'
+assert sha(E/'ROOT-MISSING-POSTINIT-EXTRA-FORK-EXPECTED-NEGATIVE-ACCEPTED.json')=='f6b82e49fd667b686d4718a5015b3dfc79951c37ea39f3f6fc3cc499c451a672'
+src=S/'source-inputs/FINAL-CALLER-SOURCE-INPUT-R2.json'
+assert sha(src)=='3e64d20cdf574b74d38cbe713b7114f0b2eb34fd9bad7c9089d397a072bc7520'
+v=json.loads(src.read_text());nonce=secrets.token_hex(16)
+op=B/('observation-'+nonce[:12]);op.mkdir(mode=0o700,exist_ok=False)
+(op/'inputs').mkdir(mode=0o700);(op/'work').mkdir(mode=0o700)
+operation='root-current-calc-m-20261116-'+nonce[:12]
+oldop=v['plan']['operation_dir'];oldid=v['plan']['operation_id'];oldnonce=v['plan']['nonce']
+assert oldid=='SOURCE_PREFLIGHT_ONLY_NOT_AN_OPERATION' and oldnonce=='0'*32
+def relocate(x):
+ if isinstance(x,str):return x.replace(oldop,str(op)).replace(oldid,operation).replace(oldnonce,nonce)
+ if isinstance(x,list):return [relocate(a) for a in x]
+ if isinstance(x,dict):return {k:relocate(a) for k,a in x.items()}
+ return x
+plan=relocate(v['plan']);pre=relocate(v['preload'])
+plan['preload']=put(op/'inputs/preload.json',pre)
+plan['inner_input']['preload']=plan['preload']
+assert plan['operation_dir']==str(op) and plan['work_dir']==str(op/'work')
+assert plan['nonce']==nonce and plan['operation_id']==operation
+assert plan['budgets']=={'cleanup_seconds':10,'cpu_seconds':120,'memory_bytes':2147483648,'startup_seconds':60,'tasks_max':128,'wall_seconds':240}
+assert plan['inner_input']['load_dependency']['operation_deadline_monotonic'] is None
+assert plan['inner_input']['gpgme_engine_init']['operation_deadline_monotonic'] is None
+assert pre['load_policy']['read_only'] is True and pre['load_policy']['store_render_draw_conversion'] is False
+assert pre['source']['sha256']=='a2e68bc685e4d689aa7972ff4f2c7f9841441c9dcb4fc5e40327a5ae190b5d58'
+plan_ref=put(op/'inputs/plan.json',plan)
+outer_ref=v['outer_ref'];assert sha(Path(outer_ref['path']))==outer_ref['sha256']=='8f162630ab2922a75a93c79476730a7a34e34e869aa4b1eaa587b6c8d01933a1'
+spec=importlib.util.spec_from_file_location('root_currentM_static_inspection',outer_ref['path']);outer=importlib.util.module_from_spec(spec);sys.modules[spec.name]=outer;spec.loader.exec_module(outer)
+t=time.monotonic();inspected=outer.inspect_plan(plan);elapsed=time.monotonic()-t
+assert inspected['status']=='SOURCE_INPUTS_INSPECTED_NO_GRANT' and inspected['actual_M'] is None and inspected['runtime_grant'] is False
+assert not list((op/'work').iterdir()) and not(op/'consumed-once.json').exists()
+inspection=put(op/'whole-actual-plan-preflight.json',{'at_moscow':datetime.now(ZoneInfo('Europe/Moscow')).isoformat(),'source_caller_input_ref':ref(src),'plan_ref':plan_ref,'outer_ref':outer_ref,'result':inspected,'elapsed_seconds':elapsed,'actual_new_operation_identity':True,'no_admission_clock_intent_ONCE_actor':True,'old_operations_effects_clocks_unchanged':True})
+identity={'at_moscow':datetime.now(ZoneInfo('Europe/Moscow')).isoformat(),'operation_id':operation,'nonce':nonce,'operation_dir':str(op),'plan_ref':plan_ref,'preload_ref':plan['preload'],'outer_ref':outer_ref,'whole_preflight_ref':inspection,'source_accepted_ref':ref(A/'ROOT-PRODUCTION15-SOURCE-ACCEPTED.json'),'locale_source_accepted_ref':ref(source_accepted),'locale_qualified_closed_ref':ref(locale_closed),'locale_source_result_ref':ref(S/'RESULT.json'),'locale_source_freeze_ref':ref(S/'FINAL-FREEZE.json'),'prior_f59e_closed_ref':ref(prior_f59e),'prior_f59e_partial_effect_ref':ref(f59e_partial),'locale_actual_ref':ref(locale_actual),'changed_boundary_qualification_ref':ref(qualified),'prior_50aa_closed_ref':ref(prior_closed),'helper_controls_accepted_ref':ref(E/'ROOT-MISSING-POSTINIT-EXTRA-FORK-EXPECTED-NEGATIVE-ACCEPTED.json'),'runtime_admitted':False,'actual_M':None,'repeat_basis':'All prior Root diagnostic/LOAD attempts including original50aa and f59e and their unknown effects/clocks remain consumed/closed; f59e included actual final gpgconf exec/entry/exitintent0 with final normalexit UNKNOWN, not no helper effect. No qualified M exists. Repeat only necessary readonly load/query to reach missing native metric, on exact locale-contract R2 common production15 after exact Root locale Source acceptance and separately Root-reviewed closed OwnC LANGUAGE qualification, with earlier mapped-bootstrap Source/qualification retained, plus preserved helper lifecycle/2negatives/postinitfork/c400 evidence and exact manifest/caller/preload/source joins. New OwnC LANGUAGE is fixture-only and does not identify the historical f59e offending ENV key/value or prove repair of its UNKNOWN selector/coverage. LANGUAGE is outside the15FONT join. StartupENV14 does not establish currentfullENV14 equality; current LANGUAGE/raw snapshot is not retained, only digests. LC_MESSAGES is a Source premise, not an observed runtime fact. Partial ENV15/font joining is distinct from full frozen effective parent/helper equality; no shared builder/ENV scrub/normalization or production ENV12 change. Earlier mapped changed-boundary qualification uses executed source-causal inference; bootstrap presence at new-method entry remains UNKNOWN and the absent-bootstrap branch is not separately runtime-qualified. It does not prequalify Office/native64/fontCAS/restore/readonlyclose/M or ordinary40wall35CPU; Office tasks128 and OwnC tasks64 remain separate. No user/model/producer/render/store/send/stop/App replay, no copied font/source rebaseline. Current authority/resources/cancel/slot/source/UID/hardware CAS required immediately before action; future native64/fontrestore/readonlyclose/M/cleanup not prepassed.'}
+identity_ref=put(B/'PREPARED-ACTUAL-IDENTITY.json',identity)
+print(json.dumps({'identity_ref':identity_ref,'operation_dir':str(op),'preflight':inspected['status'],'preflight_elapsed_seconds':elapsed,'runtime_admitted':False,'actor':False,'actual_M':None}))
