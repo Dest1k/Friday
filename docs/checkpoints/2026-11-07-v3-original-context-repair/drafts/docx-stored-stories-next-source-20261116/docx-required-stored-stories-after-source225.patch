@@ -1,0 +1,317 @@
+diff --git a/tools/scoped_word_profiles.py b/tools/scoped_word_profiles.py
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -496,8 +496,10 @@
+     """Return only inert stored text plus explicit trusted coverage metadata."""
+     package = _Package(data, format, checkpoint)
+     from tools.scoped_word_review import has_review_layers, extract_review_layers
++    from tools.scoped_word_stories import append_stored_stories
+     if has_review_layers(package):
+-        return extract_review_layers(package, checkpoint=checkpoint)
++        return append_stored_stories(package, extract_review_layers(package, checkpoint=checkpoint),
++                                     checkpoint=checkpoint)
+     rows = []
+     output_bytes = 0
+     paragraphs = tables = 0
+@@ -544,4 +546,4 @@
+     if len(result.encode('utf-8')) > MAX_BYTES:
+         _fail('extracted_text_limit')
+     _tick(checkpoint)
+-    return DocumentText(result, metadata)
++    return append_stored_stories(package, DocumentText(result, metadata), checkpoint=checkpoint)
+diff --git a/tools/scoped_word_stories.py b/tools/scoped_word_stories.py
+new file mode 100644
+--- /dev/null
++++ b/tools/scoped_word_stories.py
+@@ -0,0 +1,275 @@
++"""Bounded stored Word stories and logical links, without rendered page claims.
++
++BODY selectors remain owned by the existing reader. Secondary text has separate
++part/note identities and cannot grant a BODY edit or raw-binary write authority.
++"""
++from __future__ import annotations
++
++import re
++from tools.scoped_word_profiles import (
++    W, R, MAX_BYTES, MAX_PARAGRAPHS, DocumentText, _q, _fail, _tick, _encoded,
++)
++
++_STORIES = {
++    'header': ('header', 'hdr'), 'footer': ('footer', 'ftr'),
++    'footnote': ('footnotes', 'footnotes'), 'endnote': ('endnotes', 'endnotes'),
++}
++_PREFIX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.'
++MAX_STORY_RECORDS = 8192
++MAX_SECTIONS = 1024
++
++
++def _note_id(node):
++    value = node.get(_q(W, 'id'))
++    if (not isinstance(value, str) or re.fullmatch(r'-?(?:0|[1-9][0-9]{0,9})', value) is None
++            or not -2147483648 <= int(value) <= 2147483647 or str(int(value)) != value):
++        _fail('invalid_stored_note_id')
++    return value
++
++
++def _guide(paragraph):
++    return {child for parent in paragraph.iter()
++            if parent.tag in (_q(W, 'rt'), _q(W, 'pPr'), _q(W, 'rPr')) for child in parent.iter()}
++
++
++def _paragraph_text(paragraph):
++    if any(n is not paragraph and n.tag == _q(W, 'p') for n in paragraph.iter()):
++        _fail('unsupported_nested_paragraph')
++    excluded = _guide(paragraph)
++    return ''.join((n.text or '') if n.tag == _q(W, 't') else '\t' if n.tag == _q(W, 'tab')
++                   else '\n' if n.tag in (_q(W, 'br'), _q(W, 'cr')) else '\u2011'
++                   if n.tag == _q(W, 'noBreakHyphen') else '\u00ad' if n.tag == _q(W, 'softHyphen') else ''
++                   for n in paragraph.iter() if n not in excluded)
++
++
++def append_stored_stories(package, body_text, *, checkpoint=None):
++    """Join both existing BODY/review views with separately labelled stored text."""
++    from tools.scoped_word_review import _revision, _MARKERS
++    main = package.relationships.get('word/document.xml', {})
++    inventory = {}
++    for kind, (suffix, rootname) in _STORIES.items():
++        links = [(rid, target) for rid, (rel, target) in main.items() if rel == R + '/' + suffix]
++        typed = {p for p, content_type in package.types.items() if content_type == _PREFIX + suffix + '+xml'}
++        if typed != {target for _, target in links} or (kind in ('footnote', 'endnote') and len(links) > 1):
++            _fail('ambiguous_stored_story_part')
++        for rid, part in links:
++            root = package.xml.get(part)
++            if (package.types.get(part) != _PREFIX + suffix + '+xml'
++                    or root is None or root.tag != _q(W, rootname)):
++                _fail('stored_story_type_or_root')
++            if part in inventory and inventory[part]['kind'] != kind:
++                _fail('ambiguous_stored_story_part')
++            row = inventory.setdefault(part, dict(kind=kind, root=root, relationships=[]))
++            row['relationships'].append(rid)
++    # A genuine story root must not disappear because its content type or link
++    # was omitted. Unrelated custom XML remains outside this finite profile.
++    roots = {_q(W, rootname) for _, rootname in _STORIES.values()}
++    if any(root.tag in roots and part not in inventory for part, root in package.xml.items()):
++        _fail('unbound_stored_story_part')
++    if not inventory:
++        if any(n.tag in (_q(W, 'headerReference'), _q(W, 'footerReference'),
++                         _q(W, 'footnoteReference'), _q(W, 'endnoteReference')) for n in package.body.iter()):
++            _fail('stored_story_reference_missing')
++        return body_text
++
++    rows = []
++    output_bytes = len(body_text.encode('utf-8'))
++    def emit(label, record):
++        nonlocal output_bytes
++        _tick(checkpoint)
++        if len(rows) >= MAX_STORY_RECORDS:
++            _fail('stored_story_record_limit')
++        line = '[' + label + ' ' + _encoded(record) + ']'
++        output_bytes += len(line.encode('utf-8')) + 1
++        if output_bytes > 900_000:
++            _fail('extracted_text_limit')
++        rows.append(line)
++
++    parents = {child: parent for parent in package.body.iter() for child in parent}
++    body_paragraphs = list(package.body.iter(_q(W, 'p')))
++    sections = list(package.body.iter(_q(W, 'sectPr')))
++    if len(sections) > MAX_SECTIONS:
++        _fail('stored_story_section_limit')
++    final_sections = [child for child in package.body if child.tag == _q(W, 'sectPr')]
++    if (len(final_sections) > 1 or final_sections
++            and final_sections[0] is not package.body[-1]):
++        _fail('unsupported_stored_story_section')
++    seen_refs = set()
++    inherited = {}
++    link_count = 0
++    for section, properties in enumerate(sections, 1):
++        _tick(checkpoint)
++        parent = parents.get(properties)
++        if not (parent is package.body or parent is not None and parent.tag == _q(W, 'pPr')
++                and parents.get(parent) is not None and parents[parent].tag == _q(W, 'p')
++                and parents.get(parents[parent]) is package.body):
++            _fail('unsupported_stored_story_section')
++        declared = {}
++        for node in properties:
++            if node.tag not in (_q(W, 'headerReference'), _q(W, 'footerReference')):
++                continue
++            seen_refs.add(node)
++            kind = 'header' if node.tag == _q(W, 'headerReference') else 'footer'
++            variant, rid = node.get(_q(W, 'type')), node.get(_q(R, 'id'))
++            key = (kind, variant)
++            if variant not in ('default', 'first', 'even') or key in declared or len(node):
++                _fail('ambiguous_stored_story_reference')
++            if rid not in main or main[rid][0] != R + '/' + kind or main[rid][1] not in inventory:
++                _fail('stored_story_reference_missing')
++            declared[key] = dict(kind=kind, variant=variant, part=main[rid][1],
++                                 relationship_id=rid, declared_section=section)
++        inherited.update(declared)
++        for key, binding in inherited.items():
++            emit('STORY-LINK', dict(binding, section=section,
++                inherited_from_section=None if key in declared else binding['declared_section'],
++                page_assignment='not_evaluated'))
++            link_count += 1
++    if any(n.tag in (_q(W, 'headerReference'), _q(W, 'footerReference')) and n not in seen_refs
++           for n in package.body.iter()):
++        _fail('unsupported_stored_story_section')
++
++    notes = {}
++    separators = note_records = 0
++    for part, item in inventory.items():
++        if item['kind'] not in ('footnote', 'endnote'):
++            continue
++        normal = {}
++        all_ids = set()
++        for note in item['root']:
++            _tick(checkpoint)
++            note_records += 1
++            if note_records > MAX_STORY_RECORDS:
++                _fail('stored_note_record_limit')
++            if note.tag != _q(W, item['kind']):
++                _fail('unsupported_stored_note_structure')
++            nid = _note_id(note)
++            if nid in all_ids:
++                _fail('duplicate_stored_note_id')
++            all_ids.add(nid)
++            note_type = note.get(_q(W, 'type'), 'normal')
++            if note_type not in ('normal', 'separator', 'continuationSeparator', 'continuationNotice'):
++                _fail('unsupported_stored_note_type')
++            if note_type == 'normal':
++                normal[nid] = note
++            else:
++                separators += 1
++        notes[item['kind']] = dict(part=part, normal=normal)
++
++    anchor_count = 0
++    processed = set()
++    counts = {}
++    anchor_tags = {_q(W, kind + 'Reference'): kind for kind in ('footnote', 'endnote')}
++    for number, paragraph in enumerate(body_paragraphs, 1):
++        _tick(checkpoint)
++        excluded = _guide(paragraph)
++        ordinal = 0
++        for node in paragraph.iter():
++            if node.tag not in anchor_tags:
++                continue
++            if node in excluded or node in processed:
++                _fail('unsupported_stored_note_anchor')
++            processed.add(node)
++            ordinal += 1
++            kind = anchor_tags[node.tag]
++            nid = _note_id(node)
++            if kind not in notes or nid not in notes[kind]['normal'] or len(node):
++                _fail('stored_note_reference_missing')
++            custom = node.get(_q(W, 'customMarkFollows'), 'false')
++            if custom not in ('true', 'false', '1', '0', 'on', 'off'):
++                _fail('invalid_stored_note_mark')
++            part = notes[kind]['part']
++            counts[(part, nid)] = counts.get((part, nid), 0) + 1
++            emit('STORY-ANCHOR', dict(kind=kind, part=part, note_id=nid,
++                source_part='word/document.xml', body_paragraph=number, reference_ordinal=ordinal,
++                custom_mark_follows=custom in ('true', '1', 'on'),
++                mark_view='stored_xml_reference_not_rendered_number'))
++            anchor_count += 1
++    if any(n.tag in anchor_tags and n not in processed for n in package.body.iter()):
++        _fail('unsupported_stored_note_anchor')
++    if any(n.tag in anchor_tags for item in inventory.values() for n in item['root'].iter()):
++        _fail('unsupported_secondary_note_anchor')
++
++    story_paragraphs = story_count = gaps = 0
++    story_limitations = set()
++    def story_text(part, item, root, note_id=None, note_type='normal'):
++        nonlocal story_paragraphs, story_count, gaps
++        info = dict(kind=item['kind'], part=part, editable_body_paragraph=False)
++        if note_id is not None:
++            info.update(note_id=note_id, note_type=note_type, references=counts.get((part, note_id), 0))
++            emit('STORY-NOTE', info)
++        local_parents = {child: parent for parent in root.iter() for child in parent}
++        literal_tags = {_q(W, name) for name in
++                        ('t', 'tab', 'br', 'cr', 'noBreakHyphen', 'softHyphen')}
++        for node in root.iter():
++            if node.tag not in literal_tags:
++                continue
++            ancestor = local_parents.get(node)
++            while ancestor is not None and ancestor.tag != _q(W, 'p'):
++                ancestor = local_parents.get(ancestor)
++            if ancestor is None:
++                _fail('unsupported_stored_story_structure')
++        if any(_revision(n.tag) or n.tag in _MARKERS for n in root.iter()):
++            emit('STORY-GAP', dict(info, reason='secondary_story_review_layers_not_projected'))
++            story_limitations.add('secondary_story_review_layers_not_projected')
++            gaps += 1
++            return
++        if any(n.tag == '{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent'
++               for n in root.iter()):
++            emit('STORY-GAP', dict(info, reason='secondary_story_alternate_content_not_projected'))
++            story_limitations.add('secondary_story_alternate_content_not_projected')
++            gaps += 1
++            return
++        if note_type == 'normal':
++            story_count += 1
++        for local, paragraph in enumerate(root.iter(_q(W, 'p')), 1):
++            story_paragraphs += 1
++            if story_paragraphs + len(body_paragraphs) > MAX_PARAGRAPHS:
++                _fail('paragraph_count_limit')
++            parent = local_parents.get(paragraph)
++            record = dict(info, story_paragraph=local, role='table_cell' if parent is not None
++                          and parent.tag == _q(W, 'tc') else item['kind'], text=_paragraph_text(paragraph))
++            emit('STORY' if note_type == 'normal' else 'STORY-SEPARATOR', record)
++
++    # Deterministic logical order: header parts, footer parts, notes in source
++    # note order. No physical page, rendered mark or editable BODY number.
++    for kind in _STORIES:
++        for part, item in inventory.items():
++            if item['kind'] != kind:
++                continue
++            emit('STORY-PART', dict(kind=kind, part=part, relationship_ids=item['relationships'], stored_only=True))
++            if kind in ('header', 'footer'):
++                story_text(part, item, item['root'])
++            else:
++                for note in item['root']:
++                    story_text(part, item, note, _note_id(note), note.get(_q(W, 'type'), 'normal'))
++
++    metadata = dict(body_text.extraction_metadata)
++    limitations = set(metadata.get('limitations', ()))
++    limitations.discard('headers_footers_notes_and_comments_not_read')
++    limitations.discard('headers_footers_notes_not_read')
++    limitations.add('stored_story_links_not_rendered_pages_or_note_numbers')
++    limitations.add('nontraditional_comments_and_other_secondary_content_not_evaluated')
++    if gaps:
++        limitations.update(story_limitations)
++        if ('secondary_story_review_layers_not_projected' in story_limitations
++                and 'review_layers_complete' in metadata):
++            metadata['review_layers_complete'] = False
++    metadata.update(stored_story_profile='bounded_header_footer_notes_v1', stored_story_parts=len(inventory),
++        stored_stories=story_count, stored_story_paragraphs=story_paragraphs, stored_note_separators=separators, stored_note_records=note_records,
++        stored_story_links=link_count, stored_note_anchors=anchor_count, stored_story_gaps=gaps,
++        stored_story_text_complete=not gaps and not package.active,
++        coverage=metadata['coverage'].replace('stored_body_table_text_only;', 'stored_body_table_text;')
++                 + '; stored_header_footer_note_text_and_logical_links; no_rendered_page_assignment_or_note_numbers',
++        limitations=sorted(limitations))
++    # Replace only the document metadata line. Existing BODY/FINAL/ORIGINAL,
++    # comment and tracked-change rows retain byte identity and selector numbers.
++    _, separator, body_rows = str(body_text).partition('\n')
++    result = '[DOCUMENT ' + _encoded(metadata) + ']'
++    if separator:
++        result += '\n' + body_rows
++    if rows:
++        result += '\n' + '\n'.join(rows)
++    if len(result.encode('utf-8')) > MAX_BYTES:
++        _fail('extracted_text_limit')
++    _tick(checkpoint)
++    return DocumentText(result, metadata)
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2234,4 +2234,11 @@
+     'Read a text file with line numbers and pagination. Supports plain text and the '
+     'document/archive profiles accepted by this tool. Read-only: content and format '
+     'are write_file arguments and are rejected here. Use write_file for supported '
+-    'creation or editing; if deferred, invoke it through tool_call.')
++    'creation or editing; if deferred, invoke it through tool_call. '
++    'For supported Word stored reads, continue every partial page with next_offset and '
++    'next_char_offset and verify the same source_sha256. Returned line numbers are '
++    'pagination positions. word_located_edit paragraph selects only the current main-body/table '
++    'paragraph number; STORY identities and STORY-LINK/STORY-ANCHOR records describe stored '
++    'headers, footers, notes and logical anchors, never editable BODY selectors or rendered '
++    'Word page positions. Check extraction coverage and limitations. Header, footer and note '
++    'editing is unsupported; layout and field evaluation are unverified.')

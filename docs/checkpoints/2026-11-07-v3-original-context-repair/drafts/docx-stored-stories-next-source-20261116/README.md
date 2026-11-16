@@ -1,0 +1,9 @@
+# DOCX stored stories: проверенный Source-кандидат следующего приращения
+
+**Не подключён к активному helper/LAYER_NAMES и не установлен.** Сейчас установлен225/531/native17894. Root сначала выполняет отдельную допустимую F03BODYправку на225; кандидат226 не её предпосылка.
+
+Пакет дополняет чтение DOCX отдельно помеченными колонтитулами/сносками/endnotes и XML-привязками, сохраняя BODY/table numbering и запрещая использоватьSTORY как editableBODY selector. Реализованный профиль/ограничения описаны в [сводке Source](../../evidence/astra-20261116/docx-stored-stories-next-source-candidate.json); исходные F01/CASE162 и F03/CASE164 остаются открыты.
+
+Нормальная patch/manifest-пара не активирована. public-helper-v28.delta.patch применяется только к точному public225 helper4774e583; его forward/reverse сверены побайтно с publiccandidatef01e60fb. Два publication caller — отдельные Source extras вне project533/native17895, прежние225callers сохранены. При настоящей будущей интеграции Root разместит точные новые файлы, проверит происхождение public533 и полныйconsumer, использует explicit --layer docx-required-stored-stories-after-source225 и настоящий predecessor225. Default4 не расширять; старые слои не переустанавливать.
+
+Условная Source-композиция:225→226,531→533,17894→17895;2native modifications+1new module/9CAS,17892retained. Public8pin остаютсяUNBOUND; настоящий protectedprivatecounterpart содержит только полученные225pins. Privateinputs/helper/canonical8/current/handoffs не публикуются. Установка требует свежих прав/очереди/slot/leases/CAS/отсутствияnewmodule, допуска и проверки postconditions после операции. Чужое/частичное состояние может запретить whole-setrestore; journalrollback не атомарность при потере питания. Никакого повторения READ5603/5604/модели/producer/send/App/UNKNOWN этот Source не разрешает.
