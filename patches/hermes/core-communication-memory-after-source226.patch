@@ -1,0 +1,146 @@
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -275,12 +275,15 @@
+         else:
+             item['text_status'] = 'not_applicable_or_attachment_not_opened'
+     visit(message, 0, [])
++    attachment_part_numbers = [row['part'] for row in records
++                               if row['disposition'] == 'attachment' or row.get('filename') is not None]
+     result = {
+         'format': 'eml', 'stored_claims_only': True, 'headers': headers,
+         'other_header_metadata': other, 'parts': records,
+         'body_part_numbers': [row['part'] for row in records if row.get('text') is not None],
+-        'attachments': [row['part'] for row in records
+-                        if row['disposition'] == 'attachment' or row.get('filename') is not None],
++        'attachments': attachment_part_numbers,
++        'attachment_count': len(attachment_part_numbers),
++        'attachment_part_numbers': attachment_part_numbers,
+         'semantics': {
+             'html_rendered': False, 'attachments_opened_or_extracted': False,
+             'links_followed': False, 'message_sent': False,
+@@ -711,6 +714,7 @@
+     output = message.as_bytes()
+     if len(output) > MAX_BYTES:
+         _fail('output_limit')
++    _read_eml(output, checkpoint)
+     return output
+ 
+ 
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -386,13 +386,29 @@
+     """Canonical key order; ``parent_session_id`` set when the hit lives in a child."""
+     entry = {k: fields[k] for k in (
+         "session_id", "when", "source", "model", "title", "matched_role", "match_message_id", "snippet",
+-        "bookend_start", "messages", "bookend_end", "messages_before", "messages_after", "detail")}
++        "bookend_start", "messages", "bookend_end", "messages_before", "messages_after", "detail",
++        "match_provenance")}
+     if lineage_root and lineage_root != entry["session_id"]:
+         entry["parent_session_id"] = lineage_root
+     return entry
+ 
+ 
+-def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[Dict[str, Any]]:
++def _match_provenance(db, session_id: str, message_id, view: dict,
++                      current_session_id: Optional[str]) -> dict:
++    """Separate the raw hit's dates/context from the logical lineage metadata."""
++    anchor = next((m for m in view.get("window", []) if m.get("id") == message_id), {})
++    storage_state = _get_message_storage_state(db, message_id)
++    return {
++        "result_when_scope": "lineage_root_session_start",
++        "session_when": _format_timestamp(_get_session_meta(db, session_id).get("started_at")),
++        "message_when": _format_timestamp(anchor.get("timestamp")),
++        "is_current_session": session_id == current_session_id if current_session_id else None,
++        "compaction_archived": None if storage_state is None else _is_compacted_state(storage_state),
++    }
++
++
++def _title_match_result(db, query: str, current_lineage_root: Optional[str],
++                        current_session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+     """Discovery-shaped result when the query matches a session title, else None."""
+     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
+     session_id = title_query and _quiet(lambda: db.resolve_session_by_title(title_query), None,
+@@ -428,7 +444,8 @@
+         bookend_start=shape("bookend_start", messages[:3]),
+         messages=shape("window", messages[:5], anchor_id, max_content_len=4000),
+         bookend_end=shape("bookend_end", messages[-3:]), messages_before=view.get("messages_before", 0),
+-        messages_after=view.get("messages_after", max(page.get('message_count', len(messages)) - 5, 0)), detail="full"),
++        messages_after=view.get("messages_after", max(page.get('message_count', len(messages)) - 5, 0)), detail="full",
++        match_provenance=_match_provenance(db, session_id, anchor_id, view, current_session_id)),
+         "_lineage_root": lineage_root}
+ 
+ 
+@@ -472,7 +489,8 @@
+             if not _is_compaction_summary(m.get("content", ""))]
+ 
+ 
+-def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detail: str) -> Optional[Dict[str, Any]]:
++def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detail: str,
++                 current_session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+     """Discovery result from a surviving FTS row; None (dropped) if the view can't load."""
+     hit_sid, msg_id = match_info.get("session_id") or lineage_root, match_info.get("id")
+     try:
+@@ -494,7 +512,8 @@
+                   for m in (view.get("window") or []) if full or m.get("id") == msg_id],
+         bookend_end=_bookend(view, "bookend_end") if full else [],
+         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
+-        detail=result_detail)
++        detail=result_detail, match_provenance=_match_provenance(
++            db, hit_sid, msg_id, view, current_session_id))
+ 
+ 
+ def _discover_impl(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
+@@ -504,7 +523,7 @@
+     """Discovery shape: FTS5 plus adaptive or full result hydration."""
+     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
+     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
+-    title_result = _title_match_result(db, query, current_lineage_root)
++    title_result = _title_match_result(db, query, current_lineage_root, current_session_id)
+     # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
+     # query, so it is the one place the window is re-checked in Python.
+     if title_result:
+@@ -565,7 +584,8 @@
+         if match_info.get("_title_only"):
+             continue
+         # Adaptive: only the top-ranked result is fully hydrated.
+-        entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact")
++        entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact",
++                             current_session_id)
+         if entry is not None:
+             results.append(entry)
+     for entry in results:
+@@ -869,6 +889,12 @@
+         "args = browse recent sessions. A nonempty query + session_id without "
+         "around_message_id is rejected: omit session_id for discovery, then scroll "
+         "a returned hit with its session_id and match_message_id. "
++        "Discovery groups hits by logical lineage: `when` is that lineage's start, "
++        "while match_provenance gives the matched raw session/message dates and "
++        "whether it is an archive of the current session. Such an archive is not "
++        "a previous session. For an original/earliest source use sort='oldest'; "
++        "for a previous-session source use before with the current session's start "
++        "when known, then verify the returned raw session and document path. "
+         "Results are actual DB messages, no LLM. "
+         "Searches conversation history ONLY — when the user gave a direct "
+         "source (URL, file, contact, live system), inspect that first; never "
+@@ -906,7 +932,8 @@
+                 "description": (
+                     "Discovery shape only. Temporal bias on top of FTS5 ranking: omit "
+                     "for relevance-only (exploratory recall), 'newest' for "
+-                    "\"where did we leave X\", 'oldest' for \"how did X start\"."
++                    "\"where did we leave X\", 'oldest' for \"how did X start\" or "
++                    "the original/earliest source. One hit per logical lineage is returned."
+                 ),
+             },
+             "detail": {
+@@ -935,7 +962,10 @@
+                     "Discovery shape only. Exclusive upper bound on session start "
+                     "time. ISO date/datetime (a date-only value is midnight UTC that "
+                     "day) or relative duration (7d = older than a week). Use only "
+-                    "when the user names a time frame."
++                    "when the user names a time frame or asks for a previous session. "
++                    "FTS message matches use the matched raw session's start; "
++                    "title-only matches use the logical-lineage start. Verify "
++                    "match_provenance before treating a hit as a previous session."
+                 ),
+             },
+             "exclude_session_ids": {
