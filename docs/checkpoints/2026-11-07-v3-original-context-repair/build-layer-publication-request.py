@@ -47,6 +47,7 @@ CURRENT_SOURCE_TWENTY_SIXTH_LAYER = 'presentation-final-native-guidance-after-so
 CURRENT_SOURCE_TWENTY_SEVENTH_LAYER = 'docx-located-mainstory-after-source224'
 CURRENT_SOURCE_TWENTY_EIGHTH_LAYER = 'docx-required-stored-stories-after-source225'
 CURRENT_SOURCE_TWENTY_NINTH_LAYER = 'core-communication-memory-after-source226'
+CURRENT_SOURCE_THIRTIETH_LAYER = 'communication-create-contract-after-source227'
 
 
 def sha(path):
@@ -89,7 +90,7 @@ def parse_args(argv=None):
     parser.add_argument("--current-source-project-update", type=Path,
                         help="exact committed v6 root request for the bounded native continuation")
     parser.add_argument("--current-source-native-predecessor", type=Path,
-                        help="exact canonical committed CP199 through CP226 request for the bounded next edge")
+                        help="exact canonical committed CP199 through CP227 request for the bounded next edge")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--seconds", type=int, default=180)
     args = parser.parse_args(argv)
@@ -118,6 +119,7 @@ def parse_args(argv=None):
 
 def build_request(args):
     # The explicit after223 draft must also refuse before installed-home access.
+    publication().require_thirtieth_source_binding(args.layer_names)
     publication().require_twenty_ninth_source_binding(args.layer_names)
     publication().require_twenty_eighth_source_binding(args.layer_names)
     publication().require_twenty_seventh_source_binding(args.layer_names)
@@ -246,6 +248,7 @@ def build_request(args):
                 "friday.current-source-native-successor.v26": "friday.current-source-native-successor.v27",
                 "friday.current-source-native-successor.v27": "friday.current-source-native-successor.v28",
                 "friday.current-source-native-successor.v28": "friday.current-source-native-successor.v29",
+                "friday.current-source-native-successor.v29": "friday.current-source-native-successor.v30",
             }
             previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
             consumer.require(type(previous_schema) is str and previous_schema in supported,
@@ -331,6 +334,9 @@ def build_request(args):
             consumer.require(previous_schema != "friday.current-source-native-successor.v28"
                              or args.layer_names == (CURRENT_SOURCE_TWENTY_NINTH_LAYER,),
                              "transaction_current_source_exact_twenty_ninth_layer_required")
+            consumer.require(previous_schema != "friday.current-source-native-successor.v29"
+                             or args.layer_names == (CURRENT_SOURCE_THIRTIETH_LAYER,),
+                             "transaction_current_source_exact_thirtieth_layer_required")
             request["current_source_successor"].update({
                 "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),

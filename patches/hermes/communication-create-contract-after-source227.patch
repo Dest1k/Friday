@@ -1,0 +1,105 @@
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -756,7 +756,9 @@
+             lines.append(_fold(name.upper() + ':' + _escape(_field(spec, name))))
+     lines += [b'END:VEVENT', b'END:VCALENDAR']
+     _checkpoint(checkpoint)
+-    return _created(lines)
++    output = _created(lines)
++    _read_ics(output, checkpoint)
++    return output
+ 
+ 
+ def _typed_values(spec, name):
+@@ -793,7 +795,9 @@
+             lines.append(_fold(prop + ':' + _escape(_field(spec, key))))
+     lines.append(b'END:VCARD')
+     _checkpoint(checkpoint)
+-    return _created(lines)
++    output = _created(lines)
++    _read_vcf(output, checkpoint)
++    return output
+ 
+ 
+ def _edit_header(data, spec):
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2218,16 +2218,37 @@
+     'independent reopening, chart/notes/theme checks and actual rendered layout remain separate. '
+ )
+ 
++_COMMUNICATION_CREATE_GUIDANCE = (
++    'Local communication creation: use write_file with a NEW matching .eml/.ics/.vcf path; '
++    'content must be a JSON STRING encoding one object, never a tool-argument object. '
++    'eml_create requires exactly from:string, to:array[string] (1-100 nonempty address strings), '
++    'subject:string and text:string; from, subject and text are nonempty. '
++    'text is ONE string with JSON newline escapes, never an array of lines. '
++    r'Example content JSON: {"from":"writer@example.invalid","to":["reader@example.invalid"],"subject":"Local note","text":"First line.\nSecond line."}. '
++    'Pass that serialized JSON as content with format="eml_create", path="note.eml". '
++    'At most 100000 UTF-8 content bytes; each address at most 4096 bytes, subject/text at most '
++    '65536 bytes each, and output at most 1000000 bytes. Header fields forbid CR/LF. '
++    'ics_create requires uid,summary,start_date,dtstamp strings, optional end_date,description,location strings; '
++    'dates are YYYY-MM-DD, dtstamp is YYYYMMDDTHHMMSSZ, end_date is exclusive and later than start_date. '
++    'vcf_create requires fn:string; optional uid,organization,title,note are strings. '
++    'Optional emails/phones are arrays (at most 100 each) of strings or objects with value:string '
++    'and optional types:array[string] (at most 8 type tokens). Supplied scalar strings are nonempty. '
++    'Other fields and all existing profile/size violations refuse. Creates local files only; '
++    'no mail is sent and no calendar/contact is imported. Existing paths never overwrite. '
++)
++
+ WRITE_FILE_SCHEMA['description'] = (
+     'Write a file. For an exact DOCX copy use format=docx_copy with a NEW .docx path and '
+     'content JSON exactly {source,source_sha256} from the current read_file. Source bytes '
+     'are retained verbatim; unsupported/active packages refuse without reconstruction. '
+     'Omit format for normal text files. '
+-    'Document format catalogues are returned by the tool when a document format is requested. ') + _ODS_SAMEFORMAT_EDIT_GUIDANCE + _SPREADSHEET_CONVERSION_GUIDANCE + _PRESENTATION_NATIVE_GUIDANCE
++    'Document format catalogues are returned by the tool when a document format is requested. ') + _COMMUNICATION_CREATE_GUIDANCE + _ODS_SAMEFORMAT_EDIT_GUIDANCE + _SPREADSHEET_CONVERSION_GUIDANCE + _PRESENTATION_NATIVE_GUIDANCE
+ WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'] = (
+     'Document format profile from the enum. Plain text files omit this field.')
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] = (
+-    'File content. docx_copy needs exactly {"source":"input.docx","source_sha256":"<current read_file hash>"}; '
++    'File content string. Communication creation uses a JSON string, with eml_create to as an array '
++    'of strings and text as one string; see the typed contract and example in the tool description. '
++    'docx_copy needs exactly {"source":"input.docx","source_sha256":"<current read_file hash>"}; '
+     'use a NEW .docx output and never rebuild a source from extracted text to claim an exact copy. '
+     'For other document formats this is the profile-specific JSON described by the tool result.')
+ READ_FILE_SCHEMA['description'] = (
+--- a/hermes_cli/friday_workspace_communication.py
++++ b/hermes_cli/friday_workspace_communication.py
+@@ -13,6 +13,22 @@
+     CommunicationError, create_eml, create_ics, create_vcf, edit_communication,
+     extract_eml_attachment,
+ )
++
++
++_CREATE_SCHEMA_HINTS = {
++    'eml': ('eml_create content must be a JSON string encoding exactly from:string, '
++            'to:array[string] with 1-100 nonempty address strings, subject:string, text:string. '
++            'from, subject and text must be nonempty; text is one string with JSON newline escapes, '
++            'not an array. Use a NEW .eml path. Local file only; no mail is sent.'),
++    'ics': ('ics_create content must be a JSON string encoding required uid,summary,start_date,dtstamp '
++            'and optional end_date,description,location. All values are nonempty strings; '
++            'dates are YYYY-MM-DD, dtstamp is YYYYMMDDTHHMMSSZ. Use a NEW .ics path. '
++            'Local file only; no calendar import.'),
++    'vcf': ('vcf_create content must be a JSON string encoding fn:string and optional '
++            'uid,organization,title,note strings; all supplied scalar strings are nonempty. '
++            'Optional emails/phones are arrays of strings or objects with value:string and '
++            'optional types:array[string]. Use a NEW .vcf path. Local file only; no contact import.'),
++}
+ 
+ 
+ def _object(content):
+@@ -177,8 +193,11 @@
+                                           checkpoint=lambda: check(cap))
+         check(cap)
+     except CommunicationError as error:
+-        return json.dumps({'success': False, 'error': 'communication_' + action + '_refused',
+-                           'reason': error.code, 'effect_disposition': 'none'})
++        refusal = {'success': False, 'error': 'communication_' + action + '_refused',
++                   'reason': error.code, 'effect_disposition': 'none'}
++        if action == 'create' and error.code == 'create_schema':
++            refusal['hint'] = _CREATE_SCHEMA_HINTS[format]
++        return json.dumps(refusal)
+     verify = None
+     if source is not None:
+         def verify():
