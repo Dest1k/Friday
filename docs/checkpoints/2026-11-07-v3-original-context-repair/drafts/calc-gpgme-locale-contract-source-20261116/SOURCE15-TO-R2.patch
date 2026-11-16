@@ -1,0 +1,55 @@
+--- /home/jericho/.cache/FRW-ASTRA-MAPPED-BOOTSTRAP-FINAL-COMPOSITION-20261116/candidate/outer/deps/gpgme_boundary_collector.py
++++ /home/jericho/.cache/FRW-ASTRA-OFFICE-F59E-ENV-PROFILE-SOURCE-20261116/R2/candidate/outer/deps/gpgme_boundary_collector.py
+@@ -165,14 +165,29 @@
+     return image
+ 
+ 
++def exit_profile_environment(environment):
++    """Selectors for the exact pinned helpers' C.UTF-8 initialization path.
++
++    The caller first validates the complete ENV structurally. Pinned helper
++    initialization uses LC_ALL, then pinned glibc's C/C.* gettext path ignores
++    LANGUAGE before reading it. This is a fixed helper/source contract, not
++    an observation of the original's or helper's current locale category.
++    LOCPATH may only be absent/empty; GCONV_PATH must be absent, since even
++    its empty form disables the cache. Complete frozen ENV equality and the
++    exact mapped locale-data profile remain independently mandatory.
++    """
++    return (environment.get('LC_ALL') == environment.get('LANG') == 'C.UTF-8'
++            and environment.get('LOCPATH', '') == ''
++            and 'GCONV_PATH' not in environment)
++
++
+ def validate_exit_profile(value, pins):
+     exact(value, ('profile', 'phase', 'locale', 'source_sha256', 'files'),
+           'gpgme_collector_exit_profile_schema')
+     need(value['profile'] == EXIT_LOCALE_PROFILE and value['phase'] == 'exit_intent'
+          and value['locale'] == 'C.UTF-8' and value['source_sha256'] == EXIT_LOCALE_SOURCE_SHA256,
+          'gpgme_collector_exit_profile_source_phase_locale')
+-    need(pins['environment'].get('LC_ALL') == pins['environment'].get('LANG') == 'C.UTF-8'
+-         and not any(key in pins['environment'] for key in ('LOCPATH', 'GCONV_PATH', 'LANGUAGE')),
++    need(exit_profile_environment(pins['environment']),
+          'gpgme_collector_exit_profile_environment')
+     files = value['files']
+     need(type(files) is list and len(files) == len(EXIT_LOCALE_FILES),
+@@ -1016,6 +1031,10 @@
+             policy.validate_environment(current, current)
+             need(all(current.get(k) == initial.get(k) == self.p['environment'].get(k)
+                      for k in FONT_ENV_KEYS), 'gpgme_collector_font_runtime_environment_changed')
++            # Refuse unsupported helper selectors before freezing the parent
++            # and before the adapter can begin any engine/helper invocation.
++            need(exit_profile_environment(current),
++                 'gpgme_collector_current_environment_exit_profile')
+             need(self._read('/proc/%d/environ' % pid, 131072) == raw
+                  and self.proc(pid) == identity and self._all_stop(pid) == stop
+                  and self.g.selected_inferior().pid == pid,
+@@ -1674,8 +1693,7 @@
+             need((image['path'], image['sha256']) == EXIT_HELPERS[role][:2],
+                  'gpgme_collector_exit_profile_current_image')
+             environment = self.current_environment(pid)
+-            need(environment.get('LANG') == environment.get('LC_ALL') == 'C.UTF-8'
+-                 and not any(key in environment for key in ('LOCPATH', 'GCONV_PATH', 'LANGUAGE')),
++            need(exit_profile_environment(environment),
+                  'gpgme_collector_exit_profile_current_environment')
+             passive = self.p['exit_intent_mappings']['files']
+         expected = {i['path'] for i in images} | {i['path'] for i in passive}
