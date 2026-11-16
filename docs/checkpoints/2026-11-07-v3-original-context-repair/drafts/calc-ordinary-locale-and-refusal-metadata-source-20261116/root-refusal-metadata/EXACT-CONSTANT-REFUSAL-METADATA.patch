@@ -1,0 +1,73 @@
+--- a/inner/inner_client.py
++++ b/inner/inner_client.py
+@@ -24,6 +24,60 @@
+ 
+ class Refused(ValueError):
+     pass
++
++
++# Exact constant-only resolver codes from the separately pinned Source module.
++# This records a future refusal; it cannot reconstruct any prior lost reason.
++FONT_REFUSAL_CODES = frozenset((
++    'C_UTF8_stock_startup_language_lifecycle_UNBOUND',
++    'GlobalSheetSettings_unavailable',
++    'MS_substitution_property_schema_unsupported',
++    'TextWysiwyg_printer_reference_path_unsupported',
++    'UsePrinterMetrics_schema_mismatch',
++    'application_script_locale_outside_supported_en_US_branch',
++    'builtin_Default_style_binding_failed',
++    'configuration_locale_canonicalization_unsupported',
++    'configuration_name_sequence_unsupported',
++    'default_configuration_provider_missing',
++    'duplicate_configuration_names',
++    'empty_system_locale_requires_unexposed_host_fallback',
++    'not_real_calc_model_service',
++    'property_metadata_missing',
++    'property_schema_mismatch',
++    'property_value_factory_changed_nodepath',
++    'property_value_factory_missing',
++    'readonly_configuration_access_missing',
++    'resolved_export_font_name_unsupported',
++    'source_charset_roundtrip_unsupported',
++    'source_font_family_outside_supported_profile',
++    'source_font_name_outside_supported_profile',
++    'source_font_scalar_outside_supported_profile',
++    'source_posture_not_NONE',
++    'startup_LC_ALL_outside_supported_en_US_or_C_UTF8_branch',
++    'startup_locale_environment_schema_unsupported',
++    'stock_startup_language_lifecycle_without_C_UTF8_branch',
++    'system_locale_property_schema_mismatch',
++))
++
++
++def failure_record(exc, phase, modules):
++    """Keep generic API refusal; add only a trusted constant resolver code.
++
++    Never serialize arbitrary exception messages, configuration/font values,
++    traceback text or an exception class that merely shares a trusted name.
++    This is observational metadata only; every error remains REFUSED/Mnull.
++    """
++    record = dict(exception_class=type(exc).__name__, phase=phase,
++                  reason=str(exc) if isinstance(exc, Refused) else 'API_OR_QUALIFIER_REFUSAL')
++    resolver = modules.get('resolver') if type(modules) is dict else None
++    trusted_class = resolver.get('FontResolutionRefused') if type(resolver) is dict else None
++    if type(trusted_class) is type and type(exc) is trusted_class:
++        code = getattr(exc, 'code', None)
++        record['qualified_refusal'] = dict(
++            source='PINNED_RUNTIME_FONT_RESOLVER',
++            code=code if type(code) is str and code in FONT_REFUSAL_CODES
++                 else 'UNRECOGNIZED_PINNED_REFUSAL_CODE')
++    return record
+ 
+ 
+ def need(ok, reason):
+@@ -656,8 +710,7 @@
+                       candidate=candidate, responses=phases.responses)
+     except Exception as exc:
+         # No exception message or document/user content is emitted.
+-        result['error'] = dict(exception_class=type(exc).__name__, phase=result['stage'],
+-                               reason=str(exc) if isinstance(exc, Refused) else 'API_OR_QUALIFIER_REFUSAL')
++        result['error'] = failure_record(exc, result['stage'], modules)
+     finally:
+         if runtime is not None:
+             result['handler_requests'] = runtime['handler'].requests
