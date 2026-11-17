@@ -1,0 +1,112 @@
+--- a/agent/conversation_compression.py
++++ b/agent/conversation_compression.py
+@@ -3759,7 +3759,8 @@
+             from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+             candidate = rejoin_compressed_head_and_tail(compressed, verbatim_tail) if verbatim_tail else compressed
+             guard_bounded_compaction(agent, candidate, new_system_prompt)
+-            if getattr(agent, "_bounded_context_policy", None) is not None:
++            bounded = getattr(agent, "_bounded_context_policy", None) is not None
++            if bounded:
+                 from tools.mcp_tool_agent import persist_agent_tool_names
+                 persist_agent_tool_names(agent)
+             agent.commit_memory_session(messages)
+@@ -3767,16 +3768,19 @@
+             # Pop _compaction_tail tags before the size estimate / rotation: they must not
+             # inflate anti-growth or reach the provider. Track ids: salvage may subset list.
+             _tail_tagged_ids = {id(m) for m in compressed if isinstance(m, dict) and m.pop("_compaction_tail", None)}
+-            compressed, _refused_sp = _salvage_or_refuse_grown_transcript(
+-                agent, messages, compressed, system_message=system_message, attempt_started_at=attempt.started_at,
+-                attempt_snapshot=attempt.snapshot,
+-            )
+-            if compressed is None:
+-                from agent.summary_provenance import clear_summary_carrier_proofs
+-                clear_summary_carrier_proofs(candidate)
+-                return _CommitOutcome(
+-                    compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at
++            # Bounded growth was already checked with the fit guard. Mechanical
++            # salvage can alter the protected rows that passed that guard.
++            if not bounded:
++                compressed, _refused_sp = _salvage_or_refuse_grown_transcript(
++                    agent, messages, compressed, system_message=system_message, attempt_started_at=attempt.started_at,
++                    attempt_snapshot=attempt.snapshot,
+                 )
++                if compressed is None:
++                    from agent.summary_provenance import clear_summary_carrier_proofs
++                    clear_summary_carrier_proofs(candidate)
++                    return _CommitOutcome(
++                        compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at
++                    )
+             from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
+             from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+             if in_place:
+@@ -4285,6 +4289,15 @@
+     # finishes or closes in its daemon worker. Otherwise four timed-out streams retain all four shared
+     # compression-pool slots until the auxiliary stream's longer absolute ceiling expires. See #23975.
+     _hard_cancel_event = getattr(agent, "_hard_interrupt_requested", None)
++    _bounded_breaker = None
++    if agent._session_db and getattr(agent, "_bounded_context_policy", None) is not None:
++        # The automatic gate may have refreshed the strike count or admitted a
++        # probation attempt under the lease. Rejection must strike that state.
++        _bounded_breaker = {
++            name: getattr(agent.context_compressor, name)
++            for name in ("_ineffective_compression_count", "_anti_thrash_recovery_deadline")
++            if hasattr(agent.context_compressor, name)
++        }
+     phase = _run_summary_phase(
+         agent, messages, lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
+         approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, bypass_cooldown=bypass_cooldown,
+@@ -4357,24 +4370,50 @@
+         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
+         from agent.bounded_context import guard_bounded_compaction, BoundedContextError
+         from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
++        _bounded_would_grow = False
+         try:
+             _fit_candidate = rejoin_compressed_head_and_tail(compressed, verbatim_tail) if verbatim_tail else compressed
+             guard_bounded_compaction(agent, _fit_candidate, new_system_prompt)
++            if _bounded_breaker is not None:
++                # Compare the same head shape as the legacy anti-growth check.
++                # The kept verbatim suffix is common to both sides.
++                _untagged_head = [
++                    {key: value for key, value in row.items() if key != "_compaction_tail"}
++                    if isinstance(row, dict) and "_compaction_tail" in row else row
++                    for row in compressed
++                ]
++                _rough_in = estimate_messages_tokens_rough(messages)
++                _rough_out = estimate_messages_tokens_rough(_untagged_head)
++                _bounded_would_grow = _rough_out > _rough_in
++                if _bounded_would_grow:
++                    raise BoundedContextError(
++                        f"bounded_context: compacted transcript would grow (~{_rough_in:,} to ~{_rough_out:,} tokens)"
++                    )
+         except BoundedContextError as exc:
+             for name in _fit_fields:
+                 if name in _fit_previous:
+                     setattr(agent, name, _fit_previous[name])
+                 elif hasattr(agent, name):
+                     delattr(agent, name)
+-            attempt.restore_compressor(agent.context_compressor)
+-            _restore_messages_snapshot(messages, messages_before_compression)
+-            agent._last_compaction_in_place = False
++            if _bounded_would_grow:
++                attempt.snapshot.update(_bounded_breaker)
++            try:
++                attempt.restore_compressor(agent.context_compressor)
++            finally:
++                _restore_messages_snapshot(messages, messages_before_compression)
++                agent._last_compaction_in_place = False
++            if _bounded_would_grow:
++                from agent.summary_provenance import clear_summary_carrier_proofs
++                clear_summary_carrier_proofs(_fit_candidate)
++                agent.context_compressor._last_compress_refused_would_grow = True
+             agent.context_compressor.record_rejected_compaction()
+             _emit_bounded_compaction_refusal(
+                 agent, exc, rows_restored=(messages_before_compression is not None
+                                           and messages == messages_before_compression),
+             )
+-            _emit_aborted_attempt_telemetry(agent, attempt.started_at, "bounded_candidate_does_not_fit")
++            _emit_aborted_attempt_telemetry(
++                agent, attempt.started_at, "would_grow" if _bounded_would_grow else "bounded_candidate_does_not_fit",
++            )
+             return messages, _fit_old_prompt
+         commit = _commit_compaction(
+             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
