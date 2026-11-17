@@ -1,0 +1,148 @@
+diff --git a/tools/arg_coercion.py b/tools/arg_coercion.py
+--- a/tools/arg_coercion.py
++++ b/tools/arg_coercion.py
+@@ -8,6 +8,7 @@
+ 
+ import json
+ import logging
++from pathlib import PurePath
+ from typing import Any, Dict
+ 
+ from tools.registry import registry
+@@ -17,8 +18,30 @@
+ logger = logging.getLogger("model_tools")
+ 
+ 
++_XLSX_EDIT_FIELDS = frozenset({"source", "sheet", "cell", "expected", "value"})
++
++
++def _structured_xlsx_edit(args: Dict[str, Any]) -> str | None:
++    """Encode the native XLSX edit object for the existing string-based writer."""
++    content, path = args.get("content"), args.get("path")
++    if (args.get("format") != "spreadsheet_edit" or not isinstance(content, dict)
++            or content.keys() != _XLSX_EDIT_FIELDS or not isinstance(path, str)):
++        return None
++    if (any(not isinstance(content[key], str) for key in ("source", "sheet", "cell"))
++            or any(type(content[key]) not in (int, float) for key in ("expected", "value"))):
++        return None
++    if any(PurePath(name).suffix.lower() != ".xlsx" for name in (path, content["source"])):
++        return None
++    try:
++        encoded = json.dumps(content, ensure_ascii=False, allow_nan=False)
++        encoded.encode("utf-8")
++    except ValueError:
++        return None
++    return encoded
++
++
+ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+-    """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
++    """Repair supported wire representations against the registered schema."""
+     if not args or not isinstance(args, dict):
+         return args
+ 
+@@ -34,6 +57,11 @@
+         args = unrename_tool_args(schema.get("parameters"), args)
+     except Exception:  # pragma: no cover — never break dispatch
+         pass
++
++    if tool_name == "write_file":
++        content = _structured_xlsx_edit(args)
++        if content is not None:
++            args = {**args, "content": content}
+ 
+     for key, value in list(args.items()):
+         prop_schema = properties.get(key)
+diff --git a/tools/scoped_spreadsheet_profiles.py b/tools/scoped_spreadsheet_profiles.py
+--- a/tools/scoped_spreadsheet_profiles.py
++++ b/tools/scoped_spreadsheet_profiles.py
+@@ -326,6 +326,71 @@
+     return convert(data,'xlsx',format,checkpoint=checkpoint)
+ 
+ 
++def _xlsx_edit_sheet_hidden(sheet):
++    visibility = (
++        ('row', ('hidden', 'collapsed'), ('ht',)),
++        ('col', ('hidden', 'collapsed'), ('width',)),
++        ('sheetFormatPr', ('zeroHeight',), ('defaultRowHeight', 'defaultColWidth')),
++    )
++    for kind, flags, dimensions in visibility:
++        for node in sheet.iter(q(S, kind)):
++            if any(node.get(flag, 'false') not in ('0', 'false') for flag in flags):
++                return True
++            try:
++                values = (node.attrib[name] for name in dimensions if name in node.attrib)
++                if any(not value.isascii() or '_' in value or not 0 < float(value) < float('inf')
++                       for value in values):
++                    return True
++            except ValueError:
++                return True
++    return False
++
++
++def _validate_xlsx_edit_package(data, checkpoint):
++    book = ooxml(data, 'xlsx', writing=True, checkpoint=checkpoint, allow_empty_workbook_protection=True)
++    # The common parser discards comments and PIs. Preserve them for the edit-only
++    # empty-marker exception, and track namespace declarations on the marker itself.
++    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
++    events = ET.iterparse(BytesIO(book.parts['xl/workbook.xml']), events=('start', 'start-ns'), parser=parser)
++    markers = []
++    declares_namespace = False
++    sharing = False
++    for event, item in events:
++        if event == 'start-ns':
++            declares_namespace = True
++            continue
++        local = item.tag.rsplit('}', 1)[-1]
++        if local == 'workbookProtection':
++            markers.append((item, declares_namespace))
++        if local == 'fileSharing':
++            sharing = True
++        declares_namespace = False
++    if not markers:
++        return
++    if len(markers) != 1 or sharing:
++        fail('protected_workbook')
++    marker, declares_namespace = markers[0]
++    workbook = events.root
++    if (marker.tag != q(S, 'workbookProtection') or marker not in workbook
++            or declares_namespace or marker.attrib or len(marker)
++            or (marker.text or '').strip(' \t\r\n')):
++        fail('protected_workbook')
++
++    # The exception is for ordinary visible workbooks only. Leave the existing
++    # no-marker profile unchanged.
++    if any(view.get('visibility', 'visible') != 'visible' for view in workbook.iter(q(S, 'workbookView'))):
++        fail('hidden_workbook_mutation_unsupported')
++    if any(sheet.get('state', 'visible') != 'visible' for sheet in workbook.iter(q(S, 'sheet'))):
++        fail('hidden_sheet_mutation_unsupported')
++    for part in book.sheet_parts.values():
++        tick(checkpoint)
++        sheet = book.xml[part]
++        if any(node.tag.rsplit('}', 1)[-1] in ('sheetProtection', 'protectedRanges') for node in sheet.iter()):
++            fail('protected_sheet')
++        if _xlsx_edit_sheet_hidden(sheet):
++            fail('hidden_sheet_structure_mutation_unsupported')
++
++
+ def edit(data, source, spec, *, checkpoint=None):
+     if source in ('xlsm', 'xltm'):
+         if not isinstance(spec,dict) or set(spec) != {'source_sha256','sheet','cell','expected','value'}:
+@@ -355,8 +420,15 @@
+     if not isinstance(spec,dict) or set(spec) != {'sheet','cell','expected','value'}: fail('spreadsheet_edit_schema')
+     from hermes_cli.friday_workspace_xlsx import render_copy
+     from hermes_cli.friday_user_scope import ScopeDenied
+-    normalized = convert(data,source,'xlsx',checkpoint=checkpoint)
++    if source == 'xlsx':
++        _validate_xlsx_edit_package(data, checkpoint)
++        normalized = data
++    else:
++        normalized = convert(data, source, 'xlsx', checkpoint=checkpoint)
+     tick(checkpoint)
+     try: result = render_copy(normalized,**spec)
+     except ScopeDenied: fail('numeric_cell_edit_unsupported_or_expected_mismatch')
+-    return convert(result,'xlsx',source,checkpoint=checkpoint)
++    if source == 'xlsx':
++        _validate_xlsx_edit_package(result, checkpoint)
++        return result
++    return convert(result, 'xlsx', source, checkpoint=checkpoint)
