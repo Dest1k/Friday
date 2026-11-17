@@ -99,6 +99,7 @@ LAYER_NAMES = (
     'bounded-compaction-protected-rows-after-source234',
     'delimited-conversion-guidance-after-source235',
     'xlsx-recalc-truth-after-source236',
+    'word-same-saved-output-after-source237',
 )
 # Draft binding barrier: no request generation or publication may read the installed
 # home for this selected edge until the exact frozen manifest and patch are supplied.
@@ -178,6 +179,11 @@ CURRENT_SOURCE_THIRTY_EIGHTH_PATCH_SHA256 = '049fbb9710458e0b00a1f545f5ab8ac645c
 CURRENT_SOURCE_THIRTY_NINTH_LAYER = 'xlsx-recalc-truth-after-source236'
 CURRENT_SOURCE_THIRTY_NINTH_MANIFEST_SHA256 = '6c2d28a2b53114cdc95e0c229b9de29cae745a774fe979b992d6521134498449'
 CURRENT_SOURCE_THIRTY_NINTH_PATCH_SHA256 = '1fe85f4e0f3fe5eb484b994bbd892bc53c01e1b3a348b023f668909780e470f0'
+
+# Exact238 saved Word output Source pins.
+CURRENT_SOURCE_FORTIETH_LAYER = 'word-same-saved-output-after-source237'
+CURRENT_SOURCE_FORTIETH_MANIFEST_SHA256 = 'eadb44dca2aad704dc1cddc74b828a9a5e7cbdb2f63e6cca63ccb127f2afe3e7'
+CURRENT_SOURCE_FORTIETH_PATCH_SHA256 = '164e9413ca0f16c6e7942ef3a8ba19bfd257245ed477f05658e2bf258480c947'
 
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -522,6 +528,37 @@ def require_thirty_ninth_source_binding(layer_names, project_files=None, *, requ
                 and project_files.get(f"patches/hermes/{CURRENT_SOURCE_THIRTY_NINTH_LAYER}-manifest.json") == pair[0]
                 and project_files.get(f"patches/hermes/{CURRENT_SOURCE_THIRTY_NINTH_LAYER}.patch") == pair[1],
                 "transaction_current_source_thirty_ninth_binding_pair_changed")
+
+
+def require_fortieth_source_binding(layer_names, project_files=None, *, request=None):
+    """Bind the explicit after237 singleton to its frozen manifest and patch."""
+    selected = (isinstance(layer_names, (list, tuple))
+                and CURRENT_SOURCE_FORTIETH_LAYER in layer_names)
+    context = request.get("current_source_successor") if request is not None else None
+    selected_context = (type(context) is dict
+                        and context.get("schema") == "friday.current-source-native-successor.v40")
+    if not selected and not selected_context:
+        return
+    require(selected and tuple(layer_names) == (CURRENT_SOURCE_FORTIETH_LAYER,),
+            "transaction_current_source_exact_fortieth_layer_required")
+    if request is not None:
+        require(request.get("schema") == SCHEMA_EXPLICIT and selected_context,
+                "transaction_current_source_fortieth_context_required")
+        project_files = request.get("project_inventory") or {}
+    pair = (CURRENT_SOURCE_FORTIETH_MANIFEST_SHA256,
+            CURRENT_SOURCE_FORTIETH_PATCH_SHA256)
+    require(all(type(value) is str and __import__("re").fullmatch("[0-9a-f]{64}", value)
+                for value in pair),
+            "transaction_current_source_fortieth_binding_unbound")
+    require(pair == (
+                "eadb44dca2aad704dc1cddc74b828a9a5e7cbdb2f63e6cca63ccb127f2afe3e7",
+                "164e9413ca0f16c6e7942ef3a8ba19bfd257245ed477f05658e2bf258480c947"),
+            "transaction_current_source_fortieth_binding_pair_changed")
+    if project_files is not None:
+        require(type(project_files) is dict
+                and project_files.get(f"patches/hermes/{CURRENT_SOURCE_FORTIETH_LAYER}-manifest.json") == pair[0]
+                and project_files.get(f"patches/hermes/{CURRENT_SOURCE_FORTIETH_LAYER}.patch") == pair[1],
+                "transaction_current_source_fortieth_binding_pair_changed")
 
 
 def digest(data):
@@ -1199,6 +1236,7 @@ def read_layers(candidate_root, receipt, home, project_files, layer_names):
     that is applied is provably the reviewed one. The manifest body, the patch bytes and
     the file preimages are then compared with each other, never a file with itself.
     """
+    require_fortieth_source_binding(layer_names, project_files or {})
     require_thirty_ninth_source_binding(layer_names, project_files or {})
     require_thirty_eighth_source_binding(layer_names, project_files or {})
     require_thirty_seventh_source_binding(layer_names, project_files or {})
@@ -1491,7 +1529,7 @@ def current_source_request_bytes(request, request_path, request_sha256):
                     "friday.current-source-native-successor.v5",
                     "friday.current-source-native-successor.v6",
                     "friday.current-source-native-successor.v7",
-                    "friday.current-source-native-successor.v8", "friday.current-source-native-successor.v9", "friday.current-source-native-successor.v10", "friday.current-source-native-successor.v11", "friday.current-source-native-successor.v12", "friday.current-source-native-successor.v13", "friday.current-source-native-successor.v14", "friday.current-source-native-successor.v15", "friday.current-source-native-successor.v16", "friday.current-source-native-successor.v17", "friday.current-source-native-successor.v18", "friday.current-source-native-successor.v19", "friday.current-source-native-successor.v20", "friday.current-source-native-successor.v21", "friday.current-source-native-successor.v22", "friday.current-source-native-successor.v23", "friday.current-source-native-successor.v24", "friday.current-source-native-successor.v25", "friday.current-source-native-successor.v26", "friday.current-source-native-successor.v27", "friday.current-source-native-successor.v28", "friday.current-source-native-successor.v29", "friday.current-source-native-successor.v30", "friday.current-source-native-successor.v31", "friday.current-source-native-successor.v32", "friday.current-source-native-successor.v33", "friday.current-source-native-successor.v34", "friday.current-source-native-successor.v35", "friday.current-source-native-successor.v36", "friday.current-source-native-successor.v37", "friday.current-source-native-successor.v38", "friday.current-source-native-successor.v39")
+                    "friday.current-source-native-successor.v8", "friday.current-source-native-successor.v9", "friday.current-source-native-successor.v10", "friday.current-source-native-successor.v11", "friday.current-source-native-successor.v12", "friday.current-source-native-successor.v13", "friday.current-source-native-successor.v14", "friday.current-source-native-successor.v15", "friday.current-source-native-successor.v16", "friday.current-source-native-successor.v17", "friday.current-source-native-successor.v18", "friday.current-source-native-successor.v19", "friday.current-source-native-successor.v20", "friday.current-source-native-successor.v21", "friday.current-source-native-successor.v22", "friday.current-source-native-successor.v23", "friday.current-source-native-successor.v24", "friday.current-source-native-successor.v25", "friday.current-source-native-successor.v26", "friday.current-source-native-successor.v27", "friday.current-source-native-successor.v28", "friday.current-source-native-successor.v29", "friday.current-source-native-successor.v30", "friday.current-source-native-successor.v31", "friday.current-source-native-successor.v32", "friday.current-source-native-successor.v33", "friday.current-source-native-successor.v34", "friday.current-source-native-successor.v35", "friday.current-source-native-successor.v36", "friday.current-source-native-successor.v37", "friday.current-source-native-successor.v38", "friday.current-source-native-successor.v39", "friday.current-source-native-successor.v40")
                 and set(context) == {"schema", "root_project_update", "previous_native_update"},
                 "transaction_current_source_context_required")
         references = ("root_project_update", "previous_native_update")
@@ -1596,6 +1634,7 @@ def current_source_consumer_checked(value, request, candidate, *, committed=Fals
 def run(request, request_path, request_sha256):
     global INJECT_AFTER_RENAME, INJECT_TARGET, INJECT_SNAPSHOT_DIR, INJECT_SNAPSHOT_FILES
     global INJECT_SNAPSHOT_HOME
+    require_fortieth_source_binding(request.get("layer_names", ()), request=request)
     require_thirty_ninth_source_binding(request.get("layer_names", ()), request=request)
     require_thirty_eighth_source_binding(request.get("layer_names", ()), request=request)
     require_thirty_seventh_source_binding(request.get("layer_names", ()), request=request)
@@ -1630,7 +1669,7 @@ def run(request, request_path, request_sha256):
     current_context = raw_current_request is not None
     guarded_current = current_context and request["current_source_successor"]["schema"] in (
         "friday.current-source-native-successor.v5", "friday.current-source-native-successor.v6",
-        "friday.current-source-native-successor.v7", "friday.current-source-native-successor.v8", "friday.current-source-native-successor.v9", "friday.current-source-native-successor.v10", "friday.current-source-native-successor.v11", "friday.current-source-native-successor.v12", "friday.current-source-native-successor.v13", "friday.current-source-native-successor.v14", "friday.current-source-native-successor.v15", "friday.current-source-native-successor.v16", "friday.current-source-native-successor.v17", "friday.current-source-native-successor.v18", "friday.current-source-native-successor.v19", "friday.current-source-native-successor.v20", "friday.current-source-native-successor.v21", "friday.current-source-native-successor.v22", "friday.current-source-native-successor.v23", "friday.current-source-native-successor.v24", "friday.current-source-native-successor.v25", "friday.current-source-native-successor.v26", "friday.current-source-native-successor.v27", "friday.current-source-native-successor.v28", "friday.current-source-native-successor.v29", "friday.current-source-native-successor.v30", "friday.current-source-native-successor.v31", "friday.current-source-native-successor.v32", "friday.current-source-native-successor.v33", "friday.current-source-native-successor.v34", "friday.current-source-native-successor.v35", "friday.current-source-native-successor.v36", "friday.current-source-native-successor.v37", "friday.current-source-native-successor.v38", "friday.current-source-native-successor.v39")
+        "friday.current-source-native-successor.v7", "friday.current-source-native-successor.v8", "friday.current-source-native-successor.v9", "friday.current-source-native-successor.v10", "friday.current-source-native-successor.v11", "friday.current-source-native-successor.v12", "friday.current-source-native-successor.v13", "friday.current-source-native-successor.v14", "friday.current-source-native-successor.v15", "friday.current-source-native-successor.v16", "friday.current-source-native-successor.v17", "friday.current-source-native-successor.v18", "friday.current-source-native-successor.v19", "friday.current-source-native-successor.v20", "friday.current-source-native-successor.v21", "friday.current-source-native-successor.v22", "friday.current-source-native-successor.v23", "friday.current-source-native-successor.v24", "friday.current-source-native-successor.v25", "friday.current-source-native-successor.v26", "friday.current-source-native-successor.v27", "friday.current-source-native-successor.v28", "friday.current-source-native-successor.v29", "friday.current-source-native-successor.v30", "friday.current-source-native-successor.v31", "friday.current-source-native-successor.v32", "friday.current-source-native-successor.v33", "friday.current-source-native-successor.v34", "friday.current-source-native-successor.v35", "friday.current-source-native-successor.v36", "friday.current-source-native-successor.v37", "friday.current-source-native-successor.v38", "friday.current-source-native-successor.v39", "friday.current-source-native-successor.v40")
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")

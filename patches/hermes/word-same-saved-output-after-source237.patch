@@ -1,0 +1,843 @@
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -11,6 +11,7 @@
+ import re
+ from copy import copy, deepcopy
+ from io import BytesIO
++from xml.etree.ElementTree import iterparse
+ from xml.parsers import expat
+ from zipfile import ZipFile
+ 
+@@ -24,6 +25,9 @@
+ TB = 'urn:oasis:names:tc:opendocument:xmlns:table:1.0'
+ S = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0'
+ XL = 'http://www.w3.org/1999/xlink'
++LO = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
++DRAW = 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0'
++META = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
+ MAX_TEXT = 100_000
+ MAX_PARAGRAPHS = 8192
+ MAX_CELLS = 4096
+@@ -82,6 +86,15 @@
+     return result
+ 
+ 
++def _structured_writer_styles(package):
++    # The paired profile needs the source proof even if a recognized extension
++    # has a malformed value. The older default-only restoration stays separate.
++    return any(q(LO, 'linked-style-name') in node.attrib
++               or node.tag == q(LO, 'char-complex-color')
++               or node.get(q(LO, 'opacity')) not in (None, '0%')
++               for root in package.xml.values() for node in root.iter())
++
++
+ class _Inventory:
+     def __init__(self, checkpoint):
+         self.checkpoint = checkpoint
+@@ -133,21 +146,39 @@
+                           'bidi rtlGutter pgNumType paperSrc'.split())
+ 
+ 
+-def _word_properties(node, allowed, *, empty_numbering=None):
++def _word_paragraph_border(node):
++    # The stock Title style carries one decorative bottom rule.
++    _white(node)
++    if node.attrib or len(node) != 1 or node[0].tag != q(W, 'bottom'):
++        _fail('unsupported_word_property')
++    edge = node[0]
++    _white(edge)
++    expected = {'val': 'single', 'sz': '8', 'space': '4', 'color': '4F81BD', 'themeColor': 'accent1'}
++    if len(edge) or edge.attrib != {q(W, name): value for name, value in expected.items()}:
++        _fail('unsupported_word_property')
++
++
++def _word_properties(node, allowed, *, empty_numbering=None, title_border=False):
+     _white(node)
+     seen = set()
+     for child in node:
+         numbering = (child.tag == q(W, 'numPr') and allowed is _PARAGRAPH_PROPERTIES
+                      and empty_numbering is not None)
++        paragraph_border = title_border and child.tag == q(W, 'pBdr')
+         unprotected = (child.tag == q(W, 'formProt') and node.tag == q(W, 'sectPr')
+                        and allowed is _SECTION_PROPERTIES)
+-        if child.tag not in {q(W, name) for name in allowed} and not numbering and not unprotected:
++        if child.tag not in {q(W, name) for name in allowed} and not (numbering or paragraph_border or unprotected):
+             _fail('unsupported_word_property')
+         if child.tag in seen:
+             _fail('ambiguous_word_properties')
+         seen.add(child.tag)
+         if numbering:
+             empty_numbering(child)
++            continue
++        if paragraph_border:
++            if node.attrib:
++                _fail('unsupported_word_property')
++            _word_paragraph_border(child)
+             continue
+         if unprotected:
+             # Explicitly disabled section form protection is passive. Other
+@@ -202,6 +233,7 @@
+                 _fail('unsupported_word_relationship')
+         self.empty_numbering = None
+         self.numbering = None
++        self.inactive_numbering_styles = None
+         self.note_records, self.note_refs = {}, []
+         self.story_parts, self.story_refs = {}, set()
+         self.list_items = self.story_paragraphs = 0
+@@ -297,7 +329,11 @@
+             _fail('unsupported_custom_xml')
+ 
+     def properties(self, node, allowed):
+-        _word_properties(node, allowed, empty_numbering=self._empty_numbering_property)
++        title = self.styles.get('Title')
++        title_border = (allowed is _PARAGRAPH_PROPERTIES and title is not None
++                        and title.get(q(W, 'type')) == 'paragraph' and node is title.find(q(W, 'pPr')))
++        _word_properties(node, allowed, empty_numbering=self._empty_numbering_property,
++                         title_border=title_border)
+ 
+     @staticmethod
+     def _value(node, name, *, expected=None):
+@@ -468,6 +504,64 @@
+             else:
+                 _fail('unsupported_word_note')
+ 
++    def _numbering_root(self, root):
++        marker = q('http://schemas.openxmlformats.org/markup-compatibility/2006', 'Ignorable')
++        if root.attrib != {marker: 'w14 wp14'}:
++            self._root_attributes(root)
++            return False
++        # ElementTree discards prefix declarations, but compatibility values
++        # use their original bindings. The package XML has passed preflight.
++        namespaces = {}
++        for event, value in iterparse(BytesIO(self.pkg.parts['word/numbering.xml']),
++                                      events=('start-ns', 'start')):
++            if event == 'start':
++                break
++            prefix, uri = value
++            namespaces[prefix] = uri
++        if (namespaces.get('w14') != 'http://schemas.microsoft.com/office/word/2010/wordml'
++                or namespaces.get('wp14') != 'http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing'):
++            _fail('unsupported_word_content')
++        _white(root)
++        return True
++
++    def _inactive_numbering_level(self, node, properties):
++        # Check the stock template's bounded leaf values and visual subtree.
++        # The ordinary graph pass still checks structure, text and relationships.
++        needed = {'start', 'numFmt', 'lvlText', 'lvlJc', 'pPr'}
++        if not needed <= properties or node.get(q(W, 'ilvl')) != '0':
++            _fail('unsupported_word_numbering')
++        number_format = self._value(node.find(q(W, 'numFmt')), 'numFmt')
++        if number_format not in ('bullet', 'decimal'):
++            _fail('unsupported_word_numbering')
++        bullet = number_format == 'bullet'
++        if bullet:
++            needed.add('rPr')
++        if properties - {'pStyle'} != needed:
++            _fail('unsupported_word_numbering')
++        for name, expected in (('start', '1'), ('lvlText', '\uf0b7' if bullet else '%1.'), ('lvlJc', 'left')):
++            self._value(node.find(q(W, name)), name, expected=expected)
++        style = node.find(q(W, 'pStyle'))
++        if style is not None:
++            family = 'ListBullet' if bullet else 'ListNumber'
++            if self._value(style, 'pStyle') not in (family, family + '2', family + '3'):
++                _fail('unsupported_word_numbering')
++        ppr = node.find(q(W, 'pPr'))
++        if [part.tag for part in ppr] != [q(W, 'tabs'), q(W, 'ind')]:
++            _fail('unsupported_word_numbering')
++        tabs, indent = ppr
++        if tabs.attrib or len(tabs) != 1 or tabs[0].tag != q(W, 'tab') or len(tabs[0]) or len(indent):
++            _fail('unsupported_word_numbering')
++        position = tabs[0].get(q(W, 'pos'))
++        if (position not in ('360', '720', '1080', '1440', '1800')
++                or tabs[0].attrib != {q(W, 'val'): 'num', q(W, 'pos'): position}
++                or indent.attrib != {q(W, 'left'): position, q(W, 'hanging'): '360'}):
++            _fail('unsupported_word_numbering')
++        if bullet:
++            fonts = node.find(q(W, 'rPr'))
++            expected = {q(W, 'ascii'): 'Symbol', q(W, 'hAnsi'): 'Symbol', q(W, 'hint'): 'default'}
++            if len(fonts) != 1 or fonts[0].tag != q(W, 'rFonts') or len(fonts[0]) or fonts[0].attrib != expected:
++                _fail('unsupported_word_numbering')
++
+     def _numbering_graph(self):
+         if self.numbering is not None:
+             return
+@@ -479,7 +573,14 @@
+         root = self.pkg.xml.get('word/numbering.xml')
+         if root is None or root.tag != q(W, 'numbering'):
+             _fail('unsupported_word_numbering')
+-        self._root_attributes(root)
++        inactive_template = self._numbering_root(root)
++        if inactive_template and any(
++                style.get(q(W, 'type')) == 'table'
++                and any(part.tag in (q(W, 'numPr'), q(W, 'pStyle')) for part in style.iter())
++                for style in self.styles.values()):
++            # A table can inherit paragraph numbering without a body numPr.
++            _fail('unsupported_word_numbering')
++        linked_styles = set()
+         abstracts, references = {}, {}
+         for item in root:
+             _tick(self.state.checkpoint)
+@@ -513,20 +614,36 @@
+                                     _fail('unsupported_word_numbering')
+                                 _word_properties(part, _PARAGRAPH_PROPERTIES if local == 'pPr' else _RUN_PROPERTIES)
+                             elif local in ('isLgl', 'legacy'):
+-                                if len(part):
++                                if inactive_template or len(part):
+                                     _fail('unsupported_word_numbering')
+                                 _white(part)
+                             else:
+-                                self._value(part, local)
++                                value = self._value(part, local)
++                                if inactive_template and local == 'pStyle':
++                                    style = self.styles.get(value)
++                                    if style is None or style.get(q(W, 'type')) != 'paragraph':
++                                        _fail('unsupported_word_numbering')
++                                    linked_styles.add(value)
++                        if inactive_template:
++                            self._inactive_numbering_level(child, properties_seen)
+                         levels[level] = child
+                     elif child.tag in {q(W, n) for n in ('nsid', 'multiLevelType', 'tmpl', 'name', 'styleLink', 'numStyleLink')}:
+-                        if child.tag in metadata:
++                        if (child.tag in metadata or (inactive_template
++                                and child.tag in (q(W, 'styleLink'), q(W, 'numStyleLink')))):
+                             _fail('unsupported_word_numbering')
+                         metadata.add(child.tag)
+-                        self._value(child, child.tag.removeprefix(q(W, '')))
++                        value = self._value(child, child.tag.removeprefix(q(W, '')))
++                        if inactive_template:
++                            if child.tag == q(W, 'multiLevelType'):
++                                if value != 'singleLevel':
++                                    _fail('unsupported_word_numbering')
++                            elif child.tag == q(W, 'name') or not re.fullmatch(r'[0-9A-Fa-f]{8}', value):
++                                _fail('unsupported_word_numbering')
+                     else:
+                         _fail('unsupported_word_numbering')
+                 if not levels:
++                    _fail('unsupported_word_numbering')
++                if inactive_template and metadata != {q(W, n) for n in ('nsid', 'multiLevelType', 'tmpl')}:
+                     _fail('unsupported_word_numbering')
+                 abstracts[identity] = (item, levels)
+             elif item.tag == q(W, 'num'):
+@@ -542,9 +659,13 @@
+             _fail('unsupported_word_numbering')
+         self.numbering = abstracts, references
+         self.empty_numbering = {}
++        if inactive_template:
++            self.inactive_numbering_styles = linked_styles
+ 
+     def _numbering_profile(self, identity, index):
+         self._numbering_graph()
++        if self.inactive_numbering_styles is not None:
++            _fail('unsupported_word_numbering')
+         abstracts, references = self.numbering
+         if identity not in references:
+             _fail('unsupported_word_numbering')
+@@ -743,6 +864,9 @@
+         prop = properties[0] if properties else None
+         style = prop.find(q(W, 'pStyle')) if prop is not None else None
+         chain = self.style_chain(style.get(q(W, 'val')) if style is not None else self.default_style, 'paragraph')
++        if self.inactive_numbering_styles and any(
++                node.get(q(W, 'styleId')) in self.inactive_numbering_styles for node in chain):
++            _fail('unsupported_word_numbering')
+         level, numbering, page_break = None, None, False
+         num_identity, num_index, num_seen = None, 0, False
+         for source in [self.default_paragraph] + [n.find(q(W, 'pPr')) for n in chain] + [prop]:
+@@ -1092,6 +1216,64 @@
+         return result
+ 
+ 
++def _word2247_source_paint(word):
++    # The selected Writer output retains this Word foreground scope. A known
++    # stock palette is insufficient if a selected source style overrides it.
++    records = word.styles
++    parents = {'Normal': None, 'DefaultParagraphFont': None, 'Heading1': 'Normal',
++               'Title': 'Normal', 'TableGrid': 'TableNormal', 'TableNormal': None}
++    output_styles = {'Normal': ('Standard', 'P1'), 'Heading1': ('Heading_20_1',),
++                     'Title': ('Title',)}
++    expected_colors = {'Title': ('17365D', 'text2'), 'Heading1': ('365F91', 'accent1')}
++    hidden_or_paint = {q(W, key) for key in ('rStyle', 'vanish', 'webHidden', 'specVanish',
++                                            'color', 'shd', 'highlight', 'background')}
++    for identity, wanted in parents.items():
++        node = records.get(identity)
++        if node is None:
++            _fail('unsupported_word_paint')
++        parent = node.find(q(W, 'basedOn'))
++        if (parent.get(q(W, 'val')) if parent is not None else None) != wanted:
++            _fail('unsupported_word_paint')
++        seen = [child for child in node.iter() if child.tag in hidden_or_paint]
++        if identity in expected_colors:
++            rgb, role = expected_colors[identity]
++            if (len(seen) != 1 or seen[0].tag != q(W, 'color') or len(seen[0])
++                    or seen[0].attrib != {q(W, 'val'): rgb, q(W, 'themeColor'): role,
++                                          q(W, 'themeShade'): 'BF'}):
++                _fail('unsupported_word_paint')
++        elif seen:
++            _fail('unsupported_word_paint')
++    styles = word.pkg.xml['word/styles.xml']
++    defaults = set()
++    for identity, node in records.items():
++        value = node.get(q(W, 'default'))
++        if value in ('1', 'true', 'on'):
++            defaults.add((node.get(q(W, 'type')), identity))
++        elif value not in (None, '0', 'false', 'off'):
++            _fail('unsupported_word_paint')
++    if defaults != {('paragraph', 'Normal'), ('character', 'DefaultParagraphFont'),
++                    ('table', 'TableNormal'), ('numbering', 'NoList')}:
++        _fail('unsupported_word_paint')
++    document = word.pkg.xml['word/document.xml']
++    for node in (document, styles.find(q(W, 'docDefaults'))):
++        if node is None or any(child.tag in hidden_or_paint for child in node.iter()):
++            _fail('unsupported_word_paint')
++    for table in document.iter(q(W, 'tbl')):
++        table_styles = table.findall(q(W, 'tblPr') + '/' + q(W, 'tblStyle'))
++        if (len(table_styles) != 1 or table_styles[0].attrib != {q(W, 'val'): 'TableGrid'}
++                or len(table_styles[0])):
++            _fail('unsupported_word_paint')
++        _white(table_styles[0])
++    result = []
++    for paragraph in document.find(q(W, 'body')).iter(q(W, 'p')):
++        style = paragraph.find(q(W, 'pPr') + '/' + q(W, 'pStyle'))
++        identity = 'Normal' if style is None else style.get(q(W, 'val'))
++        if identity not in output_styles:
++            _fail('unsupported_word_paint')
++        result.append(output_styles[identity])
++    return result
++
++
+ class _ODF:
+     # These are finite semantic bounds, in addition to package/XML/text limits.
+     _MAX_NOTES = 64
+@@ -1100,10 +1282,14 @@
+     _FO = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
+     _XML = 'http://www.w3.org/XML/1998/namespace'
+ 
+-    def __init__(self, data, state, *, native_output=False):
++    def __init__(self, data, state, *, native_output=False, paired_docx=None):
+         self.state = state
+         self.native_output = native_output
+         self.pkg = _editable_package(data, 'odt', state.checkpoint)
++        self.structured_output = (native_output and paired_docx is not None
++                                  and _structured_writer_styles(self.pkg))
++        self._paint_opacity = set()
++        self._paint_color = set()
+         # The shared bounded preflight discards processing instructions. Refuse
+         # those syntactic events before admitting any of their XML containers;
+         # escaped text, CDATA and comments containing '<?' remain ordinary data.
+@@ -1268,6 +1454,17 @@
+             for node in root.iter():
+                 if node.tag == q(O, 'forms') and (len(node) or (node.text or '').strip()):
+                     _fail('active_or_signed_package')
++        if self.structured_output:
++            try:
++                word = _Word(paired_docx, _Inventory(state.checkpoint))
++                _validate_docx_odt_stock_source(word, state.checkpoint)
++                _word2247_source_links(word)
++                selected = _word2247_source_paint(word)
++            except (WordConversionError, WordProfileError) as error:
++                raise WordConversionError(str(error), 'source_inventory') from None
++            self._structured_paint(selected)
++        if self.structured_output:
++            self._word2247_output_links_and_charsets(parents)
+         # Resolve the complete graph once: an unused cycle/dangling definition
+         # cannot become a second interpretation of the same selected style.
+         for family, identity in self.styles:
+@@ -1275,6 +1472,130 @@
+         for family in self.default_styles:
+             self.style(None, family, definition=True)
+         self.validate_masters()
++        if self.structured_output:
++            self._structured_layout_envelope()
++
++    def _word2247_output_links_and_charsets(self, parents):
++        # This exception belongs to the paired Word profile. Keep the native
++        # graph and symbol metadata intact, with every admitted node validated.
++        lo = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
++        svg = 'urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0'
++        link, charset, name = q(lo, 'linked-style-name'), q(S, 'font-charset'), q(S, 'name')
++        style_root = self.pkg.xml.get('styles.xml')
++        styles = None if style_root is None else style_root.find(q(O, 'styles'))
++        if styles is None:
++            _fail('unsupported_odt_style')
++        links = {}
++        dormant = {}
++        for word_name, _, paragraph, character in _word2247_style_pairs():
++            paragraph_node = self.styles.get(('paragraph', paragraph))
++            character_node = self.styles.get(('text', character))
++            if parents.get(paragraph_node) is not styles or parents.get(character_node) is not styles:
++                _fail('unsupported_odt_style')
++            links[paragraph_node] = character
++            if word_name == 'BodyText':
++                # Writer maps Body Text to its builtin Text body style. Only
++                # the observed forward link survives the native save. Neither
++                # endpoint may be applied or inherited by visible content.
++                dormant[paragraph] = {(paragraph_node, name)}
++                dormant[character] = {(character_node, name), (paragraph_node, link)}
++                heading = self.styles.get(('paragraph', 'Heading'))
++                if parents.get(heading) is not styles or heading.get(q(S, 'next-style-name')) != paragraph:
++                    _fail('unsupported_odt_style')
++                dormant[paragraph].add((heading, q(S, 'next-style-name')))
++            else:
++                links[character_node] = paragraph
++
++        font_attributes = {q(S, 'font-family-generic'): 'roman', q(S, 'font-pitch'): 'variable'}
++        symbol = {charset: 'x-symbol'}
++        cambria = {q(svg, 'font-family'): 'Cambria', **font_attributes}
++        charset_nodes = set()
++        cambria_faces = set()
++        font_name = q(S, 'font-name')
++        dormant['Cambria'] = set()
++        for part in ('content.xml', 'styles.xml'):
++            root = self.pkg.xml[part]
++            decls = root.find(q(O, 'font-face-decls'))
++            if decls is None:
++                _fail('unsupported_odt_style')
++            for identity, extra in (('Cambria', symbol), ('Cambria1', {})):
++                face = self._word2247_child(decls, name, identity)
++                if face.tag != q(S, 'font-face') or len(face) or face.attrib != {name: identity, **cambria, **extra}:
++                    _fail('unsupported_odt_style')
++                _white(face)
++                cambria_faces.add(face)
++                dormant['Cambria'].add((face, q(svg, 'font-family')))
++                if identity == 'Cambria':
++                    charset_nodes.add(face)
++                    dormant['Cambria'].add((face, name))
++
++        for index, inset in enumerate(('0.25in', '0.5in', '0.75in', '1in'), 1):
++            label = f'ListLabel_20_{index}'
++            style = self.styles.get(('text', label))
++            if (parents.get(style) is not styles or len(style) != 1 or style.attrib != {
++                    name: label, q(S, 'family'): 'text', q(S, 'display-name'): f'ListLabel {index}'}):
++                _fail('unsupported_odt_style')
++            prop = style[0]
++            if (prop.tag != q(S, 'text-properties') or len(prop) or prop.attrib != {
++                    font_name: 'Cambria', q(self._FO, 'font-family'): 'Cambria', **font_attributes, **symbol}):
++                _fail('unsupported_odt_style')
++            dormant['Cambria'].update({(prop, font_name), (prop, q(self._FO, 'font-family'))})
++            charset_nodes.add(prop)
++
++            list_name = f'WWNum{index}'
++            definition = self.list_styles.get(list_name)
++            if parents.get(definition) is not styles or definition.attrib != {name: list_name}:
++                _fail('unsupported_odt_style')
++            level = self._word2247_child(definition, q(T, 'level'), '1')
++            glyph = '\uf0b7'
++            if (level.tag != q(T, 'list-level-style-bullet') or len(level) != 2
++                    or level.attrib != {q(T, 'level'): '1', q(T, 'style-name'): label,
++                                q(lo, 'num-list-format'): glyph, q(S, 'num-suffix'): glyph,
++                                q(T, 'bullet-char'): glyph}):
++                _fail('unsupported_odt_style')
++            position, font = level
++            if (position.tag != q(S, 'list-level-properties') or len(position) != 1
++                    or position.attrib != {q(T, 'list-level-position-and-space-mode'): 'label-alignment'}
++                    or font.tag != q(S, 'text-properties') or len(font)
++                    or font.attrib != {q(self._FO, 'font-family'): 'Symbol', **symbol}):
++                _fail('unsupported_odt_style')
++            alignment = position[0]
++            if (alignment.tag != q(S, 'list-level-label-alignment') or len(alignment) or alignment.attrib != {
++                    q(T, 'label-followed-by'): 'listtab', q(T, 'list-tab-stop-position'): inset,
++                    q(self._FO, 'text-indent'): '-0.25in', q(self._FO, 'margin-left'): inset}):
++                _fail('unsupported_odt_style')
++            for node in (style, prop, definition, level, position, font, alignment):
++                _white(node)
++            charset_nodes.add(font)
++            dormant[label] = {(style, name), (level, q(T, 'style-name'))}
++            dormant[list_name] = {(definition, name)}
++            if index <= 3:
++                owner = f'List_20_{index}'
++                owner_node = self.styles.get(('paragraph', owner))
++                if parents.get(owner_node) is not styles or owner_node.get(q(S, 'list-style-name')) != list_name:
++                    _fail('unsupported_odt_style')
++                dormant[owner] = {(owner_node, name)}
++                dormant[list_name].add((owner_node, q(S, 'list-style-name')))
++
++        other_charsets = {q(S, 'font-charset-asian'), q(S, 'font-charset-complex')}
++        for root in self.pkg.xml.values():
++            for node in root.iter():
++                _tick(self.state.checkpoint)
++                if (node.get(link) != links.get(node) or (charset in node.attrib) != (node in charset_nodes)
++                        or other_charsets.intersection(node.attrib)
++                        or (node.tag == q(S, 'font-face') and node.get(name) == 'Cambria1'
++                            and node not in cambria_faces)):
++                    _fail('unsupported_odt_style')
++                for attribute, value in node.attrib.items():
++                    if value in dormant and (node, attribute) not in dormant[value]:
++                        _fail('unsupported_odt_style')
++        self._word2247_charset_nodes = charset_nodes
++
++    def _word2247_child(self, parent, attribute, value):
++        matches = [child for child in parent if child.get(attribute) == value]
++        if len(matches) != 1:
++            _fail('unsupported_odt_style')
++        return matches[0]
+ 
+     def identity(self, value):
+         if (not isinstance(value, str) or not 1 <= len(value) <= 128
+@@ -1295,6 +1616,132 @@
+                 or (name == 'content.xml' and parent.tag != q(O, 'automatic-styles'))
+                 or parents.get(parent) is not root):
+             _fail('ambiguous_odt_style')
++
++    def _structured_paint(self, selected):
++        # Fixed, observed fallbacks for the proved Word stock palette. These
++        # are color-role/transform/RGB tuples, not a generic theme interpreter.
++        colors = {
++            ('accent1', (), '#4f81bd'),
++            ('accent1', (('shade', '2509'),), '#365f91'),
++            ('accent1', (('shade', '5019'),), '#243f60'),
++            ('accent2', (), '#c0504d'),
++            ('dark1', (), '#000000'),
++            ('dark1', (('tint', '2509'),), '#404040'),
++            ('dark1', (('tint', '5019'),), '#808080'),
++            ('dark2', (('shade', '2509'),), '#17365d'),
++        }
++        wanted = {
++            'Heading_20_1': ('accent1', (('shade', '2509'),), '#365f91'),
++            'Title': ('dark2', (('shade', '2509'),), '#17365d'),
++        }
++        styles = self.pkg.xml.get('styles.xml')
++        common = styles.find(q(O, 'styles')) if styles is not None else None
++        meta = self.pkg.xml.get('meta.xml')
++        generators = meta.findall(q(O, 'meta') + '/' + q(META, 'generator')) if meta is not None else []
++        if (common is None or styles.get(q(O, 'version')) != '1.4'
++                or len(generators) != 1 or len(generators[0]) or generators[0].attrib
++                or generators[0].text != 'LibreOffice/26.2.5.2$Linux_X86_64 LibreOffice_project/620$Build-2'):
++            _fail('unsupported_odt_paint')
++        opacity = q(LO, 'opacity')
++        flag = q(S, 'use-window-font-color')
++        child_color = q(LO, 'char-complex-color')
++        text_props = q(S, 'text-properties')
++        found_defaults = set()
++        found_named = set()
++        for node in common:
++            family = node.get(q(S, 'family'))
++            props = node.find(text_props)
++            if props is None or opacity not in props.attrib:
++                continue
++            _tick(self.state.checkpoint)
++            if q(DRAW, 'opacity') in props.attrib:
++                _fail('unsupported_odt_paint')
++            if node.tag == q(S, 'default-style'):
++                if (family not in ('paragraph', 'graphic') or props.get(opacity) != '0%'
++                        or props.get(flag) != 'true' or len(props) or q(self._FO, 'color') in props.attrib):
++                    _fail('unsupported_odt_paint')
++                found_defaults.add(family)
++            else:
++                if (node.tag != q(S, 'style') or family not in ('paragraph', 'text')
++                        or props.get(opacity) != '100%' or flag in props.attrib
++                        or len(props) != 1 or props[0].tag != child_color):
++                    _fail('unsupported_odt_paint')
++                child = props[0]
++                role = child.get(q(LO, 'theme-type'))
++                if child.attrib != {q(LO, 'color-type'): 'theme', q(LO, 'theme-type'): role}:
++                    _fail('unsupported_odt_paint')
++                _white(child)
++                transform = []
++                for item in child:
++                    if (item.tag != q(LO, 'transformation') or len(item)
++                            or set(item.attrib) != {q(LO, 'type'), q(LO, 'value')}):
++                        _fail('unsupported_odt_paint')
++                    _white(item)
++                    transform.append((item.get(q(LO, 'type')), item.get(q(LO, 'value'))))
++                color = (role, tuple(transform), props.get(q(self._FO, 'color')))
++                identity = node.get(q(S, 'name'))
++                if color not in colors or (identity in wanted and (family != 'paragraph' or color != wanted[identity])):
++                    _fail('unsupported_odt_paint')
++                if identity in wanted:
++                    found_named.add(identity)
++                self._paint_color.add(child)
++            self._paint_opacity.add(props)
++        if found_defaults != {'paragraph', 'graphic'} or found_named != wanted.keys():
++            _fail('unsupported_odt_paint')
++        for root in self.pkg.xml.values():
++            for node in root.iter():
++                _tick(self.state.checkpoint)
++                if ((opacity in node.attrib and node not in self._paint_opacity)
++                        or (node.tag == child_color and node not in self._paint_color)
++                        or node.tag.startswith(q(DRAW, ''))
++                        or (node.tag == text_props and q(DRAW, 'opacity') in node.attrib)
++                        or node.get(q(self._FO, 'background-color')) not in (None, 'transparent')):
++                    _fail('unsupported_odt_paint')
++        actual = [node for node in self.pkg.body.iter() if node.tag in (q(T, 'p'), q(T, 'h'))]
++        if len(actual) != len(selected) or any(len(node) or node.get(q(T, 'style-name')) not in choices
++                                               for node, choices in zip(actual, selected)):
++            _fail('unsupported_odt_paint')
++        standard = self.styles.get(('paragraph', 'Standard'))
++        p1 = self.styles.get(('paragraph', 'P1'))
++        if (standard is None or p1 is None or standard.get(q(S, 'parent-style-name')) is not None
++                or standard.find(text_props) is not None
++                or p1.get(q(S, 'parent-style-name')) != 'Standard'):
++            _fail('unsupported_odt_paint')
++        props = p1.find(text_props)
++        if props is None or len(props) or any(name in props.attrib for name in (opacity, flag, q(self._FO, 'color'))):
++            _fail('unsupported_odt_paint')
++        if any(node.find(text_props) is not None
++               for (family, _), node in self.styles.items() if family.startswith('table')):
++            _fail('unsupported_odt_paint')
++        if any(node.find(text_props) is not None
++               for family, node in self.default_styles.items() if family.startswith('table')):
++            _fail('unsupported_odt_paint')
++
++    def _structured_layout_envelope(self):
++        # Visibility was established only for this saved Writer layout and
++        # settings. Keep all non-body-text XML in the comparison. Visible
++        # ordered text is checked separately by the two semantic inventories.
++        parts = self.pkg.parts
++        roots = self.pkg.xml
++        manifest = roots.get('META-INF/manifest.xml')
++        if (any(name not in roots or roots[name].get(q(O, 'version')) != '1.4'
++                for name in ('styles.xml', 'content.xml', 'settings.xml', 'meta.xml'))
++                or manifest is None
++                or manifest.get(q('urn:oasis:names:tc:opendocument:xmlns:manifest:1.0', 'version')) != '1.4'
++                or hashlib.sha256(parts['styles.xml']).hexdigest()
++                != '93e8df56ea7cb68ba0520b08a1a18d4620690109e819d70cbd25c61597c8173d'
++                or hashlib.sha256(parts['settings.xml']).hexdigest()
++                != '9ea6f6d5852d7df55a39e134459488f3b653a3619aebb381b2d973cd21b67ee0'):
++            _fail('unsupported_odt_visibility_envelope')
++        body_text = {node for node in self.pkg.body.iter() if node.tag in (q(T, 'p'), q(T, 'h'))}
++        projection = []
++        for node in roots['content.xml'].iter():
++            _tick(self.state.checkpoint)
++            projection.append((node.tag, len(node), sorted(node.attrib.items()),
++                               None if node in body_text else node.text, node.tail))
++        raw = json.dumps(projection, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
++        if hashlib.sha256(raw).hexdigest() != 'fce8e4dcb436d143f4f8d7685a431cbb4b73afa5002ba7cd625e4ed783ed64c4':
++            _fail('unsupported_odt_visibility_envelope')
+ 
+     def visual_properties(self, node):
+         # Finite passive typography only. No visible descendants, URI targets,
+@@ -1335,6 +1782,8 @@
+         text = {'display', 'number-lines', 'line-number'}
+         # Semantic properties are consumed separately, never silently dropped.
+         allowed = {q(FO, n) for n in fo} | {q(S, n) for n in style} | {q(T, n) for n in text}
++        if node in self._paint_opacity:
++            allowed.add(q(LO, 'opacity'))
+         if node.tag == q(S, 'table-properties'):
+             allowed |= {q(TB, 'align'), q(TB, 'border-model')}
+         if self.native_output:
+@@ -1362,6 +1811,8 @@
+                     if node.get(name) != expected:
+                         _fail('unsupported_odt_style')
+                     allowed.add(name)
++        if self.structured_output and node in self._word2247_charset_nodes:
++            allowed.add(q(S, 'font-charset'))
+         if set(node.attrib) - allowed:
+             _fail('unsupported_odt_style')
+         if node.get(q(T, 'display')) not in (None, 'true'):
+@@ -1370,6 +1821,8 @@
+             _fail('unsupported_odt_style')
+         _white(node)
+         for child in node:
++            if child in self._paint_color:
++                continue
+             if child.tag == q(S, 'footnote-sep') and node.tag == q(S, 'page-layout-properties'):
+                 if (len(child) or set(child.attrib) - {q(S, n) for n in (
+                         'width', 'line-style', 'adjustment', 'rel-width', 'color',
+@@ -1662,6 +2115,10 @@
+                     'name', 'family', 'display-name', 'parent-style-name', 'next-style-name',
+                     'list-style-name', 'list-level', 'master-page-name', 'default-outline-level',
+                     'class', 'auto-update')})
++                if self.structured_output and not default_node:
++                    # The complete linked-style graph was checked up front.
++                    allowed.add(q('urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0',
++                                  'linked-style-name'))
+                 if set(node.attrib) - allowed:
+                     _fail('unsupported_odt_style')
+                 _white(node)
+@@ -2024,13 +2481,143 @@
+             self.style(node.get(q(T, 'citation-body-style-name')), 'text')
+ 
+ 
+-def _inventory(data, format, *, checkpoint=None, native_output=False):
++def _validate_docx_odt_stock_source(word, checkpoint):
++    # These exact settings and theme parts were inspected together. Math
++    # defaults and drawing shadow effects are passive when no Word story or
++    # style contains a math or drawing consumer. The text palette stays intact.
++    package = word.pkg
++    stock_parts = {
++        'word/settings.xml': (
++            'settings', 'wordprocessingml.settings',
++            '51a0d348fe85965c66e4748a03c3c0d055d78455514f03cb121c334af7d73689'),
++        'word/theme/theme1.xml': (
++            'theme', 'theme',
++            'e3a8ab7db9ca7afca56f5f2820a56e8b660016c647773555b060b0a02ac76941'),
++    }
++    for name, (relationship, content_type, digest) in stock_parts.items():
++        _tick(checkpoint)
++        kind = R + '/' + relationship
++        links = [(owner, selected, target) for owner, rows in package.relationships.items()
++                 for selected, target in rows.values() if target == name or selected == kind]
++        if (links != [('word/document.xml', kind, name)]
++                or package.types.get(name) != 'application/vnd.openxmlformats-officedocument.' + content_type + '+xml'
++                or hashlib.sha256(package.parts.get(name, b'')).hexdigest() != digest):
++            _fail('unsupported_output_restoration')
++
++    word_namespace = q(W, '')
++    space = q('http://www.w3.org/XML/1998/namespace', 'space')
++    marker = q('http://schemas.openxmlformats.org/markup-compatibility/2006', 'Ignorable')
++    marker_bindings = {
++        'w14': 'http://schemas.microsoft.com/office/word/2010/wordml',
++        'wp14': 'http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing',
++    }
++    unsupported = {q(W, name) for name in (
++        'vanish', 'webHidden', 'specVanish', 'background', 'drawing', 'pict', 'shapeDefaults',
++        'numPicBullet', 'txbxContent', 'object', 'control', 'altChunk', 'subDoc', 'hyperlink',
++        'embedRegular', 'embedBold', 'embedItalic', 'embedBoldItalic',
++    )}
++    for name, root in package.xml.items():
++        if name in stock_parts or not name.startswith('word/') or not name.endswith('.xml'):
++            continue
++        ignored = root.get(marker)
++        if ignored is not None:
++            if ignored not in ('w14', 'w14 wp14'):
++                _fail('unsupported_output_restoration')
++            bindings = {}
++            for event, value in iterparse(BytesIO(package.parts[name]), events=('start-ns', 'start')):
++                if event == 'start':
++                    break
++                prefix, namespace = value
++                bindings[prefix] = namespace
++            if any(bindings.get(prefix) != marker_bindings[prefix] for prefix in ignored.split()):
++                _fail('unsupported_output_restoration')
++        for node in root.iter():
++            _tick(checkpoint)
++            if not node.tag.startswith(word_namespace) or node.tag in unsupported:
++                _fail('unsupported_output_restoration')
++            for attribute, value in node.attrib.items():
++                if attribute.startswith(word_namespace) or (node is root and attribute == marker):
++                    continue
++                if node.tag == q(W, 't') and attribute == space and value in ('default', 'preserve'):
++                    continue
++                _fail('unsupported_output_restoration')
++            if node.tag == q(W, 'rPr'):
++                if node.attrib:
++                    _fail('unsupported_output_restoration')
++                _word_properties(node, _RUN_PROPERTIES)
++
++
++def _word2247_style_pairs():
++    # Source style ID, source paragraph label, Writer paragraph ID, and Writer
++    # character ID. Word character IDs append Char to the paragraph ID.
++    labels = [
++        ('Header', 'header', 'Header', 'Header'),
++        ('Footer', 'footer', 'Footer', 'Footer'),
++        ('Title', 'Title', 'Title', 'Title'),
++        ('Subtitle', 'Subtitle', 'Subtitle', 'Subtitle'),
++        ('BodyText', 'Body Text', 'Text_20_body', 'Body Text'),
++        ('BodyText2', 'Body Text 2', 'Body_20_Text_20_2', 'Body Text 2'),
++        ('BodyText3', 'Body Text 3', 'Body_20_Text_20_3', 'Body Text 3'),
++        ('MacroText', 'macro', 'macro', 'Macro Text'),
++        ('Quote', 'Quote', 'Quote', 'Quote'),
++        ('IntenseQuote', 'Intense Quote', 'Intense_20_Quote', 'Intense Quote'),
++    ]
++    labels.extend((f'Heading{i}', f'heading {i}', f'Heading_20_{i}', f'Heading {i}') for i in range(1, 10))
++    return [(identity, label, paragraph, (character + ' Char').replace(' ', '_20_'))
++            for identity, label, paragraph, character in labels]
++
++
++def _word2247_source_links(word):
++    style_id, value = q(W, 'styleId'), q(W, 'val')
++    dormant = {'BodyText', 'BodyTextChar'}
++    allowed_dormant_refs = set()
++    for part in ('word/styles.xml', 'word/stylesWithEffects.xml'):
++        root = word.pkg.xml.get(part)
++        if root is None:
++            _fail('unsupported_output_restoration')
++        expected = {}
++        for identity, label, _, character in _word2247_style_pairs():
++            if part == 'word/stylesWithEffects.xml' and identity in ('Header', 'Footer'):
++                continue
++            expected[identity] = ('paragraph', label, identity + 'Char')
++            expected[identity + 'Char'] = ('character', character.replace('_20_', ' '), identity)
++        seen = set()
++        validated = set()
++        for node in root.findall(q(W, 'style')):
++            links = node.findall(q(W, 'link'))
++            if not links:
++                continue
++            identity = node.get(style_id)
++            if identity not in expected or identity in seen or len(links) != 1:
++                _fail('unsupported_output_restoration')
++            family, label, target = expected[identity]
++            link = links[0]
++            names = node.findall(q(W, 'name'))
++            if (node.get(q(W, 'type')) != family or len(names) != 1 or names[0].get(value) != label
++                    or link.attrib != {value: target} or len(link)):
++                _fail('unsupported_output_restoration')
++            _white(link)
++            seen.add(identity)
++            validated.add(link)
++            if identity in dormant:
++                allowed_dormant_refs.update({(node, style_id), (link, value)})
++        if seen != set(expected) or validated != set(root.iter(q(W, 'link'))):
++            _fail('unsupported_output_restoration')
++    for part, root in word.pkg.xml.items():
++        if part.startswith('word/'):
++            for node in root.iter():
++                if any(value in dormant and (node, attribute) not in allowed_dormant_refs
++                       for attribute, value in node.attrib.items()):
++                    _fail('unsupported_output_restoration')
++
++
++def _inventory(data, format, *, checkpoint=None, native_output=False, paired_docx=None):
+     state = _Inventory(checkpoint)
+     try:
+         if format == 'docx':
+             blocks = _Word(data, state).blocks()
+         elif format == 'odt':
+-            blocks = _ODF(data, state, native_output=native_output).blocks()
++            blocks = _ODF(data, state, native_output=native_output, paired_docx=paired_docx).blocks()
+         else:
+             _fail('unsupported_conversion_format')
+     except (WordProfileError, ODFProfileError, ODTError, PresentationError) as error:
+@@ -2164,14 +2751,10 @@
+ 
+ 
+ def restore_docx_odt_output(source, output, *, checkpoint=None):
+-    """Remove two narrowly source-bound native default-opacity extras.
+-
+-    Raw native opacity remains unsupported, including on named/used styles.
+-    Only 0% on paragraph/graphic default text properties is eligible, and only
+-    for an admitted source with no hidden/transparency extension path. This
+-    is not a general visibility, theme, rendering or formatting-fidelity claim.
+-    Every other byte in the XML and every other package member is retained;
+-    the complete derived native inventory must still equal the source.
++    """Validate the paired stock Writer profile or preserve legacy restoration.
++
++    The paired profile keeps native style and color bytes. The old profile
++    derives only its two narrowly source-bound default-opacity removals.
+     """
+     try:
+         inventory(source, 'docx', checkpoint=checkpoint)
+@@ -2183,6 +2766,9 @@
+         package = _editable_package(output, 'odt', checkpoint)
+     except (ODFProfileError, ODTError, PresentationError) as error:
+         raise WordConversionError(str(error), 'output_inventory') from None
++    if _structured_writer_styles(package):
++        validate_conversion(source, 'docx', output, 'odt', checkpoint=checkpoint)
++        return output, {}
+     targets = []
+     for name, root in package.xml.items():
+         parents = {child: parent for parent in root.iter() for child in parent}
+@@ -2194,6 +2780,8 @@
+             container = parents.get(parent)
+             if (name != 'styles.xml' or root.tag != q(O, 'document-styles')
+                     or node.tag != q(S, 'text-properties') or node.get(opacity) != '0%'
++                    or node.get(q(S, 'use-window-font-color')) != 'true' or len(node)
++                    or q(_ODF._FO, 'color') in node.attrib or q(DRAW, 'opacity') in node.attrib
+                     or parent is None or parent.tag != q(S, 'default-style')
+                     or parent.attrib not in ({q(S, 'family'): 'paragraph'}, {q(S, 'family'): 'graphic'})
+                     or container is None or container.tag != q(O, 'styles')
+@@ -2430,8 +3018,11 @@
+     except WordConversionError as error:
+         raise WordConversionError(error.code, 'source_inventory') from None
+     try:
+-        after = _inventory(output, output_format, checkpoint=checkpoint, native_output=True)
++        after = _inventory(output, output_format, checkpoint=checkpoint, native_output=True,
++                           paired_docx=source if source_format == 'docx' else None)
+     except WordConversionError as error:
++        if error.phase is not None:
++            raise
+         raise WordConversionError(error.code, 'output_inventory') from None
+     if before != after:
+         raise WordConversionError('semantic_mismatch', 'semantic_comparison')
