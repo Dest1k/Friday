@@ -10,4 +10,16 @@
 
 Пакет ordinaryincrement/project14flavors/consumer/rollback Сола b3ec83c5 принят после finalreview9b09. Root применил точный public5file diff; actualfull14 builder с actual228 predecessor прошёл13.052с (v46/v31,e1a4). Это подготовительный Source request без maintenance/authority/install. Далее: operational Sourceframe/review/actualcaller; Root проверяет свежие источники/права/CAS/process/data и открывает maintenance только после review. Historical four-layer builder default не расширять; новый запрос с явным --layer. Старые private/public counterparts и все28различий сохранять. Standalone coldexport имеет legacyvalidationgap; его ремонт отложен без доказанной зависимости actualincrementconsumer, старыеmanifest/expectedSHAs не переписывать.
 
-Здесь только продуктовый Source patch/manifest. Privateinputflavors/ожидаемые userartifact/oracles/received/source/receipt/полный inventory не публикуются. Полные private-evidence: `FRW-ASTRA-CORE229-DOCUMENT-AND-ANCHOR-ROOT-20261117/candidate-r1`.
+`assess_installed229_saved_json.py` — подготовленный локальный consumer для
+запуска Root после закрытой установки229, exact Source6b7ae8a6/independentreview1f6768ba.
+Он загружает настоящий установленный JSON-модуль с ожидаемым pin, проверяет
+сохранённые831B в памяти и два адресных отказа. Исторический local883FAIL остаётся;
+проверка pure helper не даёт custody/publisher/delivery/formal credit. Запуск
+предусмотрен с фиксированными доверенными private-cache argv; этот небольшой
+скрипт не служит общим механизмом ограничения произвольных выходных путей.
+Фактический запуск ещё NOT_RUN.
+
+Здесь продуктовый Source patch/manifest и подготовленный pure consumer.
+Privateinputflavors/ожидаемые userartifact/oracles/received/source/receipt/полный
+inventory не публикуются. Полные private-evidence:
+`FRW-ASTRA-CORE229-DOCUMENT-AND-ANCHOR-ROOT-20261117/candidate-r1`.
