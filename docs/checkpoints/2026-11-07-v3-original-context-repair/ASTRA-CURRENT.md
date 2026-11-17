@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Чекпоинт 23:14 МСК 17.11.2026. Установлена 234. Операция TSV→XLSX закрыта и проверена, исходный файл сохранён.
+Чекпоинт 23:25 МСК 17.11.2026. Установлена 235. Службы, состав и данные проверены после закрытия операции.
 
 **17.11.2026, 22:10 МСК.** Дест возобновил работу после [паузы для смены модели](evidence/astra-20261117/owner-model-switch-pause-team-checkpoint.json). Native goal **01a1c688-e36d-7021-8df4-9c5644a4d75b active**, прежний объект и учёт, без токен-бюджета. Обе реальные сессии после переключения работают на **gpt-6.2-sol / ultra** по фактическим turn context. Астра ведёт интеграцию, Сол готовит точную подсказку для чтения файлов внутри ZIP после проверки S03. Настройки принадлежат владельцу.
 
@@ -8,11 +8,11 @@
 
 ## Установлено и работает
 
-**[Установлена 234, проект 549, 17 896 файлов](evidence/astra-20261117/core234-installed-closed-default-consumer-and-services.json).** Источник продукта и исполнения `f937d59bed82dbbb934590cb9b3c3895d1590b89`. Квитанция `6dd2827c46a71e2155f5e5c2b14817ad335f47d2d03a0d93ce42c5c52aed342a`. Один слой `zip-member-read-guidance-after-source233`.
+**[Установлена 235, проект 551, 17 896 файлов](evidence/astra-20261117/core235-installed-closed-protected-compaction-services.json).** Источник продукта и исполнения `37507bab6fc0a70ef166605884371d5368b02786`. Квитанция `c64e2b9b3e29c3a71d4e51caa657b8e60c3895cc7ab9196d02b799fb2022ed4d`. Один слой `bounded-compaction-protected-rows-after-source234`.
 
-Операция 22:47–22:50 МСК закрыта. Publisher и штатный потребитель после фиксации вернули 0. Проверены все native-файлы и девять DB/WAL/SHM. Три quick_check OK, leases 0, сообщения 30/196/5956. [Предыдущий закрытый состав 233](evidence/astra-20261117/core233-installed-closed-default-consumer-and-services.json).
+Операция 23:22–23:25 МСК закрыта. Publisher и штатный потребитель вернули 0. Проверены все native-файлы и девять DB/WAL/SHM. Все три quick_check OK, leases 0, сообщения 30/196/5972. [Предыдущий закрытый состав 234](evidence/astra-20261117/core234-installed-closed-default-consumer-and-services.json).
 
-Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. Gateway **308165**, Dashboard **308986**, оба enabled/active, постоянный режим. Telegram подключён, три профиля. Необязательная фиксация Source custody отказала, обязательные проверки установки прошли.
+Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. Gateway **334562**, Dashboard **335499**, enabled/active и постоянный режим. Telegram подключён, три профиля. Необязательная Source custody вернула FileNotFoundError. Обязательные проверки установки прошли.
 
 [CSV→typedXLSX, проверка компонента на232](evidence/astra-20261117/core232-installed-csv-component-values-assessed.json) **R2/PASS/independentf5e7a59f**: actual receipt-pinned27Code/11loaded modules, nativeconvert+adapterexecute, genuine92B CSV, XLSX толькоRAM. Exact number1200.50/date2026-04-05/styles/IDs/comments/order/zeroformulas. R1 пропускал проверки значений, сохранён; R2 добавил только их. Permission/source snapshot/revision/parent/publication leaves **inert**: ordinary delivery/runtimeCAS/formal не доказаны. [Принятый Source](evidence/astra-20261117/s05-explicit-locale-csv-direct-import-source-adopted-not-installed.json), [genuinebuilder/preintent](evidence/astra-20261117/core232-exact-next-source-genuine-builder-ready-not-installed.json) — исторические стадии до установки, не текущий NOT_INSTALLED.
 
@@ -24,7 +24,9 @@ Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-fr
 
 **F04 TSV→XLSX.** На 234 один запрос 2855 дал XLSX 2857. Полное окно 480 с закрыто. Все шесть ячеек совпали с TSV как строки, включая `1`, исходник побайтно сохранён. Прямые вызовы отказали на `tab` и на неэкранированной табуляции в JSON. В том же запросе сработал штатный xlsx_create. Формальная приёмка открыта. [Оценка результата](evidence/astra-20261117/f04-tsv-xlsx234-original-2855-2857-delivery-assessed.json), [кандидат подсказок](drafts/delimited-conversion-feedback-20261117/MANIFEST.json).
 
-**Продолжение F04.** Строка 5941 оказалась сохранённой копией прежнего результата чтения 5930. Защита от отдельно обнаруженного изменения строк при сжатии подготовлена к точному переходу 234→235. Событие 2852 к дефекту не привязано. [Привязка трассы](evidence/astra-20261117/core234-installed-closed-default-consumer-and-services.json), [проверенный Source 235](evidence/astra-20261117/core235-bounded-compaction-protected-rows-source-reviewed.json).
+**F04 XLSX→TSV.** На фактически полученном XLSX 2857 компонент 234 вернул исходные 63 байта TSV. TSV сохранил текст ячеек. Метаданные книги остались в XLSX. Отдельная обычная выдача остаётся открытой. [Проверка компонента](evidence/astra-20261117/f04-received-2857-xlsx-tsv-roundtrip-component.json).
+
+**Продолжение F04.** Строка 5941 совпала с сохранённой копией прежнего результата 5930. Отдельная правка защищённых строк при сжатии установлена в 235. Эксплуатационная проверка конкретного пути с растущим контекстом открыта. [Проверенный Source](evidence/astra-20261117/core235-bounded-compaction-protected-rows-source-reviewed.json).
 
 **F04 ODT→PDF.** Найден подтверждённый простой исходник, проверка структуры на 234 прошла. Следующая проверка относится к штатному банку PDF. Старый местный отказ относится к другому ODT и другому банку. Нужны фактические байты штатного экспорта, доверие к шрифтам и проверка каталога. [Граница Source](evidence/astra-20261117/f04-odt-pdf234-selected-source-boundary.json).
 
@@ -54,6 +56,6 @@ Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-fr
 
 ## Репозиторий и следующие этапы
 
-**В main исходники установленной 234, коммит `f937d59b`, и проверенный Source 235.** Следующий шаг Астры — подлинная заявка и ближайший потребитель нового слоя. Последующая установка потребует свежего допуска. Исходные эффекты и три сторонних файла рабочего дерева сохранены.
+**В main исходники установленной 235, коммит `37507bab`.** Далее точная подсказка полей обратного экспорта и обработка отказов TSV. Сол отдельно проверяет штатный банк для простого ODT→PDF. Исходные эффекты и три сторонних файла рабочего дерева сохранены.
 
 DSH/A0 standalone отложены; pairingarchive ужесостоялась/T1pretransactionFAIL/P,T2NOTRUN. Preflight/A0launchergap — конкретная Sourceпроблема, не общая COREпредпосылка; скрытоеCLIисключение не наблюдено. Engineeroption отложена в WORKING-RULES, без инфраструктуры/платныхпроверок/расписания. При ownerpause ежедневная актуализация сама работу не возобновляет.
