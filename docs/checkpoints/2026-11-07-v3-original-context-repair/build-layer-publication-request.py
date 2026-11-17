@@ -57,7 +57,7 @@ CURRENT_SOURCE_THIRTY_SIXTH_LAYER = 'zip-member-read-guidance-after-source233'
 CURRENT_SOURCE_THIRTY_SEVENTH_LAYER = 'bounded-compaction-protected-rows-after-source234'
 CURRENT_SOURCE_THIRTY_EIGHTH_LAYER = 'delimited-conversion-guidance-after-source235'
 CURRENT_SOURCE_THIRTY_NINTH_LAYER = 'xlsx-recalc-truth-after-source236'
-CURRENT_SOURCE_FORTIETH_LAYER = 'word-same-saved-output-after-source237'
+CURRENT_SOURCE_FORTIETH_LAYER = 'ordinary-document-reliability-after-source237'
 
 
 def sha(path):

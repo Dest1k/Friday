@@ -99,7 +99,7 @@ LAYER_NAMES = (
     'bounded-compaction-protected-rows-after-source234',
     'delimited-conversion-guidance-after-source235',
     'xlsx-recalc-truth-after-source236',
-    'word-same-saved-output-after-source237',
+    'ordinary-document-reliability-after-source237',
 )
 # Draft binding barrier: no request generation or publication may read the installed
 # home for this selected edge until the exact frozen manifest and patch are supplied.
@@ -181,9 +181,9 @@ CURRENT_SOURCE_THIRTY_NINTH_MANIFEST_SHA256 = '6c2d28a2b53114cdc95e0c229b9de29ca
 CURRENT_SOURCE_THIRTY_NINTH_PATCH_SHA256 = '1fe85f4e0f3fe5eb484b994bbd892bc53c01e1b3a348b023f668909780e470f0'
 
 # Exact238 saved Word output Source pins.
-CURRENT_SOURCE_FORTIETH_LAYER = 'word-same-saved-output-after-source237'
-CURRENT_SOURCE_FORTIETH_MANIFEST_SHA256 = 'eadb44dca2aad704dc1cddc74b828a9a5e7cbdb2f63e6cca63ccb127f2afe3e7'
-CURRENT_SOURCE_FORTIETH_PATCH_SHA256 = '164e9413ca0f16c6e7942ef3a8ba19bfd257245ed477f05658e2bf258480c947'
+CURRENT_SOURCE_FORTIETH_LAYER = 'ordinary-document-reliability-after-source237'
+CURRENT_SOURCE_FORTIETH_MANIFEST_SHA256 = 'd2daf590fad3e48f0a5857ebdf4c99f1e3eee1921b439cbc7c3c59c5a0b5337e'
+CURRENT_SOURCE_FORTIETH_PATCH_SHA256 = 'ca57d543b20f24f79b74f6bbe1efece3c633d750dee5db77b2b23930eaf3f3c7'
 
 # The composition of the HISTORICAL four-layer request, named explicitly. A legacy v45
 # request that carries no `layer_names` keeps exactly this meaning; it never widens to
@@ -551,8 +551,8 @@ def require_fortieth_source_binding(layer_names, project_files=None, *, request=
                 for value in pair),
             "transaction_current_source_fortieth_binding_unbound")
     require(pair == (
-                "eadb44dca2aad704dc1cddc74b828a9a5e7cbdb2f63e6cca63ccb127f2afe3e7",
-                "164e9413ca0f16c6e7942ef3a8ba19bfd257245ed477f05658e2bf258480c947"),
+                "d2daf590fad3e48f0a5857ebdf4c99f1e3eee1921b439cbc7c3c59c5a0b5337e",
+                "ca57d543b20f24f79b74f6bbe1efece3c633d750dee5db77b2b23930eaf3f3c7"),
             "transaction_current_source_fortieth_binding_pair_changed")
     if project_files is not None:
         require(type(project_files) is dict

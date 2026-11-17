@@ -2575,10 +2575,39 @@ CURRENT_SOURCE_SIXTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.
 # Selected SOURCE238 same-saved Word output with exact actual237 lineage.
 # Immutable Source provenance does not confer current admission or installation authority.
 CURRENT_SOURCE_FORTIETH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v40'
-CURRENT_SOURCE_FORTIETH_LAYER = 'word-same-saved-output-after-source237'
-CURRENT_SOURCE_FORTIETH_MANIFEST = 'eadb44dca2aad704dc1cddc74b828a9a5e7cbdb2f63e6cca63ccb127f2afe3e7'
-CURRENT_SOURCE_FORTIETH_PATCH = '164e9413ca0f16c6e7942ef3a8ba19bfd257245ed477f05658e2bf258480c947'
-CURRENT_SOURCE_FORTIETH_NATIVE = {'tools/scoped_word_conversion.py': ('6dd133c4d9572eec1c3e0e24bd025092ab21f1466cbab48bc33d9f3dbed7e910', '9e6c5c97c684769dd9815e0fa8c7d30b6a944eb3bd277834063d4a4fcc74c1aa', 164897, False)}
+CURRENT_SOURCE_FORTIETH_LAYER = 'ordinary-document-reliability-after-source237'
+CURRENT_SOURCE_FORTIETH_MANIFEST = 'd2daf590fad3e48f0a5857ebdf4c99f1e3eee1921b439cbc7c3c59c5a0b5337e'
+CURRENT_SOURCE_FORTIETH_PATCH = 'ca57d543b20f24f79b74f6bbe1efece3c633d750dee5db77b2b23930eaf3f3c7'
+CURRENT_SOURCE_FORTIETH_NATIVE = {
+    'agent/auxiliary_client.py': (
+        'b6040e346282fc93b19b495e365b931e34b32e8604ba6f85ab8e0ef0a15c3c29',
+        'ef7450ca0be90bc94748f0f5208727bfc05cc13abdb746afc4a70f5aaa9e92b8', 440784, False,
+    ),
+    'agent/bounded_context.py': (
+        'c2cf488d51945b1f8d7ef9e21a8678bb2f51701eb269bc56e6dd580d7bf2d4e4',
+        '4f4cb477017e6566339aaa1ea9bd624f47cf1f51a0bdae156539b6a4fdc4308b', 92874, False,
+    ),
+    'agent/context_compressor_multipass.py': (
+        '7780abd1f5d3c7e22f09ab3a43f6f2027d61f601b4d0f3a29565aeaa023f81fe',
+        '432a836723b5ffe5aab925ddab4627044d20a22ddfb83a004de81d225c9c924e', 23471, False,
+    ),
+    'hermes_cli/friday_credential_admission.py': (
+        '19092225095b8e200a7e6ea124b89d09bc5685553a78101870b1d0eb50e21d25',
+        'ac172c6629a42066cefec9b0285fbf8e703d0302eeb53750d362de292e10c2fc', 265850, False,
+    ),
+    'tools/arg_coercion.py': (
+        'a5ccb2c8fdac36e8d49dd61421144ca1e07d6d84288e9164a7fc222fcecce106',
+        '7e75a9f185da8ca1c433423c936b30350b34d4ecffd6130ffae64cd0b471cc3e', 10209, False,
+    ),
+    'tools/scoped_spreadsheet_profiles.py': (
+        'c1ba8ba6dd132e35a4a6c92f0deb8988aaa1d232df728364202126648cecb56d',
+        '69ff2572c8fc9feb2aa5c79a72cfec4d42177dc68514fe8b164e3a0867a0e6f9', 26222, False,
+    ),
+    'tools/scoped_word_conversion.py': (
+        '6dd133c4d9572eec1c3e0e24bd025092ab21f1466cbab48bc33d9f3dbed7e910',
+        'ede56176397f7ada5b758cbdb234c7e42ca2bef202da7b7e9d02ae27f97c1736', 166665, False,
+    ),
+}
 CURRENT_SOURCE_FORTIETH_PREVIOUS_COMMITTED = 'UNBOUND'
 CURRENT_SOURCE_FORTIETH_PREVIOUS_HELPER = 'UNBOUND'
 CURRENT_SOURCE_FORTIETH_PREVIOUS_INPUT = 'UNBOUND'
@@ -3855,11 +3884,19 @@ def _current_source_fortieth_source_bindings_checked():
     def sha(value):
         return type(value) is str and len(value) == 64 and all(c in '0123456789abcdef' for c in value)
     name = CURRENT_SOURCE_FORTIETH_LAYER
-    f.require(name == 'word-same-saved-output-after-source237'
-        and CURRENT_SOURCE_FORTIETH_MANIFEST == 'eadb44dca2aad704dc1cddc74b828a9a5e7cbdb2f63e6cca63ccb127f2afe3e7' and CURRENT_SOURCE_FORTIETH_PATCH == '164e9413ca0f16c6e7942ef3a8ba19bfd257245ed477f05658e2bf258480c947',
+    f.require(name == 'ordinary-document-reliability-after-source237'
+        and CURRENT_SOURCE_FORTIETH_MANIFEST == 'd2daf590fad3e48f0a5857ebdf4c99f1e3eee1921b439cbc7c3c59c5a0b5337e' and CURRENT_SOURCE_FORTIETH_PATCH == 'ca57d543b20f24f79b74f6bbe1efece3c633d750dee5db77b2b23930eaf3f3c7',
         'ordinary_current_successor_fortieth_final_layer_binding_required')
     native = CURRENT_SOURCE_FORTIETH_NATIVE
-    f.require(type(native) is dict and set(native) == {'tools/scoped_word_conversion.py'},
+    f.require(type(native) is dict and set(native) == {
+        'agent/auxiliary_client.py',
+        'agent/bounded_context.py',
+        'agent/context_compressor_multipass.py',
+        'hermes_cli/friday_credential_admission.py',
+        'tools/arg_coercion.py',
+        'tools/scoped_spreadsheet_profiles.py',
+        'tools/scoped_word_conversion.py',
+    },
         'ordinary_current_successor_exact_fortieth_native_scope_required')
     for name,pin in native.items():
         path = Path(name) if type(name) is str else None
@@ -3869,8 +3906,37 @@ def _current_source_fortieth_source_bindings_checked():
             and type(pin[3]) is bool and (pin[0] is None if pin[3] else sha(pin[0]))
             and sha(pin[1]) and pin[0] != pin[1] and type(pin[2]) is int and pin[2] >= 0,
             'ordinary_current_successor_fortieth_final_native_binding_required')
-    f.require(native == {'tools/scoped_word_conversion.py': ('6dd133c4d9572eec1c3e0e24bd025092ab21f1466cbab48bc33d9f3dbed7e910', '9e6c5c97c684769dd9815e0fa8c7d30b6a944eb3bd277834063d4a4fcc74c1aa', 164897, False)},
-        'ordinary_current_successor_fortieth_exact_word_same_saved_output_binding_required')
+    f.require(native == {
+        'agent/auxiliary_client.py': (
+            'b6040e346282fc93b19b495e365b931e34b32e8604ba6f85ab8e0ef0a15c3c29',
+            'ef7450ca0be90bc94748f0f5208727bfc05cc13abdb746afc4a70f5aaa9e92b8', 440784, False,
+        ),
+        'agent/bounded_context.py': (
+            'c2cf488d51945b1f8d7ef9e21a8678bb2f51701eb269bc56e6dd580d7bf2d4e4',
+            '4f4cb477017e6566339aaa1ea9bd624f47cf1f51a0bdae156539b6a4fdc4308b', 92874, False,
+        ),
+        'agent/context_compressor_multipass.py': (
+            '7780abd1f5d3c7e22f09ab3a43f6f2027d61f601b4d0f3a29565aeaa023f81fe',
+            '432a836723b5ffe5aab925ddab4627044d20a22ddfb83a004de81d225c9c924e', 23471, False,
+        ),
+        'hermes_cli/friday_credential_admission.py': (
+            '19092225095b8e200a7e6ea124b89d09bc5685553a78101870b1d0eb50e21d25',
+            'ac172c6629a42066cefec9b0285fbf8e703d0302eeb53750d362de292e10c2fc', 265850, False,
+        ),
+        'tools/arg_coercion.py': (
+            'a5ccb2c8fdac36e8d49dd61421144ca1e07d6d84288e9164a7fc222fcecce106',
+            '7e75a9f185da8ca1c433423c936b30350b34d4ecffd6130ffae64cd0b471cc3e', 10209, False,
+        ),
+        'tools/scoped_spreadsheet_profiles.py': (
+            'c1ba8ba6dd132e35a4a6c92f0deb8988aaa1d232df728364202126648cecb56d',
+            '69ff2572c8fc9feb2aa5c79a72cfec4d42177dc68514fe8b164e3a0867a0e6f9', 26222, False,
+        ),
+        'tools/scoped_word_conversion.py': (
+            '6dd133c4d9572eec1c3e0e24bd025092ab21f1466cbab48bc33d9f3dbed7e910',
+            'ede56176397f7ada5b758cbdb234c7e42ca2bef202da7b7e9d02ae27f97c1736', 166665, False,
+        ),
+    },
+        'ordinary_current_successor_fortieth_exact_document_reliability_binding_required')
     return True
 
 
