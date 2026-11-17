@@ -1,0 +1,38 @@
+--- a/hermes_cli/friday_workspace_delimited_table.py
++++ b/hermes_cli/friday_workspace_delimited_table.py
+@@ -3,6 +3,18 @@
+ import json
+ import os
+ from pathlib import Path
++
++
++_REFUSAL_HINTS = {
++    'delimited_delimiter_unsupported': (
++        'Set delimiter in content JSON to one character: ",", ";", "\\t", or "|". '
++        'TSV requires "\\t".'
++    ),
++    'delimited_typed_literal': (
++        'Check type_policy.columns against the source column order. Use decimal for dot decimals, '
++        'decimal_comma for comma decimals, date for ISO YYYY-MM-DD, and date_dmy for DD.MM.YYYY.'
++    ),
++}
+
+
+ def execute(cap, fd, leaf, path, content):
+@@ -34,8 +46,13 @@
+         return _publish(cap, fd, leaf, path, rendered, target, (item, data, identity), facts)
+     except ScopeDenied:
+         raise
+-    except (DelimitedRefused, ODSError, ODTError, PresentationError) as error:
+-        return json.dumps(dict(success=False, error='delimited_conversion_refused',
+-                               reason=str(error), effect_disposition='none'))
++    except (ODSError, ODTError, PresentationError) as error:
++        result = dict(success=False, error='delimited_conversion_refused',
++                      reason=str(error), effect_disposition='none')
++        if isinstance(error, DelimitedRefused):
++            hint = _REFUSAL_HINTS.get(result['reason'])
++            if hint is not None:
++                result['hint'] = hint
++        return json.dumps(result)
+     except (OSError, RuntimeError, TimeoutError):
+         return json.dumps(dict(success=False, error='delimited_conversion_stopped', effect_disposition='none'))

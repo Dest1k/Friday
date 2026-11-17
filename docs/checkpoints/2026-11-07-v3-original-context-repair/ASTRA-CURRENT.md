@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Чекпоинт 22:37 МСК 17.11.2026. CSV→ODS оценён по закрытой операции. Ближайшая интеграция — чтение файлов внутри ZIP на точном преемнике 234.
+Чекпоинт 22:50 МСК 17.11.2026. Установлена 234. Состав, данные и службы проверены после закрытия операции.
 
 **17.11.2026, 22:10 МСК.** Дест возобновил работу после [паузы для смены модели](evidence/astra-20261117/owner-model-switch-pause-team-checkpoint.json). Native goal **01a1c688-e36d-7021-8df4-9c5644a4d75b active**, прежний объект и учёт, без токен-бюджета. Обе реальные сессии после переключения работают на **gpt-6.2-sol / ultra** по фактическим turn context. Астра ведёт интеграцию, Сол готовит точную подсказку для чтения файлов внутри ZIP после проверки S03. Настройки принадлежат владельцу.
 
@@ -8,11 +8,11 @@
 
 ## Установлено и работает
 
-**[Установлена233, проект547, 17 896 файлов](evidence/astra-20261117/core233-installed-closed-default-consumer-and-services.json).** Источник продукта и исполнения — `e56ad2f1fb19087add32f81c8d71bb71de79c0ca`. Квитанция `01bee6a9f6cb6c0ac6d01399d0591b9ab0f8cd823a3cc441b4474002b9bd5e61`. Единственный слой `keyed-merge-provenance-guidance-after-source232`, одно изменение native, семь целей CAS, v46/v35, явный `--layer`.
+**[Установлена 234, проект 549, 17 896 файлов](evidence/astra-20261117/core234-installed-closed-default-consumer-and-services.json).** Источник продукта и исполнения `f937d59bed82dbbb934590cb9b3c3895d1590b89`. Квитанция `6dd2827c46a71e2155f5e5c2b14817ad335f47d2d03a0d93ce42c5c52aed342a`. Один слой `zip-member-read-guidance-after-source233`.
 
-Операция 22:06:12–22:09:15 МСК закрыта. Publisher и штатный consumer после фиксации вернули 0. Проверены все native-файлы и девять DB/WAL/SHM. Все три quick_check OK, leases 0, сообщения 30/196/5933. Смена слоя не возобновляет старые действия. Частные closure и metadata grant сохранены в FRW-ASTRA-CORE233-ROOT-PREPARATION-20261117. Предыдущий [закрытый состав232](evidence/astra-20261117/core232-installed-closed-default-consumer-and-services.json) сохранён в истории.
+Операция 22:47–22:50 МСК закрыта. Publisher и штатный потребитель после фиксации вернули 0. Проверены все native-файлы и девять DB/WAL/SHM. Три quick_check OK, leases 0, сообщения 30/196/5956. [Предыдущий закрытый состав 233](evidence/astra-20261117/core233-installed-closed-default-consumer-and-services.json).
 
-Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. Шлюз **274025**, Dashboard **274862**, оба enabled/active, постоянный режим. Telegram подключён, маршрутизация трёх профилей подтверждена. Эти наблюдения относятся к закрытию233. Отдельная необязательная фиксация Source custody снова завершилась FileNotFoundError до своих этапов; обязательные проверки установки прошли. Независимые DSH/A0 ещё открыты.
+Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. Gateway **308165**, Dashboard **308986**, оба enabled/active, постоянный режим. Telegram подключён, три профиля. Необязательная фиксация Source custody отказала, обязательные проверки установки прошли.
 
 [CSV→typedXLSX, проверка компонента на232](evidence/astra-20261117/core232-installed-csv-component-values-assessed.json) **R2/PASS/independentf5e7a59f**: actual receipt-pinned27Code/11loaded modules, nativeconvert+adapterexecute, genuine92B CSV, XLSX толькоRAM. Exact number1200.50/date2026-04-05/styles/IDs/comments/order/zeroformulas. R1 пропускал проверки значений, сохранён; R2 добавил только их. Permission/source snapshot/revision/parent/publication leaves **inert**: ordinary delivery/runtimeCAS/formal не доказаны. [Принятый Source](evidence/astra-20261117/s05-explicit-locale-csv-direct-import-source-adopted-not-installed.json), [genuinebuilder/preintent](evidence/astra-20261117/core232-exact-next-source-genuine-builder-ready-not-installed.json) — исторические стадии до установки, не текущий NOT_INSTALLED.
 
@@ -22,7 +22,9 @@ Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-fr
 
 **F04 CSV→ODS.** На 233 один запрос 2852 дал ODS 2854. Полное окно 480 с завершено. Полученный файл и файл в рабочей области совпали. ID и комментарий сохранены строками, число и дата имеют нужные типы. Исходный CSV остался побайтно идентичным. Два прямых вызова импорта отказали без записи. Документ создал штатный ods_create в том же запросе. Формальный статус тестера сохранён. [Оценка результата и нативная трасса](evidence/astra-20261117/f04-csv-ods233-original-2852-2854-delivery-assessed.json).
 
-**S03.** Для B02 одна исходная строка заказа и два совпадения в справочнике поставщиков. Произвольное объединение удвоило бы сумму. Проверена подсказка перехода от ZIP-оглавления к извлечению и чтению файлов. Исходники точного перехода 233→234 и откат на рабочей копии проверены. Астра проверяет свежий whole14 и штатного потребителя перед установкой. Историческое окно 2036 закрыто без ответа. [Проверка Source](evidence/astra-20261117/s03-zip-member-read-guidance-source-reviewed.json).
+**Продолжение F04.** Строка 5941 оказалась сохранённой копией прежнего результата чтения 5930. Астра сверила UID и содержимое. Сол проверяет отдельно найденный путь изменения защищённых строк при сжатии. Две подсказки при отказе прямого импорта прошли ревью исходников. [Привязка трассы](evidence/astra-20261117/core234-installed-closed-default-consumer-and-services.json), [кандидат](drafts/delimited-conversion-feedback-20261117/MANIFEST.json).
+
+**S03.** Для B02 одна строка заказа и два совпадения в справочнике поставщиков. Произвольное объединение удвоило бы сумму. Подсказка перехода от ZIP-оглавления к извлечению и чтению файлов установлена в 234. Новый пользовательский исход по S03 открыт, исходное окно 2036 закрылось без ответа. [Проверка Source](evidence/astra-20261117/s03-zip-member-read-guidance-source-reviewed.json).
 
 **Астра: диагностика receive, SOURCE ONLY.** [Draft manifest](drafts/receive-transport-diagnostic-20261117/MANIFEST.json), [точная3line delta](drafts/receive-transport-diagnostic-20261117/source.patch). Только два безопасных поля stop_transport_cause_code/stop_transport_phase_code из existing whitelist; oldstopcodes/status/clocks/custody/offset/retry прежние. Source30calls+independent30PASS, review527d5b97. Private fullcode/checker/result `/home/jericho/.cache/FRW-ASTRA-RECEIVE-TRANSPORT-DIAGNOSTIC-DELTA-20261117/RESULT.json` /0a41921e. **Не подключено/не установлено**: global selectedtester остаётся cc36c093/1122813; candidate d9fc6d75/1123060. После resume сначала точный следующий composedcaller/consumer и новая Sourceпривязка, затем currentCAS/штатная замена; не выдавать d9 за oldcc36. Это не обязательная самостоятельная программа перед продуктом. Старый TXTstop поздняя причинаUNKNOWN, первыйURLretry не доказывает её; retry/latecapture/replay не разрешены.
 
@@ -33,6 +35,7 @@ Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-fr
 - S01 2080→2082. Подтверждены сумма 10 101,20 RUB по четырём строкам, два листа, отсутствие двойного учёта и полный исходный цикл доставки. Формальный статус сохранён. [Оценка S01](evidence/astra-20261117/s01-original-2082-workbook-summary-assessed.json).
 - S06 2092→2094. В ответе отказ без раздельных итогов, единиц и пересчёта. У отдельного старого запроса с двумя XLSX подтверждено содержание ответа по валютам, исходное окно осталось UNKNOWN. Физические единицы открыты. [Оценка S06](evidence/astra-20261117/s06-existing-units-currency-effects-compared.json).
 - S07 2095→2096. Пришёл текст без книги. Более раннее окно 1898 закрылось без ответа. Нужен подлинный полученный XLSX, чтобы проверить формулы, значения и пересчёт при изменении входа на рабочей копии. Оба исходных эффекта закрыты. [Оценка S07](evidence/astra-20261117/s07-original-formula-delivery-no-saved-result.json).
+- S09 2083→2085. Полное окно 180 с завершено с ответом без вложения. Книга и диапазоны диаграммы открыты для оценки при появлении исходного артефакта. [Оценка S09](evidence/astra-20261117/s09-original-chart-workbook-unavailable.json).
 - S10 2097→2099. Подтверждены −499,90 RUB по двум известным строкам из трёх, разделение null и нуля, знак возврата и полный цикл доставки. Название неизвестной строки «безвозвратной» не обосновано оригиналом и сохранено как замечание к ответу. [Оценка S10](evidence/astra-20261117/s10-original-2099-null-zero-and-returns-assessed.json).
 
 - [TXT2849→2851](evidence/astra-20261117/txt231-v05-retained-budget-edit-delivery-assessed-window-interrupted.json):1118/fe92601a, budget18400→28400, только byte307/остальное exact, fullread5926→write5928→read5930; **bytes narrowPASS, full480 NOT_PROVEN/STOPPED20:03:45/poll_http TRANSPORT_OUTCOME_UNKNOWN**, actor200.933с/child1/reaped/no parentstop. Старые540 hashes/3UNKNOWN сохранены, originalSTOPPEDrun добавлен. Никаких model/send/replacement/lateobserve/capture повторов.
@@ -46,6 +49,6 @@ Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-fr
 
 ## Репозиторий и следующие этапы
 
-**В main исходники установленной 233, коммит `e56ad2f1`, и проверенный код кандидата 234.** Установленный состав пока 233. Перед установкой 234 требуется свежий допуск. Три сторонних файла рабочего дерева, частные данные и первичные записи сохранены.
+**В main исходники установленной 234, коммит `f937d59b`.** Следующий CORE-срез выбирается по открытому пользовательскому действию и точным условиям допустимости. Исходные эффекты сохраняются. Три сторонних файла рабочего дерева и частные данные сохранены.
 
 DSH/A0 standalone отложены; pairingarchive ужесостоялась/T1pretransactionFAIL/P,T2NOTRUN. Preflight/A0launchergap — конкретная Sourceпроблема, не общая COREпредпосылка; скрытоеCLIисключение не наблюдено. Engineeroption отложена в WORKING-RULES, без инфраструктуры/платныхпроверок/расписания. При ownerpause ежедневная актуализация сама работу не возобновляет.
