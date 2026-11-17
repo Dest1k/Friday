@@ -89,3 +89,8 @@ owned stopped фазы; committed/receipt/postconsumer и service readback пр�
 `ROOT-SOURCE-CHECKS.json`: compile всех21 Source файлов и обратное применение
 точного Word patch к двум настоящим Source-after файлами; оба before SHA и
 байтовые размеры подтверждены. Это не текущие native observations и не runtime.
+
+
+## Установка228 и сохранённая проверка —17Nov
+
+[Установлено/CLOSED и installed pureconsumer PASS](../../evidence/astra-20261117/word228-installed-closed-saved-consumer-assessed.json). Final Source676a/R1 исправляет точную closure пяти profile refs;87b2/первыйprepare отказ/староеreview сохранены. Новый script `qualify_installed_word228_saved_source_reviewed.py` — проверенная Source-копия5bd3, Root уже выполнила её один раз на установленной228 и тех же developer6408/raw4f→f807. Копия в этом архиве не инструкция повторять qualification и не новая authority. Нужные runtime/input/private pins сохраняются в защищённом Rootcache; Sourceprepare/ONCE/clock и native current применяются по существующей рамке, не поREADME. СтарыеF04FAIL и fullApp/formal/170/120/B00 остаются OPEN.
