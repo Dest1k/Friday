@@ -1,0 +1,61 @@
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2016,7 +2016,7 @@
+     WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _conversion_guidance
+     WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _conversion_guidance
+ 
+-_DELIMITED_TABLE_GUIDANCE = 'Delimited native tables: delimited_convert creates a NEW CSV/TSV/XLSX/ODS, exactly one side delimited and the other native. Import JSON requires source,encoding,delimiter,type_policy,sheet; type_policy="text" keeps every field literal, or {columns:["text","decimal","boolean","date"],header_rows:0} gives explicit column types and header_rows 0 or 1. Export JSON requires source,encoding,delimiter,type_policy,line_ending; sheet is mandatory for multi-sheet files, range is optional A1:D5. Export type_policy="text" permits only text/blanks; "canonical" exports exact supported numeric/boolean/ISO-date values, without display formatting or formula caches. Encoding is explicit utf-8/utf-8-sig/utf-16/utf-16-le/utf-16-be/cp1251; generic utf-16 input requires a BOM. Delimiter is comma/semicolon/tab/vertical bar; TSV requires tab; line_ending is LF or CRLF. No detection or locale inference. Quoted field delimiters, quotes and embedded line breaks are preserved. All formulas, unsafe/active/macro structures and ambiguous native extents refuse. OOXML escape-looking text is unsupported for XLSX. Without range native data must be an explicit A1 rectangle matching declarations. Sources remain unchanged; no overwrite. '
++_DELIMITED_TABLE_GUIDANCE = 'Delimited native tables: delimited_convert creates a NEW CSV/TSV/XLSX/ODS, exactly one side delimited and the other native. Import JSON requires source,encoding,delimiter,type_policy,sheet; type_policy="text" keeps every field literal, or {columns:["text","decimal_comma","date_dmy"],header_rows:1} gives one explicit type per source column in order and header_rows 0 or 1. Column types are text, decimal (dot decimal), decimal_comma (for example 1200,50), boolean, date (ISO YYYY-MM-DD), or date_dmy (exact DD.MM.YYYY). IDs, long IDs and comments require text to retain their literal contents and formula-like prefixes. Export JSON requires source,encoding,delimiter,type_policy,line_ending; sheet is mandatory for multi-sheet files, range is optional A1:D5. Export type_policy="text" permits only text/blanks; "canonical" exports exact supported numeric/boolean/ISO-date values, without display formatting or formula caches. Encoding is explicit utf-8/utf-8-sig/utf-16/utf-16-le/utf-16-be/cp1251; generic utf-16 input requires a BOM. Delimiter is comma/semicolon/tab/vertical bar; TSV requires tab; line_ending is LF or CRLF. No detection or locale inference. Quoted field delimiters, quotes and embedded line breaks are preserved. All formulas, unsafe/active/macro structures and ambiguous native extents refuse. OOXML escape-looking text is unsupported for XLSX. Without range native data must be an explicit A1 rectangle matching declarations. Sources remain unchanged; no overwrite. '
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["delimited_convert"]
+ for _new_document_guidance in (_DELIMITED_TABLE_GUIDANCE,):
+     WRITE_FILE_SCHEMA["description"] += _new_document_guidance
+@@ -2314,3 +2314,22 @@
+ )
+ for _xlsx_recalculation_target in (WRITE_FILE_SCHEMA, WRITE_FILE_SCHEMA['parameters']['properties']['format'], WRITE_FILE_SCHEMA['parameters']['properties']['content']):
+     _xlsx_recalculation_target['description'] += _XLSX_RECALCULATION_FINAL_GUIDANCE
++
++
++# Keep the typed native CSV/TSV import ABI after the final schema resets above.
++_DELIMITED_TABLE_IMPORT_FINAL_GUIDANCE = (
++    'Native CSV/TSV import: use write_file with format=delimited_convert, a NEW .xlsx or .ods path, '
++    'and content as a serialized JSON string with exactly source,encoding,delimiter,type_policy,sheet. '
++    'Example: {"source":"input.csv","encoding":"utf-8","delimiter":";",'
++    '"type_policy":{"columns":["text","text","decimal_comma","date_dmy","text"],"header_rows":1},"sheet":"Data"}. '
++    'List one explicit column type in source order; header_rows is 0 or 1. '
++    'Use decimal_comma for 1200,50 and date_dmy for exact DD.MM.YYYY; '
++    'decimal accepts dot-decimal strings and date accepts ISO YYYY-MM-DD. '
++    'Text IDs, long IDs and comments must use text: leading zeros, whitespace, line breaks and '
++    '=,+,-,@ prefixes remain literal strings, never inferred formulas. '
++    'For an all-text import type_policy may be "text"; this does not create numeric money or date cells. '
++    'Encoding and delimiter are explicit; TSV requires tab. No type or locale guessing, Office, '
++    'overwrite or source modification. Sources remain unchanged; unsupported literals refuse. '
++)
++for _delimited_import_target in (WRITE_FILE_SCHEMA, WRITE_FILE_SCHEMA['parameters']['properties']['format'], WRITE_FILE_SCHEMA['parameters']['properties']['content']):
++    _delimited_import_target['description'] += _DELIMITED_TABLE_IMPORT_FINAL_GUIDANCE
+--- a/tools/scoped_delimited_table.py
++++ b/tools/scoped_delimited_table.py
+@@ -67,7 +67,8 @@
+         if (not isinstance(policy, dict) or set(policy) != {'columns', 'header_rows'}
+                 or type(policy['header_rows']) is not int or policy['header_rows'] not in (0, 1)
+                 or not isinstance(policy['columns'], list) or not 1 <= len(policy['columns']) <= MAX_COLS
+-                or any(kind not in ('text', 'decimal', 'boolean', 'date') for kind in policy['columns'])):
++                or any(kind not in ('text', 'decimal', 'boolean', 'date', 'decimal_comma', 'date_dmy')
++                       for kind in policy['columns'])):
+             refuse('delimited_type_policy')
+     elif policy not in ('text', 'canonical'):
+         refuse('delimited_type_policy')
+@@ -145,6 +146,14 @@
+         if raw not in ('true', 'false'):
+             refuse('delimited_boolean_literal')
+         return raw == 'true'
++    if kind == 'decimal_comma':
++        if not re.fullmatch(r'-?(?:0|[1-9][0-9]*)(?:,[0-9]+)?', raw):
++            refuse('delimited_typed_literal')
++        kind = 'decimal'; raw = raw.replace(',', '.')
++    elif kind == 'date_dmy':
++        if not re.fullmatch(r'[0-9]{2}\.[0-9]{2}\.[0-9]{4}', raw):
++            refuse('delimited_typed_literal')
++        kind = 'date'; raw = raw[6:]+'-'+raw[3:5]+'-'+raw[:2]
+     value = {'type': kind, 'value': raw}
+     try:
+         # This validates decimal precision and ISO calendar/date epoch before
