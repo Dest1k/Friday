@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Чекпоинт 00:27 МСК 18.11.2026. Установлена 236. Экспорт XLSX→TSV проверен. Для DOCX v02 локализована граница проверки вывода.
+Чекпоинт 00:39 МСК 18.11.2026. Установлена 237. Исправлен признак пересчёта формул.
 
 **17.11.2026, 22:10 МСК.** Дест возобновил работу после [паузы для смены модели](evidence/astra-20261117/owner-model-switch-pause-team-checkpoint.json). Native goal **01a1c688-e36d-7021-8df4-9c5644a4d75b active**, прежний объект и учёт, без токен-бюджета. Обе реальные сессии после переключения работают на **gpt-6.2-sol / ultra** по фактическим turn context. Астра ведёт интеграцию. Настройки принадлежат владельцу. Текущие назначения указаны ниже.
 
@@ -8,11 +8,11 @@
 
 ## Установлено и работает
 
-**[Установлена 236, проект 553, 17 896 файлов](evidence/astra-20261117/core236-installed-closed-delimited-conversion-guidance.json).** Источник продукта и исполнения `bac5174bff999288015be9cff2ee8be3e2b5aa0c`. Квитанция `17f46b0af5f0a6caefd7f55f318afa02831f349be95047cf855ea95305687ee6`. Слой `delimited-conversion-guidance-after-source235`.
+**[Установлена 237, проект 555, 17 896 файлов](evidence/astra-20261118/core237-installed-closed-truthful-xlsx-count.json).** Источник продукта и исполнения `fd7ec92dce0c922feb1c4b21c2d0b30fc5d5a639`. Квитанция `cbc043a680b4a660a35b1a96de1a5c5f2610b366fac872cddcf24ad3e1bada59`. Слой `xlsx-recalc-truth-after-source236`.
 
-Публикация и штатный потребитель вернули 0. Подтверждены два изменённых файла, восемь целей CAS, весь native-состав и неизменность девяти DB/WAL/SHM перед запуском. После запуска три quick_check OK и leases 0. [Закрытая установка 235](evidence/astra-20261117/core235-installed-closed-protected-compaction-services.json).
+Публикация и штатный потребитель вернули 0. Подтверждены два изменённых файла, восемь целей CAS, полный native-состав и неизменность девяти DB/WAL/SHM. Три quick_check OK и leases 0. [Закрытая установка 236](evidence/astra-20261117/core236-installed-closed-delimited-conversion-guidance.json).
 
-Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. Gateway **360667**, Dashboard **361569**, enabled/active и постоянный режим. Telegram подключён, три профиля. Сохранение необязательного снимка Source отказало. Все обязательные проверки установки прошли.
+Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. Gateway **422266**, Dashboard **423146**, enabled/active и постоянный режим. Telegram подключён, три профиля.
 
 [CSV→typedXLSX, проверка компонента на232](evidence/astra-20261117/core232-installed-csv-component-values-assessed.json) **R2/PASS/independentf5e7a59f**: actual receipt-pinned27Code/11loaded modules, nativeconvert+adapterexecute, genuine92B CSV, XLSX толькоRAM. Exact number1200.50/date2026-04-05/styles/IDs/comments/order/zeroformulas. R1 пропускал проверки значений, сохранён; R2 добавил только их. Permission/source snapshot/revision/parent/publication leaves **inert**: ordinary delivery/runtimeCAS/formal не доказаны. [Принятый Source](evidence/astra-20261117/s05-explicit-locale-csv-direct-import-source-adopted-not-installed.json), [genuinebuilder/preintent](evidence/astra-20261117/core232-exact-next-source-genuine-builder-ready-not-installed.json) — исторические стадии до установки, не текущий NOT_INSTALLED.
 
@@ -60,6 +60,6 @@ Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-fr
 
 **F04 DOCX v02→ODT отложен на проверке вывода.** Для DOCX 2247 подтверждён отдельный ещё не исполненный шаг. R2 принимает весь вход. Единственный изолированный Writer сохранил текст и структуру. Проверка отклонила параметры прозрачности, связи стилей и свойства темы. Для 41 абзаца видимость от дефолтного стиля не доказана. Следующая проверка использует сохранённый ODT. [Проверки и условие возврата](evidence/astra-20261118/word-structured-2247-input-reviewed-output-safely-refused.json).
 
-**Установлена 236, исходники продукта `bac5174b`.** Подготовлен и независимо проверен [кандидат 237](evidence/astra-20261118/core237-xlsx-recalc-truth-source-reviewed.json). Он сообщает о пересчёте формул только при ненулевом числе пересчитанных ячеек. Готовится допуск установки. Сол сверяет отдельно допустимую обычную последовательность. Старый результат 1723 остаётся PARTIAL.
+**S08.** [Установленная 237](evidence/astra-20261118/core237-installed-closed-truthful-xlsx-count.json) сообщает о пересчёте формул только при ненулевом числе пересчитанных ячеек. Обычная выдача с подтверждённым пересчётом остаётся открытой. Результат 1723 исторически PARTIAL, отдельно допустимый вход пока не установлен. [Source](evidence/astra-20261118/core237-xlsx-recalc-truth-source-reviewed.json).
 
 DSH/A0 standalone отложены; pairingarchive ужесостоялась/T1pretransactionFAIL/P,T2NOTRUN. Preflight/A0launchergap — конкретная Sourceпроблема, не общая COREпредпосылка; скрытоеCLIисключение не наблюдено. Engineeroption отложена в WORKING-RULES, без инфраструктуры/платныхпроверок/расписания. При ownerpause ежедневная актуализация сама работу не возобновляет.
