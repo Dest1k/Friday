@@ -1,0 +1,221 @@
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -11,6 +11,7 @@
+ import re
+ from copy import copy, deepcopy
+ from io import BytesIO
++from xml.etree.ElementTree import iterparse
+ from xml.parsers import expat
+ from zipfile import ZipFile
+ 
+@@ -133,15 +134,28 @@
+                           'bidi rtlGutter pgNumType paperSrc'.split())
+ 
+ 
+-def _word_properties(node, allowed, *, empty_numbering=None):
++def _word_paragraph_border(node):
++    # The stock Title style carries one decorative bottom rule.
++    _white(node)
++    if node.attrib or len(node) != 1 or node[0].tag != q(W, 'bottom'):
++        _fail('unsupported_word_property')
++    edge = node[0]
++    _white(edge)
++    expected = {'val': 'single', 'sz': '8', 'space': '4', 'color': '4F81BD', 'themeColor': 'accent1'}
++    if len(edge) or edge.attrib != {q(W, name): value for name, value in expected.items()}:
++        _fail('unsupported_word_property')
++
++
++def _word_properties(node, allowed, *, empty_numbering=None, title_border=False):
+     _white(node)
+     seen = set()
+     for child in node:
+         numbering = (child.tag == q(W, 'numPr') and allowed is _PARAGRAPH_PROPERTIES
+                      and empty_numbering is not None)
++        paragraph_border = title_border and child.tag == q(W, 'pBdr')
+         unprotected = (child.tag == q(W, 'formProt') and node.tag == q(W, 'sectPr')
+                        and allowed is _SECTION_PROPERTIES)
+-        if child.tag not in {q(W, name) for name in allowed} and not numbering and not unprotected:
++        if child.tag not in {q(W, name) for name in allowed} and not (numbering or paragraph_border or unprotected):
+             _fail('unsupported_word_property')
+         if child.tag in seen:
+             _fail('ambiguous_word_properties')
+@@ -149,6 +163,11 @@
+         if numbering:
+             empty_numbering(child)
+             continue
++        if paragraph_border:
++            if node.attrib:
++                _fail('unsupported_word_property')
++            _word_paragraph_border(child)
++            continue
+         if unprotected:
+             # Explicitly disabled section form protection is passive. Other
+             # spellings, attributes, nested data and enabled protection refuse.
+@@ -202,6 +221,7 @@
+                 _fail('unsupported_word_relationship')
+         self.empty_numbering = None
+         self.numbering = None
++        self.inactive_numbering_styles = None
+         self.note_records, self.note_refs = {}, []
+         self.story_parts, self.story_refs = {}, set()
+         self.list_items = self.story_paragraphs = 0
+@@ -297,7 +317,11 @@
+             _fail('unsupported_custom_xml')
+ 
+     def properties(self, node, allowed):
+-        _word_properties(node, allowed, empty_numbering=self._empty_numbering_property)
++        title = self.styles.get('Title')
++        title_border = (allowed is _PARAGRAPH_PROPERTIES and title is not None
++                        and title.get(q(W, 'type')) == 'paragraph' and node is title.find(q(W, 'pPr')))
++        _word_properties(node, allowed, empty_numbering=self._empty_numbering_property,
++                         title_border=title_border)
+ 
+     @staticmethod
+     def _value(node, name, *, expected=None):
+@@ -468,6 +492,64 @@
+             else:
+                 _fail('unsupported_word_note')
+ 
++    def _numbering_root(self, root):
++        marker = q('http://schemas.openxmlformats.org/markup-compatibility/2006', 'Ignorable')
++        if root.attrib != {marker: 'w14 wp14'}:
++            self._root_attributes(root)
++            return False
++        # ElementTree discards prefix declarations, but compatibility values
++        # use their original bindings. The package XML has passed preflight.
++        namespaces = {}
++        for event, value in iterparse(BytesIO(self.pkg.parts['word/numbering.xml']),
++                                      events=('start-ns', 'start')):
++            if event == 'start':
++                break
++            prefix, uri = value
++            namespaces[prefix] = uri
++        if (namespaces.get('w14') != 'http://schemas.microsoft.com/office/word/2010/wordml'
++                or namespaces.get('wp14') != 'http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing'):
++            _fail('unsupported_word_content')
++        _white(root)
++        return True
++
++    def _inactive_numbering_level(self, node, properties):
++        # Check the stock template's bounded leaf values and visual subtree.
++        # The ordinary graph pass still checks structure, text and relationships.
++        needed = {'start', 'numFmt', 'lvlText', 'lvlJc', 'pPr'}
++        if not needed <= properties or node.get(q(W, 'ilvl')) != '0':
++            _fail('unsupported_word_numbering')
++        number_format = self._value(node.find(q(W, 'numFmt')), 'numFmt')
++        if number_format not in ('bullet', 'decimal'):
++            _fail('unsupported_word_numbering')
++        bullet = number_format == 'bullet'
++        if bullet:
++            needed.add('rPr')
++        if properties - {'pStyle'} != needed:
++            _fail('unsupported_word_numbering')
++        for name, expected in (('start', '1'), ('lvlText', '\uf0b7' if bullet else '%1.'), ('lvlJc', 'left')):
++            self._value(node.find(q(W, name)), name, expected=expected)
++        style = node.find(q(W, 'pStyle'))
++        if style is not None:
++            family = 'ListBullet' if bullet else 'ListNumber'
++            if self._value(style, 'pStyle') not in (family, family + '2', family + '3'):
++                _fail('unsupported_word_numbering')
++        ppr = node.find(q(W, 'pPr'))
++        if [part.tag for part in ppr] != [q(W, 'tabs'), q(W, 'ind')]:
++            _fail('unsupported_word_numbering')
++        tabs, indent = ppr
++        if tabs.attrib or len(tabs) != 1 or tabs[0].tag != q(W, 'tab') or len(tabs[0]) or len(indent):
++            _fail('unsupported_word_numbering')
++        position = tabs[0].get(q(W, 'pos'))
++        if (position not in ('360', '720', '1080', '1440', '1800')
++                or tabs[0].attrib != {q(W, 'val'): 'num', q(W, 'pos'): position}
++                or indent.attrib != {q(W, 'left'): position, q(W, 'hanging'): '360'}):
++            _fail('unsupported_word_numbering')
++        if bullet:
++            fonts = node.find(q(W, 'rPr'))
++            expected = {q(W, 'ascii'): 'Symbol', q(W, 'hAnsi'): 'Symbol', q(W, 'hint'): 'default'}
++            if len(fonts) != 1 or fonts[0].tag != q(W, 'rFonts') or len(fonts[0]) or fonts[0].attrib != expected:
++                _fail('unsupported_word_numbering')
++
+     def _numbering_graph(self):
+         if self.numbering is not None:
+             return
+@@ -479,7 +561,14 @@
+         root = self.pkg.xml.get('word/numbering.xml')
+         if root is None or root.tag != q(W, 'numbering'):
+             _fail('unsupported_word_numbering')
+-        self._root_attributes(root)
++        inactive_template = self._numbering_root(root)
++        if inactive_template and any(
++                style.get(q(W, 'type')) == 'table'
++                and any(part.tag in (q(W, 'numPr'), q(W, 'pStyle')) for part in style.iter())
++                for style in self.styles.values()):
++            # A table can inherit paragraph numbering without a body numPr.
++            _fail('unsupported_word_numbering')
++        linked_styles = set()
+         abstracts, references = {}, {}
+         for item in root:
+             _tick(self.state.checkpoint)
+@@ -513,21 +602,37 @@
+                                     _fail('unsupported_word_numbering')
+                                 _word_properties(part, _PARAGRAPH_PROPERTIES if local == 'pPr' else _RUN_PROPERTIES)
+                             elif local in ('isLgl', 'legacy'):
+-                                if len(part):
++                                if inactive_template or len(part):
+                                     _fail('unsupported_word_numbering')
+                                 _white(part)
+                             else:
+-                                self._value(part, local)
++                                value = self._value(part, local)
++                                if inactive_template and local == 'pStyle':
++                                    style = self.styles.get(value)
++                                    if style is None or style.get(q(W, 'type')) != 'paragraph':
++                                        _fail('unsupported_word_numbering')
++                                    linked_styles.add(value)
++                        if inactive_template:
++                            self._inactive_numbering_level(child, properties_seen)
+                         levels[level] = child
+                     elif child.tag in {q(W, n) for n in ('nsid', 'multiLevelType', 'tmpl', 'name', 'styleLink', 'numStyleLink')}:
+-                        if child.tag in metadata:
++                        if (child.tag in metadata or (inactive_template
++                                and child.tag in (q(W, 'styleLink'), q(W, 'numStyleLink')))):
+                             _fail('unsupported_word_numbering')
+                         metadata.add(child.tag)
+-                        self._value(child, child.tag.removeprefix(q(W, '')))
++                        value = self._value(child, child.tag.removeprefix(q(W, '')))
++                        if inactive_template:
++                            if child.tag == q(W, 'multiLevelType'):
++                                if value != 'singleLevel':
++                                    _fail('unsupported_word_numbering')
++                            elif child.tag == q(W, 'name') or not re.fullmatch(r'[0-9A-Fa-f]{8}', value):
++                                _fail('unsupported_word_numbering')
+                     else:
+                         _fail('unsupported_word_numbering')
+                 if not levels:
+                     _fail('unsupported_word_numbering')
++                if inactive_template and metadata != {q(W, n) for n in ('nsid', 'multiLevelType', 'tmpl')}:
++                    _fail('unsupported_word_numbering')
+                 abstracts[identity] = (item, levels)
+             elif item.tag == q(W, 'num'):
+                 if set(item.attrib) != {q(W, 'numId')} or len(item) != 1:
+@@ -542,9 +647,13 @@
+             _fail('unsupported_word_numbering')
+         self.numbering = abstracts, references
+         self.empty_numbering = {}
++        if inactive_template:
++            self.inactive_numbering_styles = linked_styles
+ 
+     def _numbering_profile(self, identity, index):
+         self._numbering_graph()
++        if self.inactive_numbering_styles is not None:
++            _fail('unsupported_word_numbering')
+         abstracts, references = self.numbering
+         if identity not in references:
+             _fail('unsupported_word_numbering')
+@@ -743,6 +852,9 @@
+         prop = properties[0] if properties else None
+         style = prop.find(q(W, 'pStyle')) if prop is not None else None
+         chain = self.style_chain(style.get(q(W, 'val')) if style is not None else self.default_style, 'paragraph')
++        if self.inactive_numbering_styles and any(
++                node.get(q(W, 'styleId')) in self.inactive_numbering_styles for node in chain):
++            _fail('unsupported_word_numbering')
+         level, numbering, page_break = None, None, False
+         num_identity, num_index, num_seen = None, 0, False
+         for source in [self.default_paragraph] + [n.find(q(W, 'pPr')) for n in chain] + [prop]:
