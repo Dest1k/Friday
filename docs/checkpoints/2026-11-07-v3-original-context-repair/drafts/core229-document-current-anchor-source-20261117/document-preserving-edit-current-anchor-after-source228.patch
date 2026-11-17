@@ -1,0 +1,471 @@
+--- /dev/null
++++ b/hermes_cli/friday_workspace_json.py
+@@ -0,0 +1,223 @@
++"""Bounded string-leaf JSON copies; only the selected token is serialized."""
++import hashlib
++import json
++from pathlib import PurePosixPath
++import re
++
++from hermes_cli.friday_user_scope import ScopeDenied
++from hermes_cli.friday_workspace_revision import check, _baseline
++from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
++from hermes_cli.friday_workspace_zip import _archive_spec, _path, _source, _verify, _inline_budget, _fits, _encode
++
++MAX_BYTES = 1000000
++MAX_DEPTH = 32
++MAX_NODES = 32768
++_NUMBER = re.compile(r'-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?')
++
++GUIDANCE = (
++    'For one explicitly requested string-value correction in an existing UTF-8 JSON, '
++    'use format=json_string_edit into a NEW .json path; keep the original. '
++    'Content is JSON exactly {source,source_sha256,pointer,expected,value}; '
++    'source_sha256 comes from a current complete read_file, including every partial page. '
++    'pointer is a nonempty RFC6901 JSON Pointer (for example /date_display or /rows/0/date; '
++    '~0 means ~ and ~1 means /); expected and value are explicit decoded strings. '
++    'The selected existing string must equal expected. Only that string token is rewritten; '
++    'all other source bytes, escapes, key order, number spelling, BOM and line endings remain. '
++    'Strict JSON only: duplicate keys, missing selections, unchanged edits, nonstring targets, '
++    'key/structure edits and root replacement refuse. Maximum 1MB input/output, depth32, '
++    '32768 values and 4096 UTF-8 pointer bytes. Numbers, booleans and null are preserved '
++    'but cannot be selected for editing. Never reconstruct the complete JSON from displayed text. '
++)
++
++
++class JsonEditRefused(ValueError):
++    """Fixed reason codes only; no source content or parser diagnostics."""
++
++
++def _pointer(pointer):
++    if type(pointer) is not str or not pointer.startswith('/'):
++        raise JsonEditRefused('pointer_required')
++    try:
++        if len(pointer.encode('utf-8')) > 4096:
++            raise JsonEditRefused('pointer_capacity')
++    except UnicodeError:
++        raise JsonEditRefused('pointer_invalid') from None
++    pieces = pointer[1:].split('/')
++    if len(pieces) > MAX_DEPTH or any(re.search(r'~(?![01])', part) for part in pieces):
++        raise JsonEditRefused('pointer_invalid')
++    return tuple(part.replace('~1', '/').replace('~0', '~') for part in pieces)
++
++
++def _string_span(text, selected):
++    """Validate the entire bounded JSON and locate one decoded string value.
++
++    No objects/numbers are reserialized. Array positions use canonical decimal
++    indexes; object keys are exact decoded strings, including escaped keys.
++    """
++    position = 1 if text.startswith('\ufeff') else 0
++    nodes = 0
++    target = None
++
++    def space():
++        nonlocal position
++        while position < len(text) and text[position] in ' \t\r\n':
++            position += 1
++
++    def string():
++        nonlocal position
++        start = position
++        if position >= len(text) or text[position] != '"':
++            raise JsonEditRefused('json_invalid')
++        try:
++            value, position = json.decoder.scanstring(text, position + 1, True)
++            value.encode('utf-8')  # Refuse unpaired surrogate escapes everywhere.
++        except (ValueError, UnicodeError):
++            raise JsonEditRefused('json_invalid') from None
++        return value, start, position
++
++    def value(path, depth):
++        nonlocal position, nodes, target
++        nodes += 1
++        if depth > MAX_DEPTH or nodes > MAX_NODES:
++            raise JsonEditRefused('json_capacity')
++        space()
++        if position >= len(text):
++            raise JsonEditRefused('json_invalid')
++        start = position
++        token = text[position]
++        if token == '"':
++            decoded, start, end = string()
++            if path == selected:
++                target = (start, end, decoded)
++            return
++        if path == selected:
++            raise JsonEditRefused('target_not_string')
++        if token == '{':
++            position += 1
++            space()
++            keys = set()
++            if position < len(text) and text[position] == '}':
++                position += 1
++                return
++            while True:
++                key, _, _ = string()
++                if key in keys:
++                    raise JsonEditRefused('duplicate_key')
++                keys.add(key)
++                space()
++                if position >= len(text) or text[position] != ':':
++                    raise JsonEditRefused('json_invalid')
++                position += 1
++                value(path + (key,), depth + 1)
++                space()
++                if position < len(text) and text[position] == '}':
++                    position += 1
++                    return
++                if position >= len(text) or text[position] != ',':
++                    raise JsonEditRefused('json_invalid')
++                position += 1
++                space()
++        elif token == '[':
++            position += 1
++            space()
++            if position < len(text) and text[position] == ']':
++                position += 1
++                return
++            index = 0
++            while True:
++                value(path + (str(index),), depth + 1)
++                index += 1
++                space()
++                if position < len(text) and text[position] == ']':
++                    position += 1
++                    return
++                if position >= len(text) or text[position] != ',':
++                    raise JsonEditRefused('json_invalid')
++                position += 1
++        else:
++            for literal in ('true', 'false', 'null'):
++                if text.startswith(literal, position):
++                    position += len(literal)
++                    return
++            number = _NUMBER.match(text, position)
++            if number is None:
++                raise JsonEditRefused('json_invalid')
++            position = number.end()
++
++    value((), 0)
++    space()
++    if position != len(text):
++        raise JsonEditRefused('json_invalid')
++    if target is None:
++        raise JsonEditRefused('pointer_not_found')
++    return target
++
++
++def replace_string(original, expected_sha256, pointer, expected, value):
++    """Replace one existing string token, retaining every unselected byte."""
++    if (type(original) is not bytes or len(original) > MAX_BYTES
++            or type(expected_sha256) is not str
++            or re.fullmatch(r'[0-9a-f]{64}', expected_sha256) is None):
++        raise JsonEditRefused('source_identity_required')
++    if hashlib.sha256(original).hexdigest() != expected_sha256:
++        raise JsonEditRefused('source_hash_mismatch')
++    selected = _pointer(pointer)
++    if type(expected) is not str or type(value) is not str:
++        raise JsonEditRefused('string_values_required')
++    if expected == value:
++        raise JsonEditRefused('edit_is_unchanged')
++    try:
++        text = original.decode('utf-8')
++        expected.encode('utf-8')
++        replacement = json.dumps(value, ensure_ascii=False).encode('utf-8')
++    except UnicodeError:
++        raise JsonEditRefused('utf8_required') from None
++    start, end, actual = _string_span(text, selected)
++    if actual != expected:
++        raise JsonEditRefused('expected_mismatch')
++    before = text[:start].encode('utf-8')
++    after = text[end:].encode('utf-8')
++    result = before + replacement + after
++    if len(result) > MAX_BYTES:
++        raise JsonEditRefused('output_capacity')
++    return result
++
++
++def create_edit(cap, fd, leaf, relative, content, *, task_id='default'):
++    """Current full-read source, retained custody/CAS, existing atomic publisher."""
++    _check_parent(cap, fd, relative)
++    relative = _path(relative)
++    if PurePosixPath(relative).suffix.lower() != '.json' or leaf != PurePosixPath(relative).name:
++        raise ScopeDenied()
++    spec = _archive_spec(content, {'source', 'source_sha256', 'pointer', 'expected', 'value'})
++    source = _path(spec['source'])
++    if PurePosixPath(source).suffix != PurePosixPath(relative).suffix or source == relative:
++        raise ScopeDenied()
++    check(cap)
++    original, identity = _source(cap, source)
++    # Exactly the version recorded by native read_file delivery, not a caller
++    # supplied hash alone. workspace_document identity includes trailing gid.
++    version = (*identity[:8], hashlib.sha256(original).digest())
++    if _baseline(cap, task_id, source) != version:
++        return _encode(dict(success=False, error='json_edit_requires_current_full_read',
++                            effect_disposition='none', hint='Read the complete current source with read_file and continue every partial page.'))
++    try:
++        data = replace_string(original, spec['source_sha256'], spec['pointer'], spec['expected'], spec['value'])
++    except JsonEditRefused as error:
++        return _encode(dict(success=False, error='json_edit_refused', reason=str(error),
++                            effect_disposition='none'))
++    sources = [(source, original, identity)]
++    receipt = dict(operation='json_string_edit', source=source,
++                   source_sha256=hashlib.sha256(original).hexdigest(), source_unchanged=True,
++                   unselected_bytes_preserved=True, replacements=1)
++    estimate = dict(receipt, success=True, path=relative, format='json',
++                    scope='own_user_workspace', create_only=True, verified=True,
++                    bytes_written=len(data), sha256=hashlib.sha256(data).hexdigest())
++    if not _fits(estimate, _inline_budget()):
++        return _encode(dict(success=False, error='json_edit_result_capacity', effect_disposition='none'))
++    _verify(cap, sources)
++    result = json.loads(_create_bytes(cap, fd, leaf, relative, data, output_format='json',
++                                    verify_source=lambda: _verify(cap, sources)))
++    if result.get('success'):
++        result.update(receipt)
++    return _encode(result)
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -1223,7 +1223,7 @@
+             return json.dumps({'success': False, 'error': 'document_write_unsupported',
+                 'reason': 'macro_profile_requires_preserving_edit', 'effect_disposition': 'none',
+                 'hint': 'Use word_macro_edit for a source-hash-bound unique literal correction into a new same-profile DOCM/DOTM. VBA remains opaque and never executes; creation, conversion and raw writes remain unsupported.'})
+-        if output_format not in ('pub_text_edit', 'onenote_text_edit', 'mpp_task_name_edit', 'xps_create', 'xps_edit', 'vdx_create', 'vdx_text_edit', 'legacy_openoffice_create', 'legacy_openoffice_edit', 'msg_create', 'msg_edit', 'xlsb_create', 'xlsb_edit', 'odf_formula_create', 'odf_formula_edit', 'abw_create', 'abw_edit', 'dif_create', 'dif_edit', 'slk_create', 'slk_edit', 'dbf_create', 'dbf_edit', 'fb2_create', 'fb2_edit', 'svg_create', 'svg_text_edit', 'word_macro_edit', 'diagram_create', 'diagram_text_edit', 'pdf_report', 'pdf_form_fill', 'text', 'text_edit', 'eml_create', 'eml_edit', 'eml_extract_attachment', 'ics_create', 'ics_edit', 'vcf_create', 'vcf_edit', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_copy', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'docx_odt', 'odt_docx', 'odt_pdf', 'xlsx_pdf', 'ods_pdf', 'delimited_convert', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'presentation_macro_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'lha_extract', 'cab_extract', 'arj_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit', 'ooxml_password_edit', 'epub_create', 'epub_edit'):
++        if output_format not in ('pub_text_edit', 'onenote_text_edit', 'mpp_task_name_edit', 'xps_create', 'xps_edit', 'vdx_create', 'vdx_text_edit', 'legacy_openoffice_create', 'legacy_openoffice_edit', 'msg_create', 'msg_edit', 'xlsb_create', 'xlsb_edit', 'odf_formula_create', 'odf_formula_edit', 'abw_create', 'abw_edit', 'dif_create', 'dif_edit', 'slk_create', 'slk_edit', 'dbf_create', 'dbf_edit', 'fb2_create', 'fb2_edit', 'svg_create', 'svg_text_edit', 'word_macro_edit', 'diagram_create', 'diagram_text_edit', 'pdf_report', 'pdf_form_fill', 'text', 'text_edit', 'json_string_edit', 'eml_create', 'eml_edit', 'eml_extract_attachment', 'ics_create', 'ics_edit', 'vcf_create', 'vcf_edit', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_copy', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'docx_odt', 'odt_docx', 'odt_pdf', 'xlsx_pdf', 'ods_pdf', 'delimited_convert', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'presentation_macro_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'lha_extract', 'cab_extract', 'arj_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit', 'ooxml_password_edit', 'epub_create', 'epub_edit'):
+             raise ScopeDenied()
+         if output_format == 'mpp_task_name_edit':
+             from hermes_cli.friday_workspace_mpp import execute
+@@ -1231,6 +1231,9 @@
+         if output_format == 'text_edit':
+             from hermes_cli.friday_workspace_text import create_edit
+             return create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'json_string_edit':
++            from hermes_cli.friday_workspace_json import create_edit
++            return create_edit(cap, fd, parts[-1], path.as_posix(), args.get('content'), task_id=task_id)
+ 
+         if output_format == 'pub_text_edit':
+             from hermes_cli.friday_workspace_pub import execute
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2242,3 +2242,12 @@
+     'headers, footers, notes and logical anchors, never editable BODY selectors or rendered '
+     'Word page positions. Check extraction coverage and limitations. Header, footer and note '
+     'editing is unsupported; layout and field evaluation are unverified.')
++
++
++# Keep these preserving text profiles in the final effective schema after its
++# compact-description assignments above. Ordinary raw text behavior is unchanged.
++from hermes_cli.friday_workspace_text import GUIDANCE as _TXT_PRESERVING_GUIDANCE
++from hermes_cli.friday_workspace_json import GUIDANCE as _JSON_STRING_EDIT_GUIDANCE
++WRITE_FILE_SCHEMA['parameters']['properties']['format']['enum'] += ['text_edit', 'json_string_edit']
++for _preserving_target in (WRITE_FILE_SCHEMA, WRITE_FILE_SCHEMA['parameters']['properties']['format'], WRITE_FILE_SCHEMA['parameters']['properties']['content']):
++    _preserving_target['description'] += _TXT_PRESERVING_GUIDANCE + _JSON_STRING_EDIT_GUIDANCE
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -1415,6 +1415,20 @@
+     })
+ 
+ 
++def bounded_compaction_current_user_index(messages, incoming):
++    """Resolve the exact canonical incoming row once, before choosing or pricing a window."""
++    from agent.conversation_compression import _strip_marker_for_comparison
++    # Native compression removes only this transient persistence marker. Keep
++    # canonical identity, sidecar and payload exact; text repetition cannot
++    # select another turn or excuse a changed current request.
++    indices = [i for i, row in enumerate(messages)
++               if isinstance(row, dict) and isinstance(incoming, dict)
++               and _strip_marker_for_comparison([row]) == _strip_marker_for_comparison([incoming])]
++    if len(indices) != 1:
++        raise BoundedContextError("bounded_context: current user anchor is ambiguous before commit")
++    return indices[0]
++
++
+ def bounded_compaction_request(agent, messages, system_prompt, *, summary_probe=False):
+     """Build the complete Chat Completions envelope without a physical call.
+ 
+@@ -1441,18 +1455,7 @@
+     if not isinstance(context, dict) or context.get("moa"):
+         raise BoundedContextError("bounded_context: exact request context unavailable before compaction commit")
+     incoming = context["incoming"]
+-    from agent.conversation_compression import _strip_marker_for_comparison
+-
+-    def anchor_matches(row):
+-        # Native compression removes only this transient persistence marker.
+-        # All canonical identity, sidecar and payload fields remain exact, so a
+-        # historical repetition of the same text cannot select another turn.
+-        return (isinstance(row, dict) and isinstance(incoming, dict)
+-                and _strip_marker_for_comparison([row]) == _strip_marker_for_comparison([incoming]))
+-
+-    indices = [i for i, row in enumerate(messages) if anchor_matches(row)]
+-    if len(indices) != 1:
+-        raise BoundedContextError("bounded_context: current user anchor is ambiguous before commit")
++    bounded_compaction_current_user_index(messages, incoming)
+     probe = copy.copy(agent)
+     for key in ("tools", "valid_tool_names", "prefill_messages", "request_overrides", "reasoning_config",
+                 "_bounded_compaction_request_context", "_usage_anchor"):
+@@ -1471,12 +1474,13 @@
+     # Mirror that exact formatter on a private copy and re-anchor the current ask.
+     from agent.agent_runtime_helpers import repair_message_sequence
+     repair_message_sequence(probe, rows)
+-    indices = [i for i, row in enumerate(rows) if anchor_matches(row)]
+-    if len(indices) != 1:
+-        raise BoundedContextError("bounded_context: current user anchor changed during native repair")
++    try:
++        current_user_idx = bounded_compaction_current_user_index(rows, incoming)
++    except BoundedContextError as exc:
++        raise BoundedContextError("bounded_context: current user anchor changed during native repair") from exc
+     probe._cached_system_prompt = system_prompt
+     assembled = assemble_api_request(
+-        probe, messages=rows, current_turn_user_idx=indices[0],
++        probe, messages=rows, current_turn_user_idx=current_user_idx,
+         _ext_prefetch_cache=context["ext"], _plugin_user_context=context["plugin"],
+         moa_config=None, active_system_prompt=system_prompt,
+         original_user_message=context["original"], pending_moa_prepared_request=None,
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -5395,14 +5395,22 @@
+         blank = self._blank_echo_indices_after(messages, self._find_last_user_message_idx(messages, 0))
+         return [m for idx, m in enumerate(messages) if idx not in blank] if blank else messages
+ 
+-    def _compress_window(self, messages: List[Dict[str, Any]]) -> tuple[int, int]:
++    def _compress_window(
++        self, messages: List[Dict[str, Any]], *, bounded_current_incoming: Optional[Dict[str, Any]] = None,
++    ) -> tuple[int, int]:
+         """Return ``(compress_start, compress_end)`` for the summarizable middle."""
+         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
+         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+         if getattr(self, "bounded_context_policy", None) is not None:
+-            latest_user = next((i for i in range(len(messages)-1, -1, -1)
+-                                if messages[i].get("role") == "user"
+-                                and messages[i].get(COMPRESSED_SUMMARY_METADATA_KEY) is not True), -1)
++            if bounded_current_incoming is not None:
++                from agent.bounded_context import bounded_compaction_current_user_index
++                latest_user = bounded_compaction_current_user_index(messages, bounded_current_incoming)
++            else:
++                # Eligibility probes without a native request keep their legacy
++                # estimate; native compression supplies its exact incoming row.
++                latest_user = next((i for i in range(len(messages)-1, -1, -1)
++                                    if messages[i].get("role") == "user"
++                                    and messages[i].get(COMPRESSED_SUMMARY_METADATA_KEY) is not True), -1)
+             # Content markers never turn a current human instruction into control.
+             # Retain the current request and every exchange it owns even when
+             # their mandatory bytes alone cannot fit. The physical guard denies
+@@ -5680,6 +5688,7 @@
+     def compress(
+         self, messages: List[Dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
+         force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,
++        bounded_current_incoming: Optional[Dict[str, Any]] = None,
+     ) -> List[Dict[str, Any]]:
+         """Summarize the middle turns: prune tool-result bodies (tool-call args untouched), protect head and a
+         token-budget tail from the pruned copy, summarize, then clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
+@@ -5762,7 +5771,11 @@
+             messages = self._drop_blank_echoes(messages)
+         n_messages = len(messages)
+         # Phase 2: Determine boundaries (on the pruned copy so a pressure-demoted tail can compress, #61932)
+-        compress_start, compress_end = self._compress_window(messages)
++        if bounded and bounded_current_incoming is not None:
++            compress_start, compress_end = self._compress_window(
++                messages, bounded_current_incoming=bounded_current_incoming)
++        else:
++            compress_start, compress_end = self._compress_window(messages)
+         if compress_start >= compress_end:
+             self._record_compression_regions(
+                 head_messages=messages[:compress_start], middle_messages=[], tail_messages=messages[compress_end:],
+--- a/agent/conversation_compression.py
++++ b/agent/conversation_compression.py
+@@ -1767,7 +1767,7 @@
+ 
+ def _supported_compression_kwargs(
+     compress_fn: Any, *, current_tokens: Optional[int], focus_topic: Optional[str], force: bool,
+-    memory_context: str, bypass_cooldown: bool = False,
++    memory_context: str, bypass_cooldown: bool = False, bounded_current_incoming: Optional[dict] = None,
+ ) -> dict:
+     """Return only compression kwargs accepted by an engine callable.
+     Inspecting first keeps older plugin signatures compatible without catching ``TypeError`` and running a
+@@ -1777,6 +1777,8 @@
+         candidates["bypass_cooldown"] = True
+     if memory_context:
+         candidates["memory_context"] = memory_context
++    if bounded_current_incoming is not None:
++        candidates["bounded_current_incoming"] = bounded_current_incoming
+     try:
+         parameters = inspect.signature(compress_fn).parameters
+     except (TypeError, ValueError):
+@@ -3000,9 +3002,14 @@
+ ) -> Tuple[Callable[..., Any], dict[str, Any]]:
+     """Bind ``compress()`` and only the kwargs its signature accepts."""
+     compress_fn = agent.context_compressor.compress
++    from agent.bounded_context import BoundedContextPolicy
++    context = getattr(agent, "_bounded_compaction_request_context", None)
++    bounded_current_incoming = (copy.deepcopy(context.get("incoming"))
++        if isinstance(getattr(agent, "_bounded_context_policy", None), BoundedContextPolicy)
++        and isinstance(context, dict) else None)
+     compress_kwargs = _supported_compression_kwargs(
+         compress_fn, current_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
+-        bypass_cooldown=bypass_cooldown,
++        bypass_cooldown=bypass_cooldown, bounded_current_incoming=bounded_current_incoming,
+     )
+     if memory_context.strip() and "memory_context" not in compress_kwargs:
+         engine_name = getattr(agent.context_compressor, "name", type(agent.context_compressor).__name__)
+--- a/hermes_cli/friday_workspace_text.py
++++ b/hermes_cli/friday_workspace_text.py
+@@ -1,4 +1,4 @@
+-"""Hash-bound, byte-preserving literal TXT edits through the existing publisher."""
++"""Hash-bound, byte-preserving literal text copies through the existing publisher."""
+ import hashlib
+ import json
+ from pathlib import PurePosixPath
+@@ -9,13 +9,19 @@
+ from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
+ from hermes_cli.friday_workspace_zip import _archive_spec, _path, _source, _verify, _inline_budget, _fits, _encode
+ 
++TEXT_SUFFIXES = frozenset({'.txt', '.md', '.markdown', '.html', '.htm'})
++
+ GUIDANCE = (
+-    'For an exact literal correction of an existing UTF-8 TXT, use format=text_edit '
+-    'and a NEW .txt output path. Content is JSON exactly {source,source_sha256,old_text,new_text}; '
++    'For an explicitly requested raw literal correction of existing UTF-8 TXT, Markdown or HTML, '
++    'use format=text_edit and a NEW output path with the same case-insensitive suffix '
++    '(.txt/.md/.markdown/.html/.htm). Content is JSON exactly '
++    '{source,source_sha256,old_text,new_text}; '
+     'use the current read_file hash and explicitly requested old/new literals. '
+     'The old literal must occur exactly once. Every other source byte, including BOM, '
+     'line endings and the presence or absence of a final newline, is retained. '
+-    'Do not reconstruct the entire file from a displayed excerpt. The source stays unchanged. '
++    'Do not reconstruct the entire file from a displayed excerpt or decode entities/escapes. '
++    'HTML is raw text: no parsing, rendering, validity or rendered-semantics guarantee. '
++    'Never execute, render or fetch its content. The source stays unchanged. '
+ )
+ 
+ 
+@@ -57,11 +63,12 @@
+     """Create a new scoped file; never overwrite or silently retry an uncertain effect."""
+     _check_parent(cap, fd, relative)
+     relative = _path(relative)
+-    if PurePosixPath(relative).suffix.lower() != '.txt' or leaf != PurePosixPath(relative).name:
++    suffix = PurePosixPath(relative).suffix.lower()
++    if suffix not in TEXT_SUFFIXES or leaf != PurePosixPath(relative).name:
+         raise ScopeDenied()
+     spec = _archive_spec(content, {'source', 'source_sha256', 'old_text', 'new_text'})
+     source = _path(spec['source'])
+-    if PurePosixPath(source).suffix.lower() != '.txt' or source == relative:
++    if PurePosixPath(source).suffix.lower() != suffix or source == relative:
+         raise ScopeDenied()
+     check(cap)
+     original, identity = _source(cap, source)
+@@ -74,13 +81,13 @@
+     receipt = dict(operation='text_edit', source=source,
+                    source_sha256=hashlib.sha256(original).hexdigest(), source_unchanged=True,
+                    unselected_bytes_preserved=True, replacements=1)
+-    estimate = dict(receipt, success=True, path=relative, format='txt',
++    estimate = dict(receipt, success=True, path=relative, format=suffix[1:],
+                     scope='own_user_workspace', create_only=True, verified=True,
+                     bytes_written=len(data), sha256=hashlib.sha256(data).hexdigest())
+     if not _fits(estimate, _inline_budget()):
+         return _encode(dict(success=False, error='text_edit_result_capacity', effect_disposition='none'))
+     _verify(cap, sources)
+-    result = json.loads(_create_bytes(cap, fd, leaf, relative, data, output_format='txt',
++    result = json.loads(_create_bytes(cap, fd, leaf, relative, data, output_format=suffix[1:],
+                                     verify_source=lambda: _verify(cap, sources)))
+     if result.get('success'):
+         result.update(receipt)
