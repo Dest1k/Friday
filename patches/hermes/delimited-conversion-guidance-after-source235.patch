@@ -1,0 +1,69 @@
+--- a/hermes_cli/friday_workspace_delimited_table.py
++++ b/hermes_cli/friday_workspace_delimited_table.py
+@@ -3,6 +3,24 @@
+ import json
+ import os
+ from pathlib import Path
++
++
++_REFUSAL_HINTS = {
++    'delimited_request_schema': (
++        'Set content to one serialized JSON object string with source, encoding, delimiter, and type_policy. '
++        'For TSV, write "delimiter":"\\t" inside that JSON string so the tab is escaped. '
++        'For CSV/TSV import, include sheet. For CSV/TSV export, include line_ending ("LF" or "CRLF"). '
++        'When exporting, sheet is required for multi-sheet input and range is optional.'
++    ),
++    'delimited_delimiter_unsupported': (
++        'Set delimiter in content JSON to one character: ",", ";", "\\t", or "|". '
++        'TSV requires "\\t".'
++    ),
++    'delimited_typed_literal': (
++        'Check type_policy.columns against the source column order. Use decimal for dot decimals, '
++        'decimal_comma for comma decimals, date for ISO YYYY-MM-DD, and date_dmy for DD.MM.YYYY.'
++    ),
++}
+
+
+ def execute(cap, fd, leaf, path, content):
+@@ -34,8 +52,13 @@
+         return _publish(cap, fd, leaf, path, rendered, target, (item, data, identity), facts)
+     except ScopeDenied:
+         raise
+-    except (DelimitedRefused, ODSError, ODTError, PresentationError) as error:
+-        return json.dumps(dict(success=False, error='delimited_conversion_refused',
+-                               reason=str(error), effect_disposition='none'))
++    except (ODSError, ODTError, PresentationError) as error:
++        result = dict(success=False, error='delimited_conversion_refused',
++                      reason=str(error), effect_disposition='none')
++        if isinstance(error, DelimitedRefused):
++            hint = _REFUSAL_HINTS.get(result['reason'])
++            if hint is not None:
++                result['hint'] = hint
++        return json.dumps(result)
+     except (OSError, RuntimeError, TimeoutError):
+         return json.dumps(dict(success=False, error='delimited_conversion_stopped', effect_disposition='none'))
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2372,3 +2372,22 @@
+     'as a serialized JSON string {"source":"input.zip"} naming the exact ZIP. '
+     'After verified extraction, use read_file on the needed extracted member paths.'
+ )
++
++
++# Keep the native delimited export ABI after the final schema resets above.
++_DELIMITED_TABLE_EXPORT_FINAL_GUIDANCE = (
++    'To export an XLSX or ODS table, use write_file with format=delimited_convert and a NEW .csv or .tsv path. '
++    'Pass content as a serialized JSON string. Export JSON requires source,encoding,delimiter,type_policy,line_ending. '
++    'Use the current own-workspace source path. Supply sheet for a multisheet workbook. Optional range selects an A1 rectangle. '
++    'For XLSX to TSV, for example, pass {"source":"input.xlsx","encoding":"utf-8","delimiter":"\\t","type_policy":"text",'
++    '"line_ending":"LF","sheet":"Data","range":"A1:B3"}. In the JSON inside content, encode the TSV delimiter '
++    'as \\t (one backslash followed by t). line_ending is LF or CRLF. '
++    'type_policy="text" accepts only literal text and blanks. Use "canonical" for supported numeric, boolean and ISO-date values. '
++    'Workbooks containing formulas refuse. Report the loss of workbook formatting and metadata. The source remains unchanged. '
++)
++for _delimited_export_target in (
++    WRITE_FILE_SCHEMA,
++    WRITE_FILE_SCHEMA['parameters']['properties']['format'],
++    WRITE_FILE_SCHEMA['parameters']['properties']['content'],
++):
++    _delimited_export_target['description'] += _DELIMITED_TABLE_EXPORT_FINAL_GUIDANCE
