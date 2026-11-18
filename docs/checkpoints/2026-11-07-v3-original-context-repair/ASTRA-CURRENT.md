@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Чекпоинт 01:52 МСК 19.11.2026. Установлена 245. Gateway, Dashboard и Telegram работают. Проверены точная квитанция правки EPUB и подсказка S14 для текста и PDF по одной версии XLSX. [Проверки 245](evidence/astra-20261119/core245-installed-epub-receipt-and-report-guidance.json).
+Чекпоинт 02:07 МСК 19.11.2026. Установлена 246. Gateway, Dashboard и Telegram работают. EPUB с другим исходным уровнем сжатия прошёл адресную правку. Нетронутые ZIP-записи сохранены. [Проверки 246](evidence/astra-20261119/core246-installed-epub-preserving-repack.json).
 
 **17.11.2026, 22:10 МСК.** Дест возобновил работу после [паузы для смены модели](evidence/astra-20261117/owner-model-switch-pause-team-checkpoint.json). Native goal **01a1c688-e36d-7021-8df4-9c5644a4d75b active**, прежний объект и учёт, без токен-бюджета. Обе реальные сессии после переключения работают на **gpt-6.2-sol / ultra** по фактическим turn context. Астра ведёт интеграцию. Настройки принадлежат владельцу. Текущие назначения указаны ниже.
 
@@ -8,17 +8,17 @@
 
 ## Установлено и работает
 
-**[Установлена 245, проект 571, 17 896 нативных файлов](evidence/astra-20261119/core245-installed-epub-receipt-and-report-guidance.json).** Коммит исходников `d60466d18b928029eb3f224c730dc8dfe0f068ff`. Квитанция `1cb5cf73e758714335a69a660ed3a52af032b105bfdbf64b77f6582b4e8dfecb`. Слой `epub-receipt-and-spreadsheet-report-evidence-after-source244`.
+**[Установлена 246, проект 573, 17 896 нативных файлов](evidence/astra-20261119/core246-installed-epub-preserving-repack.json).** Коммит исходников `32575dc42f4af7c3010a2788c04205d0627bdb52`. Квитанция `1d4ee871772b6438f7b34cac5d2ac65d45039d43cf37e91a1b1a5220964b68a3`. Слой `epub-preserving-archive-repack-after-source245`.
 
-Публикация и штатная проверка вернули 0. Подтверждены три нативные замены и девять целей CAS. Девять файлов БД, WAL и SHM сохранились до запуска. Три `quick_check` OK, leases 0. [Установка 244](evidence/astra-20261119/core244-installed-xlsx-guard-and-row-guidance.json).
+Публикация и штатная проверка вернули 0. Подтверждены одна нативная замена и семь целей CAS. Девять файлов БД, WAL и SHM сохранились до запуска. Три `quick_check` OK, leases 0. [Установка 245](evidence/astra-20261119/core245-installed-epub-receipt-and-report-guidance.json).
 
-Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. На загрузке `906e7705` работают постоянные Gateway **113421** и Dashboard **114302**. Telegram подключён в трёх профилях. Обычные JSON и XLSX ждут подтверждённой ротации ключа и свежего допуска.
+Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. На загрузке `906e7705` работают постоянные Gateway **130860** и Dashboard **131736**. Telegram подключён в трёх профилях. Обычные JSON и XLSX ждут подтверждённой ротации ключа и свежего допуска.
 
 [CSV→typedXLSX, проверка компонента на232](evidence/astra-20261117/core232-installed-csv-component-values-assessed.json) **R2/PASS/independentf5e7a59f**: actual receipt-pinned27Code/11loaded modules, nativeconvert+adapterexecute, genuine92B CSV, XLSX толькоRAM. Exact number1200.50/date2026-04-05/styles/IDs/comments/order/zeroformulas. R1 пропускал проверки значений, сохранён; R2 добавил только их. Permission/source snapshot/revision/parent/publication leaves **inert**: ordinary delivery/runtimeCAS/formal не доказаны. [Принятый Source](evidence/astra-20261117/s05-explicit-locale-csv-direct-import-source-adopted-not-installed.json), [genuinebuilder/preintent](evidence/astra-20261117/core232-exact-next-source-genuine-builder-ready-not-installed.json) — исторические стадии до установки, не текущий NOT_INSTALLED.
 
 ## Текущая работа
 
-**EPUB 246.** На корректном EPUB с другим сжатием нетронутой главы установленная 245 отказала до записи. Кандидат сохраняет исходные ZIP-записи побайтно и сохранил прежние результаты. Сборщик принял точный переход 245→246. Установка и повторная оценка тех же байтов впереди. [Сборка и проверки](evidence/astra-20261119/core246-epub-preserving-repack-genuine-builder.json).
+**EPUB 246/P2.** На том же EPUB подтверждена адресная правка. Проверены три варианта с нетронутыми записями, включая пустые каталоги. Два прежних результата совпали побайтно. Обычная выдача и формальная F01/F03 открыты. [Установленный компонент](evidence/astra-20261119/core246-installed-epub-preserving-repack.json), [исторический отказ 245 и подготовка](evidence/astra-20261119/core246-epub-preserving-repack-genuine-builder.json).
 
 **V05/P1 и V01/P1.** Установленная 242 создала PPTX с пятью полными кириллическими заголовками по 151 символу и редактируемой таблицей 5×6. PDF из Impress подтвердил читаемость и сохранность текста. На точном PPTX V01 прочитаны пять слайдов, пять отдельных заметок, диаграмма и таблица. Зарегистрированное описание различает сумму категории и сумму заказа. В 243 управляемое обычное и отложенное описания V01 и обновление старой закреплённой формы проверены. Обычная выдача V01/V05 и формальная приёмка открыты. Исторические V05 UNKNOWN/runtime FAIL и V01 semantic FAIL сохранены. [Установленные компоненты](evidence/astra-20261119/core242-installed-v01-retained-pptx-and-v05-impress.json).
 
@@ -107,6 +107,8 @@ Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-fr
 **EPUB.** На компонентах 243 подтверждены чтение по spine, Unicode, точная правка выбранного абзаца и сохранность исходника. Обнаружено расхождение в квитанции при совпавшем времени изменения OPF. В установленной 245 квитанция совпала со списком фактически изменённых членов EPUB. При прежнем времени изменения OPF в проверенном примере меняется только глава, а при новом времени также меняется OPF. [Проверки 245](evidence/astra-20261119/core245-installed-epub-receipt-and-report-guidance.json). Обычная выдача и приёмка остаются открыты. [Хеши квалификации и кандидата](evidence/astra-20261119/core244-xlsx-guard-and-row-guidance-genuine-builder.json).
 
 **EML.** В компонентах 244 проверены Unicode и декодирование одного вложения по точному пути и SHA. Неверный SHA и отсутствие права записи привели к отказу до создания файла. Обычная выдача и формальная приёмка открыты. [Хеш доказательств](evidence/astra-20261119/core245-installed-epub-receipt-and-report-guidance.json).
+
+**XPS/OXPS P2.** Сол подтвердил адресную правку строки с Unicode на второй странице в обоих форматах. Исходник, порядок и геометрия страниц, остальные восемь частей пакета сохранились. Обычная выдача, проверка рендера и формальная приёмка открыты. [Компоненты и доказательства](evidence/astra-20261119/core246-installed-epub-preserving-repack.json).
 
 **DOCM/DOTM.** Сол подтвердил чтение и правку одного абзаца с Unicode на компонентах 245. Исходники и остальные записи пакета сохранены, включая непрозрачную часть VBA. Проверки обычной выдачи, приложения и формальная F01/F03 открыты. Пакет Сола `1da7226441889ac37df08b60163cc2c327750367d0470bd36db2b0e5853816b0`.
 
