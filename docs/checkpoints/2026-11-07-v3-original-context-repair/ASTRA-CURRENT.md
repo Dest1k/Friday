@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Чекпоинт 02:07 МСК 19.11.2026. Установлена 246. Gateway, Dashboard и Telegram работают. EPUB с другим исходным уровнем сжатия прошёл адресную правку. Нетронутые ZIP-записи сохранены. [Проверки 246](evidence/astra-20261119/core246-installed-epub-preserving-repack.json).
+Чекпоинт 02:38 МСК 19.11.2026. Установлена 247. Gateway, Dashboard и Telegram работают. Подтверждены чтение штатного пассивного XLS из Calc и создание ICS с явными UTC-датами. [Проверки 247](evidence/astra-20261119/core247-installed-stock-xls-and-utc-ics.json).
 
 **17.11.2026, 22:10 МСК.** Дест возобновил работу после [паузы для смены модели](evidence/astra-20261117/owner-model-switch-pause-team-checkpoint.json). Native goal **01a1c688-e36d-7021-8df4-9c5644a4d75b active**, прежний объект и учёт, без токен-бюджета. Обе реальные сессии после переключения работают на **gpt-6.2-sol / ultra** по фактическим turn context. Астра ведёт интеграцию. Настройки принадлежат владельцу. Текущие назначения указаны ниже.
 
@@ -8,17 +8,17 @@
 
 ## Установлено и работает
 
-**[Установлена 246, проект 573, 17 896 нативных файлов](evidence/astra-20261119/core246-installed-epub-preserving-repack.json).** Коммит исходников `32575dc42f4af7c3010a2788c04205d0627bdb52`. Квитанция `1d4ee871772b6438f7b34cac5d2ac65d45039d43cf37e91a1b1a5220964b68a3`. Слой `epub-preserving-archive-repack-after-source245`.
+**[Установлена 247, проект 575, 17 896 нативных файлов](evidence/astra-20261119/core247-installed-stock-xls-and-utc-ics.json).** Коммит исходников `6cb4a8c73676e9d9dbcd3ef6762fee4df0e271ac`. Квитанция `33dcef738f41002c97014fc70b098c68ad0a5067c074db4dad9361111ea77ee0`. Слой `stock-xls-read-and-utc-ics-create-after-source246`.
 
-Публикация и штатная проверка вернули 0. Подтверждены одна нативная замена и семь целей CAS. Девять файлов БД, WAL и SHM сохранились до запуска. Три `quick_check` OK, leases 0. [Установка 245](evidence/astra-20261119/core245-installed-epub-receipt-and-report-guidance.json).
+Публикация и штатная проверка вернули 0. Подтверждены пять нативных замен и одиннадцать целей CAS. Девять файлов БД, WAL и SHM сохранились до запуска. Три `quick_check` OK, leases 0. [Установка 246](evidence/astra-20261119/core246-installed-epub-preserving-repack.json).
 
-Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. На загрузке `906e7705` работают постоянные Gateway **130860** и Dashboard **131736**. Telegram подключён в трёх профилях. Обычные JSON и XLSX ждут подтверждённой ротации ключа и свежего допуска.
+Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032`. На загрузке `906e7705` работают постоянные Gateway **169703** и Dashboard **170579**. Telegram подключён в трёх профилях. Обычные JSON и XLSX ждут подтверждённой ротации ключа и свежего допуска.
 
 [CSV→typedXLSX, проверка компонента на232](evidence/astra-20261117/core232-installed-csv-component-values-assessed.json) **R2/PASS/independentf5e7a59f**: actual receipt-pinned27Code/11loaded modules, nativeconvert+adapterexecute, genuine92B CSV, XLSX толькоRAM. Exact number1200.50/date2026-04-05/styles/IDs/comments/order/zeroformulas. R1 пропускал проверки значений, сохранён; R2 добавил только их. Permission/source snapshot/revision/parent/publication leaves **inert**: ordinary delivery/runtimeCAS/formal не доказаны. [Принятый Source](evidence/astra-20261117/s05-explicit-locale-csv-direct-import-source-adopted-not-installed.json), [genuinebuilder/preintent](evidence/astra-20261117/core232-exact-next-source-genuine-builder-ready-not-installed.json) — исторические стадии до установки, не текущий NOT_INSTALLED.
 
 ## Текущая работа
 
-**Кандидат 247.** Один слой для чтения сохранённого штатного XLS из Calc и создания ICS с явным UTC. Проверены зарегистрированные пути, сохранность прежних вариантов и откат одиннадцати целей. Сборщик принял точный переход 246→247. Установка и проверка на установленном составе впереди. [Кандидат и доказательства](evidence/astra-20261119/core247-stock-xls-utc-ics-genuine-builder.json).
+**ICS P2.** На 247 подтверждено локальное создание ICS с явным временем UTC и чтение тех же сохранённых значений. Прежний вариант на весь день совпал побайтно. Именованные зоны, повторения, обычная выдача и формальная приёмка остаются открытыми. [Установленная проверка](evidence/astra-20261119/core247-installed-stock-xls-and-utc-ics.json), [сборка и штатный вызов в изоляции](evidence/astra-20261119/core247-stock-xls-utc-ics-genuine-builder.json).
 
 **EPUB 246/P2.** На том же EPUB подтверждена адресная правка. Проверены три варианта с нетронутыми записями, включая пустые каталоги. Два прежних результата совпали побайтно. Обычная выдача и формальная F01/F03 открыты. [Установленный компонент](evidence/astra-20261119/core246-installed-epub-preserving-repack.json), [исторический отказ 245 и подготовка](evidence/astra-20261119/core246-epub-preserving-repack-genuine-builder.json).
 
@@ -110,7 +110,7 @@ Home `/home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-fr
 
 **EML.** В компонентах 244 проверены Unicode и декодирование одного вложения по точному пути и SHA. Неверный SHA и отсутствие права записи привели к отказу до создания файла. Обычная выдача и формальная приёмка открыты. [Хеш доказательств](evidence/astra-20261119/core245-installed-epub-receipt-and-report-guidance.json).
 
-**XLS P1.** Изолированная проверка обработчика 246 прочитала два видимых и один скрытый лист подготовленного BIFF8. Сохранены строковые ID, дроби, координаты и записанное числовое значение формулы. Его актуальность неизвестна. Читатель отказал на исходном образце и на файле до пересборки CFB. Calc создал и повторно открыл отдельный штатный BIFF8. 246 отклонила те же байты по профилю CFB. Сол готовит ограниченную поддержку этого формата вывода Calc. [Штатный файл и отказ](evidence/astra-20261119/xls246-stock-calc-biff8-input-refusal.json). Обычная F01, создание F02 и сохраняющая правка F03 открыты. [Чтение XLS и граница совместимости](evidence/astra-20261119/xls246-cached-read-and-producer-boundary.json).
+**XLS P1.** Изолированная проверка обработчика 246 прочитала два видимых и один скрытый лист подготовленного BIFF8. Сохранены строковые ID, дроби, координаты и записанное числовое значение формулы. Его актуальность неизвестна. Читатель отказал на исходном образце и на файле до пересборки CFB. Calc создал и повторно открыл отдельный штатный BIFF8. 246 отклонила те же байты по профилю CFB. Установленная 247 прочитала те же байты штатного XLS. Подтверждены текстовый ID, число и сохранённый результат формулы. Ранее проверенный профиль прочитан без изменения вывода. [Установленная проверка](evidence/astra-20261119/core247-installed-stock-xls-and-utc-ics.json). [Штатный файл и отказ](evidence/astra-20261119/xls246-stock-calc-biff8-input-refusal.json). Обычная F01, создание F02 и сохраняющая правка F03 открыты. [Чтение XLS и граница совместимости](evidence/astra-20261119/xls246-cached-read-and-producer-boundary.json).
 
 **XPS/OXPS P2.** Сол подтвердил адресную правку строки с Unicode на второй странице в обоих форматах. Исходник, порядок и геометрия страниц, остальные восемь частей пакета сохранились. Обычная выдача, проверка рендера и формальная приёмка открыты. [Компоненты и доказательства](evidence/astra-20261119/core246-installed-epub-preserving-repack.json).
 
