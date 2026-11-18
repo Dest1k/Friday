@@ -1,0 +1,79 @@
+--- a/hermes_cli/friday_workspace_xlsx_table.py
++++ b/hermes_cli/friday_workspace_xlsx_table.py
+@@ -17,8 +17,9 @@
+ from hermes_cli.friday_workspace_docx import _create_bytes
+ from hermes_cli.friday_workspace_xlsx_recalculate import Book, S, R, P, RecalculationRefused
+ 
+-GUIDANCE = 'For one requested literal-text table, create one XLSX with xlsx_create unless the user explicitly requests another format. Preserve string content, leading zeros, whitespace, line breaks and =,+,-,@ prefixes as strings; never infer formulas from text. Respect the requested output count; do not add alternate CSV/TSV copies. Explicit multi-file/other-format requests remain valid; CSV/TSV quoting alone does not preserve spreadsheet cell types. XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} (two-cell multiplication) or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. '
+-
++GUIDANCE = 'For one requested literal-text table, create one XLSX with xlsx_create unless the user explicitly requests another format. Preserve string content, leading zeros, whitespace, line breaks and =,+,-,@ prefixes as strings; never infer formulas from text. Respect the requested output count; do not add alternate CSV/TSV copies. Explicit multi-file/other-format requests remain valid; CSV/TSV quoting alone does not preserve spreadsheet cell types. XLSX creation: format=xlsx_create, NEW .xlsx path, content JSON {"sheets":[{"name":"Data","rows":[["id","amount","date","note"],["0001",{"type":"decimal","value":"1200.50"},{"type":"date","value":"2026-04-05"},"=1+1"]]}]}. Strings (including =,+,-,@ prefixes and long IDs) are literal text; no prefix inference. Explicit native formulas use {"type":"formula","value":"C2*D2"} (two-cell multiplication) or {"type":"formula","value":"SUM(Orders!G2:G5)"}; references must be numeric, in bounds and acyclic. A sheet may add "freeze":"A2" to freeze row 1 (only an in-bounds A-column single-cell row split), "print_area":"A1:G5" for one bounded local rectangle, and/or "table":{"name":"OrdersTable","ref":"A1:G5"}. For printable layout, "column_widths":[12,18,16,14] sets one integer width (8 to 80 spreadsheet character units) per column in order. Decimal/formula objects may add "number_format":"0.00" for two-decimal numeric display; arbitrary formats are refused. Top-level "names":{"OrderSourceRows":"Orders!$A$2:$G$5"} declares native names. Formulas are not evaluated here; recalculate the returned copy separately. null or {"type":"blank"} is blank, distinct from numeric 0. Optional explicit {"type":"string","value":"0001"}; plain numbers/booleans accepted. Decimal value is a dot-decimal string, at most 15 significant digits/12 places; dates are ISO YYYY-MM-DD (1900-03-01 onward), real Excel dates displayed dd.mm.yyyy. At most 8 uniquely named sheets, 512 rows/sheet, 64 columns, 4096 cells total, 100000 UTF-8 content bytes; rows must be rectangular. XLSX join: format=xlsx_join, NEW .xlsx path, content JSON {"source":"input.xlsx","left_sheet":"Orders","right_sheet":"Codes","key":"order_id","sheet":"Joined"}. Exact-text LEFT join of two different sheets in one own-workspace workbook: preserve left order and every left row, append right non-key columns, unmatched right cells blank. Both sides require unique nonempty text keys and unique text headers; overlapping non-key names refuse. No case/Unicode/space folding or numeric-key coercion. Produces a new plain table, not a formatting-preserving copy; literal scalar source cells only, selected formulas/merged cells/tables and unsupported numeric formats refuse. Source remains unchanged. '
++
++PRESENTATION_KEYS = ('freeze', 'print_area', 'column_widths')
+ MAX_CONTENT = 100000
+ MAX_ROWS = 512
+ MAX_COLS = 64
+@@ -164,7 +165,7 @@
+ 
+ 
+ def presentation_options(raw, name, dimensions):
+-    if not isinstance(raw, dict) or not set(raw) <= {'freeze', 'print_area'}: deny()
++    if not isinstance(raw, dict) or not set(raw) <= set(PRESENTATION_KEYS): deny()
+     result = {}
+     if 'freeze' in raw:
+         value = raw['freeze']
+@@ -183,6 +184,12 @@
+         if (any(ref[0] != name or ref[4] for ref in refs)
+                 or refs[0][1] > refs[1][1] or refs[0][2] > refs[1][2]): deny('xlsx_table_print_area')
+         result['print_area'] = tuple(refs)
++    if 'column_widths' in raw:
++        widths = raw['column_widths']
++        if (not isinstance(widths, list) or len(widths) != dimensions[name][1]
++                or any(type(width) is not int or not 8 <= width <= 80 for width in widths)):
++            deny('xlsx_table_column_widths')
++        result['column_widths'] = widths
+     return result
+ 
+ 
+@@ -298,7 +305,11 @@
+         ET.SubElement(types, ct+'Override', PartName='/xl/'+name, ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.'+suffix+'+xml')
+     package_rels = ET.Element(P+'Relationships')
+     ET.SubElement(package_rels, P+'Relationship', Id='rId1', Type=R[1:-1]+'/officeDocument', Target='xl/workbook.xml')
+-    workbook = ET.Element(S+'workbook'); native_sheets = ET.SubElement(workbook, S+'sheets')
++    workbook = ET.Element(S+'workbook')
++    if any(len(sheet) == 3 and 'freeze' in sheet[2] for sheet in sheets):
++        views = ET.SubElement(workbook, S+'bookViews')
++        ET.SubElement(views, S+'workbookView')
++    native_sheets = ET.SubElement(workbook, S+'sheets')
+     rels = ET.Element(P+'Relationships'); has_formulas = False; print_areas = []
+     for index, sheet in enumerate(sheets, 1):
+         name, rows = sheet[:2]; presentation = sheet[2] if len(sheet) == 3 else {}
+@@ -312,6 +323,11 @@
+             top = 'A'+str(presentation['freeze'])
+             ET.SubElement(view, S+'pane', ySplit=str(presentation['freeze']-1), topLeftCell=top, activePane='bottomLeft', state='frozen')
+             ET.SubElement(view, S+'selection', pane='bottomLeft', activeCell=top, sqref=top)
++        if 'column_widths' in presentation:
++            cols = ET.SubElement(root, S+'cols')
++            for col_index, width in enumerate(presentation['column_widths'], 1):
++                column = str(col_index)
++                ET.SubElement(cols, S+'col', min=column, max=column, width=str(width), customWidth='1')
+         data = ET.SubElement(root, S+'sheetData')
+         for row_index, values in enumerate(rows, 1):
+             checkpoint(); row = ET.SubElement(data, S+'row', r=str(row_index))
+@@ -390,7 +406,7 @@
+     if not 1 <= len(spec['sheets']) <= MAX_SHEETS: deny('xlsx_table_limit')
+     count = 0
+     for sheet in spec['sheets']:
+-        if (not isinstance(sheet, dict) or not set(sheet) <= {'name', 'rows', 'table', 'freeze', 'print_area'}
++        if (not isinstance(sheet, dict) or not set(sheet) <= {'name', 'rows', 'table', *PRESENTATION_KEYS}
+                 or not {'name', 'rows'} <= set(sheet)): deny()
+         rows = sheet['rows']
+         if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_ROWS: deny('xlsx_table_limit')
+@@ -401,7 +417,7 @@
+             if count > MAX_CELLS: deny('xlsx_table_limit')
+             normalized.append([scalar(cell) for cell in row])
+         name = sheet_name(sheet['name'])
+-        presentation = {key:sheet[key] for key in ('freeze', 'print_area') if key in sheet}
++        presentation = {key: sheet[key] for key in PRESENTATION_KEYS if key in sheet}
+         sheets.append((name, normalized, presentation) if presentation else (name, normalized))
+         if 'table' in sheet: tables[name] = sheet['table']
+     return sheets, tables, names
