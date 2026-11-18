@@ -100,7 +100,7 @@ def parse_args(argv=None):
     parser.add_argument("--current-source-project-update", type=Path,
                         help="exact committed v6 root request for the bounded native continuation")
     parser.add_argument("--current-source-native-predecessor", type=Path,
-                        help="exact canonical committed CP199 through CP237 request for the bounded next edge")
+                        help="exact canonical committed CP199 through CP238 request for the bounded next edge")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--seconds", type=int, default=180)
     args = parser.parse_args(argv)
@@ -128,6 +128,14 @@ def parse_args(argv=None):
 
 
 def build_request(args):
+    consumer = publication()
+    forty_first_layer = consumer.CURRENT_SOURCE_FORTY_FIRST_LAYER
+    consumer.require_forty_first_source_binding(args.layer_names)
+    if forty_first_layer in args.layer_names:
+        consumer.require(
+            getattr(args, "current_source_project_update", None) is not None
+            and getattr(args, "current_source_native_predecessor", None) is not None,
+            "transaction_current_source_fortieth_predecessor_required")
     # The explicit after223 draft must also refuse before installed-home access.
     publication().require_fortieth_source_binding(args.layer_names)
     if CURRENT_SOURCE_FORTIETH_LAYER in args.layer_names:
@@ -199,7 +207,6 @@ def build_request(args):
     current_input = pin(args.current_input)
     previous = json.loads(args.previous_input.read_text())
     current = json.loads(args.current_input.read_text())
-    consumer = publication()
     consumer.require(marker.get("input_sha256") == previous_input["sha256"],
                      "transaction_previous_input_not_installed")
     if args.layer is not None:
@@ -322,10 +329,14 @@ def build_request(args):
                 "friday.current-source-native-successor.v37": "friday.current-source-native-successor.v38",
                 "friday.current-source-native-successor.v38": "friday.current-source-native-successor.v39",
                 "friday.current-source-native-successor.v39": "friday.current-source-native-successor.v40",
+                "friday.current-source-native-successor.v40": consumer.CURRENT_SOURCE_FORTY_FIRST_SUCCESSOR_SCHEMA,
             }
             previous_schema = predecessor_context.get("schema") if type(predecessor_context) is dict else None
             consumer.require(type(previous_schema) is str and previous_schema in supported,
                              "transaction_current_source_supported_predecessor_required")
+            consumer.require(forty_first_layer not in args.layer_names
+                             or previous_schema == "friday.current-source-native-successor.v40",
+                             "transaction_current_source_fortieth_predecessor_required")
             consumer.require(CURRENT_SOURCE_FORTIETH_LAYER not in args.layer_names
                              or previous_schema == "friday.current-source-native-successor.v39",
                              "transaction_current_source_thirty_ninth_predecessor_required")
@@ -499,10 +510,23 @@ def build_request(args):
                     and predecessor_context.get("root_project_update")
                     == request["current_source_successor"]["root_project_update"],
                     "transaction_current_source_thirty_ninth_predecessor_lineage_changed")
+            if previous_schema == "friday.current-source-native-successor.v40":
+                consumer.require(args.layer_names == (forty_first_layer,),
+                                 "transaction_current_source_exact_forty_first_layer_required")
+                consumer.require(
+                    predecessor_request.get("schema") == consumer.SCHEMA_EXPLICIT
+                    and predecessor_request.get("home") == str(home)
+                    and predecessor_request.get("layer_names") == [CURRENT_SOURCE_FORTIETH_LAYER]
+                    and predecessor_request.get("current_input") == request["previous_input"]
+                    and predecessor_request.get("project_inventory") == previous["project_files"]
+                    and predecessor_context.get("root_project_update")
+                    == request["current_source_successor"]["root_project_update"],
+                    "transaction_current_source_fortieth_predecessor_lineage_changed")
             request["current_source_successor"].update({
                 "schema": supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor),
             })
+    consumer.require_forty_first_source_binding(args.layer_names, request=request)
     consumer.require_current_source_context(home, request)
     # Run the actual consumer's source preflight before issuing a request. This does not
     # stage, publish, stop services, or change the installed home.
