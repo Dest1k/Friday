@@ -1,0 +1,49 @@
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -424,7 +424,7 @@
+ 
+ 
+ def render_fill(data, fields, format, *, checkpoint=None):
+-    """Fill a DOCX/DOTX template into a NEW genuine DOCX package."""
++    """Fill a passive, unprotected DOCX/DOTX template into a new DOCX."""
+     if format not in ('docx', 'dotx'):
+         _fail('unsupported_fill_format')
+     if not isinstance(fields, dict) or len(fields) > 64:
+@@ -448,21 +448,33 @@
+     if package.active or package.macro or any(name.lower().startswith('_xmlsignatures/')
+                                               for name in package.parts):
+         _fail('unsupported_active_or_signed_fill')
++    field_tags = {_q(W, tag) for tag in ('fldChar', 'instrText', 'delInstrText', 'fldSimple')}
+     for name, raw in package.parts.items():
+         _tick(checkpoint)
+-        kind = package.types.get(name, '')
+-        if (name != 'word/document.xml' and
+-                (name.lower().endswith(('.xml', '.rels')) or kind.endswith('+xml')
+-                 or kind in ('application/xml', 'text/xml'))):
++        kind = package.types.get(name, '').partition(';')[0].lower()
++        if (name.lower().endswith(('.xml', '.rels')) or kind.endswith('+xml')
++                or kind in ('application/xml', 'text/xml')):
+             root = package.xml.get(name)
+             if root is None:
+                 try:
+                     root, _ = _xml(raw, checkpoint)
+                 except (ET.ParseError, expat.ExpatError):
+                     _fail('malformed_package')
++            # Reading cached results is inert. A new document intended for
++            # Office must not carry unassessed field instructions.
++            if any(node.tag in field_tags for node in root.iter()):
++                _fail('unsupported_word_fields_fill')
++            if name == 'word/document.xml':
++                continue
+             if any(node.tag in {_q(W, tag) for tag in ('altChunk', 'object', 'control')}
+                    for node in root.iter()):
+                 _fail('unsupported_active_or_signed_fill')
++            if root.tag == _q(W, 'settings'):
++                enforcement = _q(W, 'enforcement')
++                if (next(root.iter(_q(W, 'writeProtection')), None) is not None
++                        or any(node.get(enforcement) not in ('0', 'false', 'off')
++                               for node in root.iter(_q(W, 'documentProtection')))):
++                    _fail('unsupported_protected_fill')
+             # Match decoded text across runs, not only adjacent raw XML bytes.
+             # Non-text attributes and comments must not carry hidden tokens.
+             texts = [''.join(value for value in root.itertext() if value.strip()),
