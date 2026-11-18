@@ -1,0 +1,107 @@
+--- a/tools/scoped_epub_write.py
++++ b/tools/scoped_epub_write.py
+@@ -13,10 +13,11 @@
+ from xml.parsers import expat
+ from xml.sax.saxutils import escape
+ import zipfile
++import zlib
+ 
+ from tools.scoped_epub import (
+     CONTAINER, DC, MAX_EXPANDED, MAX_INPUT, MAX_MEMBERS, MAX_PART, OPF, XHTML,
+-    EPUBError, archive, document_text, extract_epub, fail, local_path, xml,
++    EPUBError, archive, document_text, extract_epub, fail, local_path, read_member, xml,
+ )
+ 
+ MAX_JSON = 100_000
+@@ -467,12 +468,28 @@
+ 
+ 
+ def _zip_metadata(row):
+-    return (row.filename, row.date_time, row.compress_type, row.CRC, row.compress_size, row.file_size,
++    return (row.filename, row.date_time, row.compress_type, row.CRC, row.file_size,
+             row.comment, row.extra, row.internal_attr, row.external_attr, row.create_system,
+             row.create_version, row.extract_version, row.reserved, row.flag_bits, row.volume)
+ 
+ 
+-def _rebuild(data, replacements):
++def _preserved_zip_metadata(data, rows, parts, replacements, comment):
++    compressed_sizes_match = True
++    with zipfile.ZipFile(io.BytesIO(data)) as archive:
++        checked = archive.infolist()
++        if archive.comment != comment or [row.filename for row in checked] != [row.filename for row in rows]:
++            fail('epub_edit_verification_failed')
++        for before, after in zip(rows, checked):
++            if before.filename in replacements:
++                continue
++            if (_zip_metadata(before) != _zip_metadata(after)
++                    or parts.get(before.filename, b'') != archive.read(after)):
++                fail('epub_edit_preservation_failed')
++            compressed_sizes_match &= before.compress_size == after.compress_size
++    return compressed_sizes_match
++
++
++def _rebuild(data, replacements, checkpoint=None):
+     with zipfile.ZipFile(io.BytesIO(data)) as source:
+         rows = source.infolist()
+         comment = source.comment
+@@ -498,17 +515,31 @@
+         payload = replacements.get(row.filename, parts.get(row.filename, b''))
+         output.append((copy.copy(row), payload))
+     result = _pack(output, comment=comment)
+-    with zipfile.ZipFile(io.BytesIO(result)) as changed:
+-        checked = changed.infolist()
+-        if changed.comment != comment or len(checked) != len(rows):
+-            fail('epub_edit_verification_failed')
+-        for before, after in zip(rows, checked):
+-            if before.filename in replacements:
+-                continue
+-            if _zip_metadata(before) != _zip_metadata(after) or parts.get(before.filename, b'') != changed.read(before.filename):
+-                fail('epub_edit_preservation_failed')
++    copied_compressed_members = False
++    if not _preserved_zip_metadata(result, rows, parts, replacements, comment):
++        # ZipFile may use a different compression level for unselected members.
++        # Reuse the bounded classic ZIP editor to copy their local records.
++        from tools.scoped_legacy_openoffice import LegacyOpenOfficeError
++        from tools.scoped_legacy_openoffice_write import _rewrite
++        try:
++            # The EPUB reader skips directories. Check their empty streams
++            # with its bounded inflater before the shared editor reads them.
++            with zipfile.ZipFile(io.BytesIO(data)) as source:
++                for row in source.infolist():
++                    if row.is_dir():
++                        read_member(source, data, row)
++            result = _rewrite(data, replacements, checkpoint)
++        except (zipfile.BadZipFile, struct.error, zlib.error):
++            fail('epub_edit_zip_metadata_unsupported')
++        except LegacyOpenOfficeError as exc:
++            if exc.code == 'legacy_output_limit':
++                fail('epub_output_limit')
++            fail('epub_edit_preservation_failed')
++        if not _preserved_zip_metadata(result, rows, parts, replacements, comment):
++            fail('epub_edit_preservation_failed')
++        copied_compressed_members = True
+     extract_epub(result)
+-    return result
++    return result, copied_compressed_members
+ 
+ 
+ def edit_epub(data, spec, *, checkpoint=None):
+@@ -561,7 +592,8 @@
+     changed_package = parts[package_path][:date_begin] + modified.encode() + parts[package_path][date_end:]
+     if len(changed_resource) > MAX_PART or len(changed_package) > MAX_PART:
+         fail('epub_expansion_limit')
+-    result = _rebuild(data, {resource: changed_resource, package_path: changed_package})
++    result, copied_compressed_members = _rebuild(
++        data, {resource: changed_resource, package_path: changed_package}, checkpoint)
+     checked = archive(result)
+     checked_root, _ = _xml_spans(checked[resource])
+     checked_paragraphs = list(checked_root.iter('{' + XHTML + '}p'))
+@@ -579,7 +611,7 @@
+         'unselected_member_count': len(parts) - 2,
+         'unselected_uncompressed_member_bytes_preserved': True,
+         'unselected_zip_entry_metadata_preserved': True,
+-        'unselected_compressed_bytes_preserved': False,
++        'unselected_compressed_bytes_preserved': copied_compressed_members,
+         'raw_zip_bytes_preserved': False,
+     }
+     return result, receipt
