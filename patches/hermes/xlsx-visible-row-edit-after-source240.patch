@@ -1,0 +1,169 @@
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1818,7 +1818,7 @@
+ READ_FILE_SCHEMA["description"] += " Supported native ODS charts return source ranges, series values and verified local cache records; rendering is not covered."
+ 
+ # Native spreadsheet profiles extend the existing scoped document contracts.
+-_SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value} for nonmacro profiles, or exact {source,source_sha256,sheet,cell,expected,value} for existing XLSM/XLTM, into a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. For XLSM/XLTM, read_file first supplies source_sha256; only exact-value numeric edits retaining one opaque VBA payload are supported, never macro creation/execution or a safety claim. Signed, protected, external/active, formula-target and other unsupported packages refuse. Unsupported hidden-content profiles refuse; current passive hidden rows are retained only in the bounded ODS numeric profile. Old macro create/convert refusals remain. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. The XLSX/ODS pair uses a separately validated isolated Office conversion; other cross-family pairs are unsupported. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: macros are opaque and never executed. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich-text, protected, formula or unsupported ODF edit targets refuse; the bounded passive ODS numeric profile permits existing supported integer-between validation. Unsupported resources/styles refuse flat conversion. '
++_SPREADSHEET_GUIDANCE = 'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value} for nonmacro profiles, or exact {source,source_sha256,sheet,cell,expected,value} for existing XLSM/XLTM, into a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. For XLSM/XLTM, read_file first supplies source_sha256; only exact-value numeric edits retaining one opaque VBA payload are supported, never macro creation/execution or a safety claim. Signed, protected, external/active, formula-target and other unsupported packages refuse. Unsupported hidden-content profiles refuse. Bounded numeric ODS edits may retain passive hidden rows. For XLSX with an empty workbook protection marker, a visible numeric cell may be edited while preserving unrelated explicitly hidden rows in that sheet; a hidden target or unsupported visibility still refuses. Old macro create/convert refusals remain. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. The XLSX/ODS pair uses a separately validated isolated Office conversion; other cross-family pairs are unsupported. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: macros are opaque and never executed. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich-text, protected, formula or unsupported ODF edit targets refuse; the bounded passive ODS numeric profile permits existing supported integer-between validation. Unsupported resources/styles refuse flat conversion. '
+ WRITE_FILE_SCHEMA["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["spreadsheet_create", "spreadsheet_edit", "spreadsheet_convert"]
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] = _SPREADSHEET_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"]
+diff --git a/tools/scoped_spreadsheet_profiles.py b/tools/scoped_spreadsheet_profiles.py
+--- a/tools/scoped_spreadsheet_profiles.py
++++ b/tools/scoped_spreadsheet_profiles.py
+@@ -1,5 +1,6 @@
+ """Native spreadsheet profiles; immutable bounded bytes, no engine or macro execution."""
+ from copy import deepcopy
++from decimal import Decimal
+ from io import BytesIO
+ import re
+ import zipfile
+@@ -7,7 +8,7 @@
+ from xml.etree import ElementTree as ET
+ from tools.scoped_presentation import Package, PresentationError, q, xml_root
+ from tools.scoped_ods import (Spreadsheet, SpreadsheetText, ODSError, MIME, MIMES,
+-                              O, M, TB, XL, ST, fail, tick, _zip, active_formula)
++                              O, M, TB, XL, ST, fail, tick, _zip, active_formula, address)
+ 
+ CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
+ S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+@@ -326,7 +327,40 @@
+     return convert(data,'xlsx',format,checkpoint=checkpoint)
+ 
+ 
+-def _xlsx_edit_sheet_hidden(sheet):
++def _xlsx_edit_target_row(sheet, cell_ref):
++    groups = sheet.findall(q(S, 'sheetData'))
++    if len(groups) != 1:
++        return None, set()
++    rows = {}
++    target = None
++    try:
++        selected_row, selected_column = address(cell_ref)
++        for row in groups[0].findall(q(S, 'row')):
++            row_index, _ = address('A' + row.get('r', ''))
++            if row_index in rows:
++                return None, set()
++            rows[row_index] = row
++            seen = set()
++            for cell in row.findall(q(S, 'c')):
++                cell_row, column = address(cell.get('r'))
++                if cell_row != row_index or column in seen:
++                    return None, set()
++                seen.add(column)
++                if (cell_row, column) == (selected_row, selected_column):
++                    target = row
++        for merge in sheet.iter(q(S, 'mergeCell')):
++            first, last = merge.get('ref', '').split(':')
++            top, left = address(first)
++            bottom, right = address(last)
++            if (top > bottom or left > right
++                    or top <= selected_row <= bottom and left <= selected_column <= right):
++                return None, set()
++    except ValueError:
++        return None, set()
++    return target, set(rows.values())
++
++
++def _xlsx_edit_sheet_hidden(sheet, target_row=None, rows=()):
+     visibility = (
+         ('row', ('hidden', 'collapsed'), ('ht',)),
+         ('col', ('hidden', 'collapsed'), ('width',)),
+@@ -334,8 +368,6 @@
+     )
+     for kind, flags, dimensions in visibility:
+         for node in sheet.iter(q(S, kind)):
+-            if any(node.get(flag, 'false') not in ('0', 'false') for flag in flags):
+-                return True
+             try:
+                 values = (node.attrib[name] for name in dimensions if name in node.attrib)
+                 if any(not value.isascii() or '_' in value or not 0 < float(value) < float('inf')
+@@ -343,10 +375,16 @@
+                     return True
+             except ValueError:
+                 return True
++            if any(node.get(flag, 'false') not in ('0', 'false') for flag in flags):
++                # Only an explicit, unrelated hidden data row can be preserved.
++                if (kind != 'row' or target_row is None or node is target_row or node not in rows
++                        or node.get('hidden') not in ('1', 'true')
++                        or node.get('collapsed', 'false') not in ('0', 'false')):
++                    return True
+     return False
+ 
+ 
+-def _validate_xlsx_edit_package(data, checkpoint):
++def _validate_xlsx_edit_package(data, spec, checkpoint):
+     book = ooxml(data, 'xlsx', writing=True, checkpoint=checkpoint, allow_empty_workbook_protection=True)
+     # The common parser discards comments and PIs. Preserve them for the edit-only
+     # empty-marker exception, and track namespace declarations on the marker itself.
+@@ -376,19 +414,28 @@
+             or (marker.text or '').strip(' \t\r\n')):
+         fail('protected_workbook')
+ 
+-    # The exception is for ordinary visible workbooks only. Leave the existing
+-    # no-marker profile unchanged.
++    # Only the explicitly visible edit target can benefit from the empty-marker
++    # exception. Leave the existing no-marker profile unchanged.
+     if any(view.get('visibility', 'visible') != 'visible' for view in workbook.iter(q(S, 'workbookView'))):
+         fail('hidden_workbook_mutation_unsupported')
+     if any(sheet.get('state', 'visible') != 'visible' for sheet in workbook.iter(q(S, 'sheet'))):
+         fail('hidden_sheet_mutation_unsupported')
+-    for part in book.sheet_parts.values():
++    sheets = workbook.findall(f"{q(S, 'sheets')}/{q(S, 'sheet')}")
++    selected = next((node.get(q(R, 'id')) for node in sheets if node.get('name') == spec['sheet']), None)
++    hidden_row_edit = None
++    for rid, part in book.sheet_parts.items():
+         tick(checkpoint)
+         sheet = book.xml[part]
+         if any(node.tag.rsplit('}', 1)[-1] in ('sheetProtection', 'protectedRanges') for node in sheet.iter()):
+             fail('protected_sheet')
+-        if _xlsx_edit_sheet_hidden(sheet):
++        preserve_hidden = rid == selected and any(
++            row.get('hidden') in ('1', 'true') for row in sheet.iter(q(S, 'row')))
++        target_row, rows = _xlsx_edit_target_row(sheet, spec['cell']) if preserve_hidden else (None, ())
++        if _xlsx_edit_sheet_hidden(sheet, target_row, rows):
+             fail('hidden_sheet_structure_mutation_unsupported')
++        if preserve_hidden:
++            hidden_row_edit = book, part
++    return hidden_row_edit
+ 
+ 
+ def edit(data, source, spec, *, checkpoint=None):
+@@ -418,10 +465,10 @@
+         from tools.scoped_ods import edit_spreadsheet
+         return edit_spreadsheet(data,spec,format=source,checkpoint=checkpoint)
+     if not isinstance(spec,dict) or set(spec) != {'sheet','cell','expected','value'}: fail('spreadsheet_edit_schema')
+-    from hermes_cli.friday_workspace_xlsx import render_copy
++    from hermes_cli.friday_workspace_xlsx import _macro_numeric_span, render_copy
+     from hermes_cli.friday_user_scope import ScopeDenied
+     if source == 'xlsx':
+-        _validate_xlsx_edit_package(data, checkpoint)
++        preserved = _validate_xlsx_edit_package(data, spec, checkpoint)
+         normalized = data
+     else:
+         normalized = convert(data, source, 'xlsx', checkpoint=checkpoint)
+@@ -429,6 +476,21 @@
+     try: result = render_copy(normalized,**spec)
+     except ScopeDenied: fail('numeric_cell_edit_unsupported_or_expected_mismatch')
+     if source == 'xlsx':
+-        _validate_xlsx_edit_package(result, checkpoint)
++        checked = _validate_xlsx_edit_package(result, spec, checkpoint)
++        if preserved is not None:
++            if checked is None:
++                fail('hidden_row_preservation_verification_failed')
++            before, target = preserved
++            after, after_target = checked
++            raw = before.parts[target]
++            try:
++                start, end = _macro_numeric_span(raw, spec['cell'])
++            except ScopeDenied:
++                fail('hidden_row_preservation_verification_failed')
++            expected_sheet = raw[:start] + str(Decimal(str(spec['value']))).encode('ascii') + raw[end:]
++            if (target != after_target or tuple(before.parts) != tuple(after.parts)
++                    or after.parts[target] != expected_sheet
++                    or any(before.parts[name] != after.parts[name] for name in before.parts if name != target)):
++                fail('hidden_row_preservation_verification_failed')
+         return result
+     return convert(result, 'xlsx', source, checkpoint=checkpoint)
