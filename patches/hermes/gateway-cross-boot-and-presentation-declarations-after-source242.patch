@@ -1,0 +1,329 @@
+diff --git a/gateway/host_rendezvous.py b/gateway/host_rendezvous.py
+--- a/gateway/host_rendezvous.py
++++ b/gateway/host_rendezvous.py
+@@ -25,9 +25,9 @@
+ it) and is still written unchanged. It cannot be the host record: it has no lock, no
+ single-writer semantics, no removal on exit, and no place to publish a protocol version or
+ an authentication handle. The record here is authoritative for "who owns this host role"; the
+-ledger remains authoritative for "what is running". Both are written. New host records pair the
+-ledger's live-PID proof with ``gateway.status``'s canonical process-start fingerprint; legacy
+-records without that fingerprint keep the old ``(pid, create_time)`` proof.
++ledger remains authoritative for "what is running". Both are written. Linux gateway records
++pair the ledger's live-PID proof with a boot ID and exact process start ticks. Other host roles
++use ``gateway.status``'s canonical process-start fingerprint.
+ """
+ 
+ from __future__ import annotations
+@@ -38,6 +38,7 @@
+ import json
+ import logging
+ import os
++import re
+ import stat
+ import sys
+ from dataclasses import dataclass
+@@ -70,6 +71,7 @@
+ #: how it dials one on a Desktop-only box.
+ ROLE_DESKTOP_SERVE = "desktop-serve"
+ _ROLES = (ROLE_GATEWAY, ROLE_SERVE, ROLE_DESKTOP_SERVE)
++_LINUX_BOOT_ID = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}")
+ 
+ # Open lock handles, keyed by (role, resolved lock path): the OS releases the flock when this
+ # process dies, which is what makes a crashed owner's host lock re-acquirable without a reaper.
+@@ -104,9 +106,11 @@
+     #: records written by older Hermes versions, which still fall back to create_time.
+     start_time: Optional[int] = None
+     friday_owner: Optional[dict] = None
++    #: Optional on protocol-v1 records; paired with raw Linux gateway start ticks.
++    boot_id: Optional[str] = None
+ 
+     def to_json(self) -> dict[str, Any]:
+-        return {
++        payload = {
+             "role": self.role,
+             "home": self.home,
+             "pid": self.pid,
+@@ -120,6 +124,9 @@
+             "updatedAt": self.updated_at,
+             "fridayOwner": self.friday_owner,
+         }
++        if self.boot_id is not None:
++            payload["bootId"] = self.boot_id
++        return payload
+ 
+     @classmethod
+     def from_json(cls, payload: Any) -> Optional["HostRecord"]:
+@@ -131,6 +138,11 @@
+             return None
+         create = payload.get("createTime")
+         start = payload.get("startTime")
++        boot_id = payload.get("bootId")
++        if "bootId" in payload and (
++            not _valid_linux_boot_id(boot_id) or type(start) is not int or start <= 0
++        ):
++            return None
+         port = payload.get("port")
+         profiles = payload.get("profiles")
+         version = payload.get("protocolVersion")
+@@ -151,6 +163,7 @@
+             updated_at=str(payload.get("updatedAt") or ""),
+             home=str(payload.get("home") or ""),
+             friday_owner=payload.get("fridayOwner") if isinstance(payload.get("fridayOwner"), dict) else None,
++            boot_id=boot_id,
+         )
+ 
+ 
+@@ -239,13 +252,80 @@
+     return _pid_alive_matches(pid, create_time)
+ 
+ 
++def _valid_linux_boot_id(value: Any) -> bool:
++    return isinstance(value, str) and len(value) == 36 and _LINUX_BOOT_ID.fullmatch(value) is not None
++
++
++def _read_linux_boot_id() -> Optional[str]:
++    """Read the kernel's bounded boot UUID."""
++    try:
++        with Path("/proc/sys/kernel/random/boot_id").open("rb") as stream:
++            value = stream.read(38).decode("ascii").removesuffix("\n")
++    except (OSError, UnicodeDecodeError):
++        return None
++    return value if _valid_linux_boot_id(value) else None
++
++
++def _read_linux_start_ticks(pid: int) -> Optional[int]:
++    """Read field 22 in /proc/PID/stat without falling back to epoch centiseconds."""
++    try:
++        with Path(f"/proc/{pid}/stat").open("rb") as stream:
++            raw = stream.read(4097)
++        # The command can contain spaces and parentheses. starttime is index 19 after comm.
++        prefix, separator, tail = raw.rpartition(b") ")
++        if len(raw) > 4096 or not separator or not prefix.startswith(f"{pid} (".encode("ascii")):
++            return None
++        ticks = tail.split()[19]
++        if 0 < len(ticks) <= 20 and ticks.isdigit():
++            return int(ticks) or None
++    except (OSError, IndexError):
++        pass
++    return None
++
++
++def _linux_gateway_incarnation_matches(record: HostRecord) -> Optional[bool]:
++    if record.boot_id is not None:
++        boot_id = _read_linux_boot_id()
++        if boot_id is not None and record.boot_id != boot_id:
++            return False
++        alive = _pid_incarnation_matches(record.pid, None)
++        if alive is not True:
++            return alive
++        ticks = _read_linux_start_ticks(record.pid)
++        if ticks is not None and ticks != record.start_time:
++            return False
++        return True if boot_id is not None and ticks is not None else None
++
++    # Protocol-v1 publishers without a boot ID may have recorded either the
++    # canonical start value or only the wall-clock creation time.
++    alive = _pid_incarnation_matches(record.pid, None)
++    if alive is not True:
++        return alive
++    if record.start_time is None:
++        return (_pid_incarnation_matches(record.pid, record.create_time)
++                if record.create_time is not None else None)
++    from gateway.status import get_process_start_time
++
++    current = get_process_start_time(record.pid)
++    if current is None:
++        return None
++    if record.start_time != current:
++        return False
++    # Exact ticks alone can repeat on an old record after reboot. Require
++    # corroboration, but do not discard an equal-tick record on wall-clock drift.
++    if record.create_time is not None and _pid_incarnation_matches(record.pid, record.create_time) is True:
++        return True
++    return None
++
++
+ def _record_incarnation_matches(record: HostRecord) -> Optional[bool]:
+     """Whether the record still names the same live process incarnation.
+ 
+-    New records prefer the canonical start fingerprint: on Linux/WSL it comes from /proc start
+-    ticks and is immune to wall-clock shifts that move psutil.create_time(). Legacy records keep
+-    the create-time check until their owner republishes them.
+-    """
++    A boot-bound Linux gateway record uses exact kernel identity. The other
++    host roles and platforms retain their canonical start and creation-time checks.
++    """
++    if record.role == ROLE_GATEWAY and sys.platform.startswith("linux"):
++        return _linux_gateway_incarnation_matches(record)
+     if record.start_time is None:
+         return _pid_incarnation_matches(record.pid, record.create_time)
+     alive = _pid_incarnation_matches(record.pid, None)
+@@ -502,11 +582,18 @@
+     role = _validated_role(role)
+     from gateway.status import get_process_start_time
+ 
++    pid = os.getpid()
++    boot_id = _read_linux_boot_id() if role == ROLE_GATEWAY and sys.platform.startswith("linux") else None
++    start_time = _read_linux_start_ticks(pid) if boot_id is not None else None
++    if start_time is None:
++        boot_id = None
++        start_time = get_process_start_time(pid)
++
+     record = HostRecord(
+         role=role,
+-        pid=os.getpid(),
++        pid=pid,
+         create_time=process_create_time(),
+-        start_time=get_process_start_time(os.getpid()),
++        start_time=start_time,
+         host=str(host or ""),
+         port=int(port) if isinstance(port, int) and port > 0 else None,
+         protocol_version=HOST_PROTOCOL_VERSION,
+@@ -515,6 +602,7 @@
+         updated_at=datetime.now(timezone.utc).isoformat(),
+         home=str(home or ""),
+         friday_owner=friday_owner,
++        boot_id=boot_id,
+     )
+     try:
+         ensure_host_state_dir()
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -456,6 +456,10 @@
+             'slide views with slide order; tables and cached chart data are available where reported. '
+             'separate speaker notes, source labels and coverage/unsupported-feature metadata; follow all '
+             'pages when partial is true. Hidden content is labelled; notes are not public slide content. '
++            'For supported PPTX reads, verify the same source_sha256 on all pages. Keep slide CONTENT '
++            'and SPEAKER_NOTES separate. Cached chart values belong to their series and categories. '
++            'Report an order amount only when the source explicitly gives that amount for that order. '
++            'Matching a category does not establish an order amount. Label computed totals and missing values. '
+             'Images, layout and rendering are not covered. Macro variants require their genuine native '
+             'content type and a matching opaque VBA project. Macro/project-present metadata does not '
+             'establish code safety: source/p-code are not inspected and macros are never executed. '
+diff --git a/hermes_cli/friday_schema_guidance.py b/hermes_cli/friday_schema_guidance.py
+--- a/hermes_cli/friday_schema_guidance.py
++++ b/hermes_cli/friday_schema_guidance.py
+@@ -12,7 +12,7 @@
+ 
+ # Include the request projection in ordinary persisted tool-pin identity. The
+ # donor build/version may stay unchanged when this product overlay is updated.
+-PROJECTION_REVISION = "friday.file-schema-guidance.v1"
++PROJECTION_REVISION = "friday.file-schema-guidance.v2"
+ 
+ _SHARED_PREFIX = "The shared requirements in "
+ 
+diff --git a/tests/gateway/test_host_rendezvous.py b/tests/gateway/test_host_rendezvous.py
+--- a/tests/gateway/test_host_rendezvous.py
++++ b/tests/gateway/test_host_rendezvous.py
+@@ -116,6 +116,9 @@
+     The host record must keep recognizing that owner, but a changed stable start fingerprint must
+     still be rejected as PID reuse.
+     """
++    if sys.platform.startswith("linux"):
++        monkeypatch.setattr(hr, "_read_linux_boot_id", lambda: "22222222-2222-2222-2222-222222222222")
++        monkeypatch.setattr(hr, "_read_linux_start_ticks", lambda _pid: 1743)
+     record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
+     assert record is not None
+ 
+@@ -128,11 +131,49 @@
+     assert record.start_time is not None
+     from gateway import status
+ 
+-    monkeypatch.setattr(
+-        status, "get_process_start_time",
+-        lambda _pid: record.start_time + status.START_TIME_DRIFT_TOLERANCE + 1,
++    if record.boot_id is not None:
++        monkeypatch.setattr(hr, "_read_linux_start_ticks", lambda _pid: record.start_time + 1)
++    else:
++        monkeypatch.setattr(
++            status, "get_process_start_time",
++            lambda _pid: record.start_time + status.START_TIME_DRIFT_TOLERANCE + 1,
++        )
++    assert hr.record_is_stale(record) is True
++
++
++@pytest.mark.parametrize(
++    "recorded_boot,current_ticks,create_match,stale,proven",
++    [
++        (None, 1841, False, True, False),
++        ("11111111-1111-1111-1111-111111111111", 1743, True, True, False),
++        ("22222222-2222-2222-2222-222222222222", 1743, False, False, True),
++        ("22222222-2222-2222-2222-222222222222", 1744, True, True, False),
++        (None, 1743, True, False, True),
++        (None, 1743, False, False, False),
++    ],
++    ids=["legacy-recycled-PID", "equal-ticks-other-boot", "same-owner-wall-drift",
++         "same-boot-different-tick", "legacy-corroborated", "legacy-tick-collision-unproven"],
++)
++def test_linux_gateway_record_uses_exact_boot_and_ticks(
++    monkeypatch, recorded_boot, current_ticks, create_match, stale, proven,
++):
++    from gateway import status
++
++    record = hr.HostRecord(
++        role=hr.ROLE_GATEWAY, pid=2763, create_time=1700000017.43,
++        host="", port=None, protocol_version=hr.HOST_PROTOCOL_VERSION,
++        token_fingerprint="", profiles=(), updated_at="", start_time=1743,
++        boot_id=recorded_boot,
+     )
+-    assert hr.record_is_stale(record) is True
++    monkeypatch.setattr(hr.sys, "platform", "linux")
++    monkeypatch.setattr(hr, "_read_linux_boot_id", lambda: "22222222-2222-2222-2222-222222222222")
++    monkeypatch.setattr(hr, "_read_linux_start_ticks", lambda _pid: current_ticks)
++    monkeypatch.setattr(status, "get_process_start_time", lambda _pid: current_ticks)
++    monkeypatch.setattr(hr, "_pid_incarnation_matches", lambda _pid, created: created is None or create_match)
++
++    assert hr.HostRecord.from_json(record.to_json()) == record
++    assert hr.record_is_stale(record) is stale
++    assert hr.liveness_is_proven(record) is proven
+ 
+ 
+ @pytest.mark.platforms("posix")  # POSIX signal disposition
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2281,6 +2281,23 @@
+ for _word_conversion_target in (WRITE_FILE_SCHEMA, WRITE_FILE_SCHEMA['parameters']['properties']['format'], WRITE_FILE_SCHEMA['parameters']['properties']['content']):
+     _word_conversion_target['description'] += _WORD_CONVERSION_FINAL_GUIDANCE
+ 
++# Keep the existing approved PPTX template branch visible after the compact reset.
++WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] += (
++    ' Approved PPTX template: use pptx_create, a NEW .pptx, and a serialized JSON string with '
++    'exactly {source,slides,series,template}. Use the exact own-workspace .pptx template path and '
++    'an XLSX Orders source with order_id, sku, qty, unit_price, currency, revision. '
++    'Keep all five exact titles and their order in the brief. Each slide has title/body strings and '
++    'table/chart booleans matching the existing slots; one table and one chart in total. '
++    'The bounded writer keeps native template styling and builds chart values from Orders. '
++    'It excludes original notes, comments and author properties. If the request excludes '
++    'private notes, use the approved brief and slot information without opening the notes-bearing '
++    'template view. Do not quote or carry excluded content into slides or the reply. '
++    'If slots are unknown, ask for an approved public-only template or slot mapping. '
++    'On an unsupported template or size refusal, disclose the limit and keep the original, '
++    'without substituting a default deck. Author prose and Office/render fidelity are unverified. '
++)
++
++
+ # Keep the bounded common DOTX derivative contract after compact descriptions.
+ _WORD_TEMPLATE_FILL_FINAL_GUIDANCE = (
+     ' Nonmacro Word template derivative: use format=docx_fill with a NEW .docx output '
+@@ -2402,3 +2419,19 @@
+     WRITE_FILE_SCHEMA['parameters']['properties']['content'],
+ ):
+     _delimited_export_target['description'] += _DELIMITED_TABLE_EXPORT_FINAL_GUIDANCE
++
++
++# Keep the existing PPTX merge contract visible in the final registered schema.
++WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] += (
++    ' PPTX merge uses format=pptx_merge, a NEW .pptx path, and content as a serialized JSON string '
++    'with exactly {"sources":["extracted/a.pptx","extracted/b.pptx"],"title":{"source":1,"slide":1},'
++    '"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. '
++    'Use two distinct own-workspace PPTX decks and one-based source and slide indexes. '
++    'For ZIP uploads, extract into a NEW workspace directory first and use the exact extracted member paths. '
++    'Choose slide 1 of one deck for the title, then list distinct slides numbered 2 or higher '
++    'in exact output order. Both decks must contribute. '
++    'Compatible presentation defaults, global table styles and theme, and notes masters are required. '
++    'Within the supported profile, selected native slide content, speaker notes and style parts '
++    'are retained. Sources remain unchanged. Unsupported packages refuse. '
++    'Office reopening and rendered fidelity require separate checks. '
++)
