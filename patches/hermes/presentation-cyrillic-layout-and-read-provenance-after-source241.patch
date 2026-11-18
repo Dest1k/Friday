@@ -1,0 +1,63 @@
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2376,6 +2376,15 @@
+ )
+ 
+ 
++# Keep presentation provenance in the final read_file description.
++READ_FILE_SCHEMA['description'] += (
++    ' For supported PPTX reads, verify the same source_sha256 on all pages. Keep slide CONTENT '
++    'and SPEAKER_NOTES separate. Cached chart values belong to their series and categories. '
++    'Report an order amount only when the source explicitly gives that amount for that order. '
++    'Matching a category does not establish an order amount. Label computed totals and missing values.'
++)
++
++
+ # Keep the native delimited export ABI after the final schema resets above.
+ _DELIMITED_TABLE_EXPORT_FINAL_GUIDANCE = (
+     'To export an XLSX or ODS table, use write_file with format=delimited_convert and a NEW .csv or .tsv path. '
+diff --git a/tools/scoped_presentation_write.py b/tools/scoped_presentation_write.py
+--- a/tools/scoped_presentation_write.py
++++ b/tools/scoped_presentation_write.py
+@@ -225,10 +225,10 @@
+     return value
+ 
+ 
+-def text(value, *, empty=False, limit=4000):
++def text(value, *, empty=False, limit=4000, byte_limit=None):
+     if not isinstance(value, str) or (not empty and not value) or len(value) > limit:
+         raise PresentationRefused('text_capacity')
+-    if len(value.encode('utf-8')) > limit or any(not (
++    if len(value.encode('utf-8')) > (limit if byte_limit is None else byte_limit) or any(not (
+             ord(c) in (9, 10, 13) or 0x20 <= ord(c) <= 0xD7FF
+             or 0xE000 <= ord(c) <= 0xFFFD or 0x10000 <= ord(c) <= 0x10FFFF) for c in value):
+         raise PresentationRefused('invalid_text')
+@@ -703,7 +703,7 @@
+     for slide in slides:
+         if not isinstance(slide, dict) or set(slide) != {'title', 'body', 'table', 'chart'}:
+             raise PresentationRefused('slide_schema')
+-        text(slide['title'], limit=256); text(slide['body'], empty=True)
++        text(slide['title'], limit=256, byte_limit=1024); text(slide['body'], empty=True)
+         if type(slide['table']) is not bool or type(slide['chart']) is not bool:
+             raise PresentationRefused('slide_flags')
+         table_slides += slide['table']; chart_slides += slide['chart']
+@@ -1026,7 +1026,7 @@
+     for index, slide in enumerate(slides, 1):
+         if not isinstance(slide, dict) or set(slide) != {'title', 'body', 'notes', 'table', 'chart'}:
+             raise PresentationRefused('odp_slide_schema')
+-        title = text(slide['title'], limit=256); body = text(slide['body'], empty=True)
++        title = text(slide['title'], limit=256, byte_limit=1024); body = text(slide['body'], empty=True)
+         notes = text(slide['notes'], empty=True)
+         from tools.scoped_presentation_layout import fit_font
+         title_font = fit_font(title, 24*72/2.54, 4*72/2.54, maximum=26, unicode_creation=True)
+@@ -1038,7 +1038,8 @@
+         items = [f'<draw:frame draw:name="Title" draw:style-name="TitleBox" presentation:class="title" svg:width="24cm" svg:height="4cm" svg:x="1cm" svg:y="0.4cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:text-box><text:p text:style-name="TitleText{index}">{escape(title)}</text:p></draw:text-box></draw:frame>',
+                  f'<draw:frame draw:name="Body" draw:style-name="TitleBox" svg:width="24cm" svg:height="{body_height}cm" svg:x="1cm" svg:y="4.6cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><draw:text-box><text:p text:style-name="BodyText{index}">{escape(body)}</text:p></draw:text-box></draw:frame>']
+         if slide['table'] is not None:
+-            items.append('<draw:frame draw:name="Table" svg:x="1cm" svg:y="7cm" svg:width="11cm" svg:height="10cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0">' + _odp_table('Orders' + str(index), slide['table']) + '</draw:frame>')
++            table_width = 24 if slide['chart'] is None else 11
++            items.append(f'<draw:frame draw:name="Table" svg:x="1cm" svg:y="7cm" svg:width="{table_width}cm" svg:height="10cm" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0">' + _odp_table('Orders' + str(index), slide['table']) + '</draw:frame>')
+         if slide['chart'] is not None:
+             chart = slide['chart']
+             if not isinstance(chart, dict) or set(chart) != {'categories', 'values'} or not isinstance(chart['categories'], list) or not isinstance(chart['values'], list) or not 1 <= len(chart['categories']) == len(chart['values']) <= 128:
