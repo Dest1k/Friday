@@ -1,0 +1,282 @@
+diff --git a/tools/scoped_presentation_template.py b/tools/scoped_presentation_template.py
+--- a/tools/scoped_presentation_template.py
++++ b/tools/scoped_presentation_template.py
+@@ -47,6 +47,29 @@
+     return changed
+ 
+ 
++# Regular Carlito horizontal advances (2048 units/em), the measured Calibri
++# substitute in the supported plain title profile. No runtime font reads.
++_TITLE_ASCII_ADVANCES = (
++    463, 667, 821, 1020, 1038, 1464, 1397, 452, 621, 621, 1020, 1020,
++    511, 627, 517, 791, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038,
++    1038, 1038, 548, 548, 1020, 1020, 1020, 949, 1831, 1185, 1114, 1092,
++    1260, 1000, 941, 1292, 1276, 516, 653, 1064, 861, 1751, 1322, 1356,
++    1058, 1378, 1112, 941, 998, 1314, 1162, 1822, 1063, 998, 959, 628,
++    791, 628, 1020, 1020, 596, 981, 1076, 866, 1076, 1019, 625, 964,
++    1076, 470, 490, 931, 470, 1636, 1076, 1080, 1076, 1076, 714, 801,
++    686, 1076, 925, 1464, 887, 927, 809, 644, 943, 644, 1020,
++)
++_TITLE_CYRILLIC_ADVANCES = (
++    1185, 1101, 1114, 880, 1319, 1000, 1640, 970, 1314, 1314, 1112, 1251,
++    1751, 1276, 1356, 1273, 1058, 1092, 998, 1080, 1428, 1063, 1308, 1138,
++    1778, 1822, 1259, 1560, 1088, 1122, 1800, 1137, 981, 1091, 981, 708,
++    1143, 1019, 1411, 866, 1107, 1107, 950, 1045, 1385, 1095, 1080, 1066,
++    1076, 866, 793, 927, 1278, 887, 1109, 960, 1492, 1534, 1098, 1364,
++    962, 907, 1478, 971,
++)
++_TITLE_YO_ADVANCES = {'Ё': 1000, 'ё': 1019}
++
++
+ def _max_font(root, default=None):
+     """Conservatively cover every explicit paragraph/run size in a slot."""
+     sizes = []
+@@ -63,14 +86,7 @@
+     return max(sizes) if sizes else default
+ 
+ 
+-def _text_capacity(parts, owner, shape, value):
+-    """Conservative slot budget, independent of rendering/autofit behavior."""
+-    body = shape.find('{%s}txBody' % P)
+-    old = '\n'.join(''.join(n.text or '' for n in p.iter('{%s}t' % A))
+-                    for p in body.findall('{%s}p' % A))
+-    # Reusing unchanged template text cannot introduce a new overflow.
+-    if value == old:
+-        return
++def _text_chain(parts, owner, shape):
+     ph = shape.find('{%s}nvSpPr/{%s}nvPr/{%s}ph' % (P, P, P))
+     chain = [shape]; master = None
+     current = owner
+@@ -93,6 +109,18 @@
+             if len(candidates) > 1:
+                 raise PresentationRefused('template_text_inheritance')
+             chain.extend(candidates)
++    return ph, chain, master, current
++
++
++def _text_capacity(parts, owner, shape, value):
++    """Conservative slot budget, independent of rendering/autofit behavior."""
++    body = shape.find('{%s}txBody' % P)
++    old = '\n'.join(''.join(n.text or '' for n in p.iter('{%s}t' % A))
++                    for p in body.findall('{%s}p' % A))
++    # Reusing unchanged template text cannot introduce a new overflow.
++    if value == old:
++        return
++    ph, chain, master, _ = _text_chain(parts, owner, shape)
+     bounds = font = None
+     for candidate in chain:
+         if bounds is None:
+@@ -130,6 +158,146 @@
+         lines += max(1, math.ceil(text_width / width))
+     if lines * points * 1.2 > height:
+         raise PresentationRefused('template_text_capacity')
++
++
++def _title_advance(value):
++    units = 0
++    for character in value:
++        point = ord(character)
++        if 32 <= point <= 126:
++            units += _TITLE_ASCII_ADVANCES[point - 32]
++        elif 0x410 <= point <= 0x44f:
++            units += _TITLE_CYRILLIC_ADVANCES[point - 0x410]
++        elif character in _TITLE_YO_ADVANCES:
++            units += _TITLE_YO_ADVANCES[character]
++        else:
++            return None
++    return units / 2048
++
++
++def _plain_box(shape):
++    transform = shape.find('{%s}spPr/{%s}xfrm' % (P, A))
++    if transform is None or transform.attrib:
++        return None
++    offset = transform.find('{%s}off' % A)
++    extent = transform.find('{%s}ext' % A)
++    if offset is None or extent is None:
++        return None
++    raw = (offset.get('x'), offset.get('y'), extent.get('cx'), extent.get('cy'))
++    if any(not value or not value.isascii() or not value.isdecimal() or len(value) > 9 for value in raw):
++        return None
++    return tuple(int(value) / 12700 for value in raw)
++
++
++def _unchanged_title_size(parts, owner, title, body, value):
++    """Fit a wrapping inherited Calibri title over a direct, lower body slot."""
++    advance = _title_advance(value)
++    if not advance:
++        return None
++    ph_path = '{%s}nvSpPr/{%s}nvPr/{%s}ph' % (P, P, P)
++    text_path = '{%s}txBody' % P
++    title_ph = title.find(ph_path)
++    local_style = title.find('{%s}spPr' % P)
++    local_text = title.find(text_path)
++    bare_body, bare_list, para = ('{%s}%s' % (A, name) for name in ('bodyPr', 'lstStyle', 'p'))
++    if (title_ph is None or title_ph.attrib != {'type': 'title'} or local_style is None or
++            local_style.attrib or len(local_style) or local_text is None or
++            [node.tag for node in local_text] != [bare_body, bare_list, para] or
++            any(node.attrib or len(node) for node in local_text[:2])):
++        return None
++    paragraph = local_text[2]
++    run_tag, text_tag = ('{%s}%s' % (A, name) for name in ('r', 't'))
++    if paragraph.attrib or len(paragraph) != 1 or paragraph[0].tag != run_tag:
++        return None
++    run = paragraph[0]
++    if run.attrib or len(run) != 1 or run[0].tag != text_tag or len(run[0]) or run[0].text != value:
++        return None
++
++    try:
++        _, chain, master, master_name = _text_chain(parts, owner, title)
++    except PresentationRefused:
++        return None  # Preserve the existing unchanged-text behavior outside this profile.
++    if len(chain) != 3:
++        return None
++    layout_title, master_title = chain[1:]
++    inherited = layout_title.find(text_path)
++    layout_box = layout_title.find('{%s}spPr' % P)
++    layout_body = inherited.find(bare_body) if inherited is not None else None
++    layout_list = inherited.find(bare_list) if inherited is not None else None
++    if (layout_box is None or layout_box.attrib or len(layout_box) or
++            layout_body is None or layout_body.attrib or len(layout_body) or
++            layout_list is None or layout_list.attrib or len(layout_list)):
++        return None
++    master_text = master_title.find(text_path)
++    master_body = master_text.find(bare_body) if master_text is not None else None
++    master_list = master_text.find(bare_list) if master_text is not None else None
++    if (master_body is None or master_body.attrib != {
++            'vert': 'horz', 'lIns': '91440', 'rIns': '91440', 'tIns': '45720',
++            'bIns': '45720', 'rtlCol': '0', 'anchor': 'ctr'} or
++            len(master_body) != 1 or master_body[0].tag != '{%s}normAutofit' % A or
++            master_body[0].attrib or len(master_body[0]) or
++            master_list is None or master_list.attrib or len(master_list)):
++        return None
++
++    inherited_overrides = {'{%s}%s' % (A, tag) for tag in ('pPr', 'defRPr', 'rPr', 'endParaRPr')}
++    for parent in (inherited, master_text):
++        for node in parent.iter():
++            if node.tag not in inherited_overrides:
++                continue
++            if (node.tag not in ('{%s}rPr' % A, '{%s}endParaRPr' % A) or len(node) or
++                    node.attrib.keys() - {'lang', 'smtClean'}):
++                return None
++
++    style = master.find('{%s}txStyles/{%s}titleStyle' % (P, P))
++    level_tag = '{%s}lvl1pPr' % A
++    if style is None or len(style) != 1 or style[0].tag != level_tag or style[0].attrib != {
++            'algn': 'ctr', 'defTabSz': '457200', 'rtl': '0', 'eaLnBrk': '1',
++            'latinLnBrk': '0', 'hangingPunct': '1'}:
++        return None
++    level = style[0]
++    if ([node.tag for node in level] != ['{%s}spcBef' % A, '{%s}buNone' % A, '{%s}defRPr' % A] or
++            len(level[0]) != 1 or level[0][0].tag != '{%s}spcPct' % A or level[0][0].attrib != {'val': '0'}):
++        return None
++    defaults = level[2]
++    if (defaults.attrib != {'sz': '4400', 'kern': '1200'} or
++            [node.tag for node in defaults] != ['{%s}%s' % (A, tag)
++                                                for tag in ('solidFill', 'latin', 'ea', 'cs')] or
++            defaults[1].attrib != {'typeface': '+mj-lt'}):
++        return None
++    links = [item for item in _rels(parts, _relpath(master_name)).values()
++             if item.get('Type') == R + '/theme']
++    if len(links) != 1:
++        return None
++    theme = _xml(parts[_resolve(master_name, links[0].get('Target', ''))])
++    major = theme.find('{%s}themeElements/{%s}fontScheme/{%s}majorFont' % (A, A, A))
++    latin = major.findall('{%s}latin' % A) if major is not None else []
++    if (len(latin) != 1 or latin[0].get('typeface') != 'Calibri' or
++            any(item.get('script') == 'Cyrl' for item in major.findall('{%s}font' % A))):
++        return None
++
++    title_box = _plain_box(master_title)
++    body_box = _plain_box(body)
++    body_properties = body.find(text_path + '/' + bare_body)
++    if (title_box is None or body_box is None or body.find(ph_path) is not None or
++            body_properties is None or body_properties.attrib != {'wrap': 'none'} or
++            len(body_properties) != 1 or body_properties[0].tag != '{%s}spAutoFit' % A or
++            body_properties[0].attrib or len(body_properties[0])):
++        return None
++    x, y, width, height = title_box
++    bx, by, bw, bh = body_box
++    if not (min(width, height, bw, bh) > 0 and x < bx + bw and bx < x + width and y < by < y + height):
++        return None
++    inner_width = width - 14.4
++    if advance * 44 <= inner_width:
++        return None
++
++    # Leave width for kerning/rounding and keep a 1.3-em line box above the
++    # lower slot's inset text area. Keep the inherited center anchor and box.
++    center = y + height / 2
++    clear_height = min(height - 7.2, 2 * (by + 3.6 - center - 1.5))
++    points = math.floor(min(0.95 * inner_width / advance, clear_height / 1.3))
++    # Below the supported floor, retain the original unchanged-title behavior.
++    return points * 100 if points >= 16 else None
+ 
+ 
+ def _relpath(owner):
+@@ -366,10 +534,11 @@
+     parts[name] = _tostring(root)
+ 
+ 
+-def create_template_pptx(data, facts, spec):
++def create_template_pptx(data, facts, spec, *, with_title_adjustments=False):
+     """Five existing title/body slots and one existing native table/chart.
+ 
+-    Positions, template fonts, palette and master/layout topology are preserved.
++    Positions, font families, palette and master/layout topology are preserved.
++    A supported overflowing inherited title may use a smaller local run size.
+     Table header keys select source columns; row count and requested flags must
+     match the existing template. Authored prose remains explicitly unverified.
+     """
+@@ -378,7 +547,8 @@
+     if not isinstance(slides, list) or len(slides) != 5:
+         raise PresentationRefused('exactly_five_slides')
+     count_table = count_chart = 0
+-    for name, slide in zip(paths, slides):
++    title_adjustments = []
++    for index, (name, slide) in enumerate(zip(paths, slides), 1):
+         if not isinstance(slide, dict) or set(slide) != {'title', 'body', 'table', 'chart'}:
+             raise PresentationRefused('slide_schema')
+         title = text(slide['title'], limit=256); body = text(slide['body'], empty=True)
+@@ -409,9 +579,15 @@
+         if (len(title_shapes) != 1 or len(body_shapes) != 1 or len(tables) > 1 or len(charts) > 1 or
+                 bool(tables) != slide['table'] or bool(charts) != slide['chart']):
+             raise PresentationRefused('template_slot_topology')
+-        for shape, value in ((title_shapes[0], title), (body_shapes[0], body)):
++        title_shape, body_shape = title_shapes[0], body_shapes[0]
++        title_size = _unchanged_title_size(parts, name, title_shape, body_shape, title) if body else None
++        for shape, value in ((title_shape, title), (body_shape, body)):
+             _text_capacity(parts, name, shape, value)
+             _set_text(shape.find('{%s}txBody' % P), value)
++        if title_size is not None:
++            run = title_shape.find('{%s}txBody/{%s}p/{%s}r' % (P, A, A))
++            run.insert(0, ET.Element('{%s}rPr' % A, sz=str(title_size)))
++            title_adjustments.append({'slide': index, 'from_pt': 44, 'to_pt': title_size // 100})
+         if tables:
+             _table(tables[0], facts); count_table += 1
+         if charts:
+@@ -422,4 +598,4 @@
+         raise PresentationRefused('one_native_table_and_chart')
+     result = _zip(parts)
+     _parts(result)  # The published bytes must pass the same native package gate.
+-    return result
++    return (result, title_adjustments) if with_title_adjustments else result
+diff --git a/hermes_cli/friday_workspace_presentation.py b/hermes_cli/friday_workspace_presentation.py
+--- a/hermes_cli/friday_workspace_presentation.py
++++ b/hermes_cli/friday_workspace_presentation.py
+@@ -116,11 +116,14 @@
+                 from tools.scoped_presentation_template import create_template_pptx
+                 template, template_relative, template_data, template_identity = _read_source(spec['template'], cap, '.pptx')
+                 template_state = [(template, template_data, template_identity)]
+-                rendered = create_template_pptx(template_data, facts, spec)
++                rendered, title_adjustments = create_template_pptx(
++                    template_data, facts, spec, with_title_adjustments=True)
+                 template_info = {'template': template_relative,
+                                  'template_sha256': hashlib.sha256(template_data).hexdigest(),
+-                                 'template_unchanged': True, 'template_style_preserved': True,
++                                 'template_unchanged': True, 'template_style_preserved': not title_adjustments,
+                                  'template_private_parts_removed': True}
++                if title_adjustments:
++                    template_info['template_title_adjustments'] = title_adjustments
+             else:
+                 rendered = render(facts, spec)
+             facts_public = {key: facts[key] for key in ('totals', 'grand_total', 'currency', 'largest_sku')}
