@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Чекпоинт 15:59 МСК 19.11.2026. Установлена 271. Gateway и Dashboard работают, Telegram подключён. ICS сохраняет явно заданную зону и точное время локального события. [Установка и проверка 271](evidence/astra-20261119/core271-installed-ics-explicit-embedded-timezone.json).
+Чекпоинт 16:18 МСК 19.11.2026. Установлена 272. Gateway и Dashboard работают, Telegram подключён. FB2 возвращает координаты абзаца для точного выбора при одинаковом тексте. [Установка и проверка 272](evidence/astra-20261119/core272-installed-fb2-paragraph-location.json).
 
 **17.11.2026, 22:10 МСК.** Дест возобновил работу после [паузы для смены модели](evidence/astra-20261117/owner-model-switch-pause-team-checkpoint.json). Native goal **01a1c688-e36d-7021-8df4-9c5644a4d75b active**, прежний объект и учёт, без токен-бюджета. Обе реальные сессии после переключения работают на **gpt-6.2-sol / ultra** по фактическим turn context. Астра ведёт интеграцию. Настройки принадлежат владельцу. Текущие назначения указаны ниже.
 
@@ -8,11 +8,11 @@
 
 ## Установлено и работает
 
-**[Установлена 271, проект 623, 17 901 нативный файл](evidence/astra-20261119/core271-installed-ics-explicit-embedded-timezone.json).** Коммит исходников 3afcf05da06dc8fb0d697bfb8f210c909e9b1b2a. Квитанция 97e91d9c5402a571a2928404597ac23cde929cafdc41e04b6660c2f5c36c2338. Слой ics-explicit-embedded-timezone-after-source270.
+**[Установлена 272, проект 625, 17 901 нативный файл](evidence/astra-20261119/core272-installed-fb2-paragraph-location.json).** Коммит исходников afee1806542827d2c8263072abf392c962b4f3ff. Квитанция 89b694f12519f3dbeee711ee7e0a870319b95e3525a32ad268f57fd1cefdf4ee. Слой fb2-paragraph-locations-after-source271.
 
-Штатная публикация завершилась с кодом 0. Заменены четыре нативных файла. Откат в изоляции восстановил десять целей, режимы файлов и две отсутствовавшие цели. БД, WAL и SHM сохранены до старта. Три quick_check OK, leases 0. [Предыдущая версия 270](evidence/astra-20261119/core270-installed-p13-cover-page-pagination.json).
+Штатная публикация завершилась с кодом 0. Заменены три нативных файла. Откат в изоляции восстановил девять целей, режимы файлов и две отсутствовавшие цели. БД, WAL и SHM сохранены до старта. Три quick_check OK, leases 0. [Предыдущая версия 271](evidence/astra-20261119/core271-installed-ics-explicit-embedded-timezone.json).
 
-Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032. Загрузка 63c14904, Gateway **504491**, Dashboard **505324**. Обычные пользовательские проверки ждут подтверждённой ротации ключа и свежего допуска.
+Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032. Загрузка 63c14904, Gateway **525186**, Dashboard **526224**. Обычные пользовательские проверки ждут подтверждённой ротации ключа и свежего допуска.
 
 [CSV→typedXLSX, проверка компонента на232](evidence/astra-20261117/core232-installed-csv-component-values-assessed.json) **R2/PASS/independentf5e7a59f**: actual receipt-pinned27Code/11loaded modules, nativeconvert+adapterexecute, genuine92B CSV, XLSX толькоRAM. Exact number1200.50/date2026-04-05/styles/IDs/comments/order/zeroformulas. R1 пропускал проверки значений, сохранён; R2 добавил только их. Permission/source snapshot/revision/parent/publication leaves **inert**: ordinary delivery/runtimeCAS/formal не доказаны. [Принятый Source](evidence/astra-20261117/s05-explicit-locale-csv-direct-import-source-adopted-not-installed.json), [genuinebuilder/preintent](evidence/astra-20261117/core232-exact-next-source-genuine-builder-ready-not-installed.json) — исторические стадии до установки, не текущий NOT_INSTALLED.
 
@@ -160,7 +160,7 @@ Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw
 
 **FB2.** На установленных компонентах 243 проверены Unicode, адресная замена выбранного абзаца и сохранение исходника. Writer открыл оба точных FB2 и сохранил в наблюдаемой модели два заголовка глав и пять абзацев. Изменилась только выбранная строка, совпадающий текст в другой главе сохранился. Название книги осталось в FB2, но отсутствует в экспорте Writer. Обычная выдача и формальная приёмка открыты. [Открытие в Writer](evidence/astra-20261119/fb2-exact-retained-writer-chapters.json), [штатный компонент](evidence/astra-20261119/core244-installed-xlsx-guard-and-row-guidance.json).
 
-**FB2, адресное чтение.** Кандидат поверх установленной 271 связывает полную строку с координатами абзаца. Два совпадающих абзаца получили разные координаты. Обрезанная строка остаётся читаемой без координат. Подсказка ICS сохранена в обеих схемах. Прямой и обратный патч проверены на трёх точных предобразах 271. Штатная сборка, установка и обычная приёмка открыты. [Кандидат 272](evidence/astra-20261119/core272-fb2-paragraph-location-composition.json).
+**FB2, адресное чтение.** В 272 штатный компонент вернул две разные координаты равных абзацев на сохранённом исходнике. На уже исправленной копии координаты сохранились и изменился только выбранный абзац. Обрезанное окно не выдало координаты для неполного абзаца. В обычной подсказке сохранились параметры ICS. Исходники неизменны. Обычная выдача и формальная F01/F03 открыты. [Установленная проверка](evidence/astra-20261119/core272-installed-fb2-paragraph-location.json), [исходники](evidence/astra-20261119/core272-fb2-paragraph-location-composition.json).
 
 **Установка 243.** После штатного обновления unit исторические транзакции проверяются по сохранённым доказательствам, а действующий unit по его байтам. [Подготовка и CAS11](evidence/astra-20261119/core243-exact-next-source-genuine-builder-ready-not-installed.json), [фактическая установка](evidence/astra-20261119/core243-installed-gateway-boot-and-presentation-declarations.json). Остаток V01/V06/V08 — обычное исполнение и приёмка по исходным критериям.
 
