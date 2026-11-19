@@ -127,6 +127,7 @@ LAYER_NAMES = (
     'ocr-omission-disclosure-after-source262',
     'passive-layered-pdf-redaction-after-source263',
     'telegram-tiff-document-ingress-after-source264',
+    'structured-file-password-containment-after-source265',
 )
 # Draft binding barrier: no request generation or publication may read the installed
 # home for this selected edge until the exact frozen manifest and patch are supplied.
@@ -1128,6 +1129,44 @@ CURRENT_SOURCE_SIXTY_SEVENTH_NATIVE_FILES = (
         'new_file': False,
         'path': 'plugins/platforms/telegram/telegram_file_boundary.py',
         'sha256': '3ee6bbd98393311aab50909fbd87c0a380fe11158e151834a73d952d31750e24',
+    },
+)
+
+# Exact Source266 layer and the closed Core265 predecessor it extends.
+CURRENT_SOURCE_SIXTY_EIGHTH_LAYER = 'structured-file-password-containment-after-source265'
+CURRENT_SOURCE_SIXTY_EIGHTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v68'
+CURRENT_SOURCE_SIXTY_EIGHTH_MANIFEST_SHA256 = '9c4f5b0be1c44dc421b5efd3f12a992f6f67037668edfdf62d904b6268290d7d'
+CURRENT_SOURCE_SIXTY_EIGHTH_PATCH_SHA256 = 'a0292e0a455f9c81bc6475d984cdaa9c4e1fe4c1a86c8e66f5d684babe99d00a'
+CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_REQUEST_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_COMMITTED_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_RECEIPT_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_MARKER_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_STAMP_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SIXTY_EIGHTH_HELPER = 'scripts/friday_ordinary_install.py'
+CURRENT_SOURCE_SIXTY_EIGHTH_NATIVE_FILES = (
+    {
+        'before_sha256': '08823b1e54f6aa78f49ebf1f0f92092f9c558bd982c3961ef9ed8cd99642f5ec',
+        'bytes': 49106,
+        'mode': '100644',
+        'new_file': False,
+        'path': 'agent/message_sanitization.py',
+        'sha256': 'c8b0ac1946e57badd9488da17bb3e8a9e7dd72d3d7acb063f9666f106897e3e2',
+    },
+    {
+        'before_sha256': '55ec1efe69d66eafedadc97150f4e057f1e00936299e191619410478be8e1c41',
+        'bytes': 15813,
+        'mode': '100644',
+        'new_file': False,
+        'path': 'agent/turn_tool_round.py',
+        'sha256': '3082e4eff0d5f073e8f4b3c61e8fd8e7e3d46b692062065c948490857f831f7b',
+    },
+    {
+        'before_sha256': '8d5c84fb2aec4ff030aec822351c8559298faea15c6267d78ebcf925b8416309',
+        'bytes': 15530,
+        'mode': '100644',
+        'new_file': False,
+        'path': 'tools/tool_search_validation.py',
+        'sha256': '6778a3374d5f05da029e1832d4cea9e65d99cd5e8c3d67dafd6565ab4a6cf501',
     },
 )
 
@@ -3869,6 +3908,103 @@ def require_sixty_seventh_predecessor(request, previous, *, raw=None):
     return committed_path, committed_raw
 
 
+def sixty_eighth_predecessor_ref(home):
+    pin = CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_REQUEST_SHA256
+    path = Path(home) / "preparation" / f"ordinary-source-update-v45-{pin[:16]}" / "request.json"
+    return {"path": str(path), "sha256": pin}
+
+
+def sixty_eighth_metadata_refs(home):
+    metadata = {
+        "marker": ("FRIDAY-INSTALL.json", CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_MARKER_SHA256),
+        "source_receipt": ("hermes-agent.source.json", CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_RECEIPT_SHA256),
+        "target_receipt": ("hermes-agent.source.json", CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_RECEIPT_SHA256),
+        "stamp": ("hermes-agent/install-stamp.json", CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_STAMP_SHA256),
+    }
+    return {key: {"path": str(Path(home) / relative), "sha256": sha256}
+            for key, (relative, sha256) in metadata.items()}
+
+
+def require_sixty_eighth_source_binding(layer_names, project_files=None, *, request=None):
+    """Bind the exact Source265 to Source266 publication before reading its inputs."""
+    layer = CURRENT_SOURCE_SIXTY_EIGHTH_LAYER
+    selected = isinstance(layer_names, (list, tuple)) and layer in layer_names
+    context = request.get("current_source_successor") if request is not None else None
+    context_selected = (type(context) is dict
+                        and context.get("schema") == CURRENT_SOURCE_SIXTY_EIGHTH_SUCCESSOR_SCHEMA)
+    if not selected and not context_selected:
+        return
+    require(selected and tuple(layer_names) == (layer,),
+            "transaction_current_source_exact_sixty_eighth_layer_required")
+    pins = (CURRENT_SOURCE_SIXTY_EIGHTH_MANIFEST_SHA256, CURRENT_SOURCE_SIXTY_EIGHTH_PATCH_SHA256,
+            CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_REQUEST_SHA256, CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_COMMITTED_SHA256,
+            CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_RECEIPT_SHA256, CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_MARKER_SHA256,
+            CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_STAMP_SHA256)
+    require(CURRENT_SOURCE_SIXTY_EIGHTH_NATIVE_FILES and all(
+            type(pin) is str and __import__("re").fullmatch("[0-9a-f]{64}", pin) for pin in pins),
+            "transaction_current_source_sixty_eighth_binding_required")
+    manifest = f"patches/hermes/{layer}-manifest.json"
+    patch = f"patches/hermes/{layer}.patch"
+    if request is not None:
+        require(request.get("schema") == SCHEMA_EXPLICIT and context_selected
+                and set(context) == {"schema", "root_project_update", "previous_native_update"},
+                "transaction_current_source_sixty_eighth_context_required")
+        home = request.get("home")
+        require(type(home) is str and Path(home).is_absolute(),
+                "transaction_current_source_sixty_eighth_home_required")
+        require(context["previous_native_update"] == sixty_eighth_predecessor_ref(home),
+                "transaction_current_source_sixty_eighth_previous_request_pin_changed")
+        for key, ref in sixty_eighth_metadata_refs(home).items():
+            require(request.get(key) == ref,
+                    "transaction_current_source_sixty_eighth_previous_metadata_pin_changed:" + key)
+        require(request.get("current_input") == request.get("candidate_input")
+                and request.get("current_input") != request.get("previous_input"),
+                "transaction_current_source_sixty_eighth_input_pin_changed")
+        project_files = request.get("project_inventory")
+        require(request.get("installed_layers") == 265 and request.get("installed_files") == 17901
+                and type(project_files) is dict and len(project_files) == 613,
+                "transaction_current_source_sixty_eighth_inventory_count_changed")
+        require(request.get("layer_manifest_updates") == [manifest]
+                and request.get("project_file_updates") == [CURRENT_SOURCE_SIXTY_EIGHTH_HELPER]
+                and all(request.get(key) == [] for key in ("plugin_set", "plugin_additions", "staged_files")),
+                "transaction_current_source_sixty_eighth_project_scope_changed")
+    if project_files is not None:
+        require(type(project_files) is dict
+                and project_files.get(manifest) == CURRENT_SOURCE_SIXTY_EIGHTH_MANIFEST_SHA256
+                and project_files.get(patch) == CURRENT_SOURCE_SIXTY_EIGHTH_PATCH_SHA256,
+                "transaction_current_source_sixty_eighth_binding_pair_changed")
+
+
+def require_sixty_eighth_predecessor(request, previous, *, raw=None):
+    """Check the exact retained v67 request and its successful commit."""
+    context = request["current_source_successor"]
+    ref = context["previous_native_update"]
+    require(ref == sixty_eighth_predecessor_ref(request["home"]),
+            "transaction_current_source_sixty_eighth_previous_request_pin_changed")
+    path = Path(ref["path"])
+    committed_path = path.with_name("committed.json")
+    require(path.resolve() == path and committed_path.resolve() == committed_path,
+            "transaction_current_source_sixty_eighth_previous_request_path_changed")
+    raw = owned_file(path) if raw is None else raw
+    require(digest(raw) == ref["sha256"],
+            "transaction_current_source_sixty_eighth_previous_request_changed")
+    predecessor = json.loads(raw)
+    previous_context = predecessor["current_source_successor"]
+    require(predecessor["schema"] == SCHEMA_EXPLICIT
+            and predecessor["home"] == request["home"]
+            and predecessor["layer_names"] == [CURRENT_SOURCE_SIXTY_SEVENTH_LAYER]
+            and predecessor["current_input"] == request["previous_input"]
+            and len(previous["project_files"]) == 611
+            and predecessor["project_inventory"] == previous["project_files"]
+            and previous_context["schema"] == CURRENT_SOURCE_SIXTY_SEVENTH_SUCCESSOR_SCHEMA
+            and previous_context["root_project_update"] == context["root_project_update"],
+            "transaction_current_source_sixty_seventh_predecessor_lineage_changed")
+    committed_raw = owned_file(committed_path)
+    require(digest(committed_raw) == CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_COMMITTED_SHA256,
+            "transaction_current_source_sixty_eighth_previous_committed_changed")
+    return committed_path, committed_raw
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -4478,6 +4614,14 @@ def check_project_inventory(request, previous_input, current_input):
     current_files = current_input["project_files"]
     additions = {f"patches/hermes/{name}-manifest.json" for name in layer_names} | \
                 {f"patches/hermes/{name}.patch" for name in layer_names}
+    if layer_names == (CURRENT_SOURCE_SIXTY_EIGHTH_LAYER,):
+        helper = CURRENT_SOURCE_SIXTY_EIGHTH_HELPER
+        require(len(previous_files) == 611 and current_files.keys() - previous_files.keys() == additions
+                and helper in previous_files and helper in current_files
+                and previous_files[helper] != current_files[helper]
+                and all(current_files.get(name) == sha for name, sha in previous_files.items()
+                        if name != helper),
+                "transaction_current_source_sixty_eighth_project_scope_changed")
     if layer_names == (CURRENT_SOURCE_SIXTY_SEVENTH_LAYER,):
         helper = CURRENT_SOURCE_SIXTY_SEVENTH_HELPER
         require(len(previous_files) == 609 and current_files.keys() - previous_files.keys() == additions
@@ -4727,6 +4871,10 @@ def read_layers(candidate_root, receipt, home, project_files, layer_names):
     that is applied is provably the reviewed one. The manifest body, the patch bytes and
     the file preimages are then compared with each other, never a file with itself.
     """
+    require_sixty_eighth_source_binding(layer_names, project_files or {})
+    if CURRENT_SOURCE_SIXTY_EIGHTH_LAYER in layer_names:
+        require(digest(encoded(receipt)) == CURRENT_SOURCE_SIXTY_EIGHTH_PREVIOUS_RECEIPT_SHA256,
+                "transaction_current_source_sixty_eighth_previous_receipt_changed")
     require_sixty_seventh_source_binding(layer_names, project_files or {})
     if CURRENT_SOURCE_SIXTY_SEVENTH_LAYER in layer_names:
         require(digest(encoded(receipt)) == CURRENT_SOURCE_SIXTY_SEVENTH_PREVIOUS_RECEIPT_SHA256,
@@ -4863,6 +5011,9 @@ def read_layers(candidate_root, receipt, home, project_files, layer_names):
                 "transaction_layer_base_commit_changed")
         files = body.get("files")
         require(isinstance(files, list) and files, "transaction_layer_files_required")
+        if name == CURRENT_SOURCE_SIXTY_EIGHTH_LAYER:
+            require(files == list(CURRENT_SOURCE_SIXTY_EIGHTH_NATIVE_FILES),
+                    "transaction_current_source_sixty_eighth_native_scope_changed")
         if name == CURRENT_SOURCE_SIXTY_SEVENTH_LAYER:
             require(files == list(CURRENT_SOURCE_SIXTY_SEVENTH_NATIVE_FILES),
                     "transaction_current_source_sixty_seventh_native_scope_changed")
@@ -5224,7 +5375,8 @@ def current_source_request_bytes(request, request_path, request_sha256):
                     CURRENT_SOURCE_SIXTY_FOURTH_SUCCESSOR_SCHEMA,
                     CURRENT_SOURCE_SIXTY_FIFTH_SUCCESSOR_SCHEMA,
                     CURRENT_SOURCE_SIXTY_SIXTH_SUCCESSOR_SCHEMA,
-                    CURRENT_SOURCE_SIXTY_SEVENTH_SUCCESSOR_SCHEMA)
+                    CURRENT_SOURCE_SIXTY_SEVENTH_SUCCESSOR_SCHEMA,
+                    CURRENT_SOURCE_SIXTY_EIGHTH_SUCCESSOR_SCHEMA)
                 and set(context) == {"schema", "root_project_update", "previous_native_update"},
                 "transaction_current_source_context_required")
         references = ("root_project_update", "previous_native_update")
@@ -5329,6 +5481,7 @@ def current_source_consumer_checked(value, request, candidate, *, committed=Fals
 def run(request, request_path, request_sha256):
     global INJECT_AFTER_RENAME, INJECT_TARGET, INJECT_SNAPSHOT_DIR, INJECT_SNAPSHOT_FILES
     global INJECT_SNAPSHOT_HOME
+    require_sixty_eighth_source_binding(request.get("layer_names", ()), request=request)
     require_sixty_seventh_source_binding(request.get("layer_names", ()), request=request)
     require_sixty_sixth_source_binding(request.get("layer_names", ()), request=request)
     require_sixty_fifth_source_binding(request.get("layer_names", ()), request=request)
@@ -5413,7 +5566,8 @@ def run(request, request_path, request_sha256):
         CURRENT_SOURCE_SIXTY_FOURTH_SUCCESSOR_SCHEMA,
         CURRENT_SOURCE_SIXTY_FIFTH_SUCCESSOR_SCHEMA,
         CURRENT_SOURCE_SIXTY_SIXTH_SUCCESSOR_SCHEMA,
-        CURRENT_SOURCE_SIXTY_SEVENTH_SUCCESSOR_SCHEMA)
+        CURRENT_SOURCE_SIXTY_SEVENTH_SUCCESSOR_SCHEMA,
+        CURRENT_SOURCE_SIXTY_EIGHTH_SUCCESSOR_SCHEMA)
     forty_third = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_THIRD_SUCCESSOR_SCHEMA
     forty_fourth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_FOURTH_SUCCESSOR_SCHEMA
     forty_fifth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_FIFTH_SUCCESSOR_SCHEMA
@@ -5421,6 +5575,7 @@ def run(request, request_path, request_sha256):
     forty_seventh = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_SEVENTH_SUCCESSOR_SCHEMA
     forty_eighth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_EIGHTH_SUCCESSOR_SCHEMA
     forty_ninth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_NINTH_SUCCESSOR_SCHEMA
+    sixty_eighth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_SIXTY_EIGHTH_SUCCESSOR_SCHEMA
     sixty_seventh = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_SIXTY_SEVENTH_SUCCESSOR_SCHEMA
     sixty_sixth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_SIXTY_SIXTH_SUCCESSOR_SCHEMA
     sixty_fifth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_SIXTY_FIFTH_SUCCESSOR_SCHEMA
@@ -5439,7 +5594,7 @@ def run(request, request_path, request_sha256):
     fifty_second = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FIFTY_SECOND_SUCCESSOR_SCHEMA
     fifty_first = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FIFTY_FIRST_SUCCESSOR_SCHEMA
     fiftieth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FIFTIETH_SUCCESSOR_SCHEMA
-    bound_current = forty_third or forty_fourth or forty_fifth or forty_sixth or forty_seventh or forty_eighth or forty_ninth or fiftieth or fifty_first or fifty_second or fifty_third or fifty_fourth or fifty_fifth or fifty_sixth or fifty_seventh or fifty_eighth or fifty_ninth or sixtieth or sixty_first or sixty_second or sixty_third or sixty_fourth or sixty_fifth or sixty_sixth or sixty_seventh
+    bound_current = forty_third or forty_fourth or forty_fifth or forty_sixth or forty_seventh or forty_eighth or forty_ninth or fiftieth or fifty_first or fifty_second or fifty_third or fifty_fourth or fifty_fifth or fifty_sixth or fifty_seventh or fifty_eighth or fifty_ninth or sixtieth or sixty_first or sixty_second or sixty_third or sixty_fourth or sixty_fifth or sixty_sixth or sixty_seventh or sixty_eighth
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")
@@ -5511,6 +5666,8 @@ def run(request, request_path, request_sha256):
         native_committed_path, native_committed_raw = require_forty_fifth_predecessor(request, previous_input)
     if forty_sixth:
         native_committed_path, native_committed_raw = require_forty_sixth_predecessor(request, previous_input)
+    if sixty_eighth:
+        native_committed_path, native_committed_raw = require_sixty_eighth_predecessor(request, previous_input)
     if sixty_seventh:
         native_committed_path, native_committed_raw = require_sixty_seventh_predecessor(request, previous_input)
     if sixty_sixth:
@@ -5661,6 +5818,25 @@ def run(request, request_path, request_sha256):
                           ("stamp", "hermes-agent/install-stamp.json")):
             before_pins[str(home / name)] = {"sha256": request[key]["sha256"]}
         require(not request.get("staged_files"), "transaction_v5_unexpected_staged_target")
+        if sixty_eighth:
+            layer = CURRENT_SOURCE_SIXTY_EIGHTH_LAYER
+            expected_targets = {
+                *(source / row["path"] for row in CURRENT_SOURCE_SIXTY_EIGHTH_NATIVE_FILES),
+                home / f"patches/hermes/{layer}-manifest.json",
+                home / f"patches/hermes/{layer}.patch",
+                home / CURRENT_SOURCE_SIXTY_EIGHTH_HELPER,
+                home / "hermes-agent.source.json",
+                home / "FRIDAY-INSTALL.json",
+                home / "hermes-agent/install-stamp.json",
+            }
+            require(set(before_pins) == {str(target) for target in expected_targets},
+                    "transaction_current_source_sixty_eighth_cas_scope_changed")
+            for name, mode in (
+                ('agent/message_sanitization.py', 0o600),
+                ('agent/turn_tool_round.py', 0o644),
+                ('tools/tool_search_validation.py', 0o644),
+            ):
+                before_pins[str(source / name)]["mode"] = mode
         if sixty_seventh:
             layer = CURRENT_SOURCE_SIXTY_SEVENTH_LAYER
             expected_targets = {
@@ -6193,6 +6369,9 @@ def run(request, request_path, request_sha256):
         if forty_sixth:
             require(owned_file(native_committed_path) == native_committed_raw,
                     "transaction_current_source_forty_sixth_previous_committed_changed")
+        if sixty_eighth:
+            require(owned_file(native_committed_path) == native_committed_raw,
+                    "transaction_current_source_sixty_eighth_previous_committed_changed")
         if sixty_seventh:
             require(owned_file(native_committed_path) == native_committed_raw,
                     "transaction_current_source_sixty_seventh_previous_committed_changed")
