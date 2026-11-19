@@ -6652,7 +6652,8 @@ def _current_source_eighty_fourth_successor_checked(value, request, *, cli_only,
     if marker.get('input_sha256') == request['current_input']['sha256']:
         selected_tx = _current_source_cp_transactions(home, request['current_input'])
         f.require(selected_tx is not None, 'ordinary_current_successor_leaf_journal_required')
-        marker = _current_source_json(selected_tx/'before'/f.MARKER)
+        marker = _current_source_json(selected_tx/'before'/f.MARKER,
+            expected_sha256=CURRENT_SOURCE_EIGHTY_FOURTH_PREVIOUS_MARKER)
     proof = _CurrentSourceEightyFourthHistory(eighty_third_ref, eighty_third_context['previous_native_update'],
         context['root_project_update'], request['previous_input'], context,
         _seal=_CURRENT_SOURCE_EIGHTY_FOURTH_HISTORY_SEAL)
@@ -14553,7 +14554,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
 
 
     _current_source_reference(request['previous_input']); _current_source_reference(request['current_input'])
-    current = _current_source_json(Path(request['current_input']['path']))
+    current = _current_source_json(Path(request['current_input']['path']),
+        expected_sha256=request['current_input']['sha256'])
     f.require(encoded(value) == encoded(current) and current.get('home') == str(home)
         and encoded(request['previous_input']) == encoded(previous_ref)
         and request['previous_input']['sha256'] != request['current_input']['sha256']
