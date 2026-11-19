@@ -1,0 +1,56 @@
+diff --git a/tools/scoped_word_profiles.py b/tools/scoped_word_profiles.py
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -514,8 +514,8 @@
+     from tools.scoped_word_review import has_review_layers, extract_review_layers
+     from tools.scoped_word_stories import append_stored_stories
+     if has_review_layers(package):
+-        return append_stored_stories(package, extract_review_layers(package, checkpoint=checkpoint),
+-                                     checkpoint=checkpoint)
++        review = extract_review_layers(package, checkpoint=checkpoint, allow_comment_ranges_in_revisions=True)
++        return append_stored_stories(package, review, checkpoint=checkpoint)
+     rows = []
+     output_bytes = 0
+     paragraphs = tables = 0
+diff --git a/tools/scoped_word_review.py b/tools/scoped_word_review.py
+--- a/tools/scoped_word_review.py
++++ b/tools/scoped_word_review.py
+@@ -15,7 +15,8 @@
+ COMMENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml'
+ MAX_REVIEW_ITEMS = 4096
+ W14 = 'http://schemas.microsoft.com/office/word/2010/wordml'
+-_MARKERS = {_q(W, name) for name in ('commentRangeStart', 'commentRangeEnd', 'commentReference')}
++_RANGE_MARKERS = {_q(W, name) for name in ('commentRangeStart', 'commentRangeEnd')}
++_MARKERS = _RANGE_MARKERS | {_q(W, 'commentReference')}
+ _SKIP = {'pPr', 'rPr', 'rt', 'proofErr', 'bookmarkStart', 'bookmarkEnd'}
+
+
+@@ -74,7 +75,7 @@
+     return ''
+
+
+-def extract_review_layers(package, *, checkpoint=None):
++def extract_review_layers(package, *, checkpoint=None, allow_comment_ranges_in_revisions=False):
+     parents = {child: parent for parent in package.body.iter() for child in parent}
+     paragraphs = list(package.body.iter(_q(W, 'p')))
+     if len(paragraphs) > MAX_PARAGRAPHS:
+@@ -99,9 +100,17 @@
+         if key in seen_revisions:
+             _fail('duplicate_review_id')
+         seen_revisions.add(key)
++        run_tag = _q(W, 'r')
++        # Word can place zero-width comment range markers between revision runs.
+         is_supported = (node.tag in (_q(W, 'ins'), _q(W, 'del'))
+-                        and parent in pnum and bool(list(node))
+-                        and all(child.tag == _q(W, 'r') for child in node))
++                        and parent in pnum
++                        and any(child.tag == run_tag for child in node)
++                        and all(child.tag == run_tag or (
++                            allow_comment_ranges_in_revisions and child.tag in _RANGE_MARKERS
++                            and len(child) == 0
++                            and not (child.text or '').strip()
++                            and not (child.tail or '').strip()
++                        ) for child in node))
+         if is_supported:
+             for child in node.iter():
+                 if child is node:
