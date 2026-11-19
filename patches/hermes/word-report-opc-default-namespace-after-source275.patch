@@ -1,0 +1,94 @@
+diff --git a/tools/scoped_opc.py b/tools/scoped_opc.py
+new file mode 100644
+--- /dev/null
++++ b/tools/scoped_opc.py
+@@ -0,0 +1,26 @@
++"""Serialize OPC manifests and relationship parts with a local default namespace."""
++
++from copy import deepcopy
++from xml.etree import ElementTree as ET
++
++
++def opc_xml(root, namespace):
++    # Some OPC readers compare raw element names. Use a default namespace for
++    # this tree while keeping its attributes and ElementTree's registry intact.
++    root = deepcopy(root)
++    prefix = '{%s}' % namespace
++
++    def use_default(node, in_default_namespace):
++        if node.tag.startswith(prefix):
++            node.tag = node.tag[len(prefix):]
++            if not in_default_namespace:
++                node.set('xmlns', namespace)
++                in_default_namespace = True
++        elif in_default_namespace and not node.tag.startswith('{'):
++            node.set('xmlns', '')
++            in_default_namespace = False
++        for child in node:
++            use_default(child, in_default_namespace)
++
++    use_default(root, False)
++    return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+diff --git a/tools/scoped_presentation_merge.py b/tools/scoped_presentation_merge.py
+--- a/tools/scoped_presentation_merge.py
++++ b/tools/scoped_presentation_merge.py
+@@ -9,6 +9,7 @@
+ import posixpath
+ from xml.etree import ElementTree as ET
+ 
++from tools.scoped_opc import opc_xml as _opc_xml
+ from tools.scoped_presentation_write import (
+     P, A, C, R, PR, PresentationRefused, _parts, _xml, _tostring, _resolve,
+     _rels, _zip, MAX_MEMBERS,
+@@ -35,28 +36,6 @@
+ 
+ def refuse(reason):
+     raise PresentationRefused(reason)
+-
+-
+-def _opc_xml(root, namespace):
+-    # Some OPC readers compare raw element names. Use a default namespace for
+-    # this tree while keeping its attributes and ElementTree's registry intact.
+-    root = deepcopy(root)
+-    prefix = '{%s}' % namespace
+-
+-    def use_default(node, in_default_namespace):
+-        if node.tag.startswith(prefix):
+-            node.tag = node.tag[len(prefix):]
+-            if not in_default_namespace:
+-                node.set('xmlns', namespace)
+-                in_default_namespace = True
+-        elif in_default_namespace and not node.tag.startswith('{'):
+-            node.set('xmlns', '')
+-            in_default_namespace = False
+-        for child in node:
+-            use_default(child, in_default_namespace)
+-
+-    use_default(root, False)
+-    return _tostring(root)
+ 
+ 
+ def _relname(owner):
+diff --git a/tools/scoped_word_report.py b/tools/scoped_word_report.py
+--- a/tools/scoped_word_report.py
++++ b/tools/scoped_word_report.py
+@@ -10,6 +10,7 @@
+ 
+ from hermes_cli.friday_workspace_docx import _text, _paragraph, render as render_docx
+ from hermes_cli.friday_user_scope import ScopeDenied
++from tools.scoped_opc import opc_xml
+ from tools.scoped_word_profiles import _Package, WordProfileError, MAX_BYTES, W, R, PKG, CT, _q
+ 
+ 
+@@ -101,8 +102,9 @@
+     position=settings_raw.index(anchor)
+     addition=('<fr:updateFields xmlns:fr="'+W+'" fr:val="true"/>').encode()
+     parts['word/settings.xml']=settings_raw[:position]+addition+settings_raw[position:]
+-    for name,root in [('word/document.xml',document),('word/_rels/document.xml.rels',rels),('[Content_Types].xml',types)]:
+-        parts[name]=ET.tostring(root,encoding='utf-8',xml_declaration=True)
++    parts['word/document.xml'] = ET.tostring(document, encoding='utf-8', xml_declaration=True)
++    parts['word/_rels/document.xml.rels'] = opc_xml(rels, PKG)
++    parts['[Content_Types].xml'] = opc_xml(types, CT)
+     output=BytesIO()
+     with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED)as archive:
+         for info in infos:archive.writestr(info,parts.pop(info.filename))
