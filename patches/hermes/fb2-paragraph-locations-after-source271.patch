@@ -1,0 +1,167 @@
+--- a/tools/scoped_fb2.py
++++ b/tools/scoped_fb2.py
+@@ -180,8 +180,23 @@
+             fail('fb2_unstructured_text')
+     return root, spans, state
+ 
++def _plain_text_start(data, start, end):
++    # Locate only the already-parsed start tag's terminator. Quotes may contain
++    # literal '>'; byte scanning is safe for the enforced UTF-8 edit profile.
++    quote = None; begin = None
++    for pos in range(start, end):
++        c = data[pos]
++        if quote is not None:
++            if c == quote: quote = None
++        elif c in (34, 39): quote = c
++        elif c == 62: begin = pos + 1; break
++    if begin is not None and b'<' not in data[begin:end]:
++        return begin
++    return None
++
++
+ def extract_fb2(data, *, checkpoint=None):
+-    root, _, state = _load(data, checkpoint)
++    root, spans, state = _load(data, checkpoint)
+     desc = root.find(q('description')); info = desc.find(q('title-info')); doc = desc.find(q('document-info'))
+     value = lambda node: ''.join(node.itertext()).strip() if node is not None else ''
+     authors = []
+@@ -213,21 +228,47 @@
+     out.append('Language: ' + meta['language'])
+     blocks = {'p', 'subtitle', 'v', 'text-author', 'th', 'td'}
+     items = 0
++    locations_by_block = {}
++    utf8_source = state['encoding'] in (None, 'utf-8', 'utf8') and b'\x00' not in data
+     for index, body in enumerate(root.findall(q('body')), 1):
+         out.append('[Body ' + str(index) + (' ' + body.get('name') if body.get('name') else '') + ']')
++        # These are direct child ordinals, as in edit_fb2. Unsupported paragraphs
++        # still occupy their ordinal, and their text is still read in source order.
++        ordinals = {
++            node: (index, section, paragraph)
++            for section, child in enumerate(body.findall(q('section')), 1)
++            for paragraph, node in enumerate(child.findall(q('p')), 1)
++            if section <= MAX_ITEMS and paragraph <= MAX_ITEMS
++        } if utf8_source else {}
+         for node in body.iter():
+             name = local(node)
+             if name in blocks:
+                 items += 1
+                 if items > MAX_ITEMS: fail('fb2_body_item_limit')
+                 # Images contain no text and are omitted; links remain stored display text.
+-                out.append(''.join(node.itertext()))
++                block = ''.join(node.itertext())
++                if (node in ordinals and not len(node) and not node.attrib and block.strip()
++                        and block.splitlines() == [block] and len(block.encode('utf-8')) <= 100_000
++                        and _plain_text_start(data, *spans[node]) is not None):
++                    locations_by_block[len(out)] = ordinals[node]
++                out.append(block)
+             elif name == 'empty-line': out.append('')
+     rendered = '\n'.join(out)
+     if len(rendered.encode('utf-8')) > MAX_TEXT: fail('fb2_output_text_limit')
+     meta['text_blocks'] = items
++    result = _Text(rendered, meta)
++    result.fb2_locations = {}
++    line = 1
++    for index, block in enumerate(out):
++        if index in locations_by_block:
++            body, section, paragraph = locations_by_block[index]
++            result.fb2_locations[line] = {
++                'line': line, 'body': body, 'section': section, 'paragraph': paragraph,
++            }
++        # Match scoped_file's splitlines(), including a CR paired with the join LF.
++        line += len((block + '\n').splitlines())
+     tick(checkpoint)
+-    return _Text(rendered, meta)
++    return result
+ 
+ def create_fb2(content, *, checkpoint=None):
+     spec = object_spec(content)
+@@ -296,16 +337,8 @@
+     if (target.text or '') != old: fail('fb2_target_old_text_mismatch')
+     target_index = list(root.iter(q('p'))).index(target)
+     start, end = spans[target]
+-    # Locate only the already-parsed start tag's terminator. Quotes may contain
+-    # literal '>'; byte scanning is safe for the enforced UTF-8 edit profile.
+-    quote = None; begin = None
+-    for pos in range(start, end):
+-        c = data[pos]
+-        if quote is not None:
+-            if c == quote: quote = None
+-        elif c in (34, 39): quote = c
+-        elif c == 62: begin = pos + 1; break
+-    if begin is None or data[begin:end].find(b'<') >= 0: fail('fb2_edit_complex_lexical_content')
++    begin = _plain_text_start(data, start, end)
++    if begin is None: fail('fb2_edit_complex_lexical_content')
+     result = data[:begin] + _xml_text(new).encode('utf-8') + data[end:]
+     if len(result) > MAX_INPUT: fail('fb2_output_limit')
+     changed, _, _ = _load(result, checkpoint)
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -972,6 +972,7 @@
+             extraction_metadata = None
+             encryption_metadata = None
+             source_sha256 = None
++            fb2_locations = None
+             def misnamed_docx(data, claimed_format, checkpoint):
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+                 checkpoint()
+@@ -1074,6 +1075,8 @@
+                                 'was returned.'}
+                         return json.dumps(failure)
+                 check_document()
++                if document_format == 'fb2':
++                    fb2_locations = text.fb2_locations
+                 lines = text.splitlines()
+             else:
+                 data, version = revision.snapshot(fd, parts[-1], require_utf8=False)
+@@ -1164,6 +1167,22 @@
+                     text = lines[n][start:]
+                     prefix = ('\n' if result['content'] else '') + f'{n+1}: '
+                     prior = result['content']
++                    location = fb2_locations.get(n+1) if fb2_locations and start == 0 else None
++                    if location is not None:
++                        # Keep the complete FB2 line and selector together when they
++                        # fit. A tight page can fall back to the original text path.
++                        result.update(content=prior+prefix+text, partial=n+1 != len(lines),
++                                      next_offset=n+2, next_char_offset=0)
++                        locations = result.setdefault('fb2_locations', [])
++                        locations.append(location)
++                        if serialized_bytes(encode()) <= budget:
++                            continue
++                        locations.pop()
++                        if not locations:
++                            del result['fb2_locations']
++                        result.update(content=prior, partial=True, next_offset=n+1, next_char_offset=start)
++                        if prior:
++                            break
+                     low, high = 0, len(text)
+                     while low < high:
+                         mid = (low + high + 1) // 2
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -15,7 +15,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1.macro-spreadsheet-edit.v1.document-pdf-export.v2.vdx-read.v1.visio-opc-profiles.v1.vsd-partial-read.v1.svg-static.v1.msg-partial-read.v1.msg-native-write.v1.fb2-native.v1.legacy-openoffice-read.v1.dbf-tables.v1.xps-read.v1.dif-slk-tables.v1.abw-native.v1.lha-read-extract.v1.odf-formula-write.v1.arj-native.v1.xps-text-write.v1.vdx-native-write.v1.xlsb-write.v1.epub-native.v1.access-read.v1.pub-stored-text.v1.onenote-current-text.v1.mpp-task-name-edit.v1.mpp9-task-catalog.v1.pub-text-edit.v1.mpp12-mpp14-task-catalog.v1.onenote-text-edit.v1.eml-attachment.v1.text-edit.v1.source-semantic-edit-contract.v1.ooxml-password-edit.v1.merge-provenance.v1.necessary-source-clarification.v1.xlsx-numeric-edit.v1.ics-utc-create.v1.pdf-text-docx.v1.pdf-ocr-docx.v1.ics-embedded-timezone-create.v1'
++DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1.macro-spreadsheet-edit.v1.document-pdf-export.v2.vdx-read.v1.visio-opc-profiles.v1.vsd-partial-read.v1.svg-static.v1.msg-partial-read.v1.msg-native-write.v1.fb2-native.v1.legacy-openoffice-read.v1.dbf-tables.v1.xps-read.v1.dif-slk-tables.v1.abw-native.v1.lha-read-extract.v1.odf-formula-write.v1.arj-native.v1.xps-text-write.v1.vdx-native-write.v1.xlsb-write.v1.epub-native.v1.access-read.v1.pub-stored-text.v1.onenote-current-text.v1.mpp-task-name-edit.v1.mpp9-task-catalog.v1.pub-text-edit.v1.mpp12-mpp14-task-catalog.v1.onenote-text-edit.v1.eml-attachment.v1.text-edit.v1.source-semantic-edit-contract.v1.ooxml-password-edit.v1.merge-provenance.v1.necessary-source-clarification.v1.xlsx-numeric-edit.v1.ics-utc-create.v1.pdf-text-docx.v1.pdf-ocr-docx.v1.ics-embedded-timezone-create.v1.fb2-read-locations.v1'
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -490,7 +490,7 @@
+             'OneNote native literal copy edit: format=onenote_text_edit, NEW .one path, exact JSON {source,source_sha256,page_id,object_id,old_text,new_text}. Obtain persisted page_id/object_id from own-workspace read_file native_text_objects and the current source hash; explicitly supplied whole-paragraph literals only. The current body object must be unique, plain, have one or no formatting run, known supported properties, schema40 metadata and unshared storage; equal UTF-16 byte width and equal native byte width required. ANSI text is limited to German/English/French language IDs and non-control Latin-1 bytes; Unicode is UTF-16. A new dependent revision/transaction retains all original revision bytes; old text remains in native history. This is not redaction. Unknown properties (including common 0x34DD), fields, hidden text, links, multi-run text, titles, aliases, inherited backing, nonempty free lists and unsupported transaction geometry refuse. No general .one creation, .onepkg/.onetoc2 writes, conversion or raw overwrite. No application interoperability, rendering or sync behavior has been tested. ' 'OneNote .one: read_file returns bounded current titles and stored text in persisted page/outline order from desktop OneStore v42 sections (1000000-byte tool input). Continue every partial page using next_offset/next_char_offset and verify source_sha256. Coverage is PARTIAL: images, ink and attachments are explicit non-text markers, never rendered, recognized or extracted. Committed default-context role-1 revisions only; stale/uncommitted data is not scanned. Encrypted, conflict/deleted, unsupported graph/text or hidden paragraph-style profiles refuse. Hidden text runs are omitted. No .onepkg/.onetoc2/sync-store reads, password support, external-resource loading, general creation, conversion or raw overwrite; only the separate bounded onenote_text_edit profile can edit. '
+             'DjVu/DJV: read_file returns bounded stored page-zone text and page structure from genuine single-page or bundled DjVu files, with PARTIAL text-layer-only coverage and source SHA-256. No OCR, image or layout rendering, visible-text/fidelity validation, navigation/annotation interpretation, external-resource loading, creation, editing or conversion. Indirect documents, external dependencies and unsupported/malformed profiles refuse. Never write plain text under .djvu/.djv. '
+             'AbiWord ABW: read_file returns bounded stored paragraph and table-cell text from native .abw XML (UTF-8/UTF-16), not rendered/visible text. No DTD/entities/PI, resource fetching, fields, links, images, embedded data, lists, revisions, notes, frames, templates, compressed ABW or whole-format/application validation. abw_create creates a NEW .abw using exactly {"paragraphs":["First paragraph","Second paragraph"]}; plain single-line Unicode strings (tabs allowed), no inferred Markdown formatting. abw_edit creates a NEW .abw using exactly {"source":"document.abw","source_sha256":"<current read_file hash>","old_text":"Whole paragraph","new_text":"Replacement paragraph"}. Both literals must be explicit and single-line. Only a unique complete plain paragraph directly within a section in UTF-8 can change; mixed/ambiguous targets refuse. Source and all other bytes remain unchanged. No overwrite, raw write, conversion or visual-fidelity claim. '
+-            'FB2: read_file returns bounded stored Unicode book metadata and body text from native FictionBook 2 XML. UTF-8 and UTF-16 only; no styles/images/layout rendering or resource fetching; full XSD validation is not implied. fb2_create creates a NEW .fb2 using exact JSON {"title":"Book","author":"Author","language":"en","sections":[{"title":"Chapter","paragraphs":["Text"]}]}. fb2_edit creates a NEW .fb2 using JSON {"source":"book.fb2","source_sha256":"<current read_file hash>","old_text":"Whole paragraph","new_text":"Replacement paragraph"}. Both literals must be explicit. Without a selector, exactly one matching complete plain paragraph directly within any section is required. Optionally supply the complete selector triplet {"body":2,"section":1,"paragraph":1}; ordinals are one-based direct body/section/paragraph children and permit selection among duplicate text. Partial, invalid or missing targets refuse without falling back to unaddressed search; selected old_text must match exactly. Addressed paragraphs must have no attributes. Both modes require UTF-8 and no inline/mixed content in the target; every unselected byte is preserved. DTD/entities/processing instructions and unsupported structures refuse. Source is unchanged; overwrites, raw writes, compressed FB2, conversion and general editing are unsupported. '
++            'FB2: read_file returns bounded stored Unicode book metadata and body text from native FictionBook 2 XML. A fb2_locations row maps a complete numbered line to the one-based body, section and paragraph accepted by fb2_edit. Use that exact line without its number and the same source_sha256. Missing rows have no verified selector, including nested or partial lines. UTF-8 and UTF-16 only; no styles/images/layout rendering or resource fetching; full XSD validation is not implied. fb2_create creates a NEW .fb2 using exact JSON {"title":"Book","author":"Author","language":"en","sections":[{"title":"Chapter","paragraphs":["Text"]}]}. fb2_edit creates a NEW .fb2 using JSON {"source":"book.fb2","source_sha256":"<current read_file hash>","old_text":"Whole paragraph","new_text":"Replacement paragraph"}. Both literals must be explicit. Without a selector, exactly one matching complete plain paragraph directly within any section is required. Optionally supply the complete selector triplet {"body":2,"section":1,"paragraph":1}; ordinals are one-based direct body/section/paragraph children and permit selection among duplicate text. Partial, invalid or missing targets refuse without falling back to unaddressed search; selected old_text must match exactly. Addressed paragraphs must have no attributes. Both modes require UTF-8 and no inline/mixed content in the target; every unselected byte is preserved. DTD/entities/processing instructions and unsupported structures refuse. Source is unchanged; overwrites, raw writes, compressed FB2, conversion and general editing are unsupported. '
+             'EPUB 2/3 with UTF-8 XHTML spine chapters returns logical book text in declared reading order; '
+             'auxiliary chapters are labelled. No CSS, page-layout, image or multimedia rendering, no '
+             'external fetches. Scripts, encryption, unsupported spine formats and ambiguous packages refuse. '
+@@ -519,7 +519,7 @@
+             'OneNote native literal copy edit: format=onenote_text_edit, NEW .one path, exact JSON {source,source_sha256,page_id,object_id,old_text,new_text}. Obtain persisted page_id/object_id from own-workspace read_file native_text_objects and the current source hash; explicitly supplied whole-paragraph literals only. The current body object must be unique, plain, have one or no formatting run, known supported properties, schema40 metadata and unshared storage; equal UTF-16 byte width and equal native byte width required. ANSI text is limited to German/English/French language IDs and non-control Latin-1 bytes; Unicode is UTF-16. A new dependent revision/transaction retains all original revision bytes; old text remains in native history. This is not redaction. Unknown properties (including common 0x34DD), fields, hidden text, links, multi-run text, titles, aliases, inherited backing, nonempty free lists and unsupported transaction geometry refuse. No general .one creation, .onepkg/.onetoc2 writes, conversion or raw overwrite. No application interoperability, rendering or sync behavior has been tested. ' 'OneNote .one: read_file returns bounded current titles and stored text in persisted page/outline order from desktop OneStore v42 sections (1000000-byte tool input). Continue every partial page using next_offset/next_char_offset and verify source_sha256. Coverage is PARTIAL: images, ink and attachments are explicit non-text markers, never rendered, recognized or extracted. Committed default-context role-1 revisions only; stale/uncommitted data is not scanned. Encrypted, conflict/deleted, unsupported graph/text or hidden paragraph-style profiles refuse. Hidden text runs are omitted. No .onepkg/.onetoc2/sync-store reads, password support, external-resource loading, general creation, conversion or raw overwrite; only the separate bounded onenote_text_edit profile can edit. '
+             'DjVu/DJV: read_file returns bounded stored page-zone text and page structure from genuine single-page or bundled DjVu files, with PARTIAL text-layer-only coverage and source SHA-256. No OCR, image or layout rendering, visible-text/fidelity validation, navigation/annotation interpretation, external-resource loading, creation, editing or conversion. Indirect documents, external dependencies and unsupported/malformed profiles refuse. Never write plain text under .djvu/.djv. '
+             'AbiWord ABW: read_file returns bounded stored paragraph and table-cell text from native .abw XML (UTF-8/UTF-16), not rendered/visible text. No DTD/entities/PI, resource fetching, fields, links, images, embedded data, lists, revisions, notes, frames, templates, compressed ABW or whole-format/application validation. abw_create creates a NEW .abw using exactly {"paragraphs":["First paragraph","Second paragraph"]}; plain single-line Unicode strings (tabs allowed), no inferred Markdown formatting. abw_edit creates a NEW .abw using exactly {"source":"document.abw","source_sha256":"<current read_file hash>","old_text":"Whole paragraph","new_text":"Replacement paragraph"}. Both literals must be explicit and single-line. Only a unique complete plain paragraph directly within a section in UTF-8 can change; mixed/ambiguous targets refuse. Source and all other bytes remain unchanged. No overwrite, raw write, conversion or visual-fidelity claim. '
+-            'FB2: read_file returns bounded stored Unicode book metadata and body text from native FictionBook 2 XML. UTF-8 and UTF-16 only; no styles/images/layout rendering or resource fetching; full XSD validation is not implied. fb2_create creates a NEW .fb2 using exact JSON {"title":"Book","author":"Author","language":"en","sections":[{"title":"Chapter","paragraphs":["Text"]}]}. fb2_edit creates a NEW .fb2 using JSON {"source":"book.fb2","source_sha256":"<current read_file hash>","old_text":"Whole paragraph","new_text":"Replacement paragraph"}. Both literals must be explicit. Without a selector, exactly one matching complete plain paragraph directly within any section is required. Optionally supply the complete selector triplet {"body":2,"section":1,"paragraph":1}; ordinals are one-based direct body/section/paragraph children and permit selection among duplicate text. Partial, invalid or missing targets refuse without falling back to unaddressed search; selected old_text must match exactly. Addressed paragraphs must have no attributes. Both modes require UTF-8 and no inline/mixed content in the target; every unselected byte is preserved. DTD/entities/processing instructions and unsupported structures refuse. Source is unchanged; overwrites, raw writes, compressed FB2, conversion and general editing are unsupported. '
++            'FB2: read_file returns bounded stored Unicode book metadata and body text from native FictionBook 2 XML. A fb2_locations row maps a complete numbered line to the one-based body, section and paragraph accepted by fb2_edit. Use that exact line without its number and the same source_sha256. Missing rows have no verified selector, including nested or partial lines. UTF-8 and UTF-16 only; no styles/images/layout rendering or resource fetching; full XSD validation is not implied. fb2_create creates a NEW .fb2 using exact JSON {"title":"Book","author":"Author","language":"en","sections":[{"title":"Chapter","paragraphs":["Text"]}]}. fb2_edit creates a NEW .fb2 using JSON {"source":"book.fb2","source_sha256":"<current read_file hash>","old_text":"Whole paragraph","new_text":"Replacement paragraph"}. Both literals must be explicit. Without a selector, exactly one matching complete plain paragraph directly within any section is required. Optionally supply the complete selector triplet {"body":2,"section":1,"paragraph":1}; ordinals are one-based direct body/section/paragraph children and permit selection among duplicate text. Partial, invalid or missing targets refuse without falling back to unaddressed search; selected old_text must match exactly. Addressed paragraphs must have no attributes. Both modes require UTF-8 and no inline/mixed content in the target; every unselected byte is preserved. DTD/entities/processing instructions and unsupported structures refuse. Source is unchanged; overwrites, raw writes, compressed FB2, conversion and general editing are unsupported. '
+             'PDF text forms: pdf_form_fill into a NEW .pdf, exact JSON {"source":"form.pdf","source_sha256":"<hash from that read>","fields":{"name":"value"}}. '
+             'First read with pdf_form_fields=true and default pagination. Supported flat text widgets have standard Helvetica/Courier defaults: printable ASCII retains its standard appearance, and bounded supported Latin/Cyrillic text uses pinned embedded DejaVu Sans with Unicode values and native appearance streams. Text must fit; source and unrelated pages/resources/fields remain preserved. '
+             'A changed field must have no existing appearance and an empty value, or an exact supported plain appearance matching its current value. Custom appearances of untouched fields are preserved; metadata reading does not establish visual consistency. '
