@@ -1,0 +1,138 @@
+diff --git a/tools/scoped_xls.py b/tools/scoped_xls.py
+--- a/tools/scoped_xls.py
++++ b/tools/scoped_xls.py
+@@ -37,20 +37,32 @@
+ _CALC_COMPOBJ = (bytes.fromhex('0100feff030a0000ffffffff') + _CALC_ROOT_CLSID
+                  + b'\x1b\0\0\0Microsoft Excel 97-Tabelle\0\x06\0\0\0Biff8\0\0\0\0\0')
+ 
+-# The complete OfficeArt trees for one ordinary Calc worksheet with no drawn
+-# content: one Globals Dgg with workbook defaults and one worksheet Dg with
+-# only its zero-box group parent. Exact lengths, bytes and nesting also join
+-# drawing ID 1 and shape ID 1024, with one drawing/shape in the Dgg counters.
+-_CALC_PARENT_DRAWINGS = {
+-    0x00EB: bytes.fromhex(
+-        '0f0000f052000000000006f018000000000400000200000001000000010000000100000001000000'
+-        '33000bf012000000bf0008000800810109000008c001400000084000'
+-        '1ef1100000000d0000080c00000817000008f7000010'),
+-    0x00EC: bytes.fromhex(
+-        '0f0002f048000000100008f0080000000100000000040000'
+-        '0f0003f0300000000f0004f028000000010009f01000000000000000000000000000000000000000'
+-        '02000af0080000000004000005000000'),
+-}
++# The parent-only OfficeArt output used by Calc on sheets without drawn
++# objects. Check the complete payload, including the global IDCL sequence
++# and each sheet's matching FDG and parent shape. Child drawings are refused.
++_CALC_DRAWING_KINDS = frozenset((0x00EB, 0x00EC))
++_CALC_DRAWING_DEFAULTS = bytes.fromhex(
++    '33000bf012000000bf0008000800810109000008c0014000000840001ef11000'
++    '00000d0000080c00000817000008f7000010')
++_CALC_PARENT_SHAPE = bytes.fromhex(
++    '0f0003f0300000000f0004f028000000010009f0100000000000000000000000'
++    '000000000000000002000af008000000')
++
++
++def _calc_drawing_group(sheet_count):
++    clusters = b''.join(struct.pack('<II', sheet_index, 1) for sheet_index in range(1, sheet_count + 1))
++    last_shape = sheet_count << 10
++    info = struct.pack('<4I', last_shape, sheet_count + 1, sheet_count, sheet_count) + clusters
++    content = struct.pack('<HHI', 0, 0xF006, len(info)) + info + _CALC_DRAWING_DEFAULTS
++    return struct.pack('<HHI', 0xF, 0xF000, len(content)) + content
++
++
++def _calc_sheet_drawing(sheet_index):
++    shape = sheet_index << 10
++    drawing_info = struct.pack('<HHIII', sheet_index << 4, 0xF008, 8, 1, shape)
++    content = drawing_info + _CALC_PARENT_SHAPE + struct.pack('<II', shape, 5)
++    return struct.pack('<HHI', 0xF, 0xF002, len(content)) + content
++
+ 
+ class BinarySpreadsheetError(ValueError):
+     """Fixed content-free refusal code."""
+@@ -312,7 +324,7 @@
+             _fail('biff_record_size')
+         payload=data[at+4:at+4+size]
+         if kind == 0x002F: _fail('xls_encrypted')
+-        if kind in _ACTIVE and not (calc_envelope and _CALC_PARENT_DRAWINGS.get(kind) == payload):
++        if kind in _ACTIVE and not (calc_envelope and kind in _CALC_DRAWING_KINDS):
+             _fail('xls_active_or_external_record')
+         if calc_envelope and kind in (0x0012, 0x0013, 0x0019, 0x01AF, 0x01BC) and payload != bytes(2):
+             _fail('xls_calc_protection_unsupported')
+@@ -448,6 +460,7 @@
+     _bof(records[0][1],records[0][2],0x0005)
+     if template: _template_marker(records)
+     bounds=[]; strings=[]; date1904=False; i=2 if template else 1; sst_seen=False; ignored=set()
++    calc_group = None
+     while i<len(records) and records[i][1] != 0x000A:
+         at,kind,p=records[i]; i+=1
+         if kind == 0x0085:
+@@ -468,7 +481,10 @@
+             for _ in range(unique):
+                 value,pos=_unicode(p,pos,rich=True); strings.append(value)
+             if pos!=len(p): _fail('xls_sst_trailing')
+-        elif calc_envelope and kind == 0x00EB and kind not in ignored:
++        elif calc_envelope and kind == 0x00EB:
++            if calc_group is not None:
++                _fail('xls_active_or_external_record')
++            calc_group = p
+             ignored.add(kind)
+         elif kind == 0x0063:
+             # Legacy xlwt emits an unprotected ObjProtect in Globals. This
+@@ -497,17 +513,25 @@
+     if i>=len(records) or records[i][2] or not bounds:
+         _fail('xls_globals_eof_or_sheets')
+     i+=1
+-    if calc_envelope and (len(bounds) != 1 or bounds[0]['visibility'] != 'visible'):
+-        _fail('xls_calc_worksheet_profile_unsupported')
++    if calc_envelope:
++        visibility = {row['visibility'] for row in bounds}
++        if 'visible' not in visibility or visibility - {'visible', 'hidden'}:
++            _fail('xls_calc_worksheet_profile_unsupported')
++        if calc_group is None:
++            _fail('xls_calc_drawing_pair_required')
++        if calc_group != _calc_drawing_group(len(bounds)):
++            _fail('xls_active_or_external_record')
+     if len({s['name'].casefold() for s in bounds})!=len(bounds): _fail('xls_duplicate_sheet')
+     if len({s['offset'] for s in bounds})!=len(bounds): _fail('xls_duplicate_sheet_offset')
+-    by_offset={s['offset']:s for s in bounds}; parsed={}; total_cells=0
++    sheet_indices = {sheet['offset']: index for index, sheet in enumerate(bounds, 1)}
++    parsed={}; total_cells=0
+     while i<len(records):
+         offset,kind,p=records[i]
+-        if offset not in by_offset: _fail('xls_unreferenced_substream')
++        if offset not in sheet_indices: _fail('xls_unreferenced_substream')
+         _bof(kind,p,0x0010); i+=1
+         cells=[]; seen=set(); pending=None; wsbool=False; row_ids=set()
+         extensions=set(); protected=False
++        calc_drawing = False
+         while i<len(records) and records[i][1] != 0x000A:
+             _,kind,p=records[i]; i+=1
+             if pending is not None:
+@@ -563,7 +587,10 @@
+                     pos=4+n*stride; xf=_u16(p,pos)
+                     new.append(_cell(row,col+n,xf,'number' if stride==6 else 'blank',
+                                      _rk(p[pos+2:pos+6]) if stride==6 else None))
+-            elif calc_envelope and kind == 0x00EC and kind not in ignored:
++            elif calc_envelope and kind == 0x00EC:
++                if calc_drawing or p != _calc_sheet_drawing(sheet_indices[offset]):
++                    _fail('xls_active_or_external_record')
++                calc_drawing = True
+                 ignored.add(kind)
+             elif kind in (0x0867, 0x088B, 0x089C):
+                 if kind in extensions:
+@@ -596,14 +623,14 @@
+                 seen.add(key); row_ids.add(cell['row']); total_cells+=1
+                 if total_cells>MAX_CELLS or len(row_ids)>4096: _fail('xls_cell_or_row_limit')
+                 cells.append(cell)
++        if calc_envelope and not calc_drawing:
++            _fail('xls_calc_drawing_pair_required')
+         if 0x0867 in extensions and protected:
+             _fail('xls_protected_sheet_extension_unsupported')
+         if i>=len(records) or records[i][2] or pending is not None or not wsbool:
+             _fail('xls_sheet_eof_or_wsbool')
+         i+=1; parsed[offset]=cells
+     if len(parsed)!=len(bounds): _fail('xls_missing_sheet')
+-    if calc_envelope and not _CALC_PARENT_DRAWINGS.keys() <= ignored:
+-        _fail('xls_calc_drawing_pair_required')
+     metadata={'format':'xls','native_type':'CFB/BIFF8','coverage':'stored_cell_values_and_formula_caches_only',
+         'formula_evaluation':False,'formula_cache_freshness':'unknown',
+         'security_scope':'known active records/streams refused; formula tokens and metadata payloads not inspected; not a code-safety validation',
