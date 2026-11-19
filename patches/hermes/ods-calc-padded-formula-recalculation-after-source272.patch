@@ -1,0 +1,246 @@
+--- a/tools/scoped_ods_recalculate.py
++++ b/tools/scoped_ods_recalculate.py
+@@ -3,12 +3,21 @@
+ from io import BytesIO
+ import re
+ import zipfile
++from xml.parsers import expat
+ from xml.sax.saxutils import escape
+ 
+ from tools.scoped_ods import (
+-    Spreadsheet, ODSError, O, T, TB, ST, NUM, XL, OF, q, _cell_span, _literal,
+-    address, decimal, tick,
++    Spreadsheet, ODSError, O, T, TB, ST, NUM, XL, OF, CALCEXT, MAX_CELLS,
++    MAX_COLS, q, _cell_span, _literal, _tag_end, address, decimal, tick,
+ )
++
++_XML_SPACE = re.compile(rb'[ \t\r\n]*')
++_XML_ATTRIBUTE = re.compile(rb'''[ \t\r\n]+([^ \t\r\n<>=/'"]+)[ \t\r\n]*=[ \t\r\n]*(?:"([^"]*)"|'([^']*)')''')
++_CACHE_TEXT = re.compile(rb'[ \t\r\n]*([+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[Ee][+-]?[0-9]+)?)[ \t\r\n]*')
++_CALC_TYPE = q(CALCEXT, 'value-type')
++_CALC_FORMULA_ATTRIBUTES = {
++    q(TB, 'formula'), q(TB, 'style-name'), q(O, 'value-type'), q(O, 'value'), _CALC_TYPE,
++}
+ 
+ 
+ def fail(code):
+@@ -52,22 +61,40 @@
+                    for c in range(first[2], last[2] + 1)]
+ 
+ 
++def _calc_padding(column, height, width, node, parent):
++    # Calc can serialize the unused remainder of a row as one explicit repeat.
++    return (height == 1 and width > MAX_CELLS and column + width - 1 == MAX_COLS
++            and node is parent[-1] and node.tag == q(TB, 'table-cell')
++            and node.attrib == {q(TB, 'style-name'): 'Default',
++                                q(TB, 'number-columns-repeated'): str(width)}
++            and not len(node) and not node.text and not node.tail)
++
++
+ def _inventory(book):
+     values = {}
+     plans = {}
++    padding = {}
+     count = dependencies = 0
+     for sheet in book.sheets:
+         name = sheet.get(q(TB, 'name'))
+         if sheet.get(q(TB, 'protected'), 'false') != 'false':
+             fail('unsupported_recalculation_input')
+-        for row, column, height, width, node, _ in book.cells(sheet):
++        for row, column, height, width, node, parent in book.cells(sheet):
+             tick(book.checkpoint)
+-            count += height * width
+-            if count > 4096:
++            omitted = _calc_padding(column, height, width, node, parent)
++            count += 1 if omitted else height * width
++            if count > MAX_CELLS:
+                 fail('ods_recalculate_cell_limit')
++            if omitted:
++                padding[name, row] = column
++                continue
+             value = book.value(node)
+             if value.get('covered') or any(node.get(q(TB, field)) for field in ('number-columns-spanned', 'number-rows-spanned', 'content-validation-name', 'protect')):
+                 fail('unsupported_recalculation_input')
++            if value['type'] == 'float' and node.get(_CALC_TYPE, 'float') != 'float':
++                if 'formula' in value:
++                    fail('formula_cell_calc_extension')
++                value['calc_type_conflict'] = True
+             for r in range(row, row + height):
+                 for c in range(column, column + width):
+                     values[name, r, c] = value
+@@ -97,9 +124,14 @@
+         for ref in refs:
+             value = values.get(ref)
+             if value is None:
++                name, row, column = ref
++                if column >= padding.get((name, row), MAX_COLS + 1):
++                    fail('ods_formula_nonnumeric_dependency')
+                 fail('ods_formula_value_unavailable')
+             if value['type'] != 'float':
+                 fail('ods_formula_nonnumeric_dependency')
++            if value.get('calc_type_conflict'):
++                fail('ods_formula_dependency_calc_extension')
+             if ref in plans:
+                 missing.add(ref)
+         waiting[key] = len(missing)
+@@ -121,13 +153,107 @@
+                     ready.append(dependent)
+     if not plans.keys() <= scalars.keys():
+         fail('ods_formula_cycle')
+-    return values, plans, scalars
+-
+-
+-def _formula_cell(node, value):
++    return values, plans, scalars, bool(padding)
++
++
++def _calc_value_names(raw, indices, checkpoint):
++    """Resolve the lexical cache attribute and the formula namespace in scope."""
++    if not indices:
++        return {}
++    parser = expat.ParserCreate(namespace_separator='}')
++    parser.namespace_prefixes = True
++    bindings = []
++    names = {}
++    index = 0
++    cell_names = {TB + '}table-cell', TB + '}covered-table-cell'}
++    cache_prefix = O + '}value}'
++
++    def open_namespace(prefix, uri):
++        if prefix == 'of':
++            bindings.append(uri)
++
++    def close_namespace(prefix):
++        if prefix == 'of':
++            bindings.pop()
++
++    def start(name, attrs):
++        nonlocal index
++        if '}'.join(name.split('}', 2)[:2]) not in cell_names:
++            return
++        if index % 64 == 0:
++            tick(checkpoint)
++        if index in indices:
++            if not bindings or bindings[-1] != OF:
++                fail('formula_cell_namespace_binding')
++            for attr in attrs:
++                if attr.startswith(cache_prefix):
++                    names[index] = (attr[len(cache_prefix):] + ':value').encode('utf-8')
++                    break
++        index += 1
++
++    def refuse(*args):
++        fail('active_xml')
++
++    parser.StartNamespaceDeclHandler = open_namespace
++    parser.EndNamespaceDeclHandler = close_namespace
++    parser.StartElementHandler = start
++    parser.StartDoctypeDeclHandler = refuse
++    parser.EntityDeclHandler = refuse
++    parser.ProcessingInstructionHandler = refuse
++    try:
++        parser.Parse(raw, True)
++    except expat.ExpatError:
++        fail('invalid_xml')
++    if names.keys() != indices:
++        fail('formula_cell_cache_attribute')
++    return names
++
++
++def _calc_formula_cell(fragment, node, value, cache_name):
++    if any(key.startswith('{' + CALCEXT + '}') and key != _CALC_TYPE for key in node.attrib):
++        fail('formula_cell_calc_extension')
++    if node.attrib.keys() - _CALC_FORMULA_ATTRIBUTES:
++        fail('formula_cell_calc_attributes')
++
++    opening = _tag_end(fragment, 0)
++    position = re.match(rb'<[^ \t\r\n<>/]+', fragment).end()
++    cache = None
++    for attr in _XML_ATTRIBUTE.finditer(fragment, position, opening - 1):
++        if attr.start() != position:
++            fail('formula_cell_cache_attribute')
++        position = attr.end()
++        if attr[1] == cache_name:
++            cache = attr.span(2 if attr[2] is not None else 3)
++    if (cache is None or _XML_SPACE.fullmatch(fragment, position, opening - 1) is None
++            or fragment[cache[0]:cache[1]] != node.get(q(O, 'value')).encode('utf-8')):
++        fail('formula_cell_cache_attribute')
++
++    paragraph = _XML_SPACE.match(fragment, opening).end()
++    if not fragment.startswith(b'<', paragraph):
++        fail('formula_cell_content')
++    text = _tag_end(fragment, paragraph)
++    close = fragment.find(b'<', text)
++    if close < 0 or not fragment.startswith(b'</', close):
++        fail('formula_cell_content')
++    display = _CACHE_TEXT.fullmatch(fragment, text, close)
++    end_paragraph = _tag_end(fragment, close)
++    closing = _XML_SPACE.match(fragment, end_paragraph).end()
++    if (display is None or not fragment.startswith(b'</', closing)
++            or _tag_end(fragment, closing) != len(fragment)):
++        fail('formula_cell_content')
++
++    # Preserve all declarations, prefixes, quotes, whitespace and other bytes.
++    number = value.encode('ascii')
++    return (fragment[:cache[0]] + number + fragment[cache[1]:display.start(1)]
++            + number + fragment[display.end(1):])
++
++
++def _formula_cell(node, value, fragment, calc_cache_name):
+     paragraphs = list(node)
+     if len(paragraphs) != 1 or paragraphs[0].tag != q(T, 'p') or paragraphs[0].attrib or len(paragraphs[0]):
+         fail('formula_cell_content')
++    if calc_cache_name is not None:
++        return _calc_formula_cell(fragment, node, value, calc_cache_name)
+     prefixes = {O: 'office', TB: 'table', T: 'text', ST: 'style', NUM: 'number', XL: 'xlink', OF: 'of'}
+     attributes = dict(node.attrib)
+     attributes[q(O, 'value')] = value
+@@ -136,6 +262,8 @@
+     for key, raw in attributes.items():
+         if key.startswith('{'):
+             uri, local = key[1:].split('}', 1)
++            if uri == CALCEXT:
++                fail('formula_cell_calc_extension')
+             if uri == 'http://www.w3.org/XML/1998/namespace':
+                 prefix = 'xml'
+             elif uri in prefixes:
+@@ -172,23 +300,33 @@
+     book = Spreadsheet(data, checkpoint=checkpoint)
+     if book.unsupported:
+         fail('unsupported_recalculation_input')
+-    values, plans, scalars = _inventory(book)
++    values, plans, scalars, has_calc_padding = _inventory(book)
+     root = book.xml['content.xml']
+-    cells = [n for n in root.iter() if n.tag in (q(TB, 'table-cell'), q(TB, 'covered-table-cell'))]
++    cells = {node: index for index, node in enumerate(
++        n for n in root.iter() if n.tag in (q(TB, 'table-cell'), q(TB, 'covered-table-cell')))}
+     raw = book.parts['content.xml']
++    # Every formula in a newly admitted Calc package uses the same byte-preserving
++    # writer, including siblings without the optional Calc type attribute.
++    lexical_write = has_calc_padding or any(_CALC_TYPE in node.attrib for _, _, node in plans.values())
++    calc_indices = {cells[node] for _, _, node in plans.values()} if lexical_write else set()
++    calc_cache_names = _calc_value_names(raw, calc_indices, checkpoint)
+     replacements = []
+     for key, (_, _, node) in plans.items():
++        tick(checkpoint)
+         number = format(scalars[key], 'f')
+-        begin, end = _cell_span(raw, cells.index(node))
+-        replacements.append((begin, end, _formula_cell(node, number)))
++        index = cells[node]
++        begin, end = _cell_span(raw, index, reject_hidden=True)
++        replacement = _formula_cell(node, number, raw[begin:end], calc_cache_names.get(index))
++        replacements.append((begin, end, replacement))
+     for begin, end, replacement in sorted(replacements, reverse=True):
+         raw = raw[:begin] + replacement + raw[end:]
+     result = _rewrite(data, {'content.xml': raw}, checkpoint)
+     after = Spreadsheet(result, checkpoint=checkpoint)
+     if after.unsupported:
+         fail('recalculation_readback_unsupported')
+-    after_values, after_plans, after_scalars = _inventory(after)
+-    if set(values) != set(after_values) or set(plans) != set(after_plans):
++    after_values, after_plans, after_scalars, after_calc_padding = _inventory(after)
++    if (set(values) != set(after_values) or set(plans) != set(after_plans)
++            or has_calc_padding != after_calc_padding):
+         fail('recalculation_cell_identity_mismatch')
+     for key, before in values.items():
+         other = after_values[key]
