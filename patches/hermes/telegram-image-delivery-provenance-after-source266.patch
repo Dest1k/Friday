@@ -1,0 +1,89 @@
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -27,7 +27,8 @@
+ from gateway.run_busy import approval_input_words
+ from gateway.run_common import _UNSET
+ from gateway.run_inbound_media import (
+-    owned_attachment_display_name, owned_attachment_model_path, rehome_inbound_media,
++    owned_attachment_display_name, owned_attachment_image_reference, owned_attachment_model_path,
++    rehome_inbound_media,
+ )
+ from gateway.run_plugin_injection import GatewayPluginInjectionMixin
+ from gateway.run_inbound_unauthorized import (
+@@ -1758,9 +1759,9 @@
+         if image_paths:
+             owned_images = {}
+             for image_path in image_paths:
+-                owned_path = owned_attachment_model_path(event, image_path)
+-                if owned_path:
+-                    owned_images[image_path] = owned_path
++                reference = owned_attachment_image_reference(event, image_path)
++                if reference:
++                    owned_images[image_path] = reference
+             if owned_images:
+                 message_text = await self._enrich_inbound_images(
+                     source, session_key, message_text, image_paths,
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -235,8 +235,16 @@
+         # native producer prove this same event on an idempotent second call.
+         retained_receipt = {'origin': dict(receipt['origin']), 'content': dict(receipt['content'])}
+         presentation = receipt.get('presentation')
+-        if isinstance(presentation, dict) and isinstance(presentation.get('original_filename'), str):
+-            retained_receipt['presentation'] = {'original_filename': presentation['original_filename']}
++        if isinstance(presentation, dict):
++            retained_presentation = {}
++            original_filename = presentation.get('original_filename')
++            if isinstance(original_filename, str):
++                retained_presentation['original_filename'] = original_filename
++            delivery = presentation.get('telegram_delivery')
++            if delivery in ('photo', 'document'):
++                retained_presentation['telegram_delivery'] = delivery
++            if retained_presentation:
++                retained_receipt['presentation'] = retained_presentation
+         event._telegram_media_receipts[str(destination)] = retained_receipt
+         if not event.text:
+             continue
+@@ -289,6 +297,22 @@
+     return re.sub(r'[^\w.\- ]', '_', original).strip() or None
+ 
+ 
++def owned_attachment_image_reference(event, path):
++    """Describe the verified image delivery method next to its scoped file reference."""
++    relative = owned_attachment_model_path(event, path)
++    if relative is None:
++        return None
++    receipts = getattr(event, '_telegram_media_receipts', None)
++    receipt = receipts.get(path) if isinstance(receipts, dict) else None
++    presentation = receipt.get('presentation') if isinstance(receipt, dict) else None
++    delivery = presentation.get('telegram_delivery') if isinstance(presentation, dict) else None
++    if delivery == 'photo':
++        return f'{relative} [Telegram photo rendition]'
++    if delivery == 'document':
++        return f'{relative} [Telegram file attachment]'
++    return relative
++
++
+ def rehome_inbound_media(event: MessageEvent) -> None:
+     """Move adapter-cached attachments into the ACTIVE profile's ``cache/`` and repoint the event.
+ 
+--- a/plugins/platforms/telegram/telegram_file_boundary.py
++++ b/plugins/platforms/telegram/telegram_file_boundary.py
+@@ -162,9 +162,16 @@
+     except (AttributeError, RuntimeError, TypeError, ValueError):
+         return  # synthetic/legacy events cannot acquire a native source receipt
+     receipt = {"origin": origin, "content": dict(content)}
++    presentation = {}
+     original_filename = getattr(file, "file_name", None)
+     if isinstance(original_filename, str) and original_filename:
+-        receipt["presentation"] = {"original_filename": original_filename}
++        presentation["original_filename"] = original_filename
++    if getattr(message, "photo", None):
++        presentation["telegram_delivery"] = "photo"
++    elif file is getattr(message, "document", None):
++        presentation["telegram_delivery"] = "document"
++    if presentation:
++        receipt["presentation"] = presentation
+     event._telegram_media_receipts[path] = receipt
+ 
+ 
