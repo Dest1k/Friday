@@ -1,0 +1,199 @@
+diff --git a/tools/scoped_odf_profiles.py b/tools/scoped_odf_profiles.py
+--- a/tools/scoped_odf_profiles.py
++++ b/tools/scoped_odf_profiles.py
+@@ -76,9 +76,9 @@
+         if nodes % 64 == 0:
+             _tick(checkpoint)
+         if name == odt.M + '}file-entry':
+             entries.append((attrs.get(odt.M + '}full-path'),
+-                            attrs.get(odt.M + '}media-type', '')))
++                            attrs.get(odt.M + '}media-type')))
+ 
+     def end(name):
+         nonlocal depth
+         depth -= 1
+@@ -106,9 +106,9 @@
+     _tick(checkpoint)
+     return entries
+ 
+ 
+-def _preflight_package(data, checkpoint=None, *, _xml_guard=None):
++def _preflight_package(data, checkpoint=None, *, _xml_guard=None, text_profile=False):
+     """Read bounded immutable members, then guard ALL XML before base parsers.
+ 
+     This first phase performs no XML tree construction. Manifest-declared XML
+     resources are covered even without an XML suffix; suffix checks ignore case.
+@@ -167,21 +167,23 @@
+     if manifest_name in parts:
+         entries = _xml_guard(parts[manifest_name], checkpoint)
+         checked.add(manifest_name)
+         for name, media in entries:
+-            media = media.split(';', 1)[0].strip().lower()
++            media = (media or '').split(';', 1)[0].strip().lower()
+             if media in ('text/xml', 'application/xml') or media.endswith('+xml'):
+                 if name in parts:
+                     xml_names.add(name)
++        if text_profile and odt.has_empty_ui_accelerator(parts, entries):
++            xml_names.discard(odt.EMPTY_UI_ACCELERATOR)
+     if sum(len(parts[name]) for name in xml_names) > 4_000_000:
+         _fail('xml_size_limit')
+     for name in sorted(xml_names - checked):
+         _xml_guard(parts[name], checkpoint)
+     return parts, xml_names
+ 
+ 
+ def _document_package(data, format, checkpoint=None):
+-    _preflight_package(data, checkpoint)
++    _preflight_package(data, checkpoint, text_profile=format in odt.MIMES)
+     return odt.DocumentPackage(data, format, checkpoint)
+ 
+ 
+ def _editable_package(data, format, checkpoint):
+@@ -193,8 +195,10 @@
+         if media in ('text/xml', 'application/xml') or media.endswith('+xml'):
+             name = entry.get(q(odt.M, 'full-path'))
+             if name in pkg.parts:
+                 xml_names.add(name)
++    if pkg.empty_ui_accelerator:
++        xml_names.discard(odt.EMPTY_UI_ACCELERATOR)
+     total = sum(len(pkg.parts[name]) for name in pkg.xml)
+     for name in sorted(xml_names - set(pkg.xml)):
+         total += len(pkg.parts[name])
+         if total > 4_000_000:
+@@ -839,9 +843,9 @@
+     _format(format)
+     _tick(checkpoint)
+     try:
+         if format != 'fodt':
+-            _preflight_package(data, checkpoint)
++            _preflight_package(data, checkpoint, text_profile=True)
+             return odt.extract_document(data, format, checkpoint=checkpoint)
+         pkg = _flat_package(data, checkpoint, read_only=True)
+         # The existing bounded semantic reader accepts a DocumentPackage. Build
+         # a safe ephemeral ODT view, retaining original flat XML on disk.
+diff --git a/tools/scoped_odt.py b/tools/scoped_odt.py
+--- a/tools/scoped_odt.py
++++ b/tools/scoped_odt.py
+@@ -26,8 +26,9 @@
+ SCRIPT = 'urn:oasis:names:tc:opendocument:xmlns:script:1.0'
+ FORM = 'urn:oasis:names:tc:opendocument:xmlns:form:1.0'
+ MIMES = {'odt': 'application/vnd.oasis.opendocument.text',
+          'ott': 'application/vnd.oasis.opendocument.text-template'}
++EMPTY_UI_ACCELERATOR = 'Configurations2/accelerator/current.xml'
+ MAX_TEXT = 100_000
+ MAX_RECORDS = 8_192
+ MAX_CELLS = 4_096
+ MAX_OUTPUT = 1_000_000
+@@ -61,16 +62,23 @@
+     if checkpoint is not None:
+         checkpoint()
+ 
+ 
++def has_empty_ui_accelerator(parts, manifest_entries):
++    """Recognize LibreOffice's inert, zero-byte keyboard map placeholder."""
++    return (parts.get(EMPTY_UI_ACCELERATOR) == b''
++            and [media for name, media in manifest_entries if name == EMPTY_UI_ACCELERATOR] == [''])
++
++
+ class DocumentPackage(Package):
+     def __init__(self, data, format='odt', checkpoint=None, *, _mimes=None, _formula=False):
+         mimes = MIMES if _mimes is None else _mimes
+         if format not in mimes:
+             _fail('unsupported_format')
+         _tick(checkpoint)
++        empty_xml_placeholder = EMPTY_UI_ACCELERATOR if format in MIMES else None
+         try:
+-            super().__init__(data)
++            super().__init__(data, empty_xml_placeholder=empty_xml_placeholder)
+         except PresentationError as error:
+             raise ODTError(str(error)) from None
+         except (zipfile.BadZipFile, ET.ParseError, UnicodeError, zlib.error,
+                 NotImplementedError, EOFError):
+@@ -86,8 +94,10 @@
+             _fail('not_native_' + format)
+         manifest = self.xml.get('META-INF/manifest.xml')
+         if manifest is None or manifest.tag != q(M, 'manifest'):
+             _fail('manifest_missing_or_namespace')
++        self.empty_ui_accelerator = empty_xml_placeholder is not None and has_empty_ui_accelerator(
++            self.parts, ((node.get(q(M, 'full-path')), node.get(q(M, 'media-type'))) for node in manifest))
+         roots = []
+         names = set()
+         for node in manifest:
+             if node.tag != q(M, 'file-entry'):
+@@ -109,8 +119,11 @@
+                 if not name.endswith('/') and name not in self.parts:
+                     _fail('manifest_target_missing')
+             if any(child.tag == q(M, 'encryption-data') for child in node.iter()):
+                 _fail('encrypted_package')
++        if (empty_xml_placeholder is not None and self.parts.get(empty_xml_placeholder) == b''
++                and not self.empty_ui_accelerator):
++            _fail('malformed_xml')
+         if (len(roots) != 1 or roots[0].get(q(M, 'media-type')) != mimes[format]
+                 or 'content.xml' not in names):
+             _fail('manifest_type_or_content')
+         self.content = self.xml.get('content.xml')
+diff --git a/tools/scoped_presentation.py b/tools/scoped_presentation.py
+--- a/tools/scoped_presentation.py
++++ b/tools/scoped_presentation.py
+@@ -116,9 +116,9 @@
+     return result
+ 
+ 
+ class Package:
+-    def __init__(self, data):
++    def __init__(self, data, *, empty_xml_placeholder=None):
+         if not isinstance(data, bytes) or len(data) > 1_000_000:
+             refuse('input_limit')
+         self.parts = {}; self.xml = {}; self.unsupported = set(); self.external = 0; self.output_bytes = 0
+         self.member_info = {}
+@@ -154,8 +154,10 @@
+                 if len(value) != info.file_size or len(value) > MAX_MEMBER:
+                     refuse('package_member_limit')
+                 self.parts[name] = value
+                 self.member_info[name] = (info.compress_type, info.header_offset)
++                if name == empty_xml_placeholder and not value:
++                    continue
+                 if name.endswith(('.xml', '.rels')):
+                     xml_total += len(value)
+                     if len(value) > MAX_XML or xml_total > MAX_XML_TOTAL:
+                         refuse('xml_size_limit')
+diff --git a/tools/scoped_rtf.py b/tools/scoped_rtf.py
+--- a/tools/scoped_rtf.py
++++ b/tools/scoped_rtf.py
+@@ -592,6 +592,18 @@
+         return result
+ 
+ 
++_RECORD_LINE_ESCAPES = str.maketrans({
++    '\u0085': r'\u0085',
++    '\u2028': r'\u2028',
++    '\u2029': r'\u2029',
++})
++
++
++def _record_json(value):
++    # Keep Unicode line separators inside the logical JSON record.
++    return json.dumps(value, ensure_ascii=False).translate(_RECORD_LINE_ESCAPES)
++
++
+ def extract_rtf(data, *, checkpoint=None):
+     doc = Document(data, checkpoint)
+     rows = []
+@@ -606,7 +618,7 @@
+             value.update(row=paragraph.row, column=paragraph.column)
+         if paragraph.heading is not None:
+             value['level'] = paragraph.heading
+-        rows.append('[' + paragraph.kind.upper() + ' ' + str(number) + ' ' + json.dumps(value, ensure_ascii=False) + ']')
++        rows.append('[' + paragraph.kind.upper() + ' ' + str(number) + ' ' + _record_json(value) + ']')
+     story_rows = []
+     references = []
+     for number, paragraph in enumerate(doc.paragraphs, 1):
+@@ -623,7 +635,7 @@
+                      'text': paragraph.text}
+             if reference_positions(paragraph):
+                 value['references'] = reference_positions(paragraph)
+-            rows.append('[STORY ' + str(number) + ' ' + json.dumps(value, ensure_ascii=False) + ']')
++            rows.append('[STORY ' + str(number) + ' ' + _record_json(value) + ']')
+             for position, glyph in enumerate(paragraph.glyphs):
+                 if glyph.reference:
+                     references.append({'story': number, 'paragraph': paragraph_number,
