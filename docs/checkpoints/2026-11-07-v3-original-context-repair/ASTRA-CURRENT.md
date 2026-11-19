@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Чекпоинт 08:06 МСК 19.11.2026. Установлена 259. Gateway и Dashboard работают. Штатная правка XLS NUMBER подтверждена на сохранённой книге. [Проверка 259](evidence/astra-20261119/core259-installed-xls-number-preserving-edit.json).
+Чекпоинт 09:20 МСК 19.11.2026. После перезагрузки в 09:11 работают Gateway и Dashboard, Core259 подтверждена. Три проверки БД прошли, активных leases нет. [Состояние после отключения](evidence/astra-20261119/core259-postpower-readback-20261119.json).
 
 **17.11.2026, 22:10 МСК.** Дест возобновил работу после [паузы для смены модели](evidence/astra-20261117/owner-model-switch-pause-team-checkpoint.json). Native goal **01a1c688-e36d-7021-8df4-9c5644a4d75b active**, прежний объект и учёт, без токен-бюджета. Обе реальные сессии после переключения работают на **gpt-6.2-sol / ultra** по фактическим turn context. Астра ведёт интеграцию. Настройки принадлежат владельцу. Текущие назначения указаны ниже.
 
@@ -12,7 +12,7 @@
 
 Публикация и штатная проверка вернули 0. Три нативные замены и девять целей CAS. Девять файлов БД, WAL и SHM совпали до запуска. Три quick_check OK, leases 0. [Изолированный CAS и откат 259](evidence/astra-20261119/core259-xls-number-genuine-builder-and-cas9.json), [предыдущий установленный 258](evidence/astra-20261119/core258-installed-s13-jpeg-owned-vision.json), [проверки XPS/OXPS на 255](evidence/astra-20261119/core255-installed-xps-oxps-visual-compatibility.json), [проверки V06 на 254](evidence/astra-20261119/core254-installed-v06-impress-compatibility.json).
 
-Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032. Загрузка 906e7705, Gateway **517286**, Dashboard **518576**. Telegram подключён в трёх профилях. Обычные пользовательские проверки ждут подтверждённой ротации ключа и свежего допуска.
+Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032. Загрузка 63c14904, Gateway **2754**, Dashboard **2751**. Telegram подключён в трёх профилях. Обычные пользовательские проверки ждут подтверждённой ротации ключа и свежего допуска.
 
 [CSV→typedXLSX, проверка компонента на232](evidence/astra-20261117/core232-installed-csv-component-values-assessed.json) **R2/PASS/independentf5e7a59f**: actual receipt-pinned27Code/11loaded modules, nativeconvert+adapterexecute, genuine92B CSV, XLSX толькоRAM. Exact number1200.50/date2026-04-05/styles/IDs/comments/order/zeroformulas. R1 пропускал проверки значений, сохранён; R2 добавил только их. Permission/source snapshot/revision/parent/publication leaves **inert**: ordinary delivery/runtimeCAS/formal не доказаны. [Принятый Source](evidence/astra-20261117/s05-explicit-locale-csv-direct-import-source-adopted-not-installed.json), [genuinebuilder/preintent](evidence/astra-20261117/core232-exact-next-source-genuine-builder-ready-not-installed.json) — исторические стадии до установки, не текущий NOT_INSTALLED.
 
