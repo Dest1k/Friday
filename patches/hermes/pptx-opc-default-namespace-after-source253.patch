@@ -1,0 +1,67 @@
+diff --git a/tools/scoped_presentation_merge.py b/tools/scoped_presentation_merge.py
+index f48fb7d..c40750e 100644
+--- a/tools/scoped_presentation_merge.py
++++ b/tools/scoped_presentation_merge.py
+@@ -37,6 +37,28 @@ def refuse(reason):
+     raise PresentationRefused(reason)
+ 
+ 
++def _opc_xml(root, namespace):
++    # Some OPC readers compare raw element names. Use a default namespace for
++    # this tree while keeping its attributes and ElementTree's registry intact.
++    root = deepcopy(root)
++    prefix = '{%s}' % namespace
++
++    def use_default(node, in_default_namespace):
++        if node.tag.startswith(prefix):
++            node.tag = node.tag[len(prefix):]
++            if not in_default_namespace:
++                node.set('xmlns', namespace)
++                in_default_namespace = True
++        elif in_default_namespace and not node.tag.startswith('{'):
++            node.set('xmlns', '')
++            in_default_namespace = False
++        for child in node:
++            use_default(child, in_default_namespace)
++
++    use_default(root, False)
++    return _tostring(root)
++
++
+ def _relname(owner):
+     folder, leaf = posixpath.split(owner)
+     return posixpath.join(folder, '_rels', leaf + '.rels')
+@@ -373,7 +395,7 @@ def merge_pptx(inputs, spec):
+                         rel.set('Target', relative)
+                         changed = True
+                 if changed:
+-                    raw = _tostring(root)
++                    raw = _opc_xml(root, PR)
+                     changed_rels.append(target)
+             output[target] = raw
+             output_types[target] = deck['types'][name]
+@@ -409,13 +431,13 @@ def merge_pptx(inputs, spec):
+         relation(mapped(0, tables[0]), 'tableStyles')
+     if themes[0] is not None:
+         relation(mapped(0, themes[0]), 'theme')
+-    output[PRESENTATION], output[PRES_RELS] = _tostring(root), _tostring(relationships)
++    output[PRESENTATION], output[PRES_RELS] = _tostring(root), _opc_xml(relationships, PR)
+     output_types[PRESENTATION] = MIME + 'presentationml.presentation.main+xml'
+     output_types[PRES_RELS] = 'application/vnd.openxmlformats-package.relationships+xml'
+     package_rels = ET.Element('{%s}Relationships' % PR)
+     ET.SubElement(package_rels, '{%s}Relationship' % PR, Id='rId1',
+                   Type=R + '/officeDocument', Target=PRESENTATION)
+-    output['_rels/.rels'] = _tostring(package_rels)
++    output['_rels/.rels'] = _opc_xml(package_rels, PR)
+     output_types['_rels/.rels'] = 'application/vnd.openxmlformats-package.relationships+xml'
+     types_root = ET.Element('{%s}Types' % CT)
+     ET.SubElement(types_root, '{%s}Default' % CT, Extension='rels',
+@@ -425,7 +447,7 @@ def merge_pptx(inputs, spec):
+         if not name.endswith('.rels'):
+             ET.SubElement(types_root, '{%s}Override' % CT,
+                           PartName='/' + name, ContentType=output_types[name])
+-    output['[Content_Types].xml'] = _tostring(types_root)
++    output['[Content_Types].xml'] = _opc_xml(types_root, CT)
+     if len(output) > MAX_MEMBERS:
+         refuse('merged_package_capacity')
+     rendered = _zip(output)
