@@ -1,0 +1,273 @@
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+index 6fd6f1ac9fcf7cde35823d627c7a4f7489ff5ead..5af79008385d0ff37f54c3248c0fe86381f2d137 100644
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -275,7 +275,7 @@ DOCX_EDIT_GUIDANCE = XLS_WRITE_GUIDANCE + DOCX_EXACT_COPY_GUIDANCE + ACCESS_READ
+     'PDF comments use pdf_annotate into a NEW .pdf with exact JSON {\"source\":\"input.pdf\",\"source_sha256\":\"<current read_file hash>\",\"annotations\":[{\"page\":1,\"x\":20,\"y\":40,\"text\":\"Comment\"}]}. Pages are one-based; x/y are PDF lower-left user-space points, and the 18-point icon must fit MediaBox intersect CropBox. Unicode text with LF line breaks is supported; at most 32 comments, 32 pages, 1 MB. Original pages, inert annotations and filled forms are preserved. Rotated pages, non-default UserUnit, encryption, actions, attachments, signatures and unsupported structures refuse. No author/signature is invented. '
+     'PDF page assembly uses pdf_pages, a NEW .pdf, and exact JSON {"sources":["a.pdf"],"pages":[{"source":1,"page":1,"rotation":0}]}; one or two own-workspace sources. Source/page are one-based; rotation adds clockwise 0/90/180/270 degrees. Every listed source must contribute, every selected page appears once in requested order, and sources stay unchanged. At most 64 input/output pages and 1 MB per input/output; native page content/resources are retained without rasterization. Document metadata is omitted; annotations, forms, actions, attachments, encryption, signatures, outlines, layers and unsupported document structures refuse. '
+     'XLSB читается нативно только в ограниченном инертном профиле: порядок, имена и видимость листов, типизированные сохранённые значения ячеек и отдельно помеченные кэши формул. Формулы не вычисляются, внешние ссылки не открываются; активные и неподдержанные пакеты отказываются целиком. Чтение не проверяет оформление. Для NEW .xlsb доступны xlsb_create с явными sheets/cells/address/type/value и xlsb_edit с source/source_sha256/sheet/address/old_value/new_value; узкий сохраняющий профиль отклоняет формулы, rich text и неподдержанные структуры. Конвертации нет. Продолжай все страницы read_file и сверяй metadata покрытия. '
+-    'Старый .xls читается как ограниченная таблица BIFF8: имена и порядок листов, поддержанные значения ячеек и сохранённые результаты формул. Формулы не вычисляются, макросы не запускаются. Это не проверка оформления; смотри metadata покрытия и ограничений. Для создания литеральной таблицы .xls используй spreadsheet_create. Узкая числовая правка Calc BIFF8 через spreadsheet_edit сохраняет исходник и создаёт новую копию. '
++    'Старый .xls читается как ограниченная таблица BIFF8: имена и порядок листов, поддержанные значения ячеек и сохранённые результаты формул. Формулы не вычисляются, макросы не запускаются. Это не проверка оформления; смотри metadata покрытия и ограничений. Для создания литеральной таблицы .xls используй spreadsheet_create. Узкая числовая правка BIFF8 через spreadsheet_edit сохраняет исходник и создаёт новую копию. '
+     'XPS/OXPS читается частично: записанные UnicodeString и заявленные параметры страниц; порядок Glyphs в XML не доказывает визуальный порядок чтения. Шрифты и индексы не восстанавливают отсутствующий текст; рендеринг, OCR и печать не поддерживаются. Для NEW .xps/.oxps доступны отдельные xps_create/xps_edit в ограниченном текстовом профиле. '
+     'Native spreadsheet profiles: spreadsheet_create with exactly {sheets:[{name,rows}]} creates a NEW .xlsx/.xltx/.ods/.ots/.fods, with true native type declarations. XLSX/XLTX also accept xlsx_create sheet options. spreadsheet_edit uses exactly {source,sheet,cell,expected,value} for nonmacro profiles, or exact {source,source_sha256,sheet,cell,expected,value} for existing XLSM/XLTM, into a NEW output of the SAME profile; OOXML edits one numeric cell (JSON numbers), ODF edits exact scalar float (decimal-string expected/value), string or boolean cells. Other XML bytes and package payloads are preserved; existing formula caches are not recalculated. For XLSM/XLTM, read_file first supplies source_sha256; only exact-value numeric edits retaining one opaque VBA payload are supported, never macro creation/execution or a safety claim. Signed, protected, hidden, external/active, formula-target and other unsupported packages refuse; old macro create/convert refusals remain. spreadsheet_convert uses exactly {source}, NEW output; only XLSX<->XLTX or ODS/OTS/FODS family conversions are native. The XLSX/ODS pair uses a separately validated isolated Office conversion; other cross-family pairs are unsupported. ODS creation calculates only bounded SUM/product formulas. Native XLSM/XLTM reading is inert: macros are opaque and never executed. Read separates available values and formula caches and discloses coverage/external resources; no visual/layout fidelity claim. Repeated, merged, rich, protected, formula or constrained ODF edit targets refuse; unsupported resources/styles refuse flat conversion. '
+     'ODS table operations ods_join {source,left_sheet,right_sheet,key,sheet} and ods_merge '
+diff --git a/hermes_cli/friday_workspace_spreadsheet.py b/hermes_cli/friday_workspace_spreadsheet.py
+index d2c6eb0010fd999465ffa5ec62547d003408b12d..5d40e7a03ae624330a321cf7fd9a6d86f2664210 100644
+--- a/hermes_cli/friday_workspace_spreadsheet.py
++++ b/hermes_cli/friday_workspace_spreadsheet.py
+@@ -11,10 +11,11 @@ XLS_WRITE_GUIDANCE = (
+     'Numbers are limited to 15 significant digits, 12 decimal places and magnitude 10^15. '
+     'Limits are 8 sheets, 512 rows and 64 columns per sheet, 4096 cells, 8216 encoded bytes of distinct strings '
+     'and headers, and the bounded XLS readback. The create profile refuses formulas, dates and custom formatting. '
+-    'For a supported existing Calc BIFF8 .xls use spreadsheet_edit, a NEW .xls path, and exact JSON '
++    'For a supported existing BIFF8 .xls use spreadsheet_edit, a NEW .xls path, and exact JSON '
+     '{source,source_sha256,sheet,cell,expected,value}. Read the source SHA-256 and use decimal strings '
+-    'for expected/value. The edit replaces one stored RK numeric cell. All other bytes and saved formula '
+-    'caches are preserved. Caches may be stale. Other XLS edits, XLS conversion and XLT writes are unsupported. ')
++    'with at most two fractional digits. Supported Calc workbooks allow one integer RK or General-format '
++    'NUMBER edit; native literal workbooks allow one NUMBER edit. The stored encoding and all other bytes '
++    'including saved formula caches are preserved. Caches may be stale. Other XLS edits, XLS conversion and XLT writes are unsupported. ')
+ 
+ 
+ def execute(cap, fd, leaf, path, content, *, operation):
+diff --git a/tools/scoped_xls_edit.py b/tools/scoped_xls_edit.py
+index e084cc12cb5623d83242311abe5fa9545ac1500b..80a43b44a19081687bcb56267fce0cd1b6c44e2c 100644
+--- a/tools/scoped_xls_edit.py
++++ b/tools/scoped_xls_edit.py
+@@ -1,4 +1,4 @@
+-"""Edit one integer-encoded BIFF8 RK in a validated Calc workbook copy."""
++"""Edit one stored BIFF8 number in a validated workbook copy."""
+ from __future__ import annotations
+ 
+ import hashlib
+@@ -6,7 +6,7 @@ import re
+ import struct
+ 
+ from tools.scoped_xls import (
+-    MAX_INPUT, _CFB, _extract_workbook, _fail, _records, _u16, _u32,
++    MAX_INPUT, XLS_CLSID, _CFB, _extract_workbook, _fail, _records, _u16, _u32, _unicode,
+ )
+ 
+ _SPEC_FIELDS = frozenset(('source_sha256', 'sheet', 'cell', 'expected', 'value'))
+@@ -15,6 +15,8 @@ _DECIMAL = re.compile(r'(-?)(0|[1-9][0-9]{0,8})(?:\.([0-9]{1,2}))?')
+ _SUMMARY = 'e0859ff2f94f6810ab9108002b27b3d9'
+ _DOC_SUMMARY = '02d5cdd59c2e1b10939708002b2cf9ae'
+ _USER_DEFINED = '05d5cdd59c2e1b10939708002b2cf9ae'
++_NUMBER = 0x0203
++_RK = 0x027E
+ 
+ 
+ def _coordinates(address):
+@@ -103,7 +105,58 @@ def _selected_sheet(records, sheets, name):
+     return records[start + 1:end]
+ 
+ 
+-def _target_rk(records, row, column):
++def _check_literal_layout(workbook, records, sheet_count):
++    """Recognize the bounded, all-General profile of the native literal writer."""
++    from tools.scoped_xls_write import _DEFAULT_XF, _bof, _globals
++
++    unsupported = 'xls_edit_literal_layout_unsupported'
++    if not 1 <= sheet_count <= 8 or len(workbook) != records[-1][0] + 4:
++        _fail(unsupported)
++    prefix = _globals(sheet_count)
++    if not workbook.startswith(prefix):
++        _fail(unsupported)
++    tail = [record for record in records if record[0] >= len(prefix)]
++    directory = tail[:sheet_count]
++    if (len(tail) < sheet_count + 2
++            or any(kind != 0x0085 or p[4:6] != bytes(2) for _, kind, p in directory)
++            or [kind for _, kind, _ in tail[sheet_count:sheet_count + 2]] != [0x00FC, 0x000A]):
++        _fail(unsupported)
++    sst = tail[sheet_count][2]
++    end = 8
++    for _ in range(_u32(sst, 4)):
++        _, end = _unicode(sst, end)   # refuse rich or extended strings in this edit profile
++    if end != len(sst):
++        _fail(unsupported)
++
++    at = sheet_count + 2
++    cell_count = 0
++    for index, (_, _, bound) in enumerate(directory):
++        start = at
++        while at < len(tail) and tail[at][1] != 0x000A:
++            at += 1
++        block = tail[start:at]
++        at += 1
++        if (len(block) < 4 or block[0] != (_u32(bound, 0), 0x0809, _bof(0x0010)[4:])
++                or block[1][1:] != (0x0081, b'\xc1\x04') or block[2][1] != 0x0200
++                or len(block[2][2]) != 14):
++            _fail(unsupported)
++        first_row, rows, first_column, columns, reserved = struct.unpack('<IIHHH', block[2][2])
++        window_flags = 0x00B6 if index else 0x06B6
++        if (first_row or first_column or reserved or not 1 <= rows <= 512 or not 1 <= columns <= 64
++                or block[-1][1:] != (0x023E, struct.pack('<3HI4H', window_flags, 0, 0, 0x40, 0, 100, 0, 0))):
++            _fail(unsupported)
++        for _, kind, payload in block[3:-1]:
++            if kind not in (_NUMBER, 0x00FD, 0x0205):
++                _fail(unsupported)
++            row, column, xf = struct.unpack_from('<HHH', payload)
++            if row >= rows or column >= columns or xf != _DEFAULT_XF or (kind == 0x0205 and payload[7]):
++                _fail(unsupported)
++            cell_count += 1
++    if at != len(tail) or cell_count > 4096:
++        _fail(unsupported)
++
++
++def _target_numeric(records, row, column, *, calc_envelope):
+     row_info = None
+     col_info = None
+     target = None
+@@ -127,11 +180,13 @@ def _target_rk(records, row, column):
+                 if col_info is not None or not width or flags & 0x1701:
+                     _fail('xls_edit_layout_unsupported')
+                 col_info = payload
+-        elif kind == 0x027E and struct.unpack_from('<HH', payload) == (row, column):
++        elif (kind == _NUMBER or (calc_envelope and kind == _RK)) and struct.unpack_from('<HH', payload) == (row, column):
+             # The ordinary reader already checked record size and cell uniqueness.
+-            target = offset + 4 + 6
++            target = kind, offset + 4 + 6
+     if target is None:
+-        _fail('xls_edit_standalone_rk_required')
++        _fail('xls_edit_standalone_rk_required' if calc_envelope else 'xls_edit_standalone_number_required')
++    if not calc_envelope:
++        return target
+     if row_info is None:
+         _fail('xls_edit_layout_unsupported')
+     _, first, end, height = struct.unpack_from('<4H', row_info)
+@@ -140,12 +195,46 @@ def _target_rk(records, row, column):
+     return target
+ 
+ 
++def _check_calc_number_format(records, xf_index):
++    """Require General in both XF layers, regardless of number-format inheritance."""
++    unsupported = 'xls_edit_number_format_unsupported'
++    formats = {}
++    styles = []
++    for _, kind, payload in records:
++        if kind == 0x000A:
++            break
++        if kind == 0x00E0:
++            styles.append(payload)
++        elif kind == 0x041E:
++            if len(payload) < 2:
++                _fail(unsupported)
++            formats.setdefault(_u16(payload, 0), []).append(payload)
++
++    if xf_index >= len(styles) or len(styles[xf_index]) != 20:
++        _fail(unsupported)
++    xf = styles[xf_index]
++    flags = _u16(xf, 4)
++    parent = flags >> 4
++    if flags & 4 or parent >= len(styles) or len(styles[parent]) != 20 or not _u16(styles[parent], 4) & 4:
++        _fail(unsupported)
++    for layer in (xf, styles[parent]):
++        format_id = _u16(layer, 2)
++        definitions = formats.get(format_id, ())
++        if format_id == 0 and not definitions:
++            continue
++        if format_id < 164 or len(definitions) != 1:
++            _fail(unsupported)
++        definition = definitions[0]
++        name, end = _unicode(definition, 2)
++        if name != 'General' or end != len(definition):
++            _fail(unsupported)
++
++
+ def edit_xls(data: bytes, spec: dict, *, checkpoint=None) -> tuple[bytes, dict]:
+     """Return new bytes and preservation facts for one exact, source-bound edit.
+ 
+-    Source and publication ownership are enforced by the caller. This function
+-    accepts exact decimal strings and preserves the existing signed RK encoding
+-    and scale. Every byte outside its four-byte field is copied verbatim.
++    Source and publication ownership are enforced by the caller. The selected
++    NUMBER or integer RK field keeps its encoding. All other bytes are copied verbatim.
+     """
+     if type(data) is not bytes or len(data) > MAX_INPUT:
+         _fail('xls_input_limit')
+@@ -165,41 +254,60 @@ def edit_xls(data: bytes, spec: dict, *, checkpoint=None) -> tuple[bytes, dict]:
+         checkpoint()
+ 
+     cfb = _CFB(data, allow_calc=True, keep_workbook_offsets=True)
+-    if not cfb.calc_envelope:
++    if cfb.calc_envelope:
++        _check_document_properties(cfb.streams.get('\x05SummaryInformation'), (_SUMMARY,))
++        _check_document_properties(cfb.streams.get('\x05DocumentSummaryInformation'),
++                                   (_DOC_SUMMARY, _USER_DEFINED))
++    elif (cfb.streams.keys() != {'Workbook'} or cfb.sector_size != 512
++          or cfb._sector(_u32(data, 48))[80:96] != XLS_CLSID):
+         _fail('xls_edit_calc_envelope_required')
+-    _check_document_properties(cfb.streams.get('\x05SummaryInformation'), (_SUMMARY,))
+-    _check_document_properties(cfb.streams.get('\x05DocumentSummaryInformation'),
+-                               (_DOC_SUMMARY, _USER_DEFINED))
+     workbook = cfb.streams['Workbook']
+-    records = _records(workbook, calc_envelope=True)
++    records = _records(workbook, calc_envelope=cfb.calc_envelope)
+     readback = _extract_workbook(cfb, records)
+-    selected = _selected_sheet(records, readback.extraction_metadata['sheets'], sheet)
+-    offset = _target_rk(selected, row, column)
+-
+-    previous = struct.unpack_from('<i', workbook, offset)[0]
+-    flags = previous & 3
+-    if not flags & 2:
+-        _fail('xls_edit_integer_rk_required')
+-    cents_per_unit = 1 if flags & 1 else 100
+-    if (previous >> 2) * cents_per_unit != expected_cents:
+-        _fail('xls_edit_expected_mismatch')
+-    updated, residue = divmod(updated_cents, cents_per_unit)
+-    if residue or not -(1 << 29) <= updated < (1 << 29):
+-        _fail('xls_edit_value_outside_rk_encoding')
+-    if updated == previous >> 2:
+-        _fail('xls_edit_value_unchanged')
+-
+-    positions = cfb._workbook_offsets(offset, 4)
+-    if bytes(data[pos] for pos in positions) != workbook[offset:offset + 4]:
++    sheets = readback.extraction_metadata['sheets']
++    if not cfb.calc_envelope:
++        _check_literal_layout(workbook, records, len(sheets))
++    selected = _selected_sheet(records, sheets, sheet)
++    kind, offset = _target_numeric(selected, row, column, calc_envelope=cfb.calc_envelope)
++
++    if kind == _NUMBER:
++        if cfb.calc_envelope:
++            _check_calc_number_format(records, _u16(workbook, offset - 2))
++        previous = struct.unpack_from('<d', workbook, offset)[0]
++        if previous != expected_cents / 100:
++            _fail('xls_edit_expected_mismatch')
++        updated = updated_cents / 100
++        if updated == previous:
++            _fail('xls_edit_value_unchanged')
++        replacement = struct.pack('<d', updated)
++        profile = 'calc_biff8_number.v1' if cfb.calc_envelope else 'literal_biff8_number.v1'
++    else:
++        previous = struct.unpack_from('<i', workbook, offset)[0]
++        flags = previous & 3
++        if not flags & 2:
++            _fail('xls_edit_integer_rk_required')
++        cents_per_unit = 1 if flags & 1 else 100
++        if (previous >> 2) * cents_per_unit != expected_cents:
++            _fail('xls_edit_expected_mismatch')
++        updated, residue = divmod(updated_cents, cents_per_unit)
++        if residue or not -(1 << 29) <= updated < (1 << 29):
++            _fail('xls_edit_value_outside_rk_encoding')
++        if updated == previous >> 2:
++            _fail('xls_edit_value_unchanged')
++        replacement = struct.pack('<i', (updated << 2) | flags)
++        profile = 'calc_biff8_integer_rk.v1'
++
++    positions = cfb._workbook_offsets(offset, len(replacement))
++    if bytes(data[pos] for pos in positions) != workbook[offset:offset + len(replacement)]:
+         _fail('xls_edit_storage_mapping')
+     copy = bytearray(data)
+-    for pos, value in zip(positions, struct.pack('<i', (updated << 2) | flags)):
++    for pos, value in zip(positions, replacement):
+         copy[pos] = value
+     if checkpoint is not None:
+         checkpoint()
+     result = bytes(copy)
+     return result, {
+-        'edit_profile': 'calc_biff8_integer_rk.v1',
++        'edit_profile': profile,
+         'sheet': sheet,
+         'cell': address,
+         'expected': spec['expected'],
