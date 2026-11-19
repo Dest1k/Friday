@@ -1,0 +1,357 @@
+diff --git a/gateway/run_inbound.py b/gateway/run_inbound.py
+index 01262354d7d3e5c1b04118dbbd606fe841322c96..c19306b47d4dac9e964086ee07bbda4b285c74fc 100644
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -1490,7 +1490,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         return image_paths, audio_paths, audio_file_paths, video_paths
+ 
+     async def _enrich_inbound_images(
+-        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
++        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str],
++        *, owned_image_paths: frozenset[str] = frozenset(),
+     ) -> str:
+         """Route images natively (attach pixels at run_conversation) or pre-analyze them into text."""
+         # See agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
+@@ -1523,6 +1524,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         from agent.auxiliary_client import scoped_runtime_main
+ 
+         with scoped_runtime_main(vision_runtime):
++            if owned_image_paths:
++                return await self._enrich_message_with_vision(
++                    message_text, image_paths, owned_image_paths=owned_image_paths,
++                )
+             return await self._enrich_message_with_vision(message_text, image_paths)
+ 
+     async def _echo_stt_transcripts(
+@@ -1751,7 +1756,24 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         message_text = self._prefix_inbound_sender_context(event, source, message_text)
+         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
+         if image_paths:
+-            message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
++            owned_images = {}
++            for image_path in image_paths:
++                owned_path = owned_attachment_model_path(event, image_path)
++                if owned_path:
++                    owned_images[image_path] = owned_path
++            if owned_images:
++                message_text = await self._enrich_inbound_images(
++                    source, session_key, message_text, image_paths,
++                    owned_image_paths=frozenset(owned_images),
++                )
++                paths = "\n".join(owned_images[path] for path in image_paths[:10] if path in owned_images)
++                if paths:
++                    message_text = (
++                        "[Owned workspace image files. Use read_file for the current source SHA-256.]\n"
++                        f"{paths}\n\n{message_text}"
++                    )
++            else:
++                message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
+         if audio_paths:
+             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
+@@ -1878,10 +1900,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
+             return "text"
+ 
+-    async def _enrich_message_with_vision(self, user_text: str, image_paths: List[str]) -> str:
+-        """Auto-analyze user-attached images with the vision tool and prepend the descriptions.
+-        Description *and* local cache path are injected so the model understands the image without
+-        a tool call and can re-examine it with vision_analyze."""
++    async def _enrich_message_with_vision(
++        self, user_text: str, image_paths: List[str], *, owned_image_paths: frozenset[str] = frozenset(),
++    ) -> str:
++        """Prepend image descriptions, retaining cache hints only for unmanaged inputs."""
+         from tools.vision_tools import vision_analyze_tool
+         from agent.memory_manager import sanitize_context
+ 
+@@ -1894,16 +1916,20 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         )
+         enriched_parts = []
+         for path in image_paths:
++            owned_image = path in owned_image_paths
+             try:
+                 logger.debug("Auto-analyzing user image: %s", path)
+                 result = json.loads(await vision_analyze_tool(image_url=path, user_prompt=analysis_prompt))
+                 if result.get("success"):
+                     description = sanitize_context(result.get("analysis", ""))
+-                    note = (
+-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
+-                        f"[If you need a closer look, use vision_analyze with "
+-                        f"image_url: {path} ~]"
+-                    )
++                    note = f"[The user sent an image~ Here's what I can see:\n{description}]"
++                    if not owned_image:
++                        note += (
++                            f"\n[If you need a closer look, use vision_analyze with "
++                            f"image_url: {path} ~]"
++                        )
++                elif owned_image:
++                    note = "[Automatic analysis did not return a description for the attached image.]"
+                 else:
+                     note = (
+                         "[The user sent an image but I couldn't quite see it "
+@@ -1912,11 +1938,14 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+                     )
+             except Exception as e:
+                 logger.error("Vision auto-analysis error: %s", e)
+-                note = (
+-                    f"[The user sent an image but something went wrong when I "
+-                    f"tried to look at it~ You can try examining it yourself "
+-                    f"with vision_analyze using image_url: {path}]"
+-                )
++                if owned_image:
++                    note = "[Automatic analysis did not return a description for the attached image.]"
++                else:
++                    note = (
++                        f"[The user sent an image but something went wrong when I "
++                        f"tried to look at it~ You can try examining it yourself "
++                        f"with vision_analyze using image_url: {path}]"
++                    )
+             enriched_parts.append(note)
+         if not enriched_parts:
+             return user_text
+diff --git a/gateway/run_inbound_media.py b/gateway/run_inbound_media.py
+index 7c2dd9a9931c93943019f908bd2e901e0685e18e..b5f2c8cb381727c13aff68a49cfd847ef5a104eb 100644
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -229,7 +229,7 @@ def _rehome_user_attachments(event, cap):
+     from gateway.ordinary_f04_bridge import capture_verified_ingress
+     capture_verified_ingress(event, proof, staged)
+     rewritten = []
+-    for raw, destination, _, _, receipt in staged:
++    for index, (raw, destination, _, _, receipt) in enumerate(staged):
+         rewritten.append(str(destination))
+         # Keep the origin receipt too. Remapping a verified byte copy lets the
+         # native producer prove this same event on an idempotent second call.
+@@ -238,8 +238,19 @@ def _rehome_user_attachments(event, cap):
+         if isinstance(presentation, dict) and isinstance(presentation.get('original_filename'), str):
+             retained_receipt['presentation'] = {'original_filename': presentation['original_filename']}
+         event._telegram_media_receipts[str(destination)] = retained_receipt
+-        if event.text:
++        if not event.text:
++            continue
++        mime = event.media_types[index] if index < len(event.media_types) else None
++        if not (mime or "").lower().startswith("image/"):
+             event.text = event.text.replace(raw, str(destination))
++        elif receipt['origin']['message_id'] == message.get('reply_to_message_id'):
++            # Telegram only appends this terminal note for a cached replied-to
++            # image. Keep the authored text and every other path literal intact.
++            note = event.text.rsplit("\n\n", 1)[-1]
++            note_suffix = f"' saved at: {raw}]"
++            if note.startswith("[Replied-to image '") and note.endswith(note_suffix):
++                relative = destination.relative_to(workspace).as_posix()
++                event.text = event.text.removesuffix(note_suffix) + f"' saved at: {relative}]"
+     event.media_urls = rewritten
+     # Presentation-only provenance from the verified copy above. Media paths
+     # and byte receipts keep their absolute identity; this grants no file access.
+diff --git a/hermes_cli/friday_schema_guidance.py b/hermes_cli/friday_schema_guidance.py
+index 548027cf6878d30456be9c17378c53cf2ac41098..f2d87439f8cb0d17a48d881792c3e69592a68281 100644
+--- a/hermes_cli/friday_schema_guidance.py
++++ b/hermes_cli/friday_schema_guidance.py
+@@ -12,10 +12,10 @@ import re
+ 
+ # Include the request projection in ordinary persisted tool-pin identity. The
+ # donor build/version may stay unchanged when this product overlay is updated.
+-PROJECTION_REVISION = "friday.file-schema-guidance.v5"
++PROJECTION_REVISION = "friday.file-schema-guidance.v6"
+ 
+ PNG_TABLE_READ_GUIDANCE = (
+-    ' Default read_file on an own-workspace PNG returns current source_sha256, frame geometry '
++    ' Default read_file on an own-workspace PNG or JPEG returns current source_sha256, frame geometry '
+     'and pixel hashes without OCR. Use that hash directly for a whole-grid XLSX draft. '
+     'Only when selecting numeric columns, set png_table_headings=true if selector words '
+     'are unknown. This mode requires default pagination and returns first-row OCR candidates, '
+@@ -24,10 +24,11 @@ PNG_TABLE_READ_GUIDANCE = (
+ )
+ 
+ PNG_TABLE_WRITE_GUIDANCE = (
+-    ' For an upright ruled-table PNG, use write_file format=png_ruled_table_xlsx and a NEW .xlsx path. '
++    ' For an upright ruled-table PNG or JPEG, use write_file format=png_ruled_table_xlsx and a NEW .xlsx path. '
+     'For the entire grid, pass a JSON string with exactly {"source":"input.png","source_sha256":"<current read_file hash>"}. '
+     'The editable OCR draft keeps every physical row and column, visibly marks uncertainty and '
+     'includes source coordinates and raw OCR. Header, unit and value fidelity remain unverified. '
++    'If a data cell is unresolved, deliver the draft and ask about that specific row and column without guessing. '
+     'Only for explicitly requested numeric columns, add columns as a list of objects with a '
+     'confirmed heading (the first header word) and type (integer or decimal_comma). '
+     'If selector words are unknown, read_file with png_table_headings=true can show candidates. '
+diff --git a/hermes_cli/friday_user_scope.py b/hermes_cli/friday_user_scope.py
+index 190c49a0ad3c54bbe35a76ae98dbe7461b406ca0..e14be9ff9323af9844cc7a72025b4ad76b901ae3 100644
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -876,7 +876,8 @@ def scoped_file(name, args, *, task_id="default"):
+             # the generic refusal; never resolve a basename to another upload.
+             pagination = (args.get('offset', 1), args.get('limit', 2000), args.get('char_offset', 0))
+             if png_table_headings:
+-                if (path.suffix.lower() != '.png'
++                from hermes_cli.friday_workspace_raster import RULED_IMAGE_SUFFIXES, read_ruled_headings
++                if (path.suffix.lower() not in RULED_IMAGE_SUFFIXES
+                         or any(type(value) is not int for value in pagination)
+                         or pagination != (1, 2000, 0)
+                         or args.get('archive_parts') is not None
+@@ -884,7 +885,6 @@ def scoped_file(name, args, *, task_id="default"):
+                         or args.get('pdf_signatures', False) is not False
+                         or args.get('pdf_form_fields', False) is not False):
+                     raise ScopeDenied()
+-                from hermes_cli.friday_workspace_raster import read_ruled_headings
+                 return read_ruled_headings(cap, path.as_posix())
+             if (all(type(value) is int for value in pagination)
+                     and 1 <= pagination[0] <= 1000000 and 1 <= pagination[1] <= 2000
+diff --git a/hermes_cli/friday_workspace_raster.py b/hermes_cli/friday_workspace_raster.py
+index 70f54b58280c9a73bc46ec07e07acff97b512c0e..94b7e9a03a16e25d36ae4da5d1a1c3fe84d6adaf 100644
+--- a/hermes_cli/friday_workspace_raster.py
++++ b/hermes_cli/friday_workspace_raster.py
+@@ -11,6 +11,9 @@ from hermes_cli.friday_workspace_zip import (
+ )
+ 
+ 
++RULED_IMAGE_SUFFIXES = frozenset({'.png', '.jpg', '.jpeg'})
++
++
+ def read_image(cap, relative, *, offset=1, limit=2000, char_offset=0):
+     from tools.scoped_raster import inspect_raster, RasterError
+     if (type(offset) is not int or not 1 <= offset <= 1_000_000
+@@ -150,7 +153,7 @@ def _ruled_ocr_error(call, error):
+ 
+ 
+ def read_ruled_headings(cap, relative):
+-    """Read the first physical row with the original native call and owned PNG."""
++    """Read the first physical row of a supported owned raster."""
+     from tools.scoped_pdf_ocr import LocalOCRFailure
+     from tools.scoped_png_table import extract_ruled_png
+ 
+@@ -158,7 +161,8 @@ def read_ruled_headings(cap, relative):
+     check(cap)
+     data, identity = _source(cap, relative)
+     try:
+-        grid = extract_ruled_png(data, headers_only=True)
++        grid = extract_ruled_png(data, headers_only=True,
++                                 input_format=PurePosixPath(relative).suffix.lower()[1:])
+     except LocalOCRFailure as error:
+         return _ruled_ocr_error(call, error)
+     check(cap)
+@@ -242,7 +246,7 @@ def _whole_ruled_draft(grid, source_sha256):
+ 
+ 
+ def create_ruled_table(cap, fd, leaf, relative, content):
+-    """Create one provisional whole grid or numeric projection from an owned ruled PNG."""
++    """Create a provisional whole grid or numeric projection from a supported ruled raster."""
+     import re
+     import os
+     from tools.scoped_pdf_ocr import LocalOCRFailure
+@@ -271,7 +275,8 @@ def create_ruled_table(cap, fd, leaf, relative, content):
+     whole_grid = 'columns' not in spec
+     source = _path(spec['source'])
+     expected, selected = spec['source_sha256'], spec.get('columns')
+-    if (PurePosixPath(source).suffix.lower() != '.png'
++    suffix = PurePosixPath(source).suffix.lower()
++    if (suffix not in RULED_IMAGE_SUFFIXES
+             or not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)):
+         return refuse('png_ruled_table_invalid_spec')
+     if not whole_grid and (not isinstance(selected, list) or not 1 <= len(selected) <= 8
+@@ -287,7 +292,7 @@ def create_ruled_table(cap, fd, leaf, relative, content):
+     sources = [(source, data, identity)]
+     try:
+         check(cap)
+-        grid = extract_ruled_png(data)
++        grid = extract_ruled_png(data, input_format=suffix[1:])
+     except LocalOCRFailure as error:
+         return _ruled_ocr_error(call, error)
+     check(cap)
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+index f02335c4b35f2f397776fa5a84642e9a9906d843..76ab4d166a14b7cbd131ba05b9632683b08543f0 100644
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2360,7 +2360,7 @@ from hermes_cli.friday_schema_guidance import PNG_TABLE_READ_GUIDANCE, PNG_TABLE
+ READ_FILE_SCHEMA['description'] += PNG_TABLE_READ_GUIDANCE
+ READ_FILE_SCHEMA['parameters']['properties']['png_table_headings'] = {
+     'type': 'boolean', 'default': False,
+-    'description': 'Inspect the first row of one supported own-workspace ruled PNG with local OCR.',
++    'description': 'Inspect the first row of one supported own-workspace ruled PNG or JPEG with local OCR.',
+ }
+ _png_write_props = WRITE_FILE_SCHEMA['parameters']['properties']
+ _png_write_props['format']['enum'].append('png_ruled_table_xlsx')
+diff --git a/tools/scoped_png_table.py b/tools/scoped_png_table.py
+index 4e55272f7c478727e31f9b178391427e6fa84d39..063dc03c837f20b96babe108baf0e7b393da5722 100644
+--- a/tools/scoped_png_table.py
++++ b/tools/scoped_png_table.py
+@@ -263,14 +263,21 @@ def _png_argv(ocr, work, toolchain, *, headers_only=False):
+     return argv
+ 
+ 
+-def extract_ruled_png(data: bytes, *, headers_only=False) -> dict:
+-    """Return physical cells and observable OCR words for an authorized PNG."""
++def extract_ruled_png(data: bytes, *, headers_only=False, input_format='png') -> dict:
++    """Return physical cells and OCR words for an authorized upright PNG or JPEG."""
+     from tools import scoped_pdf_ocr as ocr
+ 
+     work = None
+     try:
+         if type(headers_only) is not bool:
+             raise _PNGFailure(_INVALID_OUTPUT)
++        if input_format != 'png':
++            from tools.scoped_raster import RasterError, ruled_jpeg_rgb_png
++
++            try:
++                data = ruled_jpeg_rgb_png(data, input_format, max_edge=_MAX_EDGE)
++            except RasterError:
++                raise _PNGFailure(_IMAGE) from None
+         width, height = _png_size(data)
+         toolchain = ocr._toolchain()
+         work = Path(tempfile.mkdtemp(prefix='friday-ruled-png-'))
+diff --git a/tools/scoped_raster.py b/tools/scoped_raster.py
+index a50257b1e8f6856089b517234c7695a5e44d16e8..7be7fd39cfd83f8768a0863701a5c2396458b2fd 100644
+--- a/tools/scoped_raster.py
++++ b/tools/scoped_raster.py
+@@ -53,7 +53,7 @@ def _opened(data, format):
+     return image
+ 
+ 
+-def _frames(data, format, selected=None):
++def _frames(data, format, selected=None, *, max_edge=None):
+     Image, ImageOps = _pillow()
+     _validate(data, format)
+     with warnings.catch_warnings():
+@@ -89,6 +89,8 @@ def _frames(data, format, selected=None):
+                 if type(width) is not int or type(height) is not int:
+                     _fail('image_pixel_limit')
+                 total += width * height
++                if max_edge is not None and max(width, height) > max_edge:
++                    _fail('image_pixel_limit')
+                 if width < 1 or height < 1 or total > MAX_PIXELS:
+                     _fail('image_pixel_limit')
+                 orientation = image.getexif().get(274, 1)
+@@ -143,7 +145,24 @@ def transform_raster(data, input_format, output_format, *, frame, rotation=0, cr
+         _fail('image_transform_failed')
+ 
+ 
+-def _transform_image(rows, image, output_format, *, frame, rotation=0, crop=None):
++def ruled_jpeg_rgb_png(data, format, *, max_edge):
++    """Decode one upright JPEG into RGB8 for the bounded ruled PNG recognizer."""
++    if format not in ('jpg', 'jpeg'):
++        _fail('image_format_unsupported')
++    try:
++        rows, image = _frames(data, format, selected=1, max_edge=max_edge)
++        if len(rows) != 1 or rows[0]['orientation'] != 1:
++            image.close()
++            _fail('image_orientation_unsupported')
++        encoded, _ = _transform_image(rows, image, 'png', frame=1, opaque_png=True)
++        return encoded
++    except RasterError:
++        raise
++    except Exception:
++        _fail('image_transform_failed')
++
++
++def _transform_image(rows, image, output_format, *, frame, rotation=0, crop=None, opaque_png=False):
+     """Own and close an already decoded image; also used inside the HEIF worker."""
+     try:
+         if output_format not in OUTPUTS:
+@@ -169,7 +188,7 @@ def _transform_image(rows, image, output_format, *, frame, rotation=0, crop=None
+             image.close()
+             image = changed
+         target = FORMATS[output_format]
+-        if target in ('JPEG', 'BMP'):
++        if target in ('JPEG', 'BMP') or opaque_png:
+             if image.getextrema()[3] != (255, 255):
+                 _fail('image_alpha_not_supported')
+             changed = image.convert('RGB')

@@ -3030,6 +3030,46 @@ CURRENT_SOURCE_FIFTY_NINTH_PREVIOUS_RECEIPT = 'UNBOUND'
 CURRENT_SOURCE_FIFTY_NINTH_PREVIOUS_REQUEST = 'UNBOUND'
 CURRENT_SOURCE_FIFTY_NINTH_PREVIOUS_STAMP = 'UNBOUND'
 
+# Selected native258 layer over exact closed native257.
+CURRENT_SOURCE_SIXTIETH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v60'
+CURRENT_SOURCE_SIXTIETH_LAYER = 's13-owned-jpeg-photo-and-vision-privacy-after-source257'
+CURRENT_SOURCE_SIXTIETH_MANIFEST = 'fe60dfd82d6e40ae8ed00b51c6f13f0ef06c7a5b8a2cb7ba47077b81a705981c'
+CURRENT_SOURCE_SIXTIETH_PATCH = 'f0c0f9fc224d50641306a6fce41a263bdf4294f404f141aba990178f16f7b524'
+CURRENT_SOURCE_SIXTIETH_NATIVE = {
+    'gateway/run_inbound.py': (
+        '4343b37c452c24c2029b2fa4cc1331c6c4ccf4783cee744cd653c9f30f1ef366',
+        'd5887f1f03ac5cfe3b1f523fc7ebe0269d25cc50db150333314e112e30700461', 119758, False),
+    'gateway/run_inbound_media.py': (
+        '95d0a94121370e26def5a49fd2dc41e819b2e6bb87a61ffc7c53d2bd43b7530d',
+        '384bb3114ee5e9349794b7c5a23b97320fdb6751cd8328486f4c413ae7353744', 16588, False),
+    'hermes_cli/friday_schema_guidance.py': (
+        '629879fb8e789332f0421c865c087d2f762fea29d846657cad91c5661b6ba14d',
+        'ae7cb29c030e099bf57d6acb1e4700fc446158eea1c17d505a7b754fdc4b4f18', 4617, False),
+    'hermes_cli/friday_user_scope.py': (
+        '32679cb2de1144afcf35bc7966bde4c8b6afb738e6158c820341554afda226b9',
+        '2b12bf530ed4cebafb8502497f210f0b1ee26952e18cb7d31ff2df6d21a83ec0', 151430, False),
+    'hermes_cli/friday_workspace_raster.py': (
+        '044cf8f8c30833d9bd3b9fce8be714b845b4e48c264e216bb1453ef327cefaa2',
+        '60526b9842a2c0c75be24a373e34b27ebb921cb0a1f1df71c41f3f9d8e040cb4', 18148, False),
+    'tools/file_tools.py': (
+        'c584a3369187e35b62329b567a39e65ee19bb757515c55a4cea0f895f7ff9ee3',
+        'c3e6ac8fdb4cf0d150b52b88386703878e279bcd82dd6aed3656778b62936002', 208212, False),
+    'tools/scoped_png_table.py': (
+        '049848e347e7c074502c1a976b78410b19ab84e66daf076be04e2323f32bff06',
+        '51a8d85fff34c3744147c1965b91b520cb81f10f0dc65bc1e92fb308bb117ec5', 19203, False),
+    'tools/scoped_raster.py': (
+        '9bfc2e4379439f742fa019c6c3fad801c6bbdd70837e82fae4d5efdea85220ae',
+        '620c6b4d6c6c7dffdb68faea70c61b18a96701551a3073dfb5a0bab630216f06', 9996, False),
+}
+CURRENT_SOURCE_SIXTIETH_PREVIOUS_COMMITTED = 'UNBOUND'
+CURRENT_SOURCE_SIXTIETH_PREVIOUS_HELPER = 'UNBOUND'
+CURRENT_SOURCE_SIXTIETH_PREVIOUS_INPUT = 'UNBOUND'
+CURRENT_SOURCE_SIXTIETH_PREVIOUS_INTENT = 'UNBOUND'
+CURRENT_SOURCE_SIXTIETH_PREVIOUS_MARKER = 'UNBOUND'
+CURRENT_SOURCE_SIXTIETH_PREVIOUS_RECEIPT = 'UNBOUND'
+CURRENT_SOURCE_SIXTIETH_PREVIOUS_REQUEST = 'UNBOUND'
+CURRENT_SOURCE_SIXTIETH_PREVIOUS_STAMP = 'UNBOUND'
+
 # Selected native240 release over the exact closed native239 predecessor.
 CURRENT_SOURCE_FORTY_SECOND_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v42'
 CURRENT_SOURCE_FORTY_SECOND_LAYER = 'xlsx-print-layout-widths-after-source239'
@@ -4036,6 +4076,26 @@ class _CurrentSourceFiftyNinthHistory:
         self._seal = _seal
         self.fifty_eighth_reference = encoded(fifty_eighth_reference)
         self.fifty_seventh_reference = encoded(fifty_seventh_reference)
+        self.root_reference = encoded(root_reference)
+        self.selected_previous = encoded(selected_previous)
+        self.selected_context = encoded(selected_context)
+
+
+_CURRENT_SOURCE_SIXTIETH_HISTORY_SEAL = object()
+
+
+class _CurrentSourceSixtiethHistory:
+    """Authenticated CP257 facts for a single selected CP258 edge."""
+    __slots__ = ('fifty_ninth_reference', 'fifty_eighth_reference', 'root_reference',
+                 'selected_previous', 'selected_context', '_seal')
+
+    def __init__(self, fifty_ninth_reference, fifty_eighth_reference, root_reference,
+            selected_previous, selected_context, *, _seal):
+        api().require(_seal is _CURRENT_SOURCE_SIXTIETH_HISTORY_SEAL,
+            'ordinary_current_successor_internal_sixtieth_history_required')
+        self._seal = _seal
+        self.fifty_ninth_reference = encoded(fifty_ninth_reference)
+        self.fifty_eighth_reference = encoded(fifty_eighth_reference)
         self.root_reference = encoded(root_reference)
         self.selected_previous = encoded(selected_previous)
         self.selected_context = encoded(selected_context)
@@ -5420,6 +5480,74 @@ def _current_source_twenty_third_bindings_checked():
     return _current_source_twenty_third_source_bindings_checked()
 
 
+def _current_source_sixtieth_bindings_checked():
+    """Require the private pins from the closed installation that v60 extends."""
+    f = api()
+    pins = (CURRENT_SOURCE_SIXTIETH_PREVIOUS_REQUEST, CURRENT_SOURCE_SIXTIETH_PREVIOUS_INPUT,
+        CURRENT_SOURCE_SIXTIETH_PREVIOUS_RECEIPT, CURRENT_SOURCE_SIXTIETH_PREVIOUS_STAMP,
+        CURRENT_SOURCE_SIXTIETH_PREVIOUS_MARKER, CURRENT_SOURCE_SIXTIETH_PREVIOUS_INTENT,
+        CURRENT_SOURCE_SIXTIETH_PREVIOUS_COMMITTED, CURRENT_SOURCE_SIXTIETH_PREVIOUS_HELPER)
+    f.require(all(type(pin) is str and len(pin) == 64 and all(c in '0123456789abcdef' for c in pin)
+        for pin in pins), 'ordinary_current_successor_sixtieth_actual257_binding_required')
+
+
+def _current_source_sixtieth_successor_checked(value, request, *, cli_only, source_update):
+    """Authenticate closed CP257 before selecting its single CP258 successor."""
+    _current_source_sixtieth_bindings_checked()
+    f = api()
+    home = f.canonical(value['home'])
+    context = request['current_source_successor']
+    f.require(set(context) == {'schema', 'root_project_update', 'previous_native_update'}
+        and context['schema'] == CURRENT_SOURCE_SIXTIETH_SUCCESSOR_SCHEMA,
+        'ordinary_current_successor_context_required')
+    f.require(type(request['current_input']) is dict and type(request['previous_input']) is dict
+        and set(request['current_input']) == set(request['previous_input']) == {'path', 'sha256'}
+        and request['current_input']['path'] != request['previous_input']['path']
+        and request['current_input']['sha256'] != request['previous_input']['sha256'],
+        'ordinary_current_successor_distinct_candidate_required')
+    fifty_ninth_ref = context['previous_native_update']
+    fifty_ninth_tx = home/'preparation'/('ordinary-source-update-v45-'+
+        CURRENT_SOURCE_SIXTIETH_PREVIOUS_REQUEST[:16])
+    f.require(type(fifty_ninth_ref) is dict and fifty_ninth_ref ==
+        {'path': str(fifty_ninth_tx/'request.json'), 'sha256': CURRENT_SOURCE_SIXTIETH_PREVIOUS_REQUEST},
+        'ordinary_current_successor_exact_sixtieth_previous_required')
+    fifty_ninth_request = _current_source_json(fifty_ninth_tx/'request.json',
+        expected_sha256=CURRENT_SOURCE_SIXTIETH_PREVIOUS_REQUEST)
+    _current_source_request_metadata(fifty_ninth_request, home)
+    fifty_ninth_context = fifty_ninth_request['current_source_successor']
+    f.require(encoded(request['previous_input']) == encoded(fifty_ninth_request['current_input'])
+        and encoded(fifty_ninth_context) == encoded({'schema': CURRENT_SOURCE_FIFTY_NINTH_SUCCESSOR_SCHEMA,
+            'root_project_update': context['root_project_update'],
+            'previous_native_update': fifty_ninth_context.get('previous_native_update')}),
+        'ordinary_current_successor_fifty_ninth_edge_required')
+    f.require(_current_source_cp_transactions(home, fifty_ninth_request['current_input']) == fifty_ninth_tx,
+        'ordinary_current_successor_fifty_ninth_canonical_request_required')
+    f.require(fifty_ninth_ref['sha256'] == CURRENT_SOURCE_SIXTIETH_PREVIOUS_REQUEST
+        and fifty_ninth_request['current_input']['sha256'] == CURRENT_SOURCE_SIXTIETH_PREVIOUS_INPUT,
+        'ordinary_current_successor_exact_sixtieth_previous_required')
+    f.require(f.digest(f.owned_file(fifty_ninth_tx/'intent.json', private=True))
+        == CURRENT_SOURCE_SIXTIETH_PREVIOUS_INTENT
+        and f.digest(f.owned_file(fifty_ninth_tx/'committed.json', private=True))
+        == CURRENT_SOURCE_SIXTIETH_PREVIOUS_COMMITTED,
+        'ordinary_current_successor_exact_sixtieth_previous_proof_required')
+    _current_source_cp_proof(home, fifty_ninth_tx, fifty_ninth_request, committed=True)
+    marker = _current_source_json(home/f.MARKER)
+    if marker.get('input_sha256') == request['current_input']['sha256']:
+        selected_tx = _current_source_cp_transactions(home, request['current_input'])
+        f.require(selected_tx is not None, 'ordinary_current_successor_leaf_journal_required')
+        marker = _current_source_json(selected_tx/'before'/f.MARKER)
+    proof = _CurrentSourceSixtiethHistory(fifty_ninth_ref, fifty_ninth_context['previous_native_update'],
+        context['root_project_update'], request['previous_input'], context,
+        _seal=_CURRENT_SOURCE_SIXTIETH_HISTORY_SEAL)
+    fifty_ninth = _current_source_fifty_ninth_successor_checked(
+        _current_source_json(fifty_ninth_request['current_input']['path'],
+            expected_sha256=CURRENT_SOURCE_SIXTIETH_PREVIOUS_INPUT),
+        fifty_ninth_request, cli_only=cli_only, source_update=fifty_ninth_request,
+        historical_marker=marker, _sixtieth_history=proof)
+    return _current_native_source_edge_checked(value, cli_only=cli_only,
+        source_update=source_update, prior_edge=fifty_ninth)
+
+
 def _current_source_fifty_ninth_bindings_checked():
     """Require the private pins from the closed installation that v59 extends."""
     f = api()
@@ -5431,7 +5559,8 @@ def _current_source_fifty_ninth_bindings_checked():
         for pin in pins), 'ordinary_current_successor_fifty_ninth_actual256_binding_required')
 
 
-def _current_source_fifty_ninth_successor_checked(value, request, *, cli_only, source_update):
+def _current_source_fifty_ninth_successor_checked(value, request, *, cli_only, source_update,
+        historical_marker=None, _sixtieth_history=None):
     """Authenticate closed CP256 before selecting its single CP257 successor."""
     _current_source_fifty_ninth_bindings_checked()
     f = api()
@@ -5471,7 +5600,10 @@ def _current_source_fifty_ninth_successor_checked(value, request, *, cli_only, s
         == CURRENT_SOURCE_FIFTY_NINTH_PREVIOUS_COMMITTED,
         'ordinary_current_successor_exact_fifty_ninth_previous_proof_required')
     _current_source_cp_proof(home, fifty_eighth_tx, fifty_eighth_request, committed=True)
-    marker = _current_source_json(home/f.MARKER)
+    f.require(historical_marker is None or type(_sixtieth_history) is _CurrentSourceSixtiethHistory
+        and _sixtieth_history._seal is _CURRENT_SOURCE_SIXTIETH_HISTORY_SEAL,
+        'ordinary_current_successor_internal_sixtieth_history_required')
+    marker = historical_marker if historical_marker is not None else _current_source_json(home/f.MARKER)
     if marker.get('input_sha256') == request['current_input']['sha256']:
         selected_tx = _current_source_cp_transactions(home, request['current_input'])
         f.require(selected_tx is not None, 'ordinary_current_successor_leaf_journal_required')
@@ -5485,7 +5617,8 @@ def _current_source_fifty_ninth_successor_checked(value, request, *, cli_only, s
         fifty_eighth_request, cli_only=cli_only, source_update=fifty_eighth_request,
         historical_marker=marker, _fifty_ninth_history=proof)
     return _current_native_source_edge_checked(value, cli_only=cli_only,
-        source_update=source_update, prior_edge=fifty_eighth)
+        source_update=source_update, prior_edge=fifty_eighth,
+        historical_marker=historical_marker, _sixtieth_history=_sixtieth_history)
 
 
 def _current_source_fifty_eighth_bindings_checked():
@@ -8611,8 +8744,11 @@ def _current_source_fourth_successor_checked(value, request, *, cli_only, source
 
 
 def current_native_source_successor_checked(value, *, cli_only, source_update=None):
-    """The v6 root and fifty-nine fixed authenticated native CP edges."""
+    """The v6 root and sixty fixed authenticated native CP edges."""
     f = api()
+    if type(source_update) is dict and type(source_update.get('current_source_successor')) is dict \
+            and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_SIXTIETH_SUCCESSOR_SCHEMA:
+        _current_source_sixtieth_bindings_checked()
     if type(source_update) is dict and type(source_update.get('current_source_successor')) is dict \
             and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_FIFTY_NINTH_SUCCESSOR_SCHEMA:
         _current_source_fifty_ninth_bindings_checked()
@@ -8740,6 +8876,8 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
     context = request['current_source_successor']
     if context.get('schema') == CURRENT_SOURCE_SUCCESSOR_SCHEMA:
         return _current_native_source_edge_checked(value,cli_only=cli_only,source_update=source_update)
+    if context.get('schema') == CURRENT_SOURCE_SIXTIETH_SUCCESSOR_SCHEMA:
+        return _current_source_sixtieth_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
     if context.get('schema') == CURRENT_SOURCE_FIFTY_NINTH_SUCCESSOR_SCHEMA:
         return _current_source_fifty_ninth_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
     if context.get('schema') == CURRENT_SOURCE_FIFTY_EIGHTH_SUCCESSOR_SCHEMA:
@@ -8916,9 +9054,12 @@ def _current_source_request_metadata(request,home):
 
 
 def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
-        historical_marker=None, prior_edge=None, _fourth_history=None, _fifth_history=None, _sixth_history=None, _seventh_history=None, _eighth_history=None, _ninth_history=None, _tenth_history=None, _eleventh_history=None, _twelfth_history=None, _thirteenth_history=None, _fourteenth_history=None, _fifteenth_history=None, _sixteenth_history=None, _seventeenth_history=None, _eighteenth_history=None, _nineteenth_history=None, _twentieth_history=None, _twenty_first_history=None, _twenty_second_history=None, _twenty_third_history=None, _twenty_fourth_history=None, _twenty_fifth_history=None, _twenty_sixth_history=None, _twenty_seventh_history=None, _twenty_eighth_history=None, _twenty_ninth_history=None, _thirtieth_history=None, _thirty_first_history=None, _thirty_second_history=None, _thirty_third_history=None, _thirty_fourth_history=None, _thirty_fifth_history=None, _thirty_sixth_history=None, _thirty_seventh_history=None, _thirty_eighth_history=None, _thirty_ninth_history=None, _fortieth_history=None, _forty_first_history=None, _forty_second_history=None, _forty_third_history=None, _forty_fourth_history=None, _forty_fifth_history=None, _forty_sixth_history=None, _forty_seventh_history=None, _forty_eighth_history=None, _forty_ninth_history=None, _fiftieth_history=None, _fifty_first_history=None, _fifty_second_history=None, _fifty_third_history=None, _fifty_fourth_history=None, _fifty_fifth_history=None, _fifty_sixth_history=None, _fifty_seventh_history=None, _fifty_eighth_history=None, _fifty_ninth_history=None):
+        historical_marker=None, prior_edge=None, _fourth_history=None, _fifth_history=None, _sixth_history=None, _seventh_history=None, _eighth_history=None, _ninth_history=None, _tenth_history=None, _eleventh_history=None, _twelfth_history=None, _thirteenth_history=None, _fourteenth_history=None, _fifteenth_history=None, _sixteenth_history=None, _seventeenth_history=None, _eighteenth_history=None, _nineteenth_history=None, _twentieth_history=None, _twenty_first_history=None, _twenty_second_history=None, _twenty_third_history=None, _twenty_fourth_history=None, _twenty_fifth_history=None, _twenty_sixth_history=None, _twenty_seventh_history=None, _twenty_eighth_history=None, _twenty_ninth_history=None, _thirtieth_history=None, _thirty_first_history=None, _thirty_second_history=None, _thirty_third_history=None, _thirty_fourth_history=None, _thirty_fifth_history=None, _thirty_sixth_history=None, _thirty_seventh_history=None, _thirty_eighth_history=None, _thirty_ninth_history=None, _fortieth_history=None, _forty_first_history=None, _forty_second_history=None, _forty_third_history=None, _forty_fourth_history=None, _forty_fifth_history=None, _forty_sixth_history=None, _forty_seventh_history=None, _forty_eighth_history=None, _forty_ninth_history=None, _fiftieth_history=None, _fifty_first_history=None, _fifty_second_history=None, _fifty_third_history=None, _fifty_fourth_history=None, _fifty_fifth_history=None, _fifty_sixth_history=None, _fifty_seventh_history=None, _fifty_eighth_history=None, _fifty_ninth_history=None, _sixtieth_history=None):
     """Validate one bounded edge; historical mode returns facts, never admission."""
     f = api()
+    if type(source_update) is dict and type(source_update.get('current_source_successor')) is dict \
+            and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_SIXTIETH_SUCCESSOR_SCHEMA:
+        _current_source_sixtieth_bindings_checked()
     if type(source_update) is dict and type(source_update.get('current_source_successor')) is dict \
             and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_FIFTY_NINTH_SUCCESSOR_SCHEMA:
         _current_source_fifty_ninth_bindings_checked()
@@ -9050,6 +9191,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         and request['home'] == str(home),'ordinary_current_successor_explicit_request_required')
     context = request['current_source_successor']
     continuation = prior_edge is not None
+    sixtieth = continuation and context.get('schema') == CURRENT_SOURCE_SIXTIETH_SUCCESSOR_SCHEMA
+    if sixtieth: _current_source_sixtieth_bindings_checked()
     fifty_ninth = continuation and context.get('schema') == CURRENT_SOURCE_FIFTY_NINTH_SUCCESSOR_SCHEMA
     if fifty_ninth: _current_source_fifty_ninth_bindings_checked()
     fifty_eighth = continuation and context.get('schema') == CURRENT_SOURCE_FIFTY_EIGHTH_SUCCESSOR_SCHEMA
@@ -9144,11 +9287,12 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     fifth = continuation and context.get('schema') == CURRENT_SOURCE_FIFTH_SUCCESSOR_SCHEMA
     fourth = continuation and context.get('schema') == CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA
     third = continuation and context.get('schema') == CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA
-    second = continuation and not third and not fourth and not fifth and not sixth and not seventh and not eighth and not ninth and not tenth and not eleventh and not twelfth and not thirteenth and not fourteenth and not fifteenth and not sixteenth and not seventeenth and not eighteenth and not nineteenth and not twentieth and not twenty_first and not twenty_second and not twenty_third and not twenty_fourth and not twenty_fifth and not twenty_sixth and not twenty_seventh and not twenty_eighth and not twenty_ninth and not thirtieth and not thirty_first and not thirty_second and not thirty_third and not thirty_fourth and not thirty_fifth and not thirty_sixth and not thirty_seventh and not thirty_eighth and not thirty_ninth and not fortieth and not forty_first and not forty_second and not forty_third and not forty_fourth and not forty_fifth and not forty_sixth and not forty_seventh and not forty_eighth and not forty_ninth and not fiftieth and not fifty_first and not fifty_second and not fifty_third and not fifty_fourth and not fifty_fifth and not fifty_sixth and not fifty_seventh and not fifty_eighth and not fifty_ninth
+    second = continuation and not third and not fourth and not fifth and not sixth and not seventh and not eighth and not ninth and not tenth and not eleventh and not twelfth and not thirteenth and not fourteenth and not fifteenth and not sixteenth and not seventeenth and not eighteenth and not nineteenth and not twentieth and not twenty_first and not twenty_second and not twenty_third and not twenty_fourth and not twenty_fifth and not twenty_sixth and not twenty_seventh and not twenty_eighth and not twenty_ninth and not thirtieth and not thirty_first and not thirty_second and not thirty_third and not thirty_fourth and not thirty_fifth and not thirty_sixth and not thirty_seventh and not thirty_eighth and not thirty_ninth and not fortieth and not forty_first and not forty_second and not forty_third and not forty_fourth and not forty_fifth and not forty_sixth and not forty_seventh and not forty_eighth and not forty_ninth and not fiftieth and not fifty_first and not fifty_second and not fifty_third and not fifty_fourth and not fifty_fifth and not fifty_sixth and not fifty_seventh and not fifty_eighth and not fifty_ninth and not sixtieth
     f.require(type(context) is dict
         and set(context) == ({'schema','root_project_update','previous_native_update'} if continuation
             else {'schema','root_project_update'})
-        and context['schema'] == (CURRENT_SOURCE_FIFTY_NINTH_SUCCESSOR_SCHEMA if fifty_ninth else
+        and context['schema'] == (CURRENT_SOURCE_SIXTIETH_SUCCESSOR_SCHEMA if sixtieth else
+                CURRENT_SOURCE_FIFTY_NINTH_SUCCESSOR_SCHEMA if fifty_ninth else
                 CURRENT_SOURCE_FIFTY_EIGHTH_SUCCESSOR_SCHEMA if fifty_eighth else
                 CURRENT_SOURCE_FIFTY_SEVENTH_SUCCESSOR_SCHEMA if fifty_seventh else
                 CURRENT_SOURCE_FIFTY_SIXTH_SUCCESSOR_SCHEMA if fifty_sixth else
@@ -9207,7 +9351,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
             CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA if third else
             CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA if second else CURRENT_SOURCE_SUCCESSOR_SCHEMA)
         and (not continuation or prior_edge['request']['current_source_successor']['schema'] ==
-            (CURRENT_SOURCE_FIFTY_EIGHTH_SUCCESSOR_SCHEMA if fifty_ninth else
+            (CURRENT_SOURCE_FIFTY_NINTH_SUCCESSOR_SCHEMA if sixtieth else
+            CURRENT_SOURCE_FIFTY_EIGHTH_SUCCESSOR_SCHEMA if fifty_ninth else
             CURRENT_SOURCE_FIFTY_SEVENTH_SUCCESSOR_SCHEMA if fifty_eighth else
             CURRENT_SOURCE_FIFTY_SIXTH_SUCCESSOR_SCHEMA if fifty_seventh else
             CURRENT_SOURCE_FIFTY_FIFTH_SUCCESSOR_SCHEMA if fifty_sixth else
@@ -9264,7 +9409,10 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
                 CURRENT_SOURCE_FOURTH_SUCCESSOR_SCHEMA if fifth else
                 CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA if fourth else
                 CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA if third else CURRENT_SOURCE_SUCCESSOR_SCHEMA))
-        and not (fifty_ninth and historical_marker is not None)
+        and not (sixtieth and historical_marker is not None)
+        and (not (fifty_ninth and historical_marker is not None) or
+            type(_sixtieth_history) is _CurrentSourceSixtiethHistory
+            and _sixtieth_history._seal is _CURRENT_SOURCE_SIXTIETH_HISTORY_SEAL)
         and (not (fifty_eighth and historical_marker is not None) or
             type(_fifty_ninth_history) is _CurrentSourceFiftyNinthHistory
             and _fifty_ninth_history._seal is _CURRENT_SOURCE_FIFTY_NINTH_HISTORY_SEAL)
@@ -10065,6 +10213,24 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
             and encoded(prior_edge['request']['current_input']) == encoded(request['previous_input']),
             'ordinary_current_successor_authenticated_thirty_ninth_history_required')
         _current_source_cp_proof(home,thirty_ninth_tx,request,committed=True)
+    if fifty_ninth and historical_marker is not None:
+        # Bind CP257 history to its committed canonical request and its exact
+        # relationship to both CP256 and the selected CP258 input and context.
+        fifty_ninth_tx = _current_source_cp_transactions(home, request['current_input'])
+        f.require(fifty_ninth_tx is not None,
+            'ordinary_current_successor_authenticated_fifty_ninth_history_required')
+        fifty_ninth_ref = {'path': str(fifty_ninth_tx/'request.json'),
+            'sha256': f.digest(f.owned_file(fifty_ninth_tx/'request.json', private=True))}
+        f.require(_sixtieth_history.fifty_ninth_reference == encoded(fifty_ninth_ref)
+            and _sixtieth_history.fifty_eighth_reference == encoded(context['previous_native_update'])
+            and _sixtieth_history.root_reference == encoded(context['root_project_update'])
+            and _sixtieth_history.selected_previous == encoded(request['current_input'])
+            and _sixtieth_history.selected_context == encoded({'schema': CURRENT_SOURCE_SIXTIETH_SUCCESSOR_SCHEMA,
+                'root_project_update': context['root_project_update'],
+                'previous_native_update': fifty_ninth_ref})
+            and encoded(prior_edge['request']['current_input']) == encoded(request['previous_input']),
+            'ordinary_current_successor_authenticated_fifty_ninth_history_required')
+        _current_source_cp_proof(home, fifty_ninth_tx, request, committed=True)
     if fifty_eighth and historical_marker is not None:
         # Bind CP256 history to its committed canonical request and its exact
         # relationship to both CP255 and the selected CP257 input and context.
@@ -10417,9 +10583,9 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         previous = prior_edge['value']; previous_ref = prior_edge['request']['current_input']
         expected_before_receipt = prior_edge['receipt_sha256']
         expected_before_stamp = prior_edge['stamp_sha256']
-        before_layers = 256 if fifty_ninth else 255 if fifty_eighth else 254 if fifty_seventh else 253 if fifty_sixth else 252 if fifty_fifth else 251 if fifty_fourth else 250 if fifty_third else 249 if fifty_second else 248 if fifty_first else 247 if fiftieth else 246 if forty_ninth else 245 if forty_eighth else 244 if forty_seventh else 243 if forty_sixth else 242 if forty_fifth else 241 if forty_fourth else 240 if forty_third else 239 if forty_second else 238 if forty_first else 237 if fortieth else 236 if thirty_ninth else 235 if thirty_eighth else 234 if thirty_seventh else 233 if thirty_sixth else 232 if thirty_fifth else 231 if thirty_fourth else 230 if thirty_third else 229 if thirty_second else 228 if thirty_first else 227 if thirtieth else 226 if twenty_ninth else 225 if twenty_eighth else 224 if twenty_seventh else 223 if twenty_sixth else 222 if twenty_fifth else 221 if twenty_fourth else 220 if twenty_third else 219 if twenty_second else 218 if twenty_first else 217 if twentieth else 216 if nineteenth else 215 if eighteenth else 214 if seventeenth else 213 if sixteenth else 212 if fifteenth else 211 if fourteenth else 210 if thirteenth else 209 if twelfth else 208 if eleventh else 207 if tenth else 206 if ninth else 205 if eighth else 204 if seventh else 203 if sixth else 202 if fifth else 201 if fourth else 200 if third else 199
-        before_native_count = 17899 if fifty_ninth or fifty_eighth or fifty_seventh or fifty_sixth else 17898 if fifty_fifth else 17896 if fifty_fourth or fifty_third or fifty_second or fifty_first or fiftieth or forty_ninth or forty_eighth or forty_seventh or forty_sixth or forty_fifth or forty_fourth or forty_third or forty_second or forty_first or fortieth or thirty_ninth or thirty_eighth or thirty_seventh or thirty_sixth or thirty_fifth or thirty_fourth or thirty_third or thirty_second else 17895 if thirty_first or thirtieth or twenty_ninth else 17894 if twenty_eighth or twenty_seventh or twenty_sixth else 17893 if twenty_fifth or twenty_fourth or twenty_third else 17892 if twenty_second or twenty_first else 17891 if twentieth or nineteenth or eighteenth or seventeenth or sixteenth or fifteenth or fourteenth or thirteenth or twelfth or eleventh or tenth or ninth or eighth or seventh or sixth else 17890 if fifth else 17888
-        before_project_count = 593 if fifty_ninth else 591 if fifty_eighth else 589 if fifty_seventh else 587 if fifty_sixth else 585 if fifty_fifth else 583 if fifty_fourth else 581 if fifty_third else 579 if fifty_second else 577 if fifty_first else 575 if fiftieth else 573 if forty_ninth else 571 if forty_eighth else 569 if forty_seventh else 567 if forty_sixth else 565 if forty_fifth else 563 if forty_fourth else 561 if forty_third else 559 if forty_second else 557 if forty_first else 555 if fortieth else 553 if thirty_ninth else 551 if thirty_eighth else 549 if thirty_seventh else 547 if thirty_sixth else 545 if thirty_fifth else 543 if thirty_fourth else 541 if thirty_third else 539 if thirty_second else 537 if thirty_first else 535 if thirtieth else 533 if twenty_ninth else 531 if twenty_eighth else 529 if twenty_seventh else 527 if twenty_sixth else 525 if twenty_fifth else 523 if twenty_fourth else 521 if twenty_third else 519 if twenty_second else 517 if twenty_first else 515 if twentieth else 513 if nineteenth else 511 if eighteenth else 509 if seventeenth else 507 if sixteenth else 505 if fifteenth else 503 if fourteenth else 501 if thirteenth else 499 if twelfth else 497 if eleventh else 495 if tenth else 493 if ninth else 491 if eighth else 489 if seventh else 487 if sixth else 485 if fifth else 483 if fourth else 481 if third else 479
+        before_layers = 257 if sixtieth else 256 if fifty_ninth else 255 if fifty_eighth else 254 if fifty_seventh else 253 if fifty_sixth else 252 if fifty_fifth else 251 if fifty_fourth else 250 if fifty_third else 249 if fifty_second else 248 if fifty_first else 247 if fiftieth else 246 if forty_ninth else 245 if forty_eighth else 244 if forty_seventh else 243 if forty_sixth else 242 if forty_fifth else 241 if forty_fourth else 240 if forty_third else 239 if forty_second else 238 if forty_first else 237 if fortieth else 236 if thirty_ninth else 235 if thirty_eighth else 234 if thirty_seventh else 233 if thirty_sixth else 232 if thirty_fifth else 231 if thirty_fourth else 230 if thirty_third else 229 if thirty_second else 228 if thirty_first else 227 if thirtieth else 226 if twenty_ninth else 225 if twenty_eighth else 224 if twenty_seventh else 223 if twenty_sixth else 222 if twenty_fifth else 221 if twenty_fourth else 220 if twenty_third else 219 if twenty_second else 218 if twenty_first else 217 if twentieth else 216 if nineteenth else 215 if eighteenth else 214 if seventeenth else 213 if sixteenth else 212 if fifteenth else 211 if fourteenth else 210 if thirteenth else 209 if twelfth else 208 if eleventh else 207 if tenth else 206 if ninth else 205 if eighth else 204 if seventh else 203 if sixth else 202 if fifth else 201 if fourth else 200 if third else 199
+        before_native_count = 17899 if sixtieth or fifty_ninth or fifty_eighth or fifty_seventh or fifty_sixth else 17898 if fifty_fifth else 17896 if fifty_fourth or fifty_third or fifty_second or fifty_first or fiftieth or forty_ninth or forty_eighth or forty_seventh or forty_sixth or forty_fifth or forty_fourth or forty_third or forty_second or forty_first or fortieth or thirty_ninth or thirty_eighth or thirty_seventh or thirty_sixth or thirty_fifth or thirty_fourth or thirty_third or thirty_second else 17895 if thirty_first or thirtieth or twenty_ninth else 17894 if twenty_eighth or twenty_seventh or twenty_sixth else 17893 if twenty_fifth or twenty_fourth or twenty_third else 17892 if twenty_second or twenty_first else 17891 if twentieth or nineteenth or eighteenth or seventeenth or sixteenth or fifteenth or fourteenth or thirteenth or twelfth or eleventh or tenth or ninth or eighth or seventh or sixth else 17890 if fifth else 17888
+        before_project_count = 595 if sixtieth else 593 if fifty_ninth else 591 if fifty_eighth else 589 if fifty_seventh else 587 if fifty_sixth else 585 if fifty_fifth else 583 if fifty_fourth else 581 if fifty_third else 579 if fifty_second else 577 if fifty_first else 575 if fiftieth else 573 if forty_ninth else 571 if forty_eighth else 569 if forty_seventh else 567 if forty_sixth else 565 if forty_fifth else 563 if forty_fourth else 561 if forty_third else 559 if forty_second else 557 if forty_first else 555 if fortieth else 553 if thirty_ninth else 551 if thirty_eighth else 549 if thirty_seventh else 547 if thirty_sixth else 545 if thirty_fifth else 543 if thirty_fourth else 541 if thirty_third else 539 if thirty_second else 537 if thirty_first else 535 if thirtieth else 533 if twenty_ninth else 531 if twenty_eighth else 529 if twenty_seventh else 527 if twenty_sixth else 525 if twenty_fifth else 523 if twenty_fourth else 521 if twenty_third else 519 if twenty_second else 517 if twenty_first else 515 if twentieth else 513 if nineteenth else 511 if eighteenth else 509 if seventeenth else 507 if sixteenth else 505 if fifteenth else 503 if fourteenth else 501 if thirteenth else 499 if twelfth else 497 if eleventh else 495 if tenth else 493 if ninth else 491 if eighth else 489 if seventh else 487 if sixth else 485 if fifth else 483 if fourth else 481 if third else 479
     f.require(not fourteenth or (expected_before_receipt == CURRENT_SOURCE_FOURTEENTH_PREVIOUS_RECEIPT
         and expected_before_stamp == CURRENT_SOURCE_FOURTEENTH_PREVIOUS_STAMP),
         'ordinary_current_successor_exact_fourteenth_before_metadata_required')
@@ -10560,6 +10726,9 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     f.require(not fifty_ninth or (expected_before_receipt == CURRENT_SOURCE_FIFTY_NINTH_PREVIOUS_RECEIPT
         and expected_before_stamp == CURRENT_SOURCE_FIFTY_NINTH_PREVIOUS_STAMP),
         'ordinary_current_successor_exact_fifty_ninth_before_metadata_required')
+    f.require(not sixtieth or (expected_before_receipt == CURRENT_SOURCE_SIXTIETH_PREVIOUS_RECEIPT
+        and expected_before_stamp == CURRENT_SOURCE_SIXTIETH_PREVIOUS_STAMP),
+        'ordinary_current_successor_exact_sixtieth_before_metadata_required')
 
 
     _current_source_reference(request['previous_input']); _current_source_reference(request['current_input'])
@@ -10671,6 +10840,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_fifty_eighth_before_marker_required')
     f.require(not fifty_ninth or request['marker']['sha256'] == CURRENT_SOURCE_FIFTY_NINTH_PREVIOUS_MARKER,
         'ordinary_current_successor_exact_fifty_ninth_before_marker_required')
+    f.require(not sixtieth or request['marker']['sha256'] == CURRENT_SOURCE_SIXTIETH_PREVIOUS_MARKER,
+        'ordinary_current_successor_exact_sixtieth_before_marker_required')
 
 
     marker = historical_marker if historical_marker is not None else _current_source_json(home/f.MARKER)
@@ -10805,6 +10976,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_fifty_eighth_layer_required')
     f.require(not fifty_ninth or names == [CURRENT_SOURCE_FIFTY_NINTH_LAYER],
         'ordinary_current_successor_exact_fifty_ninth_layer_required')
+    f.require(not sixtieth or names == [CURRENT_SOURCE_SIXTIETH_LAYER],
+        'ordinary_current_successor_exact_sixtieth_layer_required')
 
 
     f.require(not twelfth or names == [CURRENT_SOURCE_TWELFTH_LAYER],
@@ -10919,6 +11092,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_fifty_eighth_before_helper_required')
     f.require(not fifty_ninth or old.get(PROJECT_DSH_CURRENT_HELPER) == CURRENT_SOURCE_FIFTY_NINTH_PREVIOUS_HELPER,
         'ordinary_current_successor_exact_fifty_ninth_before_helper_required')
+    f.require(not sixtieth or old.get(PROJECT_DSH_CURRENT_HELPER) == CURRENT_SOURCE_SIXTIETH_PREVIOUS_HELPER,
+        'ordinary_current_successor_exact_sixtieth_before_helper_required')
 
 
     f.require(not twenty_fifth or changes == {PROJECT_DSH_CURRENT_HELPER},
@@ -10993,6 +11168,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_fifty_eighth_helper_scope_required')
     f.require(not fifty_ninth or changes == {PROJECT_DSH_CURRENT_HELPER},
         'ordinary_current_successor_exact_fifty_ninth_helper_scope_required')
+    f.require(not sixtieth or changes == {PROJECT_DSH_CURRENT_HELPER},
+        'ordinary_current_successor_exact_sixtieth_helper_scope_required')
 
 
     f.require(not twelfth or changes == {PROJECT_DSH_CURRENT_HELPER},
@@ -11189,6 +11366,9 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     f.require(not fifty_ninth or (files.get(manifest_name) == CURRENT_SOURCE_FIFTY_NINTH_MANIFEST
         and files.get(patch_name) == CURRENT_SOURCE_FIFTY_NINTH_PATCH),
         'ordinary_current_successor_exact_fifty_ninth_layer_images_required')
+    f.require(not sixtieth or (files.get(manifest_name) == CURRENT_SOURCE_SIXTIETH_MANIFEST
+        and files.get(patch_name) == CURRENT_SOURCE_SIXTIETH_PATCH),
+        'ordinary_current_successor_exact_sixtieth_layer_images_required')
 
 
     for name,expected in files.items():
@@ -11375,6 +11555,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_fifty_eighth_native_scope_required')
     f.require(not fifty_ninth or touched == list(CURRENT_SOURCE_FIFTY_NINTH_NATIVE),
         'ordinary_current_successor_exact_fifty_ninth_native_scope_required')
+    f.require(not sixtieth or touched == list(CURRENT_SOURCE_SIXTIETH_NATIVE),
+        'ordinary_current_successor_exact_sixtieth_native_scope_required')
 
 
     for row in rows:
@@ -11561,6 +11743,9 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         if fifty_ninth:
             f.require((row['before_sha256'],row['sha256'],row['bytes'],row['new_file']) == CURRENT_SOURCE_FIFTY_NINTH_NATIVE[name],
                 'ordinary_current_successor_exact_fifty_ninth_native_images_required')
+        if sixtieth:
+            f.require((row['before_sha256'],row['sha256'],row['bytes'],row['new_file']) == CURRENT_SOURCE_SIXTIETH_NATIVE[name],
+                'ordinary_current_successor_exact_sixtieth_native_images_required')
 
 
         after = dict(prior) if prior is not None else {}
@@ -11709,6 +11894,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_fifty_eighth_native_count_required')
     f.require(not fifty_ninth or len(expected_files) == 17899,
         'ordinary_current_successor_exact_fifty_ninth_native_count_required')
+    f.require(not sixtieth or len(expected_files) == 17899,
+        'ordinary_current_successor_exact_sixtieth_native_count_required')
 
 
     expected_receipt['layers'].append({'manifest':manifest_name,'manifest_sha256':files[manifest_name],
