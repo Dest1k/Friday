@@ -1,0 +1,1000 @@
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -7,6 +7,7 @@
+ import hashlib
+ import json
+ from pathlib import Path
++from hermes_cli.friday_schema_guidance import PNG_TABLE_READ_GUIDANCE, PNG_TABLE_WRITE_GUIDANCE
+ from hermes_cli.friday_user_scope import current, check_agent, check_database, ScopeDenied
+ from hermes_cli.friday_workspace_pdf_report import GUIDANCE as PDF_REPORT_GUIDANCE
+ from tools.scoped_epub_write import GUIDANCE as EPUB_NATIVE_GUIDANCE
+@@ -497,7 +498,7 @@
+             'member named from the compressed basename minus its final suffix; embedded header names '
+             'are ignored. This is a registry, not decoded text; use format=stream_extract into a NEW '
+             'folder, then read its returned member path. '
+-            'Raster JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF returns frame geometry and pixel hashes for all pages/frames via pagination, not OCR or visual meaning. Use approved vision/OCR separately. '
++            'Default raster reads of JPG/JPEG/PNG/TIF/TIFF/WebP/BMP/GIF return frame geometry and pixel hashes for all pages/frames via pagination, without OCR or visual interpretation. '
+             'MHTML/MHT reads root HTML text and table order from genuine MIME multipart/related, with resource/coverage metadata. Attachments, CSS, layout and images are not rendered; external resources never fetched. '
+             'ODG/OTG/FODG drawings: read_file returns paginated native OBJECT and CONNECTOR records with page, IDs, labels, raw geometry and declared start/end shape IDs. Read all pages before building the object table. Connection endpoints come only from explicit IDREFs, never filenames or proximity. Direction is reported only for supported geometric triangle arrowheads; arbitrary markers, unresolved attachments and ambiguous direction are UNKNOWN. Marker names do not establish arrow meaning. No visual/layout rendering or automatic flow inference is implied; explicit bounded ODG/FODG creation uses diagram_create, and hash-bound plain-label copy editing uses diagram_text_edit. Binary Visio support is not implied. Active, external, embedded binary and unsupported foreign content refuse. '
+             'VSDX/VSTX/VSDM/VSTM diagrams: read_file exposes stored page shapes/labels/groups, native Connects glue and direct BeginArrow/EndArrow cells. VSSX/VSSM stencils expose MASTER definitions with separately scoped shape IDs, not instantiated page objects. Glue is not flow direction. Missing/inherited labels, formulas, master/style semantics, indexed/custom line-end meaning and visual geometry remain UNKNOWN; never infer topology from filenames or proximity. Continue all pages and join JSON char_offset segments. VBA in macro-enabled profiles is optional, bounded and opaque: never read or execute it, and safety remains unproven. External relationships and other active/embedded content refuse. No diagram writing, rendering or template instantiation. Binary VST/VSS remain unsupported. Binary VSD v11 returns only partial stored page/master/shape/text evidence: semantic_status is PARTIAL; geometry, order, hidden content, flow, inheritance and active ShapeSheet safety remain UNKNOWN. It is never a complete diagram or safe-to-open verdict. VSD v1-v6 and known OLE/link/action records refuse; no evaluation or execution. '
+@@ -509,7 +510,7 @@
+             'Protected OOXML DOCX/DOTX/DOCM/DOTM, XLSX/XLTX/XLSM/XLTM/XLSB and PPTX/POTX/PPSX/PPTM/POTM/PPSM support bounded Agile AES/CBC and Standard 3.2 AES-128/ECB SHA-1 password reading. Use only the supplied password. Agile requires HMAC authentication; Standard verifies only the password and ZIP structure, without authenticated data integrity. The source hash binds the encrypted original. Unsupported encryption, wrong password or failed checks refuse; plaintext export is unsupported. For same-format encrypted editing use the separate ooxml_password_edit profile. Native format limits still apply. '
+             'Encrypted or unsupported RAR refuses. '
+             'Before replacing an existing text file, read its complete current content in this task.')
+-        function['description'] += LEGACY_OPENOFFICE_GUIDANCE + LEGACY_WORD_GUIDANCE
++        function['description'] += LEGACY_OPENOFFICE_GUIDANCE + LEGACY_WORD_GUIDANCE + PNG_TABLE_READ_GUIDANCE
+     else:
+         function['description'] = DOCX_EXACT_COPY_GUIDANCE + (
+             'Relay any returned conversion_limitations notices to the user when delivering converted files. '
+@@ -617,7 +618,7 @@
+         function['description'] += LEGACY_OPENOFFICE_GUIDANCE + EPUB_NATIVE_GUIDANCE + ODG_EDIT_GUIDANCE
+         properties = function['parameters']['properties']
+         for target in (function, properties['format'], properties['content']):
+-            target['description'] = XLS_WRITE_GUIDANCE + target['description']
++            target['description'] = XLS_WRITE_GUIDANCE + PNG_TABLE_WRITE_GUIDANCE + target['description']
+         from tools.scoped_pub_write import GUIDANCE as PUB_EDIT_GUIDANCE
+         function['description'] += PUB_EDIT_GUIDANCE
+         function['parameters']['properties']['content']['description'] += PUB_EDIT_GUIDANCE
+diff --git a/hermes_cli/friday_schema_guidance.py b/hermes_cli/friday_schema_guidance.py
+--- a/hermes_cli/friday_schema_guidance.py
++++ b/hermes_cli/friday_schema_guidance.py
+@@ -12,7 +12,27 @@
+ 
+ # Include the request projection in ordinary persisted tool-pin identity. The
+ # donor build/version may stay unchanged when this product overlay is updated.
+-PROJECTION_REVISION = "friday.file-schema-guidance.v4"
++PROJECTION_REVISION = "friday.file-schema-guidance.v5"
++
++PNG_TABLE_READ_GUIDANCE = (
++    ' Default read_file on an own-workspace PNG returns current source_sha256, frame geometry '
++    'and pixel hashes without OCR. Use that hash directly for a whole-grid XLSX draft. '
++    'Only when selecting numeric columns, set png_table_headings=true if selector words '
++    'are unknown. This mode requires default pagination and returns first-row OCR candidates, '
++    'original pixel boxes and the current source SHA-256. Selector words, headings, '
++    'units and column types remain unverified. '
++)
++
++PNG_TABLE_WRITE_GUIDANCE = (
++    ' For an upright ruled-table PNG, use write_file format=png_ruled_table_xlsx and a NEW .xlsx path. '
++    'For the entire grid, pass a JSON string with exactly {"source":"input.png","source_sha256":"<current read_file hash>"}. '
++    'The editable OCR draft keeps every physical row and column, visibly marks uncertainty and '
++    'includes source coordinates and raw OCR. Header, unit and value fidelity remain unverified. '
++    'Only for explicitly requested numeric columns, add columns as a list of objects with a '
++    'confirmed heading (the first header word) and type (integer or decimal_comma). '
++    'If selector words are unknown, read_file with png_table_headings=true can show candidates. '
++    'Unsupported inputs and missing or ambiguous requested selectors refuse. The source remains unchanged. '
++)
+ 
+ _SHARED_PREFIX = "The shared requirements in "
+ 
+diff --git a/hermes_cli/friday_user_scope.py b/hermes_cli/friday_user_scope.py
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -827,10 +827,19 @@
+     """
+     from hermes_cli.friday_credential_admission import session_artifact_file, ordinary_readonly_file, CredentialDenied
+     from tools.binary_extensions import UNSUPPORTED_CONTAINER_EXTENSIONS
++    png_table_headings = args.get('png_table_headings', False) if name == 'read_file' else False
++    if type(png_table_headings) is not bool:
++        raise ScopeDenied()
+     try:
+-        artifact = ordinary_readonly_file(name,args)
+-        if artifact is None:
+-            artifact = session_artifact_file(name,args) if current() is None else None
++        if png_table_headings:
++            from hermes_cli.friday_credential_admission import ordinary_readonly_tool, session_artifact_tool
++            if ordinary_readonly_tool(name,args) or session_artifact_tool(name,args):
++                raise ScopeDenied()
++            artifact = None
++        else:
++            artifact = ordinary_readonly_file(name,args)
++            if artifact is None:
++                artifact = session_artifact_file(name,args) if current() is None else None
+     except (CredentialDenied,OSError,ValueError):
+         raise ScopeDenied() from None
+     if artifact is not None:
+@@ -866,6 +875,17 @@
+             # is actionable. Parent, link, ownership and policy failures keep
+             # the generic refusal; never resolve a basename to another upload.
+             pagination = (args.get('offset', 1), args.get('limit', 2000), args.get('char_offset', 0))
++            if png_table_headings:
++                if (path.suffix.lower() != '.png'
++                        or any(type(value) is not int for value in pagination)
++                        or pagination != (1, 2000, 0)
++                        or args.get('archive_parts') is not None
++                        or args.get('password') is not None
++                        or args.get('pdf_signatures', False) is not False
++                        or args.get('pdf_form_fields', False) is not False):
++                    raise ScopeDenied()
++                from hermes_cli.friday_workspace_raster import read_ruled_headings
++                return read_ruled_headings(cap, path.as_posix())
+             if (all(type(value) is int for value in pagination)
+                     and 1 <= pagination[0] <= 1000000 and 1 <= pagination[1] <= 2000
+                     and 0 <= pagination[2] <= 1000000):
+@@ -1223,7 +1243,7 @@
+             return json.dumps({'success': False, 'error': 'document_write_unsupported',
+                 'reason': 'macro_profile_requires_preserving_edit', 'effect_disposition': 'none',
+                 'hint': 'Use word_macro_edit for a source-hash-bound unique literal correction into a new same-profile DOCM/DOTM. VBA remains opaque and never executes; creation, conversion and raw writes remain unsupported.'})
+-        if output_format not in ('pub_text_edit', 'onenote_text_edit', 'mpp_task_name_edit', 'xps_create', 'xps_edit', 'vdx_create', 'vdx_text_edit', 'legacy_openoffice_create', 'legacy_openoffice_edit', 'msg_create', 'msg_edit', 'xlsb_create', 'xlsb_edit', 'odf_formula_create', 'odf_formula_edit', 'abw_create', 'abw_edit', 'dif_create', 'dif_edit', 'slk_create', 'slk_edit', 'dbf_create', 'dbf_edit', 'fb2_create', 'fb2_edit', 'svg_create', 'svg_text_edit', 'word_macro_edit', 'diagram_create', 'diagram_text_edit', 'pdf_report', 'pdf_form_fill', 'text', 'text_edit', 'json_string_edit', 'eml_create', 'eml_edit', 'eml_extract_attachment', 'ics_create', 'ics_edit', 'vcf_create', 'vcf_edit', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_copy', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'docx_odt', 'odt_docx', 'odt_pdf', 'xlsx_pdf', 'ods_pdf', 'delimited_convert', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'presentation_macro_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'lha_extract', 'cab_extract', 'arj_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit', 'ooxml_password_edit', 'epub_create', 'epub_edit'):
++        if output_format not in ('pub_text_edit', 'onenote_text_edit', 'mpp_task_name_edit', 'xps_create', 'xps_edit', 'vdx_create', 'vdx_text_edit', 'legacy_openoffice_create', 'legacy_openoffice_edit', 'msg_create', 'msg_edit', 'xlsb_create', 'xlsb_edit', 'odf_formula_create', 'odf_formula_edit', 'abw_create', 'abw_edit', 'dif_create', 'dif_edit', 'slk_create', 'slk_edit', 'dbf_create', 'dbf_edit', 'fb2_create', 'fb2_edit', 'svg_create', 'svg_text_edit', 'word_macro_edit', 'diagram_create', 'diagram_text_edit', 'pdf_report', 'pdf_form_fill', 'text', 'text_edit', 'json_string_edit', 'eml_create', 'eml_edit', 'eml_extract_attachment', 'ics_create', 'ics_edit', 'vcf_create', 'vcf_edit', 'ods_create', 'ods_edit', 'ods_join', 'ods_merge', 'ods_chart', 'ods_recalculate', 'spreadsheet_create', 'spreadsheet_edit', 'spreadsheet_convert', 'png_ruled_table_xlsx', 'odt', 'odt_structured', 'odt_edit', 'odt_fill', 'ott', 'ott_structured', 'ott_edit', 'fodt', 'fodt_structured', 'fodt_edit', 'fodt_fill', 'dotx', 'dotx_structured', 'dotx_edit', 'rtf_create', 'rtf_structured', 'rtf_edit', 'docx', 'docx_copy', 'docx_structured', 'docx_edit', 'docx_fill', 'docx_pdf', 'docx_odt', 'odt_docx', 'odt_pdf', 'xlsx_pdf', 'ods_pdf', 'delimited_convert', 'pdf_pages', 'xlsx', 'xlsx_recalculate', 'xlsx_merge', 'xlsx_create', 'xlsx_join', 'zip', 'zip_extract', '7z', '7z_extract', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst', 'tar_extract', 'gzip', 'bzip2', 'xz', 'zstd', 'stream_extract', 'image_transform', 'mhtml', 'mht', 'mhtml_structured', 'mht_structured', 'mhtml_edit', 'mht_edit', 'archive_convert', 'pptx_create', 'pptx_merge', 'odf_merge', 'pptx_edit', 'pptx_pdf', 'odp_create', 'odp_edit', 'odp_pptx', 'pptx_odp', 'presentation_create', 'presentation_edit', 'presentation_convert', 'presentation_text_edit', 'presentation_macro_edit', 'docx_merge', 'archive_edit', 'docx_report', 'word_located_edit', 'pdf_optimize', 'docx_public_copy', 'rar_extract', 'lha_extract', 'cab_extract', 'arj_extract', 'pdf_annotate', 'pdf_redact', 'pdf_text_edit', 'pdf_unsigned_copy', 'odf_password_edit', 'ooxml_password_edit', 'epub_create', 'epub_edit'):
+             raise ScopeDenied()
+         if output_format == 'mpp_task_name_edit':
+             from hermes_cli.friday_workspace_mpp import execute
+@@ -1389,6 +1409,11 @@
+         if output_format == 'archive_convert':
+             from hermes_cli.friday_workspace_zip import convert_archive
+             return convert_archive(cap, fd, parts[-1], path.as_posix(), args.get('content'))
++        if output_format == 'png_ruled_table_xlsx':
++            if path.suffix.lower() != '.xlsx':
++                raise ScopeDenied()
++            from hermes_cli.friday_workspace_raster import create_ruled_table
++            return create_ruled_table(cap, fd, parts[-1], path.as_posix(), args.get('content'))
+         if output_format in ('xlsx_create', 'xlsx_join'):
+             if path.suffix.lower() != '.xlsx': raise ScopeDenied()
+             from hermes_cli.friday_workspace_xlsx_table import create_table
+diff --git a/hermes_cli/friday_workspace_raster.py b/hermes_cli/friday_workspace_raster.py
+--- a/hermes_cli/friday_workspace_raster.py
++++ b/hermes_cli/friday_workspace_raster.py
+@@ -100,3 +100,266 @@
+         output_format=output_format, verify_source=lambda: _verify(cap, sources)))
+     result.update(receipt)
+     return _encode(result)
++
++
++def _ruled_header_options(grid):
++    """Use the same observed selector rules for discovery and XLSX projection."""
++    from collections import Counter
++
++    headers = [cell for cell in grid['cells'] if cell['row'] == 1]
++    names = [cell['words'][0]['text'].removesuffix(',') if cell['words'] else None
++             for cell in headers]
++    counts = Counter(names)
++    options = []
++    for cell, name in zip(headers, names):
++        if not name or not 1 <= len(name) <= 40 or not name.isalpha():
++            selector, state = None, 'UNRESOLVED'
++        elif counts[name] != 1:
++            selector, state = None, 'AMBIGUOUS'
++        elif cell['words'][0]['confidence'] < 80:
++            selector, state = None, 'UNRESOLVED'
++        else:
++            selector, state = name, 'OCR_SELECTOR_CANDIDATE'
++        options.append({**cell, 'selector':selector, 'selector_status':state})
++    return options
++
++
++def _ruled_call():
++    from agent.web_call_context import _current, same_web_authority
++
++    call = _current.get()
++    if call is None or not same_web_authority(call):
++        raise ScopeDenied()
++    return call
++
++
++def _ruled_ocr_error(call, error):
++    code = str(error)
++    if code == 'local_ocr_cleanup_unconfirmed':
++        if hasattr(call, 'agent'):
++            call.agent._friday_reply_effect_unknown = True
++        effect = 'unknown'
++    else:
++        allowed = {'png_ruled_table_layout_unsupported','png_ruled_table_image_unsupported',
++                   'local_ocr_timeout','local_ocr_failed','local_ocr_unavailable',
++                   'local_ocr_authority','local_ocr_custody_busy','local_ocr_invalid_output'}
++        if code not in allowed:
++            code = 'local_ocr_failed'
++        effect = 'none'
++    return _encode({'success':False,'error':code,'effect_disposition':effect})
++
++
++def read_ruled_headings(cap, relative):
++    """Read the first physical row with the original native call and owned PNG."""
++    from tools.scoped_pdf_ocr import LocalOCRFailure
++    from tools.scoped_png_table import extract_ruled_png
++
++    call = _ruled_call()
++    check(cap)
++    data, identity = _source(cap, relative)
++    try:
++        grid = extract_ruled_png(data, headers_only=True)
++    except LocalOCRFailure as error:
++        return _ruled_ocr_error(call, error)
++    check(cap)
++    _verify(cap, [(relative, data, identity)])
++    result = {'success':True, 'scope':'own_user_workspace', 'path':relative,
++        'source_sha256':hashlib.sha256(data).hexdigest(),
++        'source_geometry':[grid['width'], grid['height']],
++        'physical_rows':grid['rows'], 'physical_columns':grid['columns'],
++        'pixel_box_convention':'source [left,top,right,bottom) half-open',
++        'headers':_ruled_header_options(grid),
++        'body_ocr_performed':False, 'full_headings_verified':False,
++        'column_types_verified':False, 'currency_and_units_verified':False}
++    # Ambiguity is assessed across the full first row; never return a silent
++    # page/subset that makes a matching first word look unique.
++    budget = _inline_budget()
++    if not _fits(result, budget):
++        return _encode({'success':False,'error':'capacity','effect_disposition':'none'})
++    check(cap)
++    return _encode(result)
++
++
++def _whole_ruled_draft(grid, source_sha256):
++    """Keep every physical cell; type only bounded unambiguous numeral syntax."""
++    import re
++    from unicodedata import category
++
++    unresolved_marker = '[НЕРАЗБОРЧИВО]'
++    unverified_header = '[ЗАГОЛОВОК НЕ ПОДТВЕРЖДЁН]'
++    unverified_fragment = '[ФРАГМЕНТ НЕ ПОДТВЕРЖДЁН]'
++    reserved = (unresolved_marker, unverified_header, unverified_fragment)
++    integer = r'-?(?:0|[1-9][0-9]{0,14})'
++    decimal_comma = r'-?(?:0|[1-9][0-9]{0,12}),[0-9]{2}'
++    values = [[] for _ in range(grid['rows'])]
++    provenance = [
++        ['OCR draft: verify every candidate from the source.', '', '', '', '', '', '', '', '', '', ''],
++        ['Source SHA-256',source_sha256,'Header text, units and column roles are not verified.', '', '', '', '', '', '', '', ''],
++        ['Output row','Output column','Source row','Source column','Left','Top',
++         'Right (exclusive)','Bottom (exclusive)','State','Raw OCR (unverified)',''],
++    ]
++    unresolved_cells = []
++    uncertain_headers = []
++    for cell in grid['cells']:
++        row, column, words = cell['row'], cell['column'], cell['words']
++        raw = ' '.join(word['text'] for word in words)
++        good = bool(words) and all(word['confidence'] >= 80 for word in words)
++        observed_text = any(ch.isalnum() for ch in raw)
++        coords = {'row':row,'column':column,'source_box':cell['box']}
++        value = unresolved_marker
++        if row == 1:
++            value = unverified_header
++            state = 'UNRESOLVED_HEADER'
++            if words and words[0]['confidence'] >= 80:
++                first = words[0]['text']
++                # Do not interpret a lone letter after a separator as a unit.
++                # Actual observed symbols or complete text stay literal OCR candidates.
++                ambiguous_suffix = first.endswith(',') and (len(words) == 1 or any(
++                    len(word['text']) == 1 and word['text'].isalpha() for word in words[1:]))
++                has_label = observed_text or any(category(ch) in ('Sc','Sm','So') for ch in raw)
++                if good and has_label and not ambiguous_suffix:
++                    value = raw + ' [OCR]'
++                    state = 'UNVERIFIED_OCR_HEADER'
++                elif first.removesuffix(',').isalpha():
++                    value = first + ' ' + unverified_fragment
++                    state = 'UNRESOLVED_HEADER_SUFFIX'
++            uncertain_headers.append({**coords,'status':state})
++        elif not good or not observed_text:
++            state = 'UNRESOLVED'
++        elif len(words) == 1 and (re.fullmatch(integer,raw) or re.fullmatch(decimal_comma,raw)):
++            value = {'type':'decimal','value':raw.replace(',','.')}
++            state = 'UNVERIFIED_OCR_NUMERIC'
++        else:
++            # Preserve text, leading zeros, unfamiliar separators and any formula-
++            # looking tokens as inert strings. No expression can become a formula.
++            value = '[OCR] ' + raw if raw in reserved or raw.startswith('[OCR] ') else raw
++            state = 'UNVERIFIED_OCR_TEXT'
++        if state in ('UNRESOLVED', 'UNRESOLVED_HEADER'):
++            unresolved_cells.append(coords)
++        values[row-1].append(value)
++        provenance.append([row,column,row,column,*cell['box'],state,raw,''])
++    return values, provenance, unresolved_cells, uncertain_headers
++
++
++def create_ruled_table(cap, fd, leaf, relative, content):
++    """Create one provisional whole grid or numeric projection from an owned ruled PNG."""
++    import re
++    import os
++    from tools.scoped_pdf_ocr import LocalOCRFailure
++    from tools.scoped_png_table import extract_ruled_png
++    from hermes_cli.friday_workspace_xlsx_table import (
++        create_document, render_document, parse, TableRefused,
++    )
++
++    call = _ruled_call()
++    _check_parent(cap, fd, relative)
++    try:
++        os.stat(leaf, dir_fd=fd, follow_symlinks=False)
++    except FileNotFoundError:
++        pass
++    else:
++        return _encode({'success':False,'error':'document_already_exists','path':relative})
++    def refuse(code):
++        return _encode({'success':False,'error':code,'effect_disposition':'none'})
++    try:
++        spec = parse(content)
++    except TableRefused:
++        return refuse('png_ruled_table_invalid_spec')
++    if not isinstance(spec, dict) or set(spec) not in (
++            {'source','source_sha256'}, {'source','source_sha256','columns'}):
++        return refuse('png_ruled_table_invalid_spec')
++    whole_grid = 'columns' not in spec
++    source = _path(spec['source'])
++    expected, selected = spec['source_sha256'], spec.get('columns')
++    if (PurePosixPath(source).suffix.lower() != '.png'
++            or not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)):
++        return refuse('png_ruled_table_invalid_spec')
++    if not whole_grid and (not isinstance(selected, list) or not 1 <= len(selected) <= 8
++            or any(not isinstance(item, dict) or set(item) != {'heading','type'}
++                   or not isinstance(item['heading'], str) or not 1 <= len(item['heading']) <= 40
++                   or not item['heading'].isalpha() or item['type'] not in ('integer','decimal_comma')
++                   for item in selected)
++            or len({item['heading'] for item in selected}) != len(selected)):
++        return refuse('png_ruled_table_invalid_spec')
++    data, identity = _source(cap, source)
++    if hashlib.sha256(data).hexdigest() != expected:
++        return refuse('png_ruled_table_source_changed')
++    sources = [(source, data, identity)]
++    try:
++        check(cap)
++        grid = extract_ruled_png(data)
++    except LocalOCRFailure as error:
++        return _ruled_ocr_error(call, error)
++    check(cap)
++    _verify(cap, sources)
++    if whole_grid:
++        values, provenance, unresolved, uncertain_headers = _whole_ruled_draft(grid, expected)
++        if sum(cell['row'] > 1 for cell in unresolved) == (grid['rows'] - 1) * grid['columns']:
++            return refuse('png_ruled_table_no_body_candidate')
++    else:
++        count = grid['rows']
++        cells = {(item['row'],item['column']):item for item in grid['cells']}
++        observed = {item['selector']:item['column'] for item in _ruled_header_options(grid) if item['selector']}
++        if any(item['heading'] not in observed for item in selected):
++            return refuse('png_ruled_table_heading_unsupported')
++        columns = [observed[item['heading']] for item in selected]
++        patterns = {'integer':r'-?(?:0|[1-9][0-9]{0,14})',
++                    'decimal_comma':r'-?(?:0|[1-9][0-9]{0,12}),[0-9]{2}'}
++        values, unresolved = [], []
++        provenance = [
++            ['OCR draft: verify every candidate from the source.', '', '', '', '', '', '', '', '', '', ''],
++            ['Source SHA-256',expected,'Header text and units are not verified.', '', '', '', '', '', '', '', ''],
++            ['Output row','Output column','Source row','Source column','Left','Top',
++             'Right (exclusive)','Bottom (exclusive)','State','Raw OCR','Requested heading'],
++        ]
++        for i, c in enumerate(columns, 1):
++            header = cells[1,c]
++            provenance.append([0,i,1,c,*header['box'],'HEADER_CANDIDATE',
++                               ' '.join(word['text'] for word in header['words']),selected[i-1]['heading']])
++        for r in range(2, count + 1):
++            row = []
++            for i, c in enumerate(columns, 1):
++                item = cells[r,c]
++                words = item['words']
++                raw = ' '.join(word['text'] for word in words)
++                kind = selected[i-1]['type']
++                if len(words) == 1 and words[0]['confidence'] >= 80 and re.fullmatch(patterns[kind],raw):
++                    row.append({'type':'decimal','value':raw.replace(',','.')})
++                    status = 'UNVERIFIED_OCR_CANDIDATE'
++                else:
++                    row.append('[НЕРАЗБОРЧИВО]')
++                    status = 'UNRESOLVED'
++                    unresolved.append({'row':r-1,'column':i,'source_box':item['box']})
++                provenance.append([r-1,i,r,c,*item['box'],status,raw,selected[i-1]['heading']])
++            values.append(row)
++        if not any(isinstance(cell,dict) for row in values for cell in row):
++            return refuse('png_ruled_table_no_numeric_candidate')
++    draft = {'name':'OCR draft','rows':values}
++    if whole_grid:
++        draft['column_widths'] = [
++            min(80,max(16, max(len(cell) if isinstance(cell,str) else 0 for cell in column) + 8))
++            for column in zip(*values)]
++    try:
++        sheets, tables, names = create_document({'sheets':[
++            draft,{'name':'Source evidence','rows':provenance}]})
++        encoded = render_document(sheets, checkpoint=lambda:check(cap), tables=tables, names=names)
++    except TableRefused:
++        return refuse('png_ruled_table_output_unsupported')
++    facts = {'source_sha256':expected,'rows':len(values),'columns':len(values[0]),
++        'unresolved_cells':unresolved,'provenance_sheet':'Source evidence',
++        'numeric_values_verified':False,'heading_and_unit_fidelity_verified':False}
++    if whole_grid:
++        facts.update(projection='whole_grid', uncertain_headers=uncertain_headers,
++                     column_types_verified=False)
++    estimate = dict(facts,success=True,path=relative,format='png_ruled_table_xlsx',
++                    scope='own_user_workspace',create_only=True,verified=True,
++                    bytes_written=len(encoded),sha256=hashlib.sha256(encoded).hexdigest())
++    budget = _inline_budget()
++    if not _fits(estimate,budget):
++        return refuse('capacity') if whole_grid else _capacity(budget)
++    _verify(cap, sources)
++    result = json.loads(_create_bytes(cap,fd,leaf,relative,encoded,
++        output_format='png_ruled_table_xlsx',verify_source=lambda:_verify(cap,sources)))
++    if result.get('success'):
++        result.update(facts)
++    return _encode(result)
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -777,7 +777,7 @@
+     return count
+ 
+ 
+-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", char_offset: int = 0, pdf_form_fields: bool = False, password: str | None = None, pdf_signatures: bool = False, archive_parts: list[str] | None = None) -> str:
++def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", char_offset: int = 0, pdf_form_fields: bool = False, password: str | None = None, pdf_signatures: bool = False, archive_parts: list[str] | None = None, png_table_headings: bool = False) -> str:
+     """Read a file with pagination and line numbers.
+ 
+     Guard order: NT/device-namespace prefix (raw string, no resolution) →
+@@ -787,11 +787,18 @@
+     """
+     from hermes_cli.friday_user_scope import scoped_file, ScopeDenied, ordinary_tool_error_json
+     try:
+-        scoped = scoped_file("read_file", dict(path=path, offset=offset, limit=limit, char_offset=char_offset, pdf_form_fields=pdf_form_fields, password=password, pdf_signatures=pdf_signatures, archive_parts=archive_parts), task_id=task_id)
++        arguments = dict(path=path, offset=offset, limit=limit, char_offset=char_offset,
++                         pdf_form_fields=pdf_form_fields, password=password,
++                         pdf_signatures=pdf_signatures, archive_parts=archive_parts)
++        if png_table_headings is not False:
++            arguments['png_table_headings'] = png_table_headings
++        scoped = scoped_file("read_file", arguments, task_id=task_id)
+         if scoped is not None:
+             return scoped
+     except ScopeDenied:
+         return ordinary_tool_error_json("product_user_scope_refused") or json.dumps({"success": False, "error": "product_user_scope_refused"})
++    if png_table_headings is not False:
++        return tool_error("png_table_headings requires an own-workspace scoped ruled PNG")
+     if archive_parts is not None:
+         return tool_error("archive_parts requires an own-workspace split 7z archive")
+     if pdf_signatures:
+@@ -1688,7 +1695,7 @@
+                  'object matching its schema. '
+                  'No file was read or written by this call.')
+     tid = kw.get("task_id") or "default"
+-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0), pdf_form_fields=args.get("pdf_form_fields", False), password=args.get("password"), pdf_signatures=args.get("pdf_signatures", False), archive_parts=args.get("archive_parts"))
++    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0), pdf_form_fields=args.get("pdf_form_fields", False), password=args.get("password"), pdf_signatures=args.get("pdf_signatures", False), archive_parts=args.get("archive_parts"), png_table_headings=args.get("png_table_headings", False))
+ 
+ 
+ def _handle_write_file(args, **kw):
+@@ -2023,11 +2030,7 @@
+     WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _new_document_guidance
+     WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _new_document_guidance
+ 
+-_WORD_MACRO_EDIT_GUIDANCE = 'Word macro text: word_macro_edit accepts exactly {source,source_sha256,old_text,new_text} into a NEW same-format .docm/.dotm. Obtain source_sha256 from current read_file. One unique literal in a supported main-body/table paragraph changes; equal-format split runs work. All other XML/member bytes, macro-enabled main declaration and any opaque VBA project remain intact. Signatures, protection, fields, revisions, hidden text, mixed-format matches, external/active/OLE/unknown parts refuse. VBA is never evaluated or executed and its safety remains unproven. This operation does not create, instantiate, convert or strip macro templates/documents. '
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("word_macro_edit")
+-WRITE_FILE_SCHEMA["description"] += _WORD_MACRO_EDIT_GUIDANCE
+-WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _WORD_MACRO_EDIT_GUIDANCE
+-WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] += _WORD_MACRO_EDIT_GUIDANCE
+ 
+ _DOCUMENT_PDF_GUIDANCE = 'Native PDF export: odt_pdf, xlsx_pdf and ods_pdf export the matching original to a NEW .pdf with exactly {source,source_sha256}. Read the source first and supply its current lowercase SHA-256. The original remains unchanged; no overwrite. The isolated Office export must pass an independent source/text/value and visible-glyph check before publication. ODT supports bounded plain text and rectangular tables in single-column reading order. XLSX/ODS supports bounded scalar cells and independently recomputed supported formulas, one visible nonempty sheet per page in source order. Unsupported, hidden, protected, signed, macro, external or active source content, stale formula caches, unsupported fonts/paint, missing/extra/cropped text and ambiguous layout refuse without publishing. Only the bounded visible text profile is supported; general Office producer compatibility and visual fidelity are not established. The PDF is a derivative: editable structure and formulas stay in the original. Existing docx_pdf and presentation routes keep their own contracts. '
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["odt_pdf", "xlsx_pdf", "ods_pdf"]
+@@ -2269,6 +2272,18 @@
+     'editing is unsupported; layout and field evaluation are unverified.')
+ 
+ 
++# Preserve the scoped Word macro contract after the compact schema assignments.
++from hermes_cli.friday_workspace_word_macro import GUIDANCE as _WORD_MACRO_EDIT_GUIDANCE
++
++READ_FILE_SCHEMA['description'] += (
++    ' Own-workspace DOCM/DOTM expose bounded inert text and source_sha256 of the file read. '
++    'Use that hash for word_macro_edit on an unencrypted source. VBA is opaque and never executed. '
++    'Supply only the user-provided password for supported encrypted DOCM/DOTM reads.')
++WRITE_FILE_SCHEMA['description'] += ' ' + _WORD_MACRO_EDIT_GUIDANCE + (
++    'The Word macro edit requires an own-workspace source. For supported encrypted DOCM/DOTM, '
++    'use the separate ooxml_password_edit profile. Raw DOCM/DOTM writes and overwrites are refused. ')
++
++
+ # Keep these preserving text profiles in the final effective schema after its
+ # compact-description assignments above. Ordinary raw text behavior is unchanged.
+ from hermes_cli.friday_workspace_text import GUIDANCE as _TXT_PRESERVING_GUIDANCE
+@@ -2337,6 +2352,20 @@
+ )
+ for _xlsx_recalculation_target in (WRITE_FILE_SCHEMA, WRITE_FILE_SCHEMA['parameters']['properties']['format'], WRITE_FILE_SCHEMA['parameters']['properties']['content']):
+     _xlsx_recalculation_target['description'] += _XLSX_RECALCULATION_FINAL_GUIDANCE
++
++
++# Keep the ruled PNG contract in the final raw schema after schema resets.
++from hermes_cli.friday_schema_guidance import PNG_TABLE_READ_GUIDANCE, PNG_TABLE_WRITE_GUIDANCE
++
++READ_FILE_SCHEMA['description'] += PNG_TABLE_READ_GUIDANCE
++READ_FILE_SCHEMA['parameters']['properties']['png_table_headings'] = {
++    'type': 'boolean', 'default': False,
++    'description': 'Inspect the first row of one supported own-workspace ruled PNG with local OCR.',
++}
++_png_write_props = WRITE_FILE_SCHEMA['parameters']['properties']
++_png_write_props['format']['enum'].append('png_ruled_table_xlsx')
++for _png_target in (WRITE_FILE_SCHEMA, _png_write_props['format'], _png_write_props['content']):
++    _png_target['description'] += PNG_TABLE_WRITE_GUIDANCE
+ 
+ 
+ # Keep the typed native CSV/TSV import ABI after the final schema resets above.
+diff --git a/tools/scoped_pdf_ocr.py b/tools/scoped_pdf_ocr.py
+--- a/tools/scoped_pdf_ocr.py
++++ b/tools/scoped_pdf_ocr.py
+@@ -95,7 +95,8 @@
+ class _Custody:
+     uses_web = False
+ 
+-    def __init__(self):
++    def __init__(self, *, exclusive_turn=False):
++        self.exclusive_turn = exclusive_turn
+         self.process = None
+         self.lock = threading.RLock()
+         self.settled = False
+@@ -136,15 +137,15 @@
+         return self.stop()
+ 
+ 
+-def _run(argv, work):
++def _run(argv, work, *, wall_seconds=WALL_SECONDS, exclusive_turn=False):
+     # Offline byte consumers may have no native call. In production the existing
+     # call's original deadline, cancellation and authenticated turn own the child.
+     from agent.web_call_context import _current, same_web_authority
+     call = _current.get()
+-    custody = _Custody()
++    custody = _Custody(exclusive_turn=exclusive_turn)
+     lock = call.turn.lock if call is not None else threading.RLock()
+     bound = False
+-    deadline = time.monotonic() + WALL_SECONDS
++    deadline = time.monotonic() + wall_seconds
+     try:
+         with lock:
+             if call is not None:
+@@ -154,6 +155,14 @@
+                 deadline = min(deadline, call.deadline())
+                 if call.session is not None or call.registry is not None:
+                     raise LocalOCRFailure('local_ocr_custody_busy')
++                # A ruled-table operation exclusively owns this turn's shared renderer.
++                # Unconfirmed cleanup leaves the prior custody registered.
++                if any(isinstance(owned, _Custody) and (exclusive_turn or owned.exclusive_turn)
++                       for owned in call.turn.calls):
++                    raise LocalOCRFailure('local_ocr_custody_busy')
++            if time.monotonic() >= deadline:
++                raise LocalOCRFailure('local_ocr_timeout')
++            if call is not None:
+                 call.session, call.registry = custody, custody
+                 call.turn.calls.add(custody)
+                 bound = True
+@@ -173,6 +182,8 @@
+                 pass
+         if call is not None:
+             call.check()
++        if time.monotonic() >= deadline:
++            raise LocalOCRFailure('local_ocr_timeout')
+         if custody.process.returncode != 0:
+             raise LocalOCRFailure('local_ocr_failed')
+     finally:
+diff --git a/tools/scoped_png_table.py b/tools/scoped_png_table.py
+new file mode 100644
+--- /dev/null
++++ b/tools/scoped_png_table.py
+@@ -0,0 +1,441 @@
++"""Observe words in a bounded ruled RGB PNG using the local OCR custody.
++
++Cell and word boxes are half-open XYXY in the original pixel coordinates.
++The result contains recognition candidates and their native confidence scores.
++The ordinary caller owns scope checks and any acceptance of candidate text.
++"""
++from __future__ import annotations
++
++import ctypes
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import resource
++import shutil
++import stat
++from statistics import median
++import struct
++import sys
++import tempfile
++from types import SimpleNamespace
++import unicodedata
++import zlib
++
++
++_MAX_BYTES = 1_000_000
++_MAX_EDGE = 2000
++_MAX_CELLS = 64
++_MAX_WORDS_PER_CELL = 32
++_MAX_WORD_CHARS = 128
++_MAX_TSV = 32_768
++_OUTPUT_LIMIT = 1_000_000
++_IMAGE = 'png_ruled_table_image_unsupported'
++_LAYOUT = 'png_ruled_table_layout_unsupported'
++_INVALID_OUTPUT = 'local_ocr_invalid_output'
++_UNAVAILABLE = 'local_ocr_unavailable'
++_FAILED = 'local_ocr_failed'
++_PREFIX = Path('/opt/local-ocr')
++_LIB = 'usr/lib/x86_64-linux-gnu'
++_LEPT = f'{_LIB}/libleptonica.so.6.0.0'
++_TESS = f'{_LIB}/libtesseract.so.5.0.5'
++_MODELS = 'usr/share/tesseract-ocr/5/tessdata'
++_TOOLCHAIN_PINS = {
++    _LEPT: '34320a35133dfcccf07bab56f64948689afcea16f60783dc5a16536843af96a6',
++    _TESS: '53b8de203802e1fa28fbea711ea27e8227111cbfc87f27e3392a1b6fa57d00a3',
++    f'{_MODELS}/rus.traineddata': 'e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225',
++    f'{_MODELS}/eng.traineddata': '7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2',
++}
++_PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
++_PNG_ANCILLARY = {b'cHRM': 32, b'gAMA': 4, b'sRGB': 1, b'pHYs': 9,
++                  b'sBIT': 3, b'bKGD': 6}
++_TSV_HEADER = ('level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\t'
++               'top\twidth\theight\tconf\ttext')
++_TSV_INTEGER = re.compile(r'[0-9]{1,6}\Z')
++_TSV_CONFIDENCE = re.compile(r'[0-9]{1,3}(?:\.[0-9]{1,10})?\Z')
++
++
++class _PNGFailure(ValueError):
++    """A finite internal refusal shared by the supervisor and child."""
++
++
++def _png_size(data):
++    # Restrict the direct decoder to opaque, noninterlaced RGB8. The small
++    # ancillary allowlist excludes EXIF, animation, transparency and profiles.
++    if type(data) is not bytes or not 45 <= len(data) <= _MAX_BYTES:
++        raise _PNGFailure(_IMAGE)
++    if data[:16] != _PNG_SIGNATURE + b'\x00\x00\x00\x0dIHDR':
++        raise _PNGFailure(_IMAGE)
++    width, height = struct.unpack_from('>II', data, 16)
++    if (not 1 <= width <= _MAX_EDGE or not 1 <= height <= _MAX_EDGE
++            or data[24:29] != bytes((8, 2, 0, 0, 0))):
++        raise _PNGFailure(_IMAGE)
++    pos = len(_PNG_SIGNATURE)
++    chunks = set()
++    idat_bytes = 0
++    for _ in range(128):
++        if pos + 12 > len(data):
++            break
++        length, kind = struct.unpack_from('>I4s', data, pos)
++        end = pos + 12 + length
++        if (end > len(data) or zlib.crc32(data[pos + 4:end - 4])
++                != struct.unpack_from('>I', data, end - 4)[0]):
++            break
++        if kind == b'IEND' and length == 0 and idat_bytes and end == len(data):
++            return width, height
++        if kind == b'IDAT':
++            idat_bytes += length
++        elif (kind != b'IHDR' or chunks) and (
++                b'IDAT' in chunks or kind in chunks or _PNG_ANCILLARY.get(kind) != length):
++            break
++        chunks.add(kind)
++        pos = end
++    raise _PNGFailure(_IMAGE)
++
++
++def _long_run(bits, minimum):
++    found = None
++    start = None
++    for index, ink in enumerate(bits):
++        if ink and start is None:
++            start = index
++        elif not ink and start is not None:
++            if index - start >= minimum:
++                if found is not None:
++                    raise _PNGFailure(_LAYOUT)
++                found = (start, index)
++            start = None
++    if start is not None and len(bits) - start >= minimum:
++        if found is not None:
++            raise _PNGFailure(_LAYOUT)
++        found = (start, len(bits))
++    return found
++
++
++def _rule_bands(scans, length):
++    bands = []
++    for index, bits in enumerate(scans):
++        run = _long_run(bits, max(24, length // 5))
++        if run is None:
++            continue
++        if bands and index == bands[-1][0] + len(bands[-1][1]):
++            bands[-1][1].append(run)
++        else:
++            bands.append((index, [run]))
++    result = []
++    for start, spans in bands:
++        edges_start, edges_end = zip(*spans)
++        if (len(spans) > max(3, length // 40) or max(edges_start) - min(edges_start) > 3
++                or max(edges_end) - min(edges_end) > 3):
++            raise _PNGFailure(_LAYOUT)
++        result.append((start, start + len(spans), int(median(edges_start)), int(median(edges_end))))
++    return result
++
++
++def _grid(pixels):
++    height, width = len(pixels), len(pixels[0])
++    horizontal = _rule_bands(pixels, width)
++    vertical = _rule_bands(zip(*pixels), height)
++    rows, columns = len(horizontal) - 1, len(vertical) - 1
++    if not (2 <= rows <= 16 and 2 <= columns <= 16 and rows * columns <= _MAX_CELLS):
++        raise _PNGFailure(_LAYOUT)
++    for y0, y1, left, right in horizontal:
++        if abs(left - vertical[0][0]) > 3 or abs(right - vertical[-1][1]) > 3:
++            raise _PNGFailure(_LAYOUT)
++        for x0, x1, _, _ in vertical:
++            if not any(any(scan[x0:x1]) for scan in pixels[y0:y1]):
++                raise _PNGFailure(_LAYOUT)
++    for _, _, top, bottom in vertical:
++        if abs(top - horizontal[0][0]) > 3 or abs(bottom - horizontal[-1][1]) > 3:
++            raise _PNGFailure(_LAYOUT)
++    cells = []
++    for row, (top, bottom) in enumerate(zip(horizontal, horizontal[1:]), 1):
++        for column, (left, right) in enumerate(zip(vertical, vertical[1:]), 1):
++            box = [left[1], top[1], right[0], bottom[0]]
++            if box[2] - box[0] < 8 or box[3] - box[1] < 8:
++                raise _PNGFailure(_LAYOUT)
++            cells.append({'row': row, 'column': column, 'box': box})
++    return rows, columns, cells
++
++
++def _valid_box(box, outer):
++    return (type(box) is list and len(box) == 4 and all(type(value) is int for value in box)
++            and outer[0] <= box[0] < box[2] <= outer[2]
++            and outer[1] <= box[1] < box[3] <= outer[3])
++
++
++def _valid_word(word):
++    return (type(word) is str and 1 <= len(word) <= _MAX_WORD_CHARS
++            and all(not char.isspace() and not unicodedata.category(char).startswith('C')
++                    for char in word))
++
++
++def _parse_tsv(raw, bounds):
++    if not 0 < len(raw) <= _MAX_TSV:
++        raise _PNGFailure(_INVALID_OUTPUT)
++    lines = raw.decode('utf-8').removesuffix('\n').split('\n')
++    if lines[0] == _TSV_HEADER:
++        lines = lines[1:]
++    if not 1 <= len(lines) <= 4 * _MAX_WORDS_PER_CELL + 1:
++        raise _PNGFailure(_INVALID_OUTPUT)
++    words = []
++    for line in lines:
++        fields = line.split('\t')
++        if (len(fields) != 12 or fields[0] not in ('1', '2', '3', '4', '5')
++                or any(not _TSV_INTEGER.fullmatch(field) for field in fields[1:10])):
++            raise _PNGFailure(_INVALID_OUTPUT)
++        confidence, word = fields[10:]
++        if fields[0] != '5':
++            if confidence != '-1' or word:
++                raise _PNGFailure(_INVALID_OUTPUT)
++            continue
++        if (not _valid_word(word) or not _TSV_CONFIDENCE.fullmatch(confidence)
++                or len(words) == _MAX_WORDS_PER_CELL):
++            raise _PNGFailure(_INVALID_OUTPUT)
++        x, y, width, height = map(int, fields[6:10])
++        box = [x, y, x + width, y + height]
++        score = float(confidence)
++        if not _valid_box(box, bounds) or not 0 <= score <= 100:
++            raise _PNGFailure(_INVALID_OUTPUT)
++        words.append({'text': word, 'confidence': score, 'box': box})
++    return words
++
++
++def _validate_result(payload, width, height, *, headers_only=False):
++    if (type(payload) is not dict or set(payload) != {'width', 'height', 'rows', 'columns', 'cells'}
++            or any(type(payload[key]) is not int for key in ('width', 'height', 'rows', 'columns'))
++            or (payload['width'], payload['height']) != (width, height)):
++        raise _PNGFailure(_INVALID_OUTPUT)
++    rows, columns, cells = payload['rows'], payload['columns'], payload['cells']
++    if (not (2 <= rows <= 16 and 2 <= columns <= 16 and rows * columns <= _MAX_CELLS)
++            or type(cells) is not list or len(cells) != (columns if headers_only else rows * columns)):
++        raise _PNGFailure(_INVALID_OUTPUT)
++    x_ranges = []
++    y_ranges = []
++    for index, cell in enumerate(cells):
++        row, column = divmod(index, columns)
++        if (type(cell) is not dict or set(cell) != {'row', 'column', 'box', 'words'}
++                or type(cell['row']) is not int or type(cell['column']) is not int
++                or (cell['row'], cell['column']) != (row + 1, column + 1)
++                or not _valid_box(cell['box'], [0, 0, width, height])):
++            raise _PNGFailure(_INVALID_OUTPUT)
++        left, top, right, bottom = cell['box']
++        if right - left < 8 or bottom - top < 8:
++            raise _PNGFailure(_INVALID_OUTPUT)
++        if row == 0:
++            if x_ranges and x_ranges[-1][1] >= left:
++                raise _PNGFailure(_INVALID_OUTPUT)
++            x_ranges.append((left, right))
++        if column == 0:
++            if y_ranges and y_ranges[-1][1] >= top:
++                raise _PNGFailure(_INVALID_OUTPUT)
++            y_ranges.append((top, bottom))
++        if (x_ranges[column] != (left, right) or y_ranges[row] != (top, bottom)
++                or type(cell['words']) is not list or len(cell['words']) > _MAX_WORDS_PER_CELL):
++            raise _PNGFailure(_INVALID_OUTPUT)
++        for word in cell['words']:
++            if (type(word) is not dict or set(word) != {'text', 'confidence', 'box'}
++                    or not _valid_word(word['text']) or not _valid_box(word['box'], cell['box'])
++                    or type(word['confidence']) is not float or not 0 <= word['confidence'] <= 100):
++                raise _PNGFailure(_INVALID_OUTPUT)
++    return payload
++
++
++def _write_private(path, data):
++    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
++    with os.fdopen(os.open(path, flags, 0o600), 'wb') as stream:
++        stream.write(data)
++
++
++def _png_argv(ocr, work, toolchain, *, headers_only=False):
++    locations = {str(work / 'input.pdf'): str(work / 'input.png'),
++                 '/input.pdf': '/input.png', '/work/input.pdf': '/work/input.png'}
++    argv = [locations.get(item, item) for item in ocr._argv(work, toolchain)]
++    position = argv.index('--remount-ro')
++    argv[position:position] = [
++        '--setenv', 'FRIDAY_HOST_NETNS', os.readlink('/proc/self/ns/net'),
++        '--setenv', 'LD_LIBRARY_PATH', str(_PREFIX / _LIB),
++        '--setenv', 'OMP_THREAD_LIMIT', '2', '--setenv', 'OMP_NUM_THREADS', '2',
++    ]
++    if headers_only:
++        argv[-1] = '--child-headings'
++    return argv
++
++
++def extract_ruled_png(data: bytes, *, headers_only=False) -> dict:
++    """Return physical cells and observable OCR words for an authorized PNG."""
++    from tools import scoped_pdf_ocr as ocr
++
++    work = None
++    try:
++        if type(headers_only) is not bool:
++            raise _PNGFailure(_INVALID_OUTPUT)
++        width, height = _png_size(data)
++        toolchain = ocr._toolchain()
++        work = Path(tempfile.mkdtemp(prefix='friday-ruled-png-'))
++        _write_private(work / 'input.png', data)
++        _write_private(work / 'runner.py', Path(__file__).read_bytes())
++        ocr._run(_png_argv(ocr, work, toolchain, headers_only=headers_only), work,
++                 wall_seconds=18, exclusive_turn=True)
++        payload = json.loads(ocr._private_read(work / 'result.json', _OUTPUT_LIMIT))
++        if type(payload) is dict and set(payload) == {'error'}:
++            code = payload['error']
++            if type(code) is str and code in (_IMAGE, _LAYOUT, _INVALID_OUTPUT, _UNAVAILABLE, _FAILED):
++                raise _PNGFailure(code)
++            raise _PNGFailure(_INVALID_OUTPUT)
++        return _validate_result(payload, width, height, headers_only=headers_only)
++    except _PNGFailure as failure:
++        raise ocr.LocalOCRFailure(str(failure)) from None
++    except (OSError, ValueError):
++        raise ocr.LocalOCRFailure(_FAILED) from None
++    finally:
++        if work is not None:
++            try:
++                shutil.rmtree(work)
++            except OSError:
++                raise ocr.LocalOCRFailure('local_ocr_cleanup_unconfirmed') from None
++
++
++def _check_toolchain():
++    # Check owner, stable file identity and the measured C ABI and language bytes
++    # inside the same read-only namespace used by the child decoder.
++    for relative, pin in _TOOLCHAIN_PINS.items():
++        path = _PREFIX / relative
++        if path.resolve(strict=True) != path:
++            raise _PNGFailure(_UNAVAILABLE)
++        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
++        with os.fdopen(os.open(path, flags), 'rb') as stream:
++            before = os.fstat(stream.fileno())
++            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
++                    or before.st_nlink != 1 or before.st_mode & 0o022
++                    or not 0 < before.st_size <= 5_000_000):
++                raise _PNGFailure(_UNAVAILABLE)
++            blob = stream.read(before.st_size + 1)
++            after = os.fstat(stream.fileno())
++            named = path.lstat()
++            fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_nlink', 'st_size',
++                      'st_mtime_ns', 'st_ctime_ns')
++            if (len(blob) != before.st_size or hashlib.sha256(blob).hexdigest() != pin
++                    or any(getattr(before, field) != getattr(after, field)
++                           or getattr(before, field) != getattr(named, field) for field in fields)):
++                raise _PNGFailure(_UNAVAILABLE)
++
++
++def _native_function(library, name, result, *parameters):
++    function = getattr(library, name)
++    function.restype, function.argtypes = result, parameters
++    return function
++
++
++def _libraries():
++    lept = ctypes.CDLL(str(_PREFIX / _LEPT))
++    tess = ctypes.CDLL(str(_PREFIX / _TESS))
++    ptr, integer, text = ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p
++    function = _native_function
++    pix_api = SimpleNamespace(
++        read=function(lept, 'pixReadMem', ptr, text, ctypes.c_size_t),
++        width=function(lept, 'pixGetWidth', integer, ptr),
++        height=function(lept, 'pixGetHeight', integer, ptr),
++        depth=function(lept, 'pixGetDepth', integer, ptr),
++        stride=function(lept, 'pixGetWpl', integer, ptr),
++        data=function(lept, 'pixGetData', ctypes.POINTER(ctypes.c_uint32), ptr),
++        delete=function(lept, 'pixDestroy', None, ctypes.POINTER(ptr)),
++    )
++    tess_api = SimpleNamespace(
++        create=function(tess, 'TessBaseAPICreate', ptr),
++        init=function(tess, 'TessBaseAPIInit3', integer, ptr, text, text),
++        page_mode=function(tess, 'TessBaseAPISetPageSegMode', None, ptr, integer),
++        image=function(tess, 'TessBaseAPISetImage2', None, ptr, ptr),
++        rect=function(tess, 'TessBaseAPISetRectangle', None, ptr, integer, integer, integer, integer),
++        reset=function(tess, 'TessBaseAPIClearAdaptiveClassifier', None, ptr),
++        recognize=function(tess, 'TessBaseAPIRecognize', integer, ptr, ptr),
++        tsv=function(tess, 'TessBaseAPIGetTsvText', ptr, ptr, integer),
++        free=function(tess, 'TessDeleteText', None, ptr),
++        delete=function(tess, 'TessBaseAPIDelete', None, ptr),
++    )
++    return pix_api, tess_api
++
++
++def _pixels(api, pixel, width, height):
++    if (api.width(pixel), api.height(pixel), api.depth(pixel), api.stride(pixel)) != (
++            width, height, 32, width):
++        raise _PNGFailure(_IMAGE)
++    data = api.data(pixel)
++    if not data:
++        raise _PNGFailure(_IMAGE)
++
++    def dark(word):
++        red, green, blue = (word >> 24) & 255, (word >> 16) & 255, (word >> 8) & 255
++        return 77 * red + 150 * green + 29 * blue < 128 * 256
++
++    return [bytes(dark(data[start + x]) for x in range(width))
++            for start in range(0, width * height, width)]
++
++
++def _observe(data, width, height, *, headers_only=False):
++    pix_api, tess = _libraries()
++    pixel = pix_api.read(data, len(data))
++    if not pixel:
++        raise _PNGFailure(_IMAGE)
++    handle = None
++    try:
++        rows, columns, cells = _grid(_pixels(pix_api, pixel, width, height))
++        if headers_only:
++            cells = cells[:columns]
++        handle = tess.create()
++        if not handle or tess.init(handle, os.fsencode(_PREFIX / _MODELS), b'rus+eng') != 0:
++            raise _PNGFailure(_UNAVAILABLE)
++        tess.page_mode(handle, 7)  # One text line per ruled cell.
++        tess.image(handle, pixel)
++        for cell in cells:
++            left, top, right, bottom = cell['box']
++            tess.reset(handle)
++            tess.rect(handle, left, top, right - left, bottom - top)
++            if tess.recognize(handle, None) != 0:
++                raise _PNGFailure(_FAILED)
++            native = tess.tsv(handle, 0)
++            if not native:
++                raise _PNGFailure(_FAILED)
++            try:
++                cell['words'] = _parse_tsv(ctypes.string_at(native), cell['box'])
++            finally:
++                tess.free(native)
++        return {'width': width, 'height': height, 'rows': rows, 'columns': columns, 'cells': cells}
++    finally:
++        if handle:
++            tess.delete(handle)
++        pix_api.delete(ctypes.byref(ctypes.c_void_p(pixel)))
++
++
++def _child(*, headers_only=False):
++    host_netns = os.environ.get('FRIDAY_HOST_NETNS')
++    if (not host_netns or host_netns == os.readlink('/proc/self/ns/net')
++            or Path.cwd() != Path('/work')):
++        return 1
++    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:2])
++    for key, limit in ((resource.RLIMIT_AS, 768 * 1024**2), (resource.RLIMIT_CPU, 12),
++                       (resource.RLIMIT_FSIZE, _OUTPUT_LIMIT), (resource.RLIMIT_CORE, 0),
++                       (resource.RLIMIT_NOFILE, 64)):
++        resource.setrlimit(key, (limit, limit))
++    try:
++        with Path('/input.png').open('rb') as stream:
++            data = stream.read(_MAX_BYTES + 1)
++        width, height = _png_size(data)
++        _check_toolchain()
++        payload = _observe(data, width, height, headers_only=headers_only)
++    except _PNGFailure as failure:
++        payload = {'error': str(failure)}
++    except UnicodeError:
++        payload = {'error': _INVALID_OUTPUT}
++    except OSError:
++        payload = {'error': _UNAVAILABLE}
++    result = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode()
++    if len(result) > _OUTPUT_LIMIT:
++        result = b'{"error":"local_ocr_invalid_output"}'
++    _write_private(Path('/work/result.json'), result)
++    return 0
++
++
++if __name__ == '__main__' and sys.argv[1:] in (['--child'], ['--child-headings']):
++    raise SystemExit(_child(headers_only=sys.argv[1] == '--child-headings'))
