@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Чекпоинт 16:18 МСК 19.11.2026. Установлена 272. Gateway и Dashboard работают, Telegram подключён. FB2 возвращает координаты абзаца для точного выбора при одинаковом тексте. [Установка и проверка 272](evidence/astra-20261119/core272-installed-fb2-paragraph-location.json).
+Чекпоинт 17:00 МСК 19.11.2026. Установлена 273. Gateway и Dashboard работают, Telegram подключён. Friday пересчитывает пять формул в сохранённой книге Calc с широкими пустыми хвостами строк. [Установка и проверка 273](evidence/astra-20261119/core273-installed-real-calc-ods-recalculation.json).
 
 **17.11.2026, 22:10 МСК.** Дест возобновил работу после [паузы для смены модели](evidence/astra-20261117/owner-model-switch-pause-team-checkpoint.json). Native goal **01a1c688-e36d-7021-8df4-9c5644a4d75b active**, прежний объект и учёт, без токен-бюджета. Обе реальные сессии после переключения работают на **gpt-6.2-sol / ultra** по фактическим turn context. Астра ведёт интеграцию. Настройки принадлежат владельцу. Текущие назначения указаны ниже.
 
@@ -8,11 +8,11 @@
 
 ## Установлено и работает
 
-**[Установлена 272, проект 625, 17 901 нативный файл](evidence/astra-20261119/core272-installed-fb2-paragraph-location.json).** Коммит исходников afee1806542827d2c8263072abf392c962b4f3ff. Квитанция 89b694f12519f3dbeee711ee7e0a870319b95e3525a32ad268f57fd1cefdf4ee. Слой fb2-paragraph-locations-after-source271.
+**[Установлена 273, проект 627, 17 901 нативный файл](evidence/astra-20261119/core273-installed-real-calc-ods-recalculation.json).** Коммит исходников 5724780696b20e07dfd2d4e6749ae0033ff46b71. Квитанция fcd20e6a869db9f00d83baa45bc54e934aba20dd33874a591b3950d267ad593a. Слой ods-calc-padded-formula-recalculation-after-source272.
 
-Штатная публикация завершилась с кодом 0. Заменены три нативных файла. Откат в изоляции восстановил девять целей, режимы файлов и две отсутствовавшие цели. БД, WAL и SHM сохранены до старта. Три quick_check OK, leases 0. [Предыдущая версия 271](evidence/astra-20261119/core271-installed-ics-explicit-embedded-timezone.json).
+Штатная публикация завершилась с кодом 0. Заменён один нативный файл. Откат в изоляции восстановил семь целей, режим файла и две отсутствовавшие цели. БД, WAL и SHM сохранены до старта. Три quick_check OK, leases 0. [Предыдущая версия 272](evidence/astra-20261119/core272-installed-fb2-paragraph-location.json).
 
-Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032. Загрузка 63c14904, Gateway **525186**, Dashboard **526224**. Обычные пользовательские проверки ждут подтверждённой ротации ключа и свежего допуска.
+Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032. Загрузка 63c14904, Gateway **562239**, Dashboard **563356**. Обычные пользовательские проверки ждут подтверждённой ротации ключа и свежего допуска.
 
 [CSV→typedXLSX, проверка компонента на232](evidence/astra-20261117/core232-installed-csv-component-values-assessed.json) **R2/PASS/independentf5e7a59f**: actual receipt-pinned27Code/11loaded modules, nativeconvert+adapterexecute, genuine92B CSV, XLSX толькоRAM. Exact number1200.50/date2026-04-05/styles/IDs/comments/order/zeroformulas. R1 пропускал проверки значений, сохранён; R2 добавил только их. Permission/source snapshot/revision/parent/publication leaves **inert**: ordinary delivery/runtimeCAS/formal не доказаны. [Принятый Source](evidence/astra-20261117/s05-explicit-locale-csv-direct-import-source-adopted-not-installed.json), [genuinebuilder/preintent](evidence/astra-20261117/core232-exact-next-source-genuine-builder-ready-not-installed.json) — исторические стадии до установки, не текущий NOT_INSTALLED.
 
@@ -32,6 +32,8 @@ Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw
 
 **F03 DOCX v03 Unicode.** Writer открыл точный исходник и полученный DOCX 2827. В пяти абзацах изменилась только согласованная фраза в третьем. Заголовок, оба действующих колонтитула и стили сохранились. В рендере A4 все изменения пикселей находятся внутри третьего абзаца. Состоявшаяся выдача 2825→2827 сохранена. Формальная приёмка открыта. [Проверка Writer](evidence/astra-20261119/f03-exact-received2827-docx-writer-unicode-and-print.json), [исходная выдача](evidence/astra-20261116/docx227-unicode-original-edit-delivery-assessed.json).
 
+**F03 CSV v04.** Calc открыл точный выданный CSV 2836 и исходник с явно текстовой колонкой order_id. Четыре ID остались строками с ведущими нулями. Из 30 полей изменилось только количество у 0003 с 1 до 2. Автоматическое определение типов и формальная приёмка остаются открытыми. [Проверка Calc](evidence/astra-20261119/f03-exact-received2836-csv-calc-text-ids.json).
+
 **F03 HTML v01.** Firefox открыл точный полученный HTML 2842. Дата исправилась в том же месте. Заголовки, список, таблица с подписью и экранированный текст сохранились. DOM совпал за пределами текста даты. Исходные файлы сохранены. Telegram выдал файл с MIME application/octet-stream. Предпросмотр в Telegram и формальная приёмка открыты. [Проверка Firefox](evidence/astra-20261119/f03-exact-received2842-html-firefox-preservation.json).
 
 **F03 Markdown v02.** Запрос 2861 к сохранённому файлу 2739 дал Markdown 2863. Нативный `text_edit` создал отдельную копию. Срок изменился на один байт, исходник, таблица 4×6 и остальные байты сохранены. Наблюдатель остановился в `poll_http` с `TRANSPORT_OUTCOME_UNKNOWN`. Полные 480 с и формальная приёмка остаются неподтверждёнными. Актор завершён. Сохранены прежние 544 записи и три UNKNOWN_SEND. Доставка подтверждена по тем же байтам. Повтора и позднего захвата не допускать. [Полученный файл, нативная трасса и остановка](evidence/astra-20261118/f03-md-v02-237-original-2861-2863-delivery-assessed-interrupted-observation.json).
@@ -44,7 +46,7 @@ Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw
 
 **F03 ODS v01.** Штатный `ods_edit` на 239 изменил только числовую цену `Orders!D3` с 499,90 до 525,75 в изолированной копии. Листы `Orders` и `Summary`, стили, формулы и их прежние кэши сохранены. Пересчёта не было. Вход — ранее сохранённая локальная производная подлинного XLSX S01. В проверенной истории нет ссылки на обычный вход с этим SHA. Открыты подтверждение допустимого входа и доставка. [Компонент и границы](evidence/astra-20261118/ods-f03-v01-239-numeric-edit-multiple-sheets-local-component.json).
 
-**Пересчёт ODS из Calc.** Версия 272 отказала на подлинной двухлистовой книге из-за широких пустых хвостов. Кандидат 273 пересчитал все пять формул на точном входе. В отдельной пробе с изменённым количеством обновились два зависимых итога. Calc независимо пересчитал формулы после правки цены в памяти. Сохранились формулы, семь пустых хвостов и содержимое остальных частей. Открыты штатная установка и обычная выдача. [Проверки исходников](evidence/astra-20261119/core273-real-calc-ods-recalculate-composition.json).
+**Пересчёт ODS из Calc.** В 273 штатный обработчик пересчитал все пять формул на подлинной двухлистовой книге, на которой 272 отказывала из-за пустых хвостов. Сохранились формулы, геометрия и другие части книги. На отдельном контрольном входе установленный пересчёт обновил два зависимых итога, как при той же правке цены в Calc. Calc дважды открыл точный установленный результат и подтвердил пять формул и их значения. Обычная выдача и формальная приёмка открыты. [Установленная проверка](evidence/astra-20261119/core273-installed-real-calc-ods-recalculation.json), [проверки исходников](evidence/astra-20261119/core273-real-calc-ods-recalculate-composition.json).
 
 **S02.** [Пакет Source233](evidence/astra-20261117/core233-keyed-merge-provenance-source-accepted.json) прошёл штатную сборку заявки и последующую установку. В итоговом описании merge различает выбранную строку и прочие совпадения. Исторический ответ2059 сохранил правильные суммы, но неполно отразил происхождение. Новая пользовательская проверка потребует доказанного отдельного основания.
 
