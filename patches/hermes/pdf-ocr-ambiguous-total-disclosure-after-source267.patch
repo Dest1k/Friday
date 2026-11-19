@@ -1,0 +1,76 @@
+--- a/tools/scoped_pdf_ocr.py
++++ b/tools/scoped_pdf_ocr.py
+@@ -9,6 +9,7 @@
+ import csv
+ import hashlib
+ import io
++from itertools import groupby
+ import json
+ import os
+ from pathlib import Path
+@@ -391,23 +392,49 @@
+     return label
+ 
+ 
++def _ambiguous_total_start(words):
++    if not words or words[0].removesuffix(':').casefold() not in {'total', 'итого'}:
++        return None
++    start = 1
++    if not words[0].endswith(':') and words[1:2] == [':']:
++        start = 2
++    fragments = words[start:]
++    # Whitespace alone may be normal thousands grouping or separate values.
++    # A split amount and separate count/angle columns can have identical
++    # fragments. Describe uncertainty without inferring their meaning.
++    if len(fragments) == 2:
++        left, right = fragments
++        if re.fullmatch(r'[0-9]+', left) and re.fullmatch(r'[0-9]+°[0-9]+', right):
++            return start
++    elif len(fragments) == 3:
++        left, separator, right = fragments
++        if separator == '°' and re.fullmatch(r'[0-9]+', left) and re.fullmatch(r'[0-9]+', right):
++            return start
++    return None
++
++
+ def _recognized(rows, *, mark_fraction=False):
+-    lines, last, current, uncertain, numbers = [], None, [], 0, 0
+-    for key, text, confidence in rows:
+-        if key != last and current:
+-            lines.append(' '.join(current)); current = []
+-        last = key
+-        # An OCR score is not calibrated certainty. Numeric fields ALWAYS stay
+-        # explicitly unverified; lost/occluded digits cannot be reconstructed.
+-        if confidence < 80:
+-            uncertain += 1
+-        if any(ch.isdigit() for ch in text):
+-            numbers += 1
+-            text = _unverified_numeric_token(text, mark_fraction=mark_fraction)
+-        elif confidence < 80:
+-            text = '[uncertain OCR token: ' + text + ']'
+-        current.append(text)
+-    if current:
++    lines, uncertain, numbers = [], 0, 0
++    for _, line in groupby(rows, key=lambda row: row[0]):
++        words, current = [], []
++        for _, text, confidence in line:
++            words.append(text)
++            # An OCR score is not calibrated certainty. Numeric fields ALWAYS stay
++            # explicitly unverified; lost/occluded digits cannot be reconstructed.
++            if confidence < 80:
++                uncertain += 1
++            if any(ch.isdigit() for ch in text):
++                numbers += 1
++                text = _unverified_numeric_token(text, mark_fraction=mark_fraction)
++            elif confidence < 80:
++                text = '[uncertain OCR token: ' + text + ']'
++            current.append(text)
++        total_start = _ambiguous_total_start(words)
++        if total_start is not None:
++            # Replace the per-token labels with a shorter field-level warning
++            # so the existing OCR and reconstructed-text byte limits still fit.
++            fragments = ' '.join(words[total_start:])
++            current[total_start:] = ['[Unverified OCR fragments. Keep separate — ' + fragments + ']']
+         lines.append(' '.join(current))
+     return '\n'.join(lines), uncertain, numbers
+ 
