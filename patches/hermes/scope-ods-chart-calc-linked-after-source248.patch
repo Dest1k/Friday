@@ -1,0 +1,217 @@
+diff --git a/tools/scoped_ods_chart.py b/tools/scoped_ods_chart.py
+--- a/tools/scoped_ods_chart.py
++++ b/tools/scoped_ods_chart.py
+@@ -63,7 +63,12 @@
+ 
+ def _range_ref(sheet, row1, column, row2):
+     first = _cell_ref(sheet, row1, column)
+-    return first if row2 == row1 else first + ':.$' + colname(column) + '$' + str(row2)
++    return first if row2 == row1 else first + ':' + _cell_ref(sheet, row2, column)
++
++
++def _chart_title(title):
++    # Use literal spaces so chart paragraph import preserves word boundaries.
++    return _literal(title).replace('<text:s/>', ' ')
+ 
+ 
+ def _chart_xml(title, sheet_name, r1, c1, r2, c2, values):
+@@ -72,9 +77,11 @@
+     series = []
+     for column in range(c1 + 1, c2 + 1):
+         series.append(
+-            '<chart:series chart:class="chart:bar" chart:values-cell-range-address='
++            '<chart:series chart:class="chart:bar" chart:style-name="series-' + str(column - c1) + '"'
++            ' chart:values-cell-range-address='
+             + quoteattr(_range_ref(sheet_name, r1 + 1, column, r2))
+-            + ' chart:label-cell-address=' + quoteattr(_cell_ref(sheet_name, r1, column)) + '/>'
++            + ' chart:label-cell-address=' + quoteattr(_cell_ref(sheet_name, r1, column))
++            + '><chart:data-point chart:repeated="' + str(r2 - r1) + '"/></chart:series>'
+         )
+     rows = []
+     for r in range(r1 + 1, r2 + 1):
+@@ -85,17 +92,31 @@
+         rows.append('<table:table-row>' + ''.join(cells) + '</table:table-row>')
+     header = ['<table:table-cell office:value-type="string"><text:p>Category</text:p></table:table-cell>']
+     header += ['<table:table-cell office:value-type="string"><text:p>' + _literal(label) + '</text:p></table:table-cell>' for label in labels]
+-    cache = ('<table:table table:name="local-table"><table:table-column table:number-columns-repeated="'
+-             + str(c2 - c1 + 1) + '"/><table:table-row>' + ''.join(header) + '</table:table-row>' + ''.join(rows) + '</table:table>')
++    cache = ('<table:table table:name="local-table"><table:table-header-columns><table:table-column/>'
++             '</table:table-header-columns><table:table-columns><table:table-column table:number-columns-repeated="'
++             + str(c2 - c1) + '"/></table:table-columns><table:table-header-rows><table:table-row>'
++             + ''.join(header) + '</table:table-row></table:table-header-rows><table:table-rows>'
++             + ''.join(rows) + '</table:table-rows></table:table>')
+     declarations = ('xmlns:office="' + O + '" xmlns:chart="' + CH + '" xmlns:table="' + TB
+-                    + '" xmlns:text="' + T + '" xmlns:style="' + ST + '"')
++                    + '" xmlns:text="' + T + '" xmlns:style="' + ST + '" xmlns:xlink="' + XL
++                    + '" xmlns:svg="' + SVG + '" xmlns:draw="' + DR + '"')
+     return ('<?xml version="1.0" encoding="UTF-8"?><office:document-content ' + declarations + ' office:version="1.3">'
+             '<office:automatic-styles><style:style style:name="plot" style:family="chart">'
+-            '<style:chart-properties chart:vertical="false"/></style:style></office:automatic-styles>'
+-            '<office:body><office:chart><chart:chart chart:class="chart:bar"><chart:title><text:p>'
+-            + _literal(title) + '</text:p></chart:title><chart:plot-area chart:data-source-has-labels="both" chart:style-name="plot">'
+-            '<chart:axis chart:dimension="x" chart:name="primary-x"><chart:categories table:cell-range-address='
+-            + quoteattr(category_ref) + '/></chart:axis><chart:axis chart:dimension="y" chart:name="primary-y"/>'
++            '<style:chart-properties chart:vertical="false" chart:auto-position="true" chart:auto-size="true"/>'
++            '</style:style><style:style style:name="axis" style:family="chart">'
++            '<style:chart-properties chart:display-label="true"/></style:style>'
++            '<style:style style:name="series-1" style:family="chart">'
++            '<style:graphic-properties draw:stroke="none" draw:fill="solid" draw:fill-color="#004586"/></style:style>'
++            '<style:style style:name="series-2" style:family="chart">'
++            '<style:graphic-properties draw:stroke="none" draw:fill="solid" draw:fill-color="#ff420e"/></style:style>'
++            '</office:automatic-styles>'
++            '<office:body><office:chart><chart:chart chart:class="chart:bar" xlink:href=".." xlink:type="simple" '
++            'svg:width="9cm" svg:height="8cm"><chart:title><text:p>'
++            + _chart_title(title) + '</text:p></chart:title><chart:plot-area chart:data-source-has-labels="both" chart:style-name="plot">'
++            '<chart:axis chart:dimension="x" chart:name="primary-x" chart:style-name="axis">'
++            '<chart:categories table:cell-range-address='
++            + quoteattr(category_ref)
++            + '/></chart:axis><chart:axis chart:dimension="y" chart:name="primary-y" chart:style-name="axis"/>'
+             + ''.join(series) + '</chart:plot-area>' + cache + '</chart:chart></office:chart></office:body></office:document-content>').encode('utf-8')
+ 
+ 
+@@ -200,9 +221,13 @@
+     chart_xml = _chart_xml(spec['title'], spec['sheet'], r1, c1, r2, c2, values)
+     chart_path = base + '/content.xml'
+     declarations = 'xmlns:table="' + TB + '" xmlns:draw="' + DR + '" xmlns:svg="' + SVG + '" xmlns:xlink="' + XL + '"'
++    ranges = [_cell_ref(spec['sheet'], r1, c1), _range_ref(spec['sheet'], r1 + 1, c1, r2)]
++    for column in range(c1 + 1, c2 + 1):
++        ranges.extend((_cell_ref(spec['sheet'], r1, column), _range_ref(spec['sheet'], r1 + 1, column, r2)))
+     shapes = ('<table:shapes ' + declarations + '><draw:frame draw:name=' + quoteattr('Chart ' + str(index))
+-              + ' svg:width="12cm" svg:height="8cm" svg:x="1cm" svg:y="1cm"><draw:object xlink:href="./'
+-              + base + '" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></table:shapes>').encode('utf-8')
++              + ' svg:width="9cm" svg:height="8cm" svg:x="6cm" svg:y="1cm"><draw:object xlink:href="./'
++              + base + '" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"'
++              + ' draw:notify-on-update-of-ranges=' + quoteattr(' '.join(ranges)) + '/></draw:frame></table:shapes>').encode('utf-8')
+     raw = book.parts['content.xml']
+     at = _insertions(raw, book.sheets.index(sheet))
+     content = raw[:at] + shapes + raw[at:]
+@@ -257,9 +282,26 @@
+     return _text(titles[0][0], book)
+ 
+ 
+-def _cache_rows(table, book):
++def _cache_rows(table, book, *, linked, series_count):
++    if linked:
++        header_columns, columns, header, body = (q(TB, name) for name in
++            ('table-header-columns', 'table-columns', 'table-header-rows', 'table-rows'))
++        if [n.tag for n in table] != [header_columns, columns, header, body]:
++            fail('chart_cache_structure')
++        column = q(TB, 'table-column')
++        if (table.get(q(TB, 'name')) != 'local-table'
++                or any(len(group) != 1 or group[0].tag != column or len(group[0]) for group in table[:2])
++                or table[0][0].get(q(TB, 'number-columns-repeated')) is not None
++                or table[1][0].get(q(TB, 'number-columns-repeated')) != str(series_count)
++                or len(table[2]) != 1):
++            fail('chart_cache_structure')
++        source_rows = [*table[2], *table[3]]
++        if any(node.tag != q(TB, 'table-row') for node in source_rows):
++            fail('chart_cache_structure')
++    else:
++        source_rows = table.findall(q(TB, 'table-row'))
+     rows = []
+-    for row in table.findall(q(TB, 'table-row')):
++    for row in source_rows:
+         if row.get(q(TB, 'number-rows-repeated')):
+             fail('chart_cache_repeat')
+         values = []
+@@ -273,7 +315,12 @@
+ 
+ def chart_records(book):
+     objects = []
++    owned_objects = set()
+     for sheet in book.sheets:
++        for shapes in sheet.findall(q(TB, 'shapes')):
++            for frame in shapes.findall(q(DR, 'frame')):
++                if len(frame) == 1 and frame[0].tag == q(DR, 'object'):
++                    owned_objects.add(frame[0])
+         for node in sheet.iter(q(DR, 'object')):
+             objects.append((sheet.get(q(TB, 'name')), node))
+     if not objects:
+@@ -282,12 +329,15 @@
+     entries = {n.get(q(M, 'full-path')): n.get(q(M, 'media-type')) for n in manifest.findall(q(M, 'file-entry'))}
+     values = _cell_values(book)
+     records = []
+-    linked = []
+-    for part, root in book.xml.items():
++    linked = set()
++    recognized = set()
++    linked_parts = set()
++    for root in book.xml.values():
+         for node in root.iter():
+-            href = node.get(q(XL, 'href'))
+-            if href or node.get('{http://www.w3.org/XML/1998/namespace}base'):
+-                linked.append((node, href))
++            if node.get('{http://www.w3.org/XML/1998/namespace}base') is not None:
++                fail('chart_or_external_link_structure')
++            if node.get(q(XL, 'href')) is not None:
++                linked.add(node)
+     for source_sheet, node in objects:
+         href = node.get(q(XL, 'href'), '')
+         match = re.fullmatch(r'\./(Charts/[A-Za-z0-9][A-Za-z0-9_-]{0,63})', href)
+@@ -303,6 +353,16 @@
+         if len(charts) != 1 or charts[0].get(q(CH, 'class')) != 'chart:bar':
+             fail('chart_native_structure')
+         chart = charts[0]
++        recognized.add(node)
++        parent_link = chart.get(q(XL, 'href')) is not None
++        if parent_link:
++            # In this owned embedded chart, '..' denotes the workbook in this package.
++            if (node not in owned_objects or base in linked_parts or node.get(q(XL, 'actuate')) != 'onLoad'
++                    or {k: v for k, v in chart.attrib.items() if k.startswith('{' + XL + '}')}
++                    != {q(XL, 'href'): '..', q(XL, 'type'): 'simple'}):
++                fail('chart_or_external_link_structure')
++            recognized.add(chart)
++            linked_parts.add(base)
+         plots = chart.findall(q(CH, 'plot-area'))
+         tables = chart.findall(q(TB, 'table'))
+         styles = root.findall('./' + q(O, 'automatic-styles') + '/' + q(ST, 'style'))
+@@ -319,9 +379,15 @@
+                 or len(categories) != 1 or not 1 <= len(series) <= 2
+                 or any(item.get(q(CH, 'class')) != 'chart:bar' for item in series)):
+             fail('chart_axis_or_series')
+-        cache = _cache_rows(tables[0], book)
++        if parent_link and not any(axis.get(q(CH, 'dimension')) == 'x' and categories[0] in axis for axis in axes):
++            fail('chart_axis_or_series')
++        cache = _cache_rows(tables[0], book, linked=parent_link, series_count=len(series))
+         category_ref = categories[0].get(q(TB, 'cell-range-address'))
+         source_categories = _referenced(values, category_ref)
++        sheet, first_row, first_col, last_row, last_col = _odf_range(category_ref)
++        if parent_link and (sheet != source_sheet or first_row <= 1 or first_col != last_col):
++            fail('chart_category_range')
++        notify_ranges = [_cell_ref(sheet, first_row - 1, first_col), category_ref] if parent_link else []
+         def literal(value, kind):
+             return (value['type'] == kind and not any(value.get(flag) for flag in ('formula', 'covered', 'constrained'))
+                     and (kind != 'string' or bool(value['value'])))
+@@ -341,11 +407,23 @@
+                     or labels[0]['value'] != cache[0][index]['value']
+                     or any(not literal(value, 'float') for value in source_values + [row[index] for row in cache[1:]])):
+                 fail('chart_series_cache_mismatch')
++            if parent_link:
++                column = first_col + index
++                if (_odf_range(label_ref) != (sheet, first_row - 1, column, first_row - 1, column)
++                        or _odf_range(value_ref) != (sheet, first_row, column, last_row, column)):
++                    fail('chart_series_range')
++                notify_ranges.extend((label_ref, value_ref))
++                points = item.findall(q(CH, 'data-point'))
++                if len(item) != 1 or len(points) != 1 or points[0].get(q(CH, 'repeated')) != str(len(source_values)):
++                    fail('chart_series_dimensions')
+             expected = labels + source_values
+             if [(v['type'], v['value']) for v in expected] != [(v['type'], v['value']) for v in [cache[0][index]] + [row[index] for row in cache[1:]]]:
+                 fail('chart_series_cache_mismatch')
+             output_series.append({'label': labels[0]['value'], 'label_range': label_ref,
+                                   'value_range': value_ref, 'values': [v['value'] for v in source_values]})
++        notify = node.get(q(DR, 'notify-on-update-of-ranges'))
++        if notify != (' '.join(notify_ranges) if parent_link else None):
++            fail('chart_or_external_link_structure')
+         expected_categories = [v['value'] for v in source_categories]
+         if any(not literal(row[0], 'string') for row in cache[1:]) or expected_categories != [row[0]['value'] for row in cache[1:]]:
+             fail('chart_category_cache_mismatch')
+@@ -353,7 +431,7 @@
+                         'class': 'chart:bar', 'orientation': 'column', 'category_range': category_ref,
+                         'categories': expected_categories, 'series': output_series,
+                         'native_editable': True, 'cache_status': 'source_and_local_cache_match'})
+-    if len(records) != len(objects) or len(linked) != len(objects) or any(node.tag != q(DR, 'object') for node, _ in linked):
++    if len(records) != len(objects) or linked != recognized:
+         fail('chart_or_external_link_structure')
+     book.unsupported.discard('linked_or_embedded_content')
+     if book.unsupported:
