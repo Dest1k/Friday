@@ -137,6 +137,7 @@ LAYER_NAMES = (
     'ods-calc-padded-formula-recalculation-after-source272',
     'binary-doc97-literal-create-after-source273',
     'doc97-one-fact-preserving-edit-after-source274',
+    'word-report-opc-default-namespace-after-source275',
 )
 # Draft binding barrier: no request generation or publication may read the installed
 # home for this selected edge until the exact frozen manifest and patch are supplied.
@@ -1518,6 +1519,43 @@ CURRENT_SOURCE_SEVENTY_SEVENTH_NATIVE_FILES = (
         'new_file': False,
         'path': 'tools/scoped_doc.py',
         'sha256': 'c5f77e0717b59cc64a01512f29628a4b99edbd7c1ba04a368ae2b87ec928aa06',
+    },
+)
+
+# Exact Source276 layer and the closed Core275 predecessor it extends.
+CURRENT_SOURCE_SEVENTY_EIGHTH_LAYER = 'word-report-opc-default-namespace-after-source275'
+CURRENT_SOURCE_SEVENTY_EIGHTH_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v78'
+CURRENT_SOURCE_SEVENTY_EIGHTH_MANIFEST_SHA256 = '249c426dc02257f64660eb63a41910142b57587abd882812e0f3cd61426e277d'
+CURRENT_SOURCE_SEVENTY_EIGHTH_PATCH_SHA256 = '21f801ff53f2d3220e31669fe76d017867d526492136b4dc6622bceee4ca0321'
+CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_REQUEST_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_COMMITTED_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_RECEIPT_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_MARKER_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_STAMP_SHA256 = 'UNBOUND'
+CURRENT_SOURCE_SEVENTY_EIGHTH_HELPER = 'scripts/friday_ordinary_install.py'
+CURRENT_SOURCE_SEVENTY_EIGHTH_NATIVE_FILES = (
+    {
+        'bytes': 988,
+        'mode': '100644',
+        'new_file': True,
+        'path': 'tools/scoped_opc.py',
+        'sha256': '984d5dc5184a6669c6851a4a5a7f50f8b5ff7931aed558f0cffbc8d1181f750a',
+    },
+    {
+        'before_sha256': '93578e43b45ffb7611301717967e606debe796333e1d4b44abafd9dae378fb66',
+        'bytes': 21513,
+        'mode': '100644',
+        'new_file': False,
+        'path': 'tools/scoped_presentation_merge.py',
+        'sha256': '5a368f12766626c2fc19c9c72f2c4aec611854fc1eb6a3a242b58ba41e8401b4',
+    },
+    {
+        'before_sha256': '295ab348029be830c5c7a5b6ece0723cbb4a043d3c45cf0f06c40525a2278b5f',
+        'bytes': 6451,
+        'mode': '100644',
+        'new_file': False,
+        'path': 'tools/scoped_word_report.py',
+        'sha256': '4a7948731eddeafc92a4cbaebd377f35aa5d584645d615e1254a91ebe4110b9e',
     },
 )
 
@@ -5229,6 +5267,103 @@ def require_seventy_seventh_predecessor(request, previous, *, raw=None):
     return committed_path, committed_raw
 
 
+def seventy_eighth_predecessor_ref(home):
+    pin = CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_REQUEST_SHA256
+    path = Path(home) / "preparation" / f"ordinary-source-update-v45-{pin[:16]}" / "request.json"
+    return {"path": str(path), "sha256": pin}
+
+
+def seventy_eighth_metadata_refs(home):
+    metadata = {
+        "marker": ("FRIDAY-INSTALL.json", CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_MARKER_SHA256),
+        "source_receipt": ("hermes-agent.source.json", CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_RECEIPT_SHA256),
+        "target_receipt": ("hermes-agent.source.json", CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_RECEIPT_SHA256),
+        "stamp": ("hermes-agent/install-stamp.json", CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_STAMP_SHA256),
+    }
+    return {key: {"path": str(Path(home) / relative), "sha256": sha256}
+            for key, (relative, sha256) in metadata.items()}
+
+
+def require_seventy_eighth_source_binding(layer_names, project_files=None, *, request=None):
+    """Bind the exact Source275 to Source276 publication before reading its inputs."""
+    layer = CURRENT_SOURCE_SEVENTY_EIGHTH_LAYER
+    selected = isinstance(layer_names, (list, tuple)) and layer in layer_names
+    context = request.get("current_source_successor") if request is not None else None
+    context_selected = (type(context) is dict
+                        and context.get("schema") == CURRENT_SOURCE_SEVENTY_EIGHTH_SUCCESSOR_SCHEMA)
+    if not selected and not context_selected:
+        return
+    require(selected and tuple(layer_names) == (layer,),
+            "transaction_current_source_exact_seventy_eighth_layer_required")
+    pins = (CURRENT_SOURCE_SEVENTY_EIGHTH_MANIFEST_SHA256, CURRENT_SOURCE_SEVENTY_EIGHTH_PATCH_SHA256,
+            CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_REQUEST_SHA256, CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_COMMITTED_SHA256,
+            CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_RECEIPT_SHA256, CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_MARKER_SHA256,
+            CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_STAMP_SHA256)
+    require(CURRENT_SOURCE_SEVENTY_EIGHTH_NATIVE_FILES and all(
+            type(pin) is str and __import__("re").fullmatch("[0-9a-f]{64}", pin) for pin in pins),
+            "transaction_current_source_seventy_eighth_binding_required")
+    manifest = f"patches/hermes/{layer}-manifest.json"
+    patch = f"patches/hermes/{layer}.patch"
+    if request is not None:
+        require(request.get("schema") == SCHEMA_EXPLICIT and context_selected
+                and set(context) == {"schema", "root_project_update", "previous_native_update"},
+                "transaction_current_source_seventy_eighth_context_required")
+        home = request.get("home")
+        require(type(home) is str and Path(home).is_absolute(),
+                "transaction_current_source_seventy_eighth_home_required")
+        require(context["previous_native_update"] == seventy_eighth_predecessor_ref(home),
+                "transaction_current_source_seventy_eighth_previous_request_pin_changed")
+        for key, ref in seventy_eighth_metadata_refs(home).items():
+            require(request.get(key) == ref,
+                    "transaction_current_source_seventy_eighth_previous_metadata_pin_changed:" + key)
+        require(request.get("current_input") == request.get("candidate_input")
+                and request.get("current_input") != request.get("previous_input"),
+                "transaction_current_source_seventy_eighth_input_pin_changed")
+        project_files = request.get("project_inventory")
+        require(request.get("installed_layers") == 275 and request.get("installed_files") == 17901
+                and type(project_files) is dict and len(project_files) == 633,
+                "transaction_current_source_seventy_eighth_inventory_count_changed")
+        require(request.get("layer_manifest_updates") == [manifest]
+                and request.get("project_file_updates") == [CURRENT_SOURCE_SEVENTY_EIGHTH_HELPER]
+                and all(request.get(key) == [] for key in ("plugin_set", "plugin_additions", "staged_files")),
+                "transaction_current_source_seventy_eighth_project_scope_changed")
+    if project_files is not None:
+        require(type(project_files) is dict
+                and project_files.get(manifest) == CURRENT_SOURCE_SEVENTY_EIGHTH_MANIFEST_SHA256
+                and project_files.get(patch) == CURRENT_SOURCE_SEVENTY_EIGHTH_PATCH_SHA256,
+                "transaction_current_source_seventy_eighth_binding_pair_changed")
+
+
+def require_seventy_eighth_predecessor(request, previous, *, raw=None):
+    """Check the exact retained v77 request and its successful commit."""
+    context = request["current_source_successor"]
+    ref = context["previous_native_update"]
+    require(ref == seventy_eighth_predecessor_ref(request["home"]),
+            "transaction_current_source_seventy_eighth_previous_request_pin_changed")
+    path = Path(ref["path"])
+    committed_path = path.with_name("committed.json")
+    require(path.resolve() == path and committed_path.resolve() == committed_path,
+            "transaction_current_source_seventy_eighth_previous_request_path_changed")
+    raw = owned_file(path) if raw is None else raw
+    require(digest(raw) == ref["sha256"],
+            "transaction_current_source_seventy_eighth_previous_request_changed")
+    predecessor = json.loads(raw)
+    previous_context = predecessor["current_source_successor"]
+    require(predecessor["schema"] == SCHEMA_EXPLICIT
+            and predecessor["home"] == request["home"]
+            and predecessor["layer_names"] == [CURRENT_SOURCE_SEVENTY_SEVENTH_LAYER]
+            and predecessor["current_input"] == request["previous_input"]
+            and len(previous["project_files"]) == 631
+            and predecessor["project_inventory"] == previous["project_files"]
+            and previous_context["schema"] == CURRENT_SOURCE_SEVENTY_SEVENTH_SUCCESSOR_SCHEMA
+            and previous_context["root_project_update"] == context["root_project_update"],
+            "transaction_current_source_seventy_seventh_predecessor_lineage_changed")
+    committed_raw = owned_file(committed_path)
+    require(digest(committed_raw) == CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_COMMITTED_SHA256,
+            "transaction_current_source_seventy_eighth_previous_committed_changed")
+    return committed_path, committed_raw
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -5319,7 +5454,132 @@ def write_atomic(path, data, mode=0o600):
     sync_directory(path.parent)
 
 
-def publish(target, data, mode=0o600, *, _before_replace=None, _temporary_suffix=".publish.tmp"):
+class _PublicationDestinationOccupied(Refused):
+    def __init__(self, target):
+        self.target = target
+        super().__init__("transaction_v5_publication_destination_occupied:" + str(target))
+
+
+def _publication_stage_checked(staged, named):
+    require(all(getattr(staged, key) == getattr(named, key) for key in
+                ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
+                 "st_size", "st_mtime_ns", "st_ctime_ns")),
+            "transaction_v5_temporary_identity_changed")
+
+
+def _rename_noreplace(parent_fd, source_name, target_name):
+    # The same Linux no-clobber primitive used for directory claims by the installer.
+    import ctypes
+    try:
+        rename = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError as error:
+        raise OSError(errno.ENOSYS, os.strerror(errno.ENOSYS)) from error
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    if rename(parent_fd, os.fsencode(source_name), parent_fd, os.fsencode(target_name), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _stage_absent(parent_fd, name, data, mode):
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+                     dir_fd=parent_fd)
+    except FileExistsError as error:
+        raise StopUnconfirmed("current source staging identity requires reconciliation") from error
+    except OSError as error:
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            raise error
+        except OSError as observation:
+            raise StopUnconfirmed("current source staging identity requires reconciliation") from observation
+        raise StopUnconfirmed("current source staging identity requires reconciliation") from error
+    failure = None
+    try:
+        write_all(fd, data)
+        os.fchmod(fd, mode)
+        os.fsync(fd)
+    except BaseException as error:
+        failure = error
+    finally:
+        try:
+            try:
+                staged = os.fstat(fd)
+            finally:
+                os.close(fd)
+        except OSError as error:
+            raise StopUnconfirmed("current source staging identity requires reconciliation") from error
+    return staged, failure
+
+
+def _publish_absent(target, tmp, data, mode, before_replace):
+    parent_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(parent_fd)
+
+        def check_parent():
+            named_parent = target.parent.lstat()
+            require(parent.st_uid == os.getuid() and parent.st_mode & 0o022 == 0
+                    and all(getattr(parent, key) == getattr(named_parent, key) for key in
+                            ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode")),
+                    "transaction_v5_parent_custody_changed")
+
+        def stage_present():
+            try:
+                check_parent()
+                try:
+                    named = os.stat(tmp.name, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    return False
+                _publication_stage_checked(staged, named)
+                return True
+            except (Refused, OSError) as error:
+                raise StopUnconfirmed("current source staging identity requires reconciliation") from error
+
+        def discard_stage():
+            if not stage_present():
+                return False
+            try:
+                os.unlink(tmp.name, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            except OSError as error:
+                raise StopUnconfirmed("current source staging cleanup requires reconciliation") from error
+            return True
+
+        check_parent()
+        staged, failure = _stage_absent(parent_fd, tmp.name, data, mode)
+        if failure is not None:
+            discard_stage()
+            raise failure
+
+        require(stage_present(), "transaction_v5_publication_temp_disappeared")
+        try:
+            before_replace(tmp)
+        except BaseException as error:
+            if discard_stage() and isinstance(error, (Refused, OSError)):
+                # The last journal check can report an occupied path before renameat2.
+                try:
+                    os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise _PublicationDestinationOccupied(target) from error
+            raise
+
+        require(stage_present(), "transaction_v5_publication_temp_disappeared")
+        try:
+            _rename_noreplace(parent_fd, tmp.name, target.name)
+        except BaseException as error:
+            if discard_stage() and isinstance(error, FileExistsError):
+                raise _PublicationDestinationOccupied(target) from error
+            raise
+    finally:
+        os.close(parent_fd)
+
+
+def publish(target, data, mode=0o600, *, _before_replace=None, _temporary_suffix=".publish.tmp",
+            _no_replace=False):
     """Publish bytes to the home through a private temporary file and one rename.
 
     A failure between the rename and the directory synchronisation leaves the file
@@ -5328,35 +5588,33 @@ def publish(target, data, mode=0o600, *, _before_replace=None, _temporary_suffix
     """
     global INJECT_AFTER_RENAME
     target = Path(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name("." + target.name + _temporary_suffix)
-    if _before_replace is not None:
-        require(not os.path.lexists(tmp), "transaction_v5_publication_temp_exists")
-    elif tmp.exists():
-        tmp.unlink()
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        write_all(fd, data)
-        os.fsync(fd)
-        if _before_replace is not None:
-            os.fchmod(fd, mode)
-            staged_identity = os.fstat(fd)
-    finally:
-        os.close(fd)
-    # The legacy three-argument path keeps its exact close/chmod sequence.
-    if _before_replace is None:
-        os.chmod(tmp, mode)
+    if _no_replace:
+        require(_before_replace is not None, "transaction_v5_no_replace_journal_required")
+        _publish_absent(target, tmp, data, mode, _before_replace)
     else:
-        def staged_unchanged():
-            named = tmp.lstat()
-            require(all(getattr(staged_identity, key) == getattr(named, key) for key in
-                        ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
-                         "st_size", "st_mtime_ns", "st_ctime_ns")),
-                    "transaction_v5_temporary_identity_changed")
-        staged_unchanged()
-        _before_replace(tmp)
-        staged_unchanged()
-    os.replace(tmp, target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if _before_replace is not None:
+            require(not os.path.lexists(tmp), "transaction_v5_publication_temp_exists")
+        elif tmp.exists():
+            tmp.unlink()
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            write_all(fd, data)
+            os.fsync(fd)
+            if _before_replace is not None:
+                os.fchmod(fd, mode)
+                staged_identity = os.fstat(fd)
+        finally:
+            os.close(fd)
+        # The legacy three-argument path keeps its exact close/chmod sequence.
+        if _before_replace is None:
+            os.chmod(tmp, mode)
+        else:
+            _publication_stage_checked(staged_identity, tmp.lstat())
+            _before_replace(tmp)
+            _publication_stage_checked(staged_identity, tmp.lstat())
+        os.replace(tmp, target)
     if INJECT_AFTER_RENAME and (INJECT_TARGET is None or str(target) == INJECT_TARGET):
         # The injection is one-shot: it fires on the publication of the named target and
         # never again, so the ROLLBACK of that same target restores it instead of failing
@@ -5838,6 +6096,14 @@ def check_project_inventory(request, previous_input, current_input):
     current_files = current_input["project_files"]
     additions = {f"patches/hermes/{name}-manifest.json" for name in layer_names} | \
                 {f"patches/hermes/{name}.patch" for name in layer_names}
+    if layer_names == (CURRENT_SOURCE_SEVENTY_EIGHTH_LAYER,):
+        helper = CURRENT_SOURCE_SEVENTY_EIGHTH_HELPER
+        require(len(previous_files) == 631 and current_files.keys() - previous_files.keys() == additions
+                and helper in previous_files and helper in current_files
+                and previous_files[helper] != current_files[helper]
+                and all(current_files.get(name) == sha for name, sha in previous_files.items()
+                        if name != helper),
+                "transaction_current_source_seventy_eighth_project_scope_changed")
     if layer_names == (CURRENT_SOURCE_SEVENTY_SEVENTH_LAYER,):
         helper = CURRENT_SOURCE_SEVENTY_SEVENTH_HELPER
         require(len(previous_files) == 629 and current_files.keys() - previous_files.keys() == additions
@@ -6167,6 +6433,10 @@ def read_layers(candidate_root, receipt, home, project_files, layer_names):
     that is applied is provably the reviewed one. The manifest body, the patch bytes and
     the file preimages are then compared with each other, never a file with itself.
     """
+    require_seventy_eighth_source_binding(layer_names, project_files or {})
+    if CURRENT_SOURCE_SEVENTY_EIGHTH_LAYER in layer_names:
+        require(digest(encoded(receipt)) == CURRENT_SOURCE_SEVENTY_EIGHTH_PREVIOUS_RECEIPT_SHA256,
+                "transaction_current_source_seventy_eighth_previous_receipt_changed")
     require_seventy_seventh_source_binding(layer_names, project_files or {})
     if CURRENT_SOURCE_SEVENTY_SEVENTH_LAYER in layer_names:
         require(digest(encoded(receipt)) == CURRENT_SOURCE_SEVENTY_SEVENTH_PREVIOUS_RECEIPT_SHA256,
@@ -6343,6 +6613,9 @@ def read_layers(candidate_root, receipt, home, project_files, layer_names):
                 "transaction_layer_base_commit_changed")
         files = body.get("files")
         require(isinstance(files, list) and files, "transaction_layer_files_required")
+        if name == CURRENT_SOURCE_SEVENTY_EIGHTH_LAYER:
+            require(files == list(CURRENT_SOURCE_SEVENTY_EIGHTH_NATIVE_FILES),
+                    "transaction_current_source_seventy_eighth_native_scope_changed")
         if name == CURRENT_SOURCE_SEVENTY_SEVENTH_LAYER:
             require(files == list(CURRENT_SOURCE_SEVENTY_SEVENTH_NATIVE_FILES),
                     "transaction_current_source_seventy_seventh_native_scope_changed")
@@ -6744,7 +7017,8 @@ def current_source_request_bytes(request, request_path, request_sha256):
                     CURRENT_SOURCE_SEVENTY_FOURTH_SUCCESSOR_SCHEMA,
                     CURRENT_SOURCE_SEVENTY_FIFTH_SUCCESSOR_SCHEMA,
                     CURRENT_SOURCE_SEVENTY_SIXTH_SUCCESSOR_SCHEMA,
-                    CURRENT_SOURCE_SEVENTY_SEVENTH_SUCCESSOR_SCHEMA)
+                    CURRENT_SOURCE_SEVENTY_SEVENTH_SUCCESSOR_SCHEMA,
+                    CURRENT_SOURCE_SEVENTY_EIGHTH_SUCCESSOR_SCHEMA)
                 and set(context) == {"schema", "root_project_update", "previous_native_update"},
                 "transaction_current_source_context_required")
         references = ("root_project_update", "previous_native_update")
@@ -6849,6 +7123,7 @@ def current_source_consumer_checked(value, request, candidate, *, committed=Fals
 def run(request, request_path, request_sha256):
     global INJECT_AFTER_RENAME, INJECT_TARGET, INJECT_SNAPSHOT_DIR, INJECT_SNAPSHOT_FILES
     global INJECT_SNAPSHOT_HOME
+    require_seventy_eighth_source_binding(request.get("layer_names", ()), request=request)
     require_seventy_seventh_source_binding(request.get("layer_names", ()), request=request)
     require_seventy_sixth_source_binding(request.get("layer_names", ()), request=request)
     require_seventy_fifth_source_binding(request.get("layer_names", ()), request=request)
@@ -6953,7 +7228,8 @@ def run(request, request_path, request_sha256):
         CURRENT_SOURCE_SEVENTY_FOURTH_SUCCESSOR_SCHEMA,
         CURRENT_SOURCE_SEVENTY_FIFTH_SUCCESSOR_SCHEMA,
         CURRENT_SOURCE_SEVENTY_SIXTH_SUCCESSOR_SCHEMA,
-        CURRENT_SOURCE_SEVENTY_SEVENTH_SUCCESSOR_SCHEMA)
+        CURRENT_SOURCE_SEVENTY_SEVENTH_SUCCESSOR_SCHEMA,
+        CURRENT_SOURCE_SEVENTY_EIGHTH_SUCCESSOR_SCHEMA)
     forty_third = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_THIRD_SUCCESSOR_SCHEMA
     forty_fourth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_FOURTH_SUCCESSOR_SCHEMA
     forty_fifth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_FIFTH_SUCCESSOR_SCHEMA
@@ -6961,6 +7237,7 @@ def run(request, request_path, request_sha256):
     forty_seventh = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_SEVENTH_SUCCESSOR_SCHEMA
     forty_eighth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_EIGHTH_SUCCESSOR_SCHEMA
     forty_ninth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FORTY_NINTH_SUCCESSOR_SCHEMA
+    seventy_eighth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_SEVENTY_EIGHTH_SUCCESSOR_SCHEMA
     seventy_seventh = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_SEVENTY_SEVENTH_SUCCESSOR_SCHEMA
     seventy_sixth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_SEVENTY_SIXTH_SUCCESSOR_SCHEMA
     seventy_fifth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_SEVENTY_FIFTH_SUCCESSOR_SCHEMA
@@ -6989,7 +7266,7 @@ def run(request, request_path, request_sha256):
     fifty_second = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FIFTY_SECOND_SUCCESSOR_SCHEMA
     fifty_first = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FIFTY_FIRST_SUCCESSOR_SCHEMA
     fiftieth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_FIFTIETH_SUCCESSOR_SCHEMA
-    bound_current = forty_third or forty_fourth or forty_fifth or forty_sixth or forty_seventh or forty_eighth or forty_ninth or fiftieth or fifty_first or fifty_second or fifty_third or fifty_fourth or fifty_fifth or fifty_sixth or fifty_seventh or fifty_eighth or fifty_ninth or sixtieth or sixty_first or sixty_second or sixty_third or sixty_fourth or sixty_fifth or sixty_sixth or sixty_seventh or sixty_eighth or sixty_ninth or seventieth or seventy_first or seventy_second or seventy_third or seventy_fourth or seventy_fifth or seventy_sixth or seventy_seventh
+    bound_current = forty_third or forty_fourth or forty_fifth or forty_sixth or forty_seventh or forty_eighth or forty_ninth or fiftieth or fifty_first or fifty_second or fifty_third or fifty_fourth or fifty_fifth or fifty_sixth or fifty_seventh or fifty_eighth or fifty_ninth or sixtieth or sixty_first or sixty_second or sixty_third or sixty_fourth or sixty_fifth or sixty_sixth or sixty_seventh or sixty_eighth or sixty_ninth or seventieth or seventy_first or seventy_second or seventy_third or seventy_fourth or seventy_fifth or seventy_sixth or seventy_seventh or seventy_eighth
     INJECT_AFTER_RENAME = bool(request.get("inject_after_rename"))
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")
@@ -7061,6 +7338,8 @@ def run(request, request_path, request_sha256):
         native_committed_path, native_committed_raw = require_forty_fifth_predecessor(request, previous_input)
     if forty_sixth:
         native_committed_path, native_committed_raw = require_forty_sixth_predecessor(request, previous_input)
+    if seventy_eighth:
+        native_committed_path, native_committed_raw = require_seventy_eighth_predecessor(request, previous_input)
     if seventy_seventh:
         native_committed_path, native_committed_raw = require_seventy_seventh_predecessor(request, previous_input)
     if seventy_sixth:
@@ -7231,6 +7510,26 @@ def run(request, request_path, request_sha256):
                           ("stamp", "hermes-agent/install-stamp.json")):
             before_pins[str(home / name)] = {"sha256": request[key]["sha256"]}
         require(not request.get("staged_files"), "transaction_v5_unexpected_staged_target")
+        if seventy_eighth:
+            layer = CURRENT_SOURCE_SEVENTY_EIGHTH_LAYER
+            expected_targets = {
+                *(source / row["path"] for row in CURRENT_SOURCE_SEVENTY_EIGHTH_NATIVE_FILES),
+                home / f"patches/hermes/{layer}-manifest.json",
+                home / f"patches/hermes/{layer}.patch",
+                home / CURRENT_SOURCE_SEVENTY_EIGHTH_HELPER,
+                home / "hermes-agent.source.json",
+                home / "FRIDAY-INSTALL.json",
+                home / "hermes-agent/install-stamp.json",
+            }
+            require(set(before_pins) == {str(target) for target in expected_targets},
+                    "transaction_current_source_seventy_eighth_cas_scope_changed")
+            require(before_pins[str(source / "tools/scoped_opc.py")] is None,
+                    "transaction_current_source_seventy_eighth_new_target_preimage_changed")
+            for name, mode in (
+                ('tools/scoped_presentation_merge.py', 0o600),
+                ('tools/scoped_word_report.py', 0o644),
+            ):
+                before_pins[str(source / name)]["mode"] = mode
         if seventy_seventh:
             layer = CURRENT_SOURCE_SEVENTY_SEVENTH_LAYER
             expected_targets = {
@@ -7748,6 +8047,15 @@ def run(request, request_path, request_sha256):
         published.append(target)
         if before_replace is None:
             publish(target, data, mode)
+        elif seventy_eighth and before_pins[key] is None:
+            try:
+                publish(target, data, mode, _before_replace=before_replace, _no_replace=True)
+            except _PublicationDestinationOccupied as conflict:
+                require(conflict.target == target and published[-1] == target,
+                        "transaction_current_source_seventy_eighth_conflict_custody_changed")
+                # The kernel did not promote our inode. Roll back only actual owned writes.
+                published.pop()
+                raise
         else:
             publish(target, data, mode, _before_replace=before_replace)
 
@@ -7939,6 +8247,9 @@ def run(request, request_path, request_sha256):
         if forty_sixth:
             require(owned_file(native_committed_path) == native_committed_raw,
                     "transaction_current_source_forty_sixth_previous_committed_changed")
+        if seventy_eighth:
+            require(owned_file(native_committed_path) == native_committed_raw,
+                    "transaction_current_source_seventy_eighth_previous_committed_changed")
         if seventy_seventh:
             require(owned_file(native_committed_path) == native_committed_raw,
                     "transaction_current_source_seventy_seventh_previous_committed_changed")
@@ -8064,11 +8375,15 @@ def run(request, request_path, request_sha256):
         # added are removed again.
         try:
             journal.restore(published)
-            write_atomic(staging_root / "rolled-back.json", encoded({
+            rollback_record = {
                 "state": "ROLLED_BACK",
                 "published": [str(p) for p in published],
                 "entries": sorted(journal.entries),
-            }), 0o600)
+            }
+            if seventy_eighth and isinstance(original, _PublicationDestinationOccupied):
+                rollback_record["unmodified_conflict"] = str(original.target)
+            if not (seventy_eighth and isinstance(original, StopUnconfirmed)):
+                write_atomic(staging_root / "rolled-back.json", encoded(rollback_record), 0o600)
         except BaseException as restoration:
             if current_context:
                 raise StopUnconfirmed("current source rollback requires reconciliation") from restoration
