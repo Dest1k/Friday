@@ -1,0 +1,673 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -62,6 +62,7 @@
+ 
+ 
+ DOCUMENT_GROUNDING_GUIDANCE = (
++    'PDF layered redaction: read_file pdf_redaction_selectors=true alone with default pagination. Copy the complete opaque carrier_selectors map into drop_carriers only after explicit user confirmation of whole-carrier removal for this SHA. Exact manual names remain supported. No content is returned. '
+     'ODF presentation merge: format=odf_merge, NEW .odp/.otp/.fodp path, content JSON {"sources":["a.odp","b.fodp"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Two distinct own-workspace ODP/OTP/FODP sources; one-based indexes. Keep exactly one chosen slide1 title, then distinct selected slides >=2 in the given order; both sources must contribute. Native selected content/notes/tables/charts/PNG/JPEG is preserved through inline ODF resources; sources are unchanged. Identical global font/style/master/settings structures required. Title-source metadata is retained except derived document statistics. Ambiguous IDs/table names, fragment/external links, animations/forms, page-view settings, unsupported extensions/resources and oversized packages refuse; no Office or visual validation is implied. ' 'PPTX merge: format=pptx_merge, NEW .pptx path, content JSON {"sources":["a.pptx","b.pptx"],"title":{"source":1,"slide":1},"order":[{"source":2,"slide":3},{"source":1,"slide":2}]}. Sources are two distinct own-workspace decks; source and slide are one-based. Slide1 is the declared title of each deck: choose exactly one; order lists distinct slides >=2 in exact output order after that title, and both decks must contribute. Native slide/chart/table/notes/image/theme/layout payloads are retained; source files are unchanged. Same slide size/global text defaults/table styles/global theme and compatible notes masters are required; macros, external links, cross-links to omitted slides, unsupported global structures and oversized packages refuse. No render/Office validation is implied. '
+     'Для сравнения или правки ранее присланного файла сначала установи, какое именно '
+     'пользовательское вложение является исходником. Проверь его фактическое содержимое '
+@@ -270,7 +271,7 @@
+     'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
+     'Protected inert PDF reading: pass the supplied password to read_file; missing/wrong passwords and extraction restrictions refuse. No decrypted file is published; original source hash stays bound. Passwords are not accepted for PDF forms or writes. '
+     'Native PDF text replacement: format=pdf_text_edit into a NEW .pdf, exact JSON {"source":"input.pdf","source_sha256":"<current read_file hash>","page":1,"old_text":"Date 2026-10-31","new_text":"Date 2026-11-01"}. User must explicitly supply both literals; never infer values. One complete Tj string, unique in the document and on the declared one-based page, is replaced. The target uses standard Type1 Courier family for printable ASCII, or Helvetica/Times families when every changed character is a decimal digit; equal codepoint count and identical space positions; StandardEncoding apostrophe/backtick, other target fonts, partial/repeated/split targets and no-ops refuse. Remaining glyphs that could reconstruct old_text also refuse. Only inert standard Type1 ASCII text/graphics with one show then ET, single unfiltered/plain Flate content streams, 1 MB input/output, 64 pages, 4 MB decoded. Retains native unaffected operators, resources, geometry and all other pages without overlay or rasterization. Original unchanged; fresh output omits metadata, unreachable/history objects and comments. Unicode/custom fonts/images, Info/XMP, forms/annotations/actions/attachments/encryption/signatures and unsupported structures refuse. This is a bounded literal edit, not general PDF editing or redaction. '
+-    'Genuine PDF redaction: pdf_redact into a NEW .pdf, exact JSON {"source":"input.pdf","source_sha256":"<current read_file hash>","removals":[{"page":1,"text":"Secret code"}]}. User must explicitly specify the literals; never infer them. A target must be one complete Tj string, unique in the document and on the declared page. Remaining glyphs that could spell a target in any reading order, ignoring whitespace, also refuse. Only inert standard Type1 ASCII text/graphics, one show then ET per text object, single unfiltered/plain Flate content streams. Partial/repeated/split targets, Unicode/custom fonts/images, Info/XMP, forms/annotations/actions/attachments/encryption/signatures refuse. Produces a fresh native PDF with those strings removed, preserving unaffected page operators/resources/geometry; no overlay or rasterization. Source remains unchanged; history and unreachable objects are omitted. 1 MB input/output, 64 pages, 16 targets, 4 MB decoded streams. '
++    'Genuine PDF redaction: pdf_redact into a NEW .pdf, exact JSON {"source":"input.pdf","source_sha256":"<current read_file hash>","removals":[{"page":1,"text":"Secret code"}]}. User must explicitly specify the literals; never infer them. Default targets must each be one complete Tj string, unique in the document and on the declared page. Remaining glyphs that could spell a target in any reading order, ignoring whitespace, also refuse. Default: inert standard Type1 ASCII text/graphics, one show then ET per text object, single unfiltered/plain Flate content streams. The default profile refuses partial/repeated/split targets, Unicode/custom fonts/images, Info/XMP, forms/annotations/actions/attachments/encryption/signatures. Produces a fresh native PDF with those strings removed, preserving unaffected page operators/resources/geometry; no overlay or rasterization. Source remains unchanged; history and unreachable objects are omitted. 1 MB input/output, 64 pages, 16 targets, 4 MB decoded streams.  One passive one-page profile accepts drop_carriers={hidden_layer,image,attachment} only as the complete opaque carrier_selectors map or exact manual names, with explicit permission to remove all three carriers. It requires one visible whole Tj and the same literal in an off layer and the attachment. Report dropped_carriers. Other layered PDFs refuse. '
+     'PDF optimization: format=pdf_optimize, NEW .pdf path, exact JSON {"source":"input.pdf","source_sha256":"<64 lowercase hex from read_file>"}. Native lossless qpdf stream/object compression; page content, resources, geometry/order, document Info and XMP are verified unchanged with bounded decoded graph digests. Original unchanged. Reports before_bytes, after_bytes and smaller/not_smaller; reduction is not guaranteed. Inert PDFs only: unfiltered/plain Flate streams, 1 MB input/output, 64 pages, 4 MB total decoded streams. Other filters/predictors, forms, annotations, links/actions, attachments, encryption, signatures, outlines, layers and unsupported structures refuse. Trailer ID may regenerate; no rasterization. '
+     'PDF comments use pdf_annotate into a NEW .pdf with exact JSON {\"source\":\"input.pdf\",\"source_sha256\":\"<current read_file hash>\",\"annotations\":[{\"page\":1,\"x\":20,\"y\":40,\"text\":\"Comment\"}]}. Pages are one-based; x/y are PDF lower-left user-space points, and the 18-point icon must fit MediaBox intersect CropBox. Unicode text with LF line breaks is supported; at most 32 comments, 32 pages, 1 MB. Original pages, inert annotations and filled forms are preserved. Rotated pages, non-default UserUnit, encryption, actions, attachments, signatures and unsupported structures refuse. No author/signature is invented. '
+     'PDF page assembly uses pdf_pages, a NEW .pdf, and exact JSON {"sources":["a.pdf"],"pages":[{"source":1,"page":1,"rotation":0}]}; one or two own-workspace sources. Source/page are one-based; rotation adds clockwise 0/90/180/270 degrees. Every listed source must contribute, every selected page appears once in requested order, and sources stay unchanged. At most 64 input/output pages and 1 MB per input/output; native page content/resources are retained without rasterization. Document metadata is omitted; annotations, forms, actions, attachments, encryption, signatures, outlines, layers and unsupported document structures refuse. '
+@@ -438,6 +439,7 @@
+         'do not discover or guess a host/profile path.')
+     if function['name'] == 'read_file':
+         function['description'] = (
++            'PDF layered redaction: read_file pdf_redaction_selectors=true alone with default pagination. Copy the complete opaque carrier_selectors map into drop_carriers only after explicit user confirmation of whole-carrier removal for this SHA. Exact manual names remain supported. No content is returned. '
+             'For supported PDF text form metadata, pass pdf_form_fields=true with default pagination. The result lists field names, values and source_sha256 from the exact source snapshot; it is not page text or a full rendering, and does not establish that visible appearances match field values. '
+             'ODM/ODF: read_file returns bounded stored views with PARTIAL coverage and source SHA-256. ODM stays read-only; linked sections and cached text are not resolved or presented as current subdocument content. ODF returns inert MathML nodes with one-based IDs and source annotations, never a computed or rendered equation. Use explicit odf_formula_create or odf_formula_edit for the bounded native formula profile and a NEW .odf path; unsupported variants refuse. No conversion, password support, link fetching or raw text/XML writes. '
+             'Read an own-workspace UTF-8 text file with numbered lines. Use offset, limit and the '
+@@ -531,7 +533,7 @@
+             'TAR archives: format=tar/tar.gz/tar.bz2/tar.xz/tar.zst with entries source/member creates a NEW matching archive; input aliases tgz/tbz2/txz/tzst are recognized. read_file lists checked member names and hashes; format=tar_extract with {source} publishes a NEW directory. archive_convert converts ZIP/7z/TAR families into a NEW supported archive preserving member names and bytes. Links, devices, sparse/unsupported records, unsafe paths and over-limit expansion refuse. Source archives are unchanged; never execute members. '
+     'Single compression: format=gzip/bzip2/xz/zstd with {source} creates a NEW .gz/.bz2/.xz/.zst file. read_file lists one derived member named after the compressed basename minus its final suffix; embedded header filenames are ignored. format=stream_extract with {source} writes that byte-exact member into a NEW folder. It does not render or execute it. Read the returned path separately. Input/output and decoded payload limits are 1000000 bytes, one complete stream only; concatenation, trailing data, unsafe names and over-limit expansion refuse. '
+             'Native PDF text replacement: format=pdf_text_edit into a NEW .pdf, exact JSON {"source":"input.pdf","source_sha256":"<current read_file hash>","page":1,"old_text":"Date 2026-10-31","new_text":"Date 2026-11-01"}. User must explicitly supply both literals; never infer values. One complete Tj string, unique in the document and on the declared one-based page, is replaced. The target uses standard Type1 Courier family for printable ASCII, or Helvetica/Times families when every changed character is a decimal digit; equal codepoint count and identical space positions; StandardEncoding apostrophe/backtick, other target fonts, partial/repeated/split targets and no-ops refuse. Remaining glyphs that could reconstruct old_text also refuse. Only inert standard Type1 ASCII text/graphics with one show then ET, single unfiltered/plain Flate content streams, 1 MB input/output, 64 pages, 4 MB decoded. Retains native unaffected operators, resources, geometry and all other pages without overlay or rasterization. Original unchanged; fresh output omits metadata, unreachable/history objects and comments. Unicode/custom fonts/images, Info/XMP, forms/annotations/actions/attachments/encryption/signatures and unsupported structures refuse. This is a bounded literal edit, not general PDF editing or redaction. '
+-            'Genuine PDF redaction: pdf_redact into a NEW .pdf, exact JSON {"source":"input.pdf","source_sha256":"<current read_file hash>","removals":[{"page":1,"text":"Secret code"}]}. User must explicitly specify the literals; never infer them. A target must be one complete Tj string, unique in the document and on the declared page. Remaining glyphs that could spell a target in any reading order, ignoring whitespace, also refuse. Only inert standard Type1 ASCII text/graphics, one show then ET per text object, single unfiltered/plain Flate content streams. Partial/repeated/split targets, Unicode/custom fonts/images, Info/XMP, forms/annotations/actions/attachments/encryption/signatures refuse. Produces a fresh native PDF with those strings removed, preserving unaffected page operators/resources/geometry; no overlay or rasterization. Source remains unchanged; history and unreachable objects are omitted. 1 MB input/output, 64 pages, 16 targets, 4 MB decoded streams. '
++            'Genuine PDF redaction: pdf_redact into a NEW .pdf, exact JSON {"source":"input.pdf","source_sha256":"<current read_file hash>","removals":[{"page":1,"text":"Secret code"}]}. User must explicitly specify the literals; never infer them. Default targets must each be one complete Tj string, unique in the document and on the declared page. Remaining glyphs that could spell a target in any reading order, ignoring whitespace, also refuse. Default: inert standard Type1 ASCII text/graphics, one show then ET per text object, single unfiltered/plain Flate content streams. The default profile refuses partial/repeated/split targets, Unicode/custom fonts/images, Info/XMP, forms/annotations/actions/attachments/encryption/signatures. Produces a fresh native PDF with those strings removed, preserving unaffected page operators/resources/geometry; no overlay or rasterization. Source remains unchanged; history and unreachable objects are omitted. 1 MB input/output, 64 pages, 16 targets, 4 MB decoded streams.  One passive one-page profile accepts drop_carriers={hidden_layer,image,attachment} only as the complete opaque carrier_selectors map or exact manual names, with explicit permission to remove all three carriers. It requires one visible whole Tj and the same literal in an off layer and the attachment. Report dropped_carriers. Other layered PDFs refuse. '
+             'PDF optimization: format=pdf_optimize, NEW .pdf path, exact JSON {"source":"input.pdf","source_sha256":"<64 lowercase hex from read_file>"}. Native lossless qpdf stream/object compression; page content, resources, geometry/order, document Info and XMP are verified unchanged with bounded decoded graph digests. Original unchanged. Reports before_bytes, after_bytes and smaller/not_smaller; reduction is not guaranteed. Inert PDFs only: unfiltered/plain Flate streams, 1 MB input/output, 64 pages, 4 MB total decoded streams. Other filters/predictors, forms, annotations, links/actions, attachments, encryption, signatures, outlines, layers and unsupported structures refuse. Trailer ID may regenerate; no rasterization. '
+             'PDF comments use pdf_annotate into a NEW .pdf with exact JSON {\"source\":\"input.pdf\",\"source_sha256\":\"<current read_file hash>\",\"annotations\":[{\"page\":1,\"x\":20,\"y\":40,\"text\":\"Comment\"}]}. Pages are one-based; x/y are PDF lower-left user-space points, and the 18-point icon must fit MediaBox intersect CropBox. Unicode text with LF line breaks is supported; at most 32 comments, 32 pages, 1 MB. Original pages, inert annotations and filled forms are preserved. Rotated pages, non-default UserUnit, encryption, actions, attachments, signatures and unsupported structures refuse. No author/signature is invented. '
+             'PDF page assembly: pdf_pages into a NEW .pdf, exact JSON {"sources":["a.pdf"],"pages":[{"source":1,"page":1,"rotation":0}]}; one or two own-workspace sources. Source/page are one-based; each selected page occurs once in requested order, and every listed source contributes. Rotation adds clockwise 0/90/180/270 degrees. At most 64 input/output pages and 1 MB per input/output. Native page content/resources are preserved without rasterization, sources stay unchanged and document metadata is omitted. Forms, annotations, links/actions, attachments, encryption, signatures, outlines, layers and unsupported structures refuse. '
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -421,6 +421,9 @@
+ 
+ 
+ def guard_tool(name, args, registry_scope=None, *, execution=True):
++    if (name == 'read_file' and isinstance(args, dict)
++            and type(args.get('pdf_redaction_selectors', False)) is not bool):
++        raise ScopeDenied()
+     from hermes_cli.friday_credential_admission import session_artifact_tool, ordinary_readonly_tool, CredentialDenied
+     try:
+         ordinary_readonly_tool(name,args)
+@@ -828,10 +831,11 @@
+     from hermes_cli.friday_credential_admission import session_artifact_file, ordinary_readonly_file, CredentialDenied
+     from tools.binary_extensions import UNSUPPORTED_CONTAINER_EXTENSIONS
+     png_table_headings = args.get('png_table_headings', False) if name == 'read_file' else False
+-    if type(png_table_headings) is not bool:
++    pdf_redaction_selectors = args.get('pdf_redaction_selectors', False) if name == 'read_file' else False
++    if type(png_table_headings) is not bool or type(pdf_redaction_selectors) is not bool:
+         raise ScopeDenied()
+     try:
+-        if png_table_headings:
++        if png_table_headings or pdf_redaction_selectors:
+             from hermes_cli.friday_credential_admission import ordinary_readonly_tool, session_artifact_tool
+             if ordinary_readonly_tool(name,args) or session_artifact_tool(name,args):
+                 raise ScopeDenied()
+@@ -875,6 +879,17 @@
+             # is actionable. Parent, link, ownership and policy failures keep
+             # the generic refusal; never resolve a basename to another upload.
+             pagination = (args.get('offset', 1), args.get('limit', 2000), args.get('char_offset', 0))
++            if pdf_redaction_selectors:
++                if (path.suffix.lower() != '.pdf' or png_table_headings
++                        or any(type(value) is not int for value in pagination)
++                        or pagination != (1, 2000, 0)
++                        or args.get('archive_parts') is not None
++                        or args.get('password') is not None
++                        or args.get('pdf_signatures', False) is not False
++                        or args.get('pdf_form_fields', False) is not False):
++                    raise ScopeDenied()
++                from hermes_cli.friday_workspace_pdf_redact import read_selectors
++                return read_selectors(cap, path.as_posix())
+             if png_table_headings:
+                 from hermes_cli.friday_workspace_raster import RULED_IMAGE_SUFFIXES, read_ruled_headings
+                 if (path.suffix.lower() not in RULED_IMAGE_SUFFIXES
+--- a/hermes_cli/friday_workspace_pdf_redact.py
++++ b/hermes_cli/friday_workspace_pdf_redact.py
+@@ -1,6 +1,23 @@
+ """Create-only genuine PDF redaction with source hash and workspace CAS."""
+ import hashlib
+ import json
++
++
++def read_selectors(cap, relative):
++    from hermes_cli.friday_workspace_zip import _path, _source, _verify, _inline_budget, _fits, _capacity, _encode
++    from tools.scoped_pdf_redact import discover_layered_carriers, PDFRedactError
++
++    path = _path(relative)
++    state = (path, *_source(cap, path))
++    digest = hashlib.sha256(state[1]).hexdigest()
++    try:
++        result = discover_layered_carriers(cap, state[1], digest)
++    except PDFRedactError as error:
++        return _encode(dict(success=False, error='pdf_redaction_selectors_refused', reason=str(error),
++                            effect_disposition='unknown' if str(error)=='pdf_cleanup_unconfirmed' else 'none'))
++    _verify(cap, [state])
++    budget = _inline_budget()
++    return _encode(result) if _fits(result, budget) else _capacity(budget)
+ 
+ 
+ def create(cap, fd, leaf, relative, content):
+@@ -14,10 +31,14 @@
+         spec=request(content)
+         path=_path(spec['source'])
+         if not path.lower().endswith('.pdf'):raise ScopeDenied()
++        marker = spec['removals'][0]['text']
++        if 'drop_carriers' in spec and (marker in path or marker in relative):
++            raise PDFRedactError('pdf_layered_target_in_path')
+         state=(path,*_source(cap,path))
+         if hashlib.sha256(state[1]).hexdigest()!=spec['source_sha256']:
+             raise PDFRedactError('pdf_source_changed')
+-        data,metadata=redact(cap,state[1],spec['source_sha256'],spec['removals'])
++        data,metadata=redact(cap,state[1],spec['source_sha256'],spec['removals'],
++                             drop_carriers=spec.get('drop_carriers'))
+         check(cap)
+         receipt=dict(metadata,source=path,sources_unchanged=True)
+         budget=_inline_budget()
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -777,7 +777,7 @@
+     return count
+ 
+ 
+-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", char_offset: int = 0, pdf_form_fields: bool = False, password: str | None = None, pdf_signatures: bool = False, archive_parts: list[str] | None = None, png_table_headings: bool = False) -> str:
++def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", char_offset: int = 0, pdf_form_fields: bool = False, password: str | None = None, pdf_signatures: bool = False, archive_parts: list[str] | None = None, png_table_headings: bool = False, pdf_redaction_selectors: bool = False) -> str:
+     """Read a file with pagination and line numbers.
+ 
+     Guard order: NT/device-namespace prefix (raw string, no resolution) →
+@@ -792,11 +792,15 @@
+                          pdf_signatures=pdf_signatures, archive_parts=archive_parts)
+         if png_table_headings is not False:
+             arguments['png_table_headings'] = png_table_headings
++        if pdf_redaction_selectors is not False:
++            arguments['pdf_redaction_selectors'] = pdf_redaction_selectors
+         scoped = scoped_file("read_file", arguments, task_id=task_id)
+         if scoped is not None:
+             return scoped
+     except ScopeDenied:
+         return ordinary_tool_error_json("product_user_scope_refused") or json.dumps({"success": False, "error": "product_user_scope_refused"})
++    if pdf_redaction_selectors is not False:
++        return tool_error("pdf_redaction_selectors requires an own-workspace scoped PDF")
+     if png_table_headings is not False:
+         return tool_error("png_table_headings requires an own-workspace scoped ruled PNG")
+     if archive_parts is not None:
+@@ -1695,7 +1699,8 @@
+                  'object matching its schema. '
+                  'No file was read or written by this call.')
+     tid = kw.get("task_id") or "default"
+-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0), pdf_form_fields=args.get("pdf_form_fields", False), password=args.get("password"), pdf_signatures=args.get("pdf_signatures", False), archive_parts=args.get("archive_parts"), png_table_headings=args.get("png_table_headings", False))
++    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0), pdf_form_fields=args.get("pdf_form_fields", False), password=args.get("password"), pdf_signatures=args.get("pdf_signatures", False), archive_parts=args.get("archive_parts"), png_table_headings=args.get("png_table_headings", False),
++                          pdf_redaction_selectors=args.get("pdf_redaction_selectors", False))
+ 
+ 
+ def _handle_write_file(args, **kw):
+@@ -1930,14 +1935,15 @@
+ _PDF_REDACT_GUIDANCE = (
+     'Genuine bounded PDF redaction: format=pdf_redact, NEW .pdf, exact JSON '
+     '{"source":"input.pdf","source_sha256":"<current read_file SHA256>","removals":[{"page":1,"text":"Secret code"}]}. '
+-    'Supply the exact sensitive literals explicitly; do not infer them. Each target must equal one complete Tj text-show string, '
++    'Supply explicit sensitive literals. In the default profile each target must equal one complete Tj string, '
+     'occur exactly once in the document, and be on the declared one-based page. Partial, repeated, split, absent or ambiguously encoded targets refuse. ' 
+     'Also refuses if remaining glyphs anywhere could spell a target in any reading order, ignoring whitespace. '
+-    'Only inert simple text/graphics PDFs: standard Type1 Helvetica/Courier/Times, plain Standard or WinAnsi encoding, printable ASCII, '
++    'Default: inert simple text/graphics PDFs with standard Type1 Helvetica/Courier/Times, plain Standard or WinAnsi encoding, printable ASCII, '
+     'one show per BT/ET with ET immediately after Tj; unfiltered/plain Flate single content streams. '
+-    'No images/XObjects, TJ arrays, embedded/custom fonts, Unicode, annotations/forms/actions/attachments, encryption, signatures, Info/XMP or unsupported structures. '
++    'Default rejects images/XObjects, attachments, TJ arrays, custom fonts, Unicode, forms/actions, encryption, signatures and unknown structures. '
+     'Creates a fresh PDF with target strings removed, retaining native unaffected page operators, resources and geometry; no black overlay or rasterization. '
+     'Original unchanged; source metadata and unreachable/history objects are not copied. 1 MB input/output, 64 pages, 16 targets, 4 MB decoded streams. '
++    ' One passive one-page profile accepts drop_carriers={hidden_layer,image,attachment} only as the complete opaque carrier_selectors map or exact manual names, with explicit permission to remove all three carriers. It requires one visible whole Tj and the same literal in an off layer and the attachment. Report dropped_carriers. Other layered PDFs refuse. '
+ )
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("pdf_redact")
+ WRITE_FILE_SCHEMA["description"] += _PDF_REDACT_GUIDANCE
+@@ -1963,6 +1969,11 @@
+ READ_FILE_SCHEMA["parameters"]["properties"]["pdf_signatures"] = {"type":"boolean","default":False,
+     "description":"Bounded structural signature inventory only; NOT_CRYPTOGRAPHICALLY_VERIFIED. Default pagination; own-workspace PDF only."}
+ READ_FILE_SCHEMA["description"] += _PDF_SIGNATURE_GUIDANCE
++READ_FILE_SCHEMA["parameters"]["properties"]["pdf_redaction_selectors"] = {
++    "type": "boolean", "default": False,
++    "description": ("Use only on a scoped PDF with default pagination. Lists exact whole-carrier selectors, "
++                    "loss and source SHA-256 for the bounded passive profile. Selectors are opaque and source-bound.")
++}
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("pdf_unsigned_copy")
+ WRITE_FILE_SCHEMA["description"] += _PDF_SIGNATURE_GUIDANCE
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _PDF_SIGNATURE_GUIDANCE
+@@ -2279,6 +2290,15 @@
+     'Word page positions. Check extraction coverage and limitations. Header, footer and note '
+     'editing is unsupported; layout and field evaluation are unverified.')
+ 
++READ_FILE_SCHEMA['description'] += (
++    ' Inspect a supported passive layered PDF with pdf_redaction_selectors=true, alone and '
++    'at default pagination. It returns opaque selectors, whole-carrier loss and source SHA-256. '
++    'Ask the user to confirm whole-carrier removal before a separate write.')
++WRITE_FILE_SCHEMA['description'] += (
++    ' For passive layered PDF redaction into a NEW .pdf use format=pdf_redact and JSON '
++    '{source,source_sha256,removals,drop_carriers}. Copy the complete carrier_selectors map unchanged into drop_carriers, '
++    'or use exact manual names. Obtain explicit permission for whole-carrier removal and the exact target literal.')
++
+ 
+ # Preserve the scoped Word macro contract after the compact schema assignments.
+ from hermes_cli.friday_workspace_word_macro import GUIDANCE as _WORD_MACRO_EDIT_GUIDANCE
+--- a/tools/scoped_pdf_pages.py
++++ b/tools/scoped_pdf_pages.py
+@@ -252,7 +252,8 @@
+     return result
+ 
+ 
+-def _objects(lib, C, callback, handle, *, authenticated_encryption=False):
++def _read_graph(lib, C, callback, handle):
++    """Read bounded qpdf JSON. A caller must validate the graph before use."""
+     chunks, size = [], 0
+     def receive(data, count, _):
+         nonlocal size
+@@ -268,6 +269,11 @@
+     graph = value['qpdf'][1]
+     if len(graph) > 4096:
+         raise PDFPagesError('pdf_profile_unsupported')
++    return graph
++
++
++def _objects(lib, C, callback, handle, *, authenticated_encryption=False):
++    graph = _read_graph(lib, C, callback, handle)
+     forbidden = {'/A', '/AA', '/OpenAction', '/JS', '/JavaScript', '/AcroForm', '/XFA',
+                  '/Annots', '/Names', '/EmbeddedFiles', '/EF', '/AF', '/Collection', '/Perms',
+                  '/ByteRange', '/Outlines', '/PageLabels', '/StructTreeRoot', '/OCProperties',
+--- a/tools/scoped_pdf_redact.py
++++ b/tools/scoped_pdf_redact.py
+@@ -1,10 +1,13 @@
+-"""Bounded genuine removal of whole ASCII Tj strings from inert text PDFs.
++"""Bounded genuine redaction in inert text and closed passive layered PDFs.
+ 
+ This deliberately small profile retains native page graphics/resources, not a
+ raster or reconstructed transcript. Each text object ends immediately after its
+ single show operation: emptying that string cannot change later text positions.
++The opt-in layered profile emits a new inert page from selected text operators.
+ """
+ from collections import Counter
++from contextlib import contextmanager
++import base64
+ import hashlib
+ import json
+ import math
+@@ -26,6 +29,39 @@
+ MAX_DECODED = _optimize.MAX_DECODED
+ POLICY = 'fresh_document; metadata_and_unreachable_objects_omitted; exact_whole_Tj_strings_removed'
+ PROFILE = 'inert_standard_type1_ascii_single_show_v1'
++LAYERED_PROFILE = 'passive_single_layer_image_attachment_v1'
++LAYERED_POLICY = 'fresh_native_text_pdf; whole_selected_layer_image_attachment_removed'
++LAYERED_DROPS = {'hidden_layers':1, 'images':1, 'attachments':1}
++SELECTOR_LOSS = ('The selected hidden layer, image and attachment would be removed in full from a separate copy. '
++                 'Confirm whole-carrier removal for this source before writing.')
++
++
++def _valid_carriers(value):
++    return (type(value) is dict and set(value) == {'hidden_layer', 'image', 'attachment'}
++            and all(type(name) is str for name in value.values())
++            and all(re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}', value[key])
++                    for key in ('hidden_layer', 'image'))
++            and bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\.txt', value['attachment'])))
++
++
++def _source_selectors(source_sha256):
++    # Encode the complete source digest. Wrapping distinguishes opaque selectors
++    # from exact manual names, even if a real PDF happens to use a similar name.
++    digest = base64.urlsafe_b64encode(bytes.fromhex(source_sha256)).rstrip(b'=').decode('ascii')
++    return {
++        'hidden_layer': {'selector': 'p11_layer_' + digest},
++        'image': {'selector': 'p11_image_' + digest},
++        'attachment': {'selector': 'p11_attachment_' + digest + '.txt'},
++    }
++
++
++def _selector_receipt(source_sha256):
++    return {
++        'success': True,
++        'source_sha256': source_sha256,
++        'carrier_selectors': _source_selectors(source_sha256),
++        'reconstruction_losses': [SELECTOR_LOSS],
++    }
+ 
+ 
+ def request(content):
+@@ -38,7 +74,8 @@
+     try:
+         if type(content) is not str or len(content.encode('utf-8')) > 16000: raise ValueError()
+         s = json.loads(content, object_pairs_hook=pairs)
+-        if (type(s) is not dict or set(s) != {'source','source_sha256','removals'}
++        if (type(s) is not dict or set(s) not in (
++                    {'source','source_sha256','removals'}, {'source','source_sha256','removals','drop_carriers'})
+                 or type(s['source']) is not str or not s['source'] or len(s['source'].encode()) > 512
+                 or type(s['source_sha256']) is not str or not re.fullmatch('[0-9a-f]{64}',s['source_sha256'])
+                 or type(s['removals']) is not list or not 1 <= len(s['removals']) <= 16): raise ValueError()
+@@ -49,6 +86,11 @@
+                     or not re.fullmatch('[\x20-\x7e]{1,256}', row['text']) or not row['text'].strip()
+                     or row['text'] in seen): raise ValueError()
+             seen.add(row['text'])
++        if 'drop_carriers' in s:
++            drops = s['drop_carriers']
++            if (len(s['removals']) != 1 or s['removals'][0]['page'] != 1
++                    or not (_valid_carriers(drops) or drops == _source_selectors(s['source_sha256']))):
++                raise ValueError()
+         return s
+     except (ValueError, UnicodeError, RecursionError):
+         raise PDFRedactError('pdf_request_invalid') from None
+@@ -69,11 +111,11 @@
+     return fn(cap,work,count)
+ 
+ 
+-def redact(cap,source,source_sha256,removals):
++@contextmanager
++def _worker(cap, source, spec, *, result_limit=32000):
+     from hermes_cli.friday_workspace_revision import check
+     from tools.scoped_pdf_ocr import _private_read, LocalOCRFailure
+-    s=request(json.dumps(dict(source='input0.pdf',source_sha256=source_sha256,removals=removals)))
+-    if type(source) is not bytes or not 0<len(source)<=MAX_BYTES or hashlib.sha256(source).hexdigest()!=source_sha256:
++    if type(source) is not bytes or not 0<len(source)<=MAX_BYTES or hashlib.sha256(source).hexdigest()!=spec['source_sha256']:
+         raise PDFRedactError('pdf_source_changed')
+     try:
+         libpath=Path(_pages.LIBRARY).resolve(strict=True); info=libpath.stat()
+@@ -85,20 +127,46 @@
+         work.chmod(0o700)
+         files={'runner.py':Path(__file__).read_bytes(),'scoped_pdf_pages.py':Path(_pages.__file__).read_bytes(),
+                'scoped_pdf_optimize.py':Path(_optimize.__file__).read_bytes(),
+-               'request.json':json.dumps(s).encode(),'input0.pdf':source}
++               'request.json':json.dumps(spec).encode(),'input0.pdf':source}
+         for name,data in files.items(): (work/name).write_bytes(data); (work/name).chmod(0o600)
+         _run(cap,work,1)
+-        result=json.loads(_private_read(work/'result.json',32000))
++        result=json.loads(_private_read(work/'result.json', result_limit))
+         if type(result) is dict and set(result)=={'error'}:
+             allowed={'pdf_malformed_or_unsupported','pdf_profile_unsupported','pdf_page_limit','pdf_output_limit',
+                      'pdf_engine_unavailable','pdf_verification_failed','pdf_stream_filter_unsupported',
+                      'pdf_decoded_limit','pdf_source_changed','pdf_target_absent_or_ambiguous'}
+-            raise PDFRedactError(result['error'] if result['error'] in allowed else 'pdf_engine_failed')
++            raise PDFRedactError(result['error'] if type(result['error']) is str and result['error'] in allowed else 'pdf_engine_failed')
++        yield work, result
++    except (OSError,LocalOCRFailure,json.JSONDecodeError): raise PDFRedactError('pdf_engine_failed') from None
++    finally:
++        try: shutil.rmtree(work)
++        except OSError:
++            from agent.web_call_context import _current
++            call=_current.get()
++            if call is not None and hasattr(call,'agent'): call.agent._friday_reply_effect_unknown=True
++            raise PDFRedactError('pdf_cleanup_unconfirmed') from None
++
++
++def redact(cap,source,source_sha256,removals,*,drop_carriers=None):
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_pdf_ocr import _private_read
++    spec = dict(source='input0.pdf',source_sha256=source_sha256,removals=removals)
++    if drop_carriers is not None:
++        spec['drop_carriers'] = drop_carriers
++    s = request(json.dumps(spec))
++    with _worker(cap, source, s) as (work, result):
+         data=_private_read(work/'output.pdf',MAX_BYTES)
+         keys={'pages','engine','profile','metadata_policy','rasterized','removed_strings','source_sha256',
+               'before_bytes','after_bytes','verified_page_graph_sha256'}
++        profile, policy = PROFILE, POLICY
++        if drop_carriers is not None:
++            keys.add('dropped_carriers')
++            profile, policy = LAYERED_PROFILE, LAYERED_POLICY
+         if (type(result) is not dict or set(result)!=keys or result['engine']!='libqpdf-12.3.2'
+-                or result['profile']!=PROFILE or result['metadata_policy']!=POLICY or result['rasterized'] is not False
++                or result['profile']!=profile or result['metadata_policy']!=policy or result['rasterized'] is not False
++                or (drop_carriers is not None and (result['pages'] != 1
++                    or result['dropped_carriers'] != LAYERED_DROPS
++                    or any(type(value) is not int for value in result['dropped_carriers'].values())))
+                 or result['removed_strings']!=len(removals) or result['source_sha256']!=source_sha256
+                 or type(result['pages']) is not int or not 1<=result['pages']<=MAX_PAGES
+                 or result['before_bytes']!=len(source) or result['after_bytes']!=len(data)
+@@ -108,14 +176,19 @@
+             raise PDFRedactError('pdf_verification_failed')
+         check(cap)
+         return data,result
+-    except (OSError,LocalOCRFailure,json.JSONDecodeError): raise PDFRedactError('pdf_engine_failed') from None
+-    finally:
+-        try: shutil.rmtree(work)
+-        except OSError:
+-            from agent.web_call_context import _current
+-            call=_current.get()
+-            if call is not None and hasattr(call,'agent'): call.agent._friday_reply_effect_unknown=True
+-            raise PDFRedactError('pdf_cleanup_unconfirmed') from None
++
++
++def discover_layered_carriers(cap, source, source_sha256):
++    from hermes_cli.friday_workspace_revision import check
++
++    spec = {'mode': 'discover_layered_carriers', 'source_sha256': source_sha256}
++    with _worker(cap, source, spec, result_limit=2048) as (work, result):
++        receipt = _selector_receipt(source_sha256)
++        if (os.path.lexists(work / 'output.pdf') or type(result) is not dict
++                or result != receipt or result['success'] is not True):
++            raise PDFRedactError('pdf_verification_failed')
++        check(cap)
++        return receipt
+ 
+ 
+ # A closed PDF content grammar. Comments are discarded; every retained operand
+@@ -353,6 +426,236 @@
+     return pages,allstrings,allmatches
+ 
+ 
++def _layered_plan(lib, C, callback, handle, spec=None):
++    """Validate one closed passive graph for discovery or for a selected redaction."""
++    check = lambda name, *args: _pages._checked(lib, handle, name, *args)
++    if check('qpdf_is_encrypted') or check('qpdf_get_num_pages') != 1:
++        raise PDFRedactError('pdf_profile_unsupported')
++    graph = _pages._read_graph(lib, C, callback, handle)
++    seen = {'trailer'}
++
++    def require(condition):
++        if not condition:
++            raise PDFRedactError('pdf_profile_unsupported')
++
++    def member(ref, field):
++        require(type(ref) is str and re.fullmatch(r'[1-9][0-9]{0,3} 0 R', ref))
++        key = 'obj:' + ref
++        require(key not in seen and type(graph.get(key)) is dict and set(graph[key]) == {field})
++        seen.add(key)
++        return graph[key][field]
++
++    def exact(value, keys):
++        require(type(value) is dict and set(value) == set(keys))
++        return value
++
++    def one_resource(mapping):
++        require(type(mapping) is dict and len(mapping) == 1)
++        name, ref = next(iter(mapping.items()))
++        require(type(name) is str and name.startswith('/'))
++        return name, ref
++
++    def stream(ref, fields, limit):
++        attrs = exact(member(ref, 'stream'), ('dict',))['dict']
++        require(type(attrs) is dict and set(attrs) - {'/Length'} == set(fields))
++        # Only embedded unfiltered streams in this profile. Never resolve an external stream file.
++        buf, length, filtered = C.c_void_p(), C.c_size_t(), C.c_int()
++        try:
++            oid = int(ref.split()[0])
++            obj = check('qpdf_get_object_by_id', oid, 0)
++            require(not check('qpdf_oh_get_stream_data', obj, 0, C.byref(filtered), C.byref(buf), C.byref(length)))
++            require(0 < length.value <= limit)
++            if '/Length' in attrs:
++                require(type(attrs['/Length']) is int and attrs['/Length'] == length.value)
++            return attrs, C.string_at(buf, length.value)
++        finally:
++            lib.qpdf_oh_free_buffer(C.byref(buf))
++
++    trailer = exact(exact(graph.get('trailer'), ('value',))['value'], ('/Root', '/Size'))
++    root = exact(member(trailer['/Root'], 'value'), ('/Type', '/Pages', '/OCProperties', '/Names'))
++    require(root['/Type'] == '/Catalog')
++    tree = exact(member(root['/Pages'], 'value'), ('/Type', '/Kids', '/Count'))
++    require(tree['/Type'] == '/Pages' and type(tree['/Count']) is int and tree['/Count'] == 1
++            and type(tree['/Kids']) is list and len(tree['/Kids']) == 1)
++    page = exact(member(tree['/Kids'][0], 'value'), ('/Type', '/Parent', '/MediaBox', '/Resources', '/Contents'))
++    require(page['/Type'] == '/Page' and page['/Parent'] == root['/Pages'])
++    box = page['/MediaBox']
++    require(type(box) is list and len(box) == 4 and all(type(n) is int for n in box)
++            and box[:2] == [0, 0] and all(1 <= n <= 1440 for n in box[2:]))
++    width, height = box[2:]
++    resources = exact(page['/Resources'], ('/Font', '/Properties', '/XObject'))
++    fonts = exact(resources['/Font'], ('/F1',))
++    require(member(fonts['/F1'], 'value') == {'/Type':'/Font', '/Subtype':'/Type1', '/BaseFont':'/Helvetica'})
++
++    hidden, ocg = one_resource(resources['/Properties'])
++    require(member(ocg, 'value') == {'/Type':'/OCG', '/Name':'u:' + hidden[1:]})
++    require(root['/OCProperties'] == {'/OCGs':[ocg], '/D':{'/BaseState':'/ON', '/OFF':[ocg]}})
++
++    image, image_ref = one_resource(resources['/XObject'])
++    attrs, image_bytes = stream(image_ref, ('/Type','/Subtype','/Width','/Height','/ColorSpace','/BitsPerComponent'), 8192)
++    columns, rows = attrs['/Width'], attrs['/Height']
++    require(attrs['/Type'] == '/XObject' and attrs['/Subtype'] == '/Image' and attrs['/ColorSpace'] == '/DeviceGray'
++            and type(attrs['/BitsPerComponent']) is int and attrs['/BitsPerComponent'] == 1
++            and type(columns) is int and type(rows) is int and 1 <= columns <= 512 and 1 <= rows <= 128
++            and len(image_bytes) == ((columns + 7) // 8) * rows)
++
++    files = exact(root['/Names'], ('/EmbeddedFiles',))['/EmbeddedFiles']
++    names = exact(files, ('/Names',))['/Names']
++    require(type(names) is list and len(names) == 2
++            and type(names[0]) is str and names[0].startswith('u:'))
++    filename = names[0]
++    drops = {'hidden_layer': hidden[1:], 'image': image[1:], 'attachment': filename[2:]}
++    require(_valid_carriers(drops))
++    if spec is not None:
++        selected = spec['drop_carriers']
++        require(selected == drops or selected == _source_selectors(spec['source_sha256']))
++    attachment = exact(member(names[1], 'value'), ('/Type', '/F', '/EF'))
++    require(attachment['/Type'] == '/Filespec' and attachment['/F'] == filename)
++    embedded = exact(attachment['/EF'], ('/F',))['/F']
++    attrs, payload = stream(embedded, ('/Type',), 1024)
++    target = payload.removesuffix(b'\n')
++    require(attrs['/Type'] == '/EmbeddedFile' and re.fullmatch(rb'[ -~]{1,256}', target)
++            and target.strip())
++    if spec is not None:
++        require(target == spec['removals'][0]['text'].encode())
++
++    _, content = stream(page['/Contents'], (), 65536)
++    require(seen == set(graph) and type(trailer['/Size']) is int and 10 <= trailer['/Size'] <= 4097)
++    require(not check('qpdf_check_pdf'))
++
++    def values(block):
++        return [value for _, value, _ in block]
++
++    def is_operator(token, name):
++        return token[:2] == ('op', name)
++
++    def text(block):
++        # Independently positioned ASCII Helvetica. No preceding graphics or text state.
++        require([kind for kind, _, _ in block] ==
++                ['op','name','number','op','number','number','op','string','op','op'])
++        op, font, size, tf, x, y, td, visible, show, end = values(block)
++        require((op, font, tf, td, show, end) == ('BT','/F1','Tf','Td','Tj','ET') and 1 <= size <= 32)
++        data = b' '.join(token[2] for token in block)
++        normalized, strings, matches = _content(data, {'/F1':'standard'}, (target,))
++        require(strings == [visible])
++        # Reject an image in any visible text band. No glyph width inference.
++        bounds = (y - size, y + 1.5 * size)
++        require(0 <= x < width and 0 <= bounds[0] < bounds[1] <= height)
++        return normalized.rstrip(b'\n'), strings[0], bool(matches), bounds
++
++    block = None
++    kept, retained, text_bounds = [], [], []
++    hidden_count, visible_hits, image_bounds = 0, 0, None
++    for token in _tokens(content):
++        if block is None:
++            require(is_operator(token, 'q'))
++            block = []
++        elif not is_operator(token, 'Q'):
++            require(not is_operator(token, 'q') and len(block) < 16)
++            block.append(token)
++        else:
++            if [t[:2] for t in block[:3]] == [('name','/OC'),('name',hidden),('op','BDC')]:
++                require(is_operator(block[-1], 'EMC'))
++                _, literal, hit, _ = text(block[3:-1])
++                require(hit and literal == target)
++                hidden_count += 1
++            elif block and is_operator(block[-1], 'Do'):
++                require(image_bounds is None
++                        and [kind for kind, _, _ in block] == ['number'] * 6 + ['op','name','op'])
++                w, skew_x, skew_y, h, x, y, cm, ref, _ = values(block)
++                require(cm == 'cm' and ref == image and skew_x == skew_y == 0
++                        and 0 <= x < x + w <= width and 0 <= y < y + h <= height)
++                image_bounds = (x, y, x + w, y + h)
++            else:
++                operations, literal, hit, bounds = text(block)
++                text_bounds.append(bounds)
++                if hit:
++                    visible_hits += 1
++                else:
++                    retained.append(literal)
++                    kept.append(b'q ' + operations + b' Q')
++            block = None
++    require(block is None and image_bounds is not None and hidden_count == 1 and visible_hits == 1
++            and any(line.strip() for line in retained))
++    _, y0, _, y1 = image_bounds
++    require(all(top <= y0 or bottom >= y1 for bottom, top in text_bounds))
++    if _residual_ambiguous(retained, (target,)):
++        raise PDFRedactError('pdf_target_absent_or_ambiguous')
++    return drops, target, width, height, b'\n'.join(kept) + b'\n', retained
++
++
++def _discover_in_child(lib, C, callback, handle, source_sha256):
++    _, target, width, height, content, _ = _layered_plan(lib, C, callback, handle)
++    receipt = _selector_receipt(source_sha256)
++    normalized_target = re.sub(rb'[^a-z0-9]', b'', target.lower())
++    wire = json.dumps(receipt, ensure_ascii=True, separators=(',', ':')).encode()
++    values = ''.join((json.dumps(receipt['success']), source_sha256,
++                      *(row['selector'] for row in receipt['carrier_selectors'].values()),
++                      SELECTOR_LOSS)).encode()
++    if (not normalized_target or b'%%EOF' in content
++            or any(normalized_target in re.sub(rb'[^a-z0-9]', b'', value.lower())
++                   for value in (wire, values))):
++        raise PDFRedactError('pdf_profile_unsupported')
++    # Check the existing write-time raw marker constraint without creating or
++    # publishing PDF bytes. Scan the deterministic stream across chunk boundaries.
++    tail = b''
++    for chunk in _text_pdf_chunks(width, height, content):
++        if target in tail + chunk:
++            raise PDFRedactError('pdf_profile_unsupported')
++        tail = (tail + chunk)[-(len(target) - 1):] if len(target) > 1 else b''
++    return receipt
++
++
++def _text_pdf_chunks(width, height, content):
++    """Yield PDF chunks using only validated geometry and kept text operations."""
++    objects = (
++        b'<< /Type /Catalog /Pages 2 0 R >>',
++        b'<< /Type /Pages /Count 1 /Kids [3 0 R] >>',
++        (f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] '
++         '/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>').encode(),
++        f'<< /Length {len(content)} >>\nstream\n'.encode() + content + b'endstream',
++        b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
++    )
++    header = b'%PDF-1.4\n'
++    yield header
++    position, offsets = len(header), []
++    for number, data in enumerate(objects, 1):
++        offsets.append(position)
++        chunk = f'{number} 0 obj\n'.encode() + data + b'\nendobj\n'
++        position += len(chunk)
++        yield chunk
++    count = len(objects) + 1
++    yield f'xref\n0 {count}\n0000000000 65535 f \n'.encode()
++    for offset in offsets:
++        yield f'{offset:010d} 00000 n \n'.encode()
++    yield f'trailer\n<< /Size {count} /Root 1 0 R >>\nstartxref\n{position}\n%%EOF\n'.encode()
++
++
++def _fresh_text_pdf(width, height, content):
++    return b''.join(_text_pdf_chunks(width, height, content))
++
++
++def _layered_result(lib, C, callback, create, source, spec, handle):
++    _, target, width, height, content, kept = _layered_plan(lib, C, callback, handle, spec)
++    output = _fresh_text_pdf(width, height, content)
++    if not 0 < len(output) <= MAX_BYTES:
++        raise PDFRedactError('pdf_output_limit')
++    path = Path('/work/output.pdf')
++    path.write_bytes(output)
++    verify = create()
++    if _pages._checked(lib, verify, 'qpdf_read', os.fsencode(path), None):
++        raise PDFRedactError('pdf_verification_failed')
++    actual, retained, found = _inspect(lib, C, callback, verify, verify=True)
++    if (len(actual) != 1 or retained != kept or found or _residual_ambiguous(retained, (target,))
++            or target in output or output.count(b'%%EOF') != 1):
++        raise PDFRedactError('pdf_verification_failed')
++    states = [page['state'] for page in actual]
++    return dict(pages=1, engine='libqpdf-12.3.2', profile=LAYERED_PROFILE, metadata_policy=LAYERED_POLICY,
++                rasterized=False, removed_strings=1, source_sha256=spec['source_sha256'],
++                before_bytes=len(source), after_bytes=len(output), dropped_carriers=LAYERED_DROPS,
++                verified_page_graph_sha256=hashlib.sha256(json.dumps(states,sort_keys=True).encode()).hexdigest())
++
++
+ def _child():
+     import resource
+     os.umask(0o077);os.sched_setaffinity(0,sorted(os.sched_getaffinity(0))[:2])
+@@ -367,10 +670,31 @@
+         for n,a in [('qpdf_silence_errors',()),('qpdf_set_suppress_warnings',(1,)),('qpdf_set_attempt_recovery',(0,))]:_pages._checked(lib,h,n,*a)
+         return h
+     try:
+-        s=request(Path('/work/request.json').read_text());source=Path('/work/input0.pdf').read_bytes()
++        control = Path('/work/request.json').read_text()
++        try:
++            mode = json.loads(control)
++        except (ValueError, RecursionError):
++            raise PDFRedactError('pdf_request_invalid') from None
++        discovery = (type(mode) is dict and mode.get('mode') == 'discover_layered_carriers')
++        if discovery:
++            if (set(mode) != {'mode', 'source_sha256'} or type(mode['source_sha256']) is not str
++                    or not re.fullmatch('[0-9a-f]{64}', mode['source_sha256'])):
++                raise PDFRedactError('pdf_request_invalid')
++            s = mode
++        else:
++            s = request(control)
++        source = Path('/work/input0.pdf').read_bytes()
+         if not 0<len(source)<=MAX_BYTES or hashlib.sha256(source).hexdigest()!=s['source_sha256']:raise PDFRedactError('pdf_source_changed')
+         h=create()
+         if _pages._checked(lib,h,'qpdf_read',b'/work/input0.pdf',None):raise PDFRedactError('pdf_malformed_or_unsupported')
++        if discovery:
++            result = _discover_in_child(lib, C, callback, h, s['source_sha256'])
++            Path('/work/result.json').write_text(json.dumps(result))
++            return
++        if 'drop_carriers' in s:
++            result = _layered_result(lib, C, callback, create, source, s, h)
++            Path('/work/result.json').write_text(json.dumps(result))
++            return
+         targets=[row['text'].encode() for row in s['removals']]
+         expected,strings,matches=_inspect(lib,C,callback,h,targets)
+         if sorted(matches)!=sorted((row['page'],row['text'].encode()) for row in s['removals']):raise PDFRedactError('pdf_target_absent_or_ambiguous')
