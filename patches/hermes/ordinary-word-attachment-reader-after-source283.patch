@@ -1,0 +1,52 @@
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -2609,10 +2609,18 @@
+ 
+ 
+ def _build_document_context_note(
+-    display_name: str, agent_path: str, mtype: str, *, content_inlined: bool = True) -> str:
+-    """Context note prepended to a user turn when they attach a document.
+-    ``content_inlined=False`` = cached without content, so tell the agent to read it. Binary docs must
+-    say *extract* the text; "ask the user" made it punt."""
++    display_name: str, agent_path: str, mtype: str, *, content_inlined: bool = True,
++    scoped_word_reader: bool = False,
++) -> str:
++    """Context note prepended to a user turn when they attach a document."""
++    if scoped_word_reader:
++        return (
++            f"[The user sent a document: '{display_name}'. It is saved at: {agent_path}. "
++            "Its text is not inlined here (the file is stored as an attachment). "
++            "If the request depends on the document contents and "
++            "read_file is available, use it with that relative path and continue every partial result. "
++            "For review requests, distinguish original and final text, pending changes and comments. "
++            "Report any unavailable content or review_gaps.]")
+     if mtype.startswith("text/") and content_inlined:
+         return (
+             f"[The user sent a text document: '{display_name}'. Its content has been included below. "
+diff --git a/gateway/run_inbound.py b/gateway/run_inbound.py
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -1612,11 +1612,21 @@
+             # Every accepted file gets a note — a non-text/non-application MIME (font/*, model/*)
+             # must still tell the agent the file exists.
+             display_name, agent_path = cls._inbound_attachment_display_name(path)
+-            agent_path = owned_attachment_model_path(event, path) or agent_path
++            owned_path = owned_attachment_model_path(event, path)
++            agent_path = owned_path or agent_path
+             display_name = owned_attachment_display_name(event, path) or display_name
+             inline_flag = inline_flags[i] if i < len(inline_flags) else None
++            scoped_word_reader = False
++            if (
++                inline_flag is not True and owned_path
++                and Path(owned_path).suffix.lower() in {'.docx', '.dotx', '.docm', '.dotm'}
++            ):
++                from hermes_cli.friday_user_scope import ordinary_file_scope
++                cap = ordinary_file_scope()
++                scoped_word_reader = cap is not None and 'read_file' in cap.binding['tools']
+             context_note = _build_document_context_note(
+                 display_name, agent_path, mtype, content_inlined=inline_flag is not False,
++                scoped_word_reader=scoped_word_reader,
+             )
+             message_text = f"{context_note}\n\n{message_text}"
+         return message_text
