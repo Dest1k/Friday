@@ -1,0 +1,298 @@
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -1086,6 +1086,19 @@
+             letters = chr(65 + remainder) + letters
+         return f"{letters}{row}"
+ 
++    def add_auto_filter(self, sheet, node, *, table=None):
++        filter_truncation = [len(node) > 128]
++        record = {
++            "attributes": dict(node.attrib),
++            "children": [self._inert_filter_node(child, truncation=filter_truncation)
++                         for child in list(node)[:128]],
++            "children_omitted": max(0, len(node) - 128),
++            "evaluation": "not_evaluated; declarations only; no current visible subset inferred",
++        }
++        if table is not None:
++            record["table"] = table
++        self._structure_add("auto_filter", sheet, record, truncated=filter_truncation[0])
++
+     def add_structure(self, root, sheet, shared, s):
+         self.merge_rectangles = []
+         for row in root.iter(f"{s}row"):
+@@ -1098,14 +1111,7 @@
+             if hidden is not None and hidden.lower() in {"1", "true"}:
+                 self._structure_add("hidden_column", sheet, {"attributes": dict(col.attrib)})
+         for node in root.iter(f"{s}autoFilter"):
+-            filter_truncation = [len(node) > 128]
+-            self._structure_add("auto_filter", sheet, {
+-                "attributes": dict(node.attrib),
+-                "children": [self._inert_filter_node(child, truncation=filter_truncation)
+-                             for child in list(node)[:128]],
+-                "children_omitted": max(0, len(node) - 128),
+-                "evaluation": "not_evaluated; declarations only; no current visible subset inferred",
+-            }, truncated=filter_truncation[0])
++            self.add_auto_filter(sheet, node)
+         merges = root.findall(f"{s}mergeCells/{s}mergeCell")
+         if len(merges) > _MAX_XLSX_MERGE_RANGES:
+             raise ExtractionError("Too many merged-cell ranges")
+@@ -1272,7 +1278,8 @@
+ def _extract_xlsx(path: str, *, max_xml_bytes: Optional[int] = None,
+                   max_total_xml_bytes: Optional[int] = None, include_inventory: bool = False,
+                   sheet_parts: Optional[dict[str, str]] = None,
+-                  shared_strings_part: Optional[str] = 'xl/sharedStrings.xml') -> str:
++                  shared_strings_part: Optional[str] = 'xl/sharedStrings.xml',
++                  table_filters: Optional[dict] = None) -> str:
+     s, r, pr = f"{{{_NS_S}}}", f"{{{_NS_REL}}}", f"{{{_NS_PKG_REL}}}"
+     with _open_zip(path, "XLSX") as zf:
+         names = set(zf.namelist())
+@@ -1322,6 +1329,8 @@
+                     else zf.read(part), shared, formulas=formulas, sheet=sheet.get('name', 'Sheet'))
+                 if formulas is not None:
+                     formulas.sheets["parsed"] += 1
++                    for node, table in (table_filters or {}).get(part, ()):
++                        formulas.add_auto_filter(sheet.get('name', 'Sheet'), node, table=table)
+                 out += [f"# ── Sheet: {sheet.get('name', 'Sheet')} ──",
+                         *(["\t".join(row) for row in rows] or ["(empty)"]), ""]
+             except ET.ParseError:
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -33,6 +33,7 @@
+ MAX_TEXT = 100000
+ MAX_ROWS = 1048576
+ MAX_COLS = 16384
++MAX_READ_OUTPUT = 900000
+ 
+ 
+ class ODSError(ValueError):
+@@ -208,7 +209,7 @@
+                     self.unsupported.add('unread_sheet_structure')
+         return walk(sheet)
+ 
+-    def cells(self, sheet):
++    def cells(self, sheet, *, row_visibility=None):
+         row_number = 1
+         for row in self.rows(sheet):
+             tick(self.checkpoint)
+@@ -216,6 +217,17 @@
+             column = 1
+             if row_number + repeats - 1 > MAX_ROWS:
+                 fail('row_limit')
++            if row_visibility is not None:
++                state = row.get(q(TB, 'visibility'), 'visible')
++                last_row = row_number + repeats - 1
++                if state in ('collapse', 'filter'):
++                    if row_visibility and row_visibility[-1][1:] == (row_number - 1, state):
++                        first_row = row_visibility[-1][0]
++                        row_visibility[-1] = first_row, last_row, state
++                    else:
++                        row_visibility.append((row_number, last_row, state))
++                elif state != 'visible':
++                    self.unsupported.add('unknown_ods_row_visibility')
+             for node in row:
+                 if node.tag not in (q(TB, 'table-cell'), q(TB, 'covered-table-cell')):
+                     self.unsupported.add('unread_row_structure')
+@@ -285,12 +297,29 @@
+ def extract_spreadsheet(data, format='ods', *, checkpoint=None):
+     book = Spreadsheet(data, format, checkpoint)
+     rows = []
++    visibility_by_sheet = []
++    inspect_ods_layout = format == 'ods'
++    if inspect_ods_layout and next(book.body.iter(q(TB, 'filter')), None) is not None:
++        book.unsupported.add('ods_saved_filter_conditions_not_inspected')
+     count = total = 0
+     for sheet in book.sheets:
+         name = sheet.get(q(TB, 'name'))
+         rows.append('[SHEET ' + json.dumps(name, ensure_ascii=False) + ']')
+-        for row, column, height, width, node, _ in book.cells(sheet):
++        row_visibility = [] if inspect_ods_layout else None
++        if inspect_ods_layout and any(
++            group.get(q(TB, 'display'), 'true') != 'true'
++            for group in sheet.iter(q(TB, 'table-row-group'))
++        ):
++            book.unsupported.add('ods_row_group_visibility_not_inspected')
++        for row, column, height, width, node, _ in book.cells(
++            sheet, row_visibility=row_visibility
++        ):
+             value = book.value(node)
++            if inspect_ods_layout and (
++                value.get('covered') or node.get(q(TB, 'number-columns-spanned'))
++                or node.get(q(TB, 'number-rows-spanned'))
++            ):
++                book.unsupported.add('ods_merge_anchors_not_inspected')
+             if value['value'] is None and 'formula' not in value and not value.get('covered'):
+                 continue
+             count += height * width
+@@ -300,9 +329,11 @@
+                 for c in range(column, column + width):
+                     item = '[' + colname(c) + str(r) + ' ' + json.dumps(value, ensure_ascii=False, sort_keys=True) + ']'
+                     total += len(item.encode('utf-8'))
+-                    if total > 900000:
++                    if total > MAX_READ_OUTPUT:
+                         fail('spreadsheet_output_limit')
+                     rows.append(item)
++        if row_visibility:
++            visibility_by_sheet.append((name, row_visibility))
+     charts = []
+     if any(node.get(q(XL, 'href'), '').startswith('./Charts/') for sheet in book.sheets for node in sheet.iter()):
+         from tools.scoped_ods_chart import chart_records
+@@ -313,9 +344,24 @@
+     for chart in charts:
+         item = '[CHART ' + json.dumps(chart, ensure_ascii=False, sort_keys=True) + ']'
+         total += len(item.encode('utf-8'))
+-        if total > 900000:
++        if total > MAX_READ_OUTPUT:
+             fail('spreadsheet_output_limit')
+         rows.append(item)
++    for name, spans in visibility_by_sheet:
++        for first_row, last_row, state in spans:
++            item = '[ROW-VISIBILITY ' + json.dumps({
++                'sheet': name,
++                'first_row': first_row,
++                'last_row': last_row,
++                'stored_state': state,
++            }, sort_keys=True) + ']'
++            total += len(item.encode('utf-8')) + 1
++            if total > MAX_READ_OUTPUT:
++                book.unsupported.add('ods_row_visibility_output_limit')
++                break
++            rows.append(item)
++        if total > MAX_READ_OUTPUT:
++            break
+     metadata = dict(native_container=True, format=format, sheets=len(book.sheets), cells=count,
+                     coverage='native_cells_values_formulas_and_cached_results; drawings_layout_not_covered',
+                     formulas_evaluated=False, unsupported=sorted(book.unsupported))
+--- a/tools/scoped_spreadsheet_profiles.py
++++ b/tools/scoped_spreadsheet_profiles.py
+@@ -1,4 +1,5 @@
+ """Native spreadsheet profiles; immutable bounded bytes, no engine or macro execution."""
++from collections import Counter
+ from copy import deepcopy
+ from decimal import Decimal
+ from io import BytesIO
+@@ -24,6 +25,7 @@
+ WRITABLE = FORMATS - {'xlsm', 'xltm'}
+ VBA_TYPE = 'application/vnd.ms-office.vbaProject'
+ RELS_TYPE = 'application/vnd.openxmlformats-package.relationships+xml'
++TABLE_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml'
+ VBA_REL = 'http://schemas.microsoft.com/office/2006/relationships/vbaProject'
+ # The preserving editor admits a bounded passive worksheet package plus one
+ # opaque VBA project. Other relationships/content types need a separate profile.
+@@ -133,12 +135,15 @@
+                     if not raw.isascii() or not raw.isdecimal() or len(raw) > 8 or int(raw) >= string_count:
+                         fail('shared_string_index')
+         macro_parts = []
++        table_parts = set()
+         for name in book.parts:
+             typ = overrides.get('/'+name, defaults.get(name.rpartition('.')[2].lower(), '')) or ''
+             if name != '[Content_Types].xml' and not typ:
+                 fail('missing_part_content_type')
+             if name.endswith('.rels') and typ != RELS_TYPE:
+                 fail('relationship_content_type')
++            if typ == TABLE_TYPE:
++                table_parts.add(name)
+             if preserve_vba and name != '[Content_Types].xml' and typ not in MACRO_PASSIVE_TYPES | {OOXML[format]}:
+                 fail('unsupported_macro_preservation_part')
+             if 'vba' in typ.lower() or 'vba' in name.lower():
+@@ -191,10 +196,91 @@
+             book.unsupported.add('macro_profile_numeric_edit_only; VBA_opaque_never_executed')
+         book.macro_parts = macro_parts
+         book.sheet_parts = sheet_parts
++        book.table_parts = table_parts
+         book.shared_strings_part = shared_part
+         return book
+     except (PresentationError, zipfile.BadZipFile, ET.ParseError, UnicodeError, EOFError, NotImplementedError, zlib.error) as error:
+         raise ODSError('invalid_spreadsheet_package') from error
++
++
++def _table_filter_info(table, node):
++    name, area = table.get('displayName'), table.get('ref', '')
++    if not name:
++        return None
++
++    def corners(ref):
++        first, separator, last = ref.partition(':')
++        return address(first), address(last if separator else first)
++
++    try:
++        start, (bottom, right) = corners(area)
++        filter_start, (filter_bottom, filter_right) = corners(node.get('ref', ''))
++    except ODSError:
++        return None
++    if (filter_start != start or filter_right != right or right < start[1]
++            or not start[0] <= filter_bottom <= bottom):
++        return None
++    if any(child.tag not in (q(S, 'filterColumn'), q(S, 'sortState')) for child in node):
++        return None
++    if any(not child.tag.startswith(f'{{{S}}}') for child in node.iter()):
++        return None
++    columns = set()
++    for child in node.findall(q(S, 'filterColumn')):
++        col = child.get('colId', '')
++        if re.fullmatch(r'[0-9]{1,5}', col) is None:
++            return None
++        index = int(col)
++        if index > right - start[1] or index in columns:
++            return None
++        columns.add(index)
++    return {'name': name, 'range': area}
++
++
++def _xlsx_table_filters(book, checkpoint):
++    """Use declared sheet attachments and already validated internal package parts."""
++    link_counts = Counter(target for rows in book.relationships.values()
++                          for kind, target in rows.values() if kind == R+'/table')
++    name_counts = Counter(book.xml[part].get('displayName', '').casefold()
++                          for part in book.table_parts if part in book.xml)
++    filters = {}
++    gap = 'table_filter_declarations_incomplete'
++    sheets = book.xml['xl/workbook.xml'].find(q(S, 'sheets'))
++    for sheet in sheets:
++        if sheet.get('state', 'visible') in ('hidden', 'veryHidden'):
++            continue
++        tick(checkpoint)
++        part = book.sheet_parts[sheet.get(q(R, 'id'))]
++        groups = book.xml[part].findall(q(S, 'tableParts'))
++        if not groups:
++            continue
++        if len(groups) != 1:
++            book.unsupported.add(gap)
++            continue
++        group = groups[0]
++        ids = [node.get(q(R, 'id')) for node in group.findall(q(S, 'tablePart'))]
++        size = group.get('count', str(len(ids)))
++        if (len(ids) != len(group) or re.fullmatch(r'[0-9]{1,5}', size) is None
++                or int(size) != len(ids)):
++            book.unsupported.add(gap)
++            continue
++        for rid, count in Counter(ids).items():
++            tick(checkpoint)
++            kind, target = book.relationships.get(part, {}).get(rid, (None, None))
++            table = book.xml.get(target)
++            if (count != 1 or kind != R+'/table' or link_counts[target] != 1
++                    or target not in book.table_parts or table is None or table.tag != q(S, 'table')):
++                book.unsupported.add(gap)
++                continue
++            declared = table.findall(q(S, 'autoFilter'))
++            if len(declared) > 1:
++                book.unsupported.add(gap)
++            elif declared and len(declared[0]):
++                info = _table_filter_info(table, declared[0])
++                if info is None or name_counts[info['name'].casefold()] != 1:
++                    book.unsupported.add(gap)
++                else:
++                    filters.setdefault(part, []).append((declared[0], info))
++    return filters
+ 
+ 
+ def extract_spreadsheet(data, format, *, checkpoint=None):
+@@ -205,7 +291,8 @@
+     from tools.read_extract import _extract_xlsx
+     text = _extract_xlsx(BytesIO(data), max_xml_bytes=1000000, max_total_xml_bytes=1000000,
+                          include_inventory=True, sheet_parts=book.sheet_parts,
+-                         shared_strings_part=book.shared_strings_part)
++                         shared_strings_part=book.shared_strings_part,
++                         table_filters=_xlsx_table_filters(book, checkpoint))
+     metadata = dict(getattr(text, 'extraction_metadata', {}))
+     metadata.update(native_container=True, format=format, formulas_evaluated=False,
+                     macros_executed=False, macro_projects=len(book.macro_parts),
