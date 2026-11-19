@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the complete pinned Hermes source and apply every shipped overlay.
+"""Export the complete pinned Hermes source and apply the selected overlays.
 
 This is the source-preparation step of installation, not runtime admission.
 It never imports a donor module, installs dependencies or starts a service.
@@ -38,7 +38,8 @@ def sha(data):
 
 
 def relative(value):
-    require(isinstance(value, str) and value and "\\" not in value, "invalid_relative_path")
+    require(isinstance(value, str) and value and "\\" not in value
+            and all(ord(char) >= 32 and ord(char) != 127 for char in value), "invalid_relative_path")
     path = PurePosixPath(value)
     require(path.parts and not path.is_absolute() and str(path) == value
             and all(part not in {"..", ".git"} for part in path.parts), "invalid_relative_path")
@@ -134,65 +135,218 @@ def source_identity(repository, donor, budget):
     return source, lock_sha, entries
 
 
-def overlay_layers(repository, commit, budget):
+def overlay_digest(value, reason):
+    require(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value), reason)
+    return value
+
+
+def overlay_files(body):
+    files = body.get("files")
+    if files is None:
+        legacy = body.get("expected_patched_files")
+        require(isinstance(legacy, dict), "invalid_overlay_files")
+        files = []
+        for path, value in legacy.items():
+            require(isinstance(value, dict) and value.get("path", path) == path,
+                    "invalid_overlay_file")
+            files.append(dict(value, path=path))
+    else:
+        require("expected_patched_files" not in body, "conflicting_overlay_file_formats")
+    require(isinstance(files, list) and files, "invalid_overlay_files")
+    expected = {}
+    for value in files:
+        require(isinstance(value, dict), "invalid_overlay_file")
+        row = dict(value)
+        path = relative(row.get("path"))
+        require(path not in expected, "duplicate_overlay_file")
+        overlay_digest(row.get("sha256"), "invalid_overlay_file")
+        require(type(row.get("bytes")) is int and row["bytes"] >= 0, "invalid_overlay_size")
+        if "mode" in row:
+            require(isinstance(row["mode"], str) and row["mode"] in {"100644", "100755"}, "invalid_overlay_mode")
+        if "before_sha256" in row and row["before_sha256"] is not None:
+            overlay_digest(row["before_sha256"], "invalid_overlay_preimage")
+        if "before_bytes" in row:
+            require(type(row["before_bytes"]) is int and row["before_bytes"] >= 0,
+                    "invalid_overlay_preimage")
+        if "before_mode" in row:
+            require(isinstance(row["before_mode"], str) and row["before_mode"] in {"100644", "100755"}, "invalid_overlay_mode")
+        if "new_file" in row:
+            require(type(row["new_file"]) is bool, "invalid_overlay_new_file")
+            if row["new_file"]:
+                require(row.get("before_sha256") is None, "conflicting_overlay_preimage")
+                row["before_sha256"] = None
+            else:
+                require("before_sha256" not in row or row["before_sha256"] is not None,
+                        "conflicting_overlay_preimage")
+        expected[path] = row
+    base = body.get("expected_base_files", {})
+    require(isinstance(base, dict), "invalid_overlay_preimages")
+    for path, pin in base.items():
+        require(relative(path) in expected, "unlisted_overlay_input")
+        row = expected[path]
+        if pin is None:
+            fields = {"before_sha256": None}
+        else:
+            require(isinstance(pin, dict), "invalid_overlay_preimage")
+            fields = {"before_sha256": overlay_digest(pin.get("sha256"), "invalid_overlay_preimage")}
+            if "bytes" in pin:
+                require(type(pin["bytes"]) is int and pin["bytes"] >= 0,
+                        "invalid_overlay_preimage")
+                fields["before_bytes"] = pin["bytes"]
+            if "mode" in pin:
+                require(isinstance(pin["mode"], str) and pin["mode"] in {"100644", "100755"}, "invalid_overlay_mode")
+                fields["before_mode"] = pin["mode"]
+        for key, value in fields.items():
+            require(key not in row or row[key] == value, "conflicting_overlay_preimage")
+            row[key] = value
+    for path, row in expected.items():
+        require(not any(str(parent) in expected for parent in PurePosixPath(path).parents),
+                "overlay_path_ancestry_conflict")
+        if row.get("new_file") is True:
+            require(row.get("before_sha256") is None, "conflicting_overlay_preimage")
+        if row.get("new_file") is False:
+            require("before_sha256" not in row or row["before_sha256"] is not None,
+                    "conflicting_overlay_preimage")
+        if "before_bytes" in row or "before_mode" in row:
+            require(isinstance(row.get("before_sha256"), str), "conflicting_overlay_preimage")
+    return expected
+
+
+def check_overlay_inputs(destination, files):
+    for path, row in files.items():
+        if "before_sha256" not in row:
+            continue  # Older manifests rely on Git's exact patch preimage check.
+        target = destination / path
+        if row["before_sha256"] is None:
+            require(target.parent.resolve() == target.parent, "symlinked_input_parent")
+            try:
+                target.lstat()  # Includes directories and dangling symlinks.
+            except FileNotFoundError:
+                continue
+            raise Refused("overlay_input_already_exists")
+        data, mode = regular(target)
+        require(sha(data) == row["before_sha256"], "overlay_input_changed")
+        if "before_bytes" in row:
+            require(len(data) == row["before_bytes"], "overlay_input_changed")
+        if "before_mode" in row:
+            require(("100755" if mode & 0o111 else "100644") == row["before_mode"],
+                    "overlay_input_mode_changed")
+
+
+def overlay_file_pins(items):
+    pins = {}
+    for name, digest in items:
+        relative(name)
+        require(PurePosixPath(name).parent == PurePosixPath("patches/hermes")
+                and Path(name).suffix in {".json", ".patch"}, "invalid_overlay_selection_path")
+        require(name not in pins, "duplicate_overlay_selection")
+        pins[name] = overlay_digest(digest, "invalid_overlay_selection_hash")
+    require(pins, "empty_overlay_selection")
+    return pins
+
+
+def select_overlays(layers, pins):
+    selected = {}
+    matched = set()
+    for name, layer in layers.items():
+        manifest = layer["manifest"]
+        if manifest not in pins and name not in pins:
+            continue
+        require(pins.get(manifest) == layer["manifest_sha256"]
+                and pins.get(name) == layer["patch_sha256"], "overlay_selection_pair_changed")
+        selected[name] = layer
+        matched.update((manifest, name))
+    require(matched == set(pins), "unknown_overlay_selection")
+    require(all(layer["requires"].keys() <= selected.keys() for layer in selected.values()),
+            "selected_overlay_dependency_missing")
+    return selected
+
+
+def overlay_layers(repository, commit, budget, *, overlay_pins=None):
+    require(overlay_pins is None or type(overlay_pins) is dict, "invalid_overlay_selection")
     folder = repository / "patches/hermes"
     layers = {}
+    manifest_owners = {}
     for manifest in sorted(folder.glob("*.json")):
         body, digest = read_json(manifest)
+        require(isinstance(body, dict), "invalid_overlay_manifest")
         require(body.get("base_commit") == commit, "overlay_base_mismatch")
-        patch_name = body.get("patch") or "patches/hermes/" + body["patch_file"]
+        patch_name = body.get("patch")
+        if patch_name is None:
+            require(isinstance(body.get("patch_file"), str), "invalid_overlay_path")
+            patch_name = "patches/hermes/" + body["patch_file"]
+        elif "patch_file" in body:
+            require(isinstance(body["patch_file"], str)
+                    and patch_name == "patches/hermes/" + body["patch_file"],
+                    "conflicting_overlay_path")
         relative(patch_name)
         require(PurePosixPath(patch_name).parent == PurePosixPath("patches/hermes"),
                 "overlay_path_outside_bundle")
         patch, _ = regular(repository / patch_name)
-        require(sha(patch) == body["patch_sha256"], "overlay_hash_mismatch")
+        require(sha(patch) == overlay_digest(body.get("patch_sha256"), "invalid_overlay_hash"),
+                "overlay_hash_mismatch")
         require(patch_name not in layers, "duplicate_overlay")
-        files = body.get("files")
-        if files is None:
-            files = [dict(value, path=path) for path, value in body["expected_patched_files"].items()]
-        expected = {}
-        for row in files:
-            path = relative(row["path"])
-            require(path not in expected and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]),
-                    "invalid_overlay_file")
-            require(type(row["bytes"]) is int and row["bytes"] >= 0, "invalid_overlay_size")
-            expected[path] = row
-        for path, pin in body.get("expected_base_files", {}).items():
-            require(relative(path) in expected, "unlisted_overlay_input")
-            expected[path] = dict(expected[path], before_sha256=pin["sha256"])
+        expected = overlay_files(body)
         requires = {}
-        if body.get("prerequisite_patch"):
-            requires[relative(body["prerequisite_patch"])] = body["prerequisite_patch_sha256"]
-        for name, pin in body.get("prerequisites", {}).items():
+        if "prerequisite_patch" in body:
+            path = relative(body["prerequisite_patch"])
+            require(path.endswith(".patch"), "overlay_prerequisite_mismatch")
+            requires[path] = overlay_digest(body.get("prerequisite_patch_sha256"),
+                                            "invalid_overlay_prerequisite")
+        prerequisites = body.get("prerequisites", {})
+        require(isinstance(prerequisites, dict), "invalid_overlay_prerequisites")
+        for name, pin in prerequisites.items():
+            relative(name)
             path = relative(name if name.startswith("patches/hermes/") else "patches/hermes/" + name)
+            overlay_digest(pin, "invalid_overlay_prerequisite")
             require(path not in requires or requires[path] == pin, "conflicting_overlay_prerequisite")
             requires[path] = pin
-        # Git parses its own patch format; unsupported binary/rename/deletion
-        # layers refuse instead of accidentally dropping native capabilities.
+        require(all(PurePosixPath(path).parent == PurePosixPath("patches/hermes") for path in requires),
+                "overlay_path_outside_bundle")
+        # Git parses its own patch format; refuse unsupported operations before
+        # any application, including deletion and non-regular file creation.
+        summary = git(repository, ["apply", "--summary", "-"], budget, data=patch)
+        for record in summary.splitlines():
+            require(re.fullmatch(rb" (?:create mode (?:100644|100755) .+|create (?!mode(?: |$)).+|mode change (?:100644|100755) => (?:100644|100755) .+)", record),
+                    "unsupported_patch_operation")
         changed = set()
         for record in git(repository, ["apply", "--numstat", "-z", "-"], budget, data=patch).split(b"\0"):
             if record:
                 added, removed, path = record.decode().split("\t", 2)
                 require(added.isdigit() and removed.isdigit(), "unsupported_patch_operation")
-                changed.add(relative(path))
+                path = relative(path)
+                require(path not in changed, "duplicate_patch_file")
+                changed.add(path)
         require(changed == set(expected), "overlay_file_inventory_mismatch")
-        layers[patch_name] = {"manifest": str(manifest.relative_to(repository)), "manifest_sha256": digest,
+        manifest_name = str(manifest.relative_to(repository))
+        manifest_owners[manifest_name] = patch_name
+        layers[patch_name] = {"manifest": manifest_name, "manifest_sha256": digest,
                              "patch_sha256": sha(patch), "patch": patch, "files": expected,
                              "requires": requires}
     require(set(layers) == {str(p.relative_to(repository)) for p in folder.glob("*.patch")},
             "unmanifested_overlay")
+    paths = {path for layer in layers.values() for path in layer["files"]}
+    require(not any(str(parent) in paths for path in paths for parent in PurePosixPath(path).parents),
+            "overlay_path_ancestry_conflict")
     for value in layers.values():
-        for dependency, pin in value["requires"].items():
+        requires = {}
+        for reference, pin in value["requires"].items():
+            # Historical maps may name a manifest while pinning its owning patch.
+            dependency = manifest_owners.get(reference, reference)
             parent = layers.get(dependency)
             require(parent is not None and parent["patch_sha256"] == pin,
                     "overlay_prerequisite_mismatch")
+            requires[dependency] = pin
+        value["requires"] = requires
     ordered = []
     while len(ordered) < len(layers):
         ready = sorted(key for key, value in layers.items()
                        if key not in ordered and set(value["requires"]) <= set(ordered))
         require(ready, "overlay_dependency_cycle")
         ordered.extend(ready)
-    return [(key, layers[key]) for key in ordered]
+    selected = layers if overlay_pins is None else select_overlays(
+        layers, overlay_file_pins(overlay_pins.items()))
+    return [(key, selected[key]) for key in ordered if key in selected]
 
 
 def source_bytes(donor, name, mode, oid, budget):
@@ -233,11 +387,11 @@ def preparation_budget(seconds):
     return Budget(time.monotonic() + seconds)
 
 
-def compose(repository, donor, destination, *, seconds=120):
-    return _compose(repository, donor, destination, preparation_budget(seconds))
+def compose(repository, donor, destination, *, seconds=120, overlay_pins=None):
+    return _compose(repository, donor, destination, preparation_budget(seconds), overlay_pins=overlay_pins)
 
 
-def _compose(repository, donor, destination, budget):
+def _compose(repository, donor, destination, budget, *, overlay_pins=None):
     repository, donor, destination = map(Path, (repository, donor, destination))
     require(repository.is_absolute() and repository.resolve() == repository, "canonical_bundle_required")
     require(destination.is_absolute() and destination.parent.resolve() == destination.parent,
@@ -248,16 +402,13 @@ def _compose(repository, donor, destination, budget):
             "private_destination_parent_required")
     require(not destination.exists() and not destination.is_symlink(), "fresh_destination_required")
     source, lock_sha, entries = source_identity(repository, donor, budget)
-    layers = overlay_layers(repository, source["commit"], budget)
+    layers = overlay_layers(repository, source["commit"], budget, overlay_pins=overlay_pins)
     budget.remaining()
     destination.mkdir(mode=0o700)  # exclusive; failures retain the partial tree
     expected = export_source(donor, destination, entries, budget)
     applied = []
     for name, layer in layers:
-        for path, row in layer["files"].items():
-            if row.get("before_sha256"):
-                require(sha(regular(destination / path)[0]) == row["before_sha256"],
-                        "overlay_input_changed")
+        check_overlay_inputs(destination, layer["files"])
         git(destination, ["apply", "--check", "--whitespace=nowarn", "-"], budget, data=layer["patch"])
         git(destination, ["apply", "--whitespace=nowarn", "-"], budget, data=layer["patch"])
         for path, row in layer["files"].items():
@@ -287,12 +438,15 @@ def main():
     parser.add_argument("--donor", required=True, type=Path)
     parser.add_argument("--destination", required=True, type=Path)
     parser.add_argument("--seconds", default=120, type=int)
+    parser.add_argument("--overlay-file", nargs=2, action="append", metavar=("PATH", "SHA256"),
+                        help="Pin each selected manifest and its owning patch. Default: all overlays.")
     args = parser.parse_args()
     os.umask(0o077)
     budget = preparation_budget(args.seconds)
     receipt = args.destination.with_name(args.destination.name + ".source.json")
     require(not receipt.exists() and not receipt.is_symlink(), "fresh_receipt_required")
-    result = _compose(args.repository, args.donor, args.destination, budget)
+    pins = overlay_file_pins(args.overlay_file) if args.overlay_file is not None else None
+    result = _compose(args.repository, args.donor, args.destination, budget, overlay_pins=pins)
     serialized = json.dumps(result, indent=2, sort_keys=True) + "\n"
     budget.remaining()
     with receipt.open("x") as stream:

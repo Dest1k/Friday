@@ -118,6 +118,115 @@ class PrepareTests(unittest.TestCase):
         self.save_layer('a-second', self.second)
         self.refuse('overlay_prerequisite_mismatch')
 
+    def test_manifest_reference_orders_its_owning_patch(self):
+        (self.patches / 'z-first.json').rename(self.patches / 'legacy.json')
+        self.second['prerequisites'] = {
+            'patches/hermes/legacy.json': self.first['patch_sha256'],
+        }
+        self.save_layer('a-second', self.second)
+        result = self.prepare()
+        self.assertEqual([layer['manifest'] for layer in result['layers']],
+                         ['patches/hermes/legacy.json', 'patches/hermes/a-second.json'])
+        self.assertEqual((self.dest / 'base.txt').read_text(), 'final\n')
+
+    def test_manifest_reference_must_pin_its_exact_owning_patch(self):
+        patch_sha = self.first['patch_sha256']
+        manifest_sha = sha((self.patches / 'z-first.json').read_bytes())
+        for reference, pin in (
+            ('missing.json', patch_sha),
+            ('a-second.json', patch_sha),
+            ('z-first.json', manifest_sha),
+        ):
+            with self.subTest(reference=reference):
+                self.second['prerequisites'] = {'z-first.patch': patch_sha, reference: pin}
+                self.save_layer('a-second', self.second)
+                self.refuse('overlay_prerequisite_mismatch')
+                self.assertFalse(self.dest.exists())
+
+    def test_duplicate_patch_owner_refused_before_resolving_manifest_references(self):
+        self.save_layer('alternate-owner', self.first)
+        self.second['prerequisites'] = {'alternate-owner.json': self.first['patch_sha256']}
+        self.save_layer('a-second', self.second)
+        self.refuse('duplicate_overlay')
+        self.assertFalse(self.dest.exists())
+
+    def test_explicit_prerequisite_patch_field_requires_patch_path(self):
+        self.second.update(prerequisite_patch='patches/hermes/z-first.json',
+                           prerequisite_patch_sha256=self.first['patch_sha256'])
+        self.save_layer('a-second', self.second)
+        self.refuse('overlay_prerequisite_mismatch')
+        self.assertFalse(self.dest.exists())
+
+    def overlay_pins(self, *names):
+        pins = {}
+        for name in names:
+            for suffix in ('.json', '.patch'):
+                path = self.patches / (name + suffix)
+                pins[str(path.relative_to(self.repo))] = sha(path.read_bytes())
+        return pins
+
+    def selection_cli(self, items):
+        script = Path(__file__).resolve().parents[1] / 'scripts/hermes_prepare.py'
+        argv = [sys.executable, '-B', str(script), '--repository', str(self.repo),
+                '--donor', str(self.donor), '--destination', str(self.dest), '--seconds', '10']
+        for name, digest in items:
+            argv.extend(('--overlay-file', name, digest))
+        return subprocess.run(argv, capture_output=True, text=True, timeout=12, check=False)
+
+    def test_cli_selects_exact_pairs_leaving_inactive_sibling_intact(self):
+        self.layer('inactive', 'changed', 'diverged', {'z-first.patch': self.first['patch_sha256']})
+        self.refuse('overlay_input_changed')
+        self.dest.rename(self.root / 'actual-default-partial')
+        inactive = self.overlay_pins('inactive')
+        selection = self.overlay_pins('z-first', 'a-second')
+        result = self.selection_cli(selection.items())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.dest / 'base.txt').read_text(), 'final\n')
+        self.assertEqual(self.overlay_pins('inactive'), inactive)
+        receipt = json.loads(self.dest.with_suffix('.source.json').read_text())
+        self.assertEqual([row['manifest'] for row in receipt['layers']],
+                         ['patches/hermes/z-first.json', 'patches/hermes/a-second.json'])
+
+    def test_cli_refuses_changed_unpaired_duplicate_and_foreign_selection(self):
+        valid = self.overlay_pins('z-first', 'a-second')
+        manifest = 'patches/hermes/z-first.json'
+        patch_name = 'patches/hermes/z-first.patch'
+        cases = (
+            (dict(valid, **{manifest: '0' * 64}).items(), 'overlay_selection_pair_changed'),
+            (dict(valid, **{patch_name: '0' * 64}).items(), 'overlay_selection_pair_changed'),
+            ([(name, pin) for name, pin in valid.items() if name != patch_name],
+             'overlay_selection_pair_changed'),
+            ([*valid.items(), (manifest, valid[manifest])], 'duplicate_overlay_selection'),
+            ([*valid.items(), ('patches/hermes/unknown.patch', 'a' * 64)], 'unknown_overlay_selection'),
+            ([*valid.items(), ('patches/hermes/../unknown.patch', 'a' * 64)], 'invalid_relative_path'),
+        )
+        for items, reason in cases:
+            with self.subTest(reason=reason):
+                result = self.selection_cli(items)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stderr, f'FRIDAY_SOURCE_REFUSED reason={reason}\n')
+                self.assertFalse(self.dest.exists())
+                self.assertFalse(self.dest.with_suffix('.source.json').exists())
+
+    def test_cli_selection_cannot_omit_manifest_referenced_dependency(self):
+        self.second['prerequisites'] = {'z-first.json': self.first['patch_sha256']}
+        self.save_layer('a-second', self.second)
+        result = self.selection_cli(self.overlay_pins('a-second').items())
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stderr, 'FRIDAY_SOURCE_REFUSED reason=selected_overlay_dependency_missing\n')
+        self.assertFalse(self.dest.exists())
+
+    def test_explicit_empty_selection_cannot_mean_default(self):
+        with self.assertRaisesRegex(M['Refused'], '^empty_overlay_selection$'):
+            M['compose'](self.repo, self.donor, self.dest, seconds=10, overlay_pins={})
+        self.assertFalse(self.dest.exists())
+
+    def test_declared_absence_refuses_occupied_donor_path(self):
+        self.first['expected_base_files']['base.txt'] = None
+        self.save_layer('z-first', self.first)
+        self.refuse('overlay_input_already_exists')
+        self.assertEqual((self.dest / 'base.txt').read_text(), 'original\n')
+
     def test_dependency_cycle_refused(self):
         self.first['prerequisites'] = {'a-second.patch': self.second['patch_sha256']}
         self.save_layer('z-first', self.first)

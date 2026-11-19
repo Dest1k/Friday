@@ -8,11 +8,14 @@ preparation; ignored/untracked runtime files and credentials are not exported.
 Index metadata and working bytes are compared directly to the pinned Git tree;
 repository-local clean filters are never used to decide whether a file is clean.
 
-The preparer discovers every shipped Hermes patch manifest, validates its hash
-and prerequisites, and applies the complete dependency order. Each declared
-output hash and file inventory is checked. A missing manifest, unlisted patch
-target, incompatible input or wrong final bytes refuses completion. This avoids
-maintaining a second manual list that can omit the web or access-control layer.
+The preparer discovers every shipped Hermes patch manifest and validates the
+catalog, including hashes and prerequisites. By default it applies the full
+catalog in dependency order. For an explicit selection, the normal installer
+passes each reviewed manifest and patch as `--overlay-file PATH SHA256` from
+the same `project_files` declaration. The selection must include both members
+of each pair and all prerequisite pairs. Each declared output hash and file
+inventory is checked. A missing manifest, unlisted patch target, incompatible
+input or wrong final bytes refuses completion.
 
 Call it with a new destination below an existing private mode-0700 directory:
 

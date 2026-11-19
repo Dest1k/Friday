@@ -53,6 +53,14 @@ the `default` receiving profile. Model, endpoint, capacity, output reservations,
 web limits, Dashboard public authority and operator are actual supplied inputs.
 No secrets belong in this JSON, command arguments or preparation receipts.
 
+For an explicitly selected Hermes composition, set
+`"hermes_overlay_selection": "project_files"` in the reviewed operator input.
+Include both exact file hashes of each selected manifest and patch directly
+under `patches/hermes/` in `project_files`, including every prerequisite pair.
+Pin the preparer and source lock from the same reviewed checkout. The installer
+checks the catalog and the selected composition before claiming the home.
+Omitting the field keeps the full-catalog composition.
+
 The 10 October input reconciliation prepared a clean checkout with 103 source
 pins: twelve historical pins changed and two plugin modules were added. The
 profile, credential references, worker limits and original 3600-second install

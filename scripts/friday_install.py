@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import stat
+from subprocess import TimeoutExpired
 import sys
 import time
 from urllib.parse import urlsplit
@@ -303,7 +304,9 @@ def spec_checked(value, *, cli_only=False, project_update=None, source_update=No
     if current_source is not None: return current_source
     fields = {'home', 'bootstrap_python', 'hermes_donor', 'hermes_prepare',
               'sources_lock', 'dsh_donor', 'a0_donor', 'product', 'project_files', 'seconds', 'containment'}
-    require(isinstance(value, dict) and set(value) == fields | (set(value) & {'dashboard_tls', 'credential_sources', 'worker_install'}), 'explicit_install_fields_required')
+    optional = {'dashboard_tls', 'credential_sources', 'worker_install', 'hermes_overlay_selection'}
+    require(isinstance(value, dict) and set(value) == fields | (set(value) & optional),
+            'explicit_install_fields_required')
     if 'credential_sources' in value:
         from scripts.install_credentials import references
         references(value['credential_sources'])
@@ -331,8 +334,17 @@ def spec_checked(value, *, cli_only=False, project_update=None, source_update=No
         required.update({'scripts/worker_install.py','scripts/worker_qualification.py', 'tools/render_dsh_local.py'})
     required.update(str(p.relative_to(ROOT)) for p in (ROOT / 'plugins/friday_rework').rglob('*')
                     if p.is_file())
-    required.update(str(p.relative_to(ROOT)) for p in (ROOT / 'patches/hermes').rglob('*')
-                    if p.is_file())
+    overlay_root = ROOT / 'patches/hermes'
+    if 'hermes_overlay_selection' in value:
+        preparer = 'scripts/hermes_prepare.py'
+        require(value['hermes_prepare']['path'] == str(ROOT / preparer)
+                and value['sources_lock']['path'] == str(ROOT / 'sources.lock.json')
+                and value['hermes_prepare']['sha256'] == files.get(preparer),
+                'selected_overlay_source_entry_changed')
+    selection = hermes_overlay_pins(value)
+    required.update(str(p.relative_to(ROOT)) for p in overlay_root.rglob('*')
+                    if p.is_file() and (not selection or p.parent != overlay_root
+                                        or p.suffix not in {'.json', '.patch'}))
     require(required.issubset(files), 'complete_installer_plugin_inventory_required')
     for name, expected in files.items():
         require(isinstance(name, str) and not name.startswith('/')
@@ -435,11 +447,45 @@ def dashboard_tls_inputs(value, home):
     return output
 
 
-def commands(value):
+def hermes_overlay_pins(value):
+    if 'hermes_overlay_selection' not in value:
+        return None
+    require(value['hermes_overlay_selection'] == 'project_files', 'invalid_hermes_overlay_selection')
+    from scripts.hermes_prepare import Refused as SourceRefused, overlay_file_pins
+    items = ((name, digest) for name, digest in value['project_files'].items()
+             if isinstance(name, str) and Path(name).parent == Path('patches/hermes')
+             and Path(name).suffix in {'.json', '.patch'})
+    # The existing pinned project inventory supplies both halves of every pair.
+    try:
+        return overlay_file_pins(items)
+    except SourceRefused as exc:
+        raise Refused(str(exc)) from exc
+
+
+def hermes_compose_argv(value, root, destination):
+    pins = hermes_overlay_pins(value) or {}
+    return [value['bootstrap_python']['path'], '-B', value['hermes_prepare']['path'],
+            '--repository', str(root), '--donor', value['hermes_donor'],
+            '--destination', str(destination), '--seconds', str(min(120, value['seconds'])),
+            *(part for name, digest in sorted(pins.items()) for part in ('--overlay-file', name, digest))]
+
+
+def commands(value, *, source_deadline=None):
     """Generate native argv; no custom PM flags or replacement service backend."""
-    home, _ = spec_checked(value); source = home / 'hermes-agent'
+    home, donors = spec_checked(value); source = home / 'hermes-agent'
     from scripts.install_containment import checked_binary
     checked_binary(value['containment'])
+    if source_deadline is not None:
+        pins = hermes_overlay_pins(value)
+        if pins is not None:
+            from scripts.hermes_prepare import Budget as SourceBudget, Refused as SourceRefused, overlay_layers
+            deadline = min(source_deadline, time.monotonic() + min(120, value['seconds']))
+            try:
+                overlay_layers(ROOT, donors['hermes']['commit'], SourceBudget(deadline), overlay_pins=pins)
+            except SourceRefused as exc:
+                raise Refused(str(exc)) from exc
+            except TimeoutExpired as exc:
+                raise Refused('source_preparation_deadline') from exc
     python = value['bootstrap_python']['path']; helper = str(ROOT / 'scripts/friday_native.py')
     launcher = str(source / '.hermes/bin/hermes')
     from scripts.a0_prepare import service_plan
@@ -451,9 +497,7 @@ def commands(value):
     return {
         'worker_preparation_mode': 'BOTH_WORKERS_REQUIRED' if 'worker_install' in value else 'LEGACY_EXPLICIT_TEMPLATE',
         'a0_service_effect_plan': service_plan(planned, home),
-        'compose': [python, '-B', value['hermes_prepare']['path'], '--repository', str(ROOT),
-                    '--donor', value['hermes_donor'], '--destination', str(source),
-                    '--seconds', str(min(120, value['seconds']))],
+        'compose': hermes_compose_argv(value, ROOT, source),
         'tools': [python, '-B', '-m', 'pm.cli', 'install', '--tools-only'],
         'dependencies': [python, '-B', '-m', 'pm.cli', 'install', '--extra', 'all',
                          '--extra', 'telegram', '--extra', 'web', '--extra', 'exa'],
@@ -626,7 +670,7 @@ def install(value, input_path, *, budget=None):
     require(isinstance(value, dict), 'explicit_install_fields_required')
     budget = budget or Budget(value.get('seconds'))
     home, donors = budget.call(spec_checked, value)
-    argv = budget.call(commands, value)
+    argv = budget.call(commands, value, source_deadline=budget.deadline)
     raw = budget.call(owned_file, input_path, private=True)
     require(json.loads(raw, object_pairs_hook=unique) == value, 'install_input_changed')
     input_hash = digest(raw); budget.check()
@@ -1004,9 +1048,7 @@ def cli_resume_inputs(request, *, consumed=False, budget=None, validation_value=
     original_root = Path(old['hermes_prepare']['path']).parents[1]
     python = old['bootstrap_python']['path']
     expected = {
-        'compose':[python,'-B',old['hermes_prepare']['path'],'--repository',str(original_root),
-                   '--donor',old['hermes_donor'],'--destination',str(home/'hermes-agent'),
-                   '--seconds',str(min(120,old['seconds']))],
+        'compose':hermes_compose_argv(old, original_root, home/'hermes-agent'),
         'tools':[python,'-B','-m','pm.cli','install','--tools-only'],
         'dependencies':[python,'-B','-m','pm.cli','install','--extra','all','--extra','telegram','--extra','web','--extra','exa'],
         'pm_python':[python,'-B','-c','from pm.environments import project_python; from pathlib import Path; print(project_python(Path.cwd()))']}
@@ -5053,7 +5095,8 @@ def main():
             result = reconcile(value, sha)
         elif args.phase == 'plan':
             result = {'state': 'PLANNED_NOT_EXECUTED', 'ready': False,
-                      'commands': commands(value), 'remaining': gaps()}
+                      'commands': budget.call(commands, value, source_deadline=budget.deadline),
+                      'remaining': gaps()}
         elif args.phase == 'install':
             result = install(value, args.input, budget=budget)
         elif args.phase == 'check':
