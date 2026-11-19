@@ -1,0 +1,527 @@
+diff --git a/hermes_cli/friday_workspace_pdf.py b/hermes_cli/friday_workspace_pdf.py
+--- a/hermes_cli/friday_workspace_pdf.py
++++ b/hermes_cli/friday_workspace_pdf.py
+@@ -24,6 +24,7 @@
+ import zlib
+ 
+ MAX_OUTPUT = 1000000
++PAGE_EVIDENCE_LIMIT = 4_000_000
+ RENDER_SECONDS = 40
+ _TOOLCHAIN_NAME = 'libreoffice-26.2.5.2-ubuntu26.04-amd64'
+ _PRESENTATION_TOOLCHAIN_NAME = 'libreofficedev-26.2.5.2-frw-b711-c459-direct-20261111'
+@@ -61,23 +62,144 @@
+         raise ScopeDenied() from None
+ 
+ 
++def _footer_template(footer, w):
++    """Return a flat mixture of footer literals and decimal page fields."""
++    children = list(footer)
++    if len(children) != 1 or children[0].tag != w+'p':
++        raise ExportRefused('unsupported_package')
++    runs = list(children[0])
++    if runs and runs[0].tag == w+'pPr':
++        runs.pop(0)
++    if not 1 <= len(runs) <= 32:
++        raise ExportRefused('unsupported_package')
++    items = []
++    for run in runs:
++        nodes = list(run)
++        if nodes and nodes[0].tag == w+'rPr':
++            nodes.pop(0)
++        if run.tag != w+'r' or len(nodes) != 1 or len(nodes[0]):
++            raise ExportRefused('unsupported_package')
++        items.append(nodes[0])
++    template, fields = [], set()
++    i = 0
++    while i < len(items):
++        item = items[i]
++        if item.tag == w+'t':
++            text = item.text or ''
++            if len(text) > 256 or any(ord(c) < 32 for c in text):
++                raise ExportRefused('unsupported_package')
++            template.append(('literal', text))
++            i += 1
++            continue
++        group = items[i:i+5]
++        if [node.tag for node in group] != [w+'fldChar',w+'instrText',w+'fldChar',w+'t',w+'fldChar']:
++            raise ExportRefused('unsupported_package')
++        for node, label in zip((group[0], group[2], group[4]), ('begin','separate','end')):
++            allowed = {w+'fldCharType', w+'dirty'} if label == 'begin' else {w+'fldCharType'}
++            if (set(node.attrib) - allowed or node.get(w+'fldCharType') != label or node.text
++                    or node.get(w+'dirty', 'true') not in ('true','false','1','0')):
++                raise ExportRefused('unsupported_package')
++        instr = group[1]
++        if set(instr.attrib) - {'{http://www.w3.org/XML/1998/namespace}space'}:
++            raise ExportRefused('unsupported_package')
++        field = (instr.text or '').strip(' ')
++        if field not in ('PAGE','NUMPAGES') or field in fields:
++            raise ExportRefused('unsupported_package')
++        fields.add(field)
++        template.append((field, ''))
++        i += 5
++    if 'PAGE' not in fields:
++        raise ExportRefused('unsupported_package')
++    return template
++
++
++def _page_footer(data, w, field_tags):
++    from tools.scoped_word_profiles import _Package, R, WordProfileError
++
++    try:
++        package = _Package(data, 'docx')
++    except WordProfileError:
++        raise ExportRefused('unsupported_package') from None
++    if package.active or package.macro:
++        raise ExportRefused('unsupported_package')
++    if any(kind.lower().endswith(('xml','+xml')) and name not in package.xml
++           for name, kind in package.types.items()):
++        raise ExportRefused('unsupported_package')
++    document = package.xml['word/document.xml']
++    sections = list(document.iter(w+'sectPr'))
++    if len(sections) != 1 or not len(package.body) or sections[0] is not package.body[-1]:
++        raise ExportRefused('unsupported_package')
++    section = sections[0]
++    if any(next(section.iter(w+tag), None) is not None for tag in ('pgNumType','titlePg')):
++        raise ExportRefused('unsupported_package')
++    rels = package.relationships.get('word/document.xml', {})
++    settings_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml'
++    settings_parts = [name for kind, name in rels.values() if kind == R+'/settings']
++    if (len(settings_parts) > 1 or
++            set(settings_parts) != {name for name, kind in package.types.items() if kind == settings_type}):
++        raise ExportRefused('unsupported_package')
++    if settings_parts:
++        settings = package.xml.get(settings_parts[0])
++        if settings is None or settings.tag != w+'settings' or next(settings.iter(w+'evenAndOddHeaders'), None) is not None:
++            raise ExportRefused('unsupported_package')
++    refs = section.findall(w+'footerReference')
++    rel_id = '{'+R+'}id'
++    if (len(refs) != 1 or list(document.iter(w+'footerReference')) != refs
++            or len(refs[0]) or set(refs[0].attrib) != {w+'type', rel_id}
++            or refs[0].get(w+'type') != 'default'):
++        raise ExportRefused('unsupported_package')
++    relation = rels.get(refs[0].get(rel_id))
++    if relation is None or relation[0] != R+'/footer':
++        raise ExportRefused('unsupported_package')
++    part = relation[1]
++    footer = package.xml.get(part)
++    if (footer is None or footer.tag != w+'ftr' or
++            package.types[part] != 'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml'):
++        raise ExportRefused('unsupported_package')
++    if any(node.tag in field_tags for name, root in package.xml.items()
++           if name != part for node in root.iter()):
++        raise ExportRefused('unsupported_package')
++    template = _footer_template(footer, w)
++    field_count = sum(kind != 'literal' for kind, _ in template)
++    if sum(node.tag in field_tags for node in footer.iter()) != 4 * field_count:
++        raise ExportRefused('unsupported_package')
++    def folded_text(text):
++        return ''.join(text.split()).casefold()
++
++    anchors = sorted(
++        (folded_text(text) for kind, text in template
++         if kind == 'literal' and sum(char.isalpha() for char in text) >= 3),
++        key=len, reverse=True)
++    if not anchors:
++        raise ExportRefused('unsupported_package')
++    anchor = anchors[0]
++    if any(anchor in folded_text(''.join(t.text or '' for t in p.iter(w+'t')))
++           for name, root in package.xml.items() if name != part for p in root.iter(w+'p')):
++        raise ExportRefused('unsupported_package')
++    return template
++
++
+ def _validate_docx(data):
+     from hermes_cli.friday_workspace_docx import _edit_parts, _EditRefused, _edit_xml, _W
++    field_tags = {_W+tag for tag in ('instrText','delInstrText','fldChar','fldSimple')}
++    found_fields = False
+     try:
+         with ZipFile(BytesIO(data)) as package:
+             _, parts = _edit_parts(package)
+         for name, raw in parts.items():
+             if name.startswith(('word/embeddings/', 'word/activeX/')):
+                 raise ExportRefused('unsupported_package')
+-            if name.endswith('.xml'):
++            if name.lower().endswith('.xml'):
+                 root, _ = _edit_xml(raw)
+-                # No live fields, imported HTML, controls or executable objects.
+-                if any(n.tag in {_W+'instrText', _W+'fldSimple', _W+'altChunk', _W+'object', _W+'control'}
+-                       for n in root.iter()):
+-                    raise ExportRefused('unsupported_package')
++                for n in root.iter():
++                    if n.tag in {_W+'altChunk', _W+'object', _W+'control'}:
++                        raise ExportRefused('unsupported_package')
++                    if n.tag in field_tags:
++                        found_fields = True
+     except (BadZipFile, KeyError, _EditRefused, RuntimeError, ET.ParseError,
+             expat.ExpatError, zlib.error, NotImplementedError, OSError):
+         raise ExportRefused('unsupported_package') from None
++    return _page_footer(data, _W, field_tags) if found_fields else None
+ 
+ 
+ def _toolchain(*, family='default'):
+@@ -246,7 +368,36 @@
+         if root is not None: os.close(root)
+ 
+ 
+-def render(cap, data):
++def _verify_page_footer(cap, work, template, pdf):
++    from hermes_cli.friday_workspace_revision import check
++    from tools.scoped_document_pdf import bbox_pages, DocumentPDFError
++
++    root = os.open(work, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
++    try:
++        info = _private_bytes(root, 'pdfinfo', 8192)
++        bbox = _private_bytes(root, 'footer-bbox.xhtml', PAGE_EVIDENCE_LIMIT)
++        proof = _private_bytes(root, 'footer-pdf.sha256', 64)
++        if proof != hashlib.sha256(pdf).hexdigest().encode('ascii'):
++            raise ExportRefused('page_fields_unverified')
++        pages, geometry = bbox_pages(bbox, checkpoint=lambda: check(cap), with_geometry=True)
++        total = _check_pdf_info(info)
++        if total != len(pages):
++            raise ExportRefused('page_fields_unverified')
++        for index, (words, (_, height)) in enumerate(zip(pages, geometry), 1):
++            values = {'PAGE': str(index), 'NUMPAGES': str(total)}
++            expected = ''.join(text if kind == 'literal' else values[kind] for kind,text in template)
++            last = [word for word in words if word['line'] == words[-1]['line']]
++            if (any(word['bounds'][1] < height * .75 for word in last) or
++                    ' '.join(word['text'] for word in last) != ' '.join(expected.split())):
++                raise ExportRefused('page_fields_unverified')
++        return total
++    except (DocumentPDFError, OSError, ValueError):
++        raise ExportRefused('page_fields_unverified') from None
++    finally:
++        os.close(root)
++
++
++def render(cap, data, *, footer=None):
+     from hermes_cli.friday_workspace_revision import check
+     check(cap)
+     toolchain = _toolchain()
+@@ -257,8 +408,12 @@
+         (work/'input.docx').write_bytes(data); (work/'input.docx').chmod(0o600)
+         (work/'renderer.py').write_bytes(Path(__file__).read_bytes())
+         (work/'renderer.py').chmod(0o600)
++        if footer is not None:
++            (work/'page-footer').touch(mode=0o600, exist_ok=False)
+         _run(cap, _argv(work, toolchain), work)
+         result = _read_pdf(work)
++        if footer is not None:
++            result = result, _verify_page_footer(cap, work, footer, result)
+         check(cap)
+         return result
+     finally:
+@@ -283,8 +438,12 @@
+     except FileNotFoundError: pass
+     try:
+         data, _, identity = workspace_document(str(source), with_identity=True)
+-        _validate_docx(data)
+-        rendered = render(cap, data)
++        footer = _validate_docx(data)
++        if footer is None:
++            rendered = render(cap, data)
++            verified_pages = None
++        else:
++            rendered, verified_pages = render(cap, data, footer=footer)
+         def verify():
+             check(cap)
+             current, _, version = workspace_document(str(source), with_identity=True)
+@@ -294,6 +453,8 @@
+         if result.get('success'):
+             result.update(source=relative, source_sha256=hashlib.sha256(data).hexdigest(),
+                           export_mode='docx_pdf', source_unchanged=True)
++            if verified_pages is not None:
++                result['searchable_footer_page_numbers_verified'] = verified_pages
+         return json.dumps(result)
+     except ExportRefused as error:
+         unknown = str(error) == 'renderer_cleanup_unconfirmed'
+@@ -308,6 +469,7 @@
+     pages = re.findall(rb'^Pages:\s+([1-9][0-9]*)\s*$', info, re.MULTILINE)
+     if len(info) > 8192 or len(pages) != 1 or int(pages[0]) > 200:
+         raise ValueError('invalid_pdf')
++    return int(pages[0])
+ 
+ 
+ def _render_child():
+@@ -332,12 +494,28 @@
+                'pdf:writer_pdf_Export', '--outdir', '/work/out', '/work/input.docx']
+     subprocess.run(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=35, check=True)
++    verify_footer = Path('/work/page-footer').exists()
++    if verify_footer:
++        with open('/work/out/input.pdf', 'rb') as source:
++            rendered = source.read(MAX_OUTPUT+1)
++        if len(rendered) > MAX_OUTPUT:
++            raise ValueError('invalid_pdf')
++        pin = hashlib.sha256(rendered).hexdigest().encode('ascii')
+     with open('/work/pdfinfo', 'wb') as output:
+         subprocess.run(['/usr/bin/pdfinfo', '/work/out/input.pdf'], env=env,
+                        stdin=subprocess.DEVNULL, stdout=output,
+                        stderr=subprocess.DEVNULL, timeout=3, check=True)
+     with open('/work/pdfinfo', 'rb') as output: info = output.read(8193)
+     _check_pdf_info(info)
++    if verify_footer:
++        with open('/work/footer-bbox.xhtml', 'xb') as output:
++            subprocess.run(['/usr/bin/pdftotext', '-enc', 'UTF-8', '-bbox-layout', '-cropbox',
++                            '/work/out/input.pdf', '-'], env=env, stdin=subprocess.DEVNULL,
++                           stdout=output, stderr=subprocess.DEVNULL, timeout=3, check=True)
++        with open('/work/out/input.pdf', 'rb') as source:
++            if hashlib.sha256(source.read(MAX_OUTPUT+1)).hexdigest().encode('ascii') != pin:
++                raise ValueError('invalid_pdf')
++        Path('/work/footer-pdf.sha256').write_bytes(pin)
+     Path('/work/validated').write_bytes(b'PDF_VALIDATED\n')
+ 
+ 
+diff --git a/tools/scoped_ods.py b/tools/scoped_ods.py
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -294,18 +294,188 @@
+         return result
+ 
+ 
++def _stored_range(book, target):
++    """Accept a bounded local rectangle, with known sheet names on both ends."""
++    if not target or len(target.encode('utf-8')) > 512:
++        raise ValueError
++    left, right = target.split(':')
++
++    def endpoint(token, inherited=None):
++        if '.' in token:
++            prefix, cell = token.rsplit('.', 1)
++            label = prefix.removeprefix('$')
++            if label.startswith("'") and label.endswith("'"):
++                name = label[1:-1].replace("''", "'")
++                if label != "'" + name.replace("'", "''") + "'":
++                    raise ValueError
++            elif label and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', label):
++                name = label
++            elif not prefix and inherited is not None:
++                name = inherited
++            else:
++                raise ValueError
++        else:
++            name, cell = inherited, token
++        if name not in {sheet.get(q(TB, 'name')) for sheet in book.sheets}:
++            raise ValueError
++        if not re.fullmatch(r'\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}', cell):
++            raise ValueError
++        return name, address(cell.replace('$', ''))
++
++    sheet, (top, first) = endpoint(left)
++    last_sheet, (bottom, last) = endpoint(right, sheet)
++    if sheet != last_sheet or top > bottom or first > last:
++        raise ValueError
++    return sheet, first, last
++
++
++def _stored_filter(node, first_column, last_column):
++    """Expose a small declarative condition tree without applying it."""
++    if node.attrib or (node.text or '').strip() or (node.tail or '').strip() or not len(node):
++        raise ValueError
++    parent, logic = node, None
++    groups = {q(TB, 'filter-and'): 'and', q(TB, 'filter-or'): 'or'}
++    if len(node) == 1 and node[0].tag in groups:
++        parent = node[0]
++        logic = groups[parent.tag]
++        if parent.attrib or (parent.text or '').strip() or (parent.tail or '').strip():
++            raise ValueError
++    if not 1 <= len(parent) <= (16 if logic else 1):
++        raise ValueError
++    allowed = {q(TB, attr) for attr in ('field-number', 'operator', 'data-type', 'case-sensitive', 'value')}
++    conditions = []
++    for child in parent:
++        if (child.tag != q(TB, 'filter-condition') or set(child.attrib) - allowed
++                or (child.text or '').strip() or (child.tail or '').strip()):
++            raise ValueError
++        field = child.get(q(TB, 'field-number'), '')
++        if not re.fullmatch(r'0|[1-9][0-9]{0,4}', field):
++            raise ValueError
++        field = int(field)
++        column = first_column + field
++        operator = child.get(q(TB, 'operator'))
++        data_type = child.get(q(TB, 'data-type'))
++        case_sensitive = child.get(q(TB, 'case-sensitive'))
++        value = child.get(q(TB, 'value'))
++        if (column > last_column or operator != '=' or data_type not in (None, 'text')
++                or case_sensitive not in (None, 'true', 'false')
++                or value is None or len(value.encode('utf-8')) > 256 or len(child) > 32):
++            raise ValueError
++        items = []
++        for entry in child:
++            member = entry.get(q(TB, 'value'))
++            if (entry.tag != q(TB, 'filter-set-item') or set(entry.attrib) != {q(TB, 'value')}
++                    or len(entry) or (entry.text or '').strip() or (entry.tail or '').strip()
++                    or member is None or len(member.encode('utf-8')) > 256):
++                raise ValueError
++            items.append(member)
++        if items and (items[0] != value or len(set(items)) != len(items)):
++            raise ValueError
++        record = {'field_number': field, 'column': colname(column), 'operator': operator, 'value': value}
++        if items:
++            record['set_items'] = items
++        if data_type is not None:
++            record['data_type'] = data_type
++        if case_sensitive is not None:
++            record['case_sensitive'] = case_sensitive == 'true'
++        conditions.append(record)
++    return {'logic': logic, 'conditions': conditions}
++
++
++def _stored_database_ranges(book):
++    """Yield only direct, independently identified local range records."""
++    group_tag = q(TB, 'database-ranges')
++    filter_tag = q(TB, 'filter')
++    groups = book.body.findall(group_tag)
++    filters = set(book.body.iter(filter_tag))
++    if not groups and not filters:
++        return
++    incomplete = 'ods_saved_filter_conditions_not_inspected'
++    if len(groups) != 1 or len(groups[0]) > 64 or groups[0].attrib or (groups[0].text or '').strip():
++        book.unsupported.add(incomplete)
++        return
++    names = [entry.get(q(TB, 'name')) for entry in groups[0]]
++    if len(set(names)) != len(names):
++        book.unsupported.add(incomplete)
++        return
++    allowed = {q(TB, key) for key in ('name', 'target-range-address', 'display-filter-buttons')}
++    for entry, name in zip(groups[0], names):
++        tick(book.checkpoint)
++        try:
++            if (entry.tag != q(TB, 'database-range') or set(entry.attrib) - allowed
++                    or not name or len(name.encode('utf-8')) > 128
++                    or (entry.text or '').strip() or (entry.tail or '').strip()
++                    or len(entry) > 1 or (len(entry) and entry[0].tag != filter_tag)):
++                raise ValueError
++            target = entry.get(q(TB, 'target-range-address'))
++            sheet, first, last = _stored_range(book, target)
++            buttons = entry.get(q(TB, 'display-filter-buttons'))
++            if buttons not in (None, 'true', 'false'):
++                raise ValueError
++            saved = _stored_filter(entry[0], first, last) if len(entry) else None
++            record = {'sheet': sheet, 'name': name, 'target_range': target, 'stored_filter': saved}
++            if buttons is not None:
++                record['display_filter_buttons'] = buttons == 'true'
++            if saved is not None:
++                filters.discard(entry[0])
++        except ValueError:
++            book.unsupported.add(incomplete)
++        else:
++            yield record
++    if filters:
++        book.unsupported.add(incomplete)
++
++
++def _stored_horizontal_merges(name, parts):
++    """Ground one-row anchors only when covered cells account for the full span."""
++    result = []
++    pending = None
++    span_column = q(TB, 'number-columns-spanned')
++    span_row = q(TB, 'number-rows-spanned')
++    repeated = q(TB, 'number-columns-repeated')
++    for row, column, height, width, cell in parts:
++        if (cell.tail or '').strip():
++            return None
++        if cell.tag == q(TB, 'covered-table-cell'):
++            if pending is None or height != 1 or (row, column) != pending[:2]:
++                return None
++            if set(cell.attrib) - {repeated} or len(cell) or (cell.text or '').strip():
++                return None
++            end, anchor = pending[2:]
++            after = column + width
++            if after > end:
++                return None
++            if after == end:
++                result.append({'sheet': name, 'anchor': anchor, 'range': f'{anchor}:{colname(end-1)}{row}'})
++                pending = None
++            else:
++                pending = row, after, end, anchor
++            continue
++        span = cell.get(span_column, '1')
++        if (pending is not None or height != 1 or width != 1 or cell.get(span_row, '1') != '1'
++                or not re.fullmatch(r'[1-9][0-9]{0,4}', span)):
++            return None
++        span = int(span)
++        if span <= 1 or column + span - 1 > MAX_COLS:
++            return None
++        pending = row, column + 1, column + span, f'{colname(column)}{row}'
++    return result if pending is None else None
++
++
+ def extract_spreadsheet(data, format='ods', *, checkpoint=None):
+     book = Spreadsheet(data, format, checkpoint)
+     rows = []
+     visibility_by_sheet = []
+     inspect_ods_layout = format == 'ods'
+-    if inspect_ods_layout and next(book.body.iter(q(TB, 'filter')), None) is not None:
+-        book.unsupported.add('ods_saved_filter_conditions_not_inspected')
++    merges = []
++    merge_incomplete = False
+     count = total = 0
+     for sheet in book.sheets:
+         name = sheet.get(q(TB, 'name'))
+         rows.append('[SHEET ' + json.dumps(name, ensure_ascii=False) + ']')
+         row_visibility = [] if inspect_ods_layout else None
++        merge_parts = []
++        matrix_spans = False
+         if inspect_ods_layout and any(
+             group.get(q(TB, 'display'), 'true') != 'true'
+             for group in sheet.iter(q(TB, 'table-row-group'))
+@@ -316,10 +486,18 @@
+         ):
+             value = book.value(node)
+             if inspect_ods_layout and (
+-                value.get('covered') or node.get(q(TB, 'number-columns-spanned'))
+-                or node.get(q(TB, 'number-rows-spanned'))
++                q(TB, 'number-matrix-columns-spanned') in node.attrib
++                or q(TB, 'number-matrix-rows-spanned') in node.attrib
+             ):
+-                book.unsupported.add('ods_merge_anchors_not_inspected')
++                matrix_spans = True
++            if inspect_ods_layout and (
++                value.get('covered') or q(TB, 'number-columns-spanned') in node.attrib
++                or q(TB, 'number-rows-spanned') in node.attrib
++            ):
++                if len(merge_parts) < MAX_CELLS:
++                    merge_parts.append((row, column, height, width, node))
++                else:
++                    merge_incomplete = True
+             if value['value'] is None and 'formula' not in value and not value.get('covered'):
+                 continue
+             count += height * width
+@@ -334,6 +512,12 @@
+                     rows.append(item)
+         if row_visibility:
+             visibility_by_sheet.append((name, row_visibility))
++        if merge_parts:
++            saved = None if matrix_spans else _stored_horizontal_merges(name, merge_parts)
++            if saved is None:
++                merge_incomplete = True
++            else:
++                merges.extend(saved)
+     charts = []
+     if any(node.get(q(XL, 'href'), '').startswith('./Charts/') for sheet in book.sheets for node in sheet.iter()):
+         from tools.scoped_ods_chart import chart_records
+@@ -362,6 +546,24 @@
+             rows.append(item)
+         if total > MAX_READ_OUTPUT:
+             break
++    if inspect_ods_layout:
++        if merge_incomplete or (merges and book.unsupported.intersection(
++            ('unread_sheet_structure', 'unread_row_structure')
++        )):
++            book.unsupported.add('ods_merge_anchors_not_inspected')
++            merges = []
++        for kind, records, limit_reason in (
++            ('DATABASE-RANGE', _stored_database_ranges(book), 'ods_saved_filter_output_limit'),
++            ('MERGE', merges, 'ods_merge_output_limit'),
++        ):
++            for record in records:
++                item = '[' + kind + ' ' + json.dumps(record, sort_keys=True) + ']'
++                size = len(item.encode('utf-8')) + 1
++                if total + size > MAX_READ_OUTPUT:
++                    book.unsupported.add(limit_reason)
++                    break
++                total += size
++                rows.append(item)
+     metadata = dict(native_container=True, format=format, sheets=len(book.sheets), cells=count,
+                     coverage='native_cells_values_formulas_and_cached_results; drawings_layout_not_covered',
+                     formulas_evaluated=False, unsupported=sorted(book.unsupported))
