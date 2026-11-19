@@ -304,6 +304,22 @@ diff --git a/tools/file_tools.py b/tools/file_tools.py
 
  # Keep the existing approved PPTX template branch visible after the compact reset.
  WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] += (
+diff --git a/tools/read_extract.py b/tools/read_extract.py
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -311,9 +311,9 @@
+         except LegacyWordError as exc:
+             raise ScopedExtractionError(str(exc)) from None
+     elif format in ('doc', 'dot'):
+-        from tools.scoped_doc import extract_doc, extract_dot, DOCError
+-        try:
+-            text = extract_dot(data) if format == 'dot' else extract_doc(data)
++        from tools.scoped_doc import extract_scoped_doc, extract_dot, DOCError
++        try:
++            text = extract_dot(data) if format == 'dot' else extract_scoped_doc(data)
+         except DOCError as exc:
+             raise ScopedExtractionError(str(exc)) from None
+     elif format in ('docx', 'dotx', 'docm', 'dotm'):
 diff --git a/tools/scoped_doc.py b/tools/scoped_doc.py
 --- a/tools/scoped_doc.py
 +++ b/tools/scoped_doc.py
@@ -395,7 +411,7 @@ diff --git a/tools/scoped_doc.py b/tools/scoped_doc.py
          return value if size is None else value[:size]
 
 
-@@ -536,3 +549,218 @@
+@@ -536,3 +549,275 @@
      Same inert coverage and refusals as DOC; no instantiation or layout.
      """
      return _extract(data, template=True)
@@ -605,12 +621,69 @@ diff --git a/tools/scoped_doc.py b/tools/scoped_doc.py
 +    if type(data) is not bytes or not 512 <= len(data) <= MAX_INPUT:
 +        _fail('doc_input_limit')
 +    expected, boundaries = generated_doc97_text(expected_paragraphs)
-+    streams = _CFB(data, generated=True).streams
-+    _check_generated_root_metadata(streams)
-+    _check_generated_word_records(streams['WordDocument'], streams['1Table'], expected, boundaries)
++    word, table = _generated_doc97_streams(data)
++    _check_generated_word_records(word, table, expected, boundaries)
 +    return {
 +        'format': 'doc',
 +        'profile': 'writer_ms_word_97_literal_paragraphs',
 +        'paragraphs_verified': len(boundaries) - 1,
 +        'main_story_utf16_units': len(expected) // 2,
 +    }
++
++
++def _generated_doc97_streams(data):
++    streams = _CFB(data, generated=True).streams
++    _check_generated_root_metadata(streams)
++    return streams['WordDocument'], streams['1Table']
++
++
++def _extract_passive_doc97(data):
++    word, table = _generated_doc97_streams(data)
++    first = _GENERATED_TEXT_START
++    if len(word) < first:
++        _fail('doc_generated_fib')
++    cp_count = _u32(word, 76)
++    last = _u32(word, 28)
++    if not 1 <= cp_count <= MAX_CP or last != first + 2 * cp_count or last > len(word):
++        _fail('doc_generated_text_bounds')
++    try:
++        body = word[first:last].decode('utf-16le', errors='strict')
++    except UnicodeError:
++        _fail('doc_invalid_unicode')
++    if not body.endswith('\r') or body.count('\r') > _GENERATED_MAX_PARAGRAPHS:
++        _fail('doc_generated_expected_paragraphs')
++    paragraphs = body[:-1].split('\r')
++    literals, boundaries = generated_doc97_text(paragraphs)
++    # Verify CLX, the permitted table records, and the CHPX/PAPX and section
++    # bytes against these bounds. Decoding alone never admits a document.
++    _check_generated_word_records(word, table, literals, boundaries)
++    text = '\n'.join(paragraphs) + '\n'
++    if len(text.encode('utf-8')) > MAX_TEXT:
++        _fail('doc_extracted_text_limit')
++    return _Text(text, {
++        'schema': 'friday.doc-text.v1', 'format': 'doc', 'parser': 'bounded_word_binary',
++        'profile': 'word97_literal_main_story',
++        'coverage': 'stored_main_story_literal_paragraphs_only; layout_and_rendering_not_verified',
++        'paragraph_count': len(paragraphs), 'main_story_cp': cp_count,
++        'field_evaluation': False, 'macro_execution': False, 'external_resources_loaded': False,
++        'read_only': True, 'provenance_verified': False,
++    })
++
++
++def extract_scoped_doc(data):
++    """Read strict DOC or the bounded passive Word 97 profile as untrusted text.
++
++    The original strict result wins whenever it succeeds, and its refusal
++    survives if the narrow profile cannot validate the bytes.
++    """
++    try:
++        return extract_doc(data)
++    except DOCError as original:
++        # cfb_header follows the CFB signature and length checks. This version
++        # hint only selects an inert parser, without trusting exporter origin.
++        if str(original) != 'cfb_header' or data[24:28] != b'\x3b\x00\x03\x00':
++            raise
++        try:
++            return _extract_passive_doc97(data)
++        except DOCError:
++            raise original from None
