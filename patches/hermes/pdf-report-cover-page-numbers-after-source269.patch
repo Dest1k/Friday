@@ -1,0 +1,46 @@
+--- a/hermes_cli/friday_schema_guidance.py
++++ b/hermes_cli/friday_schema_guidance.py
+@@ -12,7 +12,7 @@
+ 
+ # Include the request projection in ordinary persisted tool-pin identity. The
+ # donor build/version may stay unchanged when this product overlay is updated.
+-PROJECTION_REVISION = "friday.file-schema-guidance.v7"
++PROJECTION_REVISION = "friday.file-schema-guidance.v8"
+ 
+ PNG_TABLE_READ_GUIDANCE = (
+     ' Default read_file on an own-workspace PNG or JPEG returns current source_sha256, frame geometry '
+--- a/hermes_cli/friday_workspace_pdf_report.py
++++ b/hermes_cli/friday_workspace_pdf_report.py
+@@ -3,7 +3,7 @@
+ import json
+ from pathlib import Path
+ 
+-GUIDANCE = 'Native PDF report: format=pdf_report, NEW .pdf path, content JSON {"title":"Отчёт","blocks":[{"type":"heading","text":"Итоги"},{"type":"paragraph","text":"Краткое описание"},{"type":"table","columns":["Показатель","Значение"],"rows":[["Итого","125"]]},{"type":"link","text":"Источник","url":"https://example.org/report"}]}. Exact keys only; title optional, blocks non-empty. Searchable embedded-font Latin/Cyrillic text, metric wrapping, real table cells, repeated table headers, deterministic A4 pagination and actual page numbers. Links are deliberate supplied HTTP(S) URLs only; never fetch or invent URLs. Finite profile: 100000 UTF-8 JSON bytes, 128 blocks, 256 total table rows, 1-8 columns, 4096 characters per string, 20000 total text characters, 32 pages, 1 MB output. Unsupported/missing glyphs, controls, combining/RTL/emoji, unsafe URLs and layout overflow refuse; no truncation, images, TOC, signatures or arbitrary rich layout. Creates a new report, never rewrites an existing PDF. read_file can extract text with normal continuation; extraction does not verify visual layout or active links. Subsequent PDF editing operations retain their own narrower profiles and may refuse links or embedded fonts. Creation and channel delivery are separate. '
++GUIDANCE = 'Native PDF report: format=pdf_report, NEW .pdf path, content JSON {"title":"Отчёт","blocks":[{"type":"heading","text":"Итоги"},{"type":"paragraph","text":"Краткое описание"},{"type":"table","columns":["Показатель","Значение"],"rows":[["Итого","125"]]},{"type":"link","text":"Источник","url":"https://example.org/report"}]}. Required non-empty blocks and optional title and page_numbers keys. Searchable embedded-font Latin/Cyrillic text, metric wrapping, real table cells, repeated table headers, deterministic A4 pagination and page numbers by default. Set "page_numbers":false for a cover page that will be assembled into another PDF. Links are deliberate supplied HTTP(S) URLs only; never fetch or invent URLs. Finite profile: 100000 UTF-8 JSON bytes, 128 blocks, 256 total table rows, 1-8 columns, 4096 characters per string, 20000 total text characters, 32 pages, 1 MB output. Unsupported/missing glyphs, controls, combining/RTL/emoji, unsafe URLs and layout overflow refuse; no truncation, images, TOC, signatures or arbitrary rich layout. Creates a new report, never rewrites an existing PDF. read_file can extract text with normal continuation; extraction does not verify visual layout or active links. Subsequent PDF editing operations retain their own narrower profiles and may refuse links or embedded fonts. Creation and channel delivery are separate. '
+ 
+ 
+ def create_report(cap, fd, leaf, relative, content):
+--- a/tools/scoped_pdf_report.py
++++ b/tools/scoped_pdf_report.py
+@@ -91,9 +91,10 @@
+         if type(content) is not str or len(content) > MAX_REQUEST or len(content.encode('utf-8')) > MAX_REQUEST:
+             raise ValueError()
+         spec = json.loads(content, object_pairs_hook=pairs)
+-        if (type(spec) is not dict or set(spec) not in ({'blocks'}, {'title', 'blocks'})
++        if (type(spec) is not dict or set(spec) - {'blocks', 'title', 'page_numbers'}
+                 or 'title' in spec and not _text(spec['title'])
+-                or type(spec['blocks']) is not list or not 1 <= len(spec['blocks']) <= MAX_BLOCKS):
++                or type(spec.get('page_numbers', True)) is not bool
++                or type(spec.get('blocks')) is not list or not 1 <= len(spec['blocks']) <= MAX_BLOCKS):
+             raise ValueError()
+         total = len(spec.get('title', ''))
+         rows = 0
+@@ -396,6 +397,8 @@
+     links = sum('url' in op for page in pages for op in page)
+     if links > MAX_LINKS:
+         raise PDFReportError('pdf_link_limit')
++    if not spec.get('page_numbers', True):
++        return pages
+     total = len(pages)
+     for number, page in enumerate(pages, 1):
+         text = f'Page {number} of {total}'
