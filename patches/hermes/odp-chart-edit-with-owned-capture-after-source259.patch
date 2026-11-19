@@ -1,0 +1,888 @@
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -572,7 +572,16 @@
+             'format=spreadsheet_edit {source,sheet,cell,expected,value}. XLSX outputs need NEW .xlsx names. Numeric-cell edits do not recalculate. '
+             'DOCX: docx/docx_structured create; docx_edit {source,old_text,new_text}; docx_pdf {source}. '
+             ' Optional JSON member {"layout":"fit_title"} on PPTX/ODP slide-only whole-title replacements explicitly adjusts that selected title box/font (minimum16pt logical budget) before the next lower object, with local ODF style copies. Direct horizontal single-paragraph titles in the known Calibri/Arial/Liberation Sans Latin/Cyrillic profile only; unknown geometry, transforms or insufficient capacity refuse. Every other shape/shared style/payload and the original remain unchanged. Without layout the old text-only byte-preserving contract applies. Logical fitting is not rendered/application fidelity; inspect the actual output. For a precise text correction use presentation_text_edit {source,slide,role,old_text,new_text} into a NEW path of the same native profile. slide is one-based; role=slide or notes. The literal must match once within a supported paragraph; other content remains unchanged. Mixed formatting/fields/ambiguous text and unsupported whitespace refuse. ' 
+-            'Presentation variants: presentation_create {slides} uses the ODP slide schema and a NEW .pptx/.potx/.ppsx/.odp/.otp/.fodp destination. presentation_convert {source} chooses the native output profile or PDF by NEW destination suffix. presentation_edit {source,edit} uses a NEW destination of the same profile: edit fields for OOXML are slide/old_title/new_title/category/old_value/new_value; ODF uses slide/table/row/column/old_value/new_value. Only the bounded supported edit is available. Macro and binary legacy creation/conversion is not supported by presentation_create; legacy OpenOffice XML uses legacy_openoffice_create. Cross-family conversion may change rendering; no visual fidelity claim. ' 
++            'Presentation variants: presentation_create {slides} uses the ODP slide schema and a NEW .pptx/.potx/.ppsx/.odp/.otp/.fodp destination. presentation_convert {source} chooses the native output profile or PDF by NEW destination suffix. presentation_edit {source,edit} uses a NEW destination of the same profile: edit fields for OOXML are slide/old_title/new_title/category/old_value/new_value; ODF body-table edits use slide/table/row/column/old_value/new_value. Only the bounded supported edit is available. Macro and binary legacy creation/conversion is not supported by presentation_create; legacy OpenOffice XML uses legacy_openoffice_create. Cross-family conversion may change rendering; no visual fidelity claim. '
++            'For one ODP chart value use presentation_edit, a NEW .odp path, and content JSON string '
++            '{"source":"deck.odp","edit":{"slide":3,"chart":{"series":"Sales","category":"A01",'
++            '"old_value":"3601.5","new_value":"3602.5"}}}. '
++            'Use exact series/category and dot-decimal strings for the current and new values; slide is one-based. '
++            'Optional edit.title on that slide is {"old_text":"Old title","new_text":"New title"}; '
++            'add "layout":"fit_title" inside title for logical fitting. '
++            'One passive local bar chart with a linked GDI/SVM. Stale, ambiguous, repeated, formula, '
++            'active, external or unsupported targets and failed fresh SVM checks refuse before publication. '
++            'Creates one copy and keeps the source. '
+             'Presentations: source-bound pptx_create {source,data} computes typed real-table facts (see tool contract); authored pptx_create {source,slides,series} leaves prose unverified; pptx_edit {source,slide,old_title,new_title,category,old_value,new_value}; odp_create {slides}; odp_edit {source,slide,table,row,column,old_value,new_value}; pptx_pdf/odp_pptx/pptx_odp {source}. All produce NEW native files with typed JSON only. '
+             'Use tool_describe for full schema before tool_call; pass each JSON object as the content string. '
+             'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use pptx_pdf, odp_pptx, pptx_odp or the typed presentation_convert contract; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. '
+diff --git a/hermes_cli/friday_schema_guidance.py b/hermes_cli/friday_schema_guidance.py
+--- a/hermes_cli/friday_schema_guidance.py
++++ b/hermes_cli/friday_schema_guidance.py
+@@ -12,7 +12,7 @@
+ 
+ # Include the request projection in ordinary persisted tool-pin identity. The
+ # donor build/version may stay unchanged when this product overlay is updated.
+-PROJECTION_REVISION = "friday.file-schema-guidance.v6"
++PROJECTION_REVISION = "friday.file-schema-guidance.v7"
+ 
+ PNG_TABLE_READ_GUIDANCE = (
+     ' Default read_file on an own-workspace PNG or JPEG returns current source_sha256, frame geometry '
+diff --git a/hermes_cli/friday_workspace_odp_chart_capture.py b/hermes_cli/friday_workspace_odp_chart_capture.py
+new file mode 100644
+--- /dev/null
++++ b/hermes_cli/friday_workspace_odp_chart_capture.py
+@@ -0,0 +1,392 @@
++"""Capture the preferred graphic of one owned, validated ODP chart."""
++import hashlib
++import json
++import math
++import os
++from pathlib import Path
++import re
++import runpy
++import shutil
++import stat
++import subprocess
++import sys
++import tempfile
++import time
++from uuid import uuid4
++
++_PREFIX = '/opt/friday-document-toolchain'
++_PROGRAM = _PREFIX + '/root/usr/lib/libreoffice/program'
++_PYTHON_HOME = _PROGRAM + '/python-core-3.12.13'
++_DOCUMENT = Path('/work/input.odp')
++_BINDING = Path('/work/binding.json')
++_OUT = Path('/work/out')
++_CHART_CLASS = bytes.fromhex('12dcae26281f416fa234c3086127382e')
++_CHART_IMPL = 'com.sun.star.comp.chart2.ChartModel'
++_MIME = 'application/x-openoffice-gdimetafile;windows_formatname="GDIMetaFile"'
++_DATA_TYPE = '[]byte'
++_MAX_SVM_BYTES = 32768
++_MAX_BINDING_BYTES = 65536
++_BINDING_FIELDS = (
++    'candidate_sha256', 'slide', 'chart_part', 'replacement_part', 'frame_name',
++    'series', 'categories', 'values', 'target_index',
++)
++_DECIMAL = re.compile(r'-?(?:[0-9]{1,15})(?:\.[0-9]{1,12})?\Z')
++
++
++def _require(condition):
++    if not condition:
++        raise ValueError('odp_chart_capture_contract')
++
++
++def _sha(raw):
++    return hashlib.sha256(raw).hexdigest()
++
++
++def _json(value):
++    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
++
++
++def _expected_values(binding):
++    _require(type(binding) is dict and set(binding) == set(_BINDING_FIELDS))
++    _require(re.fullmatch('[a-f0-9]{64}', binding['candidate_sha256']) is not None)
++    _require(type(binding['slide']) is int and 1 <= binding['slide'] <= 200)
++    for name in ('chart_part', 'replacement_part', 'frame_name', 'series'):
++        text = binding[name]
++        _require(type(text) is str and 0 < len(text.encode('utf-8')) <= 1024 and '\x00' not in text)
++    categories, values = binding['categories'], binding['values']
++    _require(type(categories) is list and type(values) is list and 1 <= len(categories) == len(values) <= 128)
++    _require(all(type(item) is str and 0 < len(item.encode('utf-8')) <= 256 and '\x00' not in item for item in categories))
++    _require(len(set(categories)) == len(categories))
++    _require(type(binding['target_index']) is int and 0 <= binding['target_index'] < len(values))
++    _require(all(type(item) is str and _DECIMAL.fullmatch(item) for item in values))
++    numbers = tuple(float(item) for item in values)
++    _require(all(map(math.isfinite, numbers)))
++    return tuple(categories), numbers
++
++
++def _argv(work, toolchain):
++    from hermes_cli.friday_workspace_presentation import _argv as presentation_argv
++
++    argv = presentation_argv(work, toolchain, 'odp_pptx')
++    rest = ['/usr/bin/python3', '-I', '-B', '-S', '/renderer.py', '--render', 'odp_pptx']
++    _require(argv[-len(rest):] == rest)
++    argv[-len(rest):] = [_PROGRAM + '/python.bin', '-B', '-S', '-s', '-P', '/renderer.py']
++    boundary = argv.index('--remount-ro')
++    argv[boundary:boundary] = [
++        '--ro-bind', str(work/'binding.json'), str(_BINDING),
++        '--ro-bind', str(work/'profile_helper.py'), '/profile_helper.py',
++        '--setenv', 'PYTHONHOME', _PYTHON_HOME,
++        '--setenv', 'PYTHONPATH', f'{_PROGRAM}:{_PYTHON_HOME}/lib:{_PYTHON_HOME}/lib/lib-dynload',
++        '--setenv', 'URE_BOOTSTRAP', f'vnd.sun.star.pathname:{_PROGRAM}/fundamentalrc',
++        '--setenv', 'LD_LIBRARY_PATH', f'{_PROGRAM}:{_PREFIX}/root/usr/lib/x86_64-linux-gnu',
++        '--setenv', 'LANG', 'C.UTF-8',
++        '--setenv', 'LC_ALL', 'C.UTF-8',
++    ]
++    return argv
++
++
++def _read_capture(work, request):
++    from hermes_cli.friday_workspace_pdf import _private_bytes
++
++    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
++    root = os.open(work, flags)
++    output = None
++    try:
++        output = os.open('out', flags, dir_fd=root)
++        for descriptor in (root, output):
++            info = os.fstat(descriptor)
++            _require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700)
++        _require(set(os.listdir(output)) == {'chart.svm', 'capture.json'})
++        fresh = _private_bytes(output, 'chart.svm', _MAX_SVM_BYTES)
++        reported = _private_bytes(output, 'capture.json', 4096)
++    finally:
++        if output is not None:
++            os.close(output)
++        os.close(root)
++    _require(len(fresh) >= 61 and reported == _json(_proof(request, fresh)))
++    return fresh
++
++
++def _proof(request, fresh):
++    return dict(binding_sha256=_sha(request), fresh_sha256=_sha(fresh), bytes=len(fresh),
++                mime_type=_MIME, data_type=_DATA_TYPE, chart_model=_CHART_IMPL,
++                document_closed=True, owned_office_reaped=True, office_binary_identity_verified=True)
++
++
++def _mark_cleanup_unknown():
++    from agent.web_call_context import _current
++    call = _current.get()
++    if call is not None and hasattr(call, 'agent'):
++        call.agent._friday_reply_effect_unknown = True
++
++
++def capture_chart_svm(cap, prepared):
++    """Return fresh bytes after the originating native child has closed."""
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli import friday_workspace_presentation
++    from hermes_cli.friday_workspace_pdf import ExportRefused, _run, _toolchain
++    from hermes_cli.friday_workspace_revision import check
++
++    check(cap)
++    work = None
++    settled = True
++    try:
++        binding = {name: getattr(prepared.binding, name) for name in _BINDING_FIELDS}
++        binding['categories'] = list(binding['categories'])
++        binding['values'] = list(binding['values'])
++        _expected_values(binding)
++        _require(type(prepared.data) is bytes and 0 < len(prepared.data) <= 1_000_000)
++        _require(_sha(prepared.data) == binding['candidate_sha256'])
++        request = _json(binding)
++        _require(0 < len(request) <= _MAX_BINDING_BYTES)
++        toolchain = _toolchain(family='presentation')
++        work = Path(tempfile.mkdtemp(prefix='friday-odp-chart-'))
++        for name in ('out', 'home', 'tmp'):
++            (work/name).mkdir(mode=0o700)
++        for name, data in (('input.odp', prepared.data), ('binding.json', request),
++                           ('renderer.py', Path(__file__).read_bytes()),
++                           ('profile_helper.py', Path(friday_workspace_presentation.__file__).read_bytes())):
++            with os.fdopen(os.open(work/name, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600), 'wb') as output:
++                output.write(data)
++        check(cap)
++        _run(cap, _argv(work, toolchain), work)
++        check(cap)
++        fresh = _read_capture(work, request)
++        check(cap)
++        return fresh, _MIME, _DATA_TYPE
++    except (ScopeDenied, TimeoutError):
++        raise
++    except ExportRefused as error:
++        if str(error) == 'renderer_cleanup_unconfirmed':
++            settled = False
++        raise
++    except (OSError, TypeError, ValueError) as error:
++        raise ExportRefused('odp_chart_capture_refused') from error
++    finally:
++        if work is not None and settled:
++            try:
++                shutil.rmtree(work)
++            except OSError:
++                _mark_cleanup_unknown()
++                raise ExportRefused('renderer_cleanup_unconfirmed') from None
++
++
++def _one_object(doc, binding):
++    count = 0
++    selected = None
++    budget = 4096
++
++    def walk(shape, slide, direct, depth):
++        nonlocal count, selected, budget
++        budget -= 1
++        _require(depth <= 12 and budget >= 0)
++        if shape.supportsService('com.sun.star.drawing.GroupShape'):
++            for index in range(shape.getCount()):
++                walk(shape.getByIndex(index), slide, False, depth+1)
++            return
++        properties = shape.getPropertySetInfo()
++        if not properties.hasPropertyByName('EmbeddedObjectNoNewClient'):
++            return
++        obj = shape.getPropertyValue('EmbeddedObjectNoNewClient')
++        if obj is None:
++            return
++        count += 1
++        _require(count == 1 and direct and slide == binding['slide'])
++        _require(properties.hasPropertyByName('Name') and shape.getPropertyValue('Name') == binding['frame_name'])
++        _require(_bytes(obj.getClassID()) == _CHART_CLASS)
++        selected = obj
++
++    pages = doc.getDrawPages()
++    _require(binding['slide'] <= pages.getCount() <= 200)
++    for index in range(pages.getCount()):
++        page = pages.getByIndex(index)
++        for offset in range(page.getCount()):
++            walk(page.getByIndex(offset), index+1, True, 0)
++        notes = page.getNotesPage()
++        for offset in range(notes.getCount()):
++            walk(notes.getByIndex(offset), None, False, 0)
++    _require(count == 1 and selected is not None)
++    return selected
++
++
++def _bytes(value):
++    raw = getattr(value, 'value', value)
++    _require(type(raw) is bytes)
++    return raw
++
++
++def _check_data(model, binding, expected):
++    categories, numbers = expected
++    data = model.getData()
++    _require(tuple(data.getColumnDescriptions()) == (binding['series'],))
++    _require(tuple(data.getRowDescriptions()) == categories)
++    rows = tuple(data.getData())
++    _require(len(rows) == len(numbers) and all(len(row) == 1 for row in rows))
++    observed = tuple(row[0] for row in rows)
++    _require(all(type(item) is float and math.isfinite(item) for item in observed))
++    _require(observed == numbers)
++
++
++def _graphic(doc, uno, binding, expected):
++    selected = _one_object(doc, binding)
++    links = selected.queryInterface(uno.getTypeByName('com.sun.star.embed.XLinkageSupport'))
++    _require(links is not None and not links.isLink())
++    loaded = uno.getConstantByName('com.sun.star.embed.EmbedStates.LOADED')
++    running = uno.getConstantByName('com.sun.star.embed.EmbedStates.RUNNING')
++    state = selected.getCurrentState()
++    _require(state in (loaded, running))
++    if state == loaded:
++        selected.changeState(running)
++    _require(selected.getCurrentState() == running and not links.isLink())
++    model = selected.getComponent()
++    _require(model is not None and model.getImplementationName() == _CHART_IMPL)
++    _require(model.hasInternalDataProvider())
++    _require(model.getPropertySetInfo().hasPropertyByName('AddIn') and model.getPropertyValue('AddIn') is None)
++    _check_data(model, binding, expected)
++    endpoint = model.queryInterface(uno.getTypeByName('com.sun.star.embed.XVisualObject'))
++    _require(endpoint is not None)
++    mode = uno.getConstantByName('com.sun.star.embed.Aspects.MSOLE_CONTENT')
++    _require(type(mode) is int and mode == 1)
++    graphic = endpoint.getPreferredVisualRepresentation(mode)
++    _require(graphic.Flavor.MimeType == _MIME and graphic.Flavor.DataType == uno.getTypeByName(_DATA_TYPE))
++    fresh = _bytes(graphic.Data)
++    _require(61 <= len(fresh) <= _MAX_SVM_BYTES)
++    _require(selected.getCurrentState() == running and selected.getComponent() == model and not links.isLink())
++    _check_data(model, binding, expected)
++    return fresh
++
++
++def _limited_file(path, limit):
++    with path.open('rb') as stream:
++        raw = stream.read(limit+1)
++    _require(0 < len(raw) <= limit)
++    return raw
++
++
++def _component():
++    import resource
++    import uno
++    import unohelper
++    import pyuno
++    from com.sun.star.connection import NoConnectException
++    from com.sun.star.task import XInteractionHandler
++
++    _require(all(Path(module.__file__).resolve().parent == Path(_PROGRAM) for module in (uno, unohelper, pyuno)))
++    os.umask(0o077)
++    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:2])
++    for key, limit in ((resource.RLIMIT_AS, 2*1024**3), (resource.RLIMIT_CPU, 35),
++                       (resource.RLIMIT_FSIZE, 16*1024**2), (resource.RLIMIT_CORE, 0),
++                       (resource.RLIMIT_NOFILE, 128)):
++        resource.setrlimit(key, (limit, limit))
++
++    request = _limited_file(_BINDING, _MAX_BINDING_BYTES)
++    binding = json.loads(request)
++    _require(request == _json(binding))
++    expected = _expected_values(binding)
++    _require(_sha(_limited_file(_DOCUMENT, 1_000_000)) == binding['candidate_sha256'])
++    abort_type = uno.getTypeByName('com.sun.star.task.XInteractionAbort')
++
++    class AbortOnly(unohelper.Base, XInteractionHandler):
++        interrupted = False
++
++        def handle(self, request):
++            self.interrupted = True
++            for choice in request.getContinuations():
++                abort = choice.queryInterface(abort_type)
++                if abort is not None:
++                    abort.select()
++                    return
++            raise ValueError('odp_chart_interaction_refused')
++
++    def prop(name, value):
++        item = uno.createUnoStruct('com.sun.star.beans.PropertyValue')
++        item.Name, item.Value = name, value
++        return item
++
++    bootstrap = uno.getComponentContext()
++    resolver = bootstrap.ServiceManager.createInstanceWithContext('com.sun.star.bridge.UnoUrlResolver', bootstrap)
++    pipe = 'frw-odp-chart-' + uuid4().hex
++    command = [_PROGRAM+'/soffice.bin', '--headless', '--norestore', '--nodefault', '--nofirststartwizard',
++               '-env:UserInstallation=file:///work/home/profile', f'--accept=pipe,name={pipe};urp;']
++    env = dict(PATH='/usr/bin:/bin', HOME='/work/home', TMPDIR='/work/tmp', LANG='C.UTF-8',
++               LC_ALL='C.UTF-8', SAL_USE_VCLPLUGIN='svp', XDG_CACHE_HOME='/work/home/cache',
++               XDG_CONFIG_HOME='/work/home/config', XDG_RUNTIME_DIR='/work/tmp',
++               URE_BOOTSTRAP=f'vnd.sun.star.pathname:{_PROGRAM}/fundamentalrc',
++               LD_LIBRARY_PATH=f'{_PROGRAM}:{_PREFIX}/root/usr/lib/x86_64-linux-gnu')
++    deadline = time.monotonic() + 35
++    # The presentation bank requests a restart on its first extension-cache
++    # initialization. Use its existing document-free trusted preparation.
++    profile = runpy.run_path('/profile_helper.py')['_prepare_presentation_profile']
++    profile(_PROGRAM, env, deadline)
++    executable = Path(command[0]).stat()
++    process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL)
++    desktop = doc = None
++    try:
++        end = min(deadline, time.monotonic()+12)
++        while True:
++            try:
++                remote = resolver.resolve(f'uno:pipe,name={pipe};urp;StarOffice.ComponentContext')
++                break
++            except NoConnectException:
++                _require(process.poll() is None and time.monotonic() < end)
++                time.sleep(0.04)
++        live = Path(f'/proc/{process.pid}/exe').stat()
++        _require(process.poll() is None and (live.st_dev, live.st_ino) == (executable.st_dev, executable.st_ino))
++        desktop = remote.ServiceManager.createInstanceWithContext('com.sun.star.frame.Desktop', remote)
++        handler = AbortOnly()
++        never = uno.getConstantByName('com.sun.star.document.MacroExecMode.NEVER_EXECUTE')
++        no_update = uno.getConstantByName('com.sun.star.document.UpdateDocMode.NO_UPDATE')
++        _require(type(never) is int and type(no_update) is int and never == no_update == 0)
++        args = tuple(prop(name, value) for name, value in (
++            ('ReadOnly', True), ('Hidden', True), ('Silent', True),
++            ('MacroExecutionMode', uno.Any('short', never)), ('UpdateDocMode', uno.Any('short', no_update)),
++            ('InteractionHandler', handler),
++        ))
++        url = _DOCUMENT.as_uri()
++        doc = desktop.loadComponentFromURL(url, '_blank', 0, args)
++        _require(doc is not None and not handler.interrupted and doc.isReadonly() and doc.getURL() == url)
++        _require(doc.supportsService('com.sun.star.presentation.PresentationDocument') and not doc.isModified())
++        fresh = _graphic(doc, uno, binding, expected)
++        _require(not handler.interrupted and doc.isReadonly() and doc.getURL() == url and not doc.isModified())
++        doc.close(True)
++        doc = None
++        _require(desktop.terminate())
++        desktop = None
++        _require(process.wait(timeout=5) == 0)
++        _require(_limited_file(_BINDING, _MAX_BINDING_BYTES) == request)
++        _require(_sha(_limited_file(_DOCUMENT, 1_000_000)) == binding['candidate_sha256'])
++        with (_OUT/'chart.svm').open('xb') as blob:
++            blob.write(fresh)
++        with (_OUT/'capture.json').open('xb') as report:
++            report.write(_json(_proof(request, fresh)))
++    finally:
++        try:
++            if doc is not None:
++                doc.dispose()
++            if desktop is not None:
++                desktop.terminate()
++        finally:
++            if process.poll() is None:
++                process.terminate()
++                try:
++                    process.wait(timeout=2)
++                except subprocess.TimeoutExpired:
++                    process.kill()
++                    process.wait(timeout=2)
++
++
++if __name__ == '__main__':
++    if len(sys.argv) != 1 or Path.cwd() != Path('/work') or not sys.dont_write_bytecode:
++        raise SystemExit(2)
++    try:
++        _component()
++    except Exception as error:
++        trace = error.__traceback__
++        locations = []
++        while trace is not None:
++            code = trace.tb_frame.f_code
++            if code.co_filename == __file__:
++                locations.append([code.co_name, trace.tb_lineno])
++            trace = trace.tb_next
++        sys.stderr.write(_json(dict(error=type(error).__name__, local_sites=locations)).decode()+'\n')
++        raise SystemExit(1) from None
+diff --git a/hermes_cli/friday_workspace_presentation_variants.py b/hermes_cli/friday_workspace_presentation_variants.py
+--- a/hermes_cli/friday_workspace_presentation_variants.py
++++ b/hermes_cli/friday_workspace_presentation_variants.py
+@@ -79,7 +79,15 @@
+                     raise PresentationRefused('edit_output_profile_mismatch')
+                 if not isinstance(request['edit'], dict):
+                     raise PresentationRefused('edit_schema')
+-                result = edit_profile(original, format, request['edit'])
++                if target == 'odp' and 'chart' in request['edit']:
++                    from hermes_cli.friday_workspace_odp_chart_capture import capture_chart_svm
++                    from tools.scoped_presentation_odp_chart_edit import prepare_odp_chart_edit, replace_chart_svm
++
++                    prepared = prepare_odp_chart_edit(original, request['edit'])
++                    fresh, mime_type, data_type = capture_chart_svm(cap, prepared)
++                    result = replace_chart_svm(prepared, fresh, mime_type=mime_type, data_type=data_type)
++                else:
++                    result = edit_profile(original, format, request['edit'])
+                 details['preserving_edit'] = True
+             else:
+                 result = _convert(cap, original, format, target)
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2213,7 +2213,15 @@
+     '{source,slide,table,row,column,old_value,new_value}; values are dot-decimal strings. '
+     'For a heading plus such a number, use a new same-format intermediate as the second edit source; retain the original. '
+     'Each step must satisfy its own source profile; text-only admission does not broaden table editing. '
+-    'Native ODP chart-data edits are unsupported by these routes. '
++    'For one ODP chart value use presentation_edit, a NEW .odp path, and content JSON string '
++    '{"source":"deck.odp","edit":{"slide":3,"chart":{"series":"Sales","category":"A01",'
++    '"old_value":"3601.5","new_value":"3602.5"}}}. '
++    'Use exact series/category and dot-decimal strings for the current and new values; slide is one-based. '
++    'Optional edit.title on that slide is {"old_text":"Old title","new_text":"New title"}; '
++    'add "layout":"fit_title" inside title for logical fitting. '
++    'One passive local bar chart with a linked GDI/SVM. Stale, ambiguous, repeated, formula, '
++    'active, external or unsupported targets and failed fresh SVM checks refuse before publication. '
++    'Creates one copy and keeps the source. '
+     'PPTX title-plus-chart edit uses pptx_edit with exactly '
+     '{source,slide,old_title,new_title,category,old_value,new_value}; chart cache and embedded workbook change together. '
+     'All slide/table/row/column indexes are one-based. Ambiguous matches, unsupported typed/repeated/formula targets '
+diff --git a/tools/scoped_presentation_odp_chart_edit.py b/tools/scoped_presentation_odp_chart_edit.py
+new file mode 100644
+--- /dev/null
++++ b/tools/scoped_presentation_odp_chart_edit.py
+@@ -0,0 +1,413 @@
++"""Pure edits for one locally bound bar chart in a passive ODP.
++
++The caller owns workspace custody, the same-call ChartModel observation, and
++publication. This module never opens a path or starts a renderer.
++"""
++
++from dataclasses import dataclass
++from decimal import Decimal
++from hashlib import sha256
++from io import BytesIO
++import math
++import re
++from xml.etree import ElementTree as ET
++
++from tools.scoped_presentation import CH, DR, O, PR, T, TB, XL, Package, PresentationError, q
++from tools.scoped_presentation_generated_odp import GDI, _manifest, _resources, _svm, _xml_profile
++from tools.scoped_presentation_layout import _length, _patch, _spans, require_title_preimage
++from tools.scoped_presentation_odp_text_source import source_parts
++from tools.scoped_presentation_text import edit_text
++from tools.scoped_presentation_variants import _namespaces
++from tools.scoped_presentation_write import PresentationRefused, _odp_structure, _rewrite, _xml, decimal, text
++
++_SVG = 'urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0'
++_STYLE = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0'
++_FO = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0'
++_NUM = 'urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0'
++_META = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
++_LO = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
++_OO = 'http://openoffice.org/2010/chart'
++_CELL = q(TB, 'table-cell')
++_DISPLAY = q(T, 'p')
++_VALUE = q(O, 'value')
++_TYPE = q(O, 'value-type')
++_EXTERNAL_DATA = q(_LO, 'external-data')
++_MAX_ROWS = 64
++_MAX_SVM_BYTES = 32768
++_VALUE_TOKEN = re.compile(rb'\soffice:value\s*=\s*(["\'])([^"\']*)\1')
++_ACTIVE_NAMESPACES = tuple('{' + uri + '}' for uri in (
++    'urn:oasis:names:tc:opendocument:xmlns:form:1.0',
++    'urn:oasis:names:tc:opendocument:xmlns:script:1.0',
++    'http://openoffice.org/2000/script',
++    'http://www.w3.org/2002/xforms',
++    'http://www.w3.org/2001/xml-events',
++    'http://www.w3.org/2001/SMIL20/',
++    'urn:oasis:names:tc:opendocument:xmlns:smil-compatible:1.0',
++    'urn:oasis:names:tc:opendocument:xmlns:animation:1.0',
++))
++_GEOMETRY = {q(_SVG, part) for part in ('width', 'height', 'x', 'y')}
++_STYLE_REF = {q(CH, 'style-name')}
++
++# This is a chart subdocument profile. The presentation, theme and notes keep
++# their existing passive package guards. No other chart kinds or import modes
++# are implied by the editing surface.
++_CHART_ATTRIBUTES = {
++    q(O, 'document-content'): {q(O, 'version')},
++    q(O, 'automatic-styles'): set(), q(O, 'body'): set(), q(O, 'chart'): set(),
++    q(CH, 'chart'): {q(CH, 'class'), q(XL, 'href'), q(XL, 'type')} | _STYLE_REF | _GEOMETRY,
++    q(CH, 'title'): _STYLE_REF | _GEOMETRY,
++    q(CH, 'plot-area'): _STYLE_REF | _GEOMETRY,
++    q(CH, 'coordinate-region'): _GEOMETRY,
++    q(CH, 'axis'): {q(CH, 'dimension'), q(CH, 'name'), q(_OO, 'axis-type')} | _STYLE_REF,
++    q(_OO, 'date-scale'): set(),
++    q(CH, 'categories'): {q(TB, 'cell-range-address')},
++    q(CH, 'grid'): {q(CH, 'class')} | _STYLE_REF,
++    q(CH, 'series'): {q(CH, name) for name in ('class', 'label-cell-address', 'values-cell-range-address')} | _STYLE_REF,
++    q(CH, 'data-point'): {q(CH, 'repeated')},
++    q(CH, 'wall'): _STYLE_REF, q(CH, 'floor'): _STYLE_REF,
++    q(TB, 'table'): {q(TB, 'name')},
++    q(TB, 'table-header-columns'): set(), q(TB, 'table-columns'): set(),
++    q(TB, 'table-column'): set(), q(TB, 'table-header-rows'): set(),
++    q(TB, 'table-rows'): set(), q(TB, 'table-row'): set(), _CELL: {_TYPE, _VALUE},
++    _DISPLAY: set(), q(T, 'span'): {q(T, 'style-name')},
++    q(_STYLE, 'style'): {q(_STYLE, name) for name in ('data-style-name', 'family', 'name')},
++    q(_STYLE, 'graphic-properties'): {q(DR, name) for name in ('fill', 'fill-color', 'stroke')} |
++                                     {q(_SVG, name) for name in ('stroke-color', 'stroke-width')},
++    q(_STYLE, 'text-properties'): {q(_FO, name) for name in ('color', 'font-family', 'font-size', 'font-weight')} |
++                                  {q(_STYLE, name) for name in ('font-size-asian', 'font-size-complex',
++                                       'font-weight-asian', 'font-weight-complex', 'text-position')},
++    q(_STYLE, 'chart-properties'): {q(CH, name) for name in (
++        'auto-position', 'auto-size', 'axis-position', 'display-label', 'gap-width', 'include-hidden-cells',
++        'interval-minor-divisor', 'label-arrangement', 'link-data-style-to-source', 'logarithmic',
++        'reverse-direction', 'tick-mark-position', 'treat-empty-cells')} |
++        {_EXTERNAL_DATA, q(_LO, 'try-staggering-first'), q(_STYLE, 'rotation-angle'), q(T, 'line-break')},
++    q(_NUM, 'number-style'): {q(_STYLE, 'name')},
++    q(_NUM, 'date-style'): {q(_STYLE, 'name')} | {q(_NUM, name) for name in ('automatic-order', 'country', 'language')},
++    q(_NUM, 'number'): {q(_NUM, 'min-integer-digits')},
++    q(_NUM, 'text'): set(),
++    **{q(_NUM, tag): {q(_NUM, 'style')} for tag in ('day', 'month', 'year')},
++}
++
++
++@dataclass(frozen=True)
++class ChartBinding:
++    candidate_sha256: str
++    slide: int
++    chart_part: str
++    replacement_part: str
++    frame_name: str
++    series: str
++    categories: tuple[str, ...]
++    values: tuple[str, ...]
++    target_index: int
++
++
++@dataclass(frozen=True)
++class PreparedChartEdit:
++    data: bytes
++    binding: ChartBinding
++
++
++@dataclass(frozen=True)
++class _Selection:
++    slides: list
++    chart_part: str
++    replacement_part: str
++    frame: ET.Element
++    chart_root: ET.Element
++    series: str
++    categories: tuple[str, ...]
++    values: tuple[str, ...]
++    value_cells: tuple[ET.Element, ...]
++
++
++def _require(condition, reason):
++    if not condition:
++        raise PresentationRefused('odp_chart_' + reason)
++
++
++def _request_text(value, *, limit=4000, empty=False):
++    try:
++        return text(value, limit=limit, empty=empty)
++    except UnicodeError:
++        raise PresentationRefused('odp_chart_invalid_text') from None
++
++
++def _children(node, *tags):
++    _require(tuple(child.tag for child in node) == tags, 'structure')
++    return tuple(node)
++
++
++def _chart_styles(automatic, plot_style):
++    names = {}
++    for style in automatic:
++        name = style.get(q(_STYLE, 'name'))
++        _require(name and name not in names, 'style')
++        names[name] = style
++        if style.tag == q(_STYLE, 'style'):
++            _require(style.get(q(_STYLE, 'family')) in ('chart', 'text'), 'style')
++            allowed = {q(_STYLE, tag) for tag in ('chart-properties', 'graphic-properties', 'text-properties')}
++        elif style.tag == q(_NUM, 'number-style'):
++            allowed = {q(_NUM, 'number')}
++        else:
++            _require(style.tag == q(_NUM, 'date-style'), 'style')
++            allowed = {q(_NUM, tag) for tag in ('day', 'month', 'year', 'text')}
++        _require(all(child.tag in allowed and not len(child) for child in style), 'style')
++        if style.tag == q(_STYLE, 'style'):
++            _require(len({child.tag for child in style}) == len(style), 'style')
++    _require(plot_style in names and names[plot_style].tag == q(_STYLE, 'style')
++             and names[plot_style].get(q(_STYLE, 'family')) == 'chart', 'style')
++    return names[plot_style].find(q(_STYLE, 'chart-properties'))
++
++
++def _plain_cell(cell, kind):
++    paragraph, = _children(cell, _DISPLAY)
++    _require(not len(paragraph), 'cell')
++    if kind == 'empty':
++        _require(not cell.attrib and not paragraph.text, 'cell')
++        return ''
++    _require(cell.get(_TYPE) == kind, 'cell')
++    value = paragraph.text
++    if kind == 'string':
++        _require(set(cell.attrib) == {_TYPE}, 'cell')
++        return text(value, limit=256)
++    _require(set(cell.attrib) == {_TYPE, _VALUE} and value == cell.get(_VALUE), 'display_value')
++    decimal(value)
++    return value
++
++
++def _local_table(table, series, category_axis, data_point):
++    header_cols, data_cols, header_rows, data_rows = _children(
++        table, *(q(TB, name) for name in ('table-header-columns', 'table-columns', 'table-header-rows', 'table-rows')))
++    for cols in (header_cols, data_cols):
++        column, = _children(cols, q(TB, 'table-column'))
++        _children(column)
++    header, = _children(header_rows, q(TB, 'table-row'))
++    corner, label = _children(header, _CELL, _CELL)
++    _plain_cell(corner, 'empty')
++    series_name = _plain_cell(label, 'string')
++    name = table.get(q(TB, 'name'), '')
++    _require(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,63}', name) and 1 <= len(data_rows) <= _MAX_ROWS, 'table')
++    last = len(data_rows) + 1
++    _require(series.get(q(CH, 'label-cell-address')) == f'{name}.$B$1'
++             and series.get(q(CH, 'values-cell-range-address')) == f'{name}.$B$2:.$B${last}'
++             and category_axis.get(q(TB, 'cell-range-address')) == f'{name}.$A$2:.$A${last}'
++             and data_point.get(q(CH, 'repeated')) == str(len(data_rows)), 'local_ranges')
++    categories, values, cells = [], [], []
++    for row in data_rows:
++        _require(row.tag == q(TB, 'table-row'), 'cell')
++        category, cell = _children(row, _CELL, _CELL)
++        categories.append(_plain_cell(category, 'string'))
++        values.append(_plain_cell(cell, 'float'))
++        cells.append(cell)
++    _require(len(set(categories)) == len(categories), 'category_ambiguous')
++    return series_name, tuple(categories), tuple(values), tuple(cells)
++
++
++def _chart(raw, document):
++    root = _xml(raw)
++    # QName-valued chart:class must be bound at its point of use. A
++    # declaration in a sibling style does not bind it in the chart body.
++    root_namespaces = {}
++    for event, binding in ET.iterparse(BytesIO(raw), events=('start-ns', 'start')):
++        if event == 'start':
++            break
++        prefix, uri = binding
++        root_namespaces[prefix] = uri
++    _require(root_namespaces.get('chart') == CH and root_namespaces.get('office') == O, 'namespace')
++    _namespaces(raw)  # Refuse any disguised nested rebindings.
++    for node in root.iter():
++        _require(node.tag in _CHART_ATTRIBUTES and set(node.attrib) <= _CHART_ATTRIBUTES[node.tag], 'chart_xml')
++        _require(not (node.tail or '').strip() and (
++            node.tag in (_DISPLAY, q(T, 'span'), q(_NUM, 'text')) or not (node.text or '').strip()), 'chart_xml')
++    _require(root.tag == q(O, 'document-content'), 'structure')
++    automatic, body = _children(root, q(O, 'automatic-styles'), q(O, 'body'))
++    office_chart, = _children(body, q(O, 'chart'))
++    chart, = _children(office_chart, q(CH, 'chart'))
++    _require(chart.get(q(CH, 'class')) == 'chart:bar' and chart.get(q(XL, 'href')) == '.'
++             and chart.get(q(XL, 'type')) == 'simple', 'kind')
++    title, plot, table = _children(chart, q(CH, 'title'), q(CH, 'plot-area'), q(TB, 'table'))
++    title_text, = _children(title, _DISPLAY)
++    if len(title_text):
++        span, = _children(title_text, q(T, 'span'))
++        _children(span)
++    coord, x_axis, y_axis, series, wall, floor = _children(
++        plot, *(q(CH, tag) for tag in ('coordinate-region', 'axis', 'axis', 'series', 'wall', 'floor')))
++    date_scale, category_axis = _children(x_axis, q(_OO, 'date-scale'), q(CH, 'categories'))
++    grid, = _children(y_axis, q(CH, 'grid'))
++    for node in (coord, date_scale, category_axis, grid, wall, floor):
++        _children(node)
++    _require(x_axis.get(q(CH, 'dimension')) == 'x' and x_axis.get(q(_OO, 'axis-type')) in (None, 'auto')
++             and y_axis.get(q(CH, 'dimension')) == 'y' and q(_OO, 'axis-type') not in y_axis.attrib
++             and grid.get(q(CH, 'class')) == 'major' and series.get(q(CH, 'class')) == 'chart:bar', 'kind')
++    data_point, = _children(series, q(CH, 'data-point'))
++    _children(data_point)
++    props = _chart_styles(automatic, plot.get(q(CH, 'style-name')))
++    for node in root.iter():
++        if _EXTERNAL_DATA in node.attrib:
++            # Import provenance on the selected plot style, not a link or provider.
++            _require(node is props and re.fullmatch(r'ppt/embeddings/[A-Za-z0-9_ -]{1,72}\.xlsx',
++                                                     node.get(_EXTERNAL_DATA)), 'external_data')
++    foreign_chart = ('{' + CH + '}', '{' + _OO + '}')
++    for subdoc in document:
++        for node in subdoc.iter():
++            _require(node.tag != q(O, 'forms') and not node.tag.startswith(_ACTIVE_NAMESPACES)
++                     and not any(name.startswith(_ACTIVE_NAMESPACES) for name in node.attrib), 'active_context')
++            _require(_EXTERNAL_DATA not in node.attrib and not node.tag.startswith(foreign_chart)
++                     and not any(name.startswith(foreign_chart) for name in node.attrib), 'other_chart_context')
++    return root, _local_table(table, series, category_axis, data_point)
++
++
++def _auxiliary(parts, object_name):
++    styles = parts.get(object_name + '/styles.xml')
++    if styles is not None:
++        root = _xml(styles)
++        _require(root.tag == q(O, 'document-styles') and set(root.attrib) <= {q(O, 'version')}, 'object_auxiliary')
++        section, = _children(root, q(O, 'styles'))
++        _require(not section.attrib and not len(section) and not (section.text or '').strip(), 'object_auxiliary')
++    meta = parts.get(object_name + '/meta.xml')
++    if meta is not None:
++        root = _xml(meta)
++        _require(root.tag == q(O, 'document-meta') and set(root.attrib) <= {q(O, 'version')}, 'object_auxiliary')
++        section, = _children(root, q(O, 'meta'))
++        generator, = _children(section, q(_META, 'generator'))
++        _require(not section.attrib and not generator.attrib and not len(generator), 'object_auxiliary')
++
++
++def _source_chart(data, slide):
++    infos, parts = source_parts(data)
++    _, slides = _odp_structure(infos, parts)
++    _require(type(slide) is int and 1 <= slide <= len(slides), 'slide')
++    try:
++        pkg = Package(data)
++        objects = _manifest(pkg)
++        _xml_profile(pkg, objects)
++        _resources(pkg, objects)
++    except PresentationError as error:
++        raise PresentationRefused(str(error)) from None
++    _require(len(objects) == 1, 'object')
++    object_name, = objects
++    chart_part = object_name + '/content.xml'
++    replacement = 'ObjectReplacements/' + object_name
++    _require(replacement in parts, 'replacement')
++    page = slides[slide - 1]
++    _require(page.get(q(PR, 'visibility')) in (None, 'visible') and page.get(q(DR, 'display')) is None, 'slide')
++    all_objects = [(name, node) for name, root in pkg.xml.items() for node in root.iter(q(DR, 'object'))]
++    frames = [frame for frame in page if frame.tag == q(DR, 'frame') and frame.find(q(DR, 'object')) is not None]
++    _require(len(all_objects) == 1 and all_objects[0][0] == 'content.xml' and len(frames) == 1, 'object')
++    frame, = frames
++    frame_attrs = _GEOMETRY | {q(DR, key) for key in ('name', 'style-name', 'text-style-name', 'layer')}
++    frame_name = frame.get(q(DR, 'name'))
++    _require(set(frame.attrib) <= frame_attrs and frame.get(q(DR, 'layer')) in (None, 'layout')
++             and frame_name and sum(node.get(q(DR, 'name')) == frame_name for node in page.iter()) == 1, 'frame')
++    text(frame_name, limit=256)
++    geometry = {field: _length(frame.get(q(_SVG, field))) for field in ('width', 'height', 'x', 'y')}
++    _require(geometry['width'] > 0 and geometry['height'] > 0, 'frame')
++    graphics = [style for root in pkg.xml.values() for style in root.iter(q(_STYLE, 'style'))
++                if style.get(q(_STYLE, 'family')) == 'graphic'
++                and style.get(q(_STYLE, 'name')) == frame.get(q(DR, 'style-name'))]
++    _require(len(graphics) == 1, 'aspect')
++    props = graphics[0].findall(q(_STYLE, 'graphic-properties'))
++    _require(len(props) == 1 and props[0].get(q(DR, 'ole-draw-aspect')) == '1', 'aspect')
++    obj, image = _children(frame, q(DR, 'object'), q(DR, 'image'))
++    link = {q(XL, 'type'): 'simple', q(XL, 'show'): 'embed', q(XL, 'actuate'): 'onLoad'}
++    _require(obj.attrib == {**link, q(XL, 'href'): './' + object_name}
++             and image.attrib == {**link, q(XL, 'href'): './' + replacement} and not len(image)
++             and len(obj) <= 1, 'object_link')
++    _auxiliary(parts, object_name)
++    chart_root, table = _chart(parts[chart_part], [root for name, root in pkg.xml.items() if name != chart_part])
++    return infos, parts, _Selection(slides, chart_part, replacement, frame, chart_root, *table)
++
++
++def _chart_bytes(raw, root, cell, replacement):
++    paragraph, = _children(cell, _DISPLAY)
++    begin, _, opening_end, empty = _spans(raw, root, _CELL)[cell]
++    matches = list(_VALUE_TOKEN.finditer(raw[begin:opening_end]))
++    _require(not empty and len(matches) == 1 and matches[0][2] == cell.get(_VALUE).encode('ascii'), 'value_span')
++    low, high = matches[0].span(2)
++    _, end, text_begin, empty = _spans(raw, root, _DISPLAY)[paragraph]
++    text_end = raw.rfind(b'</', text_begin, end)
++    _require(not empty and text_end >= text_begin and raw[text_begin:text_end] == paragraph.text.encode('ascii'), 'value_span')
++    value = replacement.encode('ascii')
++    changed = _patch(raw, [(begin + low, begin + high, value), (text_begin, text_end, value)])
++    cell.set(_VALUE, replacement)
++    paragraph.text = replacement
++    _require(ET.tostring(_xml(changed)) == ET.tostring(root), 'value_span')
++    return changed
++
++
++def _proof_rewrite(before, after, changes):
++    _require(list(before) == list(after) and all(
++        actual == changes.get(name, before[name]) for name, actual in after.items()), 'package_delta')
++
++
++def _binding(data, slide, selected, index):
++    return ChartBinding(sha256(data).hexdigest(), slide, selected.chart_part, selected.replacement_part,
++                        selected.frame.get(q(DR, 'name')), selected.series, selected.categories, selected.values, index)
++
++
++def prepare_odp_chart_edit(data, spec):
++    """Prepare one chart edit and an optional whole title in a single staged ODP."""
++    keys = {'slide', 'chart'}
++    _require(type(spec) is dict and set(spec) in (keys, keys | {'title'}), 'schema')
++    slide, chart = spec['slide'], spec['chart']
++    _require(type(chart) is dict and set(chart) == {'series', 'category', 'old_value', 'new_value'}, 'schema')
++    series = _request_text(chart['series'], limit=256)
++    category = _request_text(chart['category'], limit=256)
++    old, new = decimal(chart['old_value']), decimal(chart['new_value'])
++    previous_float, new_float = float(old), float(new)
++    _require(old != new and previous_float != new_float
++             and all(math.isfinite(value) and Decimal(str(value)) == number
++                     for value, number in ((previous_float, old), (new_float, new))), 'numeric_precision')
++    infos, original, selected = _source_chart(data, slide)
++    _require(series == selected.series and category in selected.categories, 'target')
++    index = selected.categories.index(category)
++    _require(decimal(selected.values[index]) == old, 'old_value')
++    changes = {selected.chart_part: _chart_bytes(original[selected.chart_part], selected.chart_root,
++                                                 selected.value_cells[index], chart['new_value'])}
++    if 'title' in spec:
++        title = spec['title']
++        fields = {'old_text', 'new_text'}
++        _require(type(title) is dict and set(title) in (fields, fields | {'layout'})
++                 and title['old_text'] != title['new_text'], 'title_schema')
++        _request_text(title['old_text'])
++        _request_text(title['new_text'], empty=True)
++        require_title_preimage(selected.slides[slide - 1], title['old_text'], ooxml=False)
++        titled = edit_text(data, 'odp', {**title, 'slide': slide, 'role': 'slide'})
++        _, title_parts, title_selection = _source_chart(titled, slide)
++        title_change = {'content.xml': title_parts['content.xml']}
++        _proof_rewrite(original, title_parts, title_change)
++        require_title_preimage(title_selection.slides[slide - 1], title['new_text'], ooxml=False)
++        changes.update(title_change)
++    staged = _rewrite(infos, original, changes)
++    _, final, post = _source_chart(staged, slide)
++    _proof_rewrite(original, final, changes)
++    values = selected.values[:index] + (chart['new_value'],) + selected.values[index + 1:]
++    _require(post.chart_part == selected.chart_part and post.replacement_part == selected.replacement_part
++             and ET.tostring(post.frame) == ET.tostring(selected.frame)
++             and post.series == series and post.categories == selected.categories and post.values == values, 'postimage')
++    return PreparedChartEdit(staged, _binding(staged, slide, post, index))
++
++
++def replace_chart_svm(prepared, fresh_svm, *, mime_type, data_type):
++    """Synchronize only the linked fallback with bytes from the caller's verified capture."""
++    _require(type(prepared) is PreparedChartEdit and type(prepared.binding) is ChartBinding
++             and type(prepared.data) is bytes, 'capture_binding')
++    _require(type(fresh_svm) is bytes and mime_type == GDI and data_type == '[]byte'
++             and 61 <= len(fresh_svm) <= _MAX_SVM_BYTES, 'capture_format')
++    bound = prepared.binding
++    _require(sha256(prepared.data).hexdigest() == bound.candidate_sha256, 'capture_binding')
++    infos, parts, selected = _source_chart(prepared.data, bound.slide)
++    # Verify the candidate and complete vector. The caller retains edit-intent
++    # provenance (including the target index); the fallback belongs to the
++    # whole selected chart and is never selected by this index.
++    _require(type(bound.target_index) is int and 0 <= bound.target_index < len(selected.values)
++             and _binding(prepared.data, bound.slide, selected, bound.target_index) == bound, 'capture_binding')
++    _svm(fresh_svm)
++    if parts[bound.replacement_part] == fresh_svm:
++        return prepared.data
++    changes = {bound.replacement_part: fresh_svm}
++    result = _rewrite(infos, parts, changes)
++    _, after, _ = _source_chart(result, bound.slide)
++    _proof_rewrite(parts, after, changes)
++    return result
