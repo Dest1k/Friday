@@ -1,0 +1,477 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -310,6 +310,7 @@
+     'source, source_sha256 (точный хеш из того же актуального чтения), paragraph (номер из этого чтения, включая абзацы ячеек), old_text, new_text. '
+     'В выбранном абзаце требуется одно буквальное совпадение; совпадения в других абзацах не меняются. '
+     'Если исходник изменился после чтения, перечитай его и заново выбери абзац; не подставляй новый хеш автоматически. Выход — новый файл того же профиля. Не принимай и не отклоняй отслеживаемые правки этим действием. '
++    'Для нескольких правок или правки сохранённого колонтитула, сноски или комментария DOCX используй тот же формат с source/source_sha256/edits по схеме content. '
+     'Для нового документа используй format с именем профиля (docx/dotx/odt/ott/fodt); '
+     'для структурного создания добавь _structured, для сохраняющей копии _edit. '
+     'Для шаблона ODF используй odt_fill (ODT/OTT в новый ODT) или fodt_fill (FODT в новый FODT) '
+@@ -445,7 +446,7 @@
+             'Read an own-workspace UTF-8 text file with numbered lines. Use offset, limit and the '
+             'returned next_offset/next_char_offset for continuation. PDF, Word DOCX/DOTX/DOCM/DOTM, '
+             'ODF ODT/OTT/FODT, spreadsheets XLSX/XLTX/XLSM/XLTM/ODS/OTS/FODS and RTF expose bounded '
+-            'native text or cell views; images and layout are not covered. DOCX/DOTX pages also return source_sha256 of the exact package read; keep it with the selected paragraph for word_located_edit. DOCM/DOTM expose inert reads and a separate source-bound word_macro_edit; '
++            'native text or cell views; images and layout are not covered. DOCX/DOTX pages also return source_sha256 of the exact package read; keep it with the selected paragraph or stored story/comment identifiers for word_located_edit. DOCM/DOTM expose inert reads and a separate source-bound word_macro_edit; '
+             'profiles: VBA remains opaque and is never executed; cached fields are never evaluated. '
+             'Supported native ODS charts expose source ranges and verified matching local caches; chart metadata is not visual or Office acceptance. '
+             'Word review documents expose separate FINAL/ORIGINAL paragraph views, TRACKED changes and '
+@@ -542,6 +543,8 @@
+             'Native ODS: ods_chart uses exactly {source,sheet,range,title} into a NEW .ods. range is A1:Bn or A1:Cn, with headers, literal text categories and one or two literal numeric series; formula or unavailable selected cells refuse. A real editable column chart has source references and matching local caches. ods_recalculate uses exactly {source} into a NEW .ods and recalculates only existing acyclic numeric SUM ranges and two-cell products, preserving formulas and other package members. Unsupported formulas/content, missing/non-numeric dependencies, cycles and charted recalculation inputs refuse. Readback is structural, without Office or visual acceptance. '
+             'For Word reports with native TOC and page fields use docx_report, a NEW .docx, and JSON blocks plus optional toc_levels(1-9), header, page_numbers(boolean). TOC and page fields require later refresh; no layout/page-count or Office/PDF acceptance is implied. '
+             'Word located edit: word_located_edit with exact JSON source/source_sha256/paragraph/old_text/new_text and a NEW matching .docx/.dotx. Use source_sha256 and the one-based paragraph number from the same current native reading (including table cells); a changed source refuses. Reread and reselect after a refusal, never just substitute a new hash. Change one literal match only there, preserving all other occurrences. No field/anchor-spanning edit or acceptance of tracked changes. '
++            'For a DOCX batch or stored-story edit use the same format with {source,source_sha256,edits} '
++            'and a NEW .docx path. See content for exact selectors. The list is applied as one write. '
+             'ODM/ODF: read_file returns bounded stored views with PARTIAL coverage and source SHA-256. ODM stays read-only; linked sections and cached text are not resolved or presented as current subdocument content. ODF returns inert MathML nodes with one-based IDs and source annotations, never a computed or rendered equation. Use explicit odf_formula_create or odf_formula_edit for the bounded native formula profile and a NEW .odf path; unsupported variants refuse. No conversion, password support, link fetching or raw text/XML writes. '
+             'Word DOCX/DOTX and ODF ODT/OTT/FODT: profile name creates plain text natively; '
+             'profile_structured creates typed JSON blocks; profile_edit uses exact '
+--- a/hermes_cli/friday_workspace_word_located.py
++++ b/hermes_cli/friday_workspace_word_located.py
+@@ -1,4 +1,4 @@
+-"""Existing source custody and create-only publisher for a numbered Word edit."""
++"""Source custody and create-only publication for located Word edits."""
+ import hashlib
+ import json
+ from pathlib import Path
+@@ -6,7 +6,7 @@
+ from hermes_cli.friday_user_scope import ScopeDenied,workspace_document
+ from hermes_cli.friday_workspace_docx import _check_parent,_create_bytes
+ from hermes_cli.friday_workspace_revision import check
+-from tools.scoped_word_located import edit_paragraph
++from tools.scoped_word_located import edit_paragraph, edit_paragraphs
+ from tools.scoped_word_profiles import WordProfileError
+ 
+ 
+@@ -22,7 +22,12 @@
+         return result
+     try:spec=json.loads(content,object_pairs_hook=pairs)
+     except(ValueError,RecursionError):raise ScopeDenied()from None
+-    if not isinstance(spec,dict)or set(spec)!={'source','source_sha256','paragraph','old_text','new_text'}:raise ScopeDenied()
++    if not isinstance(spec, dict):
++        raise ScopeDenied()
++    keys = set(spec)
++    batch = keys == {'source', 'source_sha256', 'edits'}
++    if not batch and keys != {'source', 'source_sha256', 'paragraph', 'old_text', 'new_text'}:
++        raise ScopeDenied()
+     expected=spec['source_sha256']
+     if (not isinstance(expected,str)or len(expected)!=64
+             or any(c not in '0123456789abcdef'for c in expected)):raise ScopeDenied()
+@@ -33,13 +38,24 @@
+     try:relative=source.relative_to(root)
+     except ValueError:raise ScopeDenied()from None
+     profile=Path(path).suffix.lower()[1:]
++    if batch:
++        edits = spec['edits']
++        if profile != 'docx' or not isinstance(edits, list) or not 1 <= len(edits) <= 64:
++            raise ScopeDenied()
+     if (not relative.parts or any(p in('.','..')or p.startswith('.')for p in relative.parts)
+             or source.suffix.lower()!='.'+profile or relative.as_posix()==path):raise ScopeDenied()
+     data,_,identity=workspace_document(str(source),with_identity=True)
+     source_sha256=hashlib.sha256(data).hexdigest()
+     if source_sha256!=expected:
+         return json.dumps(dict(success=False,error='document_edit_refused',reason='source_hash_mismatch',effect_disposition='none'))
+-    try:result=edit_paragraph(data,spec['old_text'],spec['new_text'],spec['paragraph'],profile,checkpoint=lambda:check(cap))
++    try:
++        if batch:
++            result = edit_paragraphs(data, edits, profile, checkpoint=lambda: check(cap))
++        else:
++            result = edit_paragraph(
++                data, spec['old_text'], spec['new_text'], spec['paragraph'],
++                profile, checkpoint=lambda: check(cap),
++            )
+     except WordProfileError as error:
+         return json.dumps(dict(success=False,error='document_edit_refused',reason=error.code,effect_disposition='none'))
+     def verify():
+@@ -47,5 +63,10 @@
+         if current!=data or version!=identity:raise ScopeDenied()
+     answer=json.loads(_create_bytes(cap,fd,leaf,path,result,output_format='word_located_edit',verify_source=verify))
+     if answer.get('success'):
+-        answer.update(source=relative.as_posix(),source_sha256=source_sha256,source_unchanged=True,paragraph=spec['paragraph'],replacements=1,unchanged_parts_preserved=True)
++        answer.update(source=relative.as_posix(), source_sha256=source_sha256, source_unchanged=True)
++        if batch:
++            answer.update(replacements=len(edits), edit_mode='atomic_list')
++        else:
++            answer.update(paragraph=spec['paragraph'], replacements=1)
++        answer['unchanged_parts_preserved'] = True
+     return json.dumps(answer,ensure_ascii=False)
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1862,6 +1862,15 @@
+ WRITE_FILE_SCHEMA["description"] = _REPORT_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+ 
+ 
++_WORD_LOCATED_BATCH_GUIDANCE = (
++    'For a DOCX batch or stored-story edit, use exact JSON {source,source_sha256,edits} with 1-64 edits '
++    'and a NEW .docx path. Each edit has old_text/new_text plus one selector. Use paragraph for '
++    'body/table, part/story_paragraph for header/footer, part/note_id/story_paragraph for a normal '
++    'footnote, or comment_id for a single-paragraph traditional comment. Use string IDs and '
++    'one-based paragraph numbers from the current read. Supply all replacement text and one unique '
++    'literal match per selector. Use each selector once. Any stale or unsupported target refuses '
++    'the entire list. Rendering is unverified. '
++)
+ _WORD_LOCATED_GUIDANCE = (
+     'Word located edit: format=word_located_edit, NEW .docx/.dotx matching the source profile, exact JSON {"source":"draft.docx","source_sha256":"<64 lowercase hex from read_file>","paragraph":3,"old_text":"Old","new_text":"New"}. '
+     'Read the current Word paragraph records first; use exact source_sha256 from that page and its one-based paragraph number including table-cell paragraphs. If the source changed, reread and reselect; do not merely refresh the hash. '
+@@ -1869,8 +1878,11 @@
+     'Fields, mixed-format or anchor-spanning selections, stale source and existing output refuse. This does not accept tracked changes. '
+ )
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("word_located_edit")
+-WRITE_FILE_SCHEMA["description"] = _WORD_LOCATED_GUIDANCE + WRITE_FILE_SCHEMA["description"]
+-WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] = _WORD_LOCATED_GUIDANCE + WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"]
++WRITE_FILE_SCHEMA["description"] = _WORD_LOCATED_GUIDANCE + _WORD_LOCATED_BATCH_GUIDANCE + WRITE_FILE_SCHEMA["description"]
++WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"] = (
++    _WORD_LOCATED_GUIDANCE + _WORD_LOCATED_BATCH_GUIDANCE
++    + WRITE_FILE_SCHEMA["parameters"]["properties"]["content"]["description"]
++)
+ 
+ # Bounded text AcroForm support is explicit so ordinary PDF text reads keep their contract.
+ READ_FILE_SCHEMA["parameters"]["properties"]["pdf_form_fields"] = {
+@@ -2289,10 +2301,10 @@
+     'For supported Word stored reads, continue every partial page with next_offset and '
+     'next_char_offset and verify the same source_sha256. Returned line numbers are '
+     'pagination positions. word_located_edit paragraph selects only the current main-body/table '
+-    'paragraph number; STORY identities and STORY-LINK/STORY-ANCHOR records describe stored '
+-    'headers, footers, notes and logical anchors, never editable BODY selectors or rendered '
+-    'Word page positions. Check extraction coverage and limitations. Header, footer and note '
+-    'editing is unsupported; layout and field evaluation are unverified.')
++    'paragraph number. For the DOCX edits list, use STORY part/story_paragraph for header/footer, '
++    'also note_id for a normal footnote, or COMMENT id as comment_id for a traditional comment. '
++    'STORY-LINK/STORY-ANCHOR describe logical links, and layout and field evaluation are unverified. '
++    'Check extraction coverage and limitations.')
+ 
+ READ_FILE_SCHEMA['description'] += (
+     ' Inspect a supported passive layered PDF with pdf_redaction_selectors=true, alone and '
+@@ -2506,3 +2518,5 @@
+     'are retained. Sources remain unchanged. Unsupported packages refuse. '
+     'Office reopening and rendered fidelity require separate checks. '
+ )
++WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] += (
++    'Word located edits use format=word_located_edit. ' + _WORD_LOCATED_BATCH_GUIDANCE)
+--- a/tools/scoped_word_located.py
++++ b/tools/scoped_word_located.py
+@@ -1,12 +1,15 @@
+-"""One explicit numbered Word paragraph, preserving all other package bytes."""
++"""Located literal Word edits with byte-preserved package structure."""
++import json
++from collections import defaultdict
+ from xml.etree import ElementTree as ET
++from xml.parsers import expat
+ from xml.sax.saxutils import escape
+ 
+ from hermes_cli.friday_workspace_docx import (
+     _text, _edit_xml, _check_edit_fields, _check_edit_runs, _EditRefused, _XML_SPACE,
+ )
+ from tools.scoped_word_profiles import (
+-    _Package, WordProfileError, _q, W, MAX_PARAGRAPHS, MAX_BYTES, _rewrite, _preserved,
++    _Package, DocumentText, WordProfileError, _q, W, R, MAX_PARAGRAPHS, MAX_BYTES, _rewrite, _preserved,
+ )
+ 
+ 
+@@ -40,29 +43,13 @@
+             ancestor=parents.get(ancestor)
+         if any(n.tag in (_q(W,'fldChar'),_q(W,'instrText'),_q(W,'fldSimple'))for n in target.iter()):
+             raise WordProfileError('field_owned_text')
+-        texts=list(target.iter(_q(W,'t')));value=''.join(n.text or ''for n in texts)
+-        begin=value.find(old)
+-        if begin<0:raise WordProfileError('match_missing_in_paragraph')
+-        if value.find(old,begin+1)>=0:raise WordProfileError('ambiguous_match_in_paragraph')
+-        finish=begin+len(old);selected=[];cursor=0
+-        for node in texts:
+-            end=cursor+len(node.text or '')
+-            if cursor<finish and end>begin:selected.append((node,max(0,begin-cursor),min(len(node.text or ''),finish-cursor)))
+-            cursor=end
++        selected = _literal_match(target, old)
+         _check_edit_fields(root,selected);_check_edit_runs(parents,target,selected)
+         alltext=list(root.iter(_q(W,'t')))
+         if len(alltext)!=len(spans):raise WordProfileError('unsupported_structure')
+-        offsets=dict(zip(alltext,spans));changes=[];remaining=new
+-        for index,(node,lo,hi)in enumerate(selected):
+-            piece=remaining if index==len(selected)-1 else remaining[:hi-lo];remaining=remaining[len(piece):]
+-            value=(node.text or '')[:lo]+piece+(node.text or '')[hi:]
+-            if (value[:1].isspace()or value[-1:].isspace())and node.get(_XML_SPACE)!='preserve':
+-                raise WordProfileError('unsupported_whitespace')
+-            start,end,empty=offsets[node]
+-            if empty or b'<'in raw[start:end]:raise WordProfileError('unsupported_structure')
+-            changes.append((start,end,escape(value).encode('utf-8')));node.text=value or None
+-        changed=raw
+-        for start,end,value in reversed(changes):changed=changed[:start]+value+changed[end:]
++        offsets = dict(zip(alltext, spans))
++        changes = _replacement_spans(raw, offsets, selected, new)
++        changed = _replace_spans(raw, changes)
+         checked,_=_edit_xml(changed)
+         if ET.tostring(checked)!=ET.tostring(root):raise WordProfileError('invalid_edit')
+         if checkpoint:checkpoint()
+@@ -73,3 +60,272 @@
+         return result
+     except _EditRefused as error:
+         raise WordProfileError(str(error))from None
++
++
++def _literal_match(paragraph, old):
++    texts = list(paragraph.iter(_q(W, 't')))
++    value = ''.join(node.text or '' for node in texts)
++    begin = value.find(old)
++    if begin < 0:
++        raise WordProfileError('match_missing_in_paragraph')
++    if value.find(old, begin + 1) >= 0:
++        raise WordProfileError('ambiguous_match_in_paragraph')
++    finish = begin + len(old)
++    selected = []
++    cursor = 0
++    for node in texts:
++        end = cursor + len(node.text or '')
++        if cursor < finish and end > begin:
++            selected.append((node, max(0, begin - cursor), min(len(node.text or ''), finish - cursor)))
++        cursor = end
++    return selected
++
++
++def _replacement_spans(raw, offsets, selected, new):
++    changes = []
++    remaining = new
++    for index, (node, lo, hi) in enumerate(selected):
++        piece = remaining if index == len(selected) - 1 else remaining[:hi - lo]
++        remaining = remaining[len(piece):]
++        value = (node.text or '')[:lo] + piece + (node.text or '')[hi:]
++        if (value[:1].isspace() or value[-1:].isspace()) and node.get(_XML_SPACE) != 'preserve':
++            raise WordProfileError('unsupported_whitespace')
++        start, end, empty = offsets[node]
++        if empty or b'<' in raw[start:end]:
++            raise WordProfileError('unsupported_structure')
++        changes.append((start, end, escape(value).encode('utf-8')))
++        node.text = value or None
++    return changes
++
++
++def _replace_spans(raw, changes):
++    pieces = []
++    last = 0
++    for start, end, replacement in sorted(changes):
++        if start < last:
++            raise WordProfileError('overlapping_word_edits')
++        pieces.extend((raw[last:start], replacement))
++        last = end
++    pieces.append(raw[last:])
++    return b''.join(pieces)
++
++
++def _edit_id(value):
++    if (type(value) is not str or not 1 <= len(value) <= 10 or not value.isascii()
++            or not value.isdecimal() or str(int(value)) != value or int(value) > 2147483647):
++        raise WordProfileError('invalid_stored_word_location')
++    return value
++
++
++def _edit_number(value):
++    if type(value) is not int or not 1 <= value <= MAX_PARAGRAPHS:
++        raise WordProfileError('invalid_paragraph_number')
++    return value
++
++
++def _specs(edits):
++    if type(edits) is not list or not 1 <= len(edits) <= 64:
++        raise WordProfileError('invalid_word_edit_list')
++    seen = set()
++    total = 0
++    result = []
++    for edit in edits:
++        if type(edit) is not dict or not {'old_text', 'new_text'} <= edit.keys():
++            raise WordProfileError('invalid_word_edit_list')
++        old, new = edit['old_text'], edit['new_text']
++        if any(type(value) is not str or not 1 <= len(value) <= 100_000
++               or any(ord(c) < 32 for c in value)
++               for value in (old, new)) or old == new:
++            raise WordProfileError('invalid_replacement')
++        try:
++            total += len(old.encode('utf-8')) + len(new.encode('utf-8'))
++        except UnicodeError:
++            raise WordProfileError('unsupported_text') from None
++        if total > 100_000:
++            raise WordProfileError('word_edit_text_limit')
++        keys = edit.keys() - {'old_text', 'new_text'}
++        if keys == {'paragraph'}:
++            key = ('word/document.xml', None, _edit_number(edit['paragraph']))
++        elif keys == {'comment_id'}:
++            key = (None, _edit_id(edit['comment_id']), 1)
++        elif keys in ({'part', 'story_paragraph'}, {'part', 'note_id', 'story_paragraph'}):
++            part = edit['part']
++            if type(part) is not str or not 1 <= len(part) <= 256 or part == 'word/document.xml':
++                raise WordProfileError('invalid_stored_word_location')
++            key = (part, _edit_id(edit['note_id']) if 'note_id' in keys else None,
++                   _edit_number(edit['story_paragraph']))
++        else:
++            raise WordProfileError('invalid_stored_word_location')
++        if key in seen:
++            raise WordProfileError('duplicate_word_location')
++        seen.add(key)
++        result.append((key, old, new))
++    return result
++
++
++def _stored_locations(package, checkpoint):
++    from tools.scoped_word_review import extract_review_layers, has_review_layers
++    from tools.scoped_word_stories import append_stored_stories
++
++    body_view = DocumentText('', {'coverage': ''})
++    if has_review_layers(package):
++        body_view = extract_review_layers(package, checkpoint=checkpoint)
++        if not body_view.extraction_metadata.get('review_layers_complete'):
++            raise WordProfileError('unsupported_review_layers')
++
++    view = append_stored_stories(package, body_view, checkpoint=checkpoint)
++    records = defaultdict(list)
++    for line in view.split('\n'):
++        label, _, raw = line.partition(' ')
++        if label in ('[COMMENT', '[STORY', '[STORY-LINK', '[STORY-ANCHOR'):
++            records[label].append(json.loads(raw[:-1]))
++    links = {row['part'] for row in records['[STORY-LINK']}
++    locations = {}
++    for row in records['[STORY']:
++        kind = row['kind']
++        if (kind in ('header', 'footer') and row['part'] in links
++                or kind == 'footnote' and row['references'] > 0):
++            locations[row['part'], row.get('note_id'), row['story_paragraph']] = kind
++    if records['[COMMENT']:
++        parts = [part for kind, part in package.relationships['word/document.xml'].values()
++                 if kind == R + '/comments']
++        if len(parts) != 1:
++            raise WordProfileError('unsupported_comment_location')
++        for row in records['[COMMENT']:
++            anchor = row['anchor']
++            if isinstance(anchor, dict) and anchor.get('kind') in ('range', 'point'):
++                locations[None, row['id'], 1] = parts[0]
++    footnotes = {(row['body_paragraph'], row['note_id']) for row in records['[STORY-ANCHOR']
++                 if row['kind'] == 'footnote' and not row['custom_mark_follows']}
++    return locations, footnotes
++
++
++def _location_root(root, kind, identifier):
++    if kind == 'body':
++        return root.find(_q(W, 'body'))
++    if kind in ('header', 'footer'):
++        return root
++    tag = _q(W, kind)
++    locations = [node for node in root if node.tag == tag and node.get(_q(W, 'id')) == identifier]
++    if len(locations) != 1:
++        raise WordProfileError('stored_word_location_missing')
++    return locations[0]
++
++
++def _select_paragraph(container, kind, number, parents):
++    paragraphs = list(container.iter(_q(W, 'p')))
++    if len(paragraphs) > MAX_PARAGRAPHS:
++        raise WordProfileError('paragraph_count_limit')
++    if number > len(paragraphs) or kind == 'comment' and len(paragraphs) != 1:
++        raise WordProfileError('stored_word_location_missing')
++    paragraph = paragraphs[number - 1]
++    ancestor = parents.get(paragraph)
++    if kind == 'comment' and ancestor is not container:
++        raise WordProfileError('unsupported_structure')
++    while ancestor is not container:
++        for role in ('tc', 'tr', 'tbl'):
++            if ancestor is None or ancestor.tag != _q(W, role):
++                raise WordProfileError('unsupported_structure')
++            ancestor = parents.get(ancestor)
++    if any(node.tag in {_q(W, name) for name in ('p', 'fldChar', 'instrText', 'fldSimple',
++                                               'ins', 'del', 'moveFrom', 'moveTo', 'sdt')}
++           for node in paragraph.iter() if node is not paragraph):
++        raise WordProfileError('unsupported_structure')
++    return paragraph
++
++
++def _check_batch_runs(parents, paragraph, selected, allowed_footnotes):
++    # Only the single text leaf of a plain run with its own trailing, proven
++    # passive footnote reference may use this exception to the legacy guard.
++    if len(selected) == 1:
++        node, lo, hi = selected[0]
++        run = parents.get(node)
++        if run is not None and lo == 0 and hi == len(node.text or ''):
++            children = list(run)
++            if children and children[0].tag == _q(W, 'rPr'):
++                children = children[1:]
++            if (len(children) == 2 and children[0] is node
++                    and children[1].tag == _q(W, 'footnoteReference')
++                    and children[1].get(_q(W, 'id')) in allowed_footnotes
++                    and children[1].get(_q(W, 'customMarkFollows'), 'false') in ('false', '0', 'off')
++                    and len(children[1]) == 0):
++                note = children[1]
++                run.remove(note)
++                try:
++                    _check_edit_runs(parents, paragraph, selected)
++                finally:
++                    run.append(note)
++                return
++    _check_edit_runs(parents, paragraph, selected)
++
++
++def _edit_part(raw, entries, footnotes, checkpoint):
++    root, spans = _edit_xml(raw)
++    texts = list(root.iter(_q(W, 't')))
++    if len(texts) != len(spans):
++        raise WordProfileError('unsupported_structure')
++    offsets = dict(zip(texts, spans))
++    parents = {child: parent for parent in root.iter() for child in parent}
++    decisions = []
++    for kind, identifier, number, old, new in entries:
++        if checkpoint:
++            checkpoint()
++        container = _location_root(root, kind, identifier)
++        if container is None:
++            raise WordProfileError('stored_word_location_missing')
++        paragraph = _select_paragraph(container, kind, number, parents)
++        selected = _literal_match(paragraph, old)
++        permitted = footnotes.get(number, ()) if kind == 'body' else ()
++        _check_batch_runs(parents, paragraph, selected, permitted)
++        decisions.append((selected, new))
++    _check_edit_fields(root, [span for selected, _ in decisions for span in selected])
++    changes = [span for selected, new in decisions for span in _replacement_spans(raw, offsets, selected, new)]
++    changed = _replace_spans(raw, changes)
++    verified, _ = _edit_xml(changed)
++    if ET.tostring(verified) != ET.tostring(root):
++        raise WordProfileError('invalid_edit')
++    return changed
++
++
++def edit_paragraphs(data, edits, format, *, checkpoint=None):
++    """Apply a bounded list against one immutable passive DOCX package."""
++    if format != 'docx':
++        raise WordProfileError('unsupported_word_edit_list_profile')
++    specifications = _specs(edits)
++    package = _Package(data, format, checkpoint)
++    if package.active:
++        raise WordProfileError('unsupported_active_or_signed_edit')
++    try:
++        locations, valid_footnotes = _stored_locations(package, checkpoint)
++        footnotes = defaultdict(set)
++        for paragraph, identifier in valid_footnotes:
++            footnotes[paragraph].add(identifier)
++        parts = defaultdict(list)
++        for (part, identifier, number), old, new in specifications:
++            if part is None:
++                part = locations.get((None, identifier, number))
++                kind = 'comment'
++            elif part == 'word/document.xml' and identifier is None:
++                kind = 'body'
++            else:
++                kind = locations.get((part, identifier, number))
++            if part is None or kind is None:
++                raise WordProfileError('stored_word_location_missing')
++            parts[part].append((kind, identifier, number, old, new))
++        changes = {part: _edit_part(package.parts[part], entries, footnotes, checkpoint)
++                   for part, entries in parts.items()}
++        if checkpoint:
++            checkpoint()
++        result = _rewrite(data, changes)
++        if len(result) > MAX_BYTES:
++            raise WordProfileError('output_limit')
++        validated = _Package(result, format, checkpoint)
++        _stored_locations(validated, checkpoint)
++        _preserved(data, result, set(changes))
++        if checkpoint:
++            checkpoint()
++        return result
++    except _EditRefused as error:
++        raise WordProfileError(str(error)) from None
++    except (ET.ParseError, expat.ExpatError, UnicodeError):
++        raise WordProfileError('invalid_edit') from None
