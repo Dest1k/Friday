@@ -1,0 +1,294 @@
+diff --git a/tools/scoped_ods.py b/tools/scoped_ods.py
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -307,12 +307,15 @@
+     if any(node.get(q(XL, 'href'), '').startswith('./Charts/') for sheet in book.sheets for node in sheet.iter()):
+         from tools.scoped_ods_chart import chart_records
+         charts = chart_records(book)
+-        for chart in charts:
+-            item = '[CHART ' + json.dumps(chart, ensure_ascii=False, sort_keys=True) + ']'
+-            total += len(item.encode('utf-8'))
+-            if total > 900000:
+-                fail('spreadsheet_output_limit')
+-            rows.append(item)
++    elif format == 'ods' and 'linked_or_embedded_content' in book.unsupported:
++        from tools.scoped_ods_chart import read_calc_saved_charts
++        charts = read_calc_saved_charts(book)
++    for chart in charts:
++        item = '[CHART ' + json.dumps(chart, ensure_ascii=False, sort_keys=True) + ']'
++        total += len(item.encode('utf-8'))
++        if total > 900000:
++            fail('spreadsheet_output_limit')
++        rows.append(item)
+     metadata = dict(native_container=True, format=format, sheets=len(book.sheets), cells=count,
+                     coverage='native_cells_values_formulas_and_cached_results; drawings_layout_not_covered',
+                     formulas_evaluated=False, unsupported=sorted(book.unsupported))
+diff --git a/tools/scoped_ods_chart.py b/tools/scoped_ods_chart.py
+--- a/tools/scoped_ods_chart.py
++++ b/tools/scoped_ods_chart.py
+@@ -10,13 +10,16 @@
+     Spreadsheet, ODSError, O, T, TB, M, ST, XL, q, _literal, address, colname,
+     decimal, tick,
+ )
+-from tools.scoped_odt import _text
++from tools.scoped_odt import ODTError, _text
+ 
+ DR = 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0'
+ CH = 'urn:oasis:names:tc:opendocument:xmlns:chart:1.0'
+ SVG = 'urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0'
+ CHART_MIME = 'application/vnd.oasis.opendocument.chart'
+ MAX_POINTS = 128
++CALC_CHART_HREF = re.compile(r'\./(chart[1-9][0-9]{0,2})')
++CALC_PREVIEW_TYPE = 'application/x-openoffice-gdimetafile;windows_formatname="GDIMetaFile"'
++LOEXT = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
+ 
+ 
+ def fail(code):
+@@ -282,7 +285,21 @@
+     return _text(titles[0][0], book)
+ 
+ 
+-def _cache_rows(table, book, *, linked, series_count):
++def _calc_cache_ref(cell):
++    # Calc writes local source range hints into selected cache cells.
++    annotation = cell[1:]
++    if not annotation:
++        return None
++    if len(annotation) != 1:
++        fail('chart_cache_cell_structure')
++    group = annotation[0]
++    if (group.tag != q(DR, 'g') or group.attrib or len(group) != 1 or (group.text or '').strip()
++            or group[0].tag != q(SVG, 'desc') or group[0].attrib or len(group[0])):
++        fail('chart_cache_cell_structure')
++    return _odf_range(group[0].text)
++
++
++def _cache_rows(table, book, *, linked, series_count, calc_saved=False):
+     if linked:
+         header_columns, columns, header, body = (q(TB, name) for name in
+             ('table-header-columns', 'table-columns', 'table-header-rows', 'table-rows'))
+@@ -292,7 +309,7 @@
+         if (table.get(q(TB, 'name')) != 'local-table'
+                 or any(len(group) != 1 or group[0].tag != column or len(group[0]) for group in table[:2])
+                 or table[0][0].get(q(TB, 'number-columns-repeated')) is not None
+-                or table[1][0].get(q(TB, 'number-columns-repeated')) != str(series_count)
++                or table[1][0].get(q(TB, 'number-columns-repeated'), '1' if calc_saved else None) != str(series_count)
+                 or len(table[2]) != 1):
+             fail('chart_cache_structure')
+         source_rows = [*table[2], *table[3]]
+@@ -308,19 +325,93 @@
+         for cell in row:
+             if cell.tag != q(TB, 'table-cell') or cell.get(q(TB, 'number-columns-repeated')):
+                 fail('chart_cache_cell_structure')
+-            values.append(book.value(cell))
++            value = book.value(cell)
++            if calc_saved:
++                if not len(cell) or cell[0].tag != q(T, 'p'):
++                    fail('chart_cache_cell_structure')
++                value['source_range'] = _calc_cache_ref(cell)
++            values.append(value)
+         rows.append(values)
+     return rows
+ 
+ 
+-def chart_records(book):
++def _calc_preview(frame, owner, base, book, entries):
++    """Recognize the stock replacement by package identity. Its bytes remain opaque."""
++    if [node.tag for node in frame] != [q(DR, 'object'), q(DR, 'image')] or frame[0] is not owner:
++        fail('chart_object_relationship')
++    preview = frame[1]
++    part = 'ObjectReplacements/' + base
++    attrs = {k: v for k, v in preview.attrib.items() if k.startswith('{' + XL + '}')}
++    if (len(preview) or part not in book.parts or entries.get(part) != CALC_PREVIEW_TYPE or attrs != {
++            q(XL, 'href'): './' + part, q(XL, 'type'): 'simple',
++            q(XL, 'show'): 'embed', q(XL, 'actuate'): 'onLoad'}):
++        fail('chart_object_relationship')
++    return preview
++
++
++def _calc_notify_ranges(value):
++    if not value:
++        fail('chart_or_external_link_structure')
++    # A pair of doubled quotes toggles twice without splitting the name.
++    quoted = False
++    start = 0
++    ranges = []
++    for index, char in enumerate(value):
++        if char == "'":
++            quoted = not quoted
++        elif char == ' ' and not quoted:
++            ranges.append(_odf_range(value[start:index]))
++            start = index + 1
++    if quoted:
++        fail('chart_or_external_link_structure')
++    return ranges + [_odf_range(value[start:])]
++
++
++def _ordinary_column_properties(properties):
++    return all(properties.get(q(CH, name), 'false') == 'false'
++               for name in ('vertical', 'stacked', 'percentage', 'three-dimensional'))
++
++
++def _calc_plot_orientation(properties, chart_styles):
++    if not _ordinary_column_properties(properties):
++        return False
++    for document in chart_styles:
++        if document is None:
++            continue
++        for style in document.iter(q(ST, 'default-style')):
++            if style.get(q(ST, 'family')) == 'chart' and not all(
++                    _ordinary_column_properties(item) for item in style.findall(q(ST, 'chart-properties'))):
++                return False
++    return True
++
++
++def _calc_saved_object(node):
++    return (len(node) == 1 and node[0].tag in (q(T, 'p'), q(LOEXT, 'p'))
++            and not node[0].attrib and not len(node[0])
++            and not any((text or '').strip() for text in (node.text, node[0].text, node[0].tail)))
++
++
++def read_calc_saved_charts(book):
++    if book.unsupported != {'linked_or_embedded_content'} or not any(
++            CALC_CHART_HREF.fullmatch(node.get(q(XL, 'href'), ''))
++            for sheet in book.sheets for node in sheet.iter(q(DR, 'object'))):
++        return []
++    try:
++        return chart_records(book, calc_saved=True)
++    except (ODSError, ODTError):
++        # Keep scalar extraction and the existing disclosure when a chart
++        # falls outside the verified stock Calc save profile.
++        return []
++
++
++def chart_records(book, *, calc_saved=False):
+     objects = []
+-    owned_objects = set()
++    owned_frames = {}
+     for sheet in book.sheets:
+         for shapes in sheet.findall(q(TB, 'shapes')):
+             for frame in shapes.findall(q(DR, 'frame')):
+-                if len(frame) == 1 and frame[0].tag == q(DR, 'object'):
+-                    owned_objects.add(frame[0])
++                if len(frame) and frame[0].tag == q(DR, 'object') and (calc_saved or len(frame) == 1):
++                    owned_frames[frame[0]] = frame
+         for node in sheet.iter(q(DR, 'object')):
+             objects.append((sheet.get(q(TB, 'name')), node))
+     if not objects:
+@@ -340,8 +431,10 @@
+                 linked.add(node)
+     for source_sheet, node in objects:
+         href = node.get(q(XL, 'href'), '')
+-        match = re.fullmatch(r'\./(Charts/[A-Za-z0-9][A-Za-z0-9_-]{0,63})', href)
+-        if not match or len(node) or node.get(q(XL, 'type')) != 'simple' or node.get(q(XL, 'show')) != 'embed':
++        match = (CALC_CHART_HREF.fullmatch(href) if calc_saved
++                 else re.fullmatch(r'\./(Charts/[A-Za-z0-9][A-Za-z0-9_-]{0,63})', href))
++        payload_ok = _calc_saved_object(node) if calc_saved else not len(node)
++        if not match or not payload_ok or node.get(q(XL, 'type')) != 'simple' or node.get(q(XL, 'show')) != 'embed':
+             fail('chart_object_relationship')
+         base = match[1]
+         if entries.get(base + '/') != CHART_MIME or entries.get(base + '/content.xml') != 'text/xml':
+@@ -355,22 +448,41 @@
+         chart = charts[0]
+         recognized.add(node)
+         parent_link = chart.get(q(XL, 'href')) is not None
++        if calc_saved and not parent_link:
++            fail('chart_or_external_link_structure')
+         if parent_link:
+-            # In this owned embedded chart, '..' denotes the workbook in this package.
+-            if (node not in owned_objects or base in linked_parts or node.get(q(XL, 'actuate')) != 'onLoad'
++            # In an embedded chart, '..' denotes the workbook in this package.
++            if (node not in owned_frames or base in linked_parts or node.get(q(XL, 'actuate')) != 'onLoad'
+                     or {k: v for k, v in chart.attrib.items() if k.startswith('{' + XL + '}')}
+                     != {q(XL, 'href'): '..', q(XL, 'type'): 'simple'}):
+                 fail('chart_or_external_link_structure')
+             recognized.add(chart)
+             linked_parts.add(base)
++            if calc_saved:
++                recognized.add(_calc_preview(owned_frames[node], node, base, book, entries))
+         plots = chart.findall(q(CH, 'plot-area'))
+         tables = chart.findall(q(TB, 'table'))
+         styles = root.findall('./' + q(O, 'automatic-styles') + '/' + q(ST, 'style'))
+-        vertical = [s for s in styles if s.get(q(ST, 'name')) == 'plot' and s.get(q(ST, 'family')) == 'chart']
+-        properties = vertical[0].find(q(ST, 'chart-properties')) if len(vertical) == 1 else None
+-        if (len(plots) != 1 or len(tables) != 1 or plots[0].get(q(CH, 'data-source-has-labels')) != 'both'
+-                or plots[0].get(q(CH, 'style-name')) != 'plot' or properties is None
+-                or properties.get(q(CH, 'vertical')) != 'false'):
++        if len(plots) != 1 or len(tables) != 1:
++            fail('chart_plot_or_cache')
++        plot = plots[0]
++        style_name = plot.get(q(CH, 'style-name'))
++        labels = plot.get(q(CH, 'data-source-has-labels'))
++        if (calc_saved and (not style_name or labels not in (None, 'both'))
++                or not calc_saved and (style_name != 'plot' or labels != 'both')):
++            fail('chart_plot_or_cache')
++        styles = [s for s in styles if s.get(q(ST, 'name')) == style_name and s.get(q(ST, 'family')) == 'chart']
++        if len(styles) != 1:
++            fail('chart_plot_or_cache')
++        properties = styles[0].find(q(ST, 'chart-properties'))
++        if properties is None:
++            fail('chart_plot_or_cache')
++        if calc_saved:
++            if (len(styles[0].findall(q(ST, 'chart-properties'))) != 1
++                    or styles[0].get(q(ST, 'parent-style-name')) is not None
++                    or not _calc_plot_orientation(properties, (root, book.xml.get(base + '/styles.xml')))):
++                fail('chart_plot_or_cache')
++        elif properties.get(q(CH, 'vertical')) != 'false':
+             fail('chart_plot_or_cache')
+         axes = plots[0].findall(q(CH, 'axis'))
+         categories = plots[0].findall('./' + q(CH, 'axis') + '/' + q(CH, 'categories'))
+@@ -381,13 +493,17 @@
+             fail('chart_axis_or_series')
+         if parent_link and not any(axis.get(q(CH, 'dimension')) == 'x' and categories[0] in axis for axis in axes):
+             fail('chart_axis_or_series')
+-        cache = _cache_rows(tables[0], book, linked=parent_link, series_count=len(series))
++        cache = _cache_rows(tables[0], book, linked=parent_link, series_count=len(series), calc_saved=calc_saved)
+         category_ref = categories[0].get(q(TB, 'cell-range-address'))
+         source_categories = _referenced(values, category_ref)
+         sheet, first_row, first_col, last_row, last_col = _odf_range(category_ref)
+         if parent_link and (sheet != source_sheet or first_row <= 1 or first_col != last_col):
+             fail('chart_category_range')
+-        notify_ranges = [_cell_ref(sheet, first_row - 1, first_col), category_ref] if parent_link else []
++        notify_ranges = [category_ref] if parent_link else []
++        if parent_link and not calc_saved:
++            notify_ranges.insert(0, _cell_ref(sheet, first_row - 1, first_col))
++        if calc_saved:
++            local_cache_refs = {(1, 0): _odf_range(category_ref)}
+         def literal(value, kind):
+             return (value['type'] == kind and not any(value.get(flag) for flag in ('formula', 'covered', 'constrained'))
+                     and (kind != 'string' or bool(value['value'])))
+@@ -413,6 +529,8 @@
+                         or _odf_range(value_ref) != (sheet, first_row, column, last_row, column)):
+                     fail('chart_series_range')
+                 notify_ranges.extend((label_ref, value_ref))
++                if calc_saved:
++                    local_cache_refs.update({(0, index): _odf_range(label_ref), (1, index): _odf_range(value_ref)})
+                 points = item.findall(q(CH, 'data-point'))
+                 if len(item) != 1 or len(points) != 1 or points[0].get(q(CH, 'repeated')) != str(len(source_values)):
+                     fail('chart_series_dimensions')
+@@ -422,7 +540,14 @@
+             output_series.append({'label': labels[0]['value'], 'label_range': label_ref,
+                                   'value_range': value_ref, 'values': [v['value'] for v in source_values]})
+         notify = node.get(q(DR, 'notify-on-update-of-ranges'))
+-        if notify != (' '.join(notify_ranges) if parent_link else None):
++        if calc_saved:
++            # Whitespace between references is meaningful only outside quoted sheet names.
++            if _calc_notify_ranges(notify) != list(map(_odf_range, notify_ranges)):
++                fail('chart_or_external_link_structure')
++            if ({(row, col): v['source_range'] for row, cells in enumerate(cache) for col, v in enumerate(cells)
++                 if v['source_range'] is not None} != local_cache_refs):
++                fail('chart_cache_cell_structure')
++        elif notify != (' '.join(notify_ranges) if parent_link else None):
+             fail('chart_or_external_link_structure')
+         expected_categories = [v['value'] for v in source_categories]
+         if any(not literal(row[0], 'string') for row in cache[1:]) or expected_categories != [row[0]['value'] for row in cache[1:]]:
+@@ -433,7 +558,7 @@
+                         'native_editable': True, 'cache_status': 'source_and_local_cache_match'})
+     if len(records) != len(objects) or linked != recognized:
+         fail('chart_or_external_link_structure')
++    if book.unsupported - {'linked_or_embedded_content'}:
++        fail('unsupported_chart_content')
+     book.unsupported.discard('linked_or_embedded_content')
+-    if book.unsupported:
+-        fail('unsupported_chart_content')
+     return records
