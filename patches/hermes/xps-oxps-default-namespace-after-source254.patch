@@ -1,0 +1,108 @@
+--- a/tools/scoped_xps_write.py
++++ b/tools/scoped_xps_write.py
+@@ -34,6 +34,13 @@
+     return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+ 
+ 
++def xml_root(name, namespace, prefix, attributes=None):
++    # Generated names are literal so serializer prefix registrations cannot
++    # change the package spelling or the historical ns0 edit profile.
++    declaration = 'xmlns:ns0' if prefix else 'xmlns'
++    return ET.Element(prefix + name, {declaration: namespace, **(attributes or {})})
++
++
+ def checked_font():
+     try:
+         font = _font()
+@@ -84,48 +91,49 @@
+     return pages
+ 
+ 
+-def page_bytes(lines, namespace):
+-    root = ET.Element(read.q(namespace, 'FixedPage'),
+-                      {'Width':str(WIDTH), 'Height':str(HEIGHT),
+-                       read.q(read.XML, 'lang'):'und'})
++def page_bytes(lines, namespace, *, prefixed=False):
++    prefix = 'ns0:' if prefixed else ''
++    root = xml_root('FixedPage', namespace, prefix,
++                    {'Width':str(WIDTH), 'Height':str(HEIGHT), 'xml:lang':'und'})
+     for index, line in enumerate(lines):
+         # Markup-extension escape is distinct from ordinary XML escaping.
+         value = '{}'+line if line.startswith('{') else line
+-        ET.SubElement(root, read.q(namespace, 'Glyphs'),
++        ET.SubElement(root, prefix + 'Glyphs',
+                       {'FontUri':'/'+FONT, 'FontRenderingEmSize':str(SIZE),
+                        'OriginX':str(LEFT), 'OriginY':str(TOP+index*STEP),
+                        'Fill':'#FF000000', 'UnicodeString':value})
+     return xml_bytes(root)
+ 
+ 
+-def part_map(pages, format, font):
++def part_map(pages, format, font, *, prefixed=False):
+     if format not in read.NS:
+         fail('xps_write_format')
+     ns = read.NS[format]
+-    types = ET.Element(read.q(read.CT, 'Types'))
+-    ET.SubElement(types, read.q(read.CT, 'Default'),
++    prefix = 'ns0:' if prefixed else ''
++    types = xml_root('Types', read.CT, prefix)
++    ET.SubElement(types, prefix + 'Default',
+                   {'Extension':'rels', 'ContentType':read.REL_MIME})
+     for path, kind in [(FONT, 'application/vnd.ms-opentype'),
+                        (SEQUENCE, read.TYPES['sequence']),
+                        (DOCUMENT, read.TYPES['document'])]:
+-        ET.SubElement(types, read.q(read.CT, 'Override'),
++        ET.SubElement(types, prefix + 'Override',
+                       {'PartName':'/'+path, 'ContentType':kind})
+-    seq = ET.Element(read.q(ns, 'FixedDocumentSequence'))
+-    ET.SubElement(seq, read.q(ns, 'DocumentReference'), {'Source':'/'+DOCUMENT})
+-    doc = ET.Element(read.q(ns, 'FixedDocument'))
+-    root_rel = ET.Element(read.q(read.REL, 'Relationships'))
+-    ET.SubElement(root_rel, read.q(read.REL, 'Relationship'),
++    seq = xml_root('FixedDocumentSequence', ns, prefix)
++    ET.SubElement(seq, prefix + 'DocumentReference', {'Source':'/'+DOCUMENT})
++    doc = xml_root('FixedDocument', ns, prefix)
++    root_rel = xml_root('Relationships', read.REL, prefix)
++    ET.SubElement(root_rel, prefix + 'Relationship',
+                   {'Id':'R1','Type':ns+'/fixedrepresentation','Target':'/'+SEQUENCE})
+     parts = {FONT:font['data'], SEQUENCE:xml_bytes(seq), '_rels/.rels':xml_bytes(root_rel)}
+     for index, lines in enumerate(pages, 1):
+         path = f'Documents/1/Pages/{index}.fpage'
+-        ET.SubElement(types, read.q(read.CT, 'Override'),
++        ET.SubElement(types, prefix + 'Override',
+                       {'PartName':'/'+path, 'ContentType':read.TYPES['page']})
+-        ET.SubElement(doc, read.q(ns, 'PageContent'), {'Source':'/'+path})
+-        rel = ET.Element(read.q(read.REL, 'Relationships'))
+-        ET.SubElement(rel, read.q(read.REL, 'Relationship'),
++        ET.SubElement(doc, prefix + 'PageContent', {'Source':'/'+path})
++        rel = xml_root('Relationships', read.REL, prefix)
++        ET.SubElement(rel, prefix + 'Relationship',
+                       {'Id':'R1', 'Type':ns+'/required-resource','Target':'/'+FONT})
+-        parts[path] = page_bytes(lines, ns)
++        parts[path] = page_bytes(lines, ns, prefixed=prefixed)
+         parts[f'Documents/1/Pages/_rels/{index}.fpage.rels'] = xml_bytes(rel)
+     parts[DOCUMENT] = xml_bytes(doc)
+     parts['[Content_Types].xml'] = xml_bytes(types)
+@@ -188,9 +196,10 @@
+             lines.append(value[2:] if value.startswith('{}') else value)
+         pages.append(lines)
+     checked_spec({'pages':pages}, font)
+-    # Exact recognized XML parts and the original complete font. This rejects
+-    # arbitrary page geometry, Indices, clipping, marks, links and hidden parts.
+-    if parts != part_map(pages, format, font):
++    # Only two exact generated maps are editable. Keep the original spelling
++    # on the target page and reject any mix or other layout/markup.
++    prefixed = parts != part_map(pages, format, font)
++    if prefixed and parts != part_map(pages, format, font, prefixed=True):
+         fail('xps_write_profile_required')
+     page, line = spec['page']-1, spec['line']-1
+     if not 0 <= page < len(pages) or not 0 <= line < len(pages[page]):
+@@ -205,7 +214,7 @@
+     from tools.scoped_legacy_openoffice_write import _rewrite
+     from tools.scoped_legacy_openoffice import LegacyOpenOfficeError
+     try:
+-        result = _rewrite(data, {path:page_bytes(pages[page], ns)}, checkpoint)
++        result = _rewrite(data, {path:page_bytes(pages[page], ns, prefixed=prefixed)}, checkpoint)
+     except LegacyOpenOfficeError:
+         fail('xps_write_zip_profile')
+     read.extract_xps(result, format, checkpoint=checkpoint)
