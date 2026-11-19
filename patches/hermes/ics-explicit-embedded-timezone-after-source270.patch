@@ -1,0 +1,230 @@
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -8,7 +8,7 @@
+ import base64
+ import binascii
+ import codecs
+-from datetime import datetime
++from datetime import datetime, timedelta
+ from email import policy
+ from email.errors import MessageError
+ from email.header import Header, decode_header
+@@ -739,17 +739,126 @@
+     return parsed, ';VALUE=DATE', parsed.strftime('%Y%m%d')
+ 
+ 
++ICS_NAMED_TIMEZONE_GUIDANCE = (
++    'A custom named-zone ics_create uses local YYYY-MM-DDTHH:MM:SS for start_date and end_date, '
++    'plus timezone={tzid,transitions}. Use an uppercase X-FRIDAY- custom TZID with letters, digits or hyphens '
++    'and two ordered explicit transitions forming a seasonal pair (STANDARD and DAYLIGHT) with kind, at '
++    '(local YYYY-MM-DDTHH:MM:SS, years 1970–2099), offset_from and offset_to (±HHMM) and optional name. '
++    'The second transition must restore the initial offset and change windows must be disjoint. Endpoints must resolve uniquely from the first transition up to, excluding, the second. '
++    'Ask for missing rules or ambiguous times; never guess a zone or transition. No recurrence or import. '
++)
++
++def _ics_local_time(value, code):
++    if type(value) is not str or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}', value):
++        _fail(code)
++    try:
++        local = datetime.strptime(value, '%Y-%m-%dT%H:%M:%S')
++    except ValueError:
++        _fail(code)
++    if not 1970 <= local.year <= 2099:
++        _fail('timezone_outside_coverage')
++    return local
++
++
++def _ics_zone_offset(value):
++    if (type(value) is not str or not re.fullmatch(r'[+-](?:[01][0-9]|2[0-3])[0-5][0-9]', value)
++            or value == '-0000'):
++        _fail('invalid_timezone_offset')
++    minutes = int(value[1:3]) * 60 + int(value[3:])
++    return timedelta(minutes=minutes if value[0] == '+' else -minutes)
++
++
++def _ics_named_event(spec):
++    # A custom embedded zone is an explicit finite offset timeline. No system-zone
++    # fallback, implicit floating clock, recurrence, or post-horizon extrapolation.
++    zone = spec['timezone']
++    if type(zone) is not dict or set(zone) != {'tzid', 'transitions'}:
++        _fail('invalid_timezone')
++    tzid, transitions = zone['tzid'], zone['transitions']
++    if type(tzid) is not str or not re.fullmatch(r'X-FRIDAY-[A-Z0-9][A-Z0-9-]{0,50}', tzid):
++        _fail('unsupported_timezone_id')
++    if type(transitions) is not list or len(transitions) != 2:
++        _fail('invalid_timezone_transitions')
++    lines = [b'BEGIN:VTIMEZONE', _fold('TZID:' + tzid)]
++    onsets, after = [], []
++    previous_window_end = None
++    initial = None
++    for transition in transitions:
++        required = {'kind', 'at', 'offset_from', 'offset_to'}
++        if type(transition) is not dict or not required <= set(transition) <= (required | {'name'}):
++            _fail('invalid_timezone_transition')
++        kind = transition['kind']
++        before = _ics_zone_offset(transition['offset_from'])
++        next_offset = _ics_zone_offset(transition['offset_to'])
++        if not ((kind == 'STANDARD' and next_offset < before) or
++                (kind == 'DAYLIGHT' and next_offset > before)):
++            _fail('invalid_timezone_transition')
++        local = _ics_local_time(transition['at'], 'invalid_timezone_transition')
++        instant = local - before
++        window_start, window_end = sorted((local, instant + next_offset))
++        if not onsets:
++            initial = before
++        elif (before != after[-1] or next_offset != initial or instant <= onsets[-1]
++              or window_start < previous_window_end):
++            _fail('inconsistent_timezone_transitions')
++        onsets.append(instant)
++        after.append(next_offset)
++        previous_window_end = window_end
++        wire_onset = transition['at'].replace('-', '').replace(':', '')
++        lines.extend((_fold('BEGIN:' + kind), _fold('DTSTART:' + wire_onset),
++                      _fold('TZOFFSETFROM:' + transition['offset_from']), _fold('TZOFFSETTO:' + transition['offset_to'])))
++        if 'name' in transition:
++            name = transition['name']
++            try:
++                if not _text(name, 'invalid_timezone_name', 65_536):
++                    _fail('invalid_timezone_name')
++                lines.append(_fold('TZNAME:' + _escape(name)))
++            except UnicodeError:
++                _fail('invalid_timezone_name')
++        lines.append(_fold('END:' + kind))
++    lines.append(b'END:VTIMEZONE')
++    bounds = [None, *onsets, None]
++
++    def event_bound(key):
++        local = _ics_local_time(spec[key], 'invalid_' + key)
++        candidates = []
++        for left, right, offset in zip(bounds, bounds[1:], (initial, *after)):
++            instant = local - offset
++            if (left is None or left <= instant) and (right is None or instant < right):
++                candidates.append(instant)
++        if len(candidates) != 1:
++            _fail('ambiguous_wall_time' if candidates else 'nonexistent_wall_time')
++        if not onsets[0] <= candidates[0] < onsets[-1]:
++            _fail('timezone_outside_coverage')
++        return candidates[0], spec[key].replace('-', '').replace(':', '')
++
++    start, start_wire = event_bound('start_date')
++    end_wire = None
++    if 'end_date' in spec:
++        end, end_wire = event_bound('end_date')
++        if end <= start:
++            _fail('invalid_end_date')
++    return lines, ';TZID=' + tzid, start_wire, end_wire
++
++
+ def create_ics(spec, *, checkpoint=None):
+     required = {'uid', 'summary', 'start_date', 'dtstamp'}
+-    optional = {'end_date', 'description', 'location'}
++    optional = {'end_date', 'description', 'location', 'timezone'}
+     if type(spec) is not dict or not required <= set(spec) or not set(spec) <= required | optional:
+         _fail('create_schema')
+-    start, date_params, start_wire = _iso_event_bound(spec['start_date'], 'start_date')
+-    end_wire = None
+-    if 'end_date' in spec:
+-        end, end_params, end_wire = _iso_event_bound(spec['end_date'], 'end_date')
+-        if end_params != date_params or end <= start:
+-            _fail('invalid_end_date')
++    zone_lines = []
++    if 'timezone' in spec:
++        try:
++            zone_lines, date_params, start_wire, end_wire = _ics_named_event(spec)
++        except OverflowError:
++            _fail('timezone_outside_coverage')
++    else:
++        start, date_params, start_wire = _iso_event_bound(spec['start_date'], 'start_date')
++        end_wire = None
++        if 'end_date' in spec:
++            end, end_params, end_wire = _iso_event_bound(spec['end_date'], 'end_date')
++            if end_params != date_params or end <= start:
++                _fail('invalid_end_date')
+     stamp = spec['dtstamp']
+     if type(stamp) is not str or not re.fullmatch(r'[0-9]{8}T[0-9]{6}Z', stamp):
+         _fail('invalid_dtstamp')
+@@ -757,7 +866,8 @@
+         datetime.strptime(stamp, '%Y%m%dT%H%M%SZ')
+     except ValueError:
+         _fail('invalid_dtstamp')
+-    lines = [b'BEGIN:VCALENDAR', b'VERSION:2.0', b'PRODID:-//Friday//Native Communication Files//EN', b'BEGIN:VEVENT']
++    lines = [b'BEGIN:VCALENDAR', b'VERSION:2.0', b'PRODID:-//Friday//Native Communication Files//EN',
++             *zone_lines, b'BEGIN:VEVENT']
+     lines.append(_fold('UID:' + _escape(_field(spec, 'uid'))))
+     lines.append(_fold('DTSTAMP:' + stamp))
+     lines.append(_fold(f'DTSTART{date_params}:{start_wire}'))
+--- a/hermes_cli/friday_workspace_communication.py
++++ b/hermes_cli/friday_workspace_communication.py
+@@ -21,9 +21,12 @@
+             'from, subject and text must be nonempty; text is one string with JSON newline escapes, '
+             'not an array. Use a NEW .eml path. Local file only; no mail is sent.'),
+     'ics': ('ics_create content must be a JSON string encoding required uid,summary,start_date,dtstamp '
+-            'and optional end_date,description,location. All values are nonempty strings; '
+-            'start_date and end_date use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for UTC, with end after start in the same form. dtstamp is YYYYMMDDTHHMMSSZ. Use a NEW .ics path. '
+-            'Local file only; no calendar import.'),
++            'and optional end_date,description,location,timezone. Use YYYY-MM-DD for all-day, '
++            'YYYY-MM-DDTHH:MM:SSZ for UTC, or YYYY-MM-DDTHH:MM:SS with an explicit timezone object. '
++            'timezone is {tzid,transitions}, with an X-FRIDAY- custom ID and two ordered seasonal transitions '
++            '{kind,at,offset_from,offset_to[,name]}; at is local YYYY-MM-DDTHH:MM:SS (1970–2099) and offsets are ±HHMM. '
++            'Use one STANDARD and one DAYLIGHT returning to the initial offset. Supply actual rules bracketing both endpoints. '
++            'End must follow start. dtstamp is YYYYMMDDTHHMMSSZ. Use a NEW .ics path. Local file only.'),
+     'vcf': ('vcf_create content must be a JSON string encoding fn:string and optional '
+             'uid,organization,title,note strings; all supplied scalar strings are nonempty. '
+             'Optional emails/phones are arrays of strings or objects with value:string and '
+@@ -196,7 +199,9 @@
+         refusal = {'success': False, 'error': 'communication_' + action + '_refused',
+                    'reason': error.code, 'effect_disposition': 'none'}
+         date_input_error = format == 'ics' and error.code in {'invalid_start_date', 'invalid_end_date', 'invalid_dtstamp'}
+-        if action == 'create' and (error.code == 'create_schema' or date_input_error):
++        timezone_input_error = format == 'ics' and ('timezone' in error.code or error.code in {
++            'ambiguous_wall_time', 'nonexistent_wall_time'})
++        if action == 'create' and (error.code == 'create_schema' or date_input_error or timezone_input_error):
+             refusal['hint'] = _CREATE_SCHEMA_HINTS[format]
+         return json.dumps(refusal)
+     verify = None
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1422,7 +1422,9 @@
+     }
+ }
+ 
+-WRITE_FILE_SCHEMA['description'] += ' Native local communication files: eml_create accepts JSON exactly from,to,subject,text for a NEW plain-text EML; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End uses the same form and follows start; ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. '
++from tools.scoped_communication import ICS_NAMED_TIMEZONE_GUIDANCE
++
++WRITE_FILE_SCHEMA['description'] += ' Native local communication files: eml_create accepts JSON exactly from,to,subject,text for a NEW plain-text EML; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End uses the same form and follows start. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. '
+ WRITE_FILE_SCHEMA['description'] += ' Raw split 7z: read_file path=NAME.7z.001 requires archive_parts=["NAME.7z.001","NAME.7z.002",...] in exact order. For 7z_extract use {"source":"NAME.7z.001","parts":["NAME.7z.001","NAME.7z.002",...]}, with optional password, into a NEW folder. Supply the complete fixed-size set (last may be shorter), 2..128 parts, total at most 1000000 bytes. No volume discovery; missing/mixed/reordered/corrupt sets refuse before publication. Split ZIP, RAR multivolume, SFX and split-set conversion remain unsupported. '
+ 
+ 
+@@ -2250,8 +2252,9 @@
+     'Pass that serialized JSON as content with format="eml_create", path="note.eml". '
+     'At most 100000 UTF-8 content bytes; each address at most 4096 bytes, subject/text at most '
+     '65536 bytes each, and output at most 1000000 bytes. Header fields forbid CR/LF. '
+-    'ics_create requires uid,summary,start_date,dtstamp strings, optional end_date,description,location strings; '
+-    'start_date and end_date use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End uses the same form, is exclusive and follows start. dtstamp is YYYYMMDDTHHMMSSZ. '
++    'ics_create requires uid,summary,start_date,dtstamp strings, optional end_date,description,location and timezone. '
++    'Without timezone, use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive '
++    'and follows start. dtstamp is YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE +
+     'vcf_create requires fn:string; optional uid,organization,title,note are strings. '
+     'Optional emails/phones are arrays (at most 100 each) of strings or objects with value:string '
+     'and optional types:array[string] (at most 8 type tokens). Supplied scalar strings are nonempty. '
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -15,7 +15,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1.macro-spreadsheet-edit.v1.document-pdf-export.v2.vdx-read.v1.visio-opc-profiles.v1.vsd-partial-read.v1.svg-static.v1.msg-partial-read.v1.msg-native-write.v1.fb2-native.v1.legacy-openoffice-read.v1.dbf-tables.v1.xps-read.v1.dif-slk-tables.v1.abw-native.v1.lha-read-extract.v1.odf-formula-write.v1.arj-native.v1.xps-text-write.v1.vdx-native-write.v1.xlsb-write.v1.epub-native.v1.access-read.v1.pub-stored-text.v1.onenote-current-text.v1.mpp-task-name-edit.v1.mpp9-task-catalog.v1.pub-text-edit.v1.mpp12-mpp14-task-catalog.v1.onenote-text-edit.v1.eml-attachment.v1.text-edit.v1.source-semantic-edit-contract.v1.ooxml-password-edit.v1.merge-provenance.v1.necessary-source-clarification.v1.xlsx-numeric-edit.v1.ics-utc-create.v1.pdf-text-docx.v1.pdf-ocr-docx.v1'
++DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v1.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1.macro-spreadsheet-edit.v1.document-pdf-export.v2.vdx-read.v1.visio-opc-profiles.v1.vsd-partial-read.v1.svg-static.v1.msg-partial-read.v1.msg-native-write.v1.fb2-native.v1.legacy-openoffice-read.v1.dbf-tables.v1.xps-read.v1.dif-slk-tables.v1.abw-native.v1.lha-read-extract.v1.odf-formula-write.v1.arj-native.v1.xps-text-write.v1.vdx-native-write.v1.xlsb-write.v1.epub-native.v1.access-read.v1.pub-stored-text.v1.onenote-current-text.v1.mpp-task-name-edit.v1.mpp9-task-catalog.v1.pub-text-edit.v1.mpp12-mpp14-task-catalog.v1.onenote-text-edit.v1.eml-attachment.v1.text-edit.v1.source-semantic-edit-contract.v1.ooxml-password-edit.v1.merge-provenance.v1.necessary-source-clarification.v1.xlsx-numeric-edit.v1.ics-utc-create.v1.pdf-text-docx.v1.pdf-ocr-docx.v1.ics-embedded-timezone-create.v1'
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -670,7 +670,8 @@
+     if function['name'] == 'read_file':
+         function['description'] = 'Native EML exposes bounded stored headers, decoded plain-text bodies and attachment metadata without rendering HTML, opening attachments or sending. Native ICS exposes stored event, timezone and recurrence fields without occurrence expansion, UTC conversion or import. Native VCF exposes repeated and typed stored contact fields without fetching URIs or importing contacts. All three preserve unknown values as stored claims, enforce byte/part/depth/decoded-text limits and never follow remote resources.' + function['description']
+     if function['name'] == 'write_file':
+-        function['description'] = ' Native local communication files: eml_create accepts JSON exactly from,to,subject,text for a NEW plain-text EML; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive, uses the same form and follows start. dtstamp uses YYYYMMDDTHHMMSSZ; ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. ' + function['description']
++        from tools.scoped_communication import ICS_NAMED_TIMEZONE_GUIDANCE
++        function['description'] = ' Native local communication files: eml_create accepts JSON exactly from,to,subject,text for a NEW plain-text EML; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location,timezone for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive and follows start. dtstamp uses YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. ' + function['description']
+     if function['name'] in ('read_file', 'write_file', 'patch'):
+         from tools.scoped_iwork import GUIDANCE as _IWORK_READ_GUIDANCE
+         function['description'] = _IWORK_READ_GUIDANCE + function['description']
