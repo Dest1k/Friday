@@ -1,6 +1,6 @@
 # Friday — оперативная точка входа Астры
 
-Чекпоинт 01:09 МСК 20.11.2026. Установлена 282. Gateway и Dashboard работают, Telegram подключён. Штатный экспорт DOCX в PDF подтвердил шесть пунктов оглавления и два колонтитула. [Установка и проверка 282](evidence/astra-20261120/core282-installed-native-docx-toc-pdf-verified.json)
+Чекпоинт 01:29 МСК 20.11.2026. Установлена 283. Gateway и Dashboard работают, Telegram подключён. Проверены подсказки TXT и текстового импорта ID CSV/TSV. [Установка и проверка 283](evidence/astra-20261120/core283-installed-ordinary-csv-and-txt-hints-verified.json)
 
 **17.11.2026, 22:10 МСК.** Дест возобновил работу после [паузы для смены модели](evidence/astra-20261117/owner-model-switch-pause-team-checkpoint.json). Native goal **01a1c688-e36d-7021-8df4-9c5644a4d75b active**, прежний объект и учёт, без токен-бюджета. Обе реальные сессии после переключения работают на **gpt-6.2-sol / ultra** по фактическим turn context. Астра ведёт интеграцию. Настройки принадлежат владельцу. Текущие назначения указаны ниже.
 
@@ -8,7 +8,9 @@
 
 ## Установлено и работает
 
-**[Установлена 282, проект 645, 17 909 нативных файлов](evidence/astra-20261120/core282-installed-native-docx-toc-pdf-verified.json).** Коммит исходников f860e87e48fbfff92ae58f43c9a19e829b84ba64. Заменён один файл, добавлены семь. При изолированном откате восстановлены пять существовавших файлов и девять отсутствий. Три БД прошли quick_check, leases 0.
+**[Установлена 283, проект 647, 17 909 нативных файлов](evidence/astra-20261120/core283-installed-ordinary-csv-and-txt-hints-verified.json).** Заменены два нативных файла. Три БД прошли quick_check, leases 0. Изолированный откат сохранил чужой манифест при конфликте.
+
+**[Предыдущая 282, проект 645, 17 909 нативных файлов](evidence/astra-20261120/core282-installed-native-docx-toc-pdf-verified.json).** Коммит исходников f860e87e48fbfff92ae58f43c9a19e829b84ba64. Заменён один файл, добавлены семь. При изолированном откате восстановлены пять существовавших файлов и девять отсутствий. Три БД прошли quick_check, leases 0.
 
 **[Предыдущая 281, проект 643, 17 902 нативных файла](evidence/astra-20261119/core281-installed-docx-inner-revision-comment-read.json).** Коммит исходников 6b5baae4fc90026aafa2f1688829910f95789583. Заменены два файла. В изоляции восстановлены исходные режимы, шесть файлов и два отсутствовавших пути. Три БД прошли quick_check, leases 0.
 
@@ -20,7 +22,7 @@
 
 Штатная публикация завершилась с кодом 0. Заменены четыре нативных файла. В изоляции проверен откат десяти целей с восстановлением двух исходных отсутствий. БД, WAL и SHM сохранены до старта. Три quick_check OK, leases 0. [Предыдущая версия 277 и сохраняющая правка DOCX](evidence/astra-20261119/core277-installed-d09-preserving-docx-edits.json).
 
-Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032. Загрузка 63c14904, Gateway **1150115**, Dashboard **1151107**. Обычные пользовательские проверки ждут подтверждённой ротации ключа и свежего допуска.
+Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw032. Загрузка 63c14904, Gateway **1201120**, Dashboard **1202140**. Обычные пользовательские проверки ждут подтверждённой ротации ключа и свежего допуска.
 
 [CSV→typedXLSX, проверка компонента на232](evidence/astra-20261117/core232-installed-csv-component-values-assessed.json) **R2/PASS/independentf5e7a59f**: actual receipt-pinned27Code/11loaded modules, nativeconvert+adapterexecute, genuine92B CSV, XLSX толькоRAM. Exact number1200.50/date2026-04-05/styles/IDs/comments/order/zeroformulas. R1 пропускал проверки значений, сохранён; R2 добавил только их. Permission/source snapshot/revision/parent/publication leaves **inert**: ordinary delivery/runtimeCAS/formal не доказаны. [Принятый Source](evidence/astra-20261117/s05-explicit-locale-csv-direct-import-source-adopted-not-installed.json), [genuinebuilder/preintent](evidence/astra-20261117/core232-exact-next-source-genuine-builder-ready-not-installed.json) — исторические стадии до установки, не текущий NOT_INSTALLED.
 
@@ -80,7 +82,7 @@ Home /home/jericho/jericho/Friday_rework/.runtime/friday-normal-both-workers-frw
 
 **F03 DOCX v03 Unicode.** Writer открыл точный исходник и полученный DOCX 2827. В пяти абзацах изменилась только согласованная фраза в третьем. Заголовок, оба действующих колонтитула и стили сохранились. В рендере A4 все изменения пикселей находятся внутри третьего абзаца. Состоявшаяся выдача 2825→2827 сохранена. Формальная приёмка открыта. [Проверка Writer](evidence/astra-20261119/f03-exact-received2827-docx-writer-unicode-and-print.json), [исходная выдача](evidence/astra-20261116/docx227-unicode-original-edit-delivery-assessed.json).
 
-**F03 CSV v04.** Calc открыл точный выданный CSV 2836 и исходник с явно текстовой колонкой order_id. Четыре ID остались строками с ведущими нулями. Из 30 полей изменилось только количество у 0003 с 1 до 2. Явный импорт в Calc подтвердил требуемые строковые ID. Формальная приёмка открыта. Подготовлены краткая подсказка импорта в подписи CSV/TSV и поддержка двух форм TXT-ссылок в подсказке беседы. Точный переход 282→283 прошёл штатный сборщик и независимое ревью. Открыты проверка CAS, установка и проверка установленного пути. [Проверка перехода](evidence/astra-20261120/core283-v85-exact-file-guidance-transport-source-reviewed.json). [Подготовка](evidence/astra-20261120/f03-csv-import-and-txt-upload-hints-source-candidates.json). [Проверка Calc](evidence/astra-20261119/f03-exact-received2836-csv-calc-text-ids.json).
+**F03 CSV v04.** Calc открыл точный выданный CSV 2836 и исходник с явно текстовой колонкой order_id. Четыре ID остались строками с ведущими нулями. Из 30 полей изменилось только количество у 0003 с 1 до 2. Явный импорт в Calc подтвердил требуемые строковые ID. Формальная приёмка открыта. Подготовлены краткая подсказка импорта в подписи CSV/TSV и поддержка двух форм TXT-ссылок в подсказке беседы. На 283 проверены текстовый импорт в подсказке только для свободной подписи и обе формы подсказок TXT. Обычная выдача с новой подсказкой и формальная приёмка открыты. [Установленная проверка](evidence/astra-20261120/core283-installed-ordinary-csv-and-txt-hints-verified.json). [Проверка перехода](evidence/astra-20261120/core283-v85-exact-file-guidance-transport-source-reviewed.json). [Подготовка](evidence/astra-20261120/f03-csv-import-and-txt-upload-hints-source-candidates.json). [Проверка Calc](evidence/astra-20261119/f03-exact-received2836-csv-calc-text-ids.json).
 
 **F03 HTML v01.** Firefox открыл точный полученный HTML 2842. Дата исправилась в том же месте. Заголовки, список, таблица с подписью и экранированный текст сохранились. DOM совпал за пределами текста даты. Исходные файлы сохранены. Telegram выдал файл с MIME application/octet-stream. Предпросмотр в Telegram и формальная приёмка открыты. [Проверка Firefox](evidence/astra-20261119/f03-exact-received2842-html-firefox-preservation.json).
 
