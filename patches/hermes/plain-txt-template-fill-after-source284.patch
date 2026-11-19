@@ -1,0 +1,155 @@
+diff --git a/tools/scoped_word_profiles.py b/tools/scoped_word_profiles.py
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -423,9 +423,53 @@
+     return rendered
+ 
+ 
++def _render_plain_template_fill(data, fields, checkpoint):
++    from hermes_cli.friday_user_scope import ScopeDenied
++    from hermes_cli.friday_workspace_docx import (
++        MAX_PARAGRAPHS, MAX_TEXT, _EditRefused, _fill_occurrences, _text,
++    )
++
++    if not isinstance(data, bytes) or not data or len(data) > MAX_TEXT:
++        _fail('text_template_size')
++    _tick(checkpoint)
++    try:
++        template = _text(data.decode('utf-8-sig'))
++    except (UnicodeError, ScopeDenied):
++        _fail('invalid_text_template')
++    # Match the source lines exposed by the ordinary UTF-8 reader.
++    template = '\n'.join(template.splitlines())
++    if template.count('\n') >= MAX_PARAGRAPHS:
++        _fail('text_template_paragraph_limit')
++    pieces, names = [], set()
++    offset = count = 0
++    try:
++        for name, start, end in _fill_occurrences(template):
++            _tick(checkpoint)
++            count += 1
++            if count > 256:
++                _fail('placeholder_occurrence_limit')
++            if name not in fields:
++                _fail('missing_fields')
++            names.add(name)
++            pieces.extend((template[offset:start], fields[name]))
++            offset = end
++    except _EditRefused as error:
++        _fail(str(error))
++    if not names:
++        _fail('placeholders_missing')
++    if names != fields.keys():
++        _fail('extra_fields')
++    pieces.append(template[offset:])
++    if sum(len(piece.encode('utf-8')) for piece in pieces) > MAX_TEXT:
++        _fail('replacement_limit')
++    rendered = render(''.join(pieces), 'docx', checkpoint=checkpoint)
++    return rendered, {'fields': sorted(names), 'replacements': count,
++                      'source_format': 'txt', 'output_format': 'docx'}
++
++
+ def render_fill(data, fields, format, *, checkpoint=None):
+-    """Fill a passive, unprotected DOCX/DOTX template into a new DOCX."""
+-    if format not in ('docx', 'dotx'):
++    """Fill a bounded UTF-8 TXT or passive DOCX/DOTX template into a new DOCX."""
++    if format not in ('docx', 'dotx', 'txt'):
+         _fail('unsupported_fill_format')
+     if not isinstance(fields, dict) or len(fields) > 64:
+         _fail('field_mapping_limit')
+@@ -444,6 +488,8 @@
+         replacement_bytes += len(value.encode('utf-8'))
+         if len(value.encode('utf-8')) > 100_000 or replacement_bytes > 1_000_000:
+             _fail('replacement_limit')
++    if format == 'txt':
++        return _render_plain_template_fill(data, fields, checkpoint)
+     package = _Package(data, format, checkpoint)
+     if package.active or package.macro or any(name.lower().startswith('_xmlsignatures/')
+                                               for name in package.parts):
+diff --git a/hermes_cli/friday_workspace_word_profiles.py b/hermes_cli/friday_workspace_word_profiles.py
+--- a/hermes_cli/friday_workspace_word_profiles.py
++++ b/hermes_cli/friday_workspace_word_profiles.py
+@@ -121,7 +121,7 @@
+     except ValueError:
+         raise ScopeDenied() from None
+     if (not relative.parts or any(part in ('.', '..') or part.startswith('.') for part in relative.parts)
+-            or source.suffix.lower() not in ('.docx', '.dotx') or relative.as_posix() == path):
++            or source.suffix.lower() not in ('.docx', '.dotx', '.txt') or relative.as_posix() == path):
+         raise ScopeDenied()
+     data, _, identity = workspace_document(str(source), with_identity=True)
+     actual_hash = hashlib.sha256(data).hexdigest()
+@@ -146,7 +146,8 @@
+                                      output_format='docx', verify_source=verify))
+     if result.get('success'):
+         result.update(source=relative.as_posix(), source_sha256=actual_hash,
+-                      source_unchanged=True, unchanged_parts_preserved=True,
+-                      fill_mode='native_template_fields', nested_placeholders_evaluated=False,
+-                      office_rendering_evaluated=False, **details)
++                      source_unchanged=True, fill_mode='native_template_fields',
++                      nested_placeholders_evaluated=False, office_rendering_evaluated=False, **details)
++        if details['source_format'] != 'txt':
++            result['unchanged_parts_preserved'] = True
+     return json.dumps(result, ensure_ascii=False)
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -322,9 +322,12 @@
+     'Правка принимает ровно source/old_text/new_text: один уникальный поддержанный абзац, '
+     'исходник и выход одного профиля; смешанные стили, поля, anchors и опасные структуры отказываются. '
+     'Не восстанавливай исходник из извлечённого текста ради заявления о сохранении оформления. '
+-    'Для заполнения одного Word-шаблона используй write_file format=docx_fill в НОВЫЙ .docx: '
+-    'content JSON ровно {source,source_sha256,fields}; source .docx/.dotx, hash из read_file, '
+-    'fields — точный набор строковых значений для {{NAME}}. Повторы и same-style split runs '
++    'Для заполнения шаблона используй write_file format=docx_fill в НОВЫЙ .docx: '
++    'content JSON ровно {source,source_sha256,fields}; source UTF-8 .txt, .docx или .dotx, hash из read_file. '
++    'Для TXT сохраняются исходные строки как абзацы. Если значения заданы таблицей, прочитай оба файла и '
++    'возьми только запрошенную строку. Не включай подпись к вложению. Для неизвестного явно передай '
++    'литерал исходного {{NAME}} или оговорённую пометку. fields — точный набор строк для всех {{NAME}}. '
++    'Повторы и same-style split runs '
+     'поддержаны; mixed formatting, fields/revisions/anchors/headers, malformed syntax и '
+     'active/signed/macro/external sources отказываются. Значения литеральны, не раскрывай вложенные '
+     'placeholders; DOTX преобразуется в настоящий DOCX content type, исходник не меняется. '
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1433,9 +1433,11 @@
+     'Native Word DOCX/DOTX and ODF ODT/OTT/FODT support bounded reading, creation and '
+     'preserving exact-text copies. Use the matching profile name as format for plain '
+     'creation, or append _structured for JSON blocks, or _edit for a preserving copy. '
+-    'Word template fill: format=docx_fill, NEW .docx path, content JSON exactly '
+-    '{"source":"template.docx-or-.dotx","source_sha256":"64-lowercase-hex-from-read_file",'
+-    '"fields":{"NAME":"literal string"}}. Placeholders are {{NAME}} in supported body/table '
++    'Template fill: format=docx_fill, NEW .docx path, content JSON exactly '
++    '{"source":"template.txt","source_sha256":"64-lowercase-hex-from-read_file",'
++    '"fields":{"NAME":"literal string"}}. Sources are UTF-8 .txt, .docx, or .dotx. TXT keeps '
++    'the source lines as paragraphs and does not include the chat caption. For Word files '
++    '{{NAME}} tokens are in supported body/table '
+     'paragraphs; the exact discovered field set is required. Same-style split runs and repeated '
+     'placeholders are supported. Mixed formatting, fields, revisions, anchors, headers, malformed '
+     'syntax, active/signed/macro/external content and unsupported whitespace refuse. Values are '
+@@ -2367,17 +2369,19 @@
+ )
+ 
+ 
+-# Keep the bounded common DOTX derivative contract after compact descriptions.
++# Keep the bounded template derivative contract after compact descriptions.
+ _WORD_TEMPLATE_FILL_FINAL_GUIDANCE = (
+-    ' Nonmacro Word template derivative: use format=docx_fill with a NEW .docx output '
+-    'from a genuine .dotx template identified by the current read_file. Pass content '
++    ' Template derivative: use format=docx_fill with a NEW .docx output '
++    'from a UTF-8 .txt or genuine nonmacro .docx/.dotx identified by the current read_file. '
++    'TXT preserves source lines as paragraphs. Read any requested table source and use only the '
++    'selected data, never the chat caption. Pass content '
+     'as a serialized JSON string exactly {source,source_sha256,fields}, using that '
+-    'current source hash. fields must map every supported {{NAME}} token in body/table '
+-    'text, with no extra keys. Fill supplied facts only; keep an unknown token visibly '
++    'current source hash. fields must map every supported {{NAME}} token, with no extra keys. '
++    'Word tokens are in body/table text. Fill supplied facts only; keep an unknown token visibly '
+     'unresolved by mapping it to its original literal, for example phone to {{phone}}. '
+     'Do not invent values or omit required mappings. The source remains unchanged; '
+     'publication is create-only and the output is a genuine DOCX document. '
+-    'Unselected package payloads and ZIP metadata are checked; macro/active/signed '
++    'For DOCX/DOTX, unselected package payloads and ZIP metadata are checked. Macro/active/signed '
+     'packages, external relationships and unsupported structures refuse. Report the '
+     'source template identity and macro limits, distinguish actually filled facts '
+     'from unresolved identity mappings, and never claim visual/layout or application '
