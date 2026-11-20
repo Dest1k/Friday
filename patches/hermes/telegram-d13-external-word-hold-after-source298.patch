@@ -1,0 +1,584 @@
+--- /dev/null
++++ b/gateway/external_word_intent.py
+@@ -0,0 +1,171 @@
++"""Host-only intent for a bounded external Word request. It grants no delivery."""
++from dataclasses import dataclass, field
++from hashlib import sha256
++import re
++import unicodedata
++
++
++# A direct imperative to create an external derivative in Word. Scope this
++# selector to the explicit form it supports, not subject mentions or instructions
++# obtained from attachments, quotes, restored prompts, or the model.
++_ACTION = re.compile(r"(?:(?:пожалуйста)[, ]+)?(?:сделай|подготовь|создай|составь|сформируй)\b")
++_DERIVATIVE = r"(?:сводк\w*|копи\w*|отч[её]т\w*)"
++_EXTERNAL = r"(?:внешн\w*|публичн\w*)"
++_SOURCE_PHRASE = (
++    r"(?:(?:по|из|на\s+основе)\s+"
++    r"(?:(?:приложенн\w*|исходн\w*|эт\w*|загруженн\w*)\s+)?"
++    r"(?:документ\w*|файл\w*|материал\w*)\s+)?"
++)
++_EXTERNAL_DERIVATIVE = re.compile(
++    rf"^{_SOURCE_PHRASE}(?:(?:отдельн\w*|нов\w*)\s+){{0,2}}"
++    rf"(?:{_EXTERNAL}\s+{_DERIVATIVE}|{_DERIVATIVE}\b[^,;.!?]{{0,80}}\bдля\s+{_EXTERNAL})\b"
++)
++_WORD = re.compile(r"\bв\s+(?:(?:новом|формате)\s+)?(?:docx|word)\b")
++_NEGATION = re.compile(r"\b(?:не|нельзя|запрещено)\b")
++_QUOTE_ENTITIES = {"blockquote", "expandable_blockquote", "code", "pre"}
++
++HOLD_REPLY = "Внешний DOCX не отправлен. Для выдачи нужно подтверждение готового файла."
++_INELIGIBLE = object()
++
++
++@dataclass(frozen=True)
++class _Request:
++    event_identity: int
++    raw: object = field(repr=False)
++    bot: object = field(repr=False)
++    ids: tuple[str, str, str, str, str]
++    text_sha256: str
++
++
++@dataclass(frozen=True)
++class ExternalWordIntent:
++    principal: tuple[str, str, str, str]
++    runtime_profile: str
++    admission_generation: int
++    session_key: str
++    run_generation: int
++    platform_update_id: str
++    message_id: str
++    chat_id: str
++    thread_id: str
++    request_sha256: str
++
++
++def _selects_word_copy(text):
++    if not isinstance(text, str) or not 0 < len(text) <= 4096:
++        return False
++    normalized = unicodedata.normalize("NFC", text).casefold().strip()
++    # Require the action, derivative, audience and format in one directive.
++    action = _ACTION.match(normalized)
++    if action is None:
++        return False
++    directive = re.split(r"[,.!?;\n]", normalized[action.end():], maxsplit=1)[0].strip()
++    return bool(_EXTERNAL_DERIVATIVE.match(directive) and _WORD.search(directive)
++                and not _NEGATION.search(directive))
++
++
++def _body(message):
++    # Read exactly one original SDK field. No event.text or secondary source.
++    if message.text is not None and message.caption is None:
++        return message.text, message.entities
++    if message.text is None and message.caption is not None:
++        return message.caption, message.caption_entities
++    return None, ()
++
++
++def _native_shape(message, entities):
++    return (message.chat.type == "private" and message.from_user is not None
++            and (message.text is not None or getattr(message, "document", None) is not None)
++            and getattr(message, "message_thread_id", None) is None
++            and all(not getattr(message, key, None) for key in (
++                "forward_origin", "forward_date", "forward_from", "forward_from_chat",
++                "forward_sender_name", "is_automatic_forward", "sender_chat", "via_bot",
++                "media_group_id", "business_connection_id",
++            ))
++            and not any(item.type in _QUOTE_ENTITIES for item in entities or ()))
++
++
++def mark_original_request(adapter, update, message, event):
++    """Only called by the registered Telegram handlers after their native gates."""
++    from plugins.platforms.telegram.telegram_ingress import _id
++
++    text, entities = _body(message)
++    if not _selects_word_copy(text):
++        return
++    # Recognized but unprovable input must not enter the ordinary output path.
++    event._external_word_request = _INELIGIBLE
++    event.allow_gateway_control = False
++    if (update.message is not message or event.raw_message is not message
++            or event.internal or event._ingress_merged or not _native_shape(message, entities)
++            or type(update.update_id) is not int or update.update_id <= 0
++            or event._ingress_update_id != update.update_id
++            or event.platform_update_id != update.update_id):
++        return
++    try:
++        bot = message.get_bot()
++        if bot is not adapter._bot:
++            return
++        chat_id, user_id, bot_id = _id(message.chat.id), _id(message.from_user.id), _id(bot.id)
++        if user_id != chat_id or user_id == bot_id:
++            return
++        ids = (bot_id, user_id, chat_id, _id(message.message_id), _id(update.update_id))
++    except (AttributeError, RuntimeError, TypeError, ValueError):
++        return
++    event._external_word_request = _Request(id(event), message, bot, ids, sha256(text.encode()).hexdigest())
++
++
++def is_external_word_request(event):
++    """Scheduling barrier only, including a recognized request without proof."""
++    marker = getattr(event, "_external_word_request", None)
++    return marker is _INELIGIBLE or type(marker) is _Request
++
++
++def bind_generation(runner, event, source, session_key, generation):
++    """Revalidate the exact process-local original inside native ordinary scope."""
++    from gateway.admitted_ingress import admitted_ingress
++    from gateway.session_identity import identity_of
++    from hermes_cli.friday_product_access import current_access
++    from hermes_cli.friday_user_scope import authority, current
++
++    request = getattr(event, "_external_word_request", None)
++    if (type(request) is not _Request or request.event_identity != id(event)
++            or event.internal or event._ingress_merged or event.allow_gateway_control
++            or getattr(event, "_d13_word_generation", None) is not None
++            or event.raw_message is not request.raw):
++        return None
++    text, entities = _body(request.raw)
++    if (not _selects_word_copy(text) or sha256(text.encode()).hexdigest() != request.text_sha256
++            or not _native_shape(request.raw, entities)):
++        return None
++    state = runner._peek_session_state(session_key)
++    if (state is None or state.turn.event is not event or type(generation) is not int or generation < 1
++            or state.persistent.run_generation != generation
++            or runner._session_key_for_source(source) != session_key):
++        return None
++    identity = identity_of(source)
++    transport = identity.adapter() if identity is not None and identity.multiplexed else None
++    owner = runner._transport_owner(source)
++    if transport is None or owner is None or owner[0] is not transport or transport._bot is not request.bot:
++        return None
++    ingress = admitted_ingress(event, source, session_key)
++    if ingress is None or ingress["platform"] != "telegram":
++        return None
++    native = ingress["message"]
++    if (tuple(native[k] for k in ("bot_id", "user_id", "chat_id", "message_id", "platform_update_id")) != request.ids
++            or native["thread_id"] != ""):
++        return None
++    cap = current(required=True)
++    principal = ("telegram", ingress["transport_profile"], native["bot_id"], native["user_id"])
++    if (getattr(source, "_friday_user_scope", None) is not cap or cap.principal != principal
++            or source.is_bot != request.raw.from_user.is_bot or cap.profile != ingress["runtime_profile"] or cap.authorization_home != identity.authorization_home):
++        return None
++    with authority(cap.authorization_home):
++        grant = current_access()["users"].get(cap.key)
++    if (grant is None or grant["enabled"] is not True or grant["role"] != "user"
++            or grant["generation"] != cap.admission_generation):
++        return None
++    result = ExternalWordIntent(principal, cap.profile, cap.admission_generation, session_key, generation,
++                                native["platform_update_id"], native["message_id"], native["chat_id"],
++                                native["thread_id"], request.text_sha256)
++    event._d13_word_generation = result
++    return result
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -1832,8 +1832,11 @@
+     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
+     turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
+     replace."""
++    from gateway.external_word_intent import is_external_word_request
+     existing = pending_messages.get(session_key)
+     if existing:
++        if is_external_word_request(existing) or is_external_word_request(event):
++            return  # Only the native FIFO may queue a distinct external request.
+         existing_type = getattr(existing, "message_type", None)
+         existing_is_photo = existing_type == MessageType.PHOTO
+         incoming_is_photo = event.message_type == MessageType.PHOTO
+@@ -2392,9 +2395,10 @@
+ 
+     def _apply_topic_recovery(self, event: MessageEvent) -> None:
+         """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
++        from gateway.external_word_intent import is_external_word_request
+         recover = getattr(self, "_topic_recovery_fn", None)
+         source = getattr(event, "source", None)
+-        if recover is None or source is None:
++        if recover is None or source is None or is_external_word_request(event):
+             return
+         try:
+             recovered = recover(source)
+@@ -3882,6 +3886,9 @@
+             if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
+                 return (platform, "dm", str(source.chat_id))
+             return None
++        from gateway.external_word_intent import is_external_word_request
++        if is_external_word_request(existing) or is_external_word_request(event):
++            return False
+         existing_sender = _identity(existing)
+         return existing_sender is not None and existing_sender == _identity(event)
+ 
+@@ -4061,6 +4068,7 @@
+         pending_event = self._pending_messages.pop(session_key, None)
+         self._release_session_guard(session_key, guard=command_guard)
+         if pending_event is not None:
++            self._promote_external_word_tail(pending_event, session_key)
+             self._start_session_processing(pending_event, session_key)
+ 
+     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
+@@ -4224,6 +4232,7 @@
+                 for owner in owners:
+                     orphan = owner.get_pending_message(session_key)
+                     if orphan is not None:
++                        owner._promote_external_word_tail(orphan, session_key)
+                         owner._start_session_processing(orphan, session_key)
+                         break
+                 if orphan is None and not handled:
+@@ -4231,6 +4240,14 @@
+                     return
+             if handled:
+                 return
++        from gateway.external_word_intent import is_external_word_request
++        if is_external_word_request(event):
++            return  # The authenticated busy callback did not admit this event.
++        if is_external_word_request(self._pending_messages.get(session_key)):
++            runner = getattr(self, "gateway_runner", None)
++            if runner is not None:
++                runner._queue_or_replace_pending_event(session_key, event)
++            return
+         # Without a runner FIFO, do not merge a wake into an occupied human slot
+         # (or collapse distinct wakes into one turn). Its caller can retry admission.
+         if event.internal and session_key in self._pending_messages:
+@@ -4289,9 +4306,11 @@
+                         text_content: str, media_files: list) -> bool:
+         """Auto-TTS on voice input (voice-first), gated by /voice or voice.auto_tts;
+         skipped when streaming TTS already delivered audio this turn."""
++        from gateway.external_word_intent import is_external_word_request
+         generation = getattr(interrupt_event, "_hermes_run_generation", None)
+         return bool(
+-            self._should_auto_tts_for_chat(event.source.chat_id)
++            not is_external_word_request(event)
++            and self._should_auto_tts_for_chat(event.source.chat_id)
+             and event.message_type == MessageType.VOICE and text_content and not media_files
+             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
+ 
+@@ -4675,6 +4694,7 @@
+                 logger.debug(
+                     "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                     self.name)
++                self._promote_external_word_tail(late_pending, session_key)
+                 self._spawn_drain_task(late_pending, session_key)
+         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
+             self._cleanup_finished_session_task(session_key, interrupt_event)
+@@ -4798,6 +4818,7 @@
+                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
+                 if not delay:  # a backed-off event stays queued until the drain task wakes
+                     self._pending_messages.pop(session_key)
++                    self._promote_external_word_tail(pending_event, session_key)
+                 logger.debug("[%s] Processing queued follow-up message", self.name)
+                 self._clear_session_guard(session_key)
+                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+@@ -4909,7 +4930,19 @@
+             if pending_event is None:  # consumed elsewhere during the back-off
+                 self._cleanup_finished_session_task(session_key, guard)
+                 return
++            self._promote_external_word_tail(pending_event, session_key)
+         await self._process_message_background(pending_event, session_key)
++
++    def _promote_external_word_tail(self, event, session_key):
++        # This head has its own adapter task and reply anchor. Keep the next
++        # FIFO item in the slot so orphan rescue cannot substitute that item.
++        from gateway.external_word_intent import is_external_word_request
++        runner = getattr(self, "gateway_runner", None)
++        if runner is None or session_key in self._pending_messages:
++            return
++        overflow = runner._overflow_queue(session_key)
++        if overflow and (is_external_word_request(event) or is_external_word_request(overflow[0])):
++            self._pending_messages[session_key] = runner._promote_queued_event(session_key, self, None)
+ 
+     def _clear_session_guard(self, session_key: str) -> None:
+         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""
+--- a/gateway/run_busy.py
++++ b/gateway/run_busy.py
+@@ -405,9 +405,11 @@
+             getattr(existing, "message_type", None),
+             getattr(event, "message_type", None),
+         }
++        from gateway.external_word_intent import is_external_word_request
+         from gateway.session_identity import requires_original_source
+         if (
+             same_security_context
++            and not is_external_word_request(existing) and not is_external_word_request(event)
+             and (event.internal or not requires_original_source(event.source))
+             and (existing.internal or not requires_original_source(existing.source))
+             and MessageType.PHOTO in merge_types
+@@ -842,6 +844,11 @@
+         if not self._admit_bot_message_for_source(event.source):
+             return True
+         event._bot_loop_admitted = True
++        from gateway.external_word_intent import is_external_word_request
++        if is_external_word_request(event):
++            if not self._draining:
++                self._queue_or_replace_pending_event(session_key, event)
++            return True
+ 
+         effective_mode = self._effective_busy_input_mode(event.source)
+         if self._draining:  # gateway restarting/stopping
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -22,6 +22,7 @@
+ from agent.i18n import t
+ from agent.friday_baseline_bridge import atracked
+ from gateway.config import Platform
++from gateway.external_word_intent import HOLD_REPLY, bind_generation, is_external_word_request
+ from gateway.platforms.base import EphemeralReply
+ from gateway.platforms.event import MessageEvent, MessageType
+ from gateway.run_busy import approval_input_words
+@@ -236,9 +237,15 @@
+         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
+         # counting internal/system events would keep a genuinely idle gateway awake.
+         self._scale_to_zero_note_real_inbound()
++        original = event if is_external_word_request(event) else None
++        original_request = original._external_word_request if original is not None else None
+         event = await self._hm_pre_gateway_dispatch_hook(event, source)
+         if event is None:
+             return None
++        if original is not None:
++            if event is not original or getattr(event, "_external_word_request", None) is not original_request:
++                return None  # An ordinary plugin rewrite cannot demote this request.
++            event.allow_gateway_control = False
+         source = event.source
+ 
+         if not self._is_user_authorized_for_source(source):
+@@ -599,7 +606,11 @@
+         from gateway.platforms.base import merge_pending_message_event
+         adapter = self._delivery_adapter_for(source)
+         if adapter:
+-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
++            head = adapter._pending_messages.get(_quick_key)
++            if is_external_word_request(head) or is_external_word_request(event):
++                self._queue_or_replace_pending_event(_quick_key, event)
++            else:
++                merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+ 
+     async def _hm_busy_slash_or_photo(
+         self, event: "MessageEvent", source: SessionSource, _quick_key: str
+@@ -708,6 +719,10 @@
+         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
+         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
+         from gateway.run import _AGENT_PENDING_SENTINEL
++        if is_external_word_request(event):
++            if not self._draining:
++                self._queue_or_replace_pending_event(_quick_key, event)
++            return None
+         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
+         if _handled:
+             return _result
+@@ -1313,22 +1328,25 @@
+         if _paused_notice is not None:
+             return _paused_notice
+ 
+-        from gateway.hosted_room_native import dispatch_native_room
+-        _room_handled, _room_reply = await dispatch_native_room(
+-            self, event, source, is_internal=is_internal)
+-        if _room_handled:
+-            return _room_reply
+-
+-        # Controls retain native pause policy and require no new agent/session.
+-        from gateway.run_plugin_commands import dispatch_control
+-        _control_handled, _control_reply = await dispatch_control(self, event, source)
+-        if _control_handled:
+-            return _control_reply
++        external_word = is_external_word_request(event)
++        if not external_word:
++            from gateway.hosted_room_native import dispatch_native_room
++            _room_handled, _room_reply = await dispatch_native_room(
++                self, event, source, is_internal=is_internal)
++            if _room_handled:
++                return _room_reply
++
++            # Controls retain native pause policy and require no new agent/session.
++            from gateway.run_plugin_commands import dispatch_control
++            _control_handled, _control_reply = await dispatch_control(self, event, source)
++            if _control_handled:
++                return _control_reply
+ 
+         _quick_key = self._session_key_for_source(source)
+-        _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
+-        if _reply is not None:
+-            return _reply
++        if not external_word:
++            _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
++            if _reply is not None:
++                return _reply
+ 
+         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
+         self._hm_evict_idle_stale_agent(_quick_key)
+@@ -1337,9 +1355,10 @@
+         if self._is_session_running(_quick_key):
+             return await self._hm_handle_running_session_message(event, source, _quick_key)
+ 
+-        _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
+-        if _handled:
+-            return _result
++        if not external_word:
++            _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
++            if _handled:
++                return _result
+ 
+         # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
+         # conversational "yes" would execute a dangerous command.
+@@ -1356,6 +1375,15 @@
+                 logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
+                 return t("gateway.busy.draining_maintenance")
+ 
++        # An orphan must not borrow the arriving adapter event's reply anchor.
++        overflow = self._overflow_queue(_quick_key)
++        if overflow and (external_word or is_external_word_request(overflow[0])):
++            adapter = self._delivery_adapter_for(source)
++            if adapter is not None and _quick_key not in adapter._pending_messages:
++                adapter._pending_messages[_quick_key] = self._promote_queued_event(_quick_key, adapter, None)
++                self._queue_or_replace_pending_event(_quick_key, event)
++                return None  # The adapter drains that original head under its own task.
++
+         # Claim this session before any await: many awaits sit between here and _run_agent
+         # registering the real AIAgent; without this sentinel a second message during any of them
+         # passes the "already running" guard and spins up a duplicate agent for the same session.
+@@ -1378,6 +1406,19 @@
+         _run_generation = self._begin_session_run_generation(_quick_key)
+ 
+         try:
++            if is_external_word_request(event):
++                # A fresh native generation exists. Keep the typed request on this
++                # exact event outside prompts and transport metadata. No tool, agent,
++                # writer, attachment or approval path is entered here.
++                if not self._is_user_authorized_for_source(source, allow_adapter_delegation=False):
++                    return None
++                from hermes_cli.friday_user_scope import ScopeDenied
++                try:
++                    async with self._async_profile_scope_for_source(source):
++                        bind_generation(self, event, source, _quick_key, _run_generation)
++                except ScopeDenied:
++                    return None
++                return HOLD_REPLY
+             if not is_internal:  # fail-open plugin consume, inside the claimed slot (#129958)
+                 from gateway.run_inbound_consumer import run_post_admission_hook
+                 _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -22,6 +22,7 @@
+ from contextlib import nullcontext, suppress
+ from contextvars import copy_context
+ from gateway.config import Platform
++from gateway.external_word_intent import is_external_word_request
+ from gateway.media_repair import repair_explicit_computer_use_media_paths
+ from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+ from gateway.platforms.event import MessageEvent
+@@ -3399,7 +3400,7 @@
+         from gateway.run import _build_media_placeholder
+         _peek_event = adapter._pending_messages.get(session_key)
+         pending_text = None
+-        if _peek_event is not None:
++        if _peek_event is not None and not is_external_word_request(_peek_event):
+             pending_text = _peek_event.text or ""
+             if self._pending_event_audio_paths(_peek_event):
+                 pending_text, _ = await self._transcribe_and_echo_pending_voice(
+@@ -3735,6 +3736,16 @@
+         )
+         pending_event = None
+         pending = None
++        defer_external = False
++        if result and adapter and session_key:
++            slot = getattr(adapter, "_pending_messages", None)
++            if isinstance(slot, dict):
++                head = slot.get(session_key)
++                if head is None:
++                    overflow = self._overflow_queue(session_key)
++                    if overflow and is_external_word_request(overflow[0]):
++                        head = slot[session_key] = self._promote_queued_event(session_key, adapter, None)
++                defer_external = is_external_word_request(head)
+         if (result and adapter and session_key and not self._draining
+                 and getattr(source, '_friday_user_scope', None) is not None
+                 and not (result.get('pending_steer') or '').strip()):
+@@ -3755,7 +3766,7 @@
+                         and getattr(queued_source, 'platform', None) == Platform.TELEGRAM
+                         and getattr(queued_source, '_friday_user_scope', None) is not None):
+                     return None, None
+-        if result and adapter and session_key:
++        if result and adapter and session_key and not defer_external:
+             pending_event = _dequeue_pending_event(adapter, session_key)
+             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
+             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
+@@ -3956,7 +3967,12 @@
+             )
+             adapter = self._delivery_adapter_for(source)
+             if adapter and pending_event:
+-                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
++                head = adapter._pending_messages.get(session_key)
++                if is_external_word_request(head):
++                    self._session_state(session_key).conversation.queued_events.insert(0, head)
++                    adapter._pending_messages[session_key] = pending_event
++                else:
++                    merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+             elif adapter and hasattr(adapter, 'queue_message'):
+                 adapter.queue_message(session_key, pending)
+             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
+--- a/gateway/shutdown_flush.py
++++ b/gateway/shutdown_flush.py
+@@ -191,6 +191,9 @@
+ 
+ def _serialise_value(value: Any) -> Optional[dict]:
+     """Convert a pending message value to a JSON-serialisable dict."""
++    from gateway.external_word_intent import is_external_word_request
++    if is_external_word_request(value):
++        return None  # SDK actor proof is process-local; never replay as ordinary text.
+     if hasattr(value, "text"):  # MessageEvent-like object
+         result: Dict[str, Any] = {"text": getattr(value, "text", "")}
+         for attr in ("session_id", "platform", "sender_id", "sender_name", "reply_to", "media",
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -6570,6 +6570,11 @@
+         media cached, attribution applied."""
+         from plugins.platforms.telegram.telegram_context import group_trigger_text
+         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
++        if msg_type == MessageType.TEXT:
++            from gateway.external_word_intent import is_external_word_request, mark_original_request
++            mark_original_request(self, update, msg, event)
++            if is_external_word_request(event):
++                return event  # Intake only: no quoted attachment download.
+         event.text = group_trigger_text(self, msg, event.text)
+         await self._cache_replied_media(msg, event)
+         return self._apply_telegram_group_observe_attribution(event)
+@@ -6815,6 +6820,16 @@
+                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
+             return
+         event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
++        from gateway.external_word_intent import is_external_word_request, mark_original_request
++        mark_original_request(self, update, msg, event)
++        if is_external_word_request(event):
++            # Intake only. Keep the SDK caption and document on the original
++            # event without downloads, dynamic error text or album aggregation.
++            if self._should_drop_delayed_delivery():
++                self._hold_inbound_event(event, where="external-word-intake")
++            else:
++                await self.handle_message(event)
++            return
+         if msg.caption:
+             from plugins.platforms.telegram.telegram_context import group_trigger_text
+             event.text = group_trigger_text(self, msg, expand_link_entities(msg))
+--- a/plugins/platforms/telegram/telegram_ingress.py
++++ b/plugins/platforms/telegram/telegram_ingress.py
+@@ -5,9 +5,10 @@
+ def _original_event(adapter, event):
+     if event.internal:
+         return False
++    from gateway.external_word_intent import is_external_word_request
+     from gateway.session_identity import requires_original_source
+     adapter._canonicalize(event.source)
+-    return requires_original_source(event.source)
++    return is_external_word_request(event) or requires_original_source(event.source)
+ 
+ 
+ def _per_event_key(key, event):
+@@ -24,8 +25,10 @@
+ 
+ 
+ def text_batch_delay_for(adapter, pending):
++    from gateway.external_word_intent import is_external_word_request
+     from gateway.session_identity import requires_original_source
+-    if pending is not None and not pending.internal and requires_original_source(pending.source):
++    if pending is not None and not pending.internal and (
++            is_external_word_request(pending) or requires_original_source(pending.source)):
+         # Equal delays keep sequential native messages in arrival order; no
+         # split-message coalescing is promised for this original-event lane.
+         return adapter._text_batch_delay_seconds
