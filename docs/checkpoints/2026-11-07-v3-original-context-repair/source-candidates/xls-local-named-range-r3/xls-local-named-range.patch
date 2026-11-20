@@ -1,0 +1,231 @@
+diff --git a/tools/scoped_xls.py b/tools/scoped_xls.py
+--- a/tools/scoped_xls.py
++++ b/tools/scoped_xls.py
+@@ -11,12 +11,14 @@
+ from __future__ import annotations
+ import json
+ import math
++import re
+ import struct
+ 
+ MAX_INPUT = 1_000_000
+ MAX_DIRECTORY = 256
+ MAX_RECORDS = 50_000
+ MAX_SHEETS = 32
++MAX_NAMED_RANGES = 32
+ MAX_CELLS = 8192
+ MAX_STRINGS = 8192
+ MAX_STRING = 32767
+@@ -41,6 +43,7 @@
+ # objects. Check the complete payload, including the global IDCL sequence
+ # and each sheet's matching FDG and parent shape. Child drawings are refused.
+ _CALC_DRAWING_KINDS = frozenset((0x00EB, 0x00EC))
++_LOCAL_NAME_LINKS = frozenset((0x01AE, 0x0017))
+ _CALC_DRAWING_DEFAULTS = bytes.fromhex(
+     '33000bf012000000bf0008000800810109000008c0014000000840001ef11000'
+     '00000d0000080c00000817000008f7000010')
+@@ -315,6 +318,9 @@
+ # just like FONT/XF/FORMAT above; no theme ZIP, formula, or directive is run.
+ _GLOBAL_PASSIVE_FRT = frozenset((0x087C,0x087D,0x0892,0x088E,0x089A,
+                                0x08A3,0x0863,0x0896,0x089B,0x088C))
++# Only the passive FRT records listed after Lbl in MS-XLS Globals belong here.
++_NAMED_GLOBAL_TAIL = frozenset((0x01C1, 0x00EB, 0x00FC, 0x00FF,
++                                0x0863, 0x0896, 0x089B, 0x088C))
+ _ERROR_VALUES = {0x00:'#NULL!',0x07:'#DIV/0!',0x0F:'#VALUE!',0x17:'#REF!',
+                  0x1D:'#NAME?',0x24:'#NUM!',0x2A:'#N/A',0x2B:'#GETTING_DATA'}
+ 
+@@ -330,7 +336,7 @@
+         return obj
+ 
+ 
+-def _records(data, *, calc_envelope=False):
++def _records(data, *, calc_envelope=False, allow_named_ranges=False):
+     out=[]; at=0
+     while at < len(data):
+         if len(out) >= MAX_RECORDS:
+@@ -346,7 +352,8 @@
+             _fail('biff_record_size')
+         payload=data[at+4:at+4+size]
+         if kind == 0x002F: _fail('xls_encrypted')
+-        if kind in _ACTIVE and not (calc_envelope and kind in _CALC_DRAWING_KINDS):
++        if (kind in _ACTIVE and not (calc_envelope and kind in _CALC_DRAWING_KINDS)
++                and not (allow_named_ranges and kind in _LOCAL_NAME_LINKS)):
+             _fail('xls_active_or_external_record')
+         if calc_envelope and kind in (0x0012, 0x0013, 0x0019, 0x01AF, 0x01BC) and payload != bytes(2):
+             _fail('xls_calc_protection_unsupported')
+@@ -419,12 +426,16 @@
+     return result/100 if value&1 else result
+ 
+ 
+-def _cell(row,column,xf,kind,value,**extra):
+-    if not 0<=row<65536 or not 0<=column<256: _fail('xls_cell_bounds')
++def _column_name(column):
+     col=column+1; letters=''
+     while col:
+         col,rem=divmod(col-1,26); letters=chr(65+rem)+letters
+-    return dict(cell=f'{letters}{row+1}',row=row+1,column=column+1,
++    return letters
++
++
++def _cell(row,column,xf,kind,value,**extra):
++    if not 0<=row<65536 or not 0<=column<256: _fail('xls_cell_bounds')
++    return dict(cell=f'{_column_name(column)}{row+1}',row=row+1,column=column+1,
+                 type=kind,value=value,xf_index=xf,**extra)
+ 
+ 
+@@ -475,20 +486,58 @@
+         _fail('xls_passive_extension_header')
+ 
+ 
+-def _extract(data, *, template=False):
++def _local_named_ranges(bounds, xti, labels):
++    """Decode only a plain BIFF8 Lbl with one same-sheet absolute Area3d."""
++    if not labels or not xti or any(sheet >= len(bounds) for sheet in xti):
++        _fail('xls_named_range_unsupported')
++    result = []
++    seen = set()
++    used = set()
++    for item in labels:
++        if (len(item) < 15 or item[:3] != bytes(3) or not 1 <= item[3] <= 128
++                or _u16(item, 4) != 11 or item[6:8] != bytes(2) or item[10:14] != bytes(4)
++                or item[14] not in (0, 1)):
++            _fail('xls_named_range_unsupported')
++        tab = _u16(item, 8)
++        name, end = _unicode(item[3:4] + item[14:], short=True)
++        token = item[13 + end:]
++        if (not 1 <= tab <= len(bounds) or len(token) != 11 or token[0] != 0x3B
++                or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}', name) is None
++                or name.upper() in {'R', 'C'}
++                or re.fullmatch(r'(?:[A-Za-z]{1,3}[0-9]+|R[0-9]+C[0-9]+)', name, re.I)):
++            _fail('xls_named_range_unsupported')
++        x, first_row, last_row, first_col, last_col = struct.unpack_from('<5H', token, 1)
++        identity = tab, name.casefold()
++        if (x >= len(xti) or xti[x] != tab-1 or not first_row <= last_row
++                or not first_col <= last_col < 256 or identity in seen):
++            _fail('xls_named_range_unsupported')
++        seen.add(identity)
++        used.add(x)
++        result.append({'name':name, 'scope':'worksheet', 'sheet_index':tab, 'sheet_name':bounds[tab-1]['name'],
++                       'range':f'${_column_name(first_col)}${first_row+1}:${_column_name(last_col)}${last_row+1}'})
++    if len(used) != len(xti):
++        _fail('xls_named_range_unsupported')
++    return result
++
++
++def _extract(data, *, template=False, allow_named_ranges=False):
+     cfb=_CFB(data, allow_calc=not template)
+-    records=_records(cfb.streams['Workbook'], calc_envelope=cfb.calc_envelope)
+-    return _extract_workbook(cfb, records, template=template)
+-
+-
+-def _extract_workbook(cfb, records, *, template=False):
++    records=_records(cfb.streams['Workbook'], calc_envelope=cfb.calc_envelope,
++                     allow_named_ranges=allow_named_ranges)
++    return _extract_workbook(cfb, records, template=template, allow_named_ranges=allow_named_ranges)
++
++
++def _extract_workbook(cfb, records, *, template=False, allow_named_ranges=False):
+     calc_envelope=cfb.calc_envelope
+     _bof(records[0][1],records[0][2],0x0005)
+     if template: _template_marker(records)
+     bounds=[]; strings=[]; date1904=False; i=2 if template else 1; sst_seen=False; ignored=set()
+     calc_group = None
++    self_book = False; xti = None; labels = []
+     while i<len(records) and records[i][1] != 0x000A:
+         at,kind,p=records[i]; i+=1
++        if self_book and kind not in _NAMED_GLOBAL_TAIL and kind not in _LOCAL_NAME_LINKS and kind != 0x0018:
++            _fail('xls_named_range_placement')
+         if kind == 0x0085:
+             if len(p)<8 or p[5]!=0 or p[4]&3 not in (0,1,2) or not 1<=p[6]<=31:
+                 _fail('xls_worksheet_required')
+@@ -507,6 +556,36 @@
+             for _ in range(unique):
+                 value,pos=_unicode(p,pos,rich=True); strings.append(value)
+             if pos!=len(p): _fail('xls_sst_trailing')
++        elif allow_named_ranges and kind == 0x01AE:
++            # SupBook cch 0x0401 is the four-byte self-reference type.
++            # The unused ctab field is not a sheet count for this type.
++            if self_book or len(p) != 4 or _u16(p,2) != 0x0401:
++                _fail('xls_active_or_external_record')
++            # Admit only the finite contiguous SUPBOOK/ExternSheet/Lbl block
++            # in the MS-XLS Globals window after BUNDLESHEET and before SST.
++            if (not bounds or records[i-2][1] not in (0x0085, 0x008C)
++                    or sst_seen or ignored & _NAMED_GLOBAL_TAIL):
++                _fail('xls_named_range_placement')
++            self_book = True
++        elif allow_named_ranges and kind == 0x0017:
++            if not self_book or xti is not None or len(p) < 2:
++                _fail('xls_named_range_unsupported')
++            if records[i-2][1] != 0x01AE:
++                _fail('xls_named_range_placement')
++            count = _u16(p,0)
++            if not 1 <= count <= MAX_NAMED_RANGES or len(p) != 2+6*count:
++                _fail('xls_named_range_unsupported')
++            xti = []
++            for book, first, last in struct.iter_unpack('<3H',p[2:]):
++                if book != 0 or first != last or first >= MAX_SHEETS:
++                    _fail('xls_named_range_unsupported')
++                xti.append(first)
++        elif allow_named_ranges and kind == 0x0018:
++            if xti is None or len(labels) >= MAX_NAMED_RANGES:
++                _fail('xls_named_range_unsupported')
++            if records[i-2][1] not in (0x0017, 0x0018):
++                _fail('xls_named_range_placement')
++            labels.append(p)
+         elif calc_envelope and kind == 0x00EB:
+             if calc_group is not None:
+                 _fail('xls_active_or_external_record')
+@@ -549,6 +628,7 @@
+             _fail('xls_active_or_external_record')
+     if len({s['name'].casefold() for s in bounds})!=len(bounds): _fail('xls_duplicate_sheet')
+     if len({s['offset'] for s in bounds})!=len(bounds): _fail('xls_duplicate_sheet_offset')
++    local_names = _local_named_ranges(bounds, xti, labels) if self_book else []
+     sheet_indices = {sheet['offset']: index for index, sheet in enumerate(bounds, 1)}
+     parsed={}; total_cells=0
+     while i<len(records):
+@@ -560,6 +640,8 @@
+         calc_drawing = False
+         while i<len(records) and records[i][1] != 0x000A:
+             _,kind,p=records[i]; i+=1
++            if kind in _LOCAL_NAME_LINKS:
++                _fail('xls_active_or_external_record')
+             if pending is not None:
+                 if kind!=0x0207: _fail('xls_formula_string_missing')
+                 value,end=_unicode(p)
+@@ -682,6 +764,11 @@
+         metadata.update(format='xlt',template=True,read_only=True,
+                         template_marker='BIFF8 Template (0x0060); empty; after Globals BOF',
+                         template_instantiation=False)
++    if local_names:
++        metadata['coverage']='stored_cell_values_formula_caches_and_local_named_ranges'
++        metadata['named_ranges']=local_names
++        metadata['named_range_profile']='same-sheet absolute rectangular BIFF8 names only'
++        metadata['limits']['named_ranges']=MAX_NAMED_RANGES
+     lines=[json.dumps({'xls_workbook':metadata},ensure_ascii=True,separators=(',',':'))]
+     size=len(lines[0])
+     for n,s in enumerate(bounds):
+@@ -694,11 +781,11 @@
+     return _Text('\n'.join(lines),metadata)
+ 
+ 
+-def _extract_profile(data, *, template=False):
++def _extract_profile(data, *, template=False, allow_named_ranges=False):
+     if not isinstance(data,bytes) or len(data)>MAX_INPUT:
+         raise XLSExtractionError('xls_input_limit')
+     try:
+-        return _extract(data, template=template)
++        return _extract(data, template=template, allow_named_ranges=allow_named_ranges)
+     except BinarySpreadsheetError as exc:
+         raise XLSExtractionError(str(exc)) from None
+     except (ValueError,struct.error,IndexError,OverflowError,UnicodeError):
+@@ -706,8 +793,8 @@
+ 
+ 
+ def extract_xls(data: bytes) -> str:
+-    """Extract a bounded BIFF8 workbook; refuse native template records."""
+-    return _extract_profile(data)
++    """Extract stored BIFF8 cells, caches and supported local names."""
++    return _extract_profile(data, allow_named_ranges=True)
+ 
+ 
+ def extract_xlt(data: bytes) -> str:
