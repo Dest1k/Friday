@@ -76,6 +76,11 @@ def assess_saved_merge(observer, store, *, run_id, run_ref, cursor_ref, oracle_p
                 or result["workbook_sha256"] != artifact["download"]["sha256"]
                 or result["provenance_sha256"] != caption_sha):
             raise ValueError("S02 checker assessed different bytes or caption")
+        caption_lines = caption.decode("utf-8").removeprefix("\ufeff").splitlines()
+        # The checker covers the header, delimiter and data rows.
+        if sum(bool(line.strip()) for line in caption_lines) != result["orders_count"] + 2:
+            return {**result, "status": "REVIEW_REQUIRED", "state": "TABLE_AND_WORKBOOK_CHECKED",
+                    "reason": "ADDITIONAL_CAPTION_TEXT_REQUIRES_SEMANTIC_REVIEW"}
         return {"status": "PASS", **result}
 
     evidence = assess_closed_workbook_reply(
