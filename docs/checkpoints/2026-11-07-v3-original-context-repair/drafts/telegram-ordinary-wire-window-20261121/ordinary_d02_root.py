@@ -99,6 +99,8 @@ def check_predecessor(actor, current, authority, contract, run_id, scenario_sha,
     row = current.document(row_ref)
     review_ref = actor.fileref(prior['review']['path'])
     review = current.document(review_ref)
+    settlement = review['native_ingress_settlement']
+    selected_scope = contract['scope']
     actor.need(row_ref['sha256'] == prior['run_record_sha256'] == authority['history'][prior_id]['sha256']
                and review_ref['sha256'] == prior['review']['sha256']
                and row['id'] == prior_id and row['scenario_sha256'] == PHASES[0]
@@ -110,10 +112,13 @@ def check_predecessor(actor, current, authority, contract, run_id, scenario_sha,
                and review['scenario_sha256'] == PHASES[0]
                and review['custody_evidence']['run_record_sha256'] == row_ref['sha256']
                and all(review[field] == 'PASS' for field in ('semantic', 'custody', 'native_source', 'native_context'))
-               and review['same_context'] == contract['scope']['predecessor_context'],
+               and review['same_context'] == selected_scope['predecessor_context']
+               and row['sent_api_ack_reference'] == selected_scope['predecessor_upload_ack']
+               and settlement['sha256'] == selected_scope['predecessor_ingress_settlement_sha256'],
                'D02_CLOSED_UPLOAD_AND_INDEPENDENT_CONTEXT_REVIEW_REQUIRED')
     actor.readref(review['same_context'])
     actor.readref(review['independent_evidence'])
+    actor.readref(settlement)
     # The original Runner is still responsible for full verify_reply_custody on its ordinary path.
 
 
@@ -157,6 +162,16 @@ def bind(shared, actor, reference, *, action):
                and contract['authority'] == value['authority']
                and authority['run_scenarios'] == {run_id: phase_sha},
                'D02_EXACT_PHASE_AUTHORITY_REQUIRED')
+    if active:
+        scope = contract['scope']
+        installation = scope['installation']
+        gateway = authority['gateway']
+        identity = {key: gateway[key] for key in ('pid', 'start_time')}
+        actor.need(scope['require_receiver'] is True and installation['home'] == str(shared.HOME)
+                   and installation['gateway'] == dict(identity, boot_id=authority['boot_id'])
+                   and gateway['state_path'] == str(shared.HOME/'gateway_state.json'),
+                   'D02_ACTIVE_RECEIVER_AND_GATEWAY_SCOPE_REQUIRED')
+        actor.readref(installation['native_owner_observation'])
     check_predecessor(actor, current, authority, contract, run_id, phase_sha, active)
 
     profile = 'telegram-bot-' + str(scenario['tester_id'])

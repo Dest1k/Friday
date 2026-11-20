@@ -1,0 +1,486 @@
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -3155,8 +3155,26 @@
+             claim.failed = True
+ 
+     async def handle_message(self, event: MessageEvent) -> None:
+-        self._accept_update()
+-        await super().handle_message(event)
++        arm = getattr(self, "_ordinary_dm_wire_arm", None)
++        if arm is None or arm.ingress is None:
++            self._accept_update()
++            await super().handle_message(event)
++            return
++        from gateway.ordinary_dm_ingress import begin_handoff, end_handoff
++        ticket = begin_handoff(self, event)
++        returned = False
++        try:
++            self._accept_update()
++            await super().handle_message(event)
++            returned = True
++        finally:
++            end_handoff(ticket, event, returned=returned)
++
++    def _ordinary_dm_dispatch_finished(self, event, session_key):
++        arm = getattr(self, "_ordinary_dm_wire_arm", None)
++        if arm is not None and arm.ingress is not None:
++            from gateway.ordinary_dm_ingress import finished_dispatch
++            finished_dispatch(self, event, session_key)
+ 
+     def _register_handlers(self, app) -> None:
+         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -4683,6 +4683,7 @@
+         """Background task that actually processes the message."""
+         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+         delivery_completed = False
++        dispatch_returned = False
+         delivery_results = []
+ 
+         def _record_delivery(result):
+@@ -4802,7 +4803,9 @@
+                 self._clear_session_guard(session_key)
+                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                 self._spawn_drain_task(pending_event, session_key, delay=delay)
++                dispatch_returned = True
+                 return  # Drain task owns the session now.
++            dispatch_returned = True
+         except asyncio.CancelledError:
+             expected = asyncio.current_task() in self._expected_cancelled_tasks
+             await self._run_processing_hook(
+@@ -4848,6 +4851,10 @@
+             # Flush any timer that missed the in-band drain, then reconcile ownership.
+             await self._flush_text_debounce_now(session_key)
+             self._finish_session_task(session_key, interrupt_event)
++            if dispatch_returned:
++                finished = getattr(self, "_ordinary_dm_dispatch_finished", None)
++                if finished is not None:
++                    finished(event, session_key)
+ 
+     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
+     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
+diff --git a/gateway/ordinary_dm_ingress.py b/gateway/ordinary_dm_ingress.py
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -10,6 +10,7 @@
+ from pathlib import PurePosixPath
+ import time
+ from types import MappingProxyType
++from weakref import ref
+ 
+ from gateway.session_identity import identity_of
+ 
+@@ -34,12 +35,21 @@
+ 
+ 
+ @dataclass
++class _Dispatch:
++    event_ref: object
++    handoff: str = "unstarted"
++    writer_task: object = None
++    settled: bool = False
++
++
++@dataclass
+ class _RoutedWrite:
+     evidence: OrdinaryDMIngressOutcomes
+     update: int
+     proof: dict
+     expected_proof: dict
+     payload: dict
++    source: object
+     task: asyncio.Task
+     active: bool = True
+     invoked: bool = False
+@@ -56,10 +66,11 @@
+         if type(self.bot.id) is not int or self.bot.id != self.scope["bot_id"]:
+             raise ValueError("Selected Telegram receiving bot changed")
+         self._seal = object()
+-        self._built = set()
++        self._built = {}
+         self._held = set()
+         self._commits = {}
+         self._admissions = None
++        self._receipt_source = None
+         self._unknown = None
+         self._revision = 0
+ 
+@@ -109,7 +120,7 @@
+                 or update in self._built or len(self._built) >= self.claim.max_updates):
+             self.lost("ingress_duplicate_or_unbound_native_event")
+             return
+-        self._built.add(update)
++        self._built[update] = _Dispatch(ref(event))
+         event._ordinary_dm_ingress_stamp = (self._seal, update)
+         self._revision += 1
+ 
+@@ -134,14 +145,15 @@
+         if update not in self._held:
+             self._held.add(update)
+             self._revision += 1
+-        if event._ingress_merged:
+-            self.lost("ingress_held_event_was_merged")
++        if self._built[update].event_ref() is not event or event._ingress_merged:
++            self.lost("ingress_unbound_or_merged_held_event")
+ 
+     def select(self, event, source, identity, session_key):
+         update = self._stamp(event)
+         if update is None or not self._wire():
+             return None
+-        if (event.internal or event._ingress_merged or event.source is not source
++        if (self._built[update].event_ref() is not event or event.internal
++                or event._ingress_merged or event.source is not source
+                 or type(event.platform_update_id) is not int or event.platform_update_id != update
+                 or type(event._ingress_update_id) is not int or event._ingress_update_id != update
+                 or not self._selected_source(source)
+@@ -157,7 +169,46 @@
+             return None
+         return update
+ 
+-    def attempt(self, update, proof, payload):
++    def handoff(self, event):
++        update = self._stamp(event)
++        if update is None or self._wire() is None:
++            return None
++        record = self._built[update]
++        if record.event_ref() is not event or record.handoff != "unstarted":
++            self.lost("ingress_native_handoff_reentered")
++            return None
++        record.handoff = "pending"
++        self._revision += 1
++        return record
++
++    def handoff_returned(self, record, event, *, returned):
++        if (not returned or asyncio.current_task().cancelling() or record.event_ref() is not event
++                or event._gateway_accepted is not True):
++            self.lost("ingress_native_handoff_unsettled")
++            return
++        if record.handoff != "pending" or self._wire() is None:
++            self.lost("ingress_native_handoff_changed")
++            return
++        record.handoff = "returned"
++        self._revision += 1
++
++    def dispatch_finished(self, event, session_key):
++        update = self._stamp(event)
++        if update is None or self._wire() is None:
++            return
++        record = self._built[update]
++        task = asyncio.current_task()
++        if (session_key != self.scope["session_key"] or record.settled or record.event_ref() is not event
++                or record.writer_task is None or record.writer_task() is not task or task.cancelling()
++                or event.internal or event._ingress_merged or event.platform_update_id != update
++                or event._ingress_update_id != update or not self._selected_source(event.source)):
++            self.lost("ingress_background_writer_not_same_task")
++            return
++        record.writer_task = None
++        record.settled = True
++        self._revision += 1
++
++    def attempt(self, update, proof, payload, source):
+         if update is None or payload is None or proof is None or not self._wire():
+             return None
+         message = proof["message"]
+@@ -167,7 +218,7 @@
+                     message["platform_update_id"]) != (str(self.scope["bot_id"]), user, user, "", str(update))):
+             self.lost("ingress_native_receipt_route_changed")
+             return None
+-        return _RoutedWrite(self, update, proof, deepcopy(proof), payload, asyncio.current_task())
++        return _RoutedWrite(self, update, proof, deepcopy(proof), payload, source, asyncio.current_task())
+ 
+     def readback(self):
+         wire = self._wire()
+@@ -206,6 +257,36 @@
+             evidence.lost("ingress_event_observation_failed")
+ 
+ 
++def begin_handoff(adapter, event):
++    evidence = _ingress(adapter)
++    if evidence is not None:
++        try:
++            record = evidence.handoff(event)
++            if record is not None:
++                return evidence, record
++        except (Exception, asyncio.CancelledError):
++            evidence.lost("ingress_handoff_observation_failed")
++    return None
++
++
++def end_handoff(ticket, event, *, returned):
++    if ticket is not None:
++        evidence, record = ticket
++        try:
++            evidence.handoff_returned(record, event, returned=returned)
++        except (Exception, asyncio.CancelledError):
++            evidence.lost("ingress_handoff_return_observation_failed")
++
++
++def finished_dispatch(adapter, event, session_key):
++    evidence = _ingress(adapter)
++    if evidence is not None:
++        try:
++            evidence.dispatch_finished(event, session_key)
++        except (Exception, asyncio.CancelledError):
++            evidence.lost("ingress_dispatch_finalization_observation_failed")
++
++
+ def held_event(adapter, event, *, dropped=False):
+     evidence = _ingress(adapter)
+     if evidence is not None:
+@@ -230,7 +311,7 @@
+         if evidence is not None:
+             update = evidence.select(event, source, identity, session_key)
+             if update is not None:
+-                return evidence, update
++                return evidence, update, source
+     except (Exception, asyncio.CancelledError):
+         if evidence is not None:
+             evidence.lost("ingress_routed_selection_failed")
+@@ -241,9 +322,9 @@
+ def routed_write(selected, proof, payload):
+     attempt = None
+     if selected is not None:
+-        evidence, update = selected
+-        try:
+-            attempt = evidence.attempt(update, proof, payload)
++        evidence, update, source = selected
++        try:
++            attempt = evidence.attempt(update, proof, payload, source)
+         except (Exception, asyncio.CancelledError):
+             evidence.lost("ingress_routed_receipt_observation_failed")
+     token = _DELIVERY.set(attempt)
+@@ -299,6 +380,11 @@
+             else:
+                 evidence._admissions = admissions
+                 evidence._commits[attempt.update] = committed
++                if evidence._receipt_source is None:
++                    evidence._receipt_source = attempt.source
++                tasks = getattr(evidence.adapter, "_session_tasks", {})
++                if tasks.get(evidence.scope["session_key"]) is attempt.task:
++                    evidence._built[attempt.update].writer_task = ref(attempt.task)
+                 evidence._revision += 1
+         except (Exception, asyncio.CancelledError):
+             evidence.lost("ingress_writer_return_unproved")
+diff --git a/plugins/friday_rework/d02_wire_receipts.py b/plugins/friday_rework/d02_wire_receipts.py
+--- a/plugins/friday_rework/d02_wire_receipts.py
++++ b/plugins/friday_rework/d02_wire_receipts.py
+@@ -57,16 +57,19 @@
+             "reason": reason}
+ 
+ 
+-def _read_pairs(admissions, lock_deadline):
++def _read_pairs(admissions, lock_deadline, protected_reader):
+     state = admissions._payload_state()
+     deadline = time.monotonic() + 2
+     if lock_deadline is not None:
+         if not _time(lock_deadline):
+             raise ValueError("invalid_receipt_store_lock_deadline")
+         deadline = min(deadline, lock_deadline)
+-    doc, identity = state._read_storage_readonly(
+-        lock_deadline=deadline, with_identity=True, strict_json=True
+-    )
++    if protected_reader is None:
++        doc, identity = state._read_storage_readonly(
++            lock_deadline=deadline, with_identity=True, strict_json=True
++        )
++    else:
++        doc, identity = protected_reader(state, deadline)
+     if admissions._payload_state() is not state:
+         raise PermissionError("wire_receipt_store_scope_changed")
+     receipts = _receipt_document(doc.get(KEY, {"schema_version": 1, "receipts": {}}))["receipts"]
+@@ -126,13 +129,16 @@
+ 
+ 
+ def read_closed_wire_receipts(admissions, *, wire_bytes, wire_sha256, generation, armed_at, cutoff,
+-                              expires, scenario, route, committed_pairs, held_update_ids, lock_deadline=None):
++                              expires, scenario, route, committed_pairs, held_update_ids, lock_deadline=None,
++                              _protected_reader=None):
+     """Use one verified store read. Expose matcher inputs only for complete coverage.
+ 
+     The native owner supplies the actual bound wire pin, route, arm/cutoff/expiry
+     and successful returns from record_payload_commit on the same PluginState.
+     The owner's existing dispatch boundary supplies any held or re-held IDs
+     for this closed window. Held IDs always veto an otherwise valid pair.
++    The gateway's private post-rights reader supplies the same verified buffer
++    instead of opening the routed store a second time.
+     """
+     if (type(admissions) is not IngressAdmissions or type(scenario) is not dict
+             or not _integer(scenario.get("peer_id")) or not _integer(scenario.get("tester_id"))
+@@ -163,7 +169,7 @@
+         selected_proofs[proof.update_id].append(proof)
+ 
+     try:
+-        state, identity, receipts, payloads = _read_pairs(admissions, lock_deadline)
++        state, identity, receipts, payloads = _read_pairs(admissions, lock_deadline, _protected_reader)
+     except (OSError, RuntimeError, ValueError, TypeError):
+         return _resolution(None, reason="verified_receipt_store_unavailable")
+     peer, tester = str(scenario["peer_id"]), str(scenario["tester_id"])
+diff --git a/gateway/ordinary_dm_dispatch_closure.py b/gateway/ordinary_dm_dispatch_closure.py
+new file mode 100644
+--- /dev/null
++++ b/gateway/ordinary_dm_dispatch_closure.py
+@@ -0,0 +1,161 @@
++"""Internal settlement and single-buffer protected receipt join for the owned D02 arm."""
++
++import asyncio
++from hashlib import sha256
++from importlib import import_module
++import json
++import math
++from pathlib import Path
++import time
++
++from gateway import pairing
++from gateway.d02_receiver_state import check_receiver_state
++from gateway.session_identity import identity_of
++from hermes_cli import friday_product_access as access, friday_user_scope as scope
++from hermes_constants import get_hermes_home
++
++_ROUTE = ("session_key", "source_profile", "transport_profile", "runtime_profile")
++
++
++def encode_closed_wire(wire):
++    return (json.dumps(wire, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n").encode("utf-8")
++
++
++def _unknown(reason):
++    return {"state": "UNKNOWN", "reason": reason, "observations": None}
++
++
++def _number(value):
++    return type(value) in (int, float) and 0 <= value < 2**63 and math.isfinite(value)
++
++
++def _current_adapter(adapter):
++    runner = adapter.gateway_runner
++    return runner is not None and runner.adapters.get(adapter.platform) is adapter
++
++
++def _snapshot(adapter, arm, claim_sha256, wire_sha256, revision, cutoff):
++    evidence = arm.ingress
++    if (asyncio.get_running_loop() is not arm.claim.loop
++            or getattr(adapter, "_ordinary_dm_wire_arm", None) is not arm
++            or not _current_adapter(adapter) or arm.window._cutoff != cutoff):
++        raise ValueError("d02_dispatch_owner_or_cutoff_changed")
++    data = adapter._ordinary_dm_wire_ingress_readback(claim_sha256)
++    if data is None or data["state"] != "OBSERVED_PENDING_CALLER_CLOSURE":
++        raise ValueError("d02_dispatch_outcomes_unavailable")
++    raw = encode_closed_wire(data["wire"])
++    if data["revision"] != revision or sha256(raw).hexdigest() != wire_sha256:
++        raise ValueError("d02_dispatch_wire_or_revision_changed")
++    ids = data["wire"]["target_update_ids"]
++    if not ids or data["held_update_ids"]:
++        raise ValueError("d02_dispatch_empty_or_held")
++    if (len(data["committed_pairs"]) != len(ids)
++            or any((evidence._built[update].handoff, evidence._built[update].settled)
++                   != ("returned", True) for update in ids)):
++        raise ValueError("d02_native_dispatch_unsettled")
++    key = evidence.scope["session_key"]
++    if (key in adapter._pending_messages or key in adapter._text_debounce or key in adapter._active_sessions
++            or key in adapter._session_tasks):
++        raise ValueError("d02_selected_session_still_owned_or_pending")
++    return data, raw
++
++
++def _exact_route(adapter, evidence, options, scenario):
++    source = evidence._receipt_source
++    identity = identity_of(source)
++    selected = evidence.scope
++    tester = str(evidence.claim.user_id)
++    principal = options["principal"]
++    home = Path(selected["authorization_home"])
++    profile = selected["runtime_profile"]
++    routed = Path(selected["runtime_home"])
++    if (identity is None or identity.transport_inferred or identity.adapter() is not adapter
++            or not evidence._selected_source(source) or (source.profile or "") != selected["source_profile"]
++            or identity.authorization_home != home or identity.runtime_home != routed
++            or routed != home / "profiles" / profile
++            or identity.transport_profile != selected["transport_profile"] or identity.runtime_profile != profile
++            or options["profile"] != profile
++            or (principal["platform"], principal["transport_profile"], principal["account_id"], principal["user_id"])
++            != ("telegram", selected["transport_profile"], str(selected["bot_id"]), tester)
++            or (scenario["tester_id"], scenario["peer_id"]) != (evidence.claim.user_id, selected["bot_id"])
++            or scenario["max_updates"] != evidence.claim.max_updates):
++        raise ValueError("d02_dispatch_routed_scope_changed")
++    return home, profile, routed, principal
++
++
++def _storage_signature(state):
++    directory = state.directory_storage_readonly
++    return tuple((entry.st_dev, entry.st_ino, entry.st_uid, entry.st_mode, entry.st_nlink,
++                  entry.st_size, entry.st_mtime_ns, entry.st_ctime_ns)
++                 for entry in (path.lstat() for path in (
++                     directory, directory / ".state.json.lock", directory / "state.json")))
++
++
++def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, disposition_revision, cutoff,
++                             options, scenario, transport_deadline):
++    """Return private matcher inputs at a protected boundary already authenticated by Root.
++
++    Invoke synchronously on the owning loop. Keep the returned receipt pairs in
++    the existing private evidence path. This function neither retires the arm
++    nor decides an ACK match, authorizes an effect, or writes anything.
++    """
++    if (type(disposition_revision) is not int or disposition_revision < 0
++            or not _number(cutoff) or not _number(transport_deadline)):
++        return _unknown("d02_invalid_dispatch_join_binding")
++    try:
++        arm = adapter._ordinary_dm_wire_arm
++        if (arm is None or arm.ingress is None or type(claim_sha256) is not str
++                or arm.claim.claim_sha256 != claim_sha256):
++            return _unknown("d02_exact_dispatch_arm_required")
++        deadline = min(transport_deadline, arm.claim.expires_monotonic, time.monotonic() + 2)
++        if time.monotonic() >= deadline:
++            return _unknown("d02_dispatch_join_expired")
++        before, raw = _snapshot(adapter, arm, claim_sha256, wire_sha256, disposition_revision, cutoff)
++        evidence = arm.ingress
++        admissions = before["admissions"]
++        if admissions is not evidence._admissions or admissions is None:
++            return _unknown("d02_exact_routed_writer_required")
++        home, profile, routed, principal = _exact_route(adapter, evidence, options, scenario)
++        package, separator, name = type(admissions).__module__.rpartition(".")
++        if not separator or name != "admission":
++            return _unknown("d02_exact_routed_writer_package_required")
++        consumer = import_module(".d02_wire_receipts", package)
++        state = admissions.state
++
++        def read_verified(selected_state, bound):
++            if selected_state is not state:
++                raise ValueError("d02_routed_writer_state_changed")
++            data, observed = check_receiver_state(
++                home, profile=profile, expected_principal=principal, rights=options["rights"],
++                state=state, access=access, scope=scope, pairing=pairing, phase="post_dispatch",
++                deadline=bound,
++            )
++            return data, observed["routed"]
++
++        with scope.authority(routed):
++            if Path(get_hermes_home()) != routed:
++                return _unknown("d02_receipt_join_home_not_bound")
++            storage = _storage_signature(state)
++            joined = consumer.read_closed_wire_receipts(
++                admissions, wire_bytes=raw, wire_sha256=wire_sha256, generation=arm.claim.generation,
++                armed_at=arm.armed_monotonic, cutoff=cutoff, expires=arm.claim.expires_monotonic,
++                scenario=scenario, route={key: evidence.scope[key] for key in _ROUTE},
++                committed_pairs=before["committed_pairs"], held_update_ids=before["held_update_ids"],
++                lock_deadline=deadline, _protected_reader=read_verified,
++            )
++            if _storage_signature(state) != storage:
++                return _unknown("d02_routed_store_changed_during_join")
++        after, final_raw = _snapshot(adapter, arm, claim_sha256, wire_sha256, disposition_revision, cutoff)
++        _exact_route(adapter, evidence, options, scenario)
++        if (time.monotonic() >= deadline or admissions.state is not state
++                or after["admissions"] is not admissions or before["committed_pairs"] != after["committed_pairs"]
++                or final_raw != raw):
++            return _unknown("d02_dispatch_join_drift")
++        if joined["state"] != "WIRE_RECEIPT_PAIRS_RESOLVED":
++            return _unknown("d02_protected_pairs_unresolved")
++        return {"state": "D02_NATIVE_DISPATCH_SETTLED_PAIRS_RESOLVED", "reason": None,
++                "claim_sha256": claim_sha256, "generation": arm.claim.generation,
++                "wire_sha256": wire_sha256, "disposition_revision": disposition_revision,
++                "store_identity": joined["store_identity"], "observations": joined["observations"]}
++    except (OSError, RuntimeError, ValueError, AttributeError, TypeError, KeyError, IndexError, ImportError):
++        return _unknown("d02_native_dispatch_or_protected_join_unproved")
