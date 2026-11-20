@@ -1,0 +1,714 @@
+--- a/hermes_cli/friday_workspace_calc_print.py
++++ b/hermes_cli/friday_workspace_calc_print.py
+@@ -1,6 +1,7 @@
+-"""Private print-layout derivative for the current minimal XLSX producer shape."""
++"""Private print layout for plain workbooks and bounded dimension report rows."""
+
+ from copy import copy
++from decimal import Context, Decimal, localcontext
+ from io import BytesIO
+ import re
+ from struct import error as StructError
+@@ -21,6 +22,7 @@
+ _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+ _WORKBOOK = "xl/workbook.xml"
+ _SHEET = "xl/worksheets/sheet1.xml"
++_DETAILS = "xl/worksheets/sheet2.xml"
+ _STYLES = "xl/styles.xml"
+ _PLAIN_TEXT = re.compile(r"[A-Za-zА-Яа-яЁё0-9]+(?: [A-Za-zА-Яа-яЁё0-9]+)*")
+
+@@ -60,6 +62,7 @@
+         </styleSheet>""",
+ }
+ _PART_NAMES = {*_BASE_PARTS, _SHEET}
++_TYPED_PART_NAMES = {*_PART_NAMES, _DETAILS}
+
+
+ class _PlainXML(ET.TreeBuilder):
+@@ -172,7 +175,159 @@
+     return ET.tostring(styles, encoding="utf-8", xml_declaration=True)
+
+
+-def _read_parts(source: bytes) -> tuple[list[ZipInfo], dict[str, bytes]]:
++# This is the two-sheet dimension-summary writer shape. It does not generalize
++# to arbitrary formulas, print ranges, styles, relationships or row layouts.
++_SUMMARY_HEAD = ("dimension", "target_unit", "total_value", "source_row_count")
++_DETAILS_HEAD = ("line_id", "item", "quantity_original", "unit_original",
++                 "value_in_target_unit", "target_unit", "factor_to_target")
++_DETAIL_SUMS = ((2, 4), (5, 6), (7, 8))
++_FORMATS = ("0.00", "0.000", "0.0")
++_UNIT = re.compile(r"[A-Za-zА-Яа-яЁё]{1,4}")
++_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]{0,4})(?:\.[0-9]{1,3})?")
++
++
++def _typed_descriptors() -> dict[str, ET.Element]:
++    expected = {part: ET.fromstring(template) for part, template in _BASE_PARTS.items()}
++    ET.SubElement(expected["[Content_Types].xml"], f"{{{_CONTENT_TYPES}}}Override",
++                  PartName="/" + _DETAILS, ContentType=_SPREADSHEET_TYPE + ".worksheet+xml")
++    series = expected[_WORKBOOK][0]
++    series[0].set("name", "Summary")
++    ET.SubElement(series, _tag("sheet"),
++                  {f"{{{_OFFICE_RELS}}}id": "rId2", "name": "Details", "sheetId": "2"})
++    ET.SubElement(expected[_WORKBOOK], _tag("calcPr"), calcId="191029", calcMode="auto",
++                  fullCalcOnLoad="1", forceFullCalc="1")
++    expected["xl/_rels/workbook.xml.rels"].insert(
++        1, ET.Element(f"{{{_PACKAGE_RELS}}}Relationship", Id="rId2",
++                      Type=_OFFICE_RELS + "/worksheet", Target="worksheets/sheet2.xml"))
++    styles = expected[_STYLES]
++    numfmts, xfs = styles.find(_tag("numFmts")), styles.find(_tag("cellXfs"))
++    numfmts.set("count", str(len(_FORMATS)))
++    xfs.set("count", str(len(_FORMATS) + 1))
++    for index, code in enumerate(_FORMATS, 164):
++        number_id = str(index)
++        ET.SubElement(numfmts, _tag("numFmt"), numFmtId=number_id, formatCode=code)
++        ET.SubElement(xfs, _tag("xf"), {**xfs[0].attrib, "numFmtId": number_id})
++    return expected
++
++
++def _typed_rows(sheet: ET.Element, rows: int, columns: str) -> ET.Element:
++    _expect(sheet, "worksheet", {}, 1)
++    data = sheet[0]
++    _expect(data, "sheetData", {}, rows)
++    for i, row in enumerate(data, 1):
++        _expect(row, "row", {"r": str(i)}, len(columns))
++        for column, cell in zip(columns, row):
++            if (cell.tag != _tag("c") or cell.get("r") != f"{column}{i}"
++                    or not _has_no_text(cell.text) or not _has_no_text(cell.tail)):
++                raise ProjectionUnsupported("unexpected typed worksheet cell address or body")
++    return data
++
++
++def _typed_text(cell: ET.Element) -> str:
++    _expect(cell, "c", {"r": cell.get("r"), "t": "inlineStr"}, 1)
++    _expect(cell[0], "is", {}, 1)
++    _expect(cell[0][0], "t", {_XML_SPACE: "preserve"}, 0)
++    return cell[0][0].text or ""
++
++
++def _leaf_text(element: ET.Element, name: str) -> str:
++    if (element.tag != _tag(name) or element.attrib or len(element)
++            or not _has_no_text(element.tail)):
++        raise ProjectionUnsupported("unexpected typed scalar or formula node")
++    return element.text or ""
++
++
++def _fixed_places(style: str) -> int:
++    return len(_FORMATS[int(style) - 1]) - 2
++
++
++def _typed_number(cell: ET.Element, formula: str | None = None) -> Decimal:
++    attributes = {"r": cell.get("r")}
++    style = cell.get("s")
++    if formula is None:
++        attributes["t"] = "n"
++        if style in ("1", "2", "3"):
++            attributes["s"] = style
++    _expect(cell, "c", attributes, 1 if formula is None else 2)
++    if formula is not None and _leaf_text(cell[0], "f") != formula:
++        raise ProjectionUnsupported("formula outside the dimension summary profile")
++    value = _leaf_text(cell[-1], "v")
++    if not _DECIMAL.fullmatch(value):
++        raise ProjectionUnsupported("unbounded typed numeric value")
++    result = Decimal(value)
++    if style is not None:
++        precision = _fixed_places(style)
++        if result != result.quantize(Decimal(1).scaleb(-precision)):
++            raise ProjectionUnsupported("typed number would be rounded by its print format")
++    return result
++
++
++def _display_number(cell: ET.Element, number: Decimal) -> str:
++    style = cell.get("s")
++    if style is None:
++        return format(number.normalize(), "f")
++    return format(number, f".{_fixed_places(style)}f")
++
++
++def _report_tables(summary: ET.Element, details: ET.Element) -> list[list[list[str]]]:
++    totals = _typed_rows(summary, 5, "ABCD")
++    lines = _typed_rows(details, 8, "ABCDEFG")
++    summary_head = tuple(_typed_text(cell) for cell in totals[0])
++    details_head = tuple(_typed_text(cell) for cell in lines[0])
++    if summary_head != _SUMMARY_HEAD or details_head != _DETAILS_HEAD:
++        raise ProjectionUnsupported("unexpected dimension summary headers")
++
++    details_table = [list(details_head)]
++    amounts = {}
++    for number, row in enumerate(lines[1:], 2):
++        ident, item, original, unit, converted, target, factor = row
++        identifier, label = _typed_text(ident), _typed_text(item)
++        original_unit, target_unit = _typed_text(unit), _typed_text(target)
++        if (not re.fullmatch(r"[A-Za-z0-9]{1,6}", identifier)
++                or len(label) > 9 or not _PLAIN_TEXT.fullmatch(label)
++                or not _UNIT.fullmatch(original_unit) or not _UNIT.fullmatch(target_unit)):
++            raise ProjectionUnsupported("typed detail text exceeds the print profile")
++        original_number = _typed_number(original)
++        factor_number = _typed_number(factor)
++        converted_number = _typed_number(converted)
++        amounts[number] = converted_number
++        details_table.append([
++            identifier, label, _display_number(original, original_number), original_unit,
++            _display_number(converted, converted_number), target_unit,
++            _display_number(factor, factor_number),
++        ])
++
++    summary_table = [list(summary_head)]
++    for row, dimension, (first, last) in zip(totals[1:4], ("mass", "length", "count"), _DETAIL_SUMS):
++        name, unit, total, count = row
++        target_unit = _typed_text(unit)
++        if _typed_text(name) != dimension or not _UNIT.fullmatch(target_unit):
++            raise ProjectionUnsupported("unexpected dimension or unit")
++        formula = f"SUM(Details!E{first}:E{last})"
++        total_number = _typed_number(total, formula)
++        row_count = _typed_number(count)
++        if (total_number != sum(amounts[n] for n in range(first, last + 1))
++                or row_count != last - first + 1):
++            raise ProjectionUnsupported("inconsistent dimension summary cache or row count")
++        summary_table.append([
++            dimension, target_unit, _display_number(total, total_number),
++            _display_number(count, row_count),
++        ])
++
++    note_label, note, *blanks = totals[4]
++    note_text = _typed_text(note)
++    if (_typed_text(note_label) != "note" or len(note_text) > 40
++            or not re.fullmatch(r"[A-Za-z]+(?: [A-Za-z]+)*\.?", note_text)):
++        raise ProjectionUnsupported("unbounded dimension note")
++    for cell in blanks:
++        _expect(cell, "c", {"r": cell.get("r")}, 0)
++    summary_table.append(["note", note_text, "", ""])
++    return [summary_table, details_table]
++
++
++def _read_parts(
++    source: bytes, *, typed_report: bool = False,
++) -> tuple[list[ZipInfo], dict[str, bytes]]:
+     if (
+         not isinstance(source, bytes)
+         or len(source) > 16384
+@@ -180,29 +335,35 @@
+         or source[-22:-18] != b"PK\x05\x06"
+     ):
+         raise ProjectionUnsupported("unexpected XLSX archive envelope")
++    expected_names = _TYPED_PART_NAMES if typed_report else _PART_NAMES
+     try:
+         with ZipFile(BytesIO(source)) as archive:
+             entries = archive.infolist()
+             if (
+-                len(entries) != len(_PART_NAMES)
+-                or {entry.filename for entry in entries} != _PART_NAMES
++                len(entries) != len(expected_names)
++                or {entry.filename for entry in entries} != expected_names
+                 or archive.comment
+                 or any(
+                     entry.flag_bits
+                     or entry.extra
+                     or entry.comment
+                     or entry.orig_filename != entry.filename
+-                    or entry.file_size > 4096
++                    or entry.file_size > (8192 if entry.filename == _DETAILS else 4096)
+                     or entry.compress_type not in {ZIP_DEFLATED, ZIP_STORED}
+                     for entry in entries
+                 )
+             ):
+                 raise ProjectionUnsupported("unexpected XLSX package members or options")
+-            return entries, {entry.filename: archive.read(entry) for entry in entries}
++            parts = {entry.filename: archive.read(entry) for entry in entries}
+     except ProjectionUnsupported:
+         raise
+     except (BadZipFile, EOFError, OSError, StructError, ValueError, ZlibError) as error:
+         raise ProjectionUnsupported("malformed XLSX archive") from error
++    # Admit only the producer's unambiguous ZIP envelope. ZipFile alone can
++    # ignore local header differences, gaps and trailing compressed bytes.
++    if _write_parts(entries, parts) != source:
++        raise ProjectionUnsupported("unexpected XLSX archive representation")
++    return entries, parts
+
+
+ def _write_parts(entries: list[ZipInfo], parts: dict[str, bytes]) -> bytes:
+@@ -213,13 +374,25 @@
+     return staged.getvalue()
+
+
++def typed_report_rows(source: bytes) -> list[list[list[str]]] | None:
++    """Read display rows for the bounded two-sheet dimension summary report."""
++    try:
++        _, parts = _read_parts(source, typed_report=True)
++        parsed = {name: _parse(data) for name, data in parts.items()}
++        for name, expected in _typed_descriptors().items():
++            if not _same_shape(parsed[name], expected):
++                raise ProjectionUnsupported(f"unexpected typed XLSX descriptor or style: {name}")
++        # Numeric lexemes contain at most five integral and three fractional
++        # digits. The context also covers sums over the admitted detail ranges.
++        with localcontext(Context(prec=16)):
++            return _report_tables(parsed[_SHEET], parsed[_DETAILS])
++    except ProjectionUnsupported:
++        return None
++
++
+ def project(source: bytes) -> bytes:
+     """Stage an in-memory print copy after the caller's normal XLSX source guard."""
+     entries, parts = _read_parts(source)
+-    # Admit only the producer's unambiguous ZIP envelope. ZipFile alone can
+-    # ignore local header differences, gaps and trailing compressed bytes.
+-    if _write_parts(entries, parts) != source:
+-        raise ProjectionUnsupported("unexpected XLSX archive representation")
+     parsed = {name: _parse(data) for name, data in parts.items()}
+     for name, template in _BASE_PARTS.items():
+         expected = ET.fromstring(template)
+--- a/hermes_cli/friday_workspace_document_pdf.py
++++ b/hermes_cli/friday_workspace_document_pdf.py
+@@ -200,6 +200,36 @@
+         os.close(fd)
+
+
++def _render_workbook_report(cap, plan, sheets, checkpoint):
++    _parser_available()
++    from hermes_cli.friday_workspace_pdf import ExportRefused
++    from tools import scoped_document_pdf, scoped_pdf_report
++    try:
++        output, report, info, bbox, structure = scoped_pdf_report.process_workbook(
++            cap, sheets, Path(__file__).read_bytes())
++    except scoped_pdf_report.PDFReportError as error:
++        if str(error) == 'pdf_cleanup_unconfirmed':
++            raise ExportRefused('renderer_cleanup_unconfirmed') from None
++        raise ExportRefused('pdf_typed_report_failed') from None
++    details = scoped_document_pdf.verify(plan, info, bbox, structure, checkpoint=checkpoint)
++    # The existing oracle compares numeric values. Also bind exact display
++    # strings from the original fixed decimal formats to Poppler's visible text.
++    pages = scoped_document_pdf.bbox_pages(bbox, checkpoint=checkpoint)
++    for page, sheet in zip(pages, sheets, strict=True):
++        display_words = [word for row in sheet for cell in row for word in cell.split()]
++        if [word['text'] for word in page] != display_words:
++            raise scoped_document_pdf.DocumentPDFError('pdf_typed_report_display_changed')
++    details.update(
++        render_method=report['profile'], layout_sha256=report['layout_sha256'],
++        source_sha256=plan['source_sha256'], runtime_qualified=False,
++        layout_limits=('Source sheet order, cell positions, scalar text and displayed numbers are retained '
++                       'in a fixed landscape layout. Formula results use verified caches. '
++                       'The PDF is a derivative without editable cells, live formulas, original typography '
++                       'or spreadsheet metadata. The original workbook remains unchanged.'),
++    )
++    return output, details
++
++
+ def render(cap, data, operation):
+     from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
+     from hermes_cli.friday_workspace_revision import check
+@@ -207,10 +237,14 @@
+     if operation not in OPERATIONS:
+         raise ExportRefused('pdf_operation_unsupported')
+     check(cap)
+-    plan = preflight(data, OPERATIONS[operation][0], checkpoint=lambda: check(cap))
++    checkpoint = lambda: check(cap)
++    plan = preflight(data, OPERATIONS[operation][0], checkpoint=checkpoint)
+     staged = None
+     if operation == 'xlsx_pdf':
+-        from hermes_cli.friday_workspace_calc_print import ProjectionUnsupported, project
++        from hermes_cli.friday_workspace_calc_print import ProjectionUnsupported, project, typed_report_rows
++        sheets = typed_report_rows(data)
++        if sheets is not None:
++            return _render_workbook_report(cap, plan, sheets, checkpoint)
+         try:
+             staged = project(data)
+         except ProjectionUnsupported:
+@@ -296,7 +330,9 @@
+         return json.dumps(dict(success=False, error='document_pdf_stopped', effect_disposition='none'))
+
+
+-def _pdf_structure(path, *, calc_font=None):
++def _pdf_structure(path, *, calc_font=None, exact_font=None):
++    if calc_font is not None and exact_font is not None:
++        raise ValueError('pdf_font_unsupported')
+     """Read only inside the bounded networkless child; native qpdf, no repair."""
+     import ctypes as C
+     lib = C.CDLL(LIBRARY)
+@@ -331,7 +367,7 @@
+         pages = lib.qpdf_get_num_pages(handle)
+         if not 1 <= pages <= 64:
+             raise ValueError('pdf_page_limit')
+-        visibility = _visible_pdf_profile(lib, handle, pages, calc_font=calc_font)
++        visibility = _visible_pdf_profile(lib, handle, pages, calc_font=calc_font, exact_font=exact_font)
+         if lib.qpdf_has_error(handle) or lib.qpdf_more_warnings(handle):
+             raise ValueError('invalid_pdf_output')
+         return dict(pages=pages, engine='libqpdf-12.3.2', visibility=visibility)
+@@ -1297,7 +1333,8 @@
+     if operands or array is not None or stack or in_text or path or segments or current_point is not None or pending_clip or not runs:raise ValueError('pdf_content_unsupported')
+     return runs
+
+-def _visible_pdf_profile(lib, handle, page_count, *, calc_font=None):
++def _visible_pdf_profile(lib, handle, page_count, *, calc_font=None, exact_font=None):
++    required_font = exact_font if exact_font is not None else calc_font
+     """Native qpdf object inspection and bounded, fail-closed paint proof."""
+     import ctypes as C
+     P, U, I, S = C.c_void_p, C.c_uint, C.c_int, C.c_char_p
+@@ -1414,7 +1451,7 @@
+         gidmap={code:cmap[18+code] for code in mapping}
+         if any(code not in widths or widths[code]<=0 for code in mapping):
+             raise ValueError('pdf_font_unsupported')
+-        proof=_GlyphProof(calc_font)
++        proof=_GlyphProof(required_font)
+         try:
+             glyphs=proof.prove(raw_font,mapping,gidmap,widths,mapping)
+         finally:proof.close()
+@@ -1473,7 +1510,7 @@
+             gidmap={c:int.from_bytes(raw[c*2:c*2+2],'big') for c in mapping if c*2+2<=len(raw)}
+         elif name(gids)=='/Identity':gidmap={c:c for c in mapping}
+         else:raise ValueError('pdf_font_unsupported')
+-        proof=_GlyphProof(calc_font)
++        proof=_GlyphProof(required_font)
+         try:
+             glyphs=proof.prove(raw_font,mapping,gidmap,{c:widths.get(c,default) for c in mapping},mapping)
+         finally:proof.close()
+@@ -1711,7 +1748,7 @@
+                 fonts[font_key]={'kind':'base14'}
+             else:raise ValueError('pdf_font_unsupported')
+         kinds={f['kind'] for f in fonts.values()}
+-        if len(kinds)!=1 or calc_font is not None and kinds != {'embedded'}:
++        if len(kinds)!=1 or required_font is not None and kinds != {'embedded'}:
+             raise ValueError('pdf_font_unsupported')
+         contents = get(page, '/Contents')
+         streams = array(contents, 256) if lib.qpdf_oh_is_array(handle, contents) else [contents]
+--- a/tools/scoped_pdf_report.py
++++ b/tools/scoped_pdf_report.py
+@@ -42,6 +42,13 @@
+ CPU_SECONDS = 30
+ ENGINE = 'native_pdf_report_v1'
+ PROFILE = 'A4_Latin_Cyrillic_DejaVuSans'
++WORKBOOK_PROFILE = 'A4_landscape_XLSX_scalar_report'
++WORKBOOK_PAGE_SIZE = (841.889764, 595.275591)
++WORKBOOK_SHAPES = ((5, 4), (8, 7))
++WORKBOOK_FONT_SIZE = 9.5
++WORKBOOK_SPACING = 0.45
++WORKBOOK_ROW_HEIGHT = 31.0
++WORKBOOK_EVIDENCE_LIMITS = {'pdfinfo': 8192, 'bbox.xhtml': 4_000_000, 'structure.json': MAX_BYTES}
+ PAGE_WIDTH, PAGE_HEIGHT = 595.275591, 841.889764
+ MARGIN = 42.0
+ BODY_WIDTH = PAGE_WIDTH - 2 * MARGIN
+@@ -78,19 +85,21 @@
+         return False
+
+
++def _unique_fields(items):
++    value = {}
++    for key, item in items:
++        if key in value:
++            raise ValueError()
++        value[key] = item
++    return value
++
++
+ def request(content):
+     """Parse the exact bounded public JSON contract; never infer report markup."""
+-    def pairs(items):
+-        value = {}
+-        for key, item in items:
+-            if key in value:
+-                raise ValueError()
+-            value[key] = item
+-        return value
+     try:
+         if type(content) is not str or len(content) > MAX_REQUEST or len(content.encode('utf-8')) > MAX_REQUEST:
+             raise ValueError()
+-        spec = json.loads(content, object_pairs_hook=pairs)
++        spec = json.loads(content, object_pairs_hook=_unique_fields)
+         if (type(spec) is not dict or set(spec) - {'blocks', 'title', 'page_numbers'}
+                 or 'title' in spec and not _text(spec['title'])
+                 or type(spec.get('page_numbers', True)) is not bool
+@@ -135,7 +144,31 @@
+         raise PDFReportError('pdf_report_request_invalid') from None
+
+
+-def _argv(work, count):
++def _workbook_request(content):
++    # This request is constructed from an admitted workbook inside xlsx_pdf.
++    # It is never accepted by the ordinary PDF report tool.
++    try:
++        if type(content) is not str or not 0 < len(content.encode('utf-8')) <= MAX_REQUEST:
++            raise ValueError()
++        spec = json.loads(content, object_pairs_hook=_unique_fields)
++        if type(spec) is not dict or set(spec) != {'workbook_sheets'}:
++            raise ValueError()
++        sheets = spec['workbook_sheets']
++        if type(sheets) is not list or len(sheets) != len(WORKBOOK_SHAPES):
++            raise ValueError()
++        for sheet, (rows, columns) in zip(sheets, WORKBOOK_SHAPES):
++            if type(sheet) is not list or len(sheet) != rows:
++                raise ValueError()
++            for row in sheet:
++                if type(row) is not list or len(row) != columns or any(
++                        not _text(cell, 256, empty=True) for cell in row):
++                    raise ValueError()
++        return spec
++    except (ValueError, UnicodeError, RecursionError):
++        raise PDFReportError('pdf_report_request_invalid') from None
++
++
++def _argv(work, count, *, workbook=False):
+     if count != 0:
+         raise PDFReportError('pdf_engine_failed')
+     argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--as-pid-1',
+@@ -148,14 +181,17 @@
+                 raise PDFReportError('pdf_engine_unavailable')
+             argv += ['--symlink', str(target), '/' + name]
+     argv += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--bind', str(work), '/work']
+-    for name in ('runner.py', 'font.py', 'request.json'):
++    names = ('runner.py', 'font.py', 'request.json')
++    if workbook:
++        names += ('verify.py',)
++    for name in names:
+         argv += ['--ro-bind', str(work / name), '/work/' + name]
+     argv += ['--chdir', '/work', '--remount-ro', '/', '--',
+              '/usr/bin/python3', '-I', '-B', '-S', '/work/runner.py', '--child']
+     return argv
+
+
+-def _run(cap, work, count):
++def _run(cap, work, count, *, workbook=False):
+     # Preserve the existing PDF form/ocr authority, cancellation and stop custody.
+     from agent.web_call_context import _current, same_web_authority
+     from hermes_cli.friday_workspace_revision import check
+@@ -177,7 +213,8 @@
+             call.session = call.registry = custody
+             call.turn.calls.add(custody)
+             bound = True
+-            custody.process = subprocess.Popen(_argv(work, count), cwd=work,
++            argv = _argv(work, count, workbook=True) if workbook else _argv(work, count)
++            custody.process = subprocess.Popen(argv, cwd=work,
+                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                 close_fds=True, start_new_session=True,
+                 env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
+@@ -213,12 +250,25 @@
+
+ def process(cap, spec):
+     """Return (PDF bytes, small verified metadata) after isolated native creation."""
++    try:
++        content = json.dumps(spec, ensure_ascii=False, separators=(',', ':'))
++        spec = request(content)
++    except (TypeError, ValueError, RecursionError):
++        raise PDFReportError('pdf_report_request_invalid') from None
++    return _process(cap, spec)
++
++
++def process_workbook(cap, sheets, verifier):
++    """Private source-bound PDF path for the admitted typed workbook profile."""
++    spec = _workbook_request(json.dumps({'workbook_sheets': sheets}, ensure_ascii=False,
++                                        separators=(',', ':')))
++    return _process(cap, spec, verifier=verifier)
++
++
++def _process(cap, spec, *, verifier=None):
+     from hermes_cli.friday_workspace_revision import check
+     from tools.scoped_pdf_ocr import _private_read, LocalOCRFailure
+-    try:
+-        spec = request(json.dumps(spec, ensure_ascii=False, separators=(',', ':')))
+-    except (TypeError, ValueError, RecursionError):
+-        raise PDFReportError('pdf_report_request_invalid') from None
++    workbook = verifier is not None
+     # The pin reader uses this fixed root-owned library only as the user-namespace
+     # owner sentinel; report generation does not load or execute libqpdf.
+     try:
+@@ -231,21 +281,32 @@
+     work = Path(tempfile.mkdtemp(prefix='friday-pdf-report-'))
+     try:
+         work.chmod(0o700)
+-        for name, value in {'runner.py': Path(__file__).read_bytes(),
+-                'font.py': Path(_font_module.__file__).read_bytes(),
+-                'request.json': json.dumps(spec, ensure_ascii=False, separators=(',', ':')).encode()}.items():
++        inputs = {'runner.py': Path(__file__).read_bytes(),
++                  'font.py': Path(_font_module.__file__).read_bytes(),
++                  'request.json': json.dumps(spec, ensure_ascii=False, separators=(',', ':')).encode()}
++        if workbook:
++            inputs['verify.py'] = verifier
++        for name, value in inputs.items():
+             (work / name).write_bytes(value)
+             (work / name).chmod(0o600)
+-        _run(cap, work, 0)
++        if workbook:
++            _run(cap, work, 0, workbook=True)
++        else:
++            _run(cap, work, 0)
+         result = json.loads(_private_read(work / 'result.json', 4096))
+         allowed = {'pdf_report_request_invalid', 'pdf_text_does_not_fit', 'pdf_page_limit',
+                    'pdf_output_limit', 'pdf_font_unavailable', 'pdf_glyph_unavailable', 'pdf_link_limit'}
++        result_fields = {'pages', 'engine', 'profile', 'layout_sha256', 'links', 'output_sha256'}
++        if workbook:
++            allowed.add('pdf_verification_failed')
++            result_fields.add('evidence_sha256')
+         if type(result) is dict and set(result) == {'error'}:
+             raise PDFReportError(result['error'] if type(result['error']) is str
+                                  and result['error'] in allowed else 'pdf_engine_failed')
+         if (type(result) is not dict
+-                or set(result) != {'pages', 'engine', 'profile', 'layout_sha256', 'links', 'output_sha256'}
+-                or result['engine'] != ENGINE or result['profile'] != PROFILE
++                or set(result) != result_fields
++                or result['engine'] != ENGINE
++                or result['profile'] != (WORKBOOK_PROFILE if workbook else PROFILE)
+                 or type(result['pages']) is not int or not 1 <= result['pages'] <= MAX_PAGES
+                 or type(result['links']) is not int or not 0 <= result['links'] <= MAX_LINKS
+                 or any(type(result[k]) is not str or not re.fullmatch('[0-9a-f]{64}', result[k])
+@@ -256,6 +317,14 @@
+                 or hashlib.sha256(output).hexdigest() != result.pop('output_sha256')):
+             raise PDFReportError('pdf_verification_failed')
+         check(cap)
++        if workbook:
++            if result['pages'] != len(WORKBOOK_SHAPES) or result['links'] != 0:
++                raise PDFReportError('pdf_verification_failed')
++            evidence = {name: _private_read(work / name, limit) for name, limit in WORKBOOK_EVIDENCE_LIMITS.items()}
++            if result.pop('evidence_sha256') != {name: hashlib.sha256(raw).hexdigest()
++                                                   for name, raw in evidence.items()}:
++                raise PDFReportError('pdf_verification_failed')
++            return output, result, evidence['pdfinfo'], evidence['bbox.xhtml'], json.loads(evidence['structure.json'])
+         return output, result
+     except (OSError, LocalOCRFailure, json.JSONDecodeError):
+         raise PDFReportError('pdf_engine_failed') from None
+@@ -270,9 +339,10 @@
+             raise PDFReportError('pdf_cleanup_unconfirmed') from None
+
+
+-def _measure(text, size):
++def _measure(text, size, *, spacing=0.0):
+     """(left,bottom,right,top,advance), actual glyph bounds and quantized advances."""
+     chars = _font()['chars']
++    spacing_units = spacing * 1000 / size
+     x = left = right = bottom = top = 0.0
+     for char in text:
+         try:
+@@ -283,7 +353,7 @@
+         right = max(right, x + box[2])
+         bottom = min(bottom, box[1])
+         top = max(top, box[3])
+-        x += advance
++        x += advance + spacing_units
+     return tuple(v * size / 1000 for v in (left, bottom, max(right, x), top, x))
+
+
+@@ -410,12 +480,41 @@
+     return pages
+
+
++def _workbook_layout(sheets):
++    """Measured, unwrapped text. There is one page per source sheet."""
++    width, height = WORKBOOK_PAGE_SIZE
++    size, spacing, padding = WORKBOOK_FONT_SIZE, WORKBOOK_SPACING, 11.0
++    pages = []
++    for sheet in sheets:
++        metrics = [[_measure(cell, size, spacing=spacing) for cell in row] for row in sheet]
++        widths = [max(right - left for left, _, right, _, _ in column) + 2 * padding
++                  for column in zip(*metrics, strict=True)]
++        if sum(widths) > width - 2 * MARGIN:
++            raise PDFReportError('pdf_text_does_not_fit')
++        page = []
++        for index, (row, boxes) in enumerate(zip(sheet, metrics, strict=True)):
++            baseline = height - MARGIN - size - index * WORKBOOK_ROW_HEIGHT
++            x = MARGIN
++            for cell, column_width, (left, bottom, _, top, _) in zip(row, widths, boxes, strict=True):
++                if cell:
++                    if baseline + bottom < MARGIN or baseline + top > height - MARGIN:
++                        raise PDFReportError('pdf_text_does_not_fit')
++                    page.append(dict(kind='text', text=cell, x=x + padding - left,
++                                     baseline=baseline, size=size, spacing=spacing))
++                x += column_width
++        if not page:
++            raise PDFReportError('pdf_text_does_not_fit')
++        pages.append(page)
++    return pages
++
++
+ def _number(value):
+     return format(value, '.6f').rstrip('0').rstrip('.') or '0'
+
+
+-def _pdf(spec, pages):
++def _pdf(spec, pages, *, page_size=(PAGE_WIDTH, PAGE_HEIGHT)):
+     """Serialize internally constructed objects only; no general PDF parser/guard."""
++    width, height = page_size
+     objects = [None, None]  # catalog=1, pages=2
+     def add(data):
+         objects.append(data)
+@@ -455,9 +554,10 @@
+                 drawing.append(f'q {"0.94 g" if op["fill"] else "1 g"} 0.65 G 0.4 w '
+                                f'{_number(x0)} {_number(y0)} {_number(x1-x0)} {_number(y1-y0)} re B Q')
+                 continue
++            spacing = f'{_number(op["spacing"])} Tc ' if 'spacing' in op else ''
+             drawing.append(f'BT /F0 {_number(op["size"])} Tf '
+                            f'{"0 0.2 0.7 rg" if "url" in op else "0 g"} '
+-                           f'1 0 0 1 {_number(op["x"])} {_number(op["baseline"])} Tm '
++                           f'{spacing}1 0 0 1 {_number(op["x"])} {_number(op["baseline"])} Tm '
+                            f'<{op["text"].encode("utf-16be").hex().upper()}> Tj ET')
+             if 'url' in op:
+                 # The bounded ASCII URI is a hex PDF string: no lexical syntax
+@@ -469,7 +569,7 @@
+         content = add(stream(('\n'.join(drawing)+'\n').encode('ascii')))
+         annots = ' /Annots ['+' '.join(f'{a} 0 R' for a in annotations)+']' if annotations else ''
+         page_ids.append(add((f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 '
+-            f'{_number(PAGE_WIDTH)} {_number(PAGE_HEIGHT)}] '
++            f'{_number(width)} {_number(height)}] '
+             f'/Resources << /Font << /F0 {font_id} 0 R >> >> /Contents {content} 0 R{annots} >>').encode()))
+     objects[0] = b'<< /Type /Catalog /Pages 2 0 R >>'
+     objects[1] = (f'<< /Type /Pages /Count {len(pages)} /Kids ['
+@@ -491,6 +591,33 @@
+     return bytes(output)
+
+
++def _workbook_evidence(output):
++    import importlib.util
++    spec = importlib.util.spec_from_file_location('scoped_document_pdf_verifier', '/work/verify.py')
++    verifier = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(verifier)
++    try:
++        structure = verifier._pdf_structure(output, exact_font=_font()['data'])
++        for name, argv in (
++            ('pdfinfo', ['/usr/bin/pdfinfo', str(output)]),
++            ('bbox.xhtml', ['/usr/bin/pdftotext', '-enc', 'UTF-8', '-bbox-layout', '-cropbox', str(output), '-']),
++        ):
++            with open('/work/' + name, 'xb') as out:
++                subprocess.run(argv, stdout=out, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
++                               env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, check=True, timeout=3)
++        Path('/work/structure.json').write_text(json.dumps(structure, separators=(',', ':')), encoding='ascii')
++        evidence = {}
++        for name, limit in WORKBOOK_EVIDENCE_LIMITS.items():
++            with open('/work/' + name, 'rb') as stream:
++                raw = stream.read(limit + 1)
++            if not 0 < len(raw) <= limit:
++                raise ValueError('pdf_invalid_evidence')
++            evidence[name] = hashlib.sha256(raw).hexdigest()
++        return evidence
++    except (OSError, ValueError, subprocess.SubprocessError):
++        raise PDFReportError('pdf_verification_failed') from None
++
++
+ def _child():
+     import resource
+     os.umask(0o077)
+@@ -500,15 +627,25 @@
+             (resource.RLIMIT_NOFILE, 64), (resource.RLIMIT_NPROC, 16)):
+         resource.setrlimit(kind, (limit, limit))
+     try:
+-        spec = request(Path('/work/request.json').read_text(encoding='utf-8'))
+-        pages = _layout(spec)
+-        output = _pdf(spec, pages)
+-        result = dict(pages=len(pages), engine=ENGINE, profile=PROFILE,
++        content = Path('/work/request.json').read_text(encoding='utf-8')
++        workbook = Path('/work/verify.py').is_file()
++        if workbook:
++            spec = _workbook_request(content)
++            pages = _workbook_layout(spec['workbook_sheets'])
++            output = _pdf(spec, pages, page_size=WORKBOOK_PAGE_SIZE)
++        else:
++            spec = request(content)
++            pages = _layout(spec)
++            output = _pdf(spec, pages)
++        result = dict(pages=len(pages), engine=ENGINE, profile=WORKBOOK_PROFILE if workbook else PROFILE,
+             layout_sha256=hashlib.sha256(json.dumps(pages, ensure_ascii=False,
+                 sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+             links=sum('url' in op for page in pages for op in page),
+             output_sha256=hashlib.sha256(output).hexdigest())
+-        Path('/work/output.pdf').write_bytes(output)
++        output_path = Path('/work/output.pdf')
++        output_path.write_bytes(output)
++        if workbook:
++            result['evidence_sha256'] = _workbook_evidence(output_path)
+     except PDFReportError as error:
+         result = {'error': str(error)}
+     Path('/work/result.json').write_text(json.dumps(result, separators=(',', ':')), encoding='ascii')
