@@ -1,0 +1,125 @@
+--- a/verify_route_projection.py
++++ b/verify_route_projection.py
+@@ -55,8 +55,8 @@
+ def verify_route_projection(*, before_root, before_unit, after_root, after_unit,
+                             previous_marker_sha256, previous_unit_sha256,
+                             old_host, old_public_url, host, public_url, before_marker=None,
+-                            successor=None):
+-    """Check candidate bytes. The caller supplies independently anchored old pins and approved addresses."""
++                            successor=None, runtime_config_refresh=False):
++    """Check the pinned route; a committed reader can revalidate native config changes."""
+     from hermes_cli.config_effective import read_user_config_effective_readonly
+     from hermes_cli.dashboard_auth.prefix import _normalise_public_url
+     from hermes_cli.friday_dashboard_owner import read_owned
+@@ -68,6 +68,9 @@
+     )
+     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+ 
++    require(type(runtime_config_refresh) is bool
++            and (not runtime_config_refresh or successor is not None),
++            "Dashboard runtime refresh requires exact successor marker bindings")
+     require(type(public_url) is str and bool(public_url)
+             and _normalise_public_url(public_url) == public_url,
+             "Dashboard public URL must match its native canonical form")
+@@ -119,6 +122,8 @@
+         successor_paths = {after_root / MARKER: successor["marker_sha256"],
+                            tx / MARKER: successor["marker_sha256"],
+                            tx / "request.json": successor["request_sha256"]}
++        if runtime_config_refresh:
++            del successor_paths[after_root / MARKER]
+         require(all(path.resolve(strict=True) == path for path in (applied_path, *successor_paths))
+                 and applied_path != before_marker
+                 and len({previous_marker_sha256, successor["applied_marker_sha256"], successor["marker_sha256"]}) == 3
+@@ -131,9 +136,25 @@
+     if successor is not None:
+         require(digest(after[MARKER]) == successor["applied_marker_sha256"],
+                 "Dashboard applied journal beforeimage changed")
+-    require(after[CONFIG] == exact_replacement(before[CONFIG], old_public_url.encode(), public_url.encode(),
+-                                                "Original Dashboard URL must occur once in config"),
+-            "Dashboard route changes other config bytes")
++    applied_config = exact_replacement(before[CONFIG], old_public_url.encode(), public_url.encode(),
++                                       "Original Dashboard URL must occur once in config")
++    if runtime_config_refresh:
++        live = {MARKER: read_owned(after_root / MARKER, private=True), CONFIG: after[CONFIG]}
++        live_marker = exact_object(live[MARKER])
++        staged_raw = read_owned(tx / MARKER, private=True)
++        require(digest(staged_raw) == successor["marker_sha256"],
++                "Dashboard staged successor marker changed")
++        staged_marker = exact_object(staged_raw)
++        profile_pins = live_marker.get("profile_files")
++        require(type(profile_pins) is dict and type(profile_pins.get(CONFIG)) is str
++                and re.fullmatch(r"[a-f0-9]{64}", profile_pins[CONFIG]),
++                "Dashboard live marker has an invalid raw config pin")
++        profile_pins[CONFIG] = staged_marker["profile_files"][CONFIG]
++        require(encoded(live_marker) == encoded(staged_marker),
++                "Dashboard live marker changes unrelated fields")
++        after[CONFIG] = applied_config
++    else:
++        require(after[CONFIG] == applied_config, "Dashboard route changes other config bytes")
+     old_argv = f"dashboard --host {old_host} --port {port} --no-open".encode()
+     new_argv = f"dashboard --host {host} --port {port} --no-open".encode()
+     require(after["unit"] == exact_replacement(before["unit"], old_argv, new_argv,
+@@ -144,7 +165,18 @@
+     require(after[PROFILE] == encoded(expected_profile), "Dashboard route changes other profile fields")
+ 
+     previous_cfg = read_user_config_effective_readonly(before_paths[CONFIG])
+-    candidate_cfg = read_user_config_effective_readonly(after_paths[CONFIG])
++    if runtime_config_refresh:
++        from hermes_cli.config_effective import _effective
++        from utils import fast_safe_load
++
++        applied_yaml = fast_safe_load(applied_config.decode("utf-8-sig"))
++        live_yaml = fast_safe_load(live[CONFIG].decode("utf-8-sig"))
++        require(type(applied_yaml) is dict and type(live_yaml) is dict
++                and b"${" not in live[CONFIG], "Dashboard runtime configuration is invalid")
++        candidate_cfg = _effective(applied_yaml)
++        live_cfg = _effective(live_yaml)
++    else:
++        candidate_cfg = read_user_config_effective_readonly(after_paths[CONFIG])
+     require(configuration_matches(previous_cfg, phase["configuration_sha256"])
+             and previous_cfg["dashboard"]["public_url"] == old_public_url
+             and previous_cfg["dashboard"]["require_auth"] is True,
+@@ -155,6 +187,11 @@
+     token = set_hermes_home_override(str(after_root))
+     try:
+         native_profile = configuration_contract(candidate_cfg, phase["baseline"])
++        if runtime_config_refresh:
++            require(configuration_matches(live_cfg, normalized_configuration(candidate_cfg)),
++                    "Dashboard runtime changes sealed effective settings")
++            require(configuration_contract(live_cfg, phase["baseline"]) == expected_profile,
++                    "Dashboard runtime changes the native profile contract")
+     finally:
+         reset_hermes_home_override(token)
+     require(native_profile == expected_profile, "Dashboard route fails the native profile contract")
+@@ -173,8 +210,11 @@
+     expected_marker["ordinary_gateway"]["configuration_sha256"] = normalized_configuration(candidate_cfg)
+     expected_marker["tls_files"] = tls_pins
+     require(after[MARKER] == encoded(expected_marker), "Dashboard route changes unrelated marker fields")
++    observed_after = dict(after, **{CONFIG: live[CONFIG]}) if runtime_config_refresh else after
+     require(all(read_owned(path, private=True) == before[name] for name, path in before_paths.items())
+-            and all(read_owned(path, private=True) == after[name] for name, path in after_paths.items()),
++            and all(read_owned(path, private=True) == observed_after[name]
++                    for name, path in after_paths.items())
++            and (not runtime_config_refresh or read_owned(after_root / MARKER, private=True) == live[MARKER]),
+             "Dashboard route snapshots changed during verification")
+     require(all(digest(read_owned(path, private=True)) == pin for path, pin in successor_paths.items()),
+             "Dashboard successor journal or active marker changed")
+@@ -187,6 +227,7 @@
+         "native_configuration_sha256": expected_marker["ordinary_gateway"]["configuration_sha256"],
+         "publication_authorized": False,
+         **({"successor_marker_sha256": successor["marker_sha256"]} if successor is not None else {}),
++        **({"live": {name: digest(raw) for name, raw in live.items()}} if runtime_config_refresh else {}),
+     }
+ 
+ 
+@@ -277,8 +318,9 @@
+         tx = home / "preparation" / ("ordinary-source-update-v45-" + successor["request_sha256"][:16])
+         request = exact_object(read_pinned_private(
+             {"path": str(tx / "request.json"), "sha256": successor["request_sha256"]}, 2 * 1024**2))
++        marker_root = tx if route.get("runtime_config_refresh", False) else home
+         marker = exact_object(read_pinned_private(
+-            {"path": str(home / MARKER), "sha256": successor["marker_sha256"]}, 2 * 1024**2))
++            {"path": str(marker_root / MARKER), "sha256": successor["marker_sha256"]}, 2 * 1024**2))
+         applied_refs = {
+             role: {"path": str(home / name), "sha256": proof["current"][name]}
+             for role, name in (("marker", MARKER), ("configuration", CONFIG), ("profile", PROFILE))

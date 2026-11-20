@@ -1,0 +1,102 @@
+--- a/scripts/friday_ordinary_install.py
++++ b/scripts/friday_ordinary_install.py
+@@ -7440,7 +7440,7 @@
+ # The final operator package pins a private approval path outside installed and
+ # staged source. Its bytes can then name the handoff without a recursive hash.
+ _V99_DASHBOARD_APPROVAL_PATH = None
+-_V99_DASHBOARD_LEAF_PROJECTOR = '5e09a2577791bdc3214a06cc463cb0521b1b84e123fc47c517055d91a5c034d6'
++_V99_DASHBOARD_LEAF_PROJECTOR = '71bcd0e753cdbe159b29d41fd5bc5d80912ac0653e352c531b1b352662792832'
+ _V99_DASHBOARD_ACCEPTED_READER = '7ac17e92d287760d7c31c0f1c40ed7d8c59a63857b6198cbc764d5be3cd1a529'
+ 
+ 
+@@ -7503,6 +7503,7 @@
+         'ordinary_v99_dashboard_leaf_request_join_changed')
+     tx = home/'preparation'/('ordinary-source-update-v45-'+request_sha[:16])
+     current_is_leaf = marker.get('input_sha256') == request['current_input']['sha256']
++    live = None
+     if not current_is_leaf:
+         f.require(source_update is not None and marker.get('input_sha256') == request['previous_input']['sha256']
+             and not os.path.lexists(tx), 'ordinary_v99_dashboard_no_new_transaction_required')
+@@ -7519,15 +7520,30 @@
+                                ('install-stamp.json','hermes-agent/install-stamp.json')):
+             expected = post[relative]['sha256']
+             f.require(f.digest(f.owned_file(tx/name,private=True)) == expected
+-                and f.digest(f.owned_file(home/relative,private=True)) == expected,
++                and (name == f.MARKER and commit is not None
++                     or f.digest(f.owned_file(home/relative,private=True)) == expected),
+                 'ordinary_v99_dashboard_published_receipt_changed')
+         if commit is not None:
+             f.require(commit['source_receipt_sha256'] == post['hermes-agent.source.json']['sha256'],
+                 'ordinary_v99_dashboard_committed_receipt_changed')
++            # Match stock CP: the live raw config pin may lag theme/onboarding.
++            # The exact staged marker remains immutable; only that field can vary.
++            archived = _current_source_json(tx/f.MARKER,expected_sha256=post[f.MARKER]['sha256'])
++            active_pin = f.digest(f.owned_file(home/f.MARKER,private=True))
++            active = _current_source_json(home/f.MARKER,expected_sha256=active_pin)
++            f.require(encoded(active) == encoded(marker),'ordinary_v99_dashboard_live_marker_drift')
++            config_pin = active['profile_files']['config.yaml']
++            f.require(type(config_pin) is str and len(config_pin) == 64
++                and all(c in '0123456789abcdef' for c in config_pin),
++                'ordinary_current_successor_native_config_metadata_changed')
++            active['profile_files']['config.yaml'] = archived['profile_files']['config.yaml']
++            f.require(encoded(active) == encoded(archived),'ordinary_v99_dashboard_live_marker_drift')
++            live = {f.MARKER:active_pin,
++                    'config.yaml':f.digest(f.owned_file(home/'config.yaml',private=True))}
+         successor = {'request_sha256':request_sha, 'applied_marker_sha256':roles[f.MARKER]['sha256'],
+                      'marker_sha256':post[f.MARKER]['sha256']}
+     return {'grant':grant, 'accepted':accepted, 'request':request, 'legacy_request':legacy_request,
+-            'successor':successor, 'transaction':tx}
++            'successor':successor, 'transaction':tx, 'live':live}
+ 
+ 
+ def _v99_dashboard_leaf_inputs_match(previous, current, route):
+@@ -7537,7 +7553,6 @@
+     expected['dashboard_tls'] = current['dashboard_tls']
+     roles = {'cafile':_V99_DASHBOARD_TLS_NAMES[0], 'certfile':_V99_DASHBOARD_TLS_NAMES[1],
+              'keyfile':_V99_DASHBOARD_TLS_NAMES[2]}
+-    f = api()
+     return set(current['dashboard_tls']) == set(roles) and all(
+         current['dashboard_tls'][role]['sha256'] == route['current'][name] for role,name in roles.items()
+     ) and encoded({k:v for k,v in expected.items() if k != 'project_files'}) == encoded(
+@@ -7636,7 +7651,9 @@
+         _, observed = scope['project_v99_dashboard_input'](**verify_args,
+             baseline_ref=continuity['grant']['baseline'], predecessor_ref=request['previous_input'],
+             leaf_ref=leaf_ref, tls_input_refs=leaf['dashboard_tls'], applied_read_pins=route['current'],
+-            successor=continuity['successor'])
++            successor=continuity['successor'], runtime_config_refresh=continuity['live'] is not None)
++        f.require(observed.get('live') == continuity['live'],
++            'ordinary_v99_dashboard_live_projection_drift')
+     check_origins()
+     f.require(observed['state'] == 'DASHBOARD_ADDRESS_ONLY_PROJECTION_VERIFIED'
+         and observed['publication_authorized'] is False
+@@ -7652,13 +7669,19 @@
+ 
+ def _v99_dashboard_recheck(route):
+     f = api()
++    continuity = route.get('continuity')
++    live = continuity['live'] if continuity is not None else None
+     for role, sha in route['current'].items():
+         path = route['unit'] if role == 'unit' else route['home']/role
+-        continuity = route.get('continuity')
+         if role == f.MARKER and continuity is not None and continuity['successor'] is not None:
+             path = continuity['transaction']/'before'/role
++        if role == 'config.yaml' and live is not None:
++            sha = live[role]
+         f.require(f.digest(f.owned_file(path, private=True)) == sha,
+             'ordinary_v99_dashboard_applied_file_changed')
++    if live is not None:
++        f.require(f.digest(f.owned_file(route['home']/f.MARKER,private=True)) == live[f.MARKER],
++            'ordinary_v99_dashboard_live_marker_drift')
+ 
+ 
+ def dashboard_v99_readonly_preflight(*, original_request_ref, request_ref, applied_ref, verifier_ref):
+@@ -17491,7 +17514,8 @@
+     active_dash_pin = dashboard_route['current'][f.MARKER] if dashboard_v99 else None
+     successor = continuity['successor'] if continuity is not None else None
+     if successor is not None:
+-        active_dash_pin = successor['marker_sha256']
++        active_dash_pin = (successor['marker_sha256'] if continuity['live'] is None else
++                           continuity['live'][f.MARKER])
+     marker = historical_marker if historical_marker is not None else _current_source_json(home/f.MARKER,
+         expected_sha256=active_dash_pin)
+     leaf = marker.get('input_sha256') == request['current_input']['sha256']

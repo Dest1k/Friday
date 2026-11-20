@@ -1,0 +1,89 @@
+--- a/gateway/admitted_ingress.py
++++ b/gateway/admitted_ingress.py
+@@ -5,7 +5,10 @@
+ """
+ from __future__ import annotations
+ 
++from datetime import datetime, timezone
++from hashlib import sha256
+ import logging
++import re
+ 
+ from gateway.session_identity import identity_of
+ 
+@@ -39,3 +42,75 @@
+         "runtime_profile": identity.runtime_profile,
+         "message": provenance,
+     }
++
++
++def _telegram_payload(event, source, raw, proof):
++    """Hash the original SDK field while the matching proof is still in scope."""
++    if (proof["platform"] != "telegram" or source.chat_type != "dm"
++            or raw is None or event.raw_message is not raw
++            or event._ingress_merged or raw.edit_date is not None):
++        return None
++    message = proof["message"]
++    if (message["thread_id"] or message["chat_id"] != message["user_id"]
++            or raw.chat.type != "private" or raw.media_group_id is not None):
++        return None
++    if raw.photo or any(getattr(raw, name, None) is not None for name in (
++            "video", "audio", "voice", "sticker", "animation", "video_note", "location",
++            "contact", "poll", "dice", "venue", "game", "story", "paid_media", "invoice")):
++        return None
++
++    document = raw.document
++    media = message["media"]
++    if document is None:
++        if media or raw.caption is not None or event.message_type.value != "text":
++            return None
++        kind, value = "text", raw.text
++    else:
++        if len(media) != 1 or raw.text is not None or event.message_type.value != "document":
++            return None
++        item = media[0]
++        origin, content = item.get("origin"), item.get("content")
++        if (not isinstance(origin, dict) or not isinstance(content, dict)
++                or origin["message_id"] != message["message_id"]
++                or origin["file_id"] != document.file_id
++                or origin["file_unique_id"] != document.file_unique_id
++                or type(content["size_bytes"]) is not int or type(document.file_size) is not int
++                or not 0 < content["size_bytes"] == document.file_size
++                or not isinstance(content["sha256"], str)
++                or re.fullmatch(r"[0-9a-f]{64}", content["sha256"]) is None):
++            return None
++        kind, value = "caption", raw.caption
++
++    date = raw.date
++    if (not isinstance(date, datetime) or date.utcoffset() is None
++            or not isinstance(value, str) or not 0 < len(value) <= 16384
++            or "\x00" in value):
++        return None
++    utc = date.astimezone(timezone.utc)
++    seconds = int(utc.timestamp())
++    if utc.microsecond or seconds <= 0:
++        return None
++    text = value.encode("utf-8")
++    if len(text) > 16384:
++        return None
++    commitment = sha256(b"friday.telegram.payload.v1\x00" + kind.encode("ascii") + b"\x00" + text)
++    return {"kind": kind, "sha256": commitment.hexdigest(), "date": seconds}
++
++
++def admitted_ingress_with_telegram_payload(event, source, session_key):
++    """Return the existing proof and an optional raw payload digest from the same event.
++
++    This is a post-authorization source helper. The caller still owns custody
++    and candidate coverage. No state, output text, or decision is produced here.
++    """
++    try:
++        raw = event.raw_message
++    except Exception:  # health: allow BLE001 -- Optional SDK details must not change base provenance.
++        raw = None
++    proof = admitted_ingress(event, source, session_key)
++    if proof is None or raw is None:
++        return proof, None
++    try:
++        return proof, _telegram_payload(event, source, raw, proof)
++    except Exception:  # health: allow BLE001 -- SDK errors can include the payload; do not log them.
++        return proof, None
