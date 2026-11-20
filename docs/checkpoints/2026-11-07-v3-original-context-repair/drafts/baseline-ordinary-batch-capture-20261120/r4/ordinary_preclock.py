@@ -14,6 +14,9 @@ HERE = Path(__file__).resolve().parent
 DRIVER_SHA256 = "126fa16c8b22e814d19b876933310e63657abfeaaa20d45d06075ae959a0ce6e"
 BINDING_SCHEMA = "frw.Root.ordinary-preclock.v1"
 REVIEWED_PHASES = {
+    "45e1732b0d49020182a3a9f2d67056b8c11d9c0f314240de077eb6fd19a13641": (
+        "D-01", "d9f4e553cae93e483f7998f4627c6cd2ec2bf18c957cb7d9796738bcbd25fcaf",
+    ),
     "35262768ba35539e96342da042c7d8d3141d9704adadf862eaf7dbf2c7d64758": (
         "S-05", "c69a2b4cf2e126f7d69983d856305b898441285826c95117db278ea77aa6b0dd",
     ),
@@ -61,6 +64,22 @@ REVIEWED_PHASES = {
     ),
 }
 PRESERVED_RUNS = {
+    "D-01": (
+        ("b27-d01-upload-summary-r1",
+         "7c8625f4c9f837ed7a462b3cc6927862ae749b42c95a376e53bfae3df129fc69", "STOPPED"),
+        ("b30-d01-upload-summary-r1",
+         "afcf0a063d0327d15cda8316f01e0e6bf885fb5797b98589cd89cb44b076d437", "STOPPED"),
+        ("kimi-b78-d01-d4a1fb40b630",
+         "cb99968eb7bfe808a582a4f26ef717e8de0e344fbe14cd760fe8d133f3047dae", "EVIDENCE_READY"),
+        ("root-b00-d01-brief-1-physical-01-r18",
+         "7f30e09cb999f59d139dad294459f8d1a6195f52edd4cf709394b88a99f57651", "EVIDENCE_READY"),
+        ("root-b00-s151-d01-odt-20261102-r2",
+         "75e2371b991f1cbb023057cc97f532ca597dce548035ac4adf06f5fff99adac2", "EVIDENCE_READY"),
+        ("root-b00-s151-f02-rtf-v02-create-20261103-r1",
+         "884d3d86cf29741c0254eb6ccf65c4222b8ebe4e69e6b80a646c325607788ee4", "EVIDENCE_READY"),
+        ("f01-rtf-structured-summary-tail-01-20261110",
+         "9991a2f2f42923baf8f627211b505d4262159bbfa19550935f31d1bfc5a34329", "EVIDENCE_READY"),
+    ),
     "S-05": (
         ("root-b00-s151-s05-20261102-r1",
          "a595f05da621a1f9b0e1690a03f9985b136d0de98242e5b83995ce10595b5131", "EVIDENCE_READY"),
