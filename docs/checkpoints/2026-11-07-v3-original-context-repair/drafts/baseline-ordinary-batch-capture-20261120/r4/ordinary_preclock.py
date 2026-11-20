@@ -29,6 +29,9 @@ REVIEWED_PHASES = {
     "b99effc9a4cab5b11ce17b23260564a42f5f269f1fba3d94c3a505e0a5266414": (
         "D-11", "0e6c22c0484ec102d5a521c46bc931b7f16a6cf7125aaf7825ea347b4607ec3f",
     ),
+    "0909a9722fad7e64f4d51099c1e504f0daf19166db30ad700d772bb91b7789ad": (
+        "S-11", "8e0e63a60b31594563c124d5fe648d0ba4cec319641d2bd377de44ec0b9ba04b",
+    ),
 }
 PRESERVED_RUNS = {
     "D-04": (
@@ -52,6 +55,10 @@ PRESERVED_RUNS = {
     "D-11": (
         ("root-b00-d11-styled-report-1-physical-01-r17",
          "00d47966a411e12af48a541c741f3fe374788d275ddc30fa1d0264c85832dfde", "EVIDENCE_READY"),
+    ),
+    "S-11": (
+        ("root-b00-s151-s11-20261102-r1",
+         "2eca828078ab3021ce90a7b83e34fdcfcdd6c0906bf0a3e34c4df0ba7ef41677", "EVIDENCE_READY"),
     ),
 }
 
