@@ -28,22 +28,22 @@ def digest(raw):
     return sha256(raw).hexdigest()
 
 
-def check_observation_paths(store, run_id, observations):
+def check_observation_paths(store, run_id, observations, label):
     for item in observations:
         kind = item.get("kind")
         if kind not in ("reply_text", "document"):
-            raise ValueError("S18 unknown closed receiver observation")
+            raise ValueError(f"{label} unknown closed receiver observation")
         message_id = item.get("message_id")
         key = "sha256" if kind == "document" else "text_sha256"
         pin = item.get(key)
         if (type(message_id) is not int or message_id <= 0
                 or type(pin) is not str or not re.fullmatch("[0-9a-f]{64}", pin)):
-            raise ValueError("S18 exact receiver observation identity required")
+            raise ValueError(f"{label} exact receiver observation identity required")
         basename = store.downloads / f"{run_id}-{message_id}-{pin}"
         suffix = ".receipt.json" if kind == "document" else ".text-receipt.json"
         if (item.get("receipt_path") != str(basename) + suffix
                 or (kind == "document" and item.get("path") != str(basename) + ".bin")):
-            raise ValueError("S18 receiver file is outside its exact Store path")
+            raise ValueError(f"{label} receiver file is outside its exact Store path")
 
 
 def review_workbook(observer, upload, raw, oracle_path):
@@ -69,46 +69,47 @@ def review_workbook(observer, upload, raw, oracle_path):
     return {"status": "PASS", **result}
 
 
-def assess_saved_workbook_edit(observer, store, *, run_id, run_ref, cursor_ref, oracle_path):
-    """Check the exact bounded receiver artifact. Calc and native verification stay separate."""
+def assess_closed_workbook_reply(observer, store, *, run_id, run_ref, cursor_ref, label,
+                                 scenario_sha, source_sha, output_name, assess_content):
+    """Join the exact upload and its bounded direct XLSX response before checking content."""
     if type(run_id) is not str or not re.fullmatch("[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id):
-        raise ValueError("Exact S18 run ID required")
+        raise ValueError(f"Exact {label} run ID required")
     run_path, cursor_path = store.run_path(run_id), store.root / "cursor.json"
     run = pinned_record(observer, run_ref, expected_path=run_path)
     cursor = pinned_record(observer, cursor_ref, expected_path=cursor_path)
     scenario = run["scenario"]
-    if (run.get("id") != run_id or run.get("scenario_sha256") != SCENARIO_SHA256
-            or digest(observer.encoded(scenario)) != SCENARIO_SHA256
+    if (run.get("id") != run_id or run.get("scenario_sha256") != scenario_sha
+            or digest(observer.encoded(scenario)) != scenario_sha
             or type(run.get("step")) is not int or run["step"] != 0
             or type(run.get("send_attempts")) is not int or run["send_attempts"] != 1
             or run.get("sent_ids") != [run.get("sent_message_id")] or run.get("send_state") != "sent"
             or run.get("status") != "EVIDENCE_READY" or run.get("capture_window_complete") is not True):
-        raise ValueError("Exact closed S18 edit run and one send required")
+        raise ValueError(f"Exact closed {label} run and one send required")
     created, deadline = datetime.fromisoformat(run["created_at"]), run["deadline"]
     if (created.utcoffset() is None or type(deadline) not in (int, float) or not math.isfinite(deadline)
             or abs(deadline - created.timestamp() - scenario["deadline_seconds"]) > 1):
-        raise ValueError("S18 original tester deadline changed")
+        raise ValueError(f"{label} original tester deadline changed")
     step = scenario["steps"][0]
     upload = step["input"]
-    if upload["sha256"] != SOURCE_SHA256 or run["request_metadata"].get("input_sha256") != SOURCE_SHA256:
-        raise ValueError("Exact S18 source upload required")
+    if upload["sha256"] != source_sha or run["request_metadata"].get("input_sha256") != source_sha:
+        raise ValueError(f"Exact {label} source upload required")
     observations = run["observations"]
-    check_observation_paths(store, run_id, observations)
+    check_observation_paths(store, run_id, observations, label)
 
     runner = observer.Runner(store, None)
     if runner.send_ack_budget(run) != 10:
-        raise ValueError("S18 original tester ACK budget changed")
+        raise ValueError(f"{label} original tester ACK budget changed")
     runner.verify_reply_custody(run, cursor)
     ack = original_ack(observer, runner, run)
     if not observer.valid_input_ack(ack, upload, require_document_size=True):
-        raise ValueError("S18 original ACK upload size differs or is unobserved")
+        raise ValueError(f"{label} original ACK upload size differs or is unobserved")
     captures, _, drain = runner.receive_inventory(run, cursor, terminal=True)
     poll = runner.read_poll_intent(run)
     if drain.get("complete") is None or (poll is not None and poll["outcome"] == "PENDING"):
-        raise ValueError("S18 original receive window is unsettled")
+        raise ValueError(f"{label} original receive window is unsettled")
     outcome = "RECEIVED_UNGRADED" if observations else "NO_RESPONSE_UNVERIFIED"
     if run.get("reply_outcome") != outcome:
-        raise ValueError("S18 saved outcome differs from the retained observations")
+        raise ValueError(f"{label} saved outcome differs from the retained observations")
 
     text_receipts, documents = [], []
     for item in observations:
@@ -130,19 +131,29 @@ def assess_saved_workbook_edit(observer, store, *, run_id, run_ref, cursor_ref, 
                 screen = {"status": "FAIL", "reason": "XLSX_OUTSIDE_NATIVE_DELIVERY_BOUND"}
             else:
                 raw, recipient = read_saved_document(observer, runner, run, item, captures, ack,
-                                                      max_bytes=limit, label="S18 recipient XLSX")
-                if recipient["name"] != OUTPUT_NAME or item["advertised_document"].get("mime_type") != XLSX_MIME:
+                                                      max_bytes=limit, label=f"{label} recipient XLSX")
+                if recipient["name"] != output_name or item["advertised_document"].get("mime_type") != XLSX_MIME:
                     screen = {"status": "FAIL", "reason": "EXPECTED_EXACT_XLSX_NAME_AND_MIME"}
                 else:
-                    screen = review_workbook(observer, upload, raw, oracle_path)
+                    screen = assess_content(upload, raw, recipient["download"])
     pinned_record(observer, run_ref, expected_path=run_path)
     pinned_record(observer, cursor_ref, expected_path=cursor_path)
     return {
-        "run_id": run_id, "run_sha256": run_ref["sha256"], "scenario_sha256": SCENARIO_SHA256,
+        "run_id": run_id, "run_sha256": run_ref["sha256"], "scenario_sha256": scenario_sha,
         "send_ack": run["sent_api_ack_reference"], "send_task": run["sent_task_reference"],
         "send_window": run["sent_window_reference"], "sent_message_id": run["sent_message_id"],
         "receive_head": run["receive_head"], "capture_until": run["capture_until"],
         "terminal_completed_at": drain["complete"]["completed_at"], "recipient_xlsx": recipient,
         "direct_text_receipts": text_receipts, "receiver_screen": screen,
-        "native_read_edit_delivery": "OPEN", "calc_same_received_bytes": "OPEN", "formal_acceptance": "OPEN",
     }
+
+
+def assess_saved_workbook_edit(observer, store, *, run_id, run_ref, cursor_ref, oracle_path):
+    """Check the exact bounded receiver artifact. Calc and native verification stay separate."""
+    evidence = assess_closed_workbook_reply(
+        observer, store, run_id=run_id, run_ref=run_ref, cursor_ref=cursor_ref, label="S18",
+        scenario_sha=SCENARIO_SHA256, source_sha=SOURCE_SHA256, output_name=OUTPUT_NAME,
+        assess_content=lambda upload, raw, _ref: review_workbook(observer, upload, raw, oracle_path),
+    )
+    return {**evidence, "native_read_edit_delivery": "OPEN", "calc_same_received_bytes": "OPEN",
+            "formal_acceptance": "OPEN"}
