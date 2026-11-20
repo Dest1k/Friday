@@ -238,7 +238,8 @@ def check(proof_ref, *, contract_ref, prepare_ref, authority_ref, run_id, scenar
 
     check_input(scenario['steps'][0])
     observer = source_module(prepare['current_observer'], '_Root_ordinary_current_observer')
-    require(observer.check_current(contract['scope'], scenario=scenario) is True,
+    require(observer.check_current(contract['scope'], scenario=scenario, read_reference=private_reference,
+                                   load_module=source_module) is True,
             'Ordinary current route, identity or rights not established')
     locks_and_stop()
     require(document(contract['cursor']) == bound_cursor, 'Ordinary capture cursor changed')

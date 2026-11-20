@@ -119,7 +119,7 @@ def wire_window_fits(proof_ref, run, ack_seconds):
         self.store.write(scope_path, b"fixture scope connected\n")
         observer = self.reference("current-observer.py", br"""from pathlib import Path
 
-def check_current(scope, *, scenario):
+def check_current(scope, *, scenario, read_reference, load_module):
     return (len(scenario['steps']) == 1
             and Path(scope['fixture']).read_bytes() == b'fixture scope connected\n')
 """)
