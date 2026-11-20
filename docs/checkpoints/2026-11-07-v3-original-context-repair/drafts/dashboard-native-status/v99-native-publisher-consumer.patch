@@ -1,0 +1,71 @@
+--- a/friday_v3_layer_publication.py
++++ b/friday_v3_layer_publication.py
+@@ -10612,7 +10612,7 @@
+         mapped = {"marker": "FRIDAY-INSTALL.json", "configuration": "config.yaml", "profile": "FRIDAY-PROFILE.json"}
+         require(all(request[key] == ({"path": roles[mapped[key]]["path"], "sha256": roles[mapped[key]]["sha256"]}
+                                      if key in mapped else self.reader_request[key])
+-                    for key in request if key not in {"current_input", "candidate_input"})
++                    for key in request if key not in derived)
+                 and request["marker"]["sha256"] != self.reader_request["marker"]["sha256"]
+                 and request["native_unit"]["path"] != str(_V99_DASHBOARD_UNIT),
+                 "transaction_v99_dashboard_active_request_changed")
+@@ -10680,8 +10680,21 @@
+         leaf_raw = _v99_dashboard_reference(leaf_ref, private=True)
+         leaf = _v99_dashboard_object(leaf_raw, leaf_input=True)
+         dashboard = expected["product"]["dashboard"]
++        old_project = expected["project_files"]
++        new_project = request["project_inventory"]
++        candidate = Path(request["candidate_project"])
++        require(old_project == self.reader_request["project_inventory"] and set(new_project) == set(old_project)
++                and all(new_project[name] == old_project[name] for name in old_project
++                        if name != CURRENT_SOURCE_NINETY_NINTH_HELPER)
++                and request["project_inventory_sha256"] == digest(encoded(new_project))
++                and candidate.is_absolute() and candidate.resolve(strict=True) == candidate
++                and not candidate.is_relative_to(self.home),
++                "transaction_v99_dashboard_leaf_project_changed")
++        if new_project != old_project or request["candidate_project"] != self.reader_request["candidate_project"]:
++            helper = candidate / CURRENT_SOURCE_NINETY_NINTH_HELPER
++            require(digest(owned_file(helper)) == new_project[CURRENT_SOURCE_NINETY_NINTH_HELPER],
++                    "transaction_v99_dashboard_leaf_helper_changed")
+         require((dashboard["host"], dashboard["public_url"]) == (applied["old_host"], applied["old_public_url"])
+-                and expected["project_files"] == request["project_inventory"]
+                 and expected["home"] == str(self.home),
+                 "transaction_v99_dashboard_legacy_declaration_changed")
+         roles = {"cafile": "dashboard-tls/ca.pem", "certfile": "dashboard-tls/server.pem",
+@@ -10701,6 +10714,7 @@
+         require(len(parents) == 1, "transaction_v99_dashboard_leaf_tls_parent_changed")
+         dashboard.update(host=applied["host"], public_url=applied["public_url"])
+         expected["dashboard_tls"] = tls_inputs
++        expected["project_files"] = new_project
+         require(encoded(leaf) == encoded(expected), "transaction_v99_dashboard_leaf_declaration_changed")
+         self.leaf_ref = dict(leaf_ref)
+         self.leaf_raw = leaf_raw
+@@ -10802,13 +10816,26 @@
+         return True
+ 
+ 
+-def run_dashboard_v99(request_path, request_sha256, *, handoff_ref, inspect_continuity):
++def _v99_dashboard_native_consumer(phase, *, value, request, request_reference, reader_request_ref,
++                                   continuity, transaction):
++    """Use the pinned stock reader on the three existing publisher boundaries."""
++    require(phase in {"before", "published", "committed"}
++            and request_reference["sha256"] == continuity["publisher_request_sha256"]
++            and reader_request_ref == continuity["reader_request_ref"]
++            and (phase == "before" or request_reference["path"] == str(transaction / "request.json")),
++            "transaction_v99_dashboard_native_phase_changed")
++    current_source_consumer_checked(value, request, request["candidate_project"],
++                                    committed=phase == "committed", inspect=phase != "before")
++
++
++def run_dashboard_v99(request_path, request_sha256, *, handoff_ref, inspect_continuity=None):
+     """A separately bound native operator entry, under the existing maintenance locks."""
+     require(sys.flags.isolated and sys.dont_write_bytecode,
+             "transaction_v99_dashboard_isolated_python_required")
+     request = _v99_dashboard_object(_v99_dashboard_reference({
+         "path": str(request_path), "sha256": request_sha256}))
+-    dashboard = _V99DashboardContinuity(request, request_sha256, handoff_ref, inspect_continuity)
++    inspector = _v99_dashboard_native_consumer if inspect_continuity is None else inspect_continuity
++    dashboard = _V99DashboardContinuity(request, request_sha256, handoff_ref, inspector)
+     return run(request, request_path, request_sha256, _dashboard=dashboard)
+ 
+ 

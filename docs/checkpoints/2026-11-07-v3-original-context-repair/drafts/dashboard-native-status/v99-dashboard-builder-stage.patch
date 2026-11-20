@@ -1,0 +1,140 @@
+--- a/build-v99-dashboard-request.py
++++ b/build-v99-dashboard-request.py
+@@ -2,8 +2,9 @@
+ """Bind the accepted V99 request to one separately applied Dashboard route.
+ 
+ An operator supplies the exact accepted Reader RESULT, application record and
+-bound publisher, plus independently pinned leaf projection inputs. This builder
+-emits one source handoff. It has no install or publication entry point.
++bound publisher, plus independently pinned leaf projection inputs and the staged
++candidate. This builder emits one source handoff. It has no install or
++publication entry point.
+ """
+ import argparse
+ from contextlib import contextmanager
+@@ -200,6 +201,43 @@
+             and pins["verifier_ref"]["sha256"] == evidence["verify_route_projection.py"]["sha256"],
+             "v99_builder_reader_provider_pin_changed")
+     return pins, stock, read_request, previous, current, project
++
++
++def staged_project_snapshot(project, files):
++    root_pin = parent_pin(project)
++    require(stat.S_IMODE(root_pin["st_mode"]) == 0o700, "v99_builder_private_staged_project_required")
++    paths = {path.relative_to(project).as_posix() for path in project.rglob("*")
++             if path.is_symlink() or not path.is_dir()}
++    require(paths == files.keys(), "v99_builder_staged_project_files_changed")
++    rows = {relative: capture(project / relative, sha=sha)[1] for relative, sha in files.items()}
++    require(parent_pin(project) == root_pin, "v99_builder_staged_project_identity_changed")
++    return {"root": root_pin, "files": rows}
++
++
++def staged_inputs(project, input_ref, *, original, legacy_input, legacy_project):
++    project = canonical(project)
++    home = Path(original["home"])
++    require(all(not project.is_relative_to(root) and not root.is_relative_to(project)
++                for root in (home, legacy_project)), "v99_builder_separate_staged_project_required")
++    raw, input_pin = capture_reference(input_ref, mode=0o600)
++    require(stat.S_IMODE(input_pin["parent_identity"]["st_mode"]) == 0o700
++            and not Path(input_pin["path"]).is_relative_to(home)
++            and not Path(input_pin["path"]).is_relative_to(project),
++            "v99_builder_private_staged_baseline_required")
++    staged_input = exact_object(raw)
++    inventory = staged_input.get("project_files")
++    require(type(inventory) is dict, "v99_builder_staged_baseline_inventory_required")
++    old_files = legacy_input["project_files"]
++    helper_sha = inventory.get(HELPER)
++    require(type(helper_sha) is str and re.fullmatch("[0-9a-f]{64}", helper_sha)
++            and helper_sha != old_files[HELPER], "v99_builder_staged_helper_delta_required")
++    expected_files = dict(old_files)
++    expected_files[HELPER] = helper_sha
++    require(raw == encoded(dict(legacy_input, project_files=expected_files)),
++            "v99_builder_staged_baseline_delta_changed")
++    request = dict(original, candidate_project=str(project), project_inventory=expected_files,
++                   project_inventory_sha256=digest(encoded(expected_files)))
++    return request, staged_input, input_pin, staged_project_snapshot(project, expected_files)
+ 
+ 
+ def candidate_reader(project, files):
+@@ -310,11 +348,15 @@
+ 
+ 
+ def build_request(*, reader_result, publisher, cas_basis, applied_ref, native_source,
+-                  projector_ref, leaf_ref, tls_input_refs):
++                  projector_ref, leaf_ref, tls_input_refs, staged_project, staged_baseline_ref):
+     require(sys.flags.isolated and sys.dont_write_bytecode, "v99_builder_requires_isolated_no_bytecode")
+-    pins, stock, original, previous, current, project = prepared_inputs(reader_result)
++    pins, stock, original, previous, legacy_input, legacy_project = prepared_inputs(reader_result)
++    staged_request, staged_input, staged_input_pin, staged_read_set = staged_inputs(
++        staged_project, staged_baseline_ref, original=original, legacy_input=legacy_input,
++        legacy_project=legacy_project)
++    project = Path(staged_request["candidate_project"])
+     guard = load_provider(publisher, PUBLISHER, "_v99_exact_historical_publication_checks")
+-    reader = candidate_reader(project, current["project_files"])
++    reader = candidate_reader(legacy_project, legacy_input["project_files"])
+     baseline = exact_object(read_reference({"path": str(cas_basis), "sha256": CAS_BASE}))
+     require(baseline["request_sha256"] == ORIGINAL_REQUEST and baseline["publisher_sha256"] == PUBLISHER,
+             "v99_builder_cas_basis_changed")
+@@ -347,9 +389,9 @@
+     receipt = exact_object(read_reference(pair(before["hermes-agent.source.json"])))
+     require(len(receipt["layers"]) == 296 and len(receipt["files"]) == 17911,
+             "v99_builder_installed_receipt_changed")
+-    checked_names = guard.check_project_inventory(original, previous, current)
++    checked_names = guard.check_project_inventory(staged_request, previous, staged_input)
+     require(checked_names == layer_names, "v99_builder_layer_scope_changed")
+-    layers = guard.read_layers(project, receipt, home, current["project_files"], layer_names)
++    layers = guard.read_layers(project, receipt, home, staged_input["project_files"], layer_names)
+     selected = guard.check_preimages(layers, home / "hermes-agent", receipt["files"])
+     require(len(selected) == 1 and next(iter(selected)) == "hermes_cli/friday_prompt_scope.py",
+             "v99_builder_touched_native_scope_changed")
+@@ -368,8 +410,8 @@
+     with verified_imports(native_source, receipt["files"], native_prefixes):
+         reader._v99_dashboard_verify_projection(route, Path(native_source))
+         candidate_request = bind_dashboard_leaf(
+-            projector=projector, reader=reader, baseline_ref=pins["input_ref"], leaf_ref=leaf_ref,
+-            tls_input_refs=tls_input_refs, original=original, route=route, read_set=read_set)
++            projector=projector, reader=reader, baseline_ref=staged_baseline_ref, leaf_ref=leaf_ref,
++            tls_input_refs=tls_input_refs, original=staged_request, route=route, read_set=read_set)
+     require(route_snapshot(route) == read_set and write_targets(
+         home, baseline, original, read_set["FRIDAY-INSTALL.json"]) == before,
+         "v99_builder_final_read_or_write_set_changed")
+@@ -377,14 +419,17 @@
+         _, observed = capture(row["path"], sha=row["sha256"], mode=row["mode"])
+         require(observed == row, "v99_builder_final_history_identity_changed")
+ 
+-    _, helper = capture(project / HELPER, sha=pins["helper_ref"]["sha256"])
+     marker_pin = read_set["FRIDAY-INSTALL.json"]
+     marker_raw, observed = capture(marker_pin["path"], sha=marker_pin["sha256"], mode=marker_pin["mode"])
+     require(observed == marker_pin, "v99_builder_final_marker_identity_changed")
+     require([capture_reference(ref, mode=mode)[1] for ref, mode in leaf_refs] == leaf_read_set,
+             "v99_builder_final_leaf_read_set_changed")
++    require(capture_reference(staged_baseline_ref, mode=0o600)[1] == staged_input_pin
++            and staged_project_snapshot(project, staged_input["project_files"]) == staged_read_set,
++            "v99_builder_final_staged_candidate_changed")
+     active_marker = exact_object(marker_raw)
+-    after = afterimage_pins(baseline, historical_marker, active_marker, stock, candidate_request, helper)
++    after = afterimage_pins(baseline, historical_marker, active_marker, stock, candidate_request,
++                            staged_read_set["files"][HELPER])
+     return {
+         "schema": "friday.v99-dashboard-builder-handoff.v1",
+         "state": "SOURCE_REQUEST_PREPARED_PUBLICATION_AUTHORITY_ABSENT",
+@@ -411,6 +456,9 @@
+     parser.add_argument("--applied-record", required=True, type=Path)
+     parser.add_argument("--applied-record-sha256", required=True)
+     parser.add_argument("--native-source", required=True, type=Path)
++    parser.add_argument("--staged-project", required=True, type=Path)
++    parser.add_argument("--staged-baseline", required=True, type=Path)
++    parser.add_argument("--staged-baseline-sha256", required=True)
+     parser.add_argument("--leaf-projector", required=True, type=Path)
+     parser.add_argument("--leaf-projector-sha256", required=True)
+     parser.add_argument("--leaf-input", required=True, type=Path)
+@@ -431,7 +479,8 @@
+         tls_input_refs[role] = {"path": path, "sha256": sha}
+     handoff = build_request(reader_result=args.reader_result, publisher=args.publisher, cas_basis=args.cas_basis,
+         applied_ref={"path": str(args.applied_record), "sha256": args.applied_record_sha256},
+-        native_source=args.native_source,
++        native_source=args.native_source, staged_project=args.staged_project,
++        staged_baseline_ref={"path": str(args.staged_baseline), "sha256": args.staged_baseline_sha256},
+         projector_ref={"path": str(args.leaf_projector), "sha256": args.leaf_projector_sha256},
+         leaf_ref={"path": str(args.leaf_input), "sha256": args.leaf_input_sha256},
+         tls_input_refs=tls_input_refs)

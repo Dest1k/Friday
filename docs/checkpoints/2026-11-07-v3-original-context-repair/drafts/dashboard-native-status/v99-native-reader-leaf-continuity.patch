@@ -1,0 +1,265 @@
+--- a/scripts/friday_ordinary_install.py
++++ b/scripts/friday_ordinary_install.py
+@@ -7437,7 +7437,114 @@
+ _V99_DASHBOARD_ROLES = ('FRIDAY-INSTALL.json', 'FRIDAY-PROFILE.json', 'config.yaml', *_V99_DASHBOARD_TLS_NAMES, 'unit')
+ 
+ 
+-def _v99_dashboard_proof(home, tx, request, historical_marker, *, applied_ref, verifier_ref):
++# The final operator package pins a private approval path outside installed and
++# staged source. Its bytes can then name the handoff without a recursive hash.
++_V99_DASHBOARD_APPROVAL_PATH = None
++_V99_DASHBOARD_LEAF_PROJECTOR = '5e09a2577791bdc3214a06cc463cb0521b1b84e123fc47c517055d91a5c034d6'
++_V99_DASHBOARD_ACCEPTED_READER = '7ac17e92d287760d7c31c0f1c40ed7d8c59a63857b6198cbc764d5be3cd1a529'
++
++
++def _v99_dashboard_leaf_binding(home, request, marker, source_update):
++    """Select one approved Dashboard source transaction in the normal reader."""
++    if _V99_DASHBOARD_APPROVAL_PATH is None:
++        return None
++    f = api()
++    approval = Path(_V99_DASHBOARD_APPROVAL_PATH)
++    f.require(approval.is_absolute() and approval.resolve(strict=True) == approval
++        and not approval.is_relative_to(home) and not approval.is_relative_to(f.ROOT)
++        and f.directory(approval.parent) == approval.parent,
++        'ordinary_v99_dashboard_private_approval_required')
++    grant = _current_source_json(approval)
++    f.require(type(grant) is dict and set(grant) == {'schema','handoff','projector','baseline'}
++        and grant['schema'] == 'friday.v99-dashboard-leaf-pins.v1'
++        and grant['projector']['sha256'] == _V99_DASHBOARD_LEAF_PROJECTOR,
++        'ordinary_v99_dashboard_leaf_approval_changed')
++    handoff = grant['handoff']
++    handoff_path = _current_source_reference(handoff)
++    f.require(not handoff_path.is_relative_to(home) and not handoff_path.is_relative_to(f.ROOT)
++        and f.directory(handoff_path.parent) == handoff_path.parent,
++        'ordinary_v99_dashboard_independent_handoff_required')
++    accepted = _current_source_json(handoff_path, expected_sha256=handoff['sha256'])
++    request_sha = f.digest(encoded(request))
++    f.require(type(accepted) is dict and accepted.get('schema') == 'friday.v99-dashboard-builder-handoff.v1'
++        and accepted.get('state') == 'SOURCE_REQUEST_PREPARED_PUBLICATION_AUTHORITY_ABSENT'
++        and encoded(accepted['publisher_request']) == encoded(request)
++        and accepted['publisher_request_sha256'] == request_sha,
++        'ordinary_v99_dashboard_approved_request_changed')
++    reader_ref = accepted['accepted_reader_ref']
++    f.require(reader_ref.get('sha256') == _V99_DASHBOARD_ACCEPTED_READER,
++        'ordinary_v99_dashboard_accepted_reader_changed')
++    reader = _current_source_json(_current_source_reference(reader_ref),expected_sha256=reader_ref['sha256'])
++    prior_pins = reader['artifacts']['READONLY-PINS.json']
++    legacy = _current_source_json(Path(prior_pins['path']), expected_sha256=prior_pins['sha256'])
++    f.require(accepted['reader_request_ref'] == legacy['request_ref']
++        and accepted['original_request_ref'] == legacy['original_request_ref']
++        and accepted['verifier_ref'] == legacy['verifier_ref'],
++        'ordinary_v99_dashboard_reader_lineage_changed')
++    legacy_ref = legacy['request_ref']
++    legacy_request = _current_source_json(_current_source_reference(legacy_ref),expected_sha256=legacy_ref['sha256'])
++    baseline_ref = grant['baseline']
++    baseline = _current_source_json(_current_source_reference(baseline_ref),expected_sha256=baseline_ref['sha256'])
++    helper = 'scripts/friday_ordinary_install.py'
++    project = baseline['project_files']
++    old_project = legacy_request['project_inventory']
++    f.require(set(project) == set(old_project) and project == request['project_inventory']
++        and all(project[key] == old_project[key] for key in project if key != helper)
++        and project[helper] == f.digest(f.owned_file(f.ROOT/helper)),
++        'ordinary_v99_dashboard_leaf_inventory_changed')
++    roles = accepted['application_read_set']
++    post = accepted['v99_write_after']
++    f.require(type(roles) is dict and set(roles) == set(_V99_DASHBOARD_ROLES)
++        and all(request[field] == {'path':str(home/name), 'sha256':roles[name]['sha256']}
++            for field,name in (('marker',f.MARKER),('configuration','config.yaml'),('profile','FRIDAY-PROFILE.json')))
++        and request['previous_input'] == legacy_request['previous_input']
++        and request['current_input'] == request['candidate_input']
++        and request['current_input'] != legacy_request['current_input'],
++        'ordinary_v99_dashboard_leaf_request_join_changed')
++    tx = home/'preparation'/('ordinary-source-update-v45-'+request_sha[:16])
++    current_is_leaf = marker.get('input_sha256') == request['current_input']['sha256']
++    if not current_is_leaf:
++        f.require(source_update is not None and marker.get('input_sha256') == request['previous_input']['sha256']
++            and not os.path.lexists(tx), 'ordinary_v99_dashboard_no_new_transaction_required')
++        successor = None
++    else:
++        f.require(_current_source_cp_transactions(home, request['current_input']) == tx,
++            'ordinary_v99_dashboard_canonical_transaction_required')
++        _, commit = _current_source_cp_proof(home, tx, request, committed=source_update is None)
++        f.require((commit is not None) == (source_update is None),
++            'ordinary_v99_dashboard_phase_proof_changed')
++        f.require(f.digest(f.owned_file(tx/'dashboard-continuity.json',private=True)) == handoff['sha256'],
++            'ordinary_v99_dashboard_retained_handoff_changed')
++        for name, relative in ((f.MARKER,f.MARKER),('hermes-agent.source.json','hermes-agent.source.json'),
++                               ('install-stamp.json','hermes-agent/install-stamp.json')):
++            expected = post[relative]['sha256']
++            f.require(f.digest(f.owned_file(tx/name,private=True)) == expected
++                and f.digest(f.owned_file(home/relative,private=True)) == expected,
++                'ordinary_v99_dashboard_published_receipt_changed')
++        if commit is not None:
++            f.require(commit['source_receipt_sha256'] == post['hermes-agent.source.json']['sha256'],
++                'ordinary_v99_dashboard_committed_receipt_changed')
++        successor = {'request_sha256':request_sha, 'applied_marker_sha256':roles[f.MARKER]['sha256'],
++                     'marker_sha256':post[f.MARKER]['sha256']}
++    return {'grant':grant, 'accepted':accepted, 'request':request, 'legacy_request':legacy_request,
++            'successor':successor, 'transaction':tx}
++
++
++def _v99_dashboard_leaf_inputs_match(previous, current, route):
++    """Keep the V99 declaration delta confined before the full native check."""
++    expected = json.loads(encoded(previous))
++    expected['product']['dashboard'].update(host=_V99_DASHBOARD_NEW_HOST, public_url=_V99_DASHBOARD_NEW_URL)
++    expected['dashboard_tls'] = current['dashboard_tls']
++    roles = {'cafile':_V99_DASHBOARD_TLS_NAMES[0], 'certfile':_V99_DASHBOARD_TLS_NAMES[1],
++             'keyfile':_V99_DASHBOARD_TLS_NAMES[2]}
++    f = api()
++    return set(current['dashboard_tls']) == set(roles) and all(
++        current['dashboard_tls'][role]['sha256'] == route['current'][name] for role,name in roles.items()
++    ) and encoded({k:v for k,v in expected.items() if k != 'project_files'}) == encoded(
++        {k:v for k,v in current.items() if k != 'project_files'})
++
++
++def _v99_dashboard_proof(home, tx, request, historical_marker, *, applied_ref, verifier_ref, continuity=None):
+     """Read a protected applied record and reverify its current files against exact V98."""
+     f = api()
+     f.require(applied_ref is not None, 'ordinary_v99_applied_dashboard_proof_required')
+@@ -7484,6 +7591,8 @@
+     route = {'home':home, 'unit':unit, 'before_root':before_root, 'before':before,
+              'current':current, 'historical_marker':historical_marker, 'before_marker':tx/f.MARKER,
+              'verifier_ref':verifier_ref}
++    if continuity is not None:
++        route['continuity'] = continuity
+     _v99_dashboard_recheck(route)
+     return route
+ 
+@@ -7502,20 +7611,32 @@
+                 and Path(origin).resolve(strict=True) == Path(origin)
+                 and Path(origin).is_relative_to(source), 'ordinary_v99_dashboard_native_import_changed')
+     check_origins()
+-    verifier_ref = route['verifier_ref']
++    continuity = route.get('continuity')
++    verifier_ref = (route['verifier_ref'] if continuity is None else continuity['grant']['projector'])
++    provider_sha = _V99_DASHBOARD_VERIFIER_SHA256 if continuity is None else _V99_DASHBOARD_LEAF_PROJECTOR
+     verifier_path = _current_source_reference(verifier_ref)
+     raw = f.owned_file(verifier_path, private=True)
+-    f.require(f.digest(raw) == _V99_DASHBOARD_VERIFIER_SHA256, 'ordinary_v99_dashboard_verifier_changed')
++    f.require(f.digest(raw) == provider_sha, 'ordinary_v99_dashboard_verifier_changed')
+     scope = {'__file__':str(verifier_path), '__name__':'_v99_verified_address_only_projection'}
+     exec(compile(raw, str(verifier_path), 'exec'), scope)
+     before_root = route['before_root']
+-    observed = scope['verify_route_projection'](
++    verify_args = dict(
+         before_root=before_root, before_unit=before_root/'hermes-dashboard.service',
+         before_marker=route['before_marker'], after_root=route['home'], after_unit=route['unit'],
+         previous_marker_sha256=CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER,
+         previous_unit_sha256=_V99_DASHBOARD_OLD_UNIT,
+         old_host=_V99_DASHBOARD_OLD_HOST, old_public_url=_V99_DASHBOARD_OLD_URL,
+         host=_V99_DASHBOARD_NEW_HOST, public_url=_V99_DASHBOARD_NEW_URL)
++    if continuity is None:
++        observed = scope['verify_route_projection'](**verify_args)
++    else:
++        request = continuity['request']
++        leaf_ref = request['current_input']
++        leaf = _current_source_json(_current_source_reference(leaf_ref),expected_sha256=leaf_ref['sha256'])
++        _, observed = scope['project_v99_dashboard_input'](**verify_args,
++            baseline_ref=continuity['grant']['baseline'], predecessor_ref=request['previous_input'],
++            leaf_ref=leaf_ref, tls_input_refs=leaf['dashboard_tls'], applied_read_pins=route['current'],
++            successor=continuity['successor'])
+     check_origins()
+     f.require(observed['state'] == 'DASHBOARD_ADDRESS_ONLY_PROJECTION_VERIFIED'
+         and observed['publication_authorized'] is False
+@@ -7533,6 +7654,9 @@
+     f = api()
+     for role, sha in route['current'].items():
+         path = route['unit'] if role == 'unit' else route['home']/role
++        continuity = route.get('continuity')
++        if role == f.MARKER and continuity is not None and continuity['successor'] is not None:
++            path = continuity['transaction']/'before'/role
+         f.require(f.digest(f.owned_file(path, private=True)) == sha,
+             'ordinary_v99_dashboard_applied_file_changed')
+ 
+@@ -7639,10 +7763,12 @@
+     _current_source_cp_proof(home, ninety_eighth_tx, ninety_eighth_request, committed=True)
+     marker = _current_source_json(home/f.MARKER)
+     dashboard_binding = _V99_DASHBOARD_PREFLIGHT.get()
+-    dashboard_preflight = type(dashboard_binding) is tuple
++    continuity = None if dashboard_binding is not None else _v99_dashboard_leaf_binding(home, request, marker, source_update)
++    dashboard_preflight = type(dashboard_binding) is tuple or continuity is not None
+     if dashboard_preflight:
+-        f.require(marker.get('input_sha256') == request['previous_input']['sha256'],
+-            'ordinary_v99_dashboard_requires_applied_predecessor')
++        if continuity is None:
++            f.require(marker.get('input_sha256') == request['previous_input']['sha256'],
++                'ordinary_v99_dashboard_requires_applied_predecessor')
+         marker = _current_source_json(ninety_eighth_tx/f.MARKER,
+             expected_sha256=CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER)
+     elif marker.get('input_sha256') == request['current_input']['sha256']:
+@@ -7665,8 +7791,13 @@
+         return _current_native_source_edge_checked(value, cli_only=cli_only,
+             source_update=source_update, prior_edge=ninety_eighth)
+ 
+-    route = _v99_dashboard_proof(home, ninety_eighth_tx, request, marker,
+-        applied_ref=dashboard_binding[0], verifier_ref=dashboard_binding[1])
++    if continuity is None:
++        route = _v99_dashboard_proof(home, ninety_eighth_tx, request, marker,
++            applied_ref=dashboard_binding[0], verifier_ref=dashboard_binding[1])
++    else:
++        accepted = continuity['accepted']
++        route = _v99_dashboard_proof(home, ninety_eighth_tx, continuity['legacy_request'], marker,
++            applied_ref=accepted['applied_ref'], verifier_ref=accepted['verifier_ref'], continuity=continuity)
+     token = _V99_DASHBOARD_PREFLIGHT.set(route)
+     try:
+         ninety_eighth = _current_source_ninety_eighth_successor_checked(
+@@ -17159,6 +17290,9 @@
+         'ordinary_current_successor_exact_ninety_ninth_before_metadata_required')
+ 
+ 
++    dashboard_route = _V99_DASHBOARD_PREFLIGHT.get()
++    dashboard_v99 = dashboard_route is not None and ninety_ninth and historical_marker is None
++    continuity = dashboard_route.get('continuity') if dashboard_v99 else None
+     _current_source_reference(request['previous_input']); _current_source_reference(request['current_input'])
+     current = _current_source_json(Path(request['current_input']['path']),
+         expected_sha256=request['current_input']['sha256'])
+@@ -17171,8 +17305,9 @@
+         and (historical_marker is not None
+             and str(f.canonical(request['candidate_project'])) == request['candidate_project']
+             or request['candidate_project'] == str(f.ROOT))
+-        and encoded({k:v for k,v in previous.items() if k != 'project_files'}) ==
+-            encoded({k:v for k,v in current.items() if k != 'project_files'}),
++        and (_v99_dashboard_leaf_inputs_match(previous, current, dashboard_route) if continuity is not None else
++            encoded({k:v for k,v in previous.items() if k != 'project_files'}) ==
++            encoded({k:v for k,v in current.items() if k != 'project_files'})),
+         'ordinary_current_successor_input_join_changed')
+     old_cp = _current_source_json(_current_source_reference(root_request['publication_ancestor']['request']))
+     f.require(all(encoded(request[k]) == encoded(old_cp[k]) for k in
+@@ -17347,17 +17482,21 @@
+         'ordinary_current_successor_exact_ninety_seventh_before_marker_required')
+     f.require(not ninety_eighth or request['marker']['sha256'] == CURRENT_SOURCE_NINETY_EIGHTH_PREVIOUS_MARKER,
+         'ordinary_current_successor_exact_ninety_eighth_before_marker_required')
+-    f.require(not ninety_ninth or request['marker']['sha256'] == CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER,
++    expected_before = CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER
++    if continuity is not None:
++        expected_before = dashboard_route['current'][f.MARKER]
++    f.require(not ninety_ninth or request['marker']['sha256'] == expected_before,
+         'ordinary_current_successor_exact_ninety_ninth_before_marker_required')
+ 
+-
+-    dashboard_route = _V99_DASHBOARD_PREFLIGHT.get()
+-    dashboard_v99 = dashboard_route is not None and ninety_ninth and historical_marker is None
++    active_dash_pin = dashboard_route['current'][f.MARKER] if dashboard_v99 else None
++    successor = continuity['successor'] if continuity is not None else None
++    if successor is not None:
++        active_dash_pin = successor['marker_sha256']
+     marker = historical_marker if historical_marker is not None else _current_source_json(home/f.MARKER,
+-        expected_sha256=dashboard_route['current'][f.MARKER] if dashboard_v99 else None)
++        expected_sha256=active_dash_pin)
+     leaf = marker.get('input_sha256') == request['current_input']['sha256']
+     if dashboard_v99:
+-        f.require(not leaf and dashboard_route['home'] == home,
++        f.require(leaf == (successor is not None) and dashboard_route['home'] == home,
+             'ordinary_v99_dashboard_requires_applied_predecessor')
+         _v99_dashboard_recheck(dashboard_route)
+     f.require(historical_marker is None or leaf,'ordinary_current_successor_historical_leaf_required')
+@@ -17366,7 +17505,8 @@
+         if dashboard_route is not None and historical_marker is not None and key == 'profile':
+             _v99_dashboard_history_profile(dashboard_route, request[key])
+         elif dashboard_v99 and key in {'configuration', 'profile'}:
+-            f.require(request[key]['sha256'] == dashboard_route['before'][name],
++            expected_route_pins = dashboard_route['before'] if continuity is None else dashboard_route['current']
++            f.require(request[key]['sha256'] == expected_route_pins[name],
+                 'ordinary_v99_dashboard_original_request_pins_changed')
+         elif key == 'configuration' and leaf:
+             # The CP request authenticates its before-config, not every later
