@@ -19,6 +19,40 @@ SOURCE_SHA256 = "e75b69bbbb235468e305e6bcc61901a637c4583764fe3af5191187a410438be
 CHECKER_SHA256 = "7471d70d63fdbdd7135499945ce0cc76fd18bb4151c50d9cdb50d8ea64fc2d80"
 PREPARER_SHA256 = "47fdaa897be868198fb973a0fc1c665764d990d9a8f134a9e3291fd927545953"
 
+# Roles in the exact Ruchey passport identified by SOURCE_SHA256.
+_PASSPORT_DATES = {
+    "submission_deadline": "17 декабря 2026 года",
+    "sample_storage_deadline": "25 января 2027 года",
+    "passport_date": "11 ноября 2026 года",
+}
+_DATE_SEPARATOR = r"(?:\s*[:–—-]\s*| )"
+_DATE_ROLE_PHRASES = {
+    "submission_deadline": (
+        rf"(?:срок|дата) сдачи(?: проекта)?{_DATE_SEPARATOR}(?:до )?"
+        r"|(?:проект )?(?:(?:нужно|необходимо|следует) )?сдать(?: проект)? до "
+    ),
+    "sample_storage_deadline": (
+        rf"срок хранения контрольного образца{_DATE_SEPARATOR}(?:до )?"
+        r"|хранить контрольный образец до "
+        r"|контрольный образец (?:хранится|хранить|следует хранить|нужно хранить) до "
+    ),
+    "passport_date": (
+        rf"дата паспорта(?: проекта)?{_DATE_SEPARATOR}"
+        r"|паспорт(?: проекта(?: «ручей»)?)? (?:от|датирован) "
+    ),
+    "sample_date": (
+        rf"дата контрольного образца{_DATE_SEPARATOR}"
+        r"|контрольный образец (?:от|датирован|изготовлен|подготовлен) "
+    ),
+}
+_DATE_CLAIM = re.compile(
+    r"(?:^|(?<=[.!?;]))\s*(?:[•–—-] )?(?:"
+    + "|".join(f"(?P<{role}>{phrase})" for role, phrase in _DATE_ROLE_PHRASES.items())
+    + r")"
+    r"(?P<date>[0-9]{1,2} (?:января|февраля|марта|апреля|мая|июня|июля|августа|"
+    r"сентября|октября|ноября|декабря) [0-9]{4} года)(?=$|[.!;])"
+)
+
 
 def digest(raw):
     return sha256(raw).hexdigest()
@@ -90,6 +124,29 @@ def read_saved_document(observer, runner, run, item, captures, ack, *, max_bytes
     }
 
 
+def review_date_roles(paragraphs):
+    """Screen explicit date claims in the exact Ruchey variant for manual review."""
+    matches, conflicts = [], []
+    for index, paragraph in enumerate(paragraphs):
+        normalized = " ".join(paragraph.casefold().replace("ё", "е").split())
+        for match in _DATE_CLAIM.finditer(normalized):
+            role = next(role for role in _DATE_ROLE_PHRASES if match[role] is not None)
+            claim = {"paragraph_index": index, "role": role, "date": match["date"]}
+            expected = _PASSPORT_DATES.get(role)
+            if claim["date"] == expected:
+                matches.append(claim)
+            else:
+                conflicts.append(dict(claim, expected_date=expected))
+    resolved = {claim["role"] for claim in matches} - {claim["role"] for claim in conflicts}
+    unresolved = [role for role in _PASSPORT_DATES if role not in resolved]
+    state = "MATCHED"
+    if conflicts:
+        state = "CONFLICT"
+    elif unresolved:
+        state = "REVIEW_REQUIRED"
+    return {"state": state, "matches": matches, "conflicts": conflicts, "unresolved_roles": unresolved}
+
+
 def report_review(oracle, source, report):
     try:
         structure = oracle.verify_report(report)
@@ -99,10 +156,12 @@ def report_review(oracle, source, report):
     report_body, roles = oracle.required_roles(oracle.package_xml(report))
     source_body = oracle.package_xml(source)["word/document.xml"].find(oracle.W + "body")
     # Retain the order and paragraph boundaries so reviewers can judge relationships between facts.
+    report_paragraphs = [oracle.text(p) for p in report_body.findall(oracle.W + "p")]
     return structure, {
         "state": "REVIEW_REQUIRED",
         "passport_paragraphs": [oracle.text(p) for p in source_body.findall(oracle.W + "p")],
-        "report_paragraphs": [oracle.text(p) for p in report_body.findall(oracle.W + "p")],
+        "report_paragraphs": report_paragraphs,
+        "date_roles": review_date_roles(report_paragraphs),
         "cached_footer_text": [
             [oracle.text(p) for p in footer.findall(oracle.W + "p")] for footer in roles["footer"]
         ],
