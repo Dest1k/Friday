@@ -29,15 +29,15 @@ def load_pinned_checker(observer, path, pin, name):
     return module
 
 
-def direct_attachment_count(observer, runner, run, captures, ack):
-    """Check raw committed updates, including media the generic observer skips."""
+def direct_reply_update_ids(observer, runner, run, captures, ack, *, contains):
+    """Select original-upload replies from raw updates, including skipped observations."""
     peer = run["scenario"]["peer_id"]
     upload = run["scenario"]["steps"][0]["input"]
     expected_document = {
         "file_name": upload["filename"], "mime_type": upload["mime_type"],
         "file_size": upload["stat"]["size_bytes"], "file_unique_id": ack["document"]["file_unique_id"],
     }
-    count = 0
+    selected = []
     for uid, arrival in captures.items():
         if not run["sent_at"] <= arrival["arrived_at"] < run["capture_until"]:
             continue
@@ -45,7 +45,7 @@ def direct_attachment_count(observer, runner, run, captures, ack):
         if committed_arrival != arrival:
             raise ValueError("S11 committed receive inventory changed")
         message = update.get("message")
-        if not isinstance(message, dict) or not MEDIA.intersection(message):
+        if not isinstance(message, dict) or not contains(message):
             continue
         chat, sender, parent = (message.get(key) for key in ("chat", "from", "reply_to_message"))
         date = message.get("date")
@@ -65,8 +65,14 @@ def direct_attachment_count(observer, runner, run, captures, ack):
                     or "caption" in parent and not observer.caption_ack_matches(parent["caption"], upload["caption"])
                     or "document" in parent and not advertised_document_matches(parent["document"], expected_document)):
                 raise ValueError("Committed attachment parent conflicts with the original upload")
-            count += 1
-    return count
+            selected.append(uid)
+    return selected
+
+
+def direct_attachment_count(observer, runner, run, captures, ack):
+    """Check raw committed updates, including media the generic observer skips."""
+    return len(direct_reply_update_ids(observer, runner, run, captures, ack,
+                                       contains=lambda message: bool(MEDIA.intersection(message))))
 
 
 def assess_closed_text_reply(observer, store, *, run_id, run_ref, cursor_ref, label,

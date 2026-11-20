@@ -11,9 +11,9 @@ from xml.etree.ElementTree import ParseError
 from xml.parsers.expat import ExpatError
 from zlib import error as DeflateError
 
-from ordinary_d03_reply import original_ack, pinned_record, retained_text
+from ordinary_d03_reply import MEDIA, original_ack, pinned_record, retained_text
 from ordinary_d11_reply import read_saved_document
-from ordinary_s11_reply import direct_attachment_count
+from ordinary_s11_reply import direct_attachment_count, direct_reply_update_ids
 
 
 SCENARIO_SHA256 = "b6bee941754be8f60f3d8b57ce3ad85e5044c760ffe397a418f4077f3ff19b9c"
@@ -70,7 +70,7 @@ def review_workbook(observer, upload, raw, oracle_path):
 
 
 def assess_closed_workbook_reply(observer, store, *, run_id, run_ref, cursor_ref, label,
-                                 scenario_sha, source_sha, output_name, assess_content):
+                                 scenario_sha, source_sha, output_name, assess_content, allow_separate_text=False):
     """Join the exact upload and its bounded direct XLSX response before checking content."""
     if type(run_id) is not str or not re.fullmatch("[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id):
         raise ValueError(f"Exact {label} run ID required")
@@ -111,17 +111,26 @@ def assess_closed_workbook_reply(observer, store, *, run_id, run_ref, cursor_ref
     if run.get("reply_outcome") != outcome:
         raise ValueError(f"{label} saved outcome differs from the retained observations")
 
-    text_receipts, documents = [], []
+    text_bodies, text_receipts, documents = [], [], []
     for item in observations:
         if item["kind"] == "reply_text":
-            _, receipt = retained_text(observer, runner, run, item, captures, ack)
+            body, receipt = retained_text(observer, runner, run, item, captures, ack)
+            text_bodies.append(body)
             text_receipts.append(receipt)
         else:
             documents.append(item)
+    if allow_separate_text:
+        raw_text_ids = direct_reply_update_ids(
+            observer, runner, run, captures, ack,
+            contains=lambda msg: type(msg.get("text")) is str and not MEDIA.intersection(msg),
+        )
+        if set(raw_text_ids) != {receipt["tester_update_id"] for receipt in text_receipts}:
+            raise ValueError(f"{label} direct text is missing its exact closed receipt")
     attachments = direct_attachment_count(observer, runner, run, captures, ack)
     recipient, screen = None, {"status": outcome}
+    text_limit = 1 if allow_separate_text else 0
     if observations or attachments:
-        if len(observations) != 1 or len(documents) != 1 or attachments != 1:
+        if len(documents) != 1 or attachments != 1 or len(text_receipts) > text_limit:
             screen = {"status": "FAIL", "reason": "EXPECTED_ONE_DIRECT_XLSX_REPLY"}
         else:
             item = documents[0]
@@ -134,6 +143,8 @@ def assess_closed_workbook_reply(observer, store, *, run_id, run_ref, cursor_ref
                                                       max_bytes=limit, label=f"{label} recipient XLSX")
                 if recipient["name"] != output_name or item["advertised_document"].get("mime_type") != XLSX_MIME:
                     screen = {"status": "FAIL", "reason": "EXPECTED_EXACT_XLSX_NAME_AND_MIME"}
+                elif allow_separate_text:
+                    screen = assess_content(upload, raw, recipient, text_bodies)
                 else:
                     screen = assess_content(upload, raw, recipient)
     pinned_record(observer, run_ref, expected_path=run_path)
