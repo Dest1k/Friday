@@ -1,0 +1,512 @@
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -244,7 +244,7 @@
+ SPREADSHEET_CONVERSION_GUIDANCE = 'XLSX/ODS cross-family conversion: spreadsheet_convert with exactly {source} into a NEW opposite .ods or .xlsx output uses isolated Office. Only this XLSX<->ODS pair is added; other existing native family conversions keep their limits. The output must retain sheet order, exact text/IDs, booleans, bounded decimals, dates and supported formula references, with independent formula/cache verification. Plain scalar cells and bounded SUM/product formulas only; custom styles, names, tables, charts, merged/hidden cells or sheets, protected/macro/external content refuse. Source is unchanged. No general filter or visual/layout fidelity is promised; unsupported output or unavailable toolchain produces no file. '
+ DELIMITED_TABLE_GUIDANCE = 'Delimited native tables: delimited_convert creates a NEW CSV/TSV/XLSX/ODS, exactly one side delimited and the other native. Import JSON requires source,encoding,delimiter,type_policy,sheet; type_policy="text" keeps every field literal, or {columns:["text","decimal","boolean","date"],header_rows:0} gives explicit column types and header_rows 0 or 1. Export JSON requires source,encoding,delimiter,type_policy,line_ending; sheet is mandatory for multi-sheet files, range is optional A1:D5. Export type_policy="text" permits only text/blanks; "canonical" exports exact supported numeric/boolean/ISO-date values, without display formatting or formula caches. Encoding is explicit utf-8/utf-8-sig/utf-16/utf-16-le/utf-16-be/cp1251; generic utf-16 input requires a BOM. Delimiter is comma/semicolon/tab/vertical bar; TSV requires tab; line_ending is LF or CRLF. No detection or locale inference. Quoted field delimiters, quotes and embedded line breaks are preserved. All formulas, unsafe/active/macro structures and ambiguous native extents refuse. OOXML escape-looking text is unsupported for XLSX. Without range native data must be an explicit A1 rectangle matching declarations. Sources remain unchanged; no overwrite. '
+ WORD_MACRO_EDIT_GUIDANCE = 'Word macro text: word_macro_edit accepts exactly {source,source_sha256,old_text,new_text} into a NEW same-format .docm/.dotm. Obtain source_sha256 from current read_file. One unique literal in a supported main-body/table paragraph changes; equal-format split runs work. All other XML/member bytes, macro-enabled main declaration and any opaque VBA project remain intact. Signatures, protection, fields, revisions, hidden text, mixed-format matches, external/active/OLE/unknown parts refuse. VBA is never evaluated or executed and its safety remains unproven. This operation does not create, instantiate, convert or strip macro templates/documents. '
+-DOCUMENT_PDF_GUIDANCE = 'Native PDF export: odt_pdf, xlsx_pdf and ods_pdf export the matching original to a NEW .pdf with exactly {source,source_sha256}. Read the source first and supply its current lowercase SHA-256. The original remains unchanged; no overwrite. The isolated Office export must pass an independent source/text/value and visible-glyph check before publication. ODT supports bounded plain text and rectangular tables in single-column reading order. XLSX/ODS supports bounded scalar cells and independently recomputed supported formulas, one visible nonempty sheet per page in source order. Unsupported, hidden, protected, signed, macro, external or active source content, stale formula caches, unsupported fonts/paint, missing/extra/cropped text and ambiguous layout refuse without publishing. Only the bounded visible text profile is supported; general Office producer compatibility and visual fidelity are not established. The PDF is a derivative: editable structure and formulas stay in the original. Existing docx_pdf and presentation routes keep their own contracts. '
++DOCUMENT_PDF_GUIDANCE = 'Native PDF export: odt_pdf, xlsx_pdf and ods_pdf export the matching original to a NEW .pdf with exactly {source,source_sha256}. Read the source first and supply its current lowercase SHA-256. The original remains unchanged; no overwrite. The isolated PDF export must pass an independent source/text/value and visible-glyph check before publication. Minimal unstyled ODT prose can use a fixed A4 derivative with verified paragraph positions. The Writer export supports bounded plain text and rectangular tables in single-column reading order. XLSX/ODS supports bounded scalar cells and independently recomputed supported formulas, one visible nonempty sheet per page in source order. Unsupported, hidden, protected, signed, macro, external or active source content, stale formula caches, unsupported fonts/paint, missing/extra/cropped text and ambiguous layout refuse without publishing. Only the bounded visible text profile is supported; general Office producer compatibility and visual fidelity are not established. The PDF is a derivative: editable structure and formulas stay in the original. Existing docx_pdf and presentation routes keep their own contracts. '
+ LEGACY_WORD_GUIDANCE = ' Legacy word files: read_file supports bounded flat WordPerfect 6/6.1 WPD main-story tokens and Windows Works 4 WPS MN0 ASCII text. Results stay PARTIAL and include source_sha256; continue next_offset/next_char_offset. WPD deleted and hidden regions and all prefix metadata are excluded; a declared-length discrepancy does not prove the original is complete. Other versions, character sets, compound WPD, fields/objects and unsupported structures refuse. These are read-only stored-text views: no rendering, conversion, creation or editing; never overwrite originals with extracted text. '
+ LEGACY_OPENOFFICE_GUIDANCE = ' Legacy OpenOffice.org 1.0 SXW/STW, SXC/STC and SXI/STI: read_file returns bounded stored text, tables/cells and slide text with explicit PARTIAL coverage. The legacy namespaces, version 1.0, document class and exact document/template MIME must agree; renaming modern ODF or a document as a template does not convert it. Formula strings and stored values are observations only; styles, layout, field evaluation and visual fidelity are unverified. Known legacy external DTD declarations are inert; entities, encryption, recognized scripts/forms and embedded objects refuse. Unknown structures are omitted, and links are never fetched. Creation: write_file format=legacy_openoffice_create into a NEW .sxw/.stw/.sxc/.stc/.sxi/.sti path. Text uses {"blocks":[{"type":"paragraph","text":"Hello"},{"type":"heading","level":1,"text":"Title"},{"type":"table","rows":[["A","B"]]}]}; sheets use {"sheets":[{"name":"Data","rows":[["literal",12,true,null]]}]}; slides use {"slides":[{"title":"Title","paragraphs":["Body"]}]}. Exact schemas, at most100000 UTF-8 JSON bytes; single-line strings, no tabs, leading/trailing/repeated ASCII spaces. Strings including = are literals, no formulas; each document/template has its own genuine MIME. For a preserving copy use format=legacy_openoffice_edit, NEW same extension, JSON {"source":"source.sxw","source_sha256":"<read_file hash>","old_text":"Complete old paragraph","new_text":"Complete replacement"}. Changes exactly one complete plain paragraph or heading leaf in content.xml; unselected XML bytes, other member payloads and descriptive ZIP metadata are preserved. No substring/split-run, typed/formula/repeated/spanned cell, unresolved revision, unknown-member or whitespace-sensitive edit. Original unchanged; raw overwrite, conversion, template instantiation and render/Office compatibility remain unsupported. '
+ ACCESS_READ_GUIDANCE = ' Access MDB/ACCDB: read_file decodes bounded local scalar user tables in unencrypted Jet4 MDB (Access2000/2002/2003) or ACE2007 ACCDB. System flags/MSys namespace excluded; stored values are untrusted. At most1000000 bytes,16 user tables,64 columns/table,1024 rows/table,8192 cells total,4096 characters/text value. Supported scalar booleans, byte/int16/int32, finite floats, exact decimal currency, raw Access date/time serials (epoch1899-12-30), binary hex, text and GUID. No SQL, query evaluation, external connections, DB execution or macros. Passwords/encryption, Jet3/newer ACE, memo/OLE/decimal/complex/calculated fields, schema evolution, linked/hidden user tables, overflow rows and multi-page table definitions refuse the whole input. Read all returned pages; partial pagination does not cover the whole table. All MDB/ACCDB creation, editing, raw writes and conversion remain unsupported. '
+diff --git a/hermes_cli/friday_workspace_document_pdf.py b/hermes_cli/friday_workspace_document_pdf.py
+--- a/hermes_cli/friday_workspace_document_pdf.py
++++ b/hermes_cli/friday_workspace_document_pdf.py
+@@ -1,4 +1,4 @@
+-"""Three source-bound native Office-to-PDF commands; DOCX export is unchanged.
++"""Three source-bound document-to-PDF commands; DOCX export is unchanged.
+ 
+ Uses the established document toolchain, authenticated native process custody,
+ revision checks and create-only publisher. No user-supplied command or filter.
+@@ -230,17 +230,51 @@
+     return output, details
+ 
+ 
++def _render_plain_prose(cap, plan, spec, checkpoint):
++    from hermes_cli.friday_workspace_pdf import ExportRefused
++    from tools import scoped_document_pdf, scoped_pdf_report
++
++    _parser_available()
++    try:
++        output, report, info, bbox, structure, geometry = scoped_pdf_report.process_plain_prose(
++            cap, spec, Path(__file__).read_bytes())
++    except scoped_pdf_report.PDFReportError as error:
++        cause = str(error)
++        if cause == 'pdf_cleanup_unconfirmed':
++            cause = 'renderer_cleanup_unconfirmed'
++        elif cause == 'pdf_text_does_not_fit':
++            cause = 'pdf_odt_prose_layout_unsupported'
++        raise ExportRefused(cause) from None
++    details = scoped_document_pdf.verify(plan, info, bbox, structure, checkpoint=checkpoint,
++                                         plain_prose=geometry)
++    details.update(
++        render_method=report['profile'], layout_sha256=report['layout_sha256'],
++        source_sha256=plan['source_sha256'], runtime_qualified=False,
++        paragraph_layout_verified=True,
++        layout_limits=('The derivative renders plain paragraphs one per line on one A4 page, '
++                       'with spacing for blank paragraphs and fixed DejaVu Sans typography. '
++                       'Editable structure remains in the source. General ODT visual fidelity '
++                       'is outside this profile.'),
++    )
++    return output, details
++
++
+ def render(cap, data, operation):
+     from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
+     from hermes_cli.friday_workspace_revision import check
+-    from tools.scoped_document_pdf import preflight, verify
++    from tools.scoped_document_pdf import plain_prose_paragraphs, preflight, verify
+     if operation not in OPERATIONS:
+         raise ExportRefused('pdf_operation_unsupported')
+     check(cap)
+     checkpoint = lambda: check(cap)
+     plan = preflight(data, OPERATIONS[operation][0], checkpoint=checkpoint)
+     staged = None
+-    if operation == 'xlsx_pdf':
++    if operation == 'odt_pdf':
++        from tools.scoped_pdf_report import plain_prose_spec
++        prose = plain_prose_spec(plain_prose_paragraphs(data, plan, checkpoint=checkpoint))
++        if prose is not None:
++            return _render_plain_prose(cap, plan, prose, checkpoint)
++    elif operation == 'xlsx_pdf':
+         from hermes_cli.friday_workspace_calc_print import ProjectionUnsupported, project, typed_report_rows
+         sheets = typed_report_rows(data)
+         if sheets is not None:
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2059,7 +2059,7 @@
+ 
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"].append("word_macro_edit")
+ 
+-_DOCUMENT_PDF_GUIDANCE = 'Native PDF export: odt_pdf, xlsx_pdf and ods_pdf export the matching original to a NEW .pdf with exactly {source,source_sha256}. Read the source first and supply its current lowercase SHA-256. The original remains unchanged; no overwrite. The isolated Office export must pass an independent source/text/value and visible-glyph check before publication. ODT supports bounded plain text and rectangular tables in single-column reading order. XLSX/ODS supports bounded scalar cells and independently recomputed supported formulas, one visible nonempty sheet per page in source order. Unsupported, hidden, protected, signed, macro, external or active source content, stale formula caches, unsupported fonts/paint, missing/extra/cropped text and ambiguous layout refuse without publishing. Only the bounded visible text profile is supported; general Office producer compatibility and visual fidelity are not established. The PDF is a derivative: editable structure and formulas stay in the original. Existing docx_pdf and presentation routes keep their own contracts. '
++_DOCUMENT_PDF_GUIDANCE = 'Native PDF export: odt_pdf, xlsx_pdf and ods_pdf export the matching original to a NEW .pdf with exactly {source,source_sha256}. Read the source first and supply its current lowercase SHA-256. The original remains unchanged; no overwrite. The isolated PDF export must pass an independent source/text/value and visible-glyph check before publication. Minimal unstyled ODT prose can use a fixed A4 derivative with verified paragraph positions. The Writer export supports bounded plain text and rectangular tables in single-column reading order. XLSX/ODS supports bounded scalar cells and independently recomputed supported formulas, one visible nonempty sheet per page in source order. Unsupported, hidden, protected, signed, macro, external or active source content, stale formula caches, unsupported fonts/paint, missing/extra/cropped text and ambiguous layout refuse without publishing. Only the bounded visible text profile is supported; general Office producer compatibility and visual fidelity are not established. The PDF is a derivative: editable structure and formulas stay in the original. Existing docx_pdf and presentation routes keep their own contracts. '
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["enum"] += ["odt_pdf", "xlsx_pdf", "ods_pdf"]
+ WRITE_FILE_SCHEMA["description"] += _DOCUMENT_PDF_GUIDANCE
+ WRITE_FILE_SCHEMA["parameters"]["properties"]["format"]["description"] += _DOCUMENT_PDF_GUIDANCE
+diff --git a/tools/scoped_document_pdf.py b/tools/scoped_document_pdf.py
+--- a/tools/scoped_document_pdf.py
++++ b/tools/scoped_document_pdf.py
+@@ -1,7 +1,7 @@
+-"""Source and PDF evidence oracle for three fixed native Office exports.
+-
+-No document is reconstructed here. Inputs pass the existing strict conversion
+-inventories and the genuine package is rendered by the family-local adapter.
++"""Source and PDF evidence oracle for three fixed document exports.
++
++Inputs pass the existing strict conversion inventories. Adapters render the
++source package or a separately admitted source-bound projection.
+ The PDF contract requires a separately attested restricted visible text profile,
+ then searchable ordered text, or one complete scalar sheet per page. Typography, exact whitespace, pagination and metadata are not retained.
+ """
+@@ -10,10 +10,12 @@
+ from datetime import date
+ from decimal import Decimal, InvalidOperation
+ import hashlib
++from io import BytesIO
+ import json
+ import math
+ import re
+ from xml.etree import ElementTree as ET
++from zipfile import BadZipFile, ZIP_STORED, ZipFile
+ 
+ MAX_PAGES = 64
+ MAX_EVIDENCE = 4_000_000
+@@ -23,6 +25,7 @@
+ PROFILE = 'native_office_visible_pdf_v3'
+ VISIBLE_PROFILE = 'base14_black_text_v1'
+ TRUSTED_PROFILE = 'trusted_embedded_glyphs_v1'
++PLAIN_PROSE_INPUT_LIMIT = 65_536
+ LAYOUT_LIMITS = (
+     'ODT: single-column visual reading order, ordered text including table cells; '
+     'whitespace and paragraph/table boundaries are not preserved as PDF semantics. '
+@@ -143,6 +146,75 @@
+     plan['source_sha256'] = hashlib.sha256(data).hexdigest()
+     _tick(checkpoint)
+     return plan
++
++
++def plain_prose_paragraphs(data, plan, *, checkpoint=None):
++    """Project a minimal unstyled ODT after strict preflight of these same bytes."""
++    from tools.scoped_odt import M, MIMES, O, T, q
++    from tools.scoped_presentation import PresentationError, xml_root
++    from tools.scoped_zip import read_zip_member
++
++    if len(data) > PLAIN_PROSE_INPUT_LIMIT:
++        return None
++    _tick(checkpoint)
++    try:
++        with ZipFile(BytesIO(data)) as package:
++            files = package.infolist()
++            if (len(files) != 3 or {member.filename for member in files} !=
++                    {'mimetype', 'content.xml', 'META-INF/manifest.xml'} or
++                    any(member.file_size > PLAIN_PROSE_INPUT_LIMIT for member in files)):
++                return None
++            mime = package.getinfo('mimetype')
++            if mime.header_offset != 0 or mime.compress_type != ZIP_STORED:
++                return None
++            content = xml_root(read_zip_member(package, data, package.getinfo('content.xml'),
++                                               PLAIN_PROSE_INPUT_LIMIT))
++            manifest = xml_root(read_zip_member(package, data, package.getinfo('META-INF/manifest.xml'),
++                                                PLAIN_PROSE_INPUT_LIMIT))
++    except (BadZipFile, ET.ParseError, PresentationError, NotImplementedError):
++        fail('pdf_odt_prose_source_unproven')
++
++    def is_xml_space(value):
++        return not (value or '').strip(' \t\r\n')
++
++    version = content.get(q(O, 'version'))
++    if (version not in ('1.2', '1.3') or content.tag != q(O, 'document-content') or
++            content.attrib != {q(O, 'version'): version} or len(content) != 1 or
++            manifest.tag != q(M, 'manifest') or manifest.attrib != {q(M, 'version'): version} or
++            len(manifest) != 2 or not is_xml_space(manifest.text)):
++        return None
++    manifest_paths = {'/': MIMES['odt'], 'content.xml': 'text/xml'}
++    for entry in manifest:
++        path = entry.get(q(M, 'full-path'))
++        if path not in manifest_paths:
++            return None
++        attrs = {q(M, 'full-path'): path, q(M, 'media-type'): manifest_paths.pop(path)}
++        if path == '/' and q(M, 'version') in entry.attrib:
++            attrs[q(M, 'version')] = version
++        if (entry.tag != q(M, 'file-entry') or entry.attrib != attrs or len(entry) or
++                not is_xml_space(entry.text) or not is_xml_space(entry.tail)):
++            return None
++    body, = content
++    if body.tag != q(O, 'body') or body.attrib or len(body) != 1:
++        return None
++    text, = body
++    if text.tag != q(O, 'text') or text.attrib or any(
++            not is_xml_space(node.text) or not is_xml_space(node.tail)
++            for node in (content, body, text)):
++        return None
++    paragraphs = []
++    for node in text:
++        _tick(checkpoint)
++        if node.tag != q(T, 'p') or node.attrib or len(node) or not is_xml_space(node.tail):
++            return None
++        paragraphs.append(node.text or '')
++    blocks = [{'type': 'paragraph', 'text': text} for text in paragraphs]
++    semantic = json.dumps(blocks, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
++    if (plan['source'] != 'odt' or plan['source_sha256'] != hashlib.sha256(data).hexdigest() or
++            plan['source_semantic_sha256'] != hashlib.sha256(semantic).hexdigest()):
++        fail('pdf_odt_prose_source_unproven')
++    _tick(checkpoint)
++    return paragraphs
+ 
+ 
+ def pdf_info(data):
+@@ -402,7 +474,23 @@
+     return False
+ 
+ 
+-def verify(plan, info, bbox, structure, *, checkpoint=None):
++def _verify_plain_prose(pages, geometry, expected, checkpoint):
++    size, words = expected
++    # Poppler reports text metrics to six decimal places. Allow for minor
++    # parser/serializer rounding while requiring absolute A4 positions.
++    tolerance = .05
++    if (len(pages) != 1 or len(pages[0]) != len(words) or
++            any(abs(a - b) > tolerance for a, b in zip(geometry[0], size, strict=True))):
++        fail('pdf_odt_prose_layout_changed')
++    for actual, (text, line, bounds) in zip(pages[0], words, strict=True):
++        _tick(checkpoint)
++        if (actual['text'] != text or actual['line'] != line or
++                any(abs(a - b) > tolerance
++                    for a, b in zip(actual['bounds'], bounds, strict=True))):
++            fail('pdf_odt_prose_layout_changed')
++
++
++def verify(plan, info, bbox, structure, *, checkpoint=None, plain_prose=None):
+     """Check independent native parser evidence before create-only publication."""
+     facts = pdf_info(info)
+     pages, geometry = bbox_pages(bbox, checkpoint=checkpoint, with_geometry=True)
+@@ -417,6 +505,10 @@
+         if actual != plan['words']:
+             fail('pdf_text_changed_missing_or_extra')
+         matched = dict(text_words=len(actual))
++        if plain_prose is not None:
++            if structure['visibility']['profile'] != TRUSTED_PROFILE:
++                fail('pdf_visibility_unproven')
++            _verify_plain_prose(pages, geometry, plain_prose, checkpoint)
+     else:
+         if len(pages) != len(plan['sheets']):
+             fail('pdf_sheet_page_count_changed')
+diff --git a/tools/scoped_pdf_report.py b/tools/scoped_pdf_report.py
+--- a/tools/scoped_pdf_report.py
++++ b/tools/scoped_pdf_report.py
+@@ -43,12 +43,13 @@
+ ENGINE = 'native_pdf_report_v1'
+ PROFILE = 'A4_Latin_Cyrillic_DejaVuSans'
+ WORKBOOK_PROFILE = 'A4_landscape_XLSX_scalar_report'
++PLAIN_PROSE_PROFILE = 'A4_ODT_plain_prose'
+ WORKBOOK_PAGE_SIZE = (841.889764, 595.275591)
+ WORKBOOK_SHAPES = ((5, 4), (8, 7))
+ WORKBOOK_FONT_SIZE = 9.5
+ WORKBOOK_SPACING = 0.45
+ WORKBOOK_ROW_HEIGHT = 31.0
+-WORKBOOK_EVIDENCE_LIMITS = {'pdfinfo': 8192, 'bbox.xhtml': 4_000_000, 'structure.json': MAX_BYTES}
++VERIFIED_EVIDENCE_LIMITS = {'pdfinfo': 8192, 'bbox.xhtml': 4_000_000, 'structure.json': MAX_BYTES}
+ PAGE_WIDTH, PAGE_HEIGHT = 595.275591, 841.889764
+ MARGIN = 42.0
+ BODY_WIDTH = PAGE_WIDTH - 2 * MARGIN
+@@ -144,14 +145,30 @@
+         raise PDFReportError('pdf_report_request_invalid') from None
+ 
+ 
+-def _workbook_request(content):
+-    # This request is constructed from an admitted workbook inside xlsx_pdf.
+-    # It is never accepted by the ordinary PDF report tool.
++def plain_prose_spec(paragraphs):
++    """Build the private ODT request for a finite, unambiguous text repertoire."""
++    if (type(paragraphs) is not list or not 1 <= len(paragraphs) <= MAX_BLOCKS or
++            any(not _text(line, empty=True) or line != line.strip(' ') or '  ' in line
++                for line in paragraphs) or
++            not any(paragraphs) or sum(map(len, paragraphs)) > MAX_CHARACTERS):
++        return None
++    return {'odt_paragraphs': paragraphs}
++
++
++def _verified_request(content):
++    # These private forms are built from preflighted source bytes inside the
++    # document export route and are unavailable to the ordinary report tool.
+     try:
+         if type(content) is not str or not 0 < len(content.encode('utf-8')) <= MAX_REQUEST:
+             raise ValueError()
+         spec = json.loads(content, object_pairs_hook=_unique_fields)
+-        if type(spec) is not dict or set(spec) != {'workbook_sheets'}:
++        if type(spec) is not dict:
++            raise ValueError()
++        if set(spec) == {'odt_paragraphs'}:
++            if plain_prose_spec(spec['odt_paragraphs']) is None:
++                raise ValueError()
++            return spec
++        if set(spec) != {'workbook_sheets'}:
+             raise ValueError()
+         sheets = spec['workbook_sheets']
+         if type(sheets) is not list or len(sheets) != len(WORKBOOK_SHAPES):
+@@ -168,7 +185,7 @@
+         raise PDFReportError('pdf_report_request_invalid') from None
+ 
+ 
+-def _argv(work, count, *, workbook=False):
++def _argv(work, count, *, verify_output=False):
+     if count != 0:
+         raise PDFReportError('pdf_engine_failed')
+     argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--as-pid-1',
+@@ -182,7 +199,7 @@
+             argv += ['--symlink', str(target), '/' + name]
+     argv += ['--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--bind', str(work), '/work']
+     names = ('runner.py', 'font.py', 'request.json')
+-    if workbook:
++    if verify_output:
+         names += ('verify.py',)
+     for name in names:
+         argv += ['--ro-bind', str(work / name), '/work/' + name]
+@@ -191,7 +208,7 @@
+     return argv
+ 
+ 
+-def _run(cap, work, count, *, workbook=False):
++def _run(cap, work, count, *, verify_output=False):
+     # Preserve the existing PDF form/ocr authority, cancellation and stop custody.
+     from agent.web_call_context import _current, same_web_authority
+     from hermes_cli.friday_workspace_revision import check
+@@ -213,7 +230,7 @@
+             call.session = call.registry = custody
+             call.turn.calls.add(custody)
+             bound = True
+-            argv = _argv(work, count, workbook=True) if workbook else _argv(work, count)
++            argv = _argv(work, count, verify_output=verify_output)
+             custody.process = subprocess.Popen(argv, cwd=work,
+                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                 close_fds=True, start_new_session=True,
+@@ -260,17 +277,27 @@
+ 
+ def process_workbook(cap, sheets, verifier):
+     """Private source-bound PDF path for the admitted typed workbook profile."""
+-    spec = _workbook_request(json.dumps({'workbook_sheets': sheets}, ensure_ascii=False,
+-                                        separators=(',', ':')))
+-    return _process(cap, spec, verifier=verifier)
+-
+-
+-def _process(cap, spec, *, verifier=None):
++    spec = _verified_request(json.dumps({'workbook_sheets': sheets}, ensure_ascii=False,
++                                         separators=(',', ':')))
++    return _process(cap, spec, verifier=verifier, profile=WORKBOOK_PROFILE)
++
++
++def process_plain_prose(cap, spec, verifier):
++    """Render the admitted prose with independent native output evidence."""
++    pages = _plain_prose_layout(spec)
++    output, result, info, bbox, structure = _process(
++        cap, spec, verifier=verifier, profile=PLAIN_PROSE_PROFILE)
++    if result['layout_sha256'] != _layout_sha256(pages):
++        raise PDFReportError('pdf_verification_failed')
++    return output, result, info, bbox, structure, _plain_prose_geometry(pages[0])
++
++
++def _process(cap, spec, *, verifier=None, profile=PROFILE):
+     from hermes_cli.friday_workspace_revision import check
+     from tools.scoped_pdf_ocr import _private_read, LocalOCRFailure
+-    workbook = verifier is not None
+-    # The pin reader uses this fixed root-owned library only as the user-namespace
+-    # owner sentinel; report generation does not load or execute libqpdf.
++    verified = verifier is not None
++    # The font pin reader uses this fixed root-owned library as its owner
++    # sentinel. Verified children also load libqpdf to check their output.
+     try:
+         info = Path(_font_module.LIBRARY).resolve(strict=True).stat()
+         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+@@ -284,29 +311,28 @@
+         inputs = {'runner.py': Path(__file__).read_bytes(),
+                   'font.py': Path(_font_module.__file__).read_bytes(),
+                   'request.json': json.dumps(spec, ensure_ascii=False, separators=(',', ':')).encode()}
+-        if workbook:
++        if verified:
+             inputs['verify.py'] = verifier
+         for name, value in inputs.items():
+             (work / name).write_bytes(value)
+             (work / name).chmod(0o600)
+-        if workbook:
+-            _run(cap, work, 0, workbook=True)
+-        else:
+-            _run(cap, work, 0)
++        _run(cap, work, 0, verify_output=verified)
+         result = json.loads(_private_read(work / 'result.json', 4096))
+         allowed = {'pdf_report_request_invalid', 'pdf_text_does_not_fit', 'pdf_page_limit',
+                    'pdf_output_limit', 'pdf_font_unavailable', 'pdf_glyph_unavailable', 'pdf_link_limit'}
+         result_fields = {'pages', 'engine', 'profile', 'layout_sha256', 'links', 'output_sha256'}
+-        if workbook:
++        if verified:
+             allowed.add('pdf_verification_failed')
+             result_fields.add('evidence_sha256')
++        if profile == PLAIN_PROSE_PROFILE:
++            allowed.add('pdf_odt_prose_layout_unsupported')
+         if type(result) is dict and set(result) == {'error'}:
+             raise PDFReportError(result['error'] if type(result['error']) is str
+                                  and result['error'] in allowed else 'pdf_engine_failed')
+         if (type(result) is not dict
+                 or set(result) != result_fields
+                 or result['engine'] != ENGINE
+-                or result['profile'] != (WORKBOOK_PROFILE if workbook else PROFILE)
++                or result['profile'] != profile
+                 or type(result['pages']) is not int or not 1 <= result['pages'] <= MAX_PAGES
+                 or type(result['links']) is not int or not 0 <= result['links'] <= MAX_LINKS
+                 or any(type(result[k]) is not str or not re.fullmatch('[0-9a-f]{64}', result[k])
+@@ -317,10 +343,11 @@
+                 or hashlib.sha256(output).hexdigest() != result.pop('output_sha256')):
+             raise PDFReportError('pdf_verification_failed')
+         check(cap)
+-        if workbook:
+-            if result['pages'] != len(WORKBOOK_SHAPES) or result['links'] != 0:
++        if verified:
++            expected_pages = 1 if profile == PLAIN_PROSE_PROFILE else len(WORKBOOK_SHAPES)
++            if result['pages'] != expected_pages or result['links'] != 0:
+                 raise PDFReportError('pdf_verification_failed')
+-            evidence = {name: _private_read(work / name, limit) for name, limit in WORKBOOK_EVIDENCE_LIMITS.items()}
++            evidence = {name: _private_read(work / name, limit) for name, limit in VERIFIED_EVIDENCE_LIMITS.items()}
+             if result.pop('evidence_sha256') != {name: hashlib.sha256(raw).hexdigest()
+                                                    for name, raw in evidence.items()}:
+                 raise PDFReportError('pdf_verification_failed')
+@@ -480,6 +507,38 @@
+     return pages
+ 
+ 
++def _plain_prose_layout(spec):
++    paragraphs = spec['odt_paragraphs']
++    pages = _layout({'page_numbers': False,
++                     'blocks': [{'type': 'paragraph', 'text': line} for line in paragraphs]})
++    if len(pages) != 1 or [op['text'] for op in pages[0]] != paragraphs:
++        raise PDFReportError('pdf_odt_prose_layout_unsupported')
++    return pages
++
++
++def _plain_prose_geometry(page):
++    """Compute Poppler word box expectations from the pinned PDF font metrics."""
++    font = _font()['template']['/DescendantFonts'][0]['/FontDescriptor']
++    expected = []
++    for line, op in enumerate(op for op in page if op['text']):
++        size = op['size']
++        x = op['x']
++        y = PAGE_HEIGHT - op['baseline']
++        top = y - font['/Ascent'] * size / 1000
++        bottom = y - font['/Descent'] * size / 1000
++        space = _measure(' ', size)[-1]
++        for word in op['text'].split(' '):
++            right = x + _measure(word, size)[-1]
++            expected.append((word, line, (x, top, right, bottom)))
++            x = right + space
++    return (PAGE_WIDTH, PAGE_HEIGHT), expected
++
++
++def _layout_sha256(pages):
++    return hashlib.sha256(json.dumps(pages, ensure_ascii=False, sort_keys=True,
++                                     separators=(',', ':')).encode()).hexdigest()
++
++
+ def _workbook_layout(sheets):
+     """Measured, unwrapped text. There is one page per source sheet."""
+     width, height = WORKBOOK_PAGE_SIZE
+@@ -591,7 +650,7 @@
+     return bytes(output)
+ 
+ 
+-def _workbook_evidence(output):
++def _verified_evidence(output):
+     import importlib.util
+     spec = importlib.util.spec_from_file_location('scoped_document_pdf_verifier', '/work/verify.py')
+     verifier = importlib.util.module_from_spec(spec)
+@@ -607,7 +666,7 @@
+                                env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, check=True, timeout=3)
+         Path('/work/structure.json').write_text(json.dumps(structure, separators=(',', ':')), encoding='ascii')
+         evidence = {}
+-        for name, limit in WORKBOOK_EVIDENCE_LIMITS.items():
++        for name, limit in VERIFIED_EVIDENCE_LIMITS.items():
+             with open('/work/' + name, 'rb') as stream:
+                 raw = stream.read(limit + 1)
+             if not 0 < len(raw) <= limit:
+@@ -628,24 +687,32 @@
+         resource.setrlimit(kind, (limit, limit))
+     try:
+         content = Path('/work/request.json').read_text(encoding='utf-8')
+-        workbook = Path('/work/verify.py').is_file()
+-        if workbook:
+-            spec = _workbook_request(content)
+-            pages = _workbook_layout(spec['workbook_sheets'])
+-            output = _pdf(spec, pages, page_size=WORKBOOK_PAGE_SIZE)
++        verified = Path('/work/verify.py').is_file()
++        if verified:
++            spec = _verified_request(content)
++            if 'odt_paragraphs' in spec:
++                profile = PLAIN_PROSE_PROFILE
++                pages = _plain_prose_layout(spec)
++                # Empty drawing operators are unneeded. The plan and its hash
++                # retain the blank slots and their spacing.
++                output = _pdf(spec, [[op for op in pages[0] if op['text']]])
++            else:
++                profile = WORKBOOK_PROFILE
++                pages = _workbook_layout(spec['workbook_sheets'])
++                output = _pdf(spec, pages, page_size=WORKBOOK_PAGE_SIZE)
+         else:
++            profile = PROFILE
+             spec = request(content)
+             pages = _layout(spec)
+             output = _pdf(spec, pages)
+-        result = dict(pages=len(pages), engine=ENGINE, profile=WORKBOOK_PROFILE if workbook else PROFILE,
+-            layout_sha256=hashlib.sha256(json.dumps(pages, ensure_ascii=False,
+-                sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
++        result = dict(pages=len(pages), engine=ENGINE, profile=profile,
++            layout_sha256=_layout_sha256(pages),
+             links=sum('url' in op for page in pages for op in page),
+             output_sha256=hashlib.sha256(output).hexdigest())
+         output_path = Path('/work/output.pdf')
+         output_path.write_bytes(output)
+-        if workbook:
+-            result['evidence_sha256'] = _workbook_evidence(output_path)
++        if verified:
++            result['evidence_sha256'] = _verified_evidence(output_path)
+     except PDFReportError as error:
+         result = {'error': str(error)}
+     Path('/work/result.json').write_text(json.dumps(result, separators=(',', ':')), encoding='ascii')
