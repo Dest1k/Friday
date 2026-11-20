@@ -10,6 +10,8 @@ Use --b00-wave-root to join historical B00 scenarios from a local wave archive.
 The joined archive also reports recorded observation and deadline ranges for
 one scenario per phase on the shared serial slot.
 With --b00-fixture, match explicit copies to the fixture pins.
+Use --prepared-result, --prepared-plan and --prepared-r4 to verify selected
+passive plans from an already pinned private preparation result for one case.
 The original requests and oracles stay in their source files. The projection
 carries no current admission or dispatch state.
 """
@@ -30,6 +32,7 @@ from zipfile import BadZipFile, ZipFile
 CHECKPOINT = Path(__file__).resolve().parent
 CASE_ANCHORS = 'evidence/astra-20261112/remaining-core-original-criteria-review.json'
 PACKAGE_ANCHORS = 'evidence/sol-20261110/conditional-archive-links-root-review.json'
+PREPARED_R4_SHA256 = '44577894f0669d305d2cd713048928c7ccbce265a40f1f6d09080b1fb62228bd'
 B00_PLANNING_KEY = 'b219_finite_executable_expansion'
 WORKER_CASES = {
     'W-13': 'DSH', 'R-11': 'DSH', 'W-14': 'A0', 'R-12': 'A0', 'R-13': 'DSH/A0 handoff',
@@ -424,6 +427,134 @@ def project_b00_planning(case_ledger, catalog, b00, catalog_fixtures, fixture_pi
     return result
 
 
+def prepared_file(path, pin, limit, label):
+    """Hold exactly the bytes verified from one explicit protected input."""
+    path = Path(path).absolute()
+    require(re.fullmatch(r'[a-f0-9]{64}', pin['sha256']) is not None, f'invalid SHA-256 for {label}')
+    try:
+        require(path.resolve(strict=True) == path, f'canonical non-symlink path required for {label}')
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and before.st_nlink == 1
+                    and not stat.S_IMODE(before.st_mode) & 0o077 and 0 < before.st_size <= limit,
+                    f'bounded private regular file required for {label}')
+            raw = stream.read(limit + 1)
+            after = os.fstat(stream.fileno())
+        identities = {(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                      for info in (before, after, path.lstat())}
+        require(len(identities) == 1 and len(raw) == before.st_size and path.resolve(strict=True) == path,
+                f'{label} changed while reading')
+    except OSError as error:
+        raise ProjectionError(f'could not read {label} ({type(error).__name__})') from error
+    return verified_bytes(raw, pin, label), {'path': str(path), 'bytes': len(raw), 'sha256': pin['sha256']}
+
+
+def prepared_pointer(document, pointer):
+    require(pointer.startswith('/') and not re.search(r'~(?![01])', pointer), 'invalid preparation JSON pointer')
+    node = document
+    for part in pointer.split('/')[1:]:
+        token = part.replace('~1', '/').replace('~0', '~')
+        if type(node) is dict and token in node:
+            node = node[token]
+        elif type(node) is list and re.fullmatch(r'(0|[1-9][0-9]*)', token) and int(token) < len(node):
+            node = node[int(token)]
+        else:
+            raise ProjectionError(f'preparation pointer does not resolve: {pointer}')
+    return node
+
+
+def prepared_reference(record, pointer):
+    ref = prepared_pointer(record, pointer)
+    require(type(ref) is dict and {'path', 'bytes', 'sha256'} <= ref.keys()
+            and type(ref['path']) is str and Path(ref['path']).is_absolute()
+            and type(ref['bytes']) is int and ref['bytes'] > 0 and type(ref['sha256']) is str,
+            'exact sized artifact reference required in the preparation result')
+    return ref
+
+
+def prepared_plan_reference(record, pointer, result_ref):
+    value = prepared_pointer(record, pointer)
+    # Earlier passive results retain the plan basename and its adjacent raw hash.
+    if pointer.endswith('/scenario') and type(value) is str and Path(value).name == value:
+        checksum = prepared_pointer(record, pointer + '_file_sha256')
+        require(type(checksum) is str, 'raw scenario file SHA-256 required')
+        return {'path': str(Path(result_ref['path']).with_name(value)), 'sha256': checksum}
+    return prepared_reference(record, pointer)
+
+
+def prepared_case_reference(record, case_id):
+    for field in ('case', 'assignment', 'state'):
+        value = record.get(field)
+        if type(value) is not str:
+            continue
+        pattern = r'^([A-Z])-?([0-9]{2})(?:_|$)' if field == 'state' else r'(?<![A-Z0-9])([A-Z])-?([0-9]{2})(?![A-Z0-9])'
+        cases = {f'{prefix}-{number}' for prefix, number in re.findall(pattern, value)}
+        if cases:
+            require(cases == {case_id}, 'preparation result case differs from the selected catalogue case')
+            return '/' + field
+    raise ProjectionError('preparation result is missing a case identity')
+
+
+def prepared_label(label, seen):
+    require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', label) is not None and label not in seen,
+            'duplicate or invalid preparation label')
+    seen.add(label)
+
+
+def project_prepared(args, output, selected_cases):
+    if not (args.prepared_result or args.prepared_r4 or args.prepared_plan
+            or args.prepared_artifact or args.prepared_dependency):
+        return
+    require(len(selected_cases) == 1 and args.prepared_result and args.prepared_r4 and args.prepared_plan,
+            'prepared projection requires one --case, a pinned result, selected R4 and at least one plan')
+    result_path, result_sha = args.prepared_result
+    raw, result_ref = prepared_file(result_path, {'sha256': result_sha}, 2_000_000, 'preparation result')
+    record = json.loads(raw, object_pairs_hook=unique_object)
+    require(type(record) is dict, 'preparation result must be an object')
+    case_id = next(iter(selected_cases))
+    case_ref = prepared_case_reference(record, case_id)
+    observer_raw, observer_ref = prepared_file(args.prepared_r4, {'sha256': PREPARED_R4_SHA256}, 2_000_000, 'selected R4')
+    observer = {'__file__': observer_ref['path'], '__name__': '_pinned_core_prepared_r4'}
+    exec(compile(observer_raw, observer_ref['path'], 'exec'), observer)
+    plans, artifacts, labels = [], {}, set()
+    for label, pointer, scenario_pointer in args.prepared_plan:
+        prepared_label(label, labels)
+        raw_ref = prepared_plan_reference(record, pointer, result_ref)
+        plan_bytes, plan_ref = prepared_file(raw_ref['path'], raw_ref, 2_000_000, label)
+        expected = prepared_pointer(record, scenario_pointer)
+        require(type(expected) is str and re.fullmatch(r'[a-f0-9]{64}', expected), 'normalized scenario SHA-256 required')
+        try:
+            scenario = observer['validate_scenario'](json.loads(plan_bytes, object_pairs_hook=unique_object))
+            require(hashlib.sha256(observer['encoded'](scenario)).hexdigest() == expected,
+                    f'normalized scenario does not match selected preparation for {label}')
+            inputs = []
+            for step_index, step in enumerate(scenario['steps']):
+                upload = step.get('input')
+                if upload is not None:
+                    data = observer['read_document_input'](upload, lambda: None)
+                    inputs.append({'step': step_index, 'path': upload['path'], 'bytes': len(data), 'sha256': upload['sha256']})
+        except observer['Refused'] as error:
+            raise ProjectionError(f'selected passive plan or attachment refused by exact R4 for {label}') from error
+        plans.append({'label': label, 'plan': plan_ref, 'plan_ref': pointer, 'scenario_sha256': expected,
+                      'scenario_ref': scenario_pointer, 'steps': len(scenario['steps']), 'uploads': inputs})
+
+    for role, pointer in args.prepared_artifact:
+        prepared_label(role, labels)
+        ref = prepared_reference(record, pointer)
+        _, artifact = prepared_file(ref['path'], ref, 8_388_608, role)
+        artifacts[role] = {**artifact, 'result_ref': pointer}
+    for role, path, checksum in args.prepared_dependency:
+        prepared_label(role, labels)
+        _, artifact = prepared_file(path, {'sha256': checksum}, 8_388_608, role)
+        artifacts[role] = {**artifact, 'externally_pinned': True}
+    case = next(row for row in output['cases'] if row['id'] == case_id)
+    case['selected_preparation'] = {
+        'state': 'PASSIVE_PLANS_AND_REFERENCES_VERIFIED', 'result': result_ref, 'case_ref': case_ref, 'r4': observer_ref,
+        'plans': plans, 'artifacts': artifacts, 'order': 'explicit selection order',
+        'admission': 'UNBOUND', 'historical_effects_reconciled': False,
+    }
+
+
 def project_cases(catalog, ledger, b00, fixture_families, catalog_sha):
     definitions = indexed_rows(catalog['cases'], 'id', 170, 'original cases')
     retained = indexed_rows(ledger['rows'], 'case_id', 170, 'case ledger')
@@ -721,11 +852,23 @@ def main(argv=None):
                         help='join historical B00 scenario hashes from retained wave directories')
     parser.add_argument('--b00-fixture', type=Path, action='append', default=[],
                         help='match an explicit local copy against planning or historical attachment pins; repeatable')
+    parser.add_argument('--prepared-result', nargs=2, metavar=('FILE', 'SHA256'),
+                        help='read the exact already accepted private RESULT for one selected case')
+    parser.add_argument('--prepared-r4', type=Path, help='exact composed passive R4 used to validate selected plans')
+    parser.add_argument('--prepared-plan', nargs=3, action='append', default=[],
+                        metavar=('LABEL', 'PLAN_POINTER', 'SCENARIO_SHA_POINTER'),
+                        help='select a plan reference and its recorded normalized hash; repeat for exact phases')
+    parser.add_argument('--prepared-artifact', nargs=2, action='append', default=[], metavar=('ROLE', 'POINTER'),
+                        help='verify the exact artifact reference for a reply checker, prerequisite or other input')
+    parser.add_argument('--prepared-dependency', nargs=3, action='append', default=[], metavar=('ROLE', 'FILE', 'SHA256'),
+                        help='verify a dependency pinned by existing evidence outside the prepared result')
     args = parser.parse_args(argv)
     try:
-        output = build_projection(load_inputs(args), {case.upper() for case in args.case},
+        selected_cases = {case.upper() for case in args.case}
+        output = build_projection(load_inputs(args), selected_cases,
                                   {fmt.lower().removeprefix('.') for fmt in args.format}, args.all,
                                   args.b00_wave_root, args.b00_fixture)
+        project_prepared(args, output, selected_cases)
     except ProjectionError as error:
         print(f'CORE projection refused: {error}', file=sys.stderr)
         return 1
