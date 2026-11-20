@@ -1,0 +1,73 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -8,5 +8,7 @@
+ import json
+ from pathlib import Path
+-from hermes_cli.friday_schema_guidance import PNG_TABLE_READ_GUIDANCE, PNG_TABLE_WRITE_GUIDANCE
++from hermes_cli.friday_schema_guidance import (
++    PNG_TABLE_READ_GUIDANCE, PNG_TABLE_WRITE_GUIDANCE, XLSX_RECALCULATION_DELIVERY_GUIDANCE,
++)
+ from hermes_cli.friday_user_scope import current, check_agent, check_database, ScopeDenied
+ from hermes_cli.friday_workspace_pdf_report import GUIDANCE as PDF_REPORT_GUIDANCE
+@@ -595,13 +597,11 @@
+             'Use tool_describe for full schema before tool_call; pass each JSON object as the content string. '
+             'Export an existing own-workspace DOCX to a NEW PDF with format=docx_pdf and content JSON {"source":"report.docx"}. Uses a bounded local renderer, leaves the source untouched, refuses existing output names, unsafe packages and unavailable rendering. DOCX uses docx_pdf; presentations use pptx_pdf, odp_pptx, pptx_odp or the typed presentation_convert contract; no arbitrary conversion commands. ' 'For preserving edits to an existing DOCX, use format=docx_edit, path a NEW .docx name, and content JSON with source, old_text, new_text. Example: {"source":"draft.docx","old_text":"Old deadline","new_text":"New deadline"}. Replaces exactly one literal occurrence within one main-body/table paragraph, including equally formatted split runs; other package parts and XML structure remain unchanged. Missing/ambiguous matches, mixed formatting across runs, fields/anchor boundaries and unsupported packages refuse without creating a file. Use a longer unique old_text for context. No regex, paragraph-spanning edits, header/footer/note edits or overwrite. Never reconstruct an existing DOCX from extracted text to claim layout preservation. docx and docx_structured only CREATE new documents; they do not preserve an existing source. '
+-            'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. XLSX: format=spreadsheet_edit; content JSON keys source,sheet,cell,expected,value creates a NEW one-cell numeric copy; preserves other parts/formulas, no recalculation. '
+-            'Create text/DOCX, preserving DOCX edits, or an XLSX numeric-cell copy. '
+-            'For an XLSX edit, call with format=spreadsheet_edit, path set to a NEW .xlsx name, and content '
+-            'a JSON string with source (the existing own-workspace .xlsx path), sheet, cell, '
+-            'expected (current numeric value), value (new numeric value). Example content: '
+-            '{"source":"orders.xlsx","sheet":"Orders","cell":"C3","expected":6,"value":7}. '
+-            'Other archive parts and formulas are preserved; formula caches are not recalculated by format=spreadsheet_edit. '
++            'Word titles/headings/tables require format=docx_structured. Content is JSON {"blocks":[...]}; blocks: title(text), heading(text,level=1..9), paragraph(text), table(rows of string cells). Plain format=docx keeps Markdown/tabs literal. '
++            'For one numeric-cell XLSX edit, use format=spreadsheet_edit, a NEW .xlsx path and content JSON string '
++            '{"source":"orders.xlsx","sheet":"Orders","cell":"C3","expected":6,"value":7}. Use an own-workspace '
++            'source and current/new numbers. The edit preserves other parts and formulas without recalculating caches. '
+             'Merge two supported own-workspace XLSX sources with format=xlsx_merge, a NEW .xlsx path, and JSON {"base":"orders_base.xlsx","update":"orders_update.xlsx","sheet":"Orders","key":"order_id","revision":"revision"}. Text keys stay text. Equal rows deduplicate; strictly newer integer revision wins; equal-revision conflicts refuse. In result row_sources, source/source_row/revision identify only the selected row. Each observed item is [source, source_row, revision], with source base or update; complete lists retain every occurrence, including duplicates. provenance gives the observation field order, reason legend, complete flag, returned/total observation counts, omitted_rows for observation lists, and selected_rows_omitted for whole metadata records. Result metadata is bounded; missing records or observed lists mean unknown/omitted provenance, never absent input membership. For omitted details inspect both unchanged source rows. Never infer both-input membership from the selected source: say both only when that row has observed entries from base and update. selection_reason derives from numeric revision equality, not spelling. Only dense inline-text/numeric rows, row-local scalar formulas, identical styles and explicit SUM summaries are supported; tables/charts/names and other cross-row structures refuse. Base package parts are preserved; caches are cleared, not recomputed. Recalculate the merged copy separately if requested. '
+-            'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. After an XLSX edit, recalculate that returned copy when requested; do not repeat the edit. '
++            'To recalculate an existing own-workspace XLSX, use format=xlsx_recalculate, a NEW .xlsx path, and content JSON with exactly source, e.g. {"source":"orders-edited.xlsx"}. A bounded local LibreOffice engine recomputes supported numeric formulas and ordinary chart reference caches; source, formulas, tables, names and other package content are preserved. Unsupported formulas, packages and chart caches refuse without publishing. '
++            + XLSX_RECALCULATION_DELIVERY_GUIDANCE +
+             'For preserving existing workbook packages, never rebuild from extracted text; never substitute CSV, XML, or .xls for XLSX. '
+             'For normal UTF-8 text, omit format (up to 1000000 bytes). '
+--- a/hermes_cli/friday_schema_guidance.py
++++ b/hermes_cli/friday_schema_guidance.py
+@@ -13,5 +13,13 @@
+ # Include the request projection in ordinary persisted tool-pin identity. The
+ # donor build/version may stay unchanged when this product overlay is updated.
+-PROJECTION_REVISION = "friday.file-schema-guidance.v9"
++PROJECTION_REVISION = "friday.file-schema-guidance.v10"
++
++XLSX_RECALCULATION_DELIVERY_GUIDANCE = (
++    'Recalculate the edited XLSX copy when requested. '
++    'If asked to edit an XLSX and return it with recalculated formulas, attach only the recalculation result path '
++    'with success=true, verified=true, source_sha256 equal to the current edit result sha256, '
++    'formula_cache_recomputed=true, and recalculated_formula_cells equal to the expected positive count. '
++    'If a check fails, explain and withhold the attachment. For edit-only requests, return the edited copy. '
++)
+ 
+ PNG_TABLE_READ_GUIDANCE = (
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2390,4 +2390,6 @@
+     _word_template_target['description'] += _WORD_TEMPLATE_FILL_FINAL_GUIDANCE
+ 
++from hermes_cli.friday_schema_guidance import XLSX_RECALCULATION_DELIVERY_GUIDANCE
++
+ # Keep common XLSX editing and separate recalculation in the final schema too.
+ _XLSX_RECALCULATION_FINAL_GUIDANCE = (
+@@ -2396,12 +2398,13 @@
+     'expected is the current numeric value and value is the requested numeric replacement, '
+     'both JSON numbers for one existing literal numeric cell. A successful edit preserves '
+-    'formula caches (formula_cache_recomputed=false). When recalculation is required, do not '
++    'formula caches without recalculating them. When recalculation is required, do not '
+     'repeat the edit: use write_file with format=xlsx_recalculate, a different NEW .xlsx path, '
+     'and content as the serialized JSON string {"source":"edited.xlsx"}, naming the returned '
+-    'edited copy. Return the successful recalculated copy to the user. Before claiming '
++    'edited copy. For standalone or chart-only recalculation, return the successful copy. Before claiming '
+     'formula caches were recomputed, check formula_cache_recomputed=true and '
+     'recalculated_formula_cells against the expected count. Zero means no formula cells '
+     'were recalculated. Only the existing bounded supported formula/package '
+     'profile is admitted; unsupported or unsafe inputs refuse. No visual/layout fidelity is implied. '
++    + XLSX_RECALCULATION_DELIVERY_GUIDANCE
+ )
+ for _xlsx_recalculation_target in (WRITE_FILE_SCHEMA, WRITE_FILE_SCHEMA['parameters']['properties']['format'], WRITE_FILE_SCHEMA['parameters']['properties']['content']):
