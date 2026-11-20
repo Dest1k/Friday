@@ -49,7 +49,7 @@ class Once:
         source = self.actor.new(directory / f'observer-{role}.py', raw)
         return self.actor.load_raw(raw, source['path'], f'_R4_{role}'), source
 
-    def execute(self, launch):
+    def execute(self, launch, *, release=None):
         """Qualify under the existing slot, start one clock, and reap the same child."""
         actor = self.actor
         actor.protected_directory(self.work)
@@ -59,6 +59,7 @@ class Once:
         child = child_identity = child_pidfd = clock_ref = claim = None
         stage = 'PRECLOCK'
         forwarded = False
+        previous_mask = None
         lifetime = dict(cleanup_attempted=False)
 
         def forward_stop():
@@ -77,6 +78,7 @@ class Once:
         try:
             for sig in previous:
                 signal.signal(sig, request_stop)
+            previous_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, previous)
             actor.need(not list(self.work.iterdir()), 'R4_OPERATION_DIRECTORY_ALREADY_USED')
             parent = actor.kernel(os.getpid())
             with tempfile.TemporaryDirectory(prefix='preclock-', dir=self.work) as scratch:
@@ -110,6 +112,8 @@ class Once:
                             raise
                 birth = self.record('child-birth.json', dict(pid=child.pid, identity=child_identity, parent=parent,
                                                             clock=clock_ref, claim=claim))
+                if release is not None and child_identity is not None and not stops:
+                    release()
                 stage = 'WAIT'
                 result = actor.wait_owned(child, clock, scope, baseline, self.binding['resources']['disk_bytes'],
                                           stops, lifetime, monitor_failure_path=self.work / 'disk-failure.json')
@@ -132,6 +136,8 @@ class Once:
                                     parent_stops=stops, stop_forwarded=forwarded)
             raise
         finally:
+            if previous_mask is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
             if child_pidfd is not None:
