@@ -118,7 +118,7 @@ def assess_closed_workbook_reply(observer, store, *, run_id, run_ref, cursor_ref
             text_receipts.append(receipt)
         else:
             documents.append(item)
-    attachments = direct_attachment_count(runner, run, captures, ack)
+    attachments = direct_attachment_count(observer, runner, run, captures, ack)
     recipient, screen = None, {"status": outcome}
     if observations or attachments:
         if len(observations) != 1 or len(documents) != 1 or attachments != 1:
