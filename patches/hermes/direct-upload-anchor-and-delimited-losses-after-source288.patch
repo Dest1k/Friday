@@ -1,0 +1,490 @@
+--- a/gateway/run_attachment_presentation.py
++++ b/gateway/run_attachment_presentation.py
+@@ -8,6 +8,7 @@
+ from pathlib import PurePosixPath
+ 
+ ATTACHMENT_PRESENTATIONS_KEY = "friday_attachment_presentations"
++DIRECT_UPLOAD_KEY = "friday_direct_upload"
+ _SCHEMA = "friday.ordinary-attachment-presentations.v1"
+ _SOURCE_ATTR = "_friday_original_document_names"
+ 
+@@ -107,6 +108,61 @@
+         if record is not None:
+             files.append(record)
+     return files
++
++
++def attachment_display_metadata(event, presentations):
++    """Carry direct native upload proof separately from legacy presentation."""
++    if presentations is None:
++        return {}
++    display = {ATTACHMENT_PRESENTATIONS_KEY: presentations}
++    if (event is None or getattr(event, "internal", True)
++            or getattr(event, "_ingress_merged", True)):
++        return display
++
++    from hermes_cli.friday_user_scope import ScopeDenied, _same_scope, ordinary_file_scope
++    try:
++        cap = ordinary_file_scope()
++    except ScopeDenied:
++        return display
++    source = getattr(event, "source", None)
++    owned = getattr(event, "_friday_owned_attachment_paths", None)
++    message_id = getattr(event, "message_id", None)
++    receipts = getattr(event, "_telegram_media_receipts", None)
++    if (cap is None or cap.principal[0] != "telegram"
++            or not _same_scope(getattr(source, "_friday_user_scope", None), cap)
++            or not isinstance(owned, tuple) or len(owned) != 2
++            or not _same_scope(owned[0], cap) or not isinstance(owned[1], frozenset)
++            or not isinstance(message_id, str) or re.fullmatch(r"[1-9][0-9]{0,31}", message_id) is None
++            or message_id != getattr(source, "message_id", None)
++            or not isinstance(receipts, dict)):
++        return display
++
++    files = _metadata_files(presentations, cap)
++    if not files or files != presentations["files"]:
++        return display
++    direct = []
++    for record in files:
++        absolute = str(cap.home / "workspace" / record["path"])
++        receipt = receipts.get(absolute)
++        if absolute not in owned[1] or not isinstance(receipt, dict):
++            return display
++        origin, presentation = receipt.get("origin"), receipt.get("presentation")
++        if (not isinstance(origin, dict) or origin.get("bot_id") != cap.principal[2]
++                or origin.get("chat_id") != source.chat_id or not isinstance(presentation, dict)
++                or _file_record(record["path"], receipt.get("content"),
++                                presentation.get("original_filename")) != record):
++            return display
++        if origin.get("message_id") == message_id:
++            direct.append(record)
++
++    if len(direct) == 1:
++        display[DIRECT_UPLOAD_KEY] = {
++            "schema": "friday.ordinary-direct-upload.v1",
++            "scope": _scope(cap),
++            "source_message_id": message_id,
++            "file": direct[0],
++        }
++    return display
+ 
+ 
+ def prepare_attachment_presentations(event, source, history, *, retained=()):
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -1831,12 +1831,12 @@
+         }
+         if prepared.persist_user_display_kind:
+             _user_entry["display_kind"] = prepared.persist_user_display_kind
+-        attachment_presentations = getattr(prepared, "attachment_presentations", None)
+-        if prepared.persistence_owner or attachment_presentations is not None:
++        from gateway.run_attachment_presentation import attachment_display_metadata
++        attachments = attachment_display_metadata(event, getattr(prepared, "attachment_presentations", None))
++        if prepared.persistence_owner or attachments:
+             _user_entry["display_metadata"] = {
+                 **({"gateway_input_owner": prepared.persistence_owner} if prepared.persistence_owner else {}),
+-                **({"friday_attachment_presentations": attachment_presentations}
+-                   if attachment_presentations is not None else {}),
++                **attachments,
+             }
+         if getattr(event, "message_id", None):
+             _user_entry["message_id"] = str(event.message_id)
+@@ -2258,6 +2258,7 @@
+             if ((getattr(event, "metadata", None) or {}).get("hermes_plugin_pinned")
+                 and not await self._plugin_pinned_event_current(event, _turn_source, session_id=_run_start_session_id)):
+                 return
++            from gateway.run_attachment_presentation import attachment_display_metadata
+             agent_result = await self._run_agent(
+                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
+                 session_id=_run_start_session_id, session_key=session_key,
+@@ -2271,8 +2272,7 @@
+                 reply_expected=event.reply_expected,
+                 persist_user_display_metadata={
+                     "gateway_input_owner": prepared.persistence_owner,
+-                    **({"friday_attachment_presentations": prepared.attachment_presentations}
+-                       if getattr(prepared, "attachment_presentations", None) is not None else {}),
++                    **attachment_display_metadata(event, getattr(prepared, "attachment_presentations", None)),
+                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
+                 message_type=event.message_type,
+                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+@@ -4013,7 +4013,9 @@
+             next_channel_prompt, next_source = self._pinned_channel_inputs(
+                 next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
+             )
+-            from gateway.run_attachment_presentation import prepare_attachment_presentations_for_turn
++            from gateway.run_attachment_presentation import (
++                attachment_display_metadata, prepare_attachment_presentations_for_turn,
++            )
+             next_attachment_presentations = await prepare_attachment_presentations_for_turn(
+                 pending_event, next_source, updated_history, store=self.async_session_store,
+                 session_id=session_id, session_key=next_session_key)
+@@ -4084,8 +4086,8 @@
+                 persist_user_display_kind=next_display_kind,
+                 reply_expected=next_reply_expected,
+                 persist_user_display_metadata={
+-                    **({"friday_attachment_presentations": next_attachment_presentations}
+-                       if pending_event is not None and next_attachment_presentations is not None else {}),
++                    **(attachment_display_metadata(pending_event, next_attachment_presentations)
++                       if pending_event is not None else {}),
+                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+             )
+         except asyncio.CancelledError:
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -1723,7 +1723,9 @@
+             if ctx.inbound_message_id is not None:
+                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+             from agent.notification_presentation import notification_turn
+-            with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
++            from gateway.upload_anchor import bind_upload_anchor_turn
++            with (notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""),
++                  bind_upload_anchor_turn(getattr(self._runner, "session_store", None), ctx, agent)):
+                 return agent.run_conversation(api_message, **kwargs)
+         finally:
+             unregister_gateway_notify(session_key)
+--- a/agent/inline_tool_executors.py
++++ b/agent/inline_tool_executors.py
+@@ -144,6 +144,9 @@
+ 
+ 
+ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
++    if "upload_anchor" in args:
++        from tools.session_search_tool import _upload_anchor_result
++        return _upload_anchor_result(args)
+     session_db = agent._get_session_db_for_recall()
+     if not session_db:
+         from hermes_state import format_session_db_unavailable
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -868,6 +868,24 @@
+             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
+ 
+ 
++def _upload_anchor_result(args):
++    """Report one verified own path or the same privacy-preserving refusal."""
++    import sqlite3
++    from gateway.upload_anchor import resolve_upload_anchor
++    from hermes_cli.friday_user_scope import ScopeDenied
++
++    denied = "Не удалось подтвердить исходную загрузку по этому сообщению и имени."
++    if set(args) != {"upload_anchor"}:
++        return tool_error(denied, success=False)
++    try:
++        proof = resolve_upload_anchor(args["upload_anchor"])
++    except (ScopeDenied, sqlite3.Error, OSError, ValueError, RuntimeError,
++            TypeError, AttributeError, KeyError, RecursionError):
++        return tool_error(denied, success=False)
++    return _ok(mode="upload_anchor", attachment=proof,
++               hint="Use read_file on attachment.path. Cite only if its source_sha256 matches attachment.source_sha256.")
++
++
+ def check_session_search_requirements() -> bool:
+     """Requires the SQLite state database."""
+     try:
+@@ -881,7 +899,7 @@
+     "name": "session_search",
+     "description": (
+         "Recall past conversations: search or read old Hermes sessions (FTS5), or "
+-        "scroll inside one. Four shapes, picked by args: `query` = discovery "
++        "scroll inside one. Standard recall shapes: `query` = discovery "
+         "(top-N matching sessions, top result fully hydrated); `session_id` + "
+         "`around_message_id` = scroll (window of messages around an anchor); "
+         "`session_id` alone = read a whole session — how you resolve an "
+@@ -906,6 +924,20 @@
+     "parameters": {
+         "type": "object",
+         "properties": {
++            "upload_anchor": {
++                "type": "object",
++                "description": "Managed Telegram: pass this alone to verify one direct upload from "
++                    "the current compression lineage. Use the hit's exact session_id and match_message_id "
++                    "and the user's exact saved filename. Then read the returned path with read_file "
++                    "and accept the citation only if source_sha256 matches.",
++                "properties": {
++                    "source_session_id": {"type": "string"},
++                    "native_row_id": {"type": "integer"},
++                    "file_name": {"type": "string"},
++                },
++                "required": ["source_session_id", "native_row_id", "file_name"],
++                "additionalProperties": False,
++            },
+             "query": {
+                 "type": "string",
+                 "description": (
+@@ -1046,7 +1078,7 @@
+     name="session_search",
+     toolset="session_search",
+     schema=SESSION_SEARCH_SCHEMA,
+-    handler=lambda args, **kw: session_search(
++    handler=lambda args, **kw: _upload_anchor_result(args) if "upload_anchor" in args else session_search(
+         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
+         content_offset=args.get("content_offset", 0), message_field=args.get('message_field', 'content'),
+         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
+diff --git a/gateway/upload_anchor.py b/gateway/upload_anchor.py
+new file mode 100644
+--- /dev/null
++++ b/gateway/upload_anchor.py
+@@ -0,0 +1,248 @@
++"""Resolve one direct upload in the current admitted Telegram turn."""
++from contextlib import closing, contextmanager
++from contextvars import ContextVar
++import hashlib
++import json
++from pathlib import Path
++import re
++from threading import Event
++import time
++
++from gateway.run_attachment_presentation import (
++    ATTACHMENT_PRESENTATIONS_KEY, DIRECT_UPLOAD_KEY, _file_record, _metadata_files,
++    _safe_name, _scope,
++)
++
++_TURN = ContextVar("direct_upload_anchor_turn", default=None)
++_MAX_METADATA = 65536
++_MAX_SEGMENTS = 32
++_RECEIVED_PATH = re.compile(r"received/telegram_[0-9a-f]{64}_[A-Za-z0-9_.-]{1,80}\.[a-z0-9]{1,12}")
++_SESSION_SQL = """SELECT id, source, user_id, session_key, chat_id, chat_type, thread_id,
++    profile_name, parent_session_id, ended_at, end_reason,
++    CASE WHEN length(CAST(model_config AS BLOB)) <= ? THEN model_config END AS model_config,
++    length(CAST(model_config AS BLOB)) AS config_bytes,
++    CASE WHEN length(CAST(origin_json AS BLOB)) <= ? THEN origin_json END AS origin_json
++    FROM sessions WHERE id = ?"""
++_ROW_SQL = """SELECT platform_message_id, message_uid, active, compacted,
++    CASE WHEN length(CAST(display_metadata AS BLOB)) <= ? THEN display_metadata END AS metadata
++    FROM messages WHERE session_id = ? AND id = ? AND role = 'user'
++    AND observed = 0 AND _compressed_summary = 0 AND display_kind IS NULL
++    AND ((active = 1 AND compacted = 0) OR (active = 0 AND compacted = 1))"""
++
++
++class AnchorUnavailable(ValueError):
++    """No verified, accessible attachment for the supplied exact anchor."""
++
++
++@contextmanager
++def bind_upload_anchor_turn(store, ctx, agent):
++    """Carry a read-only route witness within this existing native turn."""
++    cap = getattr(getattr(ctx, "source", None), "_friday_user_scope", None)
++    available = (cap is not None and store is not None and ctx.session_id and ctx.session_key
++                 and type(ctx.run_generation) is int and ctx.run_generation > 0)
++    closed = Event() if available else None
++    bound = (store, ctx, agent, cap, closed) if available else None
++    token = _TURN.set(bound)
++    try:
++        yield
++    finally:
++        if closed is not None:
++            closed.set()
++        _TURN.reset(token)
++
++
++def _selector(value):
++    if type(value) is not dict or set(value) != {"source_session_id", "native_row_id", "file_name"}:
++        raise AnchorUnavailable()
++    sid, row_id, name = (value[k] for k in ("source_session_id", "native_row_id", "file_name"))
++    if (not isinstance(sid, str) or not 0 < len(sid) <= 128 or sid in {".", ".."}
++            or "/" in sid or _safe_name(sid) != sid or type(row_id) is not int or not 0 < row_id < 2**63
++            or not isinstance(name, str) or _safe_name(name) != name):
++        raise AnchorUnavailable()
++    return sid, row_id, name
++
++
++def _object(raw):
++    def unique(pairs):
++        value = {}
++        for key, item in pairs:
++            if key in value:
++                raise AnchorUnavailable()
++            value[key] = item
++        return value
++
++    if not isinstance(raw, str):
++        raise AnchorUnavailable()
++    value = json.loads(raw, object_pairs_hook=unique)
++    if not isinstance(value, dict):
++        raise AnchorUnavailable()
++    return value
++
++
++def _route(source):
++    return (source.platform.value, source.user_id, source.chat_id, source.chat_type, source.thread_id)
++
++
++def _current_entry(store, ctx, cap, route):
++    if not store._lock.acquire(blocking=False):
++        raise AnchorUnavailable()
++    try:
++        # Longer-lived index initialization can repair/save routes. Only
++        # inspect the already published native entry from the owned turn.
++        entry = store._entries.get(ctx.session_key) if store._loaded else None
++        if (entry is None or entry.session_id != ctx.session_id or entry.session_key != ctx.session_key
++                or entry.origin is None or _route(entry.origin) != route
++                or store._profile_from_session_key(ctx.session_key) != cap.profile):
++            raise AnchorUnavailable()
++        return entry
++    finally:
++        store._lock.release()
++
++
++@contextmanager
++def _read_snapshot(db, deadline, progress):
++    if not db._read_budget.acquire(db):
++        raise AnchorUnavailable()
++    try:
++        remaining = deadline - time.monotonic()
++        if remaining <= 0:
++            raise AnchorUnavailable()
++        # The pooled reader can fall back to the locked writer connection.
++        # An exact proof has no writer fallback, even on contention or close.
++        with closing(db._connect_read_only(timeout=min(remaining, 0.2))) as conn:
++            conn.execute("PRAGMA query_only=ON")
++            conn.set_progress_handler(progress, 1000)
++            conn.execute("BEGIN")
++            yield conn
++    finally:
++        db._read_budget.release()
++
++
++def _read_anchor(db, cap, ctx, route, selector, deadline):
++    source_sid, row_id, _ = selector
++    expected_account = {"schema": "friday.account_origin.v1", "platform": cap.principal[0],
++                        "transport_profile": cap.principal[1], "account_id": cap.principal[2]}
++    vm_steps = 0
++
++    def progress():
++        nonlocal vm_steps
++        vm_steps += 1000
++        return int(vm_steps > 2_000_000 or time.monotonic() >= deadline)
++
++    def session(conn, sid):
++        row = conn.execute(_SESSION_SQL, (_MAX_METADATA, _MAX_METADATA, sid)).fetchone()
++        if (row is None or row["profile_name"] != cap.profile or row["session_key"] != ctx.session_key
++                or tuple(row[key] for key in ("source", "user_id", "chat_id", "chat_type", "thread_id")) != route
++                or _object(row["origin_json"]).get("friday_account_origin") != expected_account
++                or (row["config_bytes"] or 0) > _MAX_METADATA):
++            raise AnchorUnavailable()
++        value = dict(row)
++        if value["model_config"] is not None:
++            value["model_config"] = _object(value["model_config"])
++        return value
++
++    with _read_snapshot(db, deadline, progress) as conn:
++        child = session(conn, ctx.session_id)
++        # A published compression/reset can finish the DB predecessor
++        # before the in-memory route entry points at the successor.
++        if child["ended_at"] is not None or child["end_reason"] is not None:
++            raise AnchorUnavailable()
++        lineage = []
++        seen = set()
++        for _ in range(_MAX_SEGMENTS):
++            sid = child["id"]
++            if sid in seen:
++                raise AnchorUnavailable()
++            seen.add(sid)
++            lineage.append(child)
++            if sid == source_sid:
++                row = conn.execute(_ROW_SQL, (_MAX_METADATA, source_sid, row_id)).fetchone()
++                if (row is None or not isinstance(row["metadata"], str)
++                        or not isinstance(row["message_uid"], str) or not row["message_uid"]):
++                    raise AnchorUnavailable()
++                return lineage, tuple(row)
++            parent = child["parent_session_id"]
++            if (not parent or db._is_explicit_fork_child_row(child, include_reset=True)
++                    or parent in seen):
++                raise AnchorUnavailable()
++            child = session(conn, parent)
++            if child["ended_at"] is None or child["end_reason"] != "compression":
++                raise AnchorUnavailable()
++        raise AnchorUnavailable()
++
++
++def _file(row, cap, name):
++    carrier, _, _, _, raw = row
++    display = _object(raw)
++    proof = display.get(DIRECT_UPLOAD_KEY)
++    if ("model_only" in display or type(proof) is not dict
++            or set(proof) != {"schema", "scope", "source_message_id", "file"}
++            or proof["schema"] != "friday.ordinary-direct-upload.v1" or proof["scope"] != _scope(cap)
++            or not isinstance(carrier, str) or re.fullmatch(r"[1-9][0-9]{0,31}", carrier) is None
++            or proof["source_message_id"] != carrier):
++        raise AnchorUnavailable()
++    file = proof["file"]
++    if (type(file) is not dict or set(file) != {"path", "sha256", "size_bytes", "file_name"}
++            or file["file_name"] != name or not isinstance(file["path"], str)
++            or _RECEIVED_PATH.fullmatch(file["path"]) is None
++            or _file_record(file["path"], {"sha256": file["sha256"], "size_bytes": file["size_bytes"]}, name) != file):
++        raise AnchorUnavailable()
++    presentation = display.get(ATTACHMENT_PRESENTATIONS_KEY)
++    records = _metadata_files(presentation, cap)
++    if not records or records != presentation["files"] or [item for item in records if item["file_name"] == name] != [file]:
++        raise AnchorUnavailable()
++    return file
++
++
++def resolve_upload_anchor(value):
++    """Return only the own workspace path, verified byte count and SHA-256."""
++    from agent.web_call_context import _current, same_web_authority
++    from hermes_cli.friday_user_scope import _same_scope, current, ordinary_file_source, workspace_document
++
++    selector = _selector(value)
++    bound = _TURN.get()
++    if bound is None:
++        raise AnchorUnavailable()
++    store, ctx, agent, cap, closed = bound
++    call = _current.get()
++    db = getattr(agent, "_session_db", None)
++    if (closed.is_set() or cap.principal[0] != "telegram"
++            or not {"session_search", "read_file"} <= set(cap.binding["tools"])
++            or call is None or getattr(call, "agent", None) is not agent
++            or call.session_id != ctx.session_id or call.session_key != ctx.session_key
++            or db is None or Path(db.db_path) != cap.home / "state.db"
++            or db._db_file_identity is None):
++        raise AnchorUnavailable()
++    route = _route(ctx.source)
++    if route[:2] != (cap.principal[0], cap.principal[3]):
++        raise AnchorUnavailable()
++    deadline = min(call.deadline(), time.monotonic() + 0.25)
++
++    def current_entry():
++        if (closed.is_set() or time.monotonic() >= deadline or not ctx._run_still_current()
++                or getattr(agent, "session_id", None) != ctx.session_id or not call.turn_id
++                or getattr(agent, "_current_turn_id", None) != call.turn_id
++                or getattr(agent, "_persist_disabled", False) or getattr(agent, "_session_db", None) is not db
++                or not _same_scope(current(required=True), cap) or not same_web_authority(call)
++                or _route(ordinary_file_source()) != route or db._conn is None or db._db_file_was_replaced()):
++            raise AnchorUnavailable()
++        call.check()
++        entry = _current_entry(store, ctx, cap, route)
++        if time.monotonic() >= deadline:
++            raise AnchorUnavailable()
++        return entry
++
++    entry = current_entry()
++    original = _read_anchor(db, cap, ctx, route, selector, deadline)
++    file = _file(original[1], cap, selector[2])
++    if current_entry() is not entry:
++        raise AnchorUnavailable()
++    raw, relative = workspace_document(str(cap.home / "workspace" / file["path"]), max_bytes=file["size_bytes"])
++    if relative != file["path"] or len(raw) != file["size_bytes"] or hashlib.sha256(raw).hexdigest() != file["sha256"]:
++        raise AnchorUnavailable()
++    # Use a new snapshot after file I/O, so rewind, reset and changed source
++    # metadata cannot reuse the earlier transaction's stale proof.
++    if (_read_anchor(db, cap, ctx, route, selector, deadline) != original
++            or current_entry() is not entry):
++        raise AnchorUnavailable()
++    return {"path": relative, "size_bytes": len(raw), "source_sha256": file["sha256"]}
+diff --git a/hermes_cli/friday_workspace_delimited_table.py b/hermes_cli/friday_workspace_delimited_table.py
+--- a/hermes_cli/friday_workspace_delimited_table.py
++++ b/hermes_cli/friday_workspace_delimited_table.py
+@@ -49,6 +49,11 @@
+         check(cap)
+         facts.update(source=relative, source_sha256=hashlib.sha256(data).hexdigest(),
+                      source_unchanged=True, export_mode=source+'_'+target)
++        if target in ('csv', 'tsv'):
++            facts['declared_losses'] = [
++                'Native cell types and display formatting are lost; exported fields are text.',
++                'Only one sheet\'s exported data rectangle is represented. Workbook structure and metadata are lost.',
++            ]
+         return _publish(cap, fd, leaf, path, rendered, target, (item, data, identity), facts)
+     except ScopeDenied:
+         raise
