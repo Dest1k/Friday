@@ -1,0 +1,391 @@
+--- a/tools/scoped_presentation_odp_text_source.py
++++ b/tools/scoped_presentation_odp_text_source.py
+@@ -1,14 +1,16 @@
+-"""Passive ODP input for byte-preserving literal text edits only.
++"""Passive ODP input for literal edits and bounded direct PDF export.
+ 
+ This is an input profile, not evidence that a file came from our producer. It
+ never renders, decodes graphics or opens embedded objects. Existing source
+-admission stays strict for conversion, table editing and other operations.
++admission stays strict for other conversions, table editing and other operations.
+ """
+ from copy import copy, deepcopy
+ from io import BytesIO
++import re
++from xml.etree import ElementTree as ET
+ from zipfile import ZipFile
+ 
+-from tools.scoped_presentation import Package, PresentationError, O, q, extract_presentation
++from tools.scoped_presentation import Package, PresentationError, O, DR, PR, XL, q, extract_presentation
+ from tools.scoped_presentation_write import (
+     PresentationRefused, _parts, _xml, _tostring, _rewrite, _odp_structure,
+ )
+@@ -51,33 +53,182 @@
+         root.remove(scripts[0])
+         validation_view = _rewrite(infos, original_parts, {'content.xml': _tostring(root)})
+         _parts(validation_view)  # All original active/resource guards, no role flag.
+-        _odp_structure(infos, original_parts)
+-        # These helpers inspect only bounded passive structure. Calling them is
+-        # not calling the generated-destination entry point or granting custody.
+-        from tools.scoped_presentation_generated_odp import _manifest, _xml_profile, _resources
+-        # An app save may leave the replacement's media type empty. This input
+-        # profile accepts that declaration only when the existing strict role
+-        # closure and bounded SVM framing validate its actual unchanged payload.
+-        manifest_view = copy(pkg)
+-        manifest_view.xml = dict(pkg.xml)
+-        manifest = deepcopy(pkg.xml.get('META-INF/manifest.xml'))
+-        if manifest is not None:
+-            m = '{urn:oasis:names:tc:opendocument:xmlns:manifest:1.0}'
+-            for entry in manifest:
+-                if (entry.get(m+'full-path', '').startswith('ObjectReplacements/')
+-                        and entry.get(m+'media-type') == ''):
+-                    from tools.scoped_presentation_generated_odp import GDI
+-                    entry.set(m+'media-type', GDI)
+-            manifest_view.xml['META-INF/manifest.xml'] = manifest
+-        objects = _manifest(manifest_view)
+-        _xml_profile(pkg, objects)
+-        _resources(pkg, objects)
+-        view = extract_presentation(data, 'odp')
+-        incomplete = {'odf_chart_range_not_resolved', 'chart_without_supported_series',
+-                      'chart_values_not_available', 'unsupported_odf_object'}
+-        if (view.extraction_metadata['charts'] != len(objects)
+-                or incomplete.intersection(view.extraction_metadata['unsupported_features'])):
+-            raise PresentationRefused('passive_odp_chart_data_coverage')
++        _closed_parts(data, pkg, infos, original_parts)
+         return infos, original_parts
+     except PresentationError as error:
+         raise PresentationRefused(str(error)) from None
++
++
++def _closed_parts(data, pkg, infos, parts):
++    _, pages = _odp_structure(infos, parts)
++    # These helpers inspect only bounded passive structure. Calling them is
++    # not calling the generated-destination entry point or granting custody.
++    from tools.scoped_presentation_generated_odp import _manifest, _xml_profile, _resources
++    # An app save may leave the replacement's media type empty. This input
++    # profile accepts that declaration only when the existing strict role
++    # closure and bounded SVM framing validate its actual unchanged payload.
++    manifest_view = copy(pkg)
++    manifest_view.xml = dict(pkg.xml)
++    manifest = deepcopy(pkg.xml.get('META-INF/manifest.xml'))
++    if manifest is not None:
++        m = '{urn:oasis:names:tc:opendocument:xmlns:manifest:1.0}'
++        for entry in manifest:
++            if (entry.get(m+'full-path', '').startswith('ObjectReplacements/')
++                    and entry.get(m+'media-type') == ''):
++                from tools.scoped_presentation_generated_odp import GDI
++                entry.set(m+'media-type', GDI)
++        manifest_view.xml['META-INF/manifest.xml'] = manifest
++    objects = _manifest(manifest_view)
++    _xml_profile(pkg, objects)
++    _resources(pkg, objects)
++    view = extract_presentation(data, 'odp')
++    incomplete = {'odf_chart_range_not_resolved', 'chart_without_supported_series',
++                  'chart_values_not_available', 'unsupported_odf_object'}
++    if (view.extraction_metadata['charts'] != len(objects)
++            or incomplete.intersection(view.extraction_metadata['unsupported_features'])):
++        raise PresentationRefused('passive_odp_chart_data_coverage')
++    return objects, pages
++
++
++_ACTIVE_NAMESPACES = tuple('{' + namespace + '}' for namespace in (
++    'urn:oasis:names:tc:opendocument:xmlns:form:1.0',
++    'urn:oasis:names:tc:opendocument:xmlns:script:1.0',
++    'http://openoffice.org/2000/script',
++    'http://openoffice.org/2000/form',
++    'http://www.w3.org/2002/xforms',
++    'http://www.w3.org/2001/xml-events',
++    'http://www.w3.org/2001/SMIL20/',
++    'http://www.w3.org/2001/SMIL20',
++    'urn:oasis:names:tc:opendocument:xmlns:smil-compatible:1.0',
++    'urn:oasis:names:tc:opendocument:xmlns:animation:1.0',
++    'urn:oasis:names:tc:openoffice:xmlns:animation:1.0',
++    'http://openoffice.org/2000/chart',
++    'urn:oasis:names:tc:openoffice:xmlns:chart:1.0',
++))
++_LO = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
++_CHART = 'urn:oasis:names:tc:opendocument:xmlns:chart:1.0'
++_STYLE = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0'
++_XML_BASE = '{http://www.w3.org/XML/1998/namespace}base'
++
++
++_CONFIG = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
++_VIEW_INTS = {'VisibleAreaTop', 'VisibleAreaLeft', 'VisibleAreaWidth', 'VisibleAreaHeight'}
++_PRINT_INTS = {'DefaultTabStop', 'PageNumberFormat', 'ImagePreferredDPI', 'PrintQuality'}
++_PRINT_SHORTS = {'CharacterCompressionType', 'SlidesPerHandout'}
++_PRINT_BOOLS = {
++    'ApplyUserData', 'EmbedAsianScriptFonts', 'EmbedComplexScriptFonts', 'EmbedFonts',
++    'EmbedLatinScriptFonts', 'EmbedOnlyUsedFonts', 'HandoutsHorizontal', 'IsKernAsianPunctuation',
++    'IsPrintBooklet', 'IsPrintBookletBack', 'IsPrintBookletFront', 'IsPrintDate',
++    'IsPrintDrawing', 'IsPrintFitPage', 'IsPrintHandout', 'IsPrintHiddenPages',
++    'IsPrintNotes', 'IsPrintOutline', 'IsPrintPageName', 'IsPrintTilePage', 'IsPrintTime',
++    'LoadReadonly', 'ParagraphSummation', 'PrinterPaperFromSetup', 'SaveThumbnail',
++    'SaveVersionOnClose', 'UpdateFromTemplate',
++}
++_PALETTE_EXTENSIONS = {
++    'BitmapTableURL': 'sob', 'ColorTableURL': 'soc', 'DashTableURL': 'sod',
++    'LineEndTableURL': 'soe', 'GradientTableURL': 'sog', 'HatchTableURL': 'soh',
++}
++
++
++def _direct_pdf_settings(root):
++    """Accept scalar Impress settings and only the bank/profile palette paths."""
++    if root is None:
++        return
++    settings = root.findall(q(O, 'settings'))
++    if len(settings) != 1 or settings[0].attrib or (settings[0].text or '').strip():
++        raise PresentationRefused('odp_pdf_settings_profile')
++    name_key, type_key = q(_CONFIG, 'name'), q(_CONFIG, 'type')
++    configuration = 'ooo:configuration-settings'
++    view = 'ooo:view-settings'
++    profiles = {
++        view: {name: ('int', None) for name in _VIEW_INTS},
++        configuration: {
++            **{name: ('int', None) for name in _PRINT_INTS},
++            **{name: ('short', None) for name in _PRINT_SHORTS},
++            **{name: ('boolean', {'true', 'false'}) for name in _PRINT_BOOLS},
++            **{name: ('string', {'$(brandbaseurl)/share/palette%3B$(userpath)/config/standard.' + ext})
++               for name, ext in _PALETTE_EXTENSIONS.items()},
++            'PrinterName': ('string', {''}),
++            'PrinterSetup': ('base64Binary', {''}),
++            'PrinterIndependentLayout': ('string', {'low-resolution'}),
++        },
++    }
++    for section in settings[0]:
++        profile = profiles.pop(section.get(name_key), None)
++        if (section.tag != q(_CONFIG, 'config-item-set') or set(section.attrib) != {name_key}
++                or profile is None or (section.text or '').strip() or (section.tail or '').strip()):
++            raise PresentationRefused('odp_pdf_settings_profile')
++        for item in section:
++            spec = profile.pop(item.get(name_key), None)
++            if (item.tag != q(_CONFIG, 'config-item') or set(item.attrib) != {name_key, type_key}
++                    or len(item) or (item.tail or '').strip() or spec is None):
++                raise PresentationRefused('odp_pdf_settings_profile')
++            kind, allowed = spec
++            value = item.text or ''
++            if item.get(type_key) != kind:
++                raise PresentationRefused('odp_pdf_settings_profile')
++            if allowed is not None:
++                valid = value in allowed
++            else:
++                limit = 2 ** (15 if kind == 'short' else 31)
++                valid = re.fullmatch(r'-?[0-9]{1,10}', value) and -limit <= int(value) < limit
++            if not valid:
++                raise PresentationRefused('odp_pdf_settings_value')
++
++
++def direct_pdf_page_count(data):
++    """Admit the closed profile and return its count of visible source slides."""
++    try:
++        infos, parts = source_parts(data)
++        pkg = Package(data)
++        objects, slides = _closed_parts(data, pkg, infos, parts)
++    except PresentationError as error:
++        raise PresentationRefused(str(error)) from None
++
++    _direct_pdf_settings(pkg.xml.get('settings.xml'))
++    directories = {'Configurations2/'} | {name + '/' for name in objects}
++    if any(info.is_dir() and (info.file_size or info.filename not in directories) for info in infos):
++        raise PresentationRefused('odp_pdf_directory_profile')
++    chart_documents = {obj + '/content.xml' for obj in objects}
++    for member in chart_documents:
++        declarations = [pair for _, pair in ET.iterparse(BytesIO(parts[member]), events=('start-ns',))]
++        if ('chart', _CHART) not in declarations or any(
++                prefix == 'chart' and namespace != _CHART for prefix, namespace in declarations):
++            raise PresentationRefused('odp_pdf_chart_namespace')
++
++    content = pkg.xml['content.xml']
++    source_pages = set(content.findall('./' + q(O, 'body') + '/' + q(O, 'presentation') + '/' + q(DR, 'page')))
++    for name, root in pkg.xml.items():
++        for node in root.iter():
++            if (node.tag in (q(O, 'forms'), q(O, 'document'), q(DR, 'floating-frame'),
++                              q(PR, 'animations'))
++                    or node.tag.startswith(_ACTIVE_NAMESPACES)
++                    or any(key.startswith(_ACTIVE_NAMESPACES) for key in node.attrib)
++                    or _XML_BASE in node.attrib):
++                raise PresentationRefused('odp_pdf_active_context')
++            if node.tag in (q(DR, 'object'), q(DR, 'image')) and not node.get(q(XL, 'href')):
++                raise PresentationRefused('odp_pdf_inline_resource')
++            for key, value in node.attrib.items():
++                local = key.rsplit('}', 1)[-1]
++                if local in ('add-in-name', 'data-pilot-source'):
++                    raise PresentationRefused('odp_pdf_chart_provider')
++                if key == q(_CHART, 'class'):
++                    passive_class = {q(_CHART, 'chart'): 'chart:bar',
++                                     q(_CHART, 'series'): 'chart:bar',
++                                     q(_CHART, 'grid'): 'major'}
++                    if name not in chart_documents or value != passive_class.get(node.tag):
++                        raise PresentationRefused('odp_pdf_chart_class')
++                if local == 'external-data':
++                    # The stock importer records the embedded XLSX path as
++                    # chart-style provenance. No loader URL is allowed.
++                    if (key != q(_LO, 'external-data') or name not in chart_documents
++                            or node.tag != q(_STYLE, 'chart-properties')
++                            or re.fullmatch(r'ppt/embeddings/[A-Za-z0-9_ -]{1,72}\.xlsx', value) is None):
++                        raise PresentationRefused('odp_pdf_external_data')
++                if local == 'visibility':
++                    drawing_page_style = (name in ('content.xml', 'styles.xml')
++                                          and node.tag == q(_STYLE, 'drawing-page-properties'))
++                    if (key != q(PR, 'visibility') or value != 'visible'
++                            or (node not in source_pages and not drawing_page_style)):
++                        raise PresentationRefused('odp_pdf_slide_visibility')
++    return len(slides)
+--- a/hermes_cli/friday_workspace_presentation.py
++++ b/hermes_cli/friday_workspace_presentation.py
+@@ -3,13 +3,22 @@
+ import json
+ import os
+ from pathlib import Path
++import re
+ import shutil
+ import subprocess
+ import sys
+ import tempfile
+ from zipfile import ZipFile, BadZipFile
+ 
++_ODP_PDF_FILTER = 'pdf:impress_pdf_Export:' + json.dumps({
++    key: {'type': 'boolean', 'value': 'false'}
++    for key in ('ExportNotes', 'ExportNotesPages', 'ExportOnlyNotesPages',
++                'ExportNotesInMargin', 'ExportHiddenSlides', 'ExportFormFields',
++                'IsAddStream', 'UseTransitionEffects')
++})
+ _OPERATIONS = {
++    'odp_pdf': {'source': '.odp', 'output': '.pdf', 'input': 'odp', 'result': 'pdf',
++                'filter': _ODP_PDF_FILTER},
+     'pptx_pdf': {'source': '.pptx', 'output': '.pdf', 'input': 'pptx', 'result': 'pdf',
+                  'filter': 'pdf:impress_pdf_Export'},
+     'odp_pptx': {'source': '.odp', 'output': '.pptx', 'input': 'odp', 'result': 'pptx',
+@@ -248,7 +257,26 @@
+             os.close(root)
+ 
+ 
+-def render(cap, data, operation):
++def _verify_direct_pdf(work, expected_pages):
++    from hermes_cli.friday_workspace_pdf import ExportRefused, _private_bytes
++    try:
++        root = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++        try:
++            info = _private_bytes(root, 'pdfinfo', 8192)
++        finally:
++            os.close(root)
++    except OSError:
++        raise ExportRefused('invalid_pdf') from None
++    counts = re.findall(rb'^Pages:[ \t]+([1-9][0-9]*)[ \t]*$', info, re.MULTILINE)
++    if counts != [str(expected_pages).encode('ascii')]:
++        raise ExportRefused('odp_pdf_page_count_mismatch')
++    for label, value in ((b'Form:', b'none'), (b'JavaScript:', b'no'), (b'Encrypted:', b'no')):
++        lines = [line[len(label):].strip() for line in info.splitlines() if line.startswith(label)]
++        if lines != [value]:
++            raise ExportRefused('odp_pdf_output_profile')
++
++
++def render(cap, data, operation, *, details=None):
+     from hermes_cli.friday_workspace_pdf import _read_pdf, _run, _toolchain
+     from hermes_cli.friday_workspace_revision import check
+     from tools.scoped_presentation_write import validate_native
+@@ -256,8 +284,13 @@
+         raise ValueError('unsupported_conversion')
+     spec = _OPERATIONS[operation]
+     check(cap)
+-    validate_native(data, spec['input'])
+-    toolchain = _toolchain(family='presentation' if operation == 'pptx_odp' else 'default')
++    if operation == 'odp_pdf':
++        from tools.scoped_presentation_odp_text_source import direct_pdf_page_count
++        expected_pages = direct_pdf_page_count(data)
++    else:
++        validate_native(data, spec['input'])
++    family = 'presentation' if operation in ('pptx_odp', 'odp_pdf') else 'default'
++    toolchain = _toolchain(family=family)
+     work = Path(tempfile.mkdtemp(prefix='friday-presentation-convert-'))
+     try:
+         work.chmod(0o700)
+@@ -269,7 +302,18 @@
+         (work / 'renderer.py').write_bytes(Path(__file__).read_bytes())
+         (work / 'renderer.py').chmod(0o600)
+         _run(cap, _argv(work, toolchain, operation), work)
+-        result = _read_pdf(work) if operation == 'pptx_pdf' else _read_native(work, operation)
++        result = _read_pdf(work) if spec['result'] == 'pdf' else _read_native(work, operation)
++        if operation == 'odp_pdf':
++            _verify_direct_pdf(work, expected_pages)
++            if details is not None:
++                details.update(export_mode='odp_pdf', pages=expected_pages, conversion_limitations=[
++                    {'code': 'odp_pdf_notes_omitted', 'scope': 'speaker_notes',
++                     'notice': 'The PDF omits speaker notes. They remain in the source ODP.'},
++                    {'code': 'odp_pdf_visible_slides_only', 'scope': 'hidden_slides_refused',
++                     'notice': 'This direct export supports visible slides only.'},
++                    {'code': 'odp_pdf_fixed_layout', 'scope': 'native_editability',
++                     'notice': 'The PDF has fixed layout. Use the source ODP to edit slides and charts.'},
++                ])
+         check(cap)
+         return result
+     finally:
+@@ -433,15 +477,16 @@
+            'XDG_RUNTIME_DIR': '/work/tmp',
+            'LD_LIBRARY_PATH': program + ':' + prefix + '/root/usr/lib/x86_64-linux-gnu'}
+     deadline = time.monotonic() + 35
+-    if operation == 'pptx_odp':
++    prepared_profile = operation in ('pptx_odp', 'odp_pdf')
++    if prepared_profile:
+         _prepare_presentation_profile(program, env, deadline)
+     command = _office_command(operation)
+-    timeout = deadline - time.monotonic() if operation == 'pptx_odp' else 35
++    timeout = deadline - time.monotonic() if prepared_profile else 35
+     if timeout <= 0:
+         raise TimeoutError('presentation_original_budget_exhausted')
+     subprocess.run(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=timeout, check=True)
+-    if operation == 'pptx_pdf':
++    if spec['result'] == 'pdf':
+         with open('/work/pdfinfo', 'wb') as output:
+             subprocess.run(['/usr/bin/pdfinfo', '/work/out/input.pdf'], env=env,
+                            stdin=subprocess.DEVNULL, stdout=output,
+--- a/hermes_cli/friday_workspace_presentation_variants.py
++++ b/hermes_cli/friday_workspace_presentation_variants.py
+@@ -22,15 +22,24 @@
+     raise PresentationRefused('document_already_exists')
+ 
+ 
+-def _convert(cap, data, source_format, target):
++def _convert(cap, data, source_format, target, *, details=None):
+     from hermes_cli.friday_workspace_presentation import render
+     from hermes_cli.friday_workspace_revision import check
+     from tools.scoped_presentation_variants import reprofile, OOXML
++    from tools.scoped_presentation_write import PresentationRefused
+     if target == 'pdf':
+         if source_format in OOXML:
+             normal = reprofile(data, source_format, 'pptx')
+         else:
+-            normal = render(cap, reprofile(data, source_format, 'odp'), 'odp_pptx')
++            try:
++                source = reprofile(data, source_format, 'odp')
++            except PresentationRefused as error:
++                if source_format != 'odp' or str(error) != 'active_xml_content':
++                    raise
++                # Only the closed ODP source gate may admit the passive
++                # empty-script-section shape rejected by strict reprofiling.
++                return render(cap, data, 'odp_pdf', details=details)
++            normal = render(cap, source, 'odp_pptx')
+         check(cap)
+         return render(cap, normal, 'pptx_pdf')
+     if (source_format in OOXML) == (target in OOXML):
+@@ -90,7 +99,7 @@
+                     result = edit_profile(original, format, request['edit'])
+                 details['preserving_edit'] = True
+             else:
+-                result = _convert(cap, original, format, target)
++                result = _convert(cap, original, format, target, details=details)
+                 # Office conversions may change layout and fonts. No unobserved
+                 # cross-format preservation/visual fidelity claim is returned.
+                 details['conversion_mode'] = 'native_profile' if (
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2220,6 +2220,9 @@
+ # enum, required fields and per-format validation stay exactly as they are.
+ _PRESENTATION_NATIVE_GUIDANCE = (
+     'Native presentations: use a NEW output path; keep the original and unrequested content. '
++    'To export ODP use presentation_convert with JSON {"source":"deck.odp"} and a NEW .pdf path. '
++    'The direct passive ODP profile renders visible slides into fixed layout and omits speaker notes. '
++    'This direct profile refuses hidden slides. '
+     'For table-grounded PPTX, pptx_create takes content JSON {source,data:{sheet,group,order,amount,currency}}. '
+     'Selectors are exact source header names: sheet is the XLSX sheet or null for comma CSV; '
+     'amount has exactly one shape, {"column":"<amount header>"} or {"product":["<quantity header>","<price header>"]}; replace placeholders with exact source header names; currency is a text column or null. '
