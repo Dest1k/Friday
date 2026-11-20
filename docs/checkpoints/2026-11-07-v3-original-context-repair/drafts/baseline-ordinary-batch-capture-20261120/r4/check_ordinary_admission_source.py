@@ -113,6 +113,41 @@ def check(proof_ref, *, contract_ref, prepare_ref, run_id, scenario, stage):
         self.assertEqual(self.history.read_bytes(), retained)
         self.assertEqual(len(list(self.store.runs.iterdir())), 2)
 
+    def test_owned_readonly_prefix_leaves_store_unchanged(self):
+        _, runner = self.candidate()
+        original = self.history.read_bytes()
+        before = sorted(self.store.root.iterdir())
+        facts = runner._f07_qualify_new_prefix_readonly(RUN_ID, self.scenario)
+        self.assertEqual(facts["state"], "WHOLE_ORIGINAL_NEW_PREFIX_READONLY_QUALIFIED_NOT_EFFECT_ADMISSION")
+        self.assertEqual(facts["scenario_sha256"], self.scenario_sha)
+        self.assertEqual(facts["run_id"], RUN_ID)
+        self.assertIsNone(facts["continuation"])
+        self.assertTrue(all(facts[key] is False for key in ("new_called", "run_constructed", "save_called",
+                                                             "send_called", "operation_clock_created")))
+        self.assert_unprepared()
+        self.assertEqual(self.history.read_bytes(), original)
+        self.assertEqual(before, sorted(self.store.root.iterdir()))
+        self.assertEqual(list(self.store.runs.iterdir()), [self.history])
+
+    def test_owned_readonly_prefix_refuses_api_stop_and_prior_run(self):
+        module, runner = self.candidate()
+        runner.api = object()
+        with self.assertRaisesRegex(module.Refused, "requires api=None"):
+            runner._f07_qualify_new_prefix_readonly(RUN_ID, self.scenario)
+        runner.api = None
+        stop = self.store.root / "observer-stop.json"
+        self.store.put(stop, {"product_cancelled": False})
+        with self.assertRaisesRegex(module.Refused, "Observer stop marker set"):
+            runner._f07_qualify_new_prefix_readonly(RUN_ID, self.scenario)
+        self.assert_unprepared()
+        stop.unlink()
+        runner.new(RUN_ID, self.scenario)
+        path = self.store.run_path(RUN_ID)
+        retained = path.read_bytes()
+        with self.assertRaisesRegex(module.Refused, "Run ID already used"):
+            runner._f07_qualify_new_prefix_readonly(RUN_ID, self.scenario)
+        self.assertEqual(path.read_bytes(), retained)
+
     def test_unbound_candidate_still_refuses(self):
         runner = self.base.Runner(self.store, None)
         with self.assertRaisesRegex(self.base.Refused, "independent admission: absent"):

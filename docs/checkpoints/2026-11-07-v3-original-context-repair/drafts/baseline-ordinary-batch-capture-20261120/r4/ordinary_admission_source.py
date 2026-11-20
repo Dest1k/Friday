@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import re
+import textwrap
 from pathlib import PurePosixPath
 
 
@@ -33,6 +34,31 @@ def exact_reference(reference):
             and type(reference["sha256"]) is str
             and re.fullmatch("[a-f0-9]{64}", reference["sha256"]),
             "Exact protected file reference required")
+
+
+def readonly_new_prefix(runner):
+    """Reproduce the F07 owned caller's read-only entry from this exact Runner.new."""
+    original = one((node for node in runner.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "new"), "new run")
+    require(ast.unparse(original.args) == "self, name, scenario, continuation=None",
+            "Exact ordinary new-run parameters required")
+    construction = one((node for node in original.body if isinstance(node, ast.Assign)
+                        and any(isinstance(target, ast.Name) and target.id == "run"
+                                for target in node.targets)), "run construction")
+    require(tuple(ast.unparse(node) for node in original.body[-2:])
+            == ("self.save(run)", "return run"), "Exact ordinary new-run save boundary required")
+    before_construction = original.body[:original.body.index(construction)]
+    prefix = ast.parse("""def _f07_qualify_new_prefix_readonly(self, name, scenario):
+    if self.api is not None:
+        raise Refused('Read-only ordinary qualification requires api=None')
+    continuation = None
+    return dict(state='WHOLE_ORIGINAL_NEW_PREFIX_READONLY_QUALIFIED_NOT_EFFECT_ADMISSION',
+                run_id=name, scenario_sha256=digest(encoded(scenario)), continuation=None,
+                new_called=False, run_constructed=False, save_called=False, send_called=False,
+                operation_clock_created=False)
+""").body[0]
+    prefix.body[-1:-1] = before_construction
+    return (textwrap.indent(ast.unparse(prefix), "    ") + "\n").encode()
 
 
 def compose_observer(source, *, run_id, scenario_sha256, authority, authority_ref,
@@ -72,10 +98,12 @@ def compose_observer(source, *, run_id, scenario_sha256, authority, authority_re
     tree = ast.parse(source)
     runner = one((node for node in tree.body
                   if isinstance(node, ast.ClassDef) and node.name == "Runner"), "Runner")
+    require(not any(isinstance(node, ast.FunctionDef) and node.name == "_f07_qualify_new_prefix_readonly"
+                    for node in runner.body), "Read-only qualification source position is already occupied")
     gate = one((node for node in runner.body if isinstance(node, ast.FunctionDef)
                 and node.name == "ordinary_independent_admission"), "ordinary admission")
     lines = source.splitlines(keepends=True)
-    edits = []
+    edits = [(runner.end_lineno + 1, runner.end_lineno, b"\n" + readonly_new_prefix(runner))]
     for name, value in {"ORDINARY_INDEPENDENT_SCENARIOS": {run_id: scenario_sha256},
                         "ORDINARY_INDEPENDENT_AUTHORITY": authority_ref}.items():
         assignment = one((node for node in runner.body if isinstance(node, ast.Assign)
