@@ -482,6 +482,18 @@ def prepared_plan_reference(record, pointer, result_ref):
     return prepared_reference(record, pointer)
 
 
+def prepared_scenario_checksum(record, pointer):
+    if not pointer.startswith('@'):
+        return prepared_pointer(record, pointer), None
+    evidence_pointer, delimiter, checksum_pointer = pointer[1:].partition('#')
+    require(delimiter and evidence_pointer.startswith('/') and checksum_pointer.startswith('/'),
+            'linked scenario checksum requires @/evidence/reference#/checksum/pointer')
+    reference = prepared_reference(record, evidence_pointer)
+    raw, evidence = prepared_file(reference['path'], reference, 2_000_000, 'normalized scenario evidence')
+    value = json.loads(raw, object_pairs_hook=unique_object)
+    return prepared_pointer(value, checksum_pointer), evidence
+
+
 def prepared_case_reference(record, case_id):
     for field in ('case', 'assignment', 'state'):
         value = record.get(field)
@@ -521,7 +533,7 @@ def project_prepared(args, output, selected_cases):
         prepared_label(label, labels)
         raw_ref = prepared_plan_reference(record, pointer, result_ref)
         plan_bytes, plan_ref = prepared_file(raw_ref['path'], raw_ref, 2_000_000, label)
-        expected = prepared_pointer(record, scenario_pointer)
+        expected, checksum_source = prepared_scenario_checksum(record, scenario_pointer)
         require(type(expected) is str and re.fullmatch(r'[a-f0-9]{64}', expected), 'normalized scenario SHA-256 required')
         try:
             scenario = observer['validate_scenario'](json.loads(plan_bytes, object_pairs_hook=unique_object))
@@ -538,9 +550,12 @@ def project_prepared(args, output, selected_cases):
                     inputs.append({'step': step_index, 'path': upload['path'], 'bytes': len(data), 'sha256': upload['sha256']})
         except observer['Refused'] as error:
             raise ProjectionError(f'selected passive plan or attachment refused by exact R4 for {label}') from error
-        plans.append({'label': label, 'plan': plan_ref, 'plan_ref': pointer, 'scenario_sha256': expected,
-                      'scenario_ref': scenario_pointer, 'deadline_seconds': scenario['deadline_seconds'],
-                      'steps': len(scenario['steps']), 'observations': observations, 'uploads': inputs})
+        plan = {'label': label, 'plan': plan_ref, 'plan_ref': pointer, 'scenario_sha256': expected,
+                'scenario_ref': scenario_pointer, 'deadline_seconds': scenario['deadline_seconds'],
+                'steps': len(scenario['steps']), 'observations': observations, 'uploads': inputs}
+        if checksum_source is not None:
+            plan['scenario_checksum_source'] = checksum_source
+        plans.append(plan)
 
     for role, pointer in args.prepared_artifact:
         prepared_label(role, labels)
@@ -861,7 +876,7 @@ def main(argv=None):
     parser.add_argument('--prepared-r4', type=Path, help='exact composed passive R4 used to validate selected plans')
     parser.add_argument('--prepared-plan', nargs=3, action='append', default=[],
                         metavar=('LABEL', 'PLAN_POINTER', 'SCENARIO_SHA_POINTER'),
-                        help='select a plan reference and its recorded normalized hash; repeat for exact phases')
+                        help='select a plan and normalized hash, optionally @/evidence/reference#/hash for a pinned JSON')
     parser.add_argument('--prepared-artifact', nargs=2, action='append', default=[], metavar=('ROLE', 'POINTER'),
                         help='verify the exact artifact reference for a reply checker, prerequisite or other input')
     parser.add_argument('--prepared-dependency', nargs=3, action='append', default=[], metavar=('ROLE', 'FILE', 'SHA256'),
