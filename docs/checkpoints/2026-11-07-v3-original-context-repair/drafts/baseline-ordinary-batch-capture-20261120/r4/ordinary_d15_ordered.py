@@ -11,6 +11,11 @@ ALT_01 = "090f7276e1017c2ae2d3583f98db60702a2c0aa5baba1d069b80ac9b443c600b"
 ALT_02 = "5c7ceffc7a22b17c67257f73efbb963d22ee85c7a78498700abc613fea821f3a"
 ALT_03 = "a29e35c039f7f851fa2bcf220721859edfdf6f351bca41147509b714b0d24c68"
 PHASES = (ALT_01, ALT_02, ALT_03)
+DAMAGED_PHASES = (
+    "1149f6e55d6e9cb51fc9191f4a2355edeb008c565882ae347ebf52aca819c4c4",
+    "05887c52b45246a4cc2c6a6398eb26d83cae63f57a90e44f9f47a0063eed79f1",
+    "e3aee2def5ebec40b95b18115852cf02717392cb0f54122880396b20e0c29e1d",
+)
 COMPOSER_SHA256 = "57a21c19d5c2fde2ad06a9800502bdb7a5001ddf1be004c98c6ffe609bc139f6"
 CURRENT_SHA256 = "2983e06dc5579adae0f0983d64d07b65c41f849b03dca0985f270d2547a9411b"
 
@@ -91,15 +96,17 @@ def compose_observer(source, *, run_id, scenario_sha256, authority, authority_re
                      checker_ref, proof_ref, contract_ref, prepare_ref):
     """Compose a singleton D15 phase. The current observer checks native scope."""
     if (type(run_id) is not str or re.fullmatch("[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id) is None
-            or type(scenario_sha256) is not str or scenario_sha256 not in PHASES
+            or type(scenario_sha256) is not str or scenario_sha256 not in PHASES + DAMAGED_PHASES
             or type(authority) is not dict or type(authority.get("history")) is not dict):
         raise ValueError("Exact D15 phase and authority required")
-    prior_phases = PHASES[:PHASES.index(scenario_sha256)]
+    phases = DAMAGED_PHASES if scenario_sha256 in DAMAGED_PHASES else PHASES
+    prior_phases = phases[:phases.index(scenario_sha256)]
     bindings = authority.get("ordered_predecessors", {})
     immediate = bindings.get(run_id) if type(bindings) is dict else None
     if not prior_phases:
         if type(bindings) is not dict or bindings:
-            raise ValueError("D15 ALT-01 requires independent admission")
+            label = "DAMAGED-01" if phases is DAMAGED_PHASES else "ALT-01"
+            raise ValueError(f"D15 {label} requires independent admission")
     elif (type(immediate) is not dict or set(bindings) != {run_id}
           or immediate.get("scenario_sha256") != prior_phases[-1]
           or immediate.get("initially_absent") is not False):

@@ -9,6 +9,13 @@ from types import ModuleType
 SCENARIO_SHA256 = 'a985da3b6f729b51edd0f19971fe97d0e1606215cd06403bc49c636471a81632'
 SOURCE_SHA256 = '94b36b19e8665ecf52c9ada141b4d5860545ba40559aeca977d4db88b38441c2'
 VERIFIER_SHA256 = '16be9b4aff105f4ee04715f984acecdafbc7d563e1d86b0a3ac63cda1d726bcb'
+RTF_SCENARIO_SHA256 = '45e1732b0d49020182a3a9f2d67056b8c11d9c0f314240de077eb6fd19a13641'
+RTF_SOURCE_SHA256 = '008f55eddd87fe35f7a40413d97eecba9a293d2029db9a32420d0973001b3535'
+RTF_VERIFIER_SHA256 = '7060f9386c2be154a1eab1db05056a75c37651aed9f0127c728a7e95ad5241ac'
+PINNED_SCENARIOS = {
+    SCENARIO_SHA256: (SOURCE_SHA256, VERIFIER_SHA256, {}),
+    RTF_SCENARIO_SHA256: (RTF_SOURCE_SHA256, RTF_VERIFIER_SHA256, {'source_format': 'rtf'}),
+}
 DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 MAX_DOCX_BYTES = 8 * 1024 * 1024
 MEDIA = {
@@ -126,16 +133,18 @@ def assess_saved_reply(observer, store, *, run_id, run_ref, cursor_ref, verifier
     """Read pinned records and assess their one bound reply. The caller owns settlement pins."""
     require(type(run_id) is str and re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', run_id),
             'Exact D01 run ID required')
-    require(type(verifier_source) is bytes and digest(verifier_source) == VERIFIER_SHA256,
-            'Exact existing D01 verifier required')
     run_path, cursor_path = store.run_path(run_id), store.root / 'cursor.json'
     run_raw = read_exact(observer, run_ref, run_path, observer.MAX_JSON)
     cursor_raw = read_exact(observer, cursor_ref, cursor_path, observer.MAX_JSON)
     run = canonical(observer, run_raw)
     cursor = canonical(observer, cursor_raw)
     scenario = run.get('scenario')
-    require(run.get('id') == run_id and run.get('scenario_sha256') == SCENARIO_SHA256
-            and digest(observer.encoded(scenario)) == SCENARIO_SHA256
+    scenario_sha = digest(observer.encoded(scenario))
+    require(scenario_sha in PINNED_SCENARIOS, 'Exact closed D01 alternative and one ACK required')
+    source_sha, verifier_sha, source_options = PINNED_SCENARIOS[scenario_sha]
+    require(type(verifier_source) is bytes and digest(verifier_source) == verifier_sha,
+            'Exact existing D01 verifier required')
+    require(run.get('id') == run_id and run.get('scenario_sha256') == scenario_sha
             and type(run.get('step')) is int and run['step'] == 0
             and type(run.get('send_attempts')) is int and run['send_attempts'] == 1
             and type(run.get('repeat_count')) is int and run['repeat_count'] == 0
@@ -144,17 +153,17 @@ def assess_saved_reply(observer, store, *, run_id, run_ref, cursor_ref, verifier
             and run.get('status') == 'EVIDENCE_READY' and run.get('capture_window_complete') is True,
             'Exact closed D01 alternative and one ACK required')
     upload = scenario['steps'][0]['input']
-    require(upload['sha256'] == run['request_metadata']['input_sha256'] == SOURCE_SHA256,
+    require(upload['sha256'] == run['request_metadata']['input_sha256'] == source_sha,
             'D01 source differs from admitted upload')
     runner = observer.Runner(store, None)
     response, custody = pick_reply(observer, runner, run, cursor)
     source = observer.read_document_input(upload, lambda: None)
-    require(digest(source) == SOURCE_SHA256, 'D01 protected source bytes changed')
+    require(digest(source) == source_sha, 'D01 protected source bytes changed')
     assessor = ModuleType('_d01_pinned_content_assessor')
     assessor.__file__ = '<pinned D01 check_summary.py>'
     exec(compile(verifier_source, assessor.__file__, 'exec'), assessor.__dict__)
     try:
-        assessment = assessor.verify_summary(source, response, custody['media'])
+        assessment = assessor.verify_summary(source, response, custody['media'], **source_options)
     except assessor.NeedsReview as error:
         assessment = {'status': 'REVIEW_REQUIRED', 'reason': str(error)}
     if run.get('reply_outcome') != 'RECEIVED_UNGRADED':

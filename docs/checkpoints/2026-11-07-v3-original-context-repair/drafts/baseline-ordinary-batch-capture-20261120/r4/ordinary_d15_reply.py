@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 
 from ordinary_d03_reply import original_ack, pinned_record, retained_text
+from ordinary_d15_ordered import DAMAGED_PHASES as DAMAGED_SCENARIO_HASHES
 
 
 PHASES = (
@@ -20,17 +21,35 @@ PHASES = (
 )
 ORACLE_SHA256 = "1c0e272b634ebab44543cba7b12b04c563cc70bab31f56302271ad0e0c9ffddf"
 FACTS_SHA256 = "d7bc69a9d941fc49dabe6b889fbc3534c2105b480e81f2e79619674778453186"
+DAMAGED_FACTS_SHA256 = "f76e1abc9604e60e5e02a014bdf3c752e8759ab84625725c021767579e5c38f5"
+DAMAGED_PHASES = tuple(zip(
+    ("D15-DAMAGED-01", "D15-DAMAGED-02", "D15-DAMAGED-03"),
+    DAMAGED_SCENARIO_HASHES,
+    ("39c2677207c53e4d274220543100c1b6d4dcd4964c790e4732f26c516416ef03",
+     "2dfb6a9a483b27c4d9e8e035a72d67d901ac79bff71ff29efc9025271b65a6dd",
+     "36e40b4b85b83c3a18d500594dae39e8eac3d08a9d5ca03116dd9b72a5e250be"),
+    (245, 245, 1084),
+    strict=True,
+))
+SERIES = {"unsupported": (PHASES, FACTS_SHA256), "damaged_docx": (DAMAGED_PHASES, DAMAGED_FACTS_SHA256)}
 
 
 def digest(data):
     return sha256(data).hexdigest()
 
 
-def read_closed_phase(observer, runner, cursor, position, run_id, run_ref):
+def _series(variant):
+    if type(variant) is not str or variant not in SERIES:
+        raise ValueError("Exact D15 saved series variant required")
+    return SERIES[variant]
+
+
+def read_closed_phase(observer, runner, cursor, position, run_id, run_ref, *, variant="unsupported"):
     if type(run_id) is not str or not re.fullmatch("[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id):
         raise ValueError("Exact D15 phase run ID required")
+    phases, _ = _series(variant)
     run = pinned_record(observer, run_ref, expected_path=runner.store.run_path(run_id))
-    name, scenario_sha, source_sha, source_size = PHASES[position]
+    name, scenario_sha, source_sha, source_size = phases[position]
     scenario = run["scenario"]
     if (run.get("id") != run_id or run.get("scenario_sha256") != scenario_sha
             or digest(observer.encoded(scenario)) != scenario_sha
@@ -79,7 +98,8 @@ def read_closed_phase(observer, runner, cursor, position, run_id, run_ref):
     }
 
 
-def grade_summary(observer, phase, oracle_directory):
+def grade_summary(observer, phase, oracle_directory, *, variant="unsupported"):
+    _, facts_sha256 = _series(variant)
     if phase["outcome"] == "NO_RESPONSE_UNVERIFIED":
         return {"state": phase["outcome"]}
     replies = phase["direct_text_replies"]
@@ -88,7 +108,7 @@ def grade_summary(observer, phase, oracle_directory):
     path = Path(oracle_directory) / "d15_oracle.py"
     source = observer.safe_read(path, 65536)
     facts = observer.safe_read(path.with_name("ORACLE.json"), 65536)
-    if digest(source) != ORACLE_SHA256 or digest(facts) != FACTS_SHA256:
+    if digest(source) != ORACLE_SHA256 or digest(facts) != facts_sha256:
         raise ValueError("Exact D15 checker and ten-fact basis required")
     oracle = {"__file__": str(path), "__name__": "_d15_pinned_summary_oracle"}
     exec(compile(source, str(path), "exec"), oracle)
@@ -101,9 +121,10 @@ def grade_summary(observer, phase, oracle_directory):
     return {"state": state, "screen": screen, "reply_text_sha256": replies[0]["text_sha256"]}
 
 
-def assess_saved_series(observer, store, *, stages, cursor_ref, oracle_directory):
+def assess_saved_series(observer, store, *, stages, cursor_ref, oracle_directory, variant="unsupported"):
     """Assess a closed exact prefix using the existing receiver artifacts and checker."""
-    if type(stages) not in (list, tuple) or not 1 <= len(stages) <= len(PHASES):
+    phases, _ = _series(variant)
+    if type(stages) not in (list, tuple) or not 1 <= len(stages) <= len(phases):
         raise ValueError("Exact D15 stage prefix required")
     cursor_path = store.root / "cursor.json"
     cursor = pinned_record(observer, cursor_ref, expected_path=cursor_path)
@@ -113,7 +134,7 @@ def assess_saved_series(observer, store, *, stages, cursor_ref, oracle_directory
     for position, stage in enumerate(stages):
         if type(stage) is not dict or set(stage) != {"run_id", "run_ref"}:
             raise ValueError("Exact D15 stage reference required")
-        phase = read_closed_phase(observer, runner, cursor, position, stage["run_id"], stage["run_ref"])
+        phase = read_closed_phase(observer, runner, cursor, position, stage["run_id"], stage["run_ref"], variant=variant)
         message_ids = [phase["sent_message_id"], *(row["tester_reply_message_id"] for row in phase["direct_text_replies"])]
         if len(set(message_ids)) != len(message_ids) or seen_message_ids.intersection(message_ids):
             raise ValueError("D15 stages reuse a tester-side message identity")
@@ -130,7 +151,8 @@ def assess_saved_series(observer, store, *, stages, cursor_ref, oracle_directory
         phase["handover_assessment"] = (
             "INDEPENDENT_REVIEW_REQUIRED" if phase["direct_text_replies"] else phase["outcome"]
         )
-    summary = grade_summary(observer, series[-1], oracle_directory) if len(series) == len(PHASES) else {"state": "OPEN"}
+    summary = (grade_summary(observer, series[-1], oracle_directory, variant=variant)
+               if len(series) == len(phases) else {"state": "OPEN"})
     for stage in stages:
         pinned_record(observer, stage["run_ref"], expected_path=store.run_path(stage["run_id"]))
     pinned_record(observer, cursor_ref, expected_path=cursor_path)
