@@ -1,0 +1,28 @@
+diff --git a/agent/context_compressor_multipass.py b/agent/context_compressor_multipass.py
+--- a/agent/context_compressor_multipass.py
++++ b/agent/context_compressor_multipass.py
+@@ -294,10 +294,21 @@
+     common = {"focus": _redact_compaction_text(focus or ""), "memory": _redact_compaction_text(memory or ""),
+               "has_real_user": bool(has_user_turn)}
+     renderer_binding = policy.checkpoint_identity()
+-    binding = _hash({"prompt": PROMPT_VERSION, "route": asdict(policy), "renderer": renderer_binding, "options": extra,
+-                     "access": storage.access if storage else {"session": getattr(compressor, "_session_id", "")},
+-                     "common": common, "contract": local_contract})
++    binding_data = {"prompt": PROMPT_VERSION, "route": asdict(policy), "renderer": renderer_binding, "options": extra,
++                    "access": storage.access if storage else {"session": getattr(compressor, "_session_id", "")},
++                    "common": common, "contract": local_contract}
++    # Final carrier allowance is checked against the protected main turn before publication.
++    # A node's request and validated output do not depend on that allowance.
++    node_contract = {key: value for key, value in local_contract.items() if key != "carrier_byte_limit"}
++    binding = _hash({**binding_data, "contract": node_contract})
+     nodes = storage.load(binding) if storage else {}
++    if storage and not nodes:
++        # Existing data uses opaque keys that also appear in reduction inputs.
++        # Keep an exact legacy binding for the entire attempt when it matches.
++        legacy_binding = _hash(binding_data)
++        legacy_nodes = storage.load(legacy_binding)
++        if legacy_nodes:
++            binding, nodes = legacy_binding, legacy_nodes
+     calls = cache_hits = 0
+     events = []
+     physical_attempts = []
