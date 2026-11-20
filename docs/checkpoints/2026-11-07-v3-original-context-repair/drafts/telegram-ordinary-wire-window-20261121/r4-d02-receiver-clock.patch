@@ -1,0 +1,203 @@
+diff --git a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_once.py b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_once.py
+--- a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_once.py
++++ b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_once.py
+@@ -8,7 +8,15 @@
+ import time
+ 
+ 
++D02_RECEIVER_SCENARIOS = ('088d47d6a8efbf63068bb8fff13c69af05478a20156960811ac1d170db46c4cf', 'bab05e12b1465b984bf58acfd8b25507162b31c135dbb3623623951a06b10a05')
++
++# Allow the in-flight PTB long poll at cutoff and the next ordinary long
++# poll to finish. This is receiver time inside the original outer deadline.
++RECEIVER_POLL_DRAIN_SECONDS = 2 * 10
++
++
+ class Once:
++    receiver_window = None
+     def __init__(self, actor, current, composer, binding_ref):
+         self.actor = actor
+         self.current = current
+@@ -49,6 +57,98 @@
+         source = self.actor.new(directory / f'observer-{role}.py', raw)
+         return self.actor.load_raw(raw, source['path'], f'_R4_{role}'), source
+ 
++    def _requires_receiver(self):
++        return self.context['scenario_sha256'] in D02_RECEIVER_SCENARIOS
++
++    def _arm_receiver(self, claim, parent):
++        actor = self.actor
++        actor.need((self.receiver_window is not None) == self._requires_receiver(),
++                   'R4_EXACT_RECEIVER_SCOPE_REQUIRED')
++        if self.receiver_window is None:
++            return None
++        intent = self.record('receiver-arm-intent.json', dict(
++            **self.context, claim=claim, parent=parent, binding=self.binding_ref, no_retry=True))
++        receipt = self.receiver_window.arm(intent)
++        armed_at = time.monotonic()
++        actor.need(type(receipt) is dict and set(receipt) == {
++                'state', 'claim_sha256', 'generation', 'first_offset', 'armed_monotonic', 'expires_monotonic'}
++            and receipt['state'] == 'ARMED' and receipt['claim_sha256'] == claim['sha256']
++            and type(receipt['generation']) is int and receipt['generation'] > 0
++            and type(receipt['first_offset']) is int and 0 <= receipt['first_offset'] < 2**63
++            and all(type(receipt[key]) in (int, float) for key in ('armed_monotonic', 'expires_monotonic'))
++            and 0 <= receipt['armed_monotonic'] <= armed_at < receipt['expires_monotonic']
++                <= receipt['armed_monotonic'] + 600,
++            'R4_RECEIVER_ARM_NOT_CONFIRMED')
++        return self.record('receiver-arm.json', dict(**self.context, parent=parent,
++            claim=claim, intent=intent, receipt=receipt, no_retry=True))
++
++    def _prepare_receiver(self, runner, clock_record, claim, parent):
++        actor = self.actor
++        arm_ref = clock_record.get('receiver_arm')
++        actor.need((arm_ref is not None) == self._requires_receiver()
++                   == (self.receiver_window is not None), 'R4_RECEIVER_ARM_REQUIRED_FOR_CHILD')
++        if arm_ref is None:
++            return None
++        actor.need(arm_ref == actor.fileref(self.work / 'receiver-arm.json'),
++                   'R4_RECEIVER_ARM_REFERENCE_CHANGED')
++        arm = actor.doc(arm_ref)
++        actor.need(arm['claim'] == claim and arm['parent'] == parent
++                   and arm['intent'] == actor.fileref(self.work / 'receiver-arm-intent.json')
++                   and arm['receipt']['claim_sha256'] == claim['sha256']
++                   and arm['receipt']['state'] == 'ARMED' and arm['no_retry'] is True
++                   and all(arm[key] == value for key, value in self.context.items()),
++                   'R4_RECEIVER_ARM_OWNER_CHANGED')
++
++        def current_arm(original_guard):
++            # Recheck both budgets after the same arm readback and the original guard.
++            try:
++                return (arm_ref == actor.fileref(self.work / 'receiver-arm.json')
++                        and self.receiver_window.confirm(arm_ref) is True
++                        and original_guard() is True
++                        and time.monotonic() + self.current.TIMING['ack_seconds']
++                            + self.current.TIMING['reply_window_seconds'] + self.current.TIMING['reserve_seconds']
++                            + RECEIVER_POLL_DRAIN_SECONDS
++                            <= min(arm['receipt']['expires_monotonic'], clock_record['deadline_monotonic']))
++            except Exception:
++                return False
++
++        runner._ordinary_receiver_window_current = current_arm
++        return arm_ref
++
++    def _bind_receiver_cutoff(self, runner, run, clock, arm_ref):
++        # This runs after the original ACK/capture seed is durable. Any loss is
++        # scoped to receiving proof. The confirmed sender still observes once.
++        try:
++            actor = self.actor
++            before, wall, after = runner._ordinary_receiver_ack_samples
++            timing = self.current.TIMING
++            value = actor.doc(clock)
++            receipt = actor.doc(arm_ref)['receipt']
++            cutoff = after + timing['reply_window_seconds']
++            actor.need(all(type(v) in (int, float) for v in (before, wall, after))
++                       and run['id'] == self.context['run_id']
++                       and run['scenario_sha256'] == self.context['scenario_sha256']
++                       and run['send_state'] == 'sent' and run['send_attempts'] == 1
++                       and run['sent_at'] == wall and run['capture_until'] == wall + timing['reply_window_seconds']
++                       and receipt['armed_monotonic'] <= value['started_monotonic'] <= before <= after <= time.monotonic()
++                       and cutoff + timing['reserve_seconds'] + RECEIVER_POLL_DRAIN_SECONDS
++                           <= min(value['deadline_monotonic'], receipt['expires_monotonic']),
++                       'R4_RECEIVER_CUTOFF_ORIGINAL_ACK_REQUIRED')
++            for key in ('sent_api_ack_reference', 'sent_window_reference'):
++                reference = run[key]
++                runner.read_reference({k: reference[k] for k in ('basename', 'bytes', 'sha256')}, reference['basename'])
++            proof = self.record('receiver-cutoff-intent.json', dict(**self.context, arm=arm_ref, clock=clock,
++                ack=run['sent_api_ack_reference'], send_window=run['sent_window_reference'],
++                ack_wall=wall, ack_monotonic=[before, after],
++                original_wall_cutoff=run['capture_until'], receiver_monotonic_cutoff=cutoff, no_retry=True))
++            actor.need(self.receiver_window.bind_cutoff(arm_ref, proof) is True,
++                       'R4_RECEIVER_CUTOFF_NOT_CONFIRMED')
++            self.record('receiver-cutoff.json', dict(**self.context, intent=proof,
++                state='RECEIVER_CUTOFF_BOUND', no_retry=True))
++        except Exception as exc:
++            self.record_failure('receiver-cutoff-failure.json', exc,
++                state='RECEIVER_COVERAGE_UNKNOWN', arm=arm_ref, clock=clock, confirmed_send_preserved=True)
++
+     def execute(self, launch, *, release=None):
+         """Qualify under the existing slot, start one clock, and reap the same child."""
+         actor = self.actor
+@@ -91,12 +191,27 @@
+             actor.need(not stops, 'R4_STOP_BEFORE_CLAIM')
+             claim = self.record('claim.json', dict(binding=self.binding_ref, **self.context, parent=parent,
+                                                    no_retry=True, readonly_qualification=qualified))
++            stage = 'RECEIVER_ARM'
++            actor.need(not stops, 'R4_STOP_BEFORE_RECEIVER_ARM')
++            arm_ref = self._arm_receiver(claim, parent)
+             stage = 'CLOCK'
++            if arm_ref is not None:
++                receipt = actor.doc(arm_ref)['receipt']
++                actor.need(arm_ref == actor.fileref(self.work / 'receiver-arm.json')
++                           and self.receiver_window.confirm(arm_ref) is True,
++                           'R4_RECEIVER_ARM_LOST_BEFORE_CLOCK')
+             actor.need(not stops, 'R4_STOP_BEFORE_CLOCK')
+             start = time.monotonic()
++            if arm_ref is not None:
++                actor.need(start + self.current.TIMING['ack_seconds'] + self.current.TIMING['reply_window_seconds']
++                           + self.current.TIMING['reserve_seconds'] + RECEIVER_POLL_DRAIN_SECONDS
++                           <= receipt['expires_monotonic'],
++                           'R4_RECEIVER_ARM_EXPIRED_BEFORE_CLOCK')
+             clock = dict(schema='frw.Root.F07.finite-operation-clock.v1', status='ROOT_BOUND_FUTURE_OPERATION',
+                          **self.context, timing=self.current.TIMING, old_effects_clocks_preserved=True,
+                          started_monotonic=start, deadline_monotonic=start + self.current.TIMING['outer_seconds'])
++            if arm_ref is not None:
++                clock['receiver_arm'] = arm_ref
+             clock_ref = self.record('clock.json', clock)
+             try:
+                 stage = 'LAUNCH'
+@@ -194,6 +309,7 @@
+                 consumer=owner, driver_binding=self.binding_ref, clock=clock, no_retry=True))
+             observer, _ = self.observer(self.work, 'owned_consumer', parent, clock, invocation)
+             runner = runner_factory(observer, store)
++            arm_ref = self._prepare_receiver(runner, actor.doc(clock), claim, parent)
+             path = store.run_path(self.context['run_id'])
+             present_before = os.path.lexists(path)
+             try:
+@@ -201,6 +317,8 @@
+                 run = runner.new(self.context['run_id'], self.phase['scenario'])
+                 progress['stage'] = 'SEND'
+                 runner.send(run, consumer_fd=consumer, credential_fd=credential)
++                if arm_ref is not None:
++                    self._bind_receiver_cutoff(runner, run, clock, arm_ref)
+                 progress['stage'] = 'OBSERVE'
+                 runner.observe(run)
+             except BaseException as exc:
+diff --git a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_admission_source.py b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_admission_source.py
+--- a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_admission_source.py
++++ b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_admission_source.py
+@@ -89,6 +89,9 @@
+ """).body[0]
+     prefix.body[-1:-1] = before_construction
+     return (textwrap.indent(ast.unparse(prefix), "    ") + "\n").encode()
++
++
++D02_RECEIVER_SCENARIOS = ('088d47d6a8efbf63068bb8fff13c69af05478a20156960811ac1d170db46c4cf', 'bab05e12b1465b984bf58acfd8b25507162b31c135dbb3623623951a06b10a05')
+ 
+ 
+ def compose_observer(source, *, run_id, scenario_sha256, authority, authority_ref,
+@@ -153,6 +156,26 @@
+                   b"                    return self._ordinary_wire_window(run, ack_budget) is True\n"
+                   b"                except (OSError, ValueError, TypeError, KeyError):\n"
+                   b"                    return False\n"))
++    if scenario_sha256 in D02_RECEIVER_SCENARIOS:
++        first, last, _ = edits[-1]
++        require((first, last) == (window.lineno + 1, window.lineno), "Exact ordinary wire guard required")
++        edits[-1] = (first, window.end_lineno,
++                      b"            if admitted is not None:\n"
++                      b"                return False\n"
++                      b"            receiver = getattr(self, '_ordinary_receiver_window_current', None)\n"
++                      b"            if not callable(receiver):\n"
++                      b"                return False\n"
++                      b"            def original_guard():\n"
++                      b"                return (self._ordinary_wire_window(run, ack_budget) is True\n"
++                      b"                        and self.clock() + ack_budget + step['observe']['window_seconds']\n"
++                      b"                            + REPLY_WINDOW_RESERVE <= run['deadline'])\n"
++                      b"            return receiver(original_guard) is True\n")
++        ack = one((node for node in send.body if isinstance(node, ast.Assign)
++                   and ast.unparse(node) == "ack_received_at = self.clock()"), "ordinary ACK sampling")
++        edits.append((ack.lineno, ack.lineno,
++                      b"        ack_mono_before = time.monotonic()\n"
++                      b"        ack_received_at = self.clock()\n"
++                      b"        self._ordinary_receiver_ack_samples = (ack_mono_before, ack_received_at, time.monotonic())\n"))
+     for name, value in {"ORDINARY_INDEPENDENT_SCENARIOS": {run_id: scenario_sha256},
+                         "ORDINARY_INDEPENDENT_AUTHORITY": authority_ref}.items():
+         assignment = one((node for node in runner.body if isinstance(node, ast.Assign)
