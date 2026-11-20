@@ -4,8 +4,10 @@
 The default output is a summary. Use --case and --format for indexed source
 references and use --all for the full projection. A source reference is a
 source name from the output's `sources` object followed by a JSON pointer.
+Each B00 phase references its pinned planning row, including fixture and
+predecessor requirements. Historical wave evidence is projected separately.
 Use --b00-wave-root to join historical B00 scenarios from a local wave archive.
-With --b00-fixture, match operator-supplied copies by size and SHA-256.
+With --b00-fixture, match explicit copies to the fixture pins.
 The original requests and oracles stay in their source files. The projection
 carries no current admission or dispatch state.
 """
@@ -26,6 +28,7 @@ from zipfile import BadZipFile, ZipFile
 CHECKPOINT = Path(__file__).resolve().parent
 CASE_ANCHORS = 'evidence/astra-20261112/remaining-core-original-criteria-review.json'
 PACKAGE_ANCHORS = 'evidence/sol-20261110/conditional-archive-links-root-review.json'
+B00_PLANNING_KEY = 'b219_finite_executable_expansion'
 WORKER_CASES = {
     'W-13': 'DSH', 'R-11': 'DSH', 'W-14': 'A0', 'R-12': 'A0', 'R-13': 'DSH/A0 handoff',
 }
@@ -59,6 +62,17 @@ def read_pinned(path, pin, source):
         return verified_bytes(stream.read(pin.get('bytes', 65536) + 1), pin, source)
 
 
+def catalog_fixture_members(archive, member_directory):
+    fixtures = defaultdict(list)
+    fixture_directory = f'{member_directory}/fixtures'
+    for info in archive.infolist():
+        name = info.filename
+        if not info.is_dir() and Path(name).parent.as_posix() == fixture_directory:
+            data = archive.read(info)
+            fixtures[hashlib.sha256(data).hexdigest()].append({'zip_member': name, 'bytes': len(data)})
+    return fixtures
+
+
 def load_inputs(args):
     anchors = json.loads((CHECKPOINT / CASE_ANCHORS).read_bytes())['original_anchors']
     package = json.loads((CHECKPOINT / PACKAGE_ANCHORS).read_bytes())['original_contract']
@@ -85,6 +99,7 @@ def load_inputs(args):
         formats = json.loads(verified_bytes(archive.read(format_member), pins['format_catalog'], 'format catalogue'))
         fixture_headings = re.findall(r'^### (FX-[A-Z]+(?: / FX-[A-Z]+)*):',
                                       archive.read(fixture_member).decode('utf-8'), re.MULTILINE)
+        catalog_fixtures = catalog_fixture_members(archive, member_directory)
     fixture_families = set(' / '.join(fixture_headings).split(' / '))
     case_ledger = json.loads(read_pinned(args.case_ledger, pins['case_ledger'], 'case ledger'))
     require(case_ledger['schema'] == 'private.user-journey.case-ledger.v1', 'unexpected case ledger schema')
@@ -99,7 +114,7 @@ def load_inputs(args):
     sources['catalogue_archive'] = {'sha256': package['zip']['sha256']}
     sources['original_directive'] = {'zip_member': f'{member_directory}/01_ASTRA_DIRECTIVE_EN.md'}
     sources['original_fixture_families'] = {'zip_member': fixture_member}
-    return cases, formats, case_ledger, extension_ledger, b00, fixture_families, sources
+    return cases, formats, case_ledger, extension_ledger, b00, fixture_families, sources, catalog_fixtures
 
 
 def indexed_rows(rows, key, count, label):
@@ -210,9 +225,8 @@ def b00_capsule_details(capsule, root, fixture_pins):
     }
 
 
-def project_b00_wave_history(b00, root, fixture_paths=()):
+def project_b00_wave_history(b00, root, fixture_pins):
     require(archive_directory(root), 'expected a B00 wave root directory')
-    fixture_pins = b00_fixture_pins(fixture_paths)
     registry = Path(b00['source_registry'])
     phases = {phase: [] for row in b00['cases'] for phase in row['step_ids']}
     waves = [path for path in sorted(root.iterdir())
@@ -263,6 +277,83 @@ def b00_availability(bindings):
     if any(binding['capsule'] for binding in bindings):
         return 'separately_pinned_variant_exact'
     return 'missing_capsule' if bindings else 'missing_authority'
+
+
+def project_b00_planning(case_ledger, catalog, b00, catalog_fixtures, fixture_pins):
+    expanded = case_ledger[B00_PLANNING_KEY]
+    require(expanded['schema'] == 'frw.Kimi.b219-finite-case-instances.v1', 'unexpected B00 planning schema')
+    planned = indexed_rows(expanded['cases'], 'case_id', 170, 'expanded cases')
+    definitions = indexed_rows(catalog['cases'], 'id', 170, 'original cases')
+    copies = defaultdict(list)
+    for (size, digest), arguments in fixture_pins.items():
+        copies[digest].extend({'argument': index, 'bytes': size} for index in arguments)
+
+    result = {}
+    for row in b00['cases']:
+        case_id = row['case']
+        case_index, case_plan = planned[case_id]
+        catalog_index, definition = definitions[case_id]
+        clauses = definition['steps_ru']
+        operations = case_plan['operations']
+        require(len(row['step_ids']) == len(operations), f'B00 planning phase count differs for {case_id}')
+        phases = []
+        for ordinal, (phase, op) in enumerate(zip(row['step_ids'], operations, strict=True)):
+            label = f'{case_id} {phase}'
+            ref = f'case_ledger#/{B00_PLANNING_KEY}/cases/{case_index}/operations/{ordinal}'
+            index = op['original_step_index']
+            require(op['operation_id'] == f'{case_id}/OP-{ordinal + 1:03}'
+                    and type(index) is int and 0 <= index < len(clauses)
+                    and op['exact_original_clause'] == clauses[index]
+                    and op['oracle']['text'] == definition['oracle_en']
+                    and op['new_execution_credit'] == 0, f'invalid B00 planning operation for {label}')
+            request = op['request']
+            require(isinstance(request['text'], str)
+                    and hashlib.sha256(request['text'].encode('utf-8')).hexdigest() == request['sha256'],
+                    f'invalid B00 planning request pin for {label}')
+            inputs = op['inputs']
+            scenario = op['scenario']
+            case_input = op['case_input']
+            if scenario is None:
+                require(op['phase'] == f'original_step_{ordinal + 1}' and index == ordinal
+                        and request['binding'] == 'ORIGINAL_CLAUSE_FUTURE_PLANNED_REQUEST_NOT_SCENARIO_ACCEPTED'
+                        and request['text'] == clauses[index] and case_input is None and not inputs,
+                        f'invalid B00 clause-only operation for {label}')
+                source = 'original_clause_only'
+            else:
+                require(op['phase'] == phase and request['binding'] == 'PINNED_ACCEPTED_SCENARIO'
+                        and Path(scenario['path']).name == f'{phase}.json'
+                        and all(isinstance(pin, str) and re.fullmatch(r'[a-f0-9]{64}', pin)
+                                for pin in (scenario['sha256'], case_input['sha256'])),
+                        f'invalid B00 planning scenario pin for {label}')
+                source = 'pinned_planning_scenario'
+
+            dependencies = op['dependencies']
+            needed = dependencies['required_original_step_indices']
+            require(all(type(step) is int and 0 <= step < index for step in needed)
+                    and len(set(needed)) == len(needed), f'invalid B00 planning dependency for {label}')
+            documents = []
+            for input_index, attachment in enumerate(inputs):
+                digest = attachment['sha256']
+                require(attachment['kind'] == 'document' and isinstance(digest, str)
+                        and re.fullmatch(r'[a-f0-9]{64}', digest),
+                        f'invalid B00 planning document pin for {label}')
+                documents.append({
+                    'ref': f'{ref}/inputs/{input_index}', 'filename': attachment['filename'],
+                    'mime_type': attachment['mime_type'], 'sha256': digest,
+                    'catalogue_members': catalog_fixtures.get(digest, []),
+                    'matching_fixture_arguments': copies.get(digest, []),
+                })
+            phases.append({
+                'phase': phase, 'source': source, 'operation_ref': ref,
+                'original_step_ref': f'case_catalog#/cases/{catalog_index}/steps_ru/{index}',
+                'request_ref': f'{ref}/request/text', 'request_sha256': request['sha256'],
+                'scenario_pin': {'ref': f'{ref}/scenario', 'sha256': scenario['sha256']} if scenario else None,
+                'case_input_pin': {'ref': f'{ref}/case_input', 'sha256': case_input['sha256']} if case_input else None,
+                'dependencies': dependencies, 'missing_bindings': op['missing_bindings'],
+                'documents': documents,
+            })
+        result[case_id] = phases
+    return result
 
 
 def project_cases(catalog, ledger, b00, fixture_families, catalog_sha):
@@ -483,8 +574,12 @@ def format_conditions(ledger, formats, case_ids):
 
 
 def build_projection(inputs, selected_cases, selected_formats, select_all, b00_wave_root=None, b00_fixtures=()):
-    case_catalog, format_catalog, case_ledger, extension_ledger, b00, fixture_families, sources = inputs
+    case_catalog, format_catalog, case_ledger, extension_ledger, b00, fixture_families, sources, catalog_fixtures = inputs
     cases = project_cases(case_catalog, case_ledger, b00, fixture_families, sources['case_catalog']['sha256'])
+    fixture_pins = b00_fixture_pins(b00_fixtures)
+    b00_plans = project_b00_planning(case_ledger, case_catalog, b00, catalog_fixtures, fixture_pins)
+    planned_phases = [phase for phases in b00_plans.values() for phase in phases]
+    planned_documents = [doc for phase in planned_phases for doc in phase['documents']]
     original_ids = cases.keys() | WORKER_CASES.keys()
     conversion_criteria = cases['F-04']['criteria_refs'][0]
     formats = project_formats(format_catalog, extension_ledger, original_ids, conversion_criteria)
@@ -498,6 +593,12 @@ def build_projection(inputs, selected_cases, selected_formats, select_all, b00_w
             'original_cases': len(original_ids), 'core_cases': len(cases), 'worker_cases_out_of_scope': WORKER_CASES,
             'b00_cases': b00['cases_total'], 'b00_phases': b00['steps_total'],
             'b00_sent_exact_hash_in_snapshot': b00['steps_sent'],
+            'b00_planning': {
+                'phases_by_source': dict(Counter(phase['source'] for phase in planned_phases)),
+                'attachment_references': len(planned_documents),
+                'attachment_references_with_verified_bytes': sum(
+                    bool(doc['catalogue_members'] or doc['matching_fixture_arguments']) for doc in planned_documents),
+            },
             'formats': len(formats), 'variants': sum(len(row['variants']) for row in formats.values()),
             'format_operation_rows': len(operations),
             'format_operations_by_applicability': dict(Counter(row['applicability'] for row in operations)),
@@ -513,8 +614,11 @@ def build_projection(inputs, selected_cases, selected_formats, select_all, b00_w
     }
     if select_all or selected_cases:
         output['cases'] = [row for case_id, row in cases.items() if select_all or case_id in selected_cases]
+        for case in output['cases']:
+            if 'b00' in case:
+                case['b00']['planning_operations'] = b00_plans[case['id']]
     if b00_wave_root is not None:
-        history = project_b00_wave_history(b00, b00_wave_root, b00_fixtures)
+        history = project_b00_wave_history(b00, b00_wave_root, fixture_pins)
         availability = Counter(row['availability'] for row in history.values())
         output['summary']['b00_historical_scenarios'] = {
             status: availability[status] for status in (
@@ -547,10 +651,8 @@ def main(argv=None):
     parser.add_argument('--b00-wave-root', type=Path,
                         help='join historical B00 scenario hashes from retained wave directories')
     parser.add_argument('--b00-fixture', type=Path, action='append', default=[],
-                        help='match an explicit local copy against historical attachment pins; repeatable')
+                        help='match an explicit local copy against planning or historical attachment pins; repeatable')
     args = parser.parse_args(argv)
-    if args.b00_fixture and args.b00_wave_root is None:
-        parser.error('--b00-fixture requires --b00-wave-root')
     try:
         output = build_projection(load_inputs(args), {case.upper() for case in args.case},
                                   {fmt.lower().removeprefix('.') for fmt in args.format}, args.all,
