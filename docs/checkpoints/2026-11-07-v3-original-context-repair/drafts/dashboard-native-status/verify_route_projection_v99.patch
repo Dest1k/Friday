@@ -1,0 +1,136 @@
+--- a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/dashboard-native-status/verify_route_projection.py
++++ b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/dashboard-native-status/verify_route_projection.py
+@@ -3,7 +3,10 @@
+ from copy import deepcopy
+ from hashlib import sha256
+ import json
++import os
+ from pathlib import Path
++import re
++import stat
+ 
+ 
+ MARKER = "FRIDAY-INSTALL.json"
+@@ -51,7 +54,8 @@
+ 
+ def verify_route_projection(*, before_root, before_unit, after_root, after_unit,
+                             previous_marker_sha256, previous_unit_sha256,
+-                            old_host, old_public_url, host, public_url, before_marker=None):
++                            old_host, old_public_url, host, public_url, before_marker=None,
++                            successor=None):
+     """Check candidate bytes. The caller supplies independently anchored old pins and approved addresses."""
+     from hermes_cli.config_effective import read_user_config_effective_readonly
+     from hermes_cli.dashboard_auth.prefix import _normalise_public_url
+@@ -102,7 +106,31 @@
+             "Historical authenticated Dashboard identity changed")
+     port = dashboard["port"]
+ 
++    successor_paths = {}
++    if successor is not None:
++        # A V99 leaf keeps the route changes in its applied journal beforeimage.
++        # The caller authenticates these independent pins in the publisher proof.
++        require(type(successor) is dict
++                and set(successor) == {"request_sha256", "applied_marker_sha256", "marker_sha256"}
++                and all(type(pin) is str and re.fullmatch(r"[a-f0-9]{64}", pin) for pin in successor.values()),
++                "Exact Dashboard successor marker bindings required")
++        tx = after_root / "preparation" / ("ordinary-source-update-v45-" + successor["request_sha256"][:16])
++        applied_path = tx / "before" / MARKER
++        successor_paths = {after_root / MARKER: successor["marker_sha256"],
++                           tx / MARKER: successor["marker_sha256"],
++                           tx / "request.json": successor["request_sha256"]}
++        require(all(path.resolve(strict=True) == path for path in (applied_path, *successor_paths))
++                and applied_path != before_marker
++                and len({previous_marker_sha256, successor["applied_marker_sha256"], successor["marker_sha256"]}) == 3
++                and all(digest(read_owned(path, private=True)) == pin
++                        for path, pin in successor_paths.items()),
++                "Dashboard successor journal or active marker changed")
++        after_paths[MARKER] = applied_path
++
+     after = {name: read_owned(path, private=True) for name, path in after_paths.items()}
++    if successor is not None:
++        require(digest(after[MARKER]) == successor["applied_marker_sha256"],
++                "Dashboard applied journal beforeimage changed")
+     require(after[CONFIG] == exact_replacement(before[CONFIG], old_public_url.encode(), public_url.encode(),
+                                                 "Original Dashboard URL must occur once in config"),
+             "Dashboard route changes other config bytes")
+@@ -148,6 +176,8 @@
+     require(all(read_owned(path, private=True) == before[name] for name, path in before_paths.items())
+             and all(read_owned(path, private=True) == after[name] for name, path in after_paths.items()),
+             "Dashboard route snapshots changed during verification")
++    require(all(digest(read_owned(path, private=True)) == pin for path, pin in successor_paths.items()),
++            "Dashboard successor journal or active marker changed")
+     return {
+         "state": "DASHBOARD_ADDRESS_ONLY_PROJECTION_VERIFIED",
+         "source_receipt_sha256": marker["source_receipt_sha256"],
+@@ -156,4 +186,71 @@
+         "tls": tls,
+         "native_configuration_sha256": expected_marker["ordinary_gateway"]["configuration_sha256"],
+         "publication_authorized": False,
++        **({"successor_marker_sha256": successor["marker_sha256"]} if successor is not None else {}),
+     }
++
++
++def project_v99_dashboard_input(*, baseline_ref, tls_input_refs, applied_read_pins, **route):
++    """Derive a durable candidate input from an independently accepted applied route.
++
++    This function returns bytes to validate and pin. The caller binds them into
++    the ordinary successor request and keeps the canonical predecessor unchanged.
++    """
++    from hermes_cli.friday_dashboard_owner import read_owned
++
++    def read_pinned_private(ref, maximum):
++        require(type(ref) is dict and set(ref) == {"path", "sha256"}
++                and type(ref["path"]) is str and type(ref["sha256"]) is str
++                and re.fullmatch(r"[a-f0-9]{64}", ref["sha256"]), "Exact protected input pin required")
++        path = Path(ref["path"])
++        require(path.is_absolute() and path.resolve(strict=True) == path
++                and path.stat().st_size <= maximum, "Exact protected input path required")
++        raw = read_owned(path, private=True)
++        require(len(raw) <= maximum and digest(raw) == ref["sha256"], "Protected input bytes changed")
++        return raw
++
++    value = exact_object(read_pinned_private(baseline_ref, 2 * 1024**2))
++    require(route.get("successor") is None and value["home"] == str(route["after_root"]),
++            "Dashboard leaf input requires the applied predecessor")
++    dashboard = value["product"]["dashboard"]
++    require(set(dashboard) == {"host", "port", "public_url", "operator", "tls"}
++            and dashboard["host"] == route["old_host"]
++            and dashboard["public_url"] == route["old_public_url"] and dashboard["tls"] == TLS_PATHS
++            and set(value["dashboard_tls"]) == set(TLS_PATHS) == set(tls_input_refs),
++            "Reviewed Dashboard declaration differs from predecessor")
++    proof = verify_route_projection(**route)
++    require(proof["current"] == applied_read_pins, "Exact accepted applied Dashboard pins required")
++    before_root = Path(route["before_root"])
++    before_marker = Path(route.get("before_marker") or before_root / MARKER)
++    historical_marker = exact_object(read_pinned_private(
++        {"path": str(before_marker), "sha256": proof["previous"][MARKER]}, 2 * 1024**2))
++    historical_profile = exact_object(read_pinned_private(
++        {"path": str(before_root / PROFILE), "sha256": proof["previous"][PROFILE]}, 65536))
++    declared_dashboard = historical_profile["native_dashboard"]
++    require(all(dashboard[name] == declared_dashboard[name] for name in dashboard)
++            and {relative: value["dashboard_tls"][role]["sha256"] for role, relative in TLS_PATHS.items()}
++                == historical_marker["tls_files"],
++            "Historical Dashboard declaration or TLS pins changed")
++    parents = set()
++    for role, relative in TLS_PATHS.items():
++        ref = tls_input_refs[role]
++        if role != "cafile":
++            require(ref["sha256"] == value["dashboard_tls"][role]["sha256"]
++                    or ref["path"] != value["dashboard_tls"][role]["path"],
++                    "Dashboard relocation may not replace historical TLS inputs")
++        # These are retained inputs for the durable declaration, independently
++        # read and hashed against the files that passed native TLS validation.
++        path = Path(ref["path"])
++        require(path.name == Path(relative).name and not path.is_relative_to(Path(value["home"])),
++                "Dashboard declaration requires separate protected TLS inputs with exact names")
++        raw = read_pinned_private(ref, 262144)
++        parent = path.parent.lstat()
++        require(stat.S_ISDIR(parent.st_mode) and stat.S_IMODE(parent.st_mode) == 0o700
++                and parent.st_uid == os.getuid(), "Dashboard TLS input directory must be private")
++        parents.add(path.parent)
++        require(digest(raw) == proof["current"][relative], "Dashboard retained TLS differs from the applied files")
++    require(len(parents) == 1, "Dashboard TLS inputs must share one protected directory")
++
++    dashboard.update(host=route["host"], public_url=route["public_url"])
++    value["dashboard_tls"] = deepcopy(tls_input_refs)
++    return encoded(value), proof
