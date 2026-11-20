@@ -7,6 +7,8 @@ source name from the output's `sources` object followed by a JSON pointer.
 Each B00 phase references its pinned planning row, including fixture and
 predecessor requirements. Historical wave evidence is projected separately.
 Use --b00-wave-root to join historical B00 scenarios from a local wave archive.
+The joined archive also reports recorded observation and deadline ranges for
+one scenario per phase on the shared serial slot.
 With --b00-fixture, match explicit copies to the fixture pins.
 The original requests and oracles stay in their source files. The projection
 carries no current admission or dispatch state.
@@ -38,6 +40,18 @@ TRIAL_POLICY = {
     'default': 'one baseline trial per applicable instance',
     'critical_non_dangerous': ['nominal', 'paraphrase', 'retained-history'],
     'controlled_fault_exception': 'Predeclare one controlled observation and deterministic negatives where sufficient.',
+}
+# These retained records establish phase order within a shared catalogue clause.
+B00_DOCUMENT_PHASE_ORDER = {
+    'D-03-02': ('D-03-01', 'evidence/astra-20261120/d03-exact-staged-owned-predecessor-offline.json#/pairs/0'),
+    'D-03-03': ('D-03-02', 'evidence/astra-20261120/d03-exact-staged-owned-predecessor-offline.json#/pairs/1'),
+    'D-07-02': ('D-07-01', 'TWENTYSECOND-WAVE.json#/results'),
+    'D-08-02': ('D-08-01', 'TWENTYTHIRD-WAVE.json#/results'),
+    'D-14-02': ('D-14-01',
+                'evidence/astra-20261120/d14-b00-exact-clauses-and-ordered-passive-continuation.json#/phase_summary/1/predecessor'),
+    'D-14-03': ('D-14-02',
+                'evidence/astra-20261120/d14-b00-exact-clauses-and-ordered-passive-continuation.json#/phase_summary/2/predecessor'),
+    'D-15-02': ('D-15-01', 'THIRTEENTH-WAVE.json#/admission/scope'),
 }
 
 
@@ -279,6 +293,40 @@ def b00_availability(bindings):
     return 'missing_capsule' if bindings else 'missing_authority'
 
 
+def b00_historical_timing(history):
+    observation = []
+    deadlines = []
+    for row in history.values():
+        capsules = [binding for binding in row['bindings'] if binding['capsule']]
+        if capsules:
+            deadlines.append([binding['recorded_deadline_seconds'] for binding in capsules])
+        windows = []
+        for binding in capsules:
+            parts = [step.get('recorded_observation_seconds') for step in binding['steps']]
+            if None not in parts:
+                seconds = sum(parts)
+                if seconds <= binding['recorded_deadline_seconds']:
+                    windows.append(seconds)
+        if windows:
+            observation.append(windows)
+
+    def serial_envelope(per_phase):
+        return {
+            'phases_with_recorded_bounds': len(per_phase),
+            'phases_without_recorded_bounds': len(history) - len(per_phase),
+            'minimum_seconds': sum(map(min, per_phase)) if per_phase else None,
+            'maximum_seconds': sum(map(max, per_phase)) if per_phase else None,
+        }
+
+    return {
+        'scope': 'One archived scenario per covered phase, including separately pinned variants. '
+                 'These are declared slot bounds. Current eligibility, endpoint latency, '
+                 'preparation and independent grading time are unmeasured.',
+        'observation_windows': serial_envelope(observation),
+        'deadline_envelopes': serial_envelope(deadlines),
+    }
+
+
 def project_b00_planning(case_ledger, catalog, b00, catalog_fixtures, fixture_pins):
     expanded = case_ledger[B00_PLANNING_KEY]
     require(expanded['schema'] == 'frw.Kimi.b219-finite-case-instances.v1', 'unexpected B00 planning schema')
@@ -331,6 +379,16 @@ def project_b00_planning(case_ledger, catalog, b00, catalog_fixtures, fixture_pi
             needed = dependencies['required_original_step_indices']
             require(all(type(step) is int and 0 <= step < index for step in needed)
                     and len(set(needed)) == len(needed), f'invalid B00 planning dependency for {label}')
+            prior_clauses = []
+            for step in needed:
+                earlier_phases = [previous_phase for previous_phase, previous_op
+                                  in zip(row['step_ids'][:ordinal], operations[:ordinal], strict=True)
+                                  if previous_op['original_step_index'] == step]
+                prior_clauses.append({
+                    'original_step_ref': f'case_catalog#/cases/{catalog_index}/steps_ru/{step}',
+                    'earlier_phase_candidates': earlier_phases,
+                    'mapping': 'unique_candidate' if len(earlier_phases) == 1 else 'exact_phase_mapping_open',
+                })
             documents = []
             for input_index, attachment in enumerate(inputs):
                 digest = attachment['sha256']
@@ -343,15 +401,25 @@ def project_b00_planning(case_ledger, catalog, b00, catalog_fixtures, fixture_pi
                     'catalogue_members': catalog_fixtures.get(digest, []),
                     'matching_fixture_arguments': copies.get(digest, []),
                 })
-            phases.append({
+            projected = {
                 'phase': phase, 'source': source, 'operation_ref': ref,
                 'original_step_ref': f'case_catalog#/cases/{catalog_index}/steps_ru/{index}',
                 'request_ref': f'{ref}/request/text', 'request_sha256': request['sha256'],
                 'scenario_pin': {'ref': f'{ref}/scenario', 'sha256': scenario['sha256']} if scenario else None,
                 'case_input_pin': {'ref': f'{ref}/case_input', 'sha256': case_input['sha256']} if case_input else None,
                 'dependencies': dependencies, 'missing_bindings': op['missing_bindings'],
+                'prior_clause_phases': prior_clauses,
                 'documents': documents,
-            })
+            }
+            sequence = B00_DOCUMENT_PHASE_ORDER.get(phase)
+            if sequence:
+                previous_phase, evidence = sequence
+                earlier = row['step_ids'][:ordinal]
+                require(previous_phase in earlier
+                        and operations[earlier.index(previous_phase)]['original_step_index'] == index,
+                        f'invalid documented B00 phase order for {label}')
+                projected['same_clause_predecessor'] = {'phase': previous_phase, 'evidence': evidence}
+            phases.append(projected)
         result[case_id] = phases
     return result
 
@@ -623,6 +691,7 @@ def build_projection(inputs, selected_cases, selected_formats, select_all, b00_w
         output['summary']['b00_historical_scenarios'] = {
             status: availability[status] for status in (
                 'original_registry_exact', 'separately_pinned_variant_exact', 'missing_capsule', 'missing_authority')}
+        output['summary']['b00_archived_serial_timing'] = b00_historical_timing(history)
         for case in output.get('cases', []):
             if 'b00' in case:
                 case['b00']['historical_scenarios'] = [
