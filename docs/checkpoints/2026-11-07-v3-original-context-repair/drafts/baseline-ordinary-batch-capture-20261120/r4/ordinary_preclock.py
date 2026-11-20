@@ -29,6 +29,9 @@ REVIEWED_PHASES = {
     "b99effc9a4cab5b11ce17b23260564a42f5f269f1fba3d94c3a505e0a5266414": (
         "D-11", "0e6c22c0484ec102d5a521c46bc931b7f16a6cf7125aaf7825ea347b4607ec3f",
     ),
+    "f1bf10b96ad7f861ae83c250076c8b8eeaea7f47ebf10f6999350eb97a9e77e4": (
+        "S-04", "f4d1ac2b216f0d3af35315bac4ee79c16390b9cedd411712c1517f95d3319cc9",
+    ),
     "0909a9722fad7e64f4d51099c1e504f0daf19166db30ad700d772bb91b7789ad": (
         "S-11", "8e0e63a60b31594563c124d5fe648d0ba4cec319641d2bd377de44ec0b9ba04b",
     ),
@@ -61,6 +64,12 @@ PRESERVED_RUNS = {
     "D-11": (
         ("root-b00-d11-styled-report-1-physical-01-r17",
          "00d47966a411e12af48a541c741f3fe374788d275ddc30fa1d0264c85832dfde", "EVIDENCE_READY"),
+    ),
+    "S-04": (
+        ("root-b00-s151-s04-20261102-r1",
+         "8fa1f8d0d9a362041672250003a3023f0920c1f19869a1b6ca5dcc14f2e6a04e", "EVIDENCE_READY"),
+        ("root-s04-confusable-37c0b13b977f",
+         "5259cd8d73f99c333d99bbe763f42dde2e618b1aa66143889953bde007766f84", "EVIDENCE_READY"),
     ),
     "S-11": (
         ("root-b00-s151-s11-20261102-r1",
