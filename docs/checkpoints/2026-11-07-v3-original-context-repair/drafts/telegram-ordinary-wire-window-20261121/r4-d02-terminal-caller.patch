@@ -1,0 +1,186 @@
+diff --git a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_once.py b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_once.py
+--- a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_once.py
++++ b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/baseline-ordinary-batch-capture-20261120/r4/ordinary_once.py
+@@ -3,6 +3,7 @@
+ import fcntl
+ import os
+ from pathlib import Path
++import re
+ import signal
+ import tempfile
+ import time
+@@ -17,6 +18,7 @@
+ 
+ class Once:
+     receiver_window = None
++    match_receiver = None
+     def __init__(self, actor, current, composer, binding_ref):
+         self.actor = actor
+         self.current = current
+@@ -66,6 +68,7 @@
+                    'R4_EXACT_RECEIVER_SCOPE_REQUIRED')
+         if self.receiver_window is None:
+             return None
++        actor.need(callable(self.match_receiver), 'R4_EXACT_RECEIVER_MATCHER_REQUIRED')
+         intent = self.record('receiver-arm-intent.json', dict(
+             **self.context, claim=claim, parent=parent, binding=self.binding_ref, no_retry=True))
+         receipt = self.receiver_window.arm(intent)
+@@ -143,11 +146,69 @@
+                 original_wall_cutoff=run['capture_until'], receiver_monotonic_cutoff=cutoff, no_retry=True))
+             actor.need(self.receiver_window.bind_cutoff(arm_ref, proof) is True,
+                        'R4_RECEIVER_CUTOFF_NOT_CONFIRMED')
+-            self.record('receiver-cutoff.json', dict(**self.context, intent=proof,
++            return self.record('receiver-cutoff.json', dict(**self.context, intent=proof,
+                 state='RECEIVER_CUTOFF_BOUND', no_retry=True))
+         except Exception as exc:
+             self.record_failure('receiver-cutoff-failure.json', exc,
+                 state='RECEIVER_COVERAGE_UNKNOWN', arm=arm_ref, clock=clock, confirmed_send_preserved=True)
++
++    def _settle_receiver(self, runner, run_ref, clock, arm_ref, cutoff_ref, invocation, locks):
++        actor = self.actor
++        terminal_intent = native_ref = None
++        try:
++            actor.need(cutoff_ref is not None, 'R4_RECEIVER_ORIGINAL_CUTOFF_NOT_BOUND')
++            run = actor.doc(run_ref)
++            scenario = self.phase['scenario']
++            actor.need(run['id'] == self.context['run_id'] and run['scenario_sha256'] == self.context['scenario_sha256']
++                       and run['scenario'] == scenario and run['step'] == 0
++                       and run['status'] == 'EVIDENCE_READY' and run['capture_window_complete'] is True
++                       and run['send_state'] == 'sent' and run['send_attempts'] == 1,
++                       'R4_RECEIVER_FINAL_ORIGINAL_CAPTURE_REQUIRED')
++            cursor_path = runner.store.root / 'cursor.json'
++            cursor_ref = actor.fileref(cursor_path)
++            runner.verify_reply_custody(run)
++            head = runner.read_reference(run['receive_head'])
++            actor.need(head['kind'] == 'terminal_complete' and actor.fileref(cursor_path) == cursor_ref
++                       and actor.fileref(run_ref['path']) == run_ref,
++                       'R4_RECEIVER_TERMINAL_SENDER_CUSTODY_CHANGED')
++            ack_ref = run['sent_api_ack_reference']
++            ack = runner.read_reference({key: ack_ref[key] for key in ('basename', 'bytes', 'sha256')},
++                                        f"send-ack-{run['id']}-0-1.json")
++            representation = ack_ref['representation']
++            if representation == 'botapi-wire-envelope-json':
++                actor.need(ack['ok'] is True, 'R4_RECEIVER_ORIGINAL_ACK_REQUIRED')
++                ack = ack['result']
++            else:
++                actor.need(representation == 'decoded-message-json', 'R4_RECEIVER_ORIGINAL_ACK_REQUIRED')
++            terminal_intent = self.record('receiver-terminal-intent.json', dict(**self.context,
++                arm=arm_ref, clock=clock, cutoff=cutoff_ref, run=run_ref, cursor=cursor_ref,
++                invocation=invocation, locks={name: actor.lock_identity(os.fstat(fd)) for name, fd in locks.items()},
++                no_retry=True))
++            response_ref = self.receiver_window.finalize(arm_ref, terminal_intent)
++            native = actor.doc(response_ref)
++            arm = actor.doc(arm_ref)['receipt']
++            actor.need(set(native) == {'schema', 'intent', 'run_id', 'scenario_sha256', 'claim_sha256',
++                       'wire_sha256', 'generation', 'disposition_revision', 'route', 'observations', 'no_retry'}
++                       and native['schema'] == 'frw.gateway.d02-native-settlement.v1'
++                       and native['intent'] == terminal_intent and native['no_retry'] is True
++                       and all(native[key] == value for key, value in self.context.items())
++                       and native['claim_sha256'] == arm['claim_sha256']
++                       and type(native['generation']) is int and native['generation'] == arm['generation']
++                       and type(native['disposition_revision']) is int and native['disposition_revision'] >= 0
++                       and re.fullmatch('[a-f0-9]{64}', native['wire_sha256']) is not None
++                       and type(native['observations']) is list and 0 < len(native['observations']) <= scenario['max_updates'],
++                       'R4_RECEIVER_NATIVE_SETTLEMENT_CUSTODY_CHANGED')
++            native_ref = response_ref
++            match = self.match_receiver(ack, scenario, native['route'], native['observations'])
++            return self.record('receiver-terminal-match.json', dict(**self.context,
++                state='RECEIVER_MATCH_RETAINED', terminal_intent=terminal_intent,
++                native_ingress_settlement=native_ref, ack=ack_ref, match=match, no_retry=True))
++        except BaseException as exc:
++            self.record_failure('receiver-terminal-failure.json', exc,
++                state='RECEIVER_SETTLEMENT_UNKNOWN', terminal_intent=terminal_intent,
++                native_ingress_settlement=native_ref, run=run_ref, confirmed_send_preserved=True)
++            if not isinstance(exc, Exception):
++                raise
+ 
+     def execute(self, launch, *, release=None):
+         """Qualify under the existing slot, start one clock, and reap the same child."""
+@@ -317,10 +378,14 @@
+                 run = runner.new(self.context['run_id'], self.phase['scenario'])
+                 progress['stage'] = 'SEND'
+                 runner.send(run, consumer_fd=consumer, credential_fd=credential)
+-                if arm_ref is not None:
+-                    self._bind_receiver_cutoff(runner, run, clock, arm_ref)
++                cutoff_ref = self._bind_receiver_cutoff(runner, run, clock, arm_ref) if arm_ref is not None else None
+                 progress['stage'] = 'OBSERVE'
+                 runner.observe(run)
++                progress['run'] = actor.fileref(path)
++                if arm_ref is not None:
++                    progress['stage'] = 'RECEIVER_FINALIZE'
++                    progress['receiver_match'] = self._settle_receiver(runner, progress['run'], clock, arm_ref,
++                        cutoff_ref, invocation, {'consumer.lock': consumer, 'tester-token': credential})
+             except BaseException as exc:
+                 try:
+                     if not present_before and os.path.lexists(path):
+@@ -328,4 +393,3 @@
+                 except Exception as read_error:
+                     exc.add_note(f'Protected run reference unavailable: {type(read_error).__name__}')
+                 raise
+-            progress['run'] = actor.fileref(path)
+diff --git a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/telegram-ordinary-wire-window-20261121/r4_d02_receiver_client.py b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/telegram-ordinary-wire-window-20261121/r4_d02_receiver_client.py
+--- a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/telegram-ordinary-wire-window-20261121/r4_d02_receiver_client.py
++++ b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/telegram-ordinary-wire-window-20261121/r4_d02_receiver_client.py
+@@ -12,6 +12,7 @@
+ OPTIONS_SCHEMA = 'frw.Root.D02.receiver-options.v1'
+ ARM_SECONDS = 25.0
+ READBACK_SECONDS = 1.5
++TERMINAL_SECONDS = 25.0
+ RECEIPT_FIELDS = {
+     'state', 'claim_sha256', 'generation', 'first_offset', 'armed_monotonic', 'expires_monotonic',
+ }
+@@ -113,7 +114,9 @@
+                    and options['schema'] == OPTIONS_SCHEMA,
+                    'R4_RECEIVER_CONTROL_OPTIONS_REQUIRED')
+         created = time.monotonic()
+-        expires = min(deadline, created + (ARM_SECONDS if action == 'arm' else READBACK_SECONDS))
++        budget = {'arm': ARM_SECONDS, 'confirm': READBACK_SECONDS, 'cutoff': READBACK_SECONDS,
++                  'finalize': TERMINAL_SECONDS}[action]
++        expires = min(deadline, created + budget)
+         actor.need(created < expires, 'R4_RECEIVER_CONTROL_REQUEST_EXPIRED')
+         query_id = uuid4().hex
+         request = actor.new(self.work / filename, actor.encoded(dict(
+@@ -137,9 +140,11 @@
+         self._identity_current()
+         actor.need(time.monotonic() < expires and type(response) is dict,
+                    'R4_RECEIVER_CONTROL_RESPONSE_UNKNOWN')
++        state = {'arm': 'ARMED', 'confirm': 'ARMED', 'cutoff': 'CUTOFF_BOUND',
++                 'finalize': 'RECEIVER_CLOSED_RETAINED'}[action]
+         actor.need(response.get('accepted') is True and response.get('action') == action
+                    and response.get('query_id') == query_id
+-                   and response.get('state') == ('CUTOFF_BOUND' if action == 'cutoff' else 'ARMED'),
++                   and response.get('state') == state,
+                    'R4_RECEIVER_CONTROL_RESPONSE_NOT_CONFIRMED')
+         return response, created
+ 
+@@ -209,3 +214,30 @@
+             return True
+         except Exception:
+             return False
++
++    def finalize(self, arm_ref, terminal_intent_ref):
++        actor = self.actor
++        actor.need(self.role == 'consumer' and self.consumer_confirmations == CONSUMER_CONFIRMATIONS,
++                   'R4_RECEIVER_CONTROL_OWNED_WIRE_READBACK_REQUIRED')
++        intent_ref, intent, receipt = self._arm_record(arm_ref)
++        clock_ref, outer_deadline = self._owner(intent, arm_ref)
++        terminal = self._named_document(terminal_intent_ref, 'receiver-terminal-intent.json')
++        actor.need(terminal['arm'] == arm_ref and terminal['clock'] == clock_ref
++                   and terminal['no_retry'] is True
++                   and all(terminal[key] == intent[key] for key in ('run_id', 'scenario_sha256')),
++                   'R4_RECEIVER_CONTROL_TERMINAL_PROOF_CHANGED')
++        bound = self._named_document(terminal['cutoff'], 'receiver-cutoff.json')
++        proof = self._named_document(bound['intent'], 'receiver-cutoff-intent.json')
++        cutoff = proof['receiver_monotonic_cutoff']
++        actor.need(bound['state'] == 'RECEIVER_CUTOFF_BOUND' and bound['no_retry'] is True
++                   and proof['arm'] == arm_ref and proof['clock'] == clock_ref and proof['no_retry'] is True
++                   and all(proof[key] == bound[key] == intent[key] for key in ('run_id', 'scenario_sha256'))
++                   and _monotonic_number(cutoff), 'R4_RECEIVER_CONTROL_TERMINAL_CUTOFF_CHANGED')
++        response, _ = self._request('finalize', 'receiver-control-finalize.json', intent_ref, terminal_intent_ref,
++                                    min(cutoff + TERMINAL_SECONDS, outer_deadline, receipt['expires_monotonic']))
++        reference = response.get('receipt')
++        actor.need(set(response) == {'accepted', 'action', 'query_id', 'state', 'receipt'}
++                   and actor.reference_shape(reference)
++                   and reference['path'] == str(self.work / 'receiver-terminal-native.json'),
++                   'R4_RECEIVER_CONTROL_TERMINAL_RECEIPT_REQUIRED')
++        return reference

@@ -1,0 +1,212 @@
+diff --git a/gateway/ordinary_dm_ingress.py b/gateway/ordinary_dm_ingress.py
+index 9a12612..5a54e32 100644
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -56,7 +56,7 @@ class _RoutedWrite:
+ 
+ 
+ class OrdinaryDMIngressOutcomes:
+-    def __init__(self, adapter, claim, window, armed):
++    def __init__(self, adapter, claim, window, armed, changed):
+         self.adapter = adapter
+         self.claim = claim
+         self.window = window
+@@ -73,11 +73,13 @@ class OrdinaryDMIngressOutcomes:
+         self._receipt_source = None
+         self._unknown = None
+         self._revision = 0
++        self._changed = changed
+ 
+     def lost(self, reason):
+         if self._unknown is None:
+             self._unknown = reason
+             self._revision += 1
++            self._changed.set()
+ 
+     def _wire(self):
+         claim, adapter = self.claim, self.adapter
+@@ -145,6 +147,7 @@ class OrdinaryDMIngressOutcomes:
+         if update not in self._held:
+             self._held.add(update)
+             self._revision += 1
++            self._changed.set()
+         if self._built[update].event_ref() is not event or event._ingress_merged:
+             self.lost("ingress_unbound_or_merged_held_event")
+ 
+@@ -191,10 +194,15 @@ class OrdinaryDMIngressOutcomes:
+             return
+         record.handoff = "returned"
+         self._revision += 1
++        self._changed.set()
+ 
+     def dispatch_finished(self, event, session_key):
+         update = self._stamp(event)
+-        if update is None or self._wire() is None:
++        if update is None:
++            if session_key == self.scope["session_key"]:
++                self._changed.set()
++            return
++        if self._wire() is None:
+             return
+         record = self._built[update]
+         task = asyncio.current_task()
+@@ -207,6 +215,7 @@ class OrdinaryDMIngressOutcomes:
+         record.writer_task = None
+         record.settled = True
+         self._revision += 1
++        self._changed.set()
+ 
+     def attempt(self, update, proof, payload, source):
+         if update is None or payload is None or proof is None or not self._wire():
+@@ -242,6 +251,54 @@ class OrdinaryDMIngressOutcomes:
+             "admissions": self._admissions,
+         }
+ 
++    def _settlement_state(self):
++        adapter = self.adapter
++        runner = adapter.gateway_runner
++        if runner is None or runner.adapters.get(adapter.platform) is not adapter:
++            return "UNKNOWN"
++        wire = self._wire()
++        if wire is None:
++            return "UNKNOWN"
++        if wire["state"] != "LOCAL_WIRE_CLOSED":
++            return None
++        updates = wire["target_update_ids"]
++        if not updates:
++            return "EMPTY"
++        if any(update in self._held for update in updates):
++            return "HELD"
++        if self._admissions is None or any(
++                update not in self._commits or self._built[update].handoff != "returned"
++                or not self._built[update].settled for update in updates):
++            return None
++        key = self.scope["session_key"]
++        if (key in adapter._pending_messages or key in adapter._text_debounce
++                or key in adapter._active_sessions or key in adapter._session_tasks):
++            return None
++        return "SETTLED"
++
++    async def wait_for_settlement(self, deadline):
++        """Wait on native changes within the already authenticated caller's deadline."""
++        cutoff = self.window._cutoff
++        if cutoff is None or type(deadline) not in (int, float) or not 0 <= deadline < 2**63:
++            return "UNKNOWN"
++        deadline = min(deadline, self.claim.expires_monotonic)
++        try:
++            async with asyncio.timeout(max(0, deadline - time.monotonic())):
++                while time.monotonic() < deadline:
++                    # The clear and read run on the owning loop without yielding.
++                    self._changed.clear()
++                    if self.window._cutoff != cutoff:
++                        return "UNKNOWN"
++                    state = self._settlement_state()
++                    if time.monotonic() >= deadline:
++                        break
++                    if state is not None:
++                        return state
++                    await self._changed.wait()
++        except TimeoutError:
++            pass
++        return "EXPIRED"
++
+ 
+ def _ingress(adapter):
+     arm = getattr(adapter, "_ordinary_dm_wire_arm", None)
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+index c0792dd..f6dbbd6 100644
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -1714,6 +1714,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         if verifier is not None and not verifier.done():
+             verifier.cancel()
+         self._polling_progress_verifier_task = None
++        arm = getattr(self, "_ordinary_dm_wire_arm", None)
++        if arm is not None and arm.ingress is not None:
++            arm.ingress.lost("ingress_polling_generation_replaced")
+         self._polling_generation = getattr(self, "_polling_generation", 0) + 1
+         self._polling_progress_event = asyncio.Event()
+         self._polling_progress_accepting = True
+@@ -1873,14 +1876,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+             if armed_at >= claim.expires_monotonic:
+                 return None
+             offset = parameters["offset"]
++            changed = asyncio.Event() if claim.ingress_scope is not None else None
+             window = DirectMessageWireWindow(
+                 generation=generation, user_id=claim.user_id, first_offset=offset,
+                 armed_at=armed_at, expires=claim.expires_monotonic, max_updates=claim.max_updates,
++                on_terminal=changed.set if changed is not None else None,
+             )
+             ingress = None
+             if claim.ingress_scope is not None:
+                 from gateway.ordinary_dm_ingress import OrdinaryDMIngressOutcomes
+-                ingress = OrdinaryDMIngressOutcomes(self, claim, window, armed_at)
++                ingress = OrdinaryDMIngressOutcomes(self, claim, window, armed_at, changed)
+             self._ordinary_dm_wire_arm = _OrdinaryDMWireArm(claim, window, offset, armed_at, ingress)
+             self._ordinary_dm_wire_window = window
+             return armed_at
+@@ -1935,6 +1940,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+             return None
+         return arm.ingress.readback()
+ 
++    async def _wait_ordinary_dm_wire_settlement(self, claim_sha256, deadline):
++        """Wait on the exact already armed and cutoff-bound PTB window."""
++        arm = getattr(self, "_ordinary_dm_wire_arm", None)
++        if (arm is None or arm.ingress is None or type(claim_sha256) is not str
++                or arm.claim.claim_sha256 != claim_sha256
++                or asyncio.get_running_loop() is not arm.claim.loop):
++            return "UNKNOWN"
++        return await arm.ingress.wait_for_settlement(deadline)
++
+     def _retire_ordinary_dm_wire_window(self, claim_sha256):
+         """Release only an exact terminal arm after the protected caller retains its evidence."""
+         arm = getattr(self, "_ordinary_dm_wire_arm", None)
+@@ -1953,6 +1967,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         except Exception:
+             return False
+         self._ordinary_dm_wire_window = self._ordinary_dm_wire_arm = None
++        if arm.ingress is not None:
++            arm.ingress.lost("ingress_window_retired")
+         return True
+ 
+     def _instrument_polling_request(self, request):
+diff --git a/plugins/platforms/telegram/telegram_receive_window.py b/plugins/platforms/telegram/telegram_receive_window.py
+index e809981..e65c745 100644
+--- a/plugins/platforms/telegram/telegram_receive_window.py
++++ b/plugins/platforms/telegram/telegram_receive_window.py
+@@ -26,7 +26,8 @@ def _unique_object(items):
+ 
+ 
+ class DirectMessageWireWindow:
+-    def __init__(self, *, generation, user_id, first_offset, armed_at, expires, max_updates):
++    def __init__(self, *, generation, user_id, first_offset, armed_at, expires, max_updates,
++                 on_terminal=None):
+         if (not _integer(generation) or not _integer(user_id)
+                 or not _integer(first_offset, minimum=0)
+                 or not all(_finite_time(value) for value in (armed_at, expires))
+@@ -45,6 +46,7 @@ class DirectMessageWireWindow:
+         self._unknown = None
+         self._count = 0
+         self._target_ids = []
++        self._on_terminal = on_terminal
+ 
+     def bind_cutoff(self, cutoff):
+         """Pin the authenticated sender's original cutoff once it exists."""
+@@ -57,6 +59,8 @@ class DirectMessageWireWindow:
+         """Invalidate an unclosed window on a failed or fenced native poll."""
+         if self._wire_closed is None and self._unknown is None:
+             self._unknown = reason
++            if self._on_terminal is not None:
++                self._on_terminal()
+ 
+     def observe_response(self, *, generation, accepting, parameters, started, completed, result):
+         """Read the ordinary polling request envelope without changing its return."""
+@@ -134,6 +138,8 @@ class DirectMessageWireWindow:
+         self._expected_offset = highest + 1
+         if not updates and self._cutoff is not None and started >= self._cutoff:
+             self._wire_closed = (started, completed)
++            if self._on_terminal is not None:
++                self._on_terminal()
+ 
+     def snapshot(self, now, *, current_generation, accepting):
+         """Project evidence without changing the epoch or extending clocks."""

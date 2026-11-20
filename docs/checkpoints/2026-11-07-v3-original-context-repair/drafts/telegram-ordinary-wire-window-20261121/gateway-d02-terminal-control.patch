@@ -1,0 +1,286 @@
+diff --git a/gateway/d02_receiver_control.py b/gateway/d02_receiver_control.py
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -24,7 +24,8 @@
+ SHORT_SECONDS = 1.2
+ _LOCAL_RIGHTS_SECONDS = 0.2
+ _CAPTURE = 180
+-_RESERVE = 5 + 20
++_POLL_DRAIN = 20
++_RESERVE = 5 + _POLL_DRAIN
+ _RUN_JSON_LIMIT = 1024 * 1024
+ _CLOCK_TIMING = {"outer_seconds": 600, "operation_seconds": 300, "ack_seconds": 10,
+                  "reply_window_seconds": _CAPTURE, "reserve_seconds": 5}
+@@ -120,6 +121,24 @@
+             "d02_control_fixed_slot_not_held")
+ 
+ 
++def _write_private(work, name, value, identity):
++    raw = _encode(value)
++    require(len(raw) <= _RUN_JSON_LIMIT, "d02_control_terminal_receipt_too_large")
++    directory = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
++    try:
++        require(_work_identity(os.fstat(directory)) == identity, "d02_control_workdir_changed")
++        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
++                     0o600, dir_fd=directory)
++        with os.fdopen(fd, "wb") as stream:
++            stream.write(raw)
++            stream.flush()
++            os.fsync(stream.fileno())
++        os.fsync(directory)
++    finally:
++        os.close(directory)
++    return {"path": str(work / name), "bytes": len(raw), "sha256": sha256(raw).hexdigest()}
++
++
+ class ReceiverControl:
+     def __init__(self, *, home, slot, store, read_owned, select_route, check_rights):
+         self.home = Path(home)
+@@ -144,14 +163,14 @@
+                                "created_monotonic", "expires_monotonic", "arm_intent",
+                                "receiver_options", "proof"}
+                 and value["schema"] == SCHEMA and value["operator"] == "Root"
+-                and value["action"] in ("arm", "confirm", "cutoff") and _hex(value["query_id"], 32)
++                and value["action"] in ("arm", "confirm", "cutoff", "finalize") and _hex(value["query_id"], 32)
+                 and (value["proof"] is None) == (value["action"] == "arm"),
+                 "d02_control_exact_request")
+         actual = _kernel(os.getpid())
+         require(value["boot_id"] == actual.pop("boot_id") and value["gateway"] == actual,
+                 "d02_control_gateway_changed")
+         start, end = value["created_monotonic"], value["expires_monotonic"]
+-        budget = 25 if value["action"] == "arm" else 1.5
++        budget = {"arm": 25, "confirm": 1.5, "cutoff": 1.5, "finalize": _RESERVE}[value["action"]]
+         require(_now(start) and _now(end) and 0 <= start <= time.monotonic() < end <= start + budget,
+                 "d02_control_request_expired")
+         return value
+@@ -211,20 +230,9 @@
+     def _durable_reservation(self, work, intent, options_ref, identity):
+         # This metadata belongs to Once's existing no-retry work directory.
+         # It is committed before touching the adapter and never overwritten.
+-        raw = _encode({"claim": intent["claim"], "parent": intent["parent"], "options": options_ref, "no_retry": True})
+-        directory = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+-        try:
+-            require(_work_identity(os.fstat(directory)) == identity, "d02_control_workdir_changed")
+-            fd = os.open("receiver-gateway-reservation.json",
+-                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+-                         0o600, dir_fd=directory)
+-            with os.fdopen(fd, "wb") as stream:
+-                stream.write(raw)
+-                stream.flush()
+-                os.fsync(stream.fileno())
+-            os.fsync(directory)
+-        finally:
+-            os.close(directory)
++        _write_private(work, "receiver-gateway-reservation.json",
++                       {"claim": intent["claim"], "parent": intent["parent"],
++                        "options": options_ref, "no_retry": True}, identity)
+ 
+     def _reservation_current(self, intent, request, work):
+         expected = _encode({"claim": intent["claim"], "parent": intent["parent"],
+@@ -246,10 +254,10 @@
+                 "d02_control_arm_not_confirmed")
+         return {"state": "ARMED", **value}
+ 
+-    def _arm_receipt(self, reference, intent, request, work, adapter, expires):
++    def _arm_receipt(self, reference, intent, request, work, adapter, expires, *, retained=None):
+         self._reservation_current(intent, request, work)
+         arm, path = self.doc(reference, name="receiver-arm.json")
+-        current = self._arm_from(adapter, intent["claim"]["sha256"], expires)
++        current = self._arm_from(adapter, intent["claim"]["sha256"], expires) if retained is None else retained
+         require(path.parent == work and arm["no_retry"] is True
+                 and arm["claim"] == intent["claim"] and arm["parent"] == intent["parent"]
+                 and arm["intent"] == request["arm_intent"] and arm["run_id"] == intent["run_id"]
+@@ -330,13 +338,24 @@
+                 "d02_control_retained_window_binding")
+ 
+     def _ack_cutoff(self, request, intent, work, adapter, expires, scenario):
+-        proof, proof_path = self.doc(request["proof"], name="receiver-cutoff-intent.json")
++        proof, _ = self.doc(request["proof"], name="receiver-cutoff-intent.json")
+         _, receipt = self._arm_receipt(proof["arm"], intent, request, work, adapter, expires)
++        cutoff = self._original_cutoff(request["proof"], intent, work, scenario, receipt)
++        return adapter._ordinary_dm_wire_window, cutoff
++
++    def _original_cutoff(self, reference, intent, work, scenario, receipt, *, terminal_run=None):
++        proof, proof_path = self.doc(reference, name="receiver-cutoff-intent.json")
+         clock, clock_path = self.doc(proof["clock"], name="clock.json")
+         run_id = intent["run_id"]
+         path = self.store / "runs" / (run_id + ".json")
+-        raw = _private_bytes(path, self.read_owned, _RUN_JSON_LIMIT)
+-        run = json.loads(raw, object_pairs_hook=_unique)
++        if terminal_run is None:
++            raw = _private_bytes(path, self.read_owned, _RUN_JSON_LIMIT)
++            run = json.loads(raw, object_pairs_hook=_unique)
++            require(run["status"] == "OBSERVING", "d02_control_cutoff_before_observation")
++        else:
++            run, retained = self.doc(terminal_run, limit=_RUN_JSON_LIMIT)
++            require(retained == path and run["status"] == "EVIDENCE_READY"
++                    and run["capture_window_complete"] is True, "d02_control_closed_sender_required")
+         before, after = proof["ack_monotonic"]
+         wall = proof["ack_wall"]
+         cutoff = proof["receiver_monotonic_cutoff"]
+@@ -346,7 +365,7 @@
+                 and clock["schema"] == "frw.Root.F07.finite-operation-clock.v1"
+                 and clock["status"] == "ROOT_BOUND_FUTURE_OPERATION" and clock["old_effects_clocks_preserved"] is True
+                 and clock["timing"] == _CLOCK_TIMING and clock["receiver_arm"] == proof["arm"]
+-                and run["status"] == "OBSERVING" and run["send_state"] == "sent" and run["send_attempts"] == 1
++                and run["send_state"] == "sent" and run["send_attempts"] == 1
+                 and run["step"] == 0 and run["scenario"] == scenario
+                 and run["sent_at"] == wall and run["capture_until"] == proof["original_wall_cutoff"] == wall + _CAPTURE
+                 and all(_now(item) for item in (before, after, wall, cutoff))
+@@ -366,8 +385,132 @@
+                     "d02_control_current_ack_bytes")
+             retained[field] = json.loads(content, object_pairs_hook=_unique)
+         self._check_ack_window(run, retained["ack"], retained["send_window"], scenario)
+-        # Native window identity is checked by the positive ARM readback above.
+-        return adapter._ordinary_dm_wire_window, cutoff
++        return cutoff
++
++    def _terminal_consumer(self, proof, intent, work):
++        invocation, path = self.doc(proof["invocation"], name="consumer-invocation.json")
++        owner = invocation["consumer"]
++        require(type(owner) is dict and set(owner) == {"pid", "start_time", "boot_id"}
++                and _kernel(owner["pid"]) == owner, "d02_control_terminal_consumer_identity")
++        birth_raw = _private_bytes(work / "child-birth.json", self.read_owned, 65536)
++        birth = json.loads(birth_raw, object_pairs_hook=_unique)
++        require(path.parent == work and invocation["schema"] == "frw.Root.F07.one-ordinary-consumer-invocation.v1"
++                and invocation["run_id"] == intent["run_id"] and invocation["no_retry"] is True
++                and invocation["driver_binding"] == intent["binding"] and invocation["clock"] == proof["clock"]
++                and birth["claim"] == intent["claim"] and birth["parent"] == intent["parent"]
++                and birth["identity"] == owner and birth["pid"] == owner["pid"] and birth["clock"] == proof["clock"],
++                "d02_control_exact_terminal_consumer")
++        parent = (Path("/proc") / str(owner["pid"]) / "stat").read_text().rsplit(")", 1)[1].split()[1]
++        require(int(parent) == intent["parent"]["pid"], "d02_control_original_terminal_parent")
++        locks = proof["locks"]
++        require(set(locks) == {"consumer.lock", "tester-token"}, "d02_control_exact_terminal_locks")
++        for name, identity in locks.items():
++            _held_slot(self.store / name, identity, owner)
++
++    def _terminal_arm(self, adapter, claim_sha, expires, ingress_scope):
++        arm = getattr(adapter, "_ordinary_dm_wire_arm", None)
++        require(arm is not None and arm.ingress is not None and arm.ingress.scope == ingress_scope
++                and arm.claim.claim_sha256 == claim_sha and arm.claim.expires_monotonic == expires
++                and asyncio.get_running_loop() is arm.claim.loop
++                and getattr(adapter, "_ordinary_dm_wire_window", None) is arm.window
++                and adapter._ordinary_dm_wire_updater(arm.claim.generation) is arm.claim.updater
++                and arm.claim.owner_is_current() is True and time.monotonic() < expires,
++                "d02_control_exact_retained_arm_required")
++        return arm, {"state": "ARMED", "claim_sha256": claim_sha, "generation": arm.claim.generation,
++                     "first_offset": arm.first_offset, "armed_monotonic": arm.armed_monotonic,
++                     "expires_monotonic": expires}
++
++    @staticmethod
++    def _closed_snapshot(adapter, claim_sha):
++        from .ordinary_dm_dispatch_closure import encode_closed_wire
++
++        data = adapter._ordinary_dm_wire_ingress_readback(claim_sha)
++        require(type(data) is dict and data["state"] == "OBSERVED_PENDING_CALLER_CLOSURE",
++                "d02_control_settlement_snapshot_missing")
++        return data["revision"], sha256(encode_closed_wire(data["wire"])).hexdigest()
++
++    async def _finalize(self, request, intent, driver, options, scenario, work, adapter, ingress_scope, deadline):
++        from .ordinary_dm_dispatch_closure import join_settled_ordinary_dm
++
++        proof, path = self.doc(request["proof"], name="receiver-terminal-intent.json")
++        require(path.parent == work
++                and set(proof) == {"run_id", "scenario_sha256", "arm", "clock", "cutoff",
++                                   "run", "cursor", "invocation", "locks", "no_retry"}
++                and proof["run_id"] == intent["run_id"] and proof["scenario_sha256"] == intent["scenario_sha256"]
++                and proof["no_retry"] is True, "d02_control_exact_terminal_intent")
++        self._terminal_consumer(proof, intent, work)
++        _, cursor_path = self.doc(proof["cursor"], name="cursor.json", limit=_RUN_JSON_LIMIT)
++        require(cursor_path == self.store / "cursor.json", "d02_control_exact_terminal_cursor")
++        claim_sha = intent["claim"]["sha256"]
++        expires = options["observer_expires_monotonic"]
++        arm, retained = self._terminal_arm(adapter, claim_sha, expires, ingress_scope)
++        self._arm_receipt(proof["arm"], intent, request, work, adapter, expires, retained=retained)
++        cutoff_record, cutoff_path = self.doc(proof["cutoff"], name="receiver-cutoff.json")
++        require(cutoff_path.parent == work and cutoff_record["state"] == "RECEIVER_CUTOFF_BOUND"
++                and cutoff_record["run_id"] == intent["run_id"] and cutoff_record["scenario_sha256"] == intent["scenario_sha256"]
++                and cutoff_record["no_retry"] is True, "d02_control_original_bound_cutoff_required")
++        original, _ = self.doc(cutoff_record["intent"], name="receiver-cutoff-intent.json")
++        require(original["arm"] == proof["arm"] and original["clock"] == proof["clock"],
++                "d02_control_original_terminal_clock_changed")
++        cutoff = self._original_cutoff(cutoff_record["intent"], intent, work, scenario, retained,
++                                       terminal_run=proof["run"])
++        require(arm.window._cutoff == cutoff, "d02_control_terminal_cutoff_changed")
++        deadline = min(deadline, cutoff + _RESERVE, expires)
++        wait_deadline = min(deadline, cutoff + _POLL_DRAIN)
++        require(time.monotonic() < deadline, "d02_control_terminal_budget_exhausted")
++
++        def current():
++            _held_slot(self.slot, driver["slot_identity"], intent["parent"])
++            self._terminal_consumer(proof, intent, work)
++            self.doc(request["proof"], name="receiver-terminal-intent.json")
++            self.doc(proof["cutoff"], name="receiver-cutoff.json")
++            self.doc(cutoff_record["intent"], name="receiver-cutoff-intent.json")
++            seen, scope = self.select_route(options["profile"], options["principal"])
++            current_arm, _ = self._terminal_arm(adapter, claim_sha, expires, ingress_scope)
++            require(seen is adapter and scope == ingress_scope and current_arm is arm
++                    and arm.window._cutoff == cutoff and time.monotonic() < deadline,
++                    "d02_control_terminal_owner_or_scope_changed")
++
++        current()
++        await asyncio.wait_for(asyncio.to_thread(
++            _write_private, work, "receiver-terminal-reservation.json",
++            {"intent": request["proof"], "claim_sha256": claim_sha, "no_retry": True},
++            driver["work_identity"]), timeout=max(0, deadline - time.monotonic()))
++        current()
++        state = await adapter._wait_ordinary_dm_wire_settlement(claim_sha, wait_deadline)
++        require(state == "SETTLED", "d02_control_native_dispatch_unresolved")
++        current()
++        self.doc(proof["run"], name=intent["run_id"] + ".json", limit=_RUN_JSON_LIMIT)
++        self.doc(proof["cursor"], name="cursor.json", limit=_RUN_JSON_LIMIT)
++        revision, wire = self._closed_snapshot(adapter, claim_sha)
++        joined = join_settled_ordinary_dm(adapter, claim_sha256=claim_sha, wire_sha256=wire,
++            disposition_revision=revision, cutoff=cutoff, options=options, scenario=scenario,
++            transport_deadline=min(deadline, time.monotonic() + _LOCAL_RIGHTS_SECONDS))
++        require(joined["state"] == "D02_NATIVE_DISPATCH_SETTLED_PAIRS_RESOLVED"
++                and joined["claim_sha256"] == claim_sha and joined["wire_sha256"] == wire
++                and joined["generation"] == arm.claim.generation and joined["disposition_revision"] == revision,
++                "d02_control_protected_settlement_unresolved")
++        evidence = {"schema": "frw.gateway.d02-native-settlement.v1", "intent": request["proof"],
++                    "run_id": intent["run_id"], "scenario_sha256": intent["scenario_sha256"],
++                    "claim_sha256": claim_sha, "wire_sha256": wire, "generation": arm.claim.generation,
++                    "disposition_revision": revision,
++                    "route": {name: ingress_scope[name] for name in
++                              ("session_key", "source_profile", "transport_profile", "runtime_profile")},
++                    "observations": joined["observations"], "no_retry": True}
++        # The private write may finish after caller loss. That remains UNKNOWN;
++        # only the exact live recheck below allows retirement and confirmation.
++        reference = await asyncio.wait_for(asyncio.to_thread(
++            _write_private, work, "receiver-terminal-native.json", evidence, driver["work_identity"]),
++            timeout=max(0, deadline - time.monotonic()))
++        current()
++        self.doc(reference, name="receiver-terminal-native.json", limit=_RUN_JSON_LIMIT)
++        self.doc(proof["run"], name=intent["run_id"] + ".json", limit=_RUN_JSON_LIMIT)
++        self.doc(proof["cursor"], name="cursor.json", limit=_RUN_JSON_LIMIT)
++        require(arm.ingress._settlement_state() == "SETTLED"
++                and self._closed_snapshot(adapter, claim_sha) == (revision, wire)
++                and time.monotonic() < deadline and adapter._retire_ordinary_dm_wire_window(claim_sha) is True,
++                "d02_control_exact_terminal_retirement_unproved")
++        return reference
+ 
+     async def dispatch(self, reference, transport_deadline):
+         request = self._request(reference)
+@@ -375,6 +518,11 @@
+         intent, driver, options, scenario, work = self._owner(request)
+         action = request["action"]
+         adapter, ingress_scope = self.select_route(options["profile"], options["principal"])
++        if action == "finalize":
++            reference = await self._finalize(
++                request, intent, driver, options, scenario, work, adapter, ingress_scope, deadline)
++            return {"accepted": True, "query_id": request["query_id"], "action": action,
++                    "state": "RECEIVER_CLOSED_RETAINED", "receipt": reference}
+         phase = {"arm": "arm", "confirm": "dispatch", "cutoff": "post_dispatch"}[action]
+         self._rights_current(options, phase, deadline)
+         require(time.monotonic() < deadline, "d02_control_dispatch_expired")
+@@ -403,7 +551,8 @@
+         future = None
+         try:
+             request = self._request(params["root_request"])
+-            budget = ARM_SECONDS if request["action"] == "arm" else SHORT_SECONDS
++            budget = {"arm": ARM_SECONDS, "confirm": SHORT_SECONDS, "cutoff": SHORT_SECONDS,
++                      "finalize": _RESERVE}[request["action"]]
+             deadline = min(time.monotonic() + budget, request["expires_monotonic"])
+             future = asyncio.run_coroutine_threadsafe(self.dispatch(params["root_request"], deadline), loop)
+             return future.result(timeout=max(0, deadline - time.monotonic()))

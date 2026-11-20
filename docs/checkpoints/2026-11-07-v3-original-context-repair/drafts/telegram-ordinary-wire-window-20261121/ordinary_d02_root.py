@@ -27,9 +27,10 @@ ACTIVE_RUNS = {
 SOURCE_PINS = dict(
     checker='2983e06dc5579adae0f0983d64d07b65c41f849b03dca0985f270d2547a9411b',
     composer='68eaa543d507800232daa3700f570e28eff564280f5c83431420cf57a2d35c90',
-    once='e569e03cebf482129c16102ad3559e162d1332a32b1bb3a6271158048b9cc809',
-    receiver_client='c12b4268619e546e874ab884acaaed0fe1b3f665fe17c2d06fdf461868d528b4',
+    once='dd7ddd9dca840e2297ab25f3f814dbe14584736abf772a63363a5f8324cefce7',
+    receiver_client='2c15a96c6a99573702351fe92264e7d2177c2f5b7504032cd397d688fb5148bd',
 )
+MATCHER_SHA = '9406aa0b50eb387b8997fdfe60bb88bb69a01f1f3e64675b60fd42e288d50411'
 TOOL_PINS = {
     'gateway/control_socket.py': '0c71b698bbbbfb1829d07e371128bb9e4f803a940c5e5fdf7d5ff3ed9594e1cc',
     'agent/deadline.py': '429ff313e0ae4427cf3bfdfc148a22ed46eaf09b994d6875b1c57693228bd13e',
@@ -228,6 +229,11 @@ def bind(shared, actor, reference, *, action):
                    and options['principal']['account_id'] == str(scenario['peer_id']),
                    'D02_EXACT_GATEWAY_RECEIVER_ROUTE_REQUIRED')
         query, bounded = load_runtime_tools(actor, shared.HOME)
+        matcher = value['receiver_matcher']
+        actor.need(matcher['sha256'] == MATCHER_SHA, 'D02_EXACT_RECEIVER_MATCHER_REQUIRED')
+        matcher_source = actor.readref(matcher, private=False)
+        once.match_receiver = actor.load_raw(
+            matcher_source, matcher['path'], '_D02_receiver_matcher').match_observed_ingress
         once.receiver_window = modules['receiver_client'].ReceiverWindow(
             actor, workdir=work, home=shared.HOME, gateway=identity, boot_id=boot,
             receiver_options=value['receiver_options'], role='consumer' if action == 'consume' else 'parent',
