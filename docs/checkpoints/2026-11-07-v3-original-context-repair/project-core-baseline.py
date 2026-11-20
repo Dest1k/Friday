@@ -5,8 +5,9 @@ The default output is a summary. Use --case and --format for indexed source
 references and use --all for the full projection. A source reference is a
 source name from the output's `sources` object followed by a JSON pointer.
 Use --b00-wave-root to join historical B00 scenarios from a local wave archive.
-The original requests, oracles, and private evidence locators stay in their
-source files. The projection carries no current admission or dispatch state.
+With --b00-fixture, match operator-supplied copies by size and SHA-256.
+The original requests and oracles stay in their source files. The projection
+carries no current admission or dispatch state.
 """
 
 import argparse
@@ -14,6 +15,7 @@ from collections import Counter, defaultdict
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import stat
@@ -145,8 +147,9 @@ def b00_capsule(wave, scenario_path, run_id, expected, stores):
     if scenario_path.parent.name == 'scenarios' and scenario_path.parent.parent.name == wave.name:
         path = local_scenarios / scenario_path.name
         if archive_directory(local_scenarios) and path.is_file():
-            if matches_b00_scenario(read_wave_object(path), expected):
-                return 'scenario_file'
+            scenario = read_wave_object(path)
+            if matches_b00_scenario(scenario, expected):
+                return 'scenario_file', path, '', scenario
     for store in stores:
         path = store / f'{run_id}.json'
         if not path.is_file():
@@ -154,12 +157,62 @@ def b00_capsule(wave, scenario_path, run_id, expected, stores):
         record = read_wave_object(path)
         if (record.get('id') == run_id and record.get('scenario_sha256') == expected
                 and matches_b00_scenario(record.get('scenario'), expected)):
-            return 'run_record'
+            return 'run_record', path, '/scenario', record['scenario']
     return None
 
 
-def project_b00_wave_history(b00, root):
+def b00_fixture_pins(paths):
+    pins = {}
+    for index, path in enumerate(paths, 1):
+        # Only read explicit CLI inputs. Never follow an old scenario's input path.
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            require(stat.S_ISREG(before.st_mode), 'expected a regular B00 fixture copy')
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+            after = os.fstat(stream.fileno())
+        identities = {(item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+                      for item in (before, after, path.lstat())}
+        require(len(identities) == 1, 'B00 fixture copy changed during read')
+        pins.setdefault((before.st_size, digest), []).append(index)
+    return pins
+
+
+def b00_capsule_details(capsule, root, fixture_pins):
+    kind, path, pointer, scenario = capsule
+    deadline = scenario.get('deadline_seconds')
+    require(type(deadline) is int and deadline > 0, 'invalid B00 scenario deadline')
+    steps = []
+    for index, step in enumerate(scenario['steps']):
+        projected = {'source': f'{pointer}/steps/{index}'}
+        observation = step.get('observe')
+        if isinstance(observation, dict) and 'window_seconds' in observation:
+            window = observation['window_seconds']
+            require(type(window) is int and 0 < window <= deadline, 'invalid B00 observation window')
+            projected['recorded_observation_seconds'] = window
+        attachment = step.get('input')
+        if isinstance(attachment, dict) and attachment.get('kind') == 'document':
+            filename, size, digest = attachment['filename'], attachment['stat']['size_bytes'], attachment['sha256']
+            require(type(size) is int and size >= 0 and isinstance(digest, str)
+                    and re.fullmatch(r'[a-f0-9]{64}', digest), 'invalid B00 attachment size or hash')
+            require(isinstance(filename, str) and 1 <= len(filename) <= 128 and filename[0].isalnum()
+                    and '..' not in filename and all(c.isalnum() or c in '_.-' for c in filename),
+                    'invalid B00 attachment filename')
+            projected['document'] = {
+                'filename': filename, 'bytes': size, 'sha256': digest,
+                'matching_fixture_arguments': fixture_pins.get((size, digest), []),
+            }
+        steps.append(projected)
+    return {
+        'capsule': kind,
+        'capsule_ref': {'relative_to_wave_root': path.relative_to(root).as_posix(), 'pointer': pointer},
+        'recorded_deadline_seconds': deadline,
+        'steps': steps,
+    }
+
+
+def project_b00_wave_history(b00, root, fixture_paths=()):
     require(archive_directory(root), 'expected a B00 wave root directory')
+    fixture_pins = b00_fixture_pins(fixture_paths)
     registry = Path(b00['source_registry'])
     phases = {phase: [] for row in b00['cases'] for phase in row['step_ids']}
     waves = [path for path in sorted(root.iterdir())
@@ -190,6 +243,7 @@ def project_b00_wave_history(b00, root):
                             for digest in (expected, registry_sha))
                         and binding.get('tester_sha256', expected) == expected, 'invalid B00 scenario pin')
                 original = scenario_path.parent == registry and registry_sha == expected
+                capsule = b00_capsule(wave, scenario_path, run_id, expected, stores)
                 phases[phase].append({
                     'wave': wave.name.removeprefix('FRW-KIMI-B00-'),
                     'authority': path.stem.removeprefix('INDEPENDENT-AUTHORITY-'),
@@ -197,7 +251,7 @@ def project_b00_wave_history(b00, root):
                     'scenario_sha256': expected,
                     'source_scenario_sha256': registry_sha,
                     'source': 'original_registry' if original else 'separately_pinned_variant',
-                    'capsule': b00_capsule(wave, scenario_path, run_id, expected, stores),
+                    **(b00_capsule_details(capsule, root, fixture_pins) if capsule else {'capsule': None}),
                 })
     return {phase: {'availability': b00_availability(bindings), 'bindings': bindings}
             for phase, bindings in phases.items()}
@@ -428,7 +482,7 @@ def format_conditions(ledger, formats, case_ids):
     }
 
 
-def build_projection(inputs, selected_cases, selected_formats, select_all, b00_wave_root=None):
+def build_projection(inputs, selected_cases, selected_formats, select_all, b00_wave_root=None, b00_fixtures=()):
     case_catalog, format_catalog, case_ledger, extension_ledger, b00, fixture_families, sources = inputs
     cases = project_cases(case_catalog, case_ledger, b00, fixture_families, sources['case_catalog']['sha256'])
     original_ids = cases.keys() | WORKER_CASES.keys()
@@ -460,7 +514,7 @@ def build_projection(inputs, selected_cases, selected_formats, select_all, b00_w
     if select_all or selected_cases:
         output['cases'] = [row for case_id, row in cases.items() if select_all or case_id in selected_cases]
     if b00_wave_root is not None:
-        history = project_b00_wave_history(b00, b00_wave_root)
+        history = project_b00_wave_history(b00, b00_wave_root, b00_fixtures)
         availability = Counter(row['availability'] for row in history.values())
         output['summary']['b00_historical_scenarios'] = {
             status: availability[status] for status in (
@@ -492,10 +546,15 @@ def main(argv=None):
     parser.add_argument('--all', action='store_true', help='include every CORE case, extension and format rule')
     parser.add_argument('--b00-wave-root', type=Path,
                         help='join historical B00 scenario hashes from retained wave directories')
+    parser.add_argument('--b00-fixture', type=Path, action='append', default=[],
+                        help='match an explicit local copy against historical attachment pins; repeatable')
     args = parser.parse_args(argv)
+    if args.b00_fixture and args.b00_wave_root is None:
+        parser.error('--b00-fixture requires --b00-wave-root')
     try:
         output = build_projection(load_inputs(args), {case.upper() for case in args.case},
-                                  {fmt.lower().removeprefix('.') for fmt in args.format}, args.all, args.b00_wave_root)
+                                  {fmt.lower().removeprefix('.') for fmt in args.format}, args.all,
+                                  args.b00_wave_root, args.b00_fixture)
     except ProjectionError as error:
         print(f'CORE projection refused: {error}', file=sys.stderr)
         return 1
