@@ -71,6 +71,13 @@ def readonly_new_prefix(runner):
     require(tuple(ast.unparse(node) for node in original.body[-2:])
             == ("self.save(run)", "return run"), "Exact ordinary new-run save boundary required")
     before_construction = original.body[:original.body.index(construction)]
+    admission = one((node for statement in before_construction for node in ast.walk(statement)
+                     if isinstance(node, ast.Call)
+                     and ast.unparse(node.func) == "self.ordinary_independent_admission"),
+                    "read-only independent admission")
+    require(ast.unparse(admission) == "self.ordinary_independent_admission(name, scenario)",
+            "Exact read-only admission call required")
+    admission.keywords.append(ast.keyword(arg="readonly", value=ast.Constant(value=True)))
     prefix = ast.parse("""def _f07_qualify_new_prefix_readonly(self, name, scenario):
     if self.api is not None:
         raise Refused('Read-only ordinary qualification requires api=None')
@@ -127,6 +134,25 @@ def compose_observer(source, *, run_id, scenario_sha256, authority, authority_re
                 and node.name == "ordinary_independent_admission"), "ordinary admission")
     lines = source.splitlines(keepends=True)
     edits = [(runner.end_lineno + 1, runner.end_lineno, b"\n" + readonly_new_prefix(runner))]
+    require(lines[gate.lineno - 1] == b"    def ordinary_independent_admission(self, name, scenario):\n",
+            "Exact ordinary admission signature required")
+    edits.append((gate.lineno, gate.lineno,
+                  b"    def ordinary_independent_admission(self, name, scenario, *, readonly=False):\n"))
+    send = one((node for node in runner.body if isinstance(node, ast.FunctionDef)
+                and node.name == "_send"), "ordinary send")
+    window = one((node for node in send.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "monotonic_window_fits"), "immediate monotonic wire check")
+    require(ast.unparse(window.body[0]) == (
+        "return admitted is None or time.monotonic() + ack_budget + "
+        "run['scenario']['steps'][run['step']]['observe']['window_seconds'] + "
+        "REPLY_WINDOW_RESERVE <= admitted[0]['clock']['deadline_monotonic']"),
+        "Exact monotonic wire check required")
+    edits.append((window.lineno + 1, window.lineno,
+                  b"            if admitted is None:\n"
+                  b"                try:\n"
+                  b"                    return self._ordinary_wire_window(run, ack_budget) is True\n"
+                  b"                except (OSError, ValueError, TypeError, KeyError):\n"
+                  b"                    return False\n"))
     for name, value in {"ORDINARY_INDEPENDENT_SCENARIOS": {run_id: scenario_sha256},
                         "ORDINARY_INDEPENDENT_AUTHORITY": authority_ref}.items():
         assignment = one((node for node in runner.body if isinstance(node, ast.Assign)
@@ -158,10 +184,15 @@ def compose_observer(source, *, run_id, scenario_sha256, authority, authority_re
         checker = root_checker_types.ModuleType('_Root_baseline_current')
         checker.__file__ = checker_ref['path']
         exec(compile(checker_raw, checker.__file__, 'exec'), checker.__dict__)
+        stage = 'READONLY' if readonly else getattr(self, '_send_phase', 'NEW')
         if checker.check({proof_ref!r}, contract_ref={contract_ref!r}, prepare_ref={prepare_ref!r},
-                         run_id=name, scenario=scenario,
-                         stage=getattr(self, '_send_phase', 'NEW')) is not True:
+                         authority_ref=reference, run_id=name, scenario=scenario, stage=stage) is not True:
             raise Refused('Exact affirmative Root current qualification required')
+        if stage in ('CURSOR_AUTHORITY', 'PRE_INTENT_REVALIDATION'):
+            wire = getattr(checker, 'wire_window_fits', None)
+            if not callable(wire):
+                raise Refused('Exact ordinary wire window checker required')
+            self._ordinary_wire_window = lambda run, ack: wire({proof_ref!r}, run, ack)
         return document
 """
     edits.append((end.lineno, end.end_lineno, check.encode()))
