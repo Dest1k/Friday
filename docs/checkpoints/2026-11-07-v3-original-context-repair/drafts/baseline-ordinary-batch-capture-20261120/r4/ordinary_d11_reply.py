@@ -46,6 +46,12 @@ def load_report_checker(observer, directory):
 
 
 def read_saved_docx(observer, runner, run, item, captures, ack):
+    return read_saved_document(observer, runner, run, item, captures, ack,
+                               max_bytes=MAX_DOCX_BYTES, label="D11 recipient DOCX")
+
+
+def read_saved_document(observer, runner, run, item, captures, ack, *, max_bytes, label):
+    """Read a direct retained document against its original upload and bounded receipt."""
     update, arrival = runner.committed_capture(run, item["update_id"])
     message = update["message"]
     parent = message.get("reply_to_message", {})
@@ -67,15 +73,15 @@ def read_saved_docx(observer, runner, run, item, captures, ack):
             or "caption" in parent and not observer.caption_ack_matches(parent["caption"], upload["caption"])
             or "document" in parent and not advertised_document_matches(parent["document"], expected_parent)
             or MEDIA.intersection(message) != {"document"} or "text" in message):
-        raise ValueError("D11 recipient DOCX does not bind the original private upload")
+        raise ValueError(f"{label} does not bind the original private upload")
     document, info = message["document"], item["get_file"]
     if (item.get("complete_artifact") is not True or item.get("artifact_acceptance") != "RECEIVED_UNGRADED"
             or not all(document.get(key) and document[key] == info.get(key) for key in ("file_id", "file_unique_id"))
             or not item["bytes"] == document.get("file_size") == info.get("file_size")):
-        raise ValueError("D11 recipient DOCX custody is incomplete")
+        raise ValueError(f"{label} custody is incomplete")
     path = runner.store.downloads / f"{run['id']}-{item['message_id']}-{item['sha256']}.bin"
     reference = {key: item[key] for key in ("path", "bytes", "sha256")}
-    data = read_exact(observer, reference, path, MAX_DOCX_BYTES)
+    data = read_exact(observer, reference, path, max_bytes)
     return data, {
         "name": document.get("file_name"), "download": reference, "raw_update": arrival["raw_update"],
         "arrived_at": arrival["arrived_at"],
