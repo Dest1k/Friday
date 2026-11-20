@@ -1,0 +1,144 @@
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -4009,6 +4009,7 @@
+         guard = interrupt_event or asyncio.Event()
+         session_guard_change(self, session_key, self._active_sessions.get(session_key), guard)
+         self._active_sessions[session_key] = guard
++        event._friday_document_guard = (session_key, guard)
+         task = asyncio.create_task(self._process_message_background(event, session_key))
+         if not self._track_session_task(session_key, task):
+             self._session_tasks.pop(session_key, None)
+@@ -4931,6 +4932,7 @@
+                 self._cleanup_finished_session_task(session_key, guard)
+                 return
+             self._promote_external_word_tail(pending_event, session_key)
++        pending_event._friday_document_guard = (session_key, guard) if guard is not None else None
+         await self._process_message_background(pending_event, session_key)
+ 
+     def _promote_external_word_tail(self, event, session_key):
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -1306,11 +1306,52 @@
+             # Same session key by construction; carry the orphan's own source so reply anchors /
+             # thread metadata point at the message actually being answered.
+             _rescued_source = getattr(_rescued, "source", None)
++            if (_rescued is not event and getattr(_rescued_source, "platform", None) == Platform.TELEGRAM
++                    and getattr(_rescued_source, "_friday_user_scope", None) is not None):
++                # An orphan must never reuse the guard from an earlier dispatch of that event.
++                _rescued._friday_document_guard = None
++                try:
++                    self._hm_handoff_rescued_document_guard(event, source, _rescued, _orphan_adapter, _quick_key)
++                except Exception:
++                    # Refuse document authority without undoing the already-restaged FIFO.
++                    logger.debug("FIFO orphan document guard handoff refused")
+             source = _rescued_source if _rescued_source is not None else source
+             return _rescued, source, bool(getattr(_rescued, "internal", False))
+         except Exception:
+             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
+             return event, source, is_internal
++
++    def _hm_handoff_rescued_document_guard(self, event, source, rescued, adapter, quick_key):
++        """Transfer only the live adapter task's guard; the orphan proves its own ingress."""
++        from gateway.session_identity import identity_of
++        from hermes_cli.friday_user_scope import _same_scope
++
++        rescued_source = rescued.source
++        if (rescued.internal or event.source is not source or source is rescued_source
++                or source.platform != Platform.TELEGRAM
++                or not _same_scope(getattr(source, "_friday_user_scope", None),
++                                   rescued_source._friday_user_scope)):
++            return
++        binding = getattr(event, "_friday_document_guard", None)
++        if type(binding) is not tuple or len(binding) != 2:
++            return
++        adapter_key, guard = binding
++        task = asyncio.current_task()
++        if (not isinstance(adapter_key, str) or not adapter_key or not isinstance(guard, asyncio.Event)
++                or task is None or task.cancelling() or adapter.gateway_runner is not self
++                or adapter._session_tasks.get(adapter_key) is not task
++                or adapter._active_sessions.get(adapter_key) is not guard or guard.is_set()):
++            return
++        for owner in (source, rescued_source):
++            identity = identity_of(owner)
++            if identity is None or identity.transport_inferred or identity.adapter() is not adapter:
++                return
++        if (self._session_key_for_source(source) != quick_key
++                or self._session_key_for_source(rescued_source) != quick_key
++                or adapter._event_session_key(rescued) != adapter_key):
++            return
++        rescued._friday_document_guard = binding
++        event._friday_document_guard = None  # The arriving event is parked; its next dispatch binds afresh.
+ 
+     @atracked("friday-inbound-pending")
+     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+--- a/gateway/run_plugin_delivery.py
++++ b/gateway/run_plugin_delivery.py
+@@ -242,16 +242,31 @@
+     from gateway.session_identity import identity_of
+     cap = current(required=True)
+     route = freeze_route(getattr(source, '_friday_document_route', None))
++    guard_binding = getattr(source, '_friday_document_guard', None)
++    if guard_binding is None:
++        raise ValueError('ordinary_document_turn_guard_required')
++    session_key, guard = guard_binding
++    run_binding = getattr(source, '_friday_document_run', None)
++    if run_binding is None:
++        raise ValueError('ordinary_document_run_required')
++    run_key, generation = run_binding
++    if not run_key or type(generation) is not int or generation < 1:
++        raise ValueError('ordinary_document_run_required')
+     runner = getattr(adapter, 'gateway_runner', None)
+     context = SimpleNamespace(_manager=SimpleNamespace(home_path=cap.home))
+     def check():
+         cap.check()
++        if (getattr(source, '_friday_document_guard', None) is not guard_binding
++                or adapter._active_sessions.get(session_key) is not guard or guard.is_set()
++                or getattr(source, '_friday_document_run', None) is not run_binding
++                or runner is None or not runner._is_session_run_current(run_key, generation)):
++            raise ValueError('ordinary_document_turn_no_longer_current')
+         identity = identity_of(source)
+         if (current(required=True) is not cap or ordinary_file_source() is not source
+                 or source.platform != Platform.TELEGRAM or identity is None or identity.transport_inferred
+                 or identity.runtime_home != cap.home or identity.runtime_profile != cap.profile
+                 or identity.transport_profile != cap.principal[1] or source.user_id != cap.principal[3]
+-                or runner is None or getattr(adapter, 'gateway_runner', None) is not runner
++                or getattr(adapter, 'gateway_runner', None) is not runner
+                 or str(getattr(getattr(adapter, '_bot', None), 'id', '')) != cap.principal[2]):
+             raise ValueError('original_source_required')
+         actual = freeze_route({'transport_profile': identity.transport_profile,
+@@ -299,6 +314,7 @@
+         stage = 'recovery_owner'
+         await _mark_ordinary_file_recovery(runner, source, cap, route,
+             [{'relative_path': relative, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}])
++        check()
+         stage = 'journal_reservation'
+         state, selection, reserved = _begin_ordinary_document(cap, relative, data, route, name)
+     except Exception as exc:
+@@ -479,6 +495,9 @@
+     cap = ordinary_file_scope()
+     if cap is None or source.platform != Platform.TELEGRAM:
+         return
++    # Native continuations may reuse this mutable source. Require fresh ingress.
++    source._friday_document_guard = None
++    source._friday_document_route = None
+     proof = admitted_ingress(event, source, '')
+     if not isinstance(proof, dict):
+         return
+@@ -492,6 +511,7 @@
+             or source.user_id != cap.principal[3]
+             or any(message.get(k) != v for k, v in expected.items())):
+         return
++    source._friday_document_guard = getattr(event, '_friday_document_guard', None)
+     source._friday_document_route = freeze_route({
+         'transport_profile': cap.principal[1], 'runtime_profile': cap.profile,
+         'bot_id': cap.principal[2], 'source': {'platform': source.platform.value,
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -2137,6 +2137,7 @@
+             source._friday_document_turn = (
+                 getattr(event, '_gateway_active_turn_session_key', None),
+                 getattr(event, '_gateway_active_turn_token', None))
++            source._friday_document_run = (_quick_key, run_generation)
+ 
+         # An unreadable store is not an empty conversation: stop before the agent invents continuity
+         # from []. Restore task-local context here (before the broad cleanup finally).
