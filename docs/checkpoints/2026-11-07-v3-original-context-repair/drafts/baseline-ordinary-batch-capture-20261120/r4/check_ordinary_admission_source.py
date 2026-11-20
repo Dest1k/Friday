@@ -2,6 +2,7 @@
 """Exercise the genuine R4 prepare consumer on a disjoint synthetic store."""
 
 import datetime as dt
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -34,7 +35,7 @@ class OrdinaryAdmission(unittest.TestCase):
         cls.scenario_sha = cls.base.digest(cls.base.encoded(cls.scenario))
 
     def setUp(self):
-        sandbox = tempfile.TemporaryDirectory(prefix="frw-ordinary-admission-control-")
+        sandbox = tempfile.TemporaryDirectory(prefix="frw-ordinary-admission-stand-")
         self.addCleanup(sandbox.cleanup)
         self.work = Path(sandbox.name)
         self.store = self.base.Store(self.work / "state")
@@ -103,6 +104,37 @@ def check(proof_ref, *, contract_ref, prepare_ref, run_id, scenario, stage):
         self.assertFalse(self.store.run_path(RUN_ID).exists())
         self.assertFalse((self.store.root / "cursor.json").exists())
 
+    def owned_caller(self, scenario):
+        drafts = Path(__file__).resolve().parents[2]
+        checker_path = ("f07-ordinary-current209-source-20261113/config-bound-delta/source/current209.py")
+        actor_path = "ordinary-disk-monitor-next-source-20261116/root_f07_once.py"
+        actor_raw = (drafts / actor_path).read_bytes()
+        checker_raw = (drafts / checker_path).read_bytes()
+        self.assertEqual(hashlib.sha256(actor_raw).hexdigest(),
+                         "729efbd54ae5d12b61c0375964fdee817457c57544b08f79ca507215070ea5f5")
+        self.assertEqual(hashlib.sha256(checker_raw).hexdigest(),
+                         "24215d1fca8d59e4109e5934464cf4cfbcf6d2dd48d33b7d44c3fc54377de47f")
+        actor = load_observer(actor_raw, "original_owned_f07_actor")
+        checker = load_observer(checker_raw, "original_f07_lock_checker")
+        actor.STATE = self.store.root
+        actor.SLOT = Path(self.reference("acceptance.lock", b"")["path"])
+        sink = self.store.root / "consumer.lock"
+        credentials = self.store.root / "tester-token"
+        self.store.write(sink, b"")
+        self.store.write(credentials, b"inert lock-test bytes\n")
+        scenario_sha = self.base.digest(self.base.encoded(scenario))
+        self.authority["run_scenarios"] = {RUN_ID: scenario_sha}
+        ordinary = self.compose(scenario_sha256=scenario_sha)
+        caller = load_observer(ordinary)
+        source = self.reference("bound-observer.py", ordinary)
+        phase = {"scenario": scenario, "scenario_sha256": scenario_sha}
+        descriptor = {"run_id": RUN_ID, "selected_tester": source}
+        stack = self.enterContext(ExitStack())
+        slot = actor.safe_lock(actor.SLOT)
+        stack.callback(os.close, slot)
+        return caller, sink, credentials, lambda: actor.qualify_before_clock(
+            descriptor, caller, checker, ordinary, phase)
+
     def test_genuine_prepare_uses_exact_authority(self):
         _, runner = self.candidate()
         retained = self.history.read_bytes()
@@ -147,6 +179,55 @@ def check(proof_ref, *, contract_ref, prepare_ref, run_id, scenario, stage):
         with self.assertRaisesRegex(module.Refused, "Run ID already used"):
             runner._f07_qualify_new_prefix_readonly(RUN_ID, self.scenario)
         self.assertEqual(path.read_bytes(), retained)
+
+    def test_actual_owned_preclock_reads_exact_d10_without_writing(self):
+        _, _, credentials, qualify = self.owned_caller(self.scenario)
+        before = {p: p.read_bytes() for p in self.store.root.rglob("*") if p.is_file()}
+        result = qualify()
+        self.assertEqual(result["state"], "SELECTED_ORDINARY_READONLY_QUALIFIED_NOT_EFFECT_ADMISSION")
+        self.assertEqual(result["input_sha256"], self.scenario["steps"][0]["input"]["sha256"])
+        self.assertFalse(result["readonly_prefix"]["operation_clock_created"])
+        self.assertEqual(before, {p: p.read_bytes() for p in self.store.root.rglob("*") if p.is_file()})
+        self.assertEqual(credentials.read_bytes(), b"inert lock-test bytes\n")
+        self.assert_unprepared()
+
+    def test_actual_owned_preclock_refuses_busy_credential_and_releases_consumer(self):
+        _, sink, credentials, qualify = self.owned_caller(self.scenario)
+        with self.store.lock(credentials, create=False):
+            with self.assertRaisesRegex(Exception, "Another tester consumer is active"):
+                qualify()
+            with self.store.lock(sink, create=False):
+                self.assert_unprepared()
+        self.assertFalse(qualify()["readonly_prefix"]["save_called"])
+
+    def test_actual_owned_preclock_refuses_drifted_input(self):
+        scenario = json.loads(self.base.encoded(self.scenario))
+        upload = scenario["steps"][0]["input"]
+        pinned = Path(upload["path"]).read_bytes()
+        replacement = self.work / "local-d10.docx"
+        self.store.write(replacement, pinned)
+        upload["path"] = str(replacement)
+        upload["stat"] = self.base.input_stat(replacement.stat())
+        _, _, credentials, qualify = self.owned_caller(scenario)
+        self.store.write(replacement, pinned + b"drift")
+        with self.assertRaisesRegex(Exception, "Document source identity or metadata drift"):
+            qualify()
+        with self.store.lock(credentials, create=False):
+            self.assert_unprepared()
+
+    def test_actual_owned_preclock_stop_after_prefix_refuses_and_unlocks(self):
+        caller, sink, credentials, qualify = self.owned_caller(self.scenario)
+        document_reader = caller.read_document_input
+
+        def interrupted_input(upload, guard):
+            self.store.put(self.store.root / "observer-stop.json", {"product_cancelled": False})
+            return document_reader(upload, guard)
+
+        caller.read_document_input = interrupted_input
+        with self.assertRaisesRegex(caller.Refused, "Observer stopped during read-only input qualification"):
+            qualify()
+        with self.store.lock(sink, create=False), self.store.lock(credentials, create=False):
+            self.assert_unprepared()
 
     def test_unbound_candidate_still_refuses(self):
         runner = self.base.Runner(self.store, None)

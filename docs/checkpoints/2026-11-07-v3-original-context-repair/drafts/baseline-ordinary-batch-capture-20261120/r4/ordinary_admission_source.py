@@ -11,6 +11,29 @@ from pathlib import PurePosixPath
 SOURCE_SHA256 = "44577894f0669d305d2cd713048928c7ccbce265a40f1f6d09080b1fb62228bd"
 AUTHORITY_SCHEMA = "frw.Root.ordinary-independent-history-admission.v1"
 
+OWNED_CALLER_ENTRY = b"""def qualify_selected_ordinary_readonly(genuine_runner, *, run_id, phase):
+    scenario = phase['scenario']
+    scenario_sha256 = digest(encoded(scenario))
+    if scenario_sha256 != phase.get('scenario_sha256') or len(scenario.get('steps', [])) != 1:
+        raise Refused('Exact one-step ordinary pre-clock scenario required')
+    prefix = genuine_runner._f07_qualify_new_prefix_readonly(run_id, scenario)
+    upload = scenario['steps'][0].get('input')
+
+    def check_stop():
+        if (genuine_runner.store.root / 'observer-stop.json').exists():
+            raise Refused('Observer stopped during read-only input qualification')
+
+    if upload is not None:
+        read_document_input(upload, check_stop)
+    check_stop()
+    return dict(state='SELECTED_ORDINARY_READONLY_QUALIFIED_NOT_EFFECT_ADMISSION',
+                run_id=run_id, scenario_sha256=scenario_sha256,
+                input_sha256=upload['sha256'] if upload is not None else None,
+                readonly_prefix=prefix, new_called=False, send_called=False)
+
+
+"""
+
 
 def require(condition, message):
     if not condition:
@@ -144,8 +167,8 @@ def compose_observer(source, *, run_id, scenario_sha256, authority, authority_re
     edits.append((end.lineno, end.end_lineno, check.encode()))
     command = one((node for node in tree.body if isinstance(node, ast.FunctionDef)
                    and node.name == "main"), "observer command")
-    edits.append((command.lineno, command.end_lineno,
-                  b"def main(argv=None):\n"
+    edits.append((command.lineno, command.end_lineno, OWNED_CALLER_ENTRY
+                  + b"def main(argv=None):\n"
                   b"    raise SystemExit('Ordinary admission requires the reviewed owned caller')\n"))
     entry = one((node for node in tree.body if isinstance(node, ast.If)
                  and ast.unparse(node.test) == "__name__ == '__main__'"), "observer entry point")
