@@ -1,0 +1,285 @@
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -508,6 +508,26 @@
+ _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
+ 
+ 
++@dataclasses.dataclass(frozen=True, slots=True)
++class _OrdinaryDMWireClaim:
++    claim_sha256: str
++    user_id: int
++    generation: int
++    expires_monotonic: float
++    max_updates: int
++    owner_is_current: Callable[[], bool]
++    updater: object
++    loop: asyncio.AbstractEventLoop
++
++
++@dataclasses.dataclass(frozen=True, slots=True)
++class _OrdinaryDMWireArm:
++    claim: _OrdinaryDMWireClaim
++    window: object
++    first_offset: int
++    armed_monotonic: float
++
++
+ class _PollingLifecycleAbort(RuntimeError):
+     """Internal control flow for polling startup fenced by teardown."""
+ 
+@@ -1747,6 +1767,171 @@
+         if isinstance(result, list) and result:
+             self._updates_received_total += len(result)
+ 
++    def _ordinary_dm_wire_updater(self, generation):
++        """Identify the current PTB poller on its owning event loop."""
++        if (type(generation) is not int or not 0 < generation < 2**63
++                or generation != self._polling_generation or self._teardown_started
++                or not self._polling_progress_accepting):
++            return None
++        updater = getattr(getattr(self, "_app", None), "updater", None)
++        task = getattr(updater, "_Updater__polling_task", None)
++        if (isinstance(task, asyncio.Task) and not task.done() and updater.running
++                and updater.bot is getattr(self, "_bot", None)
++                and task.get_loop() is asyncio.get_running_loop()):
++            return updater
++        return None
++
++    def _reserve_ordinary_dm_wire_window(self, *, claim_sha256, user_id, generation,
++                                        expires_monotonic, max_updates, owner_is_current):
++        """Queue an already authorized claim on the gateway loop. None means pending only."""
++        now = time.monotonic()
++        updater = self._ordinary_dm_wire_updater(generation)
++        if (updater is None or type(claim_sha256) is not str
++                or re.fullmatch(r"[0-9a-f]{64}", claim_sha256) is None
++                or type(user_id) is not int or not 0 < user_id < 2**63
++                or type(expires_monotonic) not in (int, float) or not now < expires_monotonic <= now + 600
++                or type(max_updates) is not int or not 1 <= max_updates <= 200
++                or not callable(owner_is_current) or owner_is_current() is not True):
++            raise ValueError("Invalid authorized Telegram wire claim")
++        pending = getattr(self, "_ordinary_dm_wire_pending", None)
++        if (pending is not None and (pending.updater is not updater or pending.generation != generation
++                                    or now >= pending.expires_monotonic)):
++            self._ordinary_dm_wire_pending = pending = None
++        claimed = getattr(self, "_ordinary_dm_wire_claimed", None)
++        if claimed is None:
++            self._ordinary_dm_wire_claimed = claimed = set()
++        if (pending is not None or getattr(self, "_ordinary_dm_wire_arm", None) is not None
++                or getattr(self, "_ordinary_dm_wire_window", None) is not None or claim_sha256 in claimed):
++            raise ValueError("Telegram wire claim already reserved or another claim still held")
++        claimed.add(claim_sha256)
++        self._ordinary_dm_wire_pending = _OrdinaryDMWireClaim(
++            claim_sha256, user_id, generation, expires_monotonic, max_updates,
++            owner_is_current, updater, asyncio.get_running_loop(),
++        )
++
++    def _ordinary_dm_wire_native_parameters(self, request, generation, kwargs):
++        """Match the actual current PTB long-poll action, transport, filter and cursor."""
++        url = kwargs.get("url")
++        if type(url) is not str or not url.endswith("/getUpdates") or kwargs.get("method") != "POST":
++            return None
++        parameters = kwargs["request_data"].parameters
++        timeout = parameters.get("timeout")
++        offset = parameters.get("offset")
++        allowed = parameters.get("allowed_updates")
++        updater = self._ordinary_dm_wire_updater(generation)
++        if (updater is None or type(timeout) is not int or not 0 < timeout < 2**63
++                or type(offset) is not int or not 0 <= offset < 2**63
++                or type(allowed) is not list or allowed != Update.ALL_TYPES
++                or updater.bot._request[0] is not request
++                or type(updater._last_update_id) is not int or updater._last_update_id != offset):
++            return None
++        # PTB 22.8 awaits getUpdates in this native child's coroutine. A caller
++        # sharing the request and ContextVar still cannot present that child.
++        coroutine = asyncio.current_task().get_coro()
++        action = getattr(coroutine, "cr_code", None)
++        frame = getattr(coroutine, "cr_frame", None)
++        if (action is not None and action.co_name == "polling_action_cb" and frame is not None
++                and any(action is constant for constant in updater._start_polling.__code__.co_consts)
++                and frame.f_locals.get("self") is updater):
++            return parameters
++        return None
++
++    def _arm_ordinary_dm_wire_window(self, request, generation, kwargs, *, overlapping):
++        """Consume pending once at the native transport boundary without changing the request."""
++        claim = self._ordinary_dm_wire_pending
++        selected = True
++        try:
++            url = kwargs.get("url")
++            if type(url) is not str or not url.endswith("/getUpdates") or kwargs.get("method") != "POST":
++                selected = False
++                return None
++            parameters = kwargs["request_data"].parameters
++            timeout = parameters.get("timeout")
++            if type(timeout) is int and timeout == 0:
++                selected = False
++                return None  # PTB's stop cleanup is outside the claim boundary.
++            if (overlapping or generation != claim.generation
++                    or self._ordinary_dm_wire_updater(generation) is not claim.updater
++                    or self._ordinary_dm_wire_native_parameters(request, generation, kwargs) is None
++                    or time.monotonic() >= claim.expires_monotonic
++                    or claim.owner_is_current() is not True):
++                return None
++            from .telegram_receive_window import DirectMessageWireWindow
++
++            armed_at = time.monotonic()
++            if armed_at >= claim.expires_monotonic:
++                return None
++            offset = parameters["offset"]
++            window = DirectMessageWireWindow(
++                generation=generation, user_id=claim.user_id, first_offset=offset,
++                armed_at=armed_at, expires=claim.expires_monotonic, max_updates=claim.max_updates,
++            )
++            self._ordinary_dm_wire_arm = _OrdinaryDMWireArm(claim, window, offset, armed_at)
++            self._ordinary_dm_wire_window = window
++            return armed_at
++        except (Exception, asyncio.CancelledError):
++            return None
++        finally:
++            if selected:
++                self._ordinary_dm_wire_pending = None
++
++    def _ordinary_dm_wire_arm_readback(self, claim_sha256):
++        """Read only a matching, still usable native arm on the gateway loop."""
++        arm = getattr(self, "_ordinary_dm_wire_arm", None)
++        if arm is None or type(claim_sha256) is not str or arm.claim.claim_sha256 != claim_sha256:
++            return None
++        claim, window = arm.claim, arm.window
++        try:
++            if asyncio.get_running_loop() is not claim.loop:
++                return None
++        except RuntimeError:
++            return None
++        try:
++            if (self._ordinary_dm_wire_updater(claim.generation) is not claim.updater
++                    or getattr(self, "_ordinary_dm_wire_window", None) is not window
++                    or claim.owner_is_current() is not True):
++                window.lost("wire_arm_owner_or_updater_changed")
++                return None
++            now = time.monotonic()
++            if window.snapshot(now, current_generation=claim.generation, accepting=True)["state"] != "OPEN":
++                return None
++            last_progress = self._polling_last_progress_monotonic
++            if last_progress is not None and not 0 <= now - last_progress <= _POLLING_STALL_TIMEOUT:
++                window.lost("wire_arm_polling_progress_stale")
++                return None
++            if last_progress is None or not self._polling_progress_event.is_set() or self._send_path_degraded:
++                return None
++        except (Exception, asyncio.CancelledError):
++            window.lost("wire_arm_readback_failed")
++            return None
++        return {
++            "claim_sha256": claim.claim_sha256,
++            "generation": claim.generation,
++            "first_offset": arm.first_offset,
++            "armed_monotonic": arm.armed_monotonic,
++            "expires_monotonic": claim.expires_monotonic,
++        }
++
++    def _retire_ordinary_dm_wire_window(self, claim_sha256):
++        """Release only an exact terminal arm after the protected caller retains its evidence."""
++        arm = getattr(self, "_ordinary_dm_wire_arm", None)
++        if arm is None or type(claim_sha256) is not str or arm.claim.claim_sha256 != claim_sha256:
++            return False
++        claim, window = arm.claim, arm.window
++        try:
++            if (asyncio.get_running_loop() is not claim.loop
++                    or getattr(self, "_ordinary_dm_wire_window", None) is not window):
++                return False
++            accepting = self._ordinary_dm_wire_updater(claim.generation) is claim.updater
++            state = window.snapshot(time.monotonic(), current_generation=self._polling_generation,
++                                    accepting=accepting)["state"]
++            if state not in ("UNKNOWN", "LOCAL_WIRE_CLOSED"):
++                return False
++        except Exception:
++            return False
++        self._ordinary_dm_wire_window = self._ordinary_dm_wire_arm = None
++        return True
++
+     def _instrument_polling_request(self, request):
+         """Instrument one dedicated PTB getUpdates request with progress tracking.
+ 
+@@ -1760,9 +1945,8 @@
+         """
+         adapter = self
+ 
+-        def invalidate_window(reason):
+-            window = getattr(adapter, "_ordinary_dm_wire_window", None)
+-            if window is not None:
++        def invalidate_window(window, reason):
++            if window is not None and window is getattr(adapter, "_ordinary_dm_wire_window", None):
+                 try:
+                     window.lost(reason)
+                 except Exception:
+@@ -1774,26 +1958,52 @@
+             async def do_request(self, *args, **kwargs):
+                 generation = _POLLING_GENERATION_CONTEXT.get()
+                 started = time.monotonic()
++                inflight = getattr(adapter, "_ordinary_dm_wire_poll_inflight", 0)
++                adapter._ordinary_dm_wire_poll_inflight = inflight + 1
+                 try:
+-                    result = await super().do_request(*args, **kwargs)
+-                except BaseException:
+-                    invalidate_window("native_poll_failed")
+-                    raise
+-                adapter._observe_polling_request_result(self, generation, result)
+-                window = getattr(adapter, "_ordinary_dm_wire_window", None)
+-                if window is not None:
++                    armed_at = None
++                    if getattr(adapter, "_ordinary_dm_wire_pending", None) is not None:
++                        armed_at = adapter._arm_ordinary_dm_wire_window(self, generation, kwargs,
++                                                                       overlapping=inflight != 0)
++                        if armed_at is not None:
++                            started = armed_at
++                    window = getattr(adapter, "_ordinary_dm_wire_window", None)
++                    if inflight:
++                        invalidate_window(window, "native_poll_overlap")
++                    arm = getattr(adapter, "_ordinary_dm_wire_arm", None)
++                    native_boundary = False
++                    if window is not None and arm is not None and not inflight:
++                        try:
++                            native_boundary = armed_at is not None or (
++                                adapter._ordinary_dm_wire_native_parameters(self, generation, kwargs) is not None
++                            )
++                        except Exception:
++                            pass
++                        if not native_boundary:
++                            invalidate_window(window, "native_poll_boundary_unbound")
+                     try:
+-                        window.observe_response(
+-                            generation=generation,
+-                            accepting=(not adapter._teardown_started
+-                                       and adapter._polling_progress_accepting
+-                                       and generation == adapter._polling_generation),
+-                            parameters=kwargs["request_data"].parameters,
+-                            started=started, completed=time.monotonic(), result=result,
+-                        )
+-                    except Exception:
+-                        invalidate_window("native_poll_observation_failed")
+-                return result
++                        result = await super().do_request(*args, **kwargs)
++                    except BaseException:
++                        invalidate_window(window, "native_poll_failed")
++                        raise
++                    adapter._observe_polling_request_result(self, generation, result)
++                    if window is not None and window is getattr(adapter, "_ordinary_dm_wire_window", None):
++                        try:
++                            window.observe_response(
++                                generation=generation,
++                                accepting=(not adapter._teardown_started
++                                           and adapter._polling_progress_accepting
++                                           and generation == adapter._polling_generation
++                                           and (arm is None or native_boundary
++                                                and adapter._ordinary_dm_wire_updater(generation) is arm.claim.updater)),
++                                parameters=kwargs["request_data"].parameters,
++                                started=started, completed=time.monotonic(), result=result,
++                            )
++                        except Exception:
++                            invalidate_window(window, "native_poll_observation_failed")
++                    return result
++                finally:
++                    adapter._ordinary_dm_wire_poll_inflight -= 1
+ 
+         request.__class__ = _InstrumentedPollingRequest
+         return request
