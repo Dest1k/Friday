@@ -1,0 +1,97 @@
+--- a/bot_tester.py
++++ b/bot_tester.py
+@@ -12233,12 +12233,12 @@
+         else:
+             self.save(run)
+ 
+-    def capture(self, update):
++    def capture(self, update, *, arrived_at=None):
+         uid = update.get('update_id')
+         if type(uid) is not int or uid < 0 or len(encoded(update)) > 256 * 1024:
+             raise Refused('Invalid or oversized update')
+         if getattr(self, 'reply_run', None) is not None:
+-            return self.capture_reply(self.reply_run, update)
++            return self.capture_reply(self.reply_run, update, arrived_at=arrived_at)
+         cursor = self.store.get(self.store.root / 'cursor.json', {'offset': 0})
+         self.cursor_offsets(cursor)
+         tracked = 'capture_receipts' in cursor
+@@ -12804,7 +12804,7 @@
+                 raise Refused('Committed processed observations missing or changed')
+         return (captures, processed, drain) if terminal else (captures, processed)
+ 
+-    def capture_reply(self, run, update):
++    def capture_reply(self, run, update, *, arrived_at=None):
+         captures, processed = self.receive_inventory(run)
+         uid = update['update_id']; raw = encoded(update)
+         if uid in captures:
+@@ -12814,7 +12814,9 @@
+         cursor = self.store.get(self.store.root / 'cursor.json')
+         if uid < cursor['offset']:
+             raise Refused('Uncommitted update behind receive cursor')
+-        arrival = dict(update_id=uid, arrived_at=self.clock(), context=self.receive_context(run),
++        if arrived_at is None:
++            arrived_at = self.clock()
++        arrival = dict(update_id=uid, arrived_at=arrived_at, context=self.receive_context(run),
+                        raw_update={'basename': str(uid) + '.json', 'bytes': len(raw), 'sha256': digest(raw)})
+         arrival_raw = encoded(arrival)
+         for name, data in [(str(uid) + '.json', raw), (str(uid) + '.arrival.json', arrival_raw)]:
+@@ -13663,7 +13665,8 @@
+                   'limit': min(20, run['scenario']['max_updates'] - run['update_count'] + 1),
+                   'allowed_updates': ['message']}
+         try:
+-            return self.api.call('getUpdates', params, timeout=timeout)
++            updates = self.api.call('getUpdates', params, timeout=timeout)
++            return updates, self.clock()
+         except Uncertain as first:
+             # Telegram confirms only update_id < offset. Repeating the exact
+             # nonnegative offset cannot acknowledge an unseen/lost response.
+@@ -13697,13 +13700,14 @@
+                                   started + run['capture_until'] - self.clock()))
+             try:
+                 updates = self.api.call('getUpdates', params, timeout=timeout)
++                arrived_at = self.clock()
+             except Uncertain:
+                 retry['outcome'] = 'FAILED_UNKNOWN'
+                 self.save(run)
+                 raise
+             retry['outcome'] = 'RETURNED_UNVALIDATED'
+             self.save(run)
+-            return updates
++            return updates, arrived_at
+ 
+     def observe(self, run):
+         if run.get('id') == 'root-s05-d745ac09dcf2':
+@@ -13816,17 +13820,28 @@
+                 # Sample again at dispatch; only terminal intent permits a later read.
+                 if reply and self.reply_window(run) <= self.clock():
+                     continue
+-                updates = self.poll_updates(run, cursor, timeout, poll_diagnostic)
++                updates, arrived_at = self.poll_updates(run, cursor, timeout, poll_diagnostic)
+                 phase = 'poll_batch'
+-                if not isinstance(updates, list) or len(updates) > 20:
++                limit = min(20, run['scenario']['max_updates'] - run['update_count'] + 1) if reply else 20
++                if not isinstance(updates, list) or len(updates) > limit:
+                     raise Refused('Invalid update batch')
+                 if any(not isinstance(u, dict) or type(u.get('update_id')) is not int or u['update_id'] < 0 for u in updates):
+                     raise Refused('Invalid update identifiers')
+-                for update in sorted(updates, key=lambda u: u['update_id']):
++                updates = sorted(updates, key=lambda u: u['update_id'])
++                if reply:
++                    # The response batch arrived together. Commit every raw update
++                    # before processing can fail or cross the fixed receive cutoff.
++                    for update in updates:
++                        phase = 'update_guard'
++                        self.guard(run)
++                        phase = 'capture'
++                        self.capture(update, arrived_at=arrived_at)
++                for update in updates:
+                     phase = 'update_guard'
+                     self.guard(run)
+-                    phase = 'capture'
+-                    self.capture(update)
++                    if not reply:
++                        phase = 'capture'
++                        self.capture(update)
+                     phase = 'process_update'
+                     self.process(run, update)
+                 phase = 'sleep'

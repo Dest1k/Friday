@@ -1,0 +1,206 @@
+--- a/bot_tester.py
++++ b/bot_tester.py
+@@ -11645,6 +11645,11 @@
+             if (previous.get('send_state') in ('intent', 'unknown')
+                     and not self.ordinary_independent_history_row(independent, previous)):
+                 raise Refused('Unresolved send blocks all new work')
++            if previous['status'] == 'STOPPED' and 'receive_head' in previous:
++                poll = self.read_poll_intent(previous)
++                if (poll is not None and poll['outcome'] == 'PENDING'
++                        and not self.ordinary_independent_history_row(independent, previous)):
++                    raise Refused('Unresolved ordinary receive blocks new work on the shared cursor')
+         if (self.store.root / 'observer-stop.json').exists():
+             raise Refused('Observer stop marker set; explicit reset-stop required')
+         run = {'id': name, 'scenario': scenario, 'scenario_sha256': digest(encoded(scenario)),
+@@ -12790,6 +12795,8 @@
+             raise Refused('Capture receipt sequence exceeds the original record bound')
+         if pending and (cursor['offset'] != offset or run['status'] not in ('OBSERVING', 'RATE_LIMITED_RECEIVE')):
+             raise Refused('Pending ordinary poll outcome requires offline review')
++        if pending and terminal:
++            raise Refused('Pending ordinary poll batch bars terminal evidence')
+         stopped1667 = False
+         if processing == {261479189} and run.get('id') == 'root-settings-restarted-e109244e1a93':
+             self.settings_stopped1667_history(run)
+@@ -13630,6 +13637,7 @@
+         # One finite read after the unchanged cutoff. Durable intent consumes the
+         # opportunity even if dispatch/transport/process custody later becomes unknown.
+         captures, processed, drain = self.receive_inventory(run, terminal=True)
++        self.reconcile_poll_intent(run)
+         if drain:
+             if drain.get('complete'):
+                 return
+@@ -13726,7 +13734,7 @@
+         except (ValueError, UnicodeError):
+             raise Refused('Ordinary poll response is not unambiguous JSON') from None
+ 
+-    def keep_poll_batch(self, run, cursor, updates, arrived_at, limit):
++    def poll_response(self):
+         raw = getattr(self.api, '_last_response', None)
+         if not isinstance(raw, bytes) or not 1 <= len(raw) <= MAX_JSON:
+             raise Refused('Ordinary poll response lacks exact bounded HTTP custody')
+@@ -13734,6 +13742,55 @@
+             wire = json.loads(raw, object_pairs_hook=unique_object)
+         except (ValueError, UnicodeError):
+             raise Refused('Ordinary poll response is not unambiguous JSON') from None
++        return raw, wire
++
++    def poll_intent_path(self, run):
++        return self.store.root / ('poll-active-' + self.receive_key(run) + '.json')
++
++    def read_poll_intent(self, run):
++        path = self.poll_intent_path(run)
++        if path.with_suffix('.json.new').exists():
++            raise Uncertain('Ordinary poll settlement is incomplete')
++        if not path.exists():
++            return None
++        intent = self.store.get(path)
++        if (not isinstance(intent, dict) or set(intent) != {'context_sha256', 'head', 'offset', 'outcome'}
++                or intent['context_sha256'] != digest(encoded(self.receive_context(run)))
++                or not isinstance(intent['head'], dict) or type(intent['offset']) is not int
++                or intent['offset'] < run['capture_start_offset']
++                or intent['outcome'] not in ('PENDING', 'BATCH', 'EMPTY', 'RATE_LIMITED', 'NOT_DISPATCHED')):
++            raise Refused('Ordinary poll intent context or settlement changed')
++        return intent
++
++    def open_poll_intent(self, run, cursor):
++        previous = self.read_poll_intent(run)
++        if previous is not None and previous['outcome'] == 'PENDING':
++            raise Uncertain('Ordinary poll response is unresolved')
++        intent = dict(context_sha256=digest(encoded(self.receive_context(run))),
++                      head=run['receive_head'], offset=cursor['offset'], outcome='PENDING')
++        self.store.put(self.poll_intent_path(run), intent)
++        return intent
++
++    def settle_poll_intent(self, run, intent, outcome):
++        if self.read_poll_intent(run) != intent:
++            raise Refused('Ordinary poll intent changed before settlement')
++        self.store.put(self.poll_intent_path(run), dict(intent, outcome=outcome))
++
++    def reconcile_poll_intent(self, run):
++        # A fully committed R2 witness can settle this exact dispatch. An intent
++        # with no such receipt cannot prove timely arrival, even after cutoff.
++        intent = self.read_poll_intent(run)
++        if intent is None or intent['outcome'] != 'PENDING':
++            return
++        record = self.read_reference(run['receive_head'])
++        if (record.get('kind') != 'poll_batch' or record.get('previous') != intent['head']
++                or record.get('offset') != intent['offset']
++                or record.get('poll_intent_sha256') != digest(encoded(intent))):
++            raise Uncertain('Ordinary poll response was not durably retained; observation remains incomplete')
++        self.settle_poll_intent(run, intent, 'BATCH')
++
++    def keep_poll_batch(self, run, cursor, updates, arrived_at, limit, intent):
++        raw, wire = self.poll_response()
+         if (encoded(self.poll_batch_updates(wire, limit, cursor['offset'])) != encoded(updates)
+                 or self.store.get(self.store.root / 'cursor.json') != cursor
+                 or type(arrived_at) not in (int, float) or not math.isfinite(arrived_at)
+@@ -13741,7 +13798,8 @@
+             raise Refused('Ordinary poll response differs from its transport or original cursor')
+         record = dict(kind='poll_batch', offset=cursor['offset'], arrived_at=arrived_at,
+                       update_count=run['update_count'], limit=limit, sequence=run['receive_sequence'] + 1,
+-                      previous=run['receive_head'], context=self.receive_context(run))
++                      previous=run['receive_head'], context=self.receive_context(run),
++                      poll_intent_sha256=digest(encoded(intent)))
+         header = self.poll_witness_header(record)
+         if len(header) > POLL_WITNESS_HEADER_LIMIT:
+             raise Refused('Ordinary poll witness header exceeds its bound')
+@@ -13827,11 +13885,16 @@
+             # Unconditional custody revalidation on recovery, derived from the committed
+             # scenario: outbound task/ACK, window commitment, raw updates, all receipts.
+             self.verify_reply_custody(run)
+-        self.import_quarantine(run)
+         phase = 'preflight_budget'
+         poll_diagnostic = None
++        poll_intent = None
+         try:
+             if reply:
++                phase = 'replay_poll_intent'
++                self.reconcile_poll_intent(run)
++            phase = 'import_quarantine'
++            self.import_quarantine(run)
++            if reply:
+                 phase = 'replay_batch'
+                 updates, arrived_at = self.receive_inventory(run, pending_batch=True)
+                 self.stage_poll_batch(run, updates, arrived_at)
+@@ -13905,8 +13968,21 @@
+                     # No HTTP call started. Re-enter the normal guard/readiness and
+                     # custody path; do not catch any API or document failure here.
+                     continue
+-                phase = 'poll_http'
++                # Record the active dispatch before any ordinary receive. Spend
++                # its local write time from the budget already computed above.
+                 poll_started = time.monotonic()
++                if reply:
++                    phase = 'poll_intent'
++                    dispatch_deadline = poll_started + timeout
++                    poll_intent = self.open_poll_intent(run, cursor)
++                    cutoff = self.reply_window(run)
++                    now = self.clock()
++                    poll_started = time.monotonic()
++                    timeout = min(dispatch_deadline - poll_started, run['deadline'] - now)
++                    if timeout <= 0 or now >= cutoff:
++                        self.settle_poll_intent(run, poll_intent, 'NOT_DISPATCHED')
++                        continue
++                phase = 'poll_http'
+                 poll_diagnostic = {
+                     'stop_poll_started_monotonic': poll_started,
+                     'stop_poll_timeout_seconds': timeout,
+@@ -13917,22 +13993,31 @@
+                     # only: it never changes dispatch budgets, readiness, or cause.
+                     poll_diagnostic['stop_poll_capture_cutoff_monotonic'] = (
+                         poll_started + (run['capture_until'] - self.clock()))
+-                # guard() performs durable reads and may cross the fixed cutoff.
+-                # Sample again at dispatch; only terminal intent permits a later read.
+-                if reply and self.reply_window(run) <= self.clock():
+-                    continue
+-                updates, arrived_at, retry = self.poll_updates(run, cursor, timeout, poll_diagnostic)
++                had_retry = 'receive_http_retry' in run
++                try:
++                    updates, arrived_at, retry = self.poll_updates(run, cursor, timeout, poll_diagnostic)
++                except RateLimited as exc:
++                    if not had_retry and 'receive_http_retry' in run:
++                        self.cooldown(exc)
++                        raise Uncertain('The first ordinary receive remains unknown after a rate-limited retry') from None
++                    raise
+                 phase = 'poll_batch'
+                 limit = min(20, run['scenario']['max_updates'] - run['update_count'] + 1) if reply else 20
+                 if not isinstance(updates, list) or len(updates) > limit:
+                     raise Refused('Invalid update batch')
+                 if any(not isinstance(u, dict) or type(u.get('update_id')) is not int or u['update_id'] < 0 for u in updates):
+                     raise Refused('Invalid update identifiers')
+-                if reply and updates:
+-                    # Preserve the original wire and clock before any update can
+-                    # advance the cursor or the retry can be marked returned.
++                if reply:
+                     phase = 'poll_batch_commit'
+-                    self.keep_poll_batch(run, cursor, updates, arrived_at, limit)
++                    if updates:
++                        # Preserve the wire before settling this dispatch.
++                        self.keep_poll_batch(run, cursor, updates, arrived_at, limit, poll_intent)
++                        self.settle_poll_intent(run, poll_intent, 'BATCH')
++                    else:
++                        _, wire = self.poll_response()
++                        if not isinstance(wire, dict) or wire.get('ok') is not True or wire.get('result') != []:
++                            raise Refused('Ordinary empty poll lacks a verified empty response')
++                        self.settle_poll_intent(run, poll_intent, 'EMPTY')
+                 if retry is not None:
+                     retry['outcome'] = 'RETURNED_UNVALIDATED'
+                     self.save(run)
+@@ -13955,6 +14040,8 @@
+                 self.sleep(pause)
+         except RateLimited as exc:
+             self.cooldown(exc)
++            if phase == 'poll_http' and poll_intent is not None:
++                self.settle_poll_intent(run, poll_intent, 'RATE_LIMITED')
+             run['status'] = 'RATE_LIMITED_RECEIVE'
+             self.save(run)
+             raise
+@@ -13965,6 +14052,8 @@
+             run.update(status='STOPPED', stopped_at=stamp(), product_cancelled=False,
+                        stop_phase=phase, stop_reason_code=code)
+             if isinstance(exc, Uncertain):
++                if reply and phase in ('replay_poll_intent', 'poll_intent', 'poll_http'):
++                    run['receive_poll_outcome_unknown'] = True
+                 # Preserve the broad legacy code and add a fixed, text-free cause.
+                 cause = getattr(exc, 'cause_code', None)
+                 run['stop_cause_code'] = (cause if cause in (

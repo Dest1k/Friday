@@ -1,5 +1,6 @@
 """Actual product composition and native config reads; no provider/worker calls."""
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -170,6 +171,72 @@ def test_thinking_mode_change_invalidates_the_persisted_usage_anchor(native_home
     after = native_load(native_home, ordinary(compose_product(spec)))
     assert bounded_usage_route_binding(after) != anchor['bounded_route_binding']
     assert persisted_anchor_tokens(ledger, 'synthetic-session', history) is None
+
+
+def test_future_main_route_replays_tool_result_and_counts_chat_completion_usage(native_home):
+    import httpx
+    from openai import OpenAI
+
+    from agent.agent_init import _custom_provider_extra_body_for_agent
+    from agent.message_sanitization import apply_reasoning_content_policy, needs_reasoning_echo
+    from agent.transports.chat_completions import ChatCompletionsTransport
+    from hermes_cli.config import get_compatible_custom_providers
+
+    spec = split_spec()
+    model = 'deepseek-v4.1-flash-1017'
+    url = spec['inference']['base_url']
+    spec['inference'].update(model=model,
+                            request_options={'extra_body': {'thinking': {'type': 'enabled'}}})
+    loaded = native_load(native_home, ordinary(compose_product(spec)))
+    options = _custom_provider_extra_body_for_agent(
+        provider='custom:friday-local', model=model, base_url=url,
+        custom_providers=get_compatible_custom_providers(loaded))
+    tools = [{'type': 'function', 'function': {'name': 'read_file', 'parameters': {'type': 'object'}}}]
+    call = {'id': 'call_local_1', 'type': 'function',
+            'function': {'name': 'read_file', 'arguments': '{"path":"facts.txt"}'}}
+    tool_turn = {'role': 'assistant', 'content': None, 'tool_calls': [call],
+                 'reasoning_content': 'Synthetic wire field.'}
+    answer_turn = {'role': 'assistant', 'content': 'One fact.'}
+    sent = []
+
+    def respond(request):
+        assert request.url.path == '/v1/chat/completions'
+        sent.append(json.loads(request.content))
+        first = len(sent) == 1
+        prompt_tokens = 17 if first else 26
+        return httpx.Response(200, json={
+            'id': f'local-{len(sent)}', 'object': 'chat.completion', 'model': model, 'created': 1,
+            'choices': [{'index': 0, 'finish_reason': 'tool_calls' if first else 'stop',
+                         'message': tool_turn if first else answer_turn}],
+            'usage': {'prompt_tokens': prompt_tokens, 'completion_tokens': 6,
+                      'total_tokens': prompt_tokens + 6},
+        })
+
+    transport = ChatCompletionsTransport()
+    messages = [{'role': 'user', 'content': 'Read the fixture.'}]
+    with OpenAI(base_url=url, api_key='synthetic-key', max_retries=0,
+                http_client=httpx.Client(transport=httpx.MockTransport(respond), trust_env=False)) as client:
+        def complete():
+            payload = transport.build_kwargs(model, messages, tools,
+                                             request_overrides={'extra_body': options})
+            return transport.normalize_response(client.chat.completions.create(**payload))
+
+        first = complete()
+        assert first.finish_reason == 'tool_calls' and first.content is None
+        assert first.usage.prompt_tokens == 17 and first.usage.total_tokens == 23
+        tool = first.tool_calls[0]
+        assert (tool.id, tool.name, tool.arguments) == ('call_local_1', 'read_file', call['function']['arguments'])
+        replay = {'role': 'assistant', 'content': first.content, 'tool_calls': [call]}
+        apply_reasoning_content_policy({**replay, 'reasoning_content': first.reasoning_content}, replay,
+                                       needs_reasoning_echo('custom', model, url))
+        messages.extend([replay, {'role': 'tool', 'tool_call_id': tool.id, 'content': 'One fact.'}])
+        final = complete()
+
+    assert final.finish_reason == 'stop' and final.content == 'One fact.'
+    assert final.usage.prompt_tokens == 26 and final.usage.completion_tokens == 6
+    assert len(sent) == 2
+    assert all(body['thinking'] == {'type': 'enabled'} and body['tools'] == tools for body in sent)
+    assert sent[1]['messages'][1:] == [tool_turn, messages[-1]]
 
 
 @pytest.mark.parametrize('surface', ['root', 'ordinary'])

@@ -4,6 +4,7 @@
 The default output is a summary. Use --case and --format for indexed source
 references and use --all for the full projection. A source reference is a
 source name from the output's `sources` object followed by a JSON pointer.
+Use --b00-wave-root to join historical B00 scenarios from a local wave archive.
 The original requests, oracles, and private evidence locators stay in their
 source files. The projection carries no current admission or dispatch state.
 """
@@ -15,6 +16,7 @@ import io
 import json
 from pathlib import Path
 import re
+import stat
 import sys
 from zipfile import BadZipFile, ZipFile
 
@@ -107,6 +109,106 @@ def indexed_rows(rows, key, count, label):
 def list_references(row, reference, fields):
     return {field: {'count': len(row[field]), 'ref': f'{reference}/{field}'}
             for field in fields if row.get(field)}
+
+
+def archive_directory(path):
+    return not path.is_symlink() and path.is_dir()
+
+
+def unique_object(pairs):
+    value = dict(pairs)
+    require(len(value) == len(pairs), 'duplicate key in B00 wave JSON')
+    return value
+
+
+def read_wave_object(path):
+    require(stat.S_ISREG(path.lstat().st_mode), 'expected a regular B00 wave file')
+    limit = 256 * 1024
+    with path.open('rb') as stream:
+        data = stream.read(limit + 1)
+    require(len(data) <= limit, 'B00 wave file exceeds size limit')
+    value = json.loads(data, object_pairs_hook=unique_object)
+    require(isinstance(value, dict), 'expected a B00 wave JSON object')
+    return value
+
+
+def matches_b00_scenario(scenario, expected):
+    steps = scenario.get('steps') if isinstance(scenario, dict) else None
+    if not isinstance(steps, list) or not steps or not all(isinstance(step, dict) for step in steps):
+        return False
+    encoded = json.dumps(scenario, ensure_ascii=True, sort_keys=True, allow_nan=False) + '\n'
+    return hashlib.sha256(encoded.encode('utf-8')).hexdigest() == expected
+
+
+def b00_capsule(wave, scenario_path, run_id, expected, stores):
+    local_scenarios = wave / 'scenarios'
+    if scenario_path.parent.name == 'scenarios' and scenario_path.parent.parent.name == wave.name:
+        path = local_scenarios / scenario_path.name
+        if archive_directory(local_scenarios) and path.is_file():
+            if matches_b00_scenario(read_wave_object(path), expected):
+                return 'scenario_file'
+    for store in stores:
+        path = store / f'{run_id}.json'
+        if not path.is_file():
+            continue
+        record = read_wave_object(path)
+        if (record.get('id') == run_id and record.get('scenario_sha256') == expected
+                and matches_b00_scenario(record.get('scenario'), expected)):
+            return 'run_record'
+    return None
+
+
+def project_b00_wave_history(b00, root):
+    require(archive_directory(root), 'expected a B00 wave root directory')
+    registry = Path(b00['source_registry'])
+    phases = {phase: [] for row in b00['cases'] for phase in row['step_ids']}
+    waves = [path for path in sorted(root.iterdir())
+             if re.fullmatch(r'FRW-KIMI-B00-[A-Z0-9-]+-[0-9]{8}', path.name) and archive_directory(path)]
+    stores = [child / 'store' / 'runs' for wave in waves for child in sorted(wave.iterdir())
+              if archive_directory(child) and archive_directory(child / 'store')
+              and archive_directory(child / 'store' / 'runs')]
+    for wave in waves:
+        for path in sorted(wave.glob('INDEPENDENT-AUTHORITY-R*.json')):
+            if not re.fullmatch(r'INDEPENDENT-AUTHORITY-R[0-9]+\.json', path.name):
+                continue
+            authority = read_wave_object(path)
+            bindings = authority.get('phase_id_bindings', {})
+            hashes = authority.get('run_scenarios', {})
+            require(isinstance(bindings, dict) and isinstance(hashes, dict), 'invalid B00 wave bindings')
+            for run_id, binding in bindings.items():
+                require(isinstance(binding, dict), 'invalid B00 phase binding')
+                scenario_path = Path(binding['scenario_path'])
+                phase = scenario_path.stem.removesuffix('-long')
+                if phase not in phases:
+                    continue
+                require(scenario_path.is_absolute() and '..' not in scenario_path.parts
+                        and scenario_path.suffix == '.json' and '\x00' not in str(scenario_path)
+                        and re.fullmatch(r'root-b00-[a-z0-9-]{1,120}', run_id), 'invalid B00 phase identity')
+                expected = hashes.get(run_id)
+                registry_sha = binding.get('canonical_sha256', expected)
+                require(all(isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest)
+                            for digest in (expected, registry_sha))
+                        and binding.get('tester_sha256', expected) == expected, 'invalid B00 scenario pin')
+                original = scenario_path.parent == registry and registry_sha == expected
+                phases[phase].append({
+                    'wave': wave.name.removeprefix('FRW-KIMI-B00-'),
+                    'authority': path.stem.removeprefix('INDEPENDENT-AUTHORITY-'),
+                    'run_id': run_id,
+                    'scenario_sha256': expected,
+                    'source_scenario_sha256': registry_sha,
+                    'source': 'original_registry' if original else 'separately_pinned_variant',
+                    'capsule': b00_capsule(wave, scenario_path, run_id, expected, stores),
+                })
+    return {phase: {'availability': b00_availability(bindings), 'bindings': bindings}
+            for phase, bindings in phases.items()}
+
+
+def b00_availability(bindings):
+    if any(binding['capsule'] and binding['source'] == 'original_registry' for binding in bindings):
+        return 'original_registry_exact'
+    if any(binding['capsule'] for binding in bindings):
+        return 'separately_pinned_variant_exact'
+    return 'missing_capsule' if bindings else 'missing_authority'
 
 
 def project_cases(catalog, ledger, b00, fixture_families, catalog_sha):
@@ -326,7 +428,7 @@ def format_conditions(ledger, formats, case_ids):
     }
 
 
-def build_projection(inputs, selected_cases, selected_formats, select_all):
+def build_projection(inputs, selected_cases, selected_formats, select_all, b00_wave_root=None):
     case_catalog, format_catalog, case_ledger, extension_ledger, b00, fixture_families, sources = inputs
     cases = project_cases(case_catalog, case_ledger, b00, fixture_families, sources['case_catalog']['sha256'])
     original_ids = cases.keys() | WORKER_CASES.keys()
@@ -357,6 +459,16 @@ def build_projection(inputs, selected_cases, selected_formats, select_all):
     }
     if select_all or selected_cases:
         output['cases'] = [row for case_id, row in cases.items() if select_all or case_id in selected_cases]
+    if b00_wave_root is not None:
+        history = project_b00_wave_history(b00, b00_wave_root)
+        availability = Counter(row['availability'] for row in history.values())
+        output['summary']['b00_historical_scenarios'] = {
+            status: availability[status] for status in (
+                'original_registry_exact', 'separately_pinned_variant_exact', 'missing_capsule', 'missing_authority')}
+        for case in output.get('cases', []):
+            if 'b00' in case:
+                case['b00']['historical_scenarios'] = [
+                    {'phase': phase, **history[phase]} for phase in case['b00']['listed_order']]
     format_cases_selected = bool(selected_cases & {'F-04', 'F-05', 'F-06', 'F-07', 'F-08'})
     if select_all or selected_formats or format_cases_selected:
         output['format_conditions'] = conditions
@@ -378,14 +490,16 @@ def main(argv=None):
     parser.add_argument('--case', action='append', default=[], metavar='ID', help='include an indexed CORE case')
     parser.add_argument('--format', action='append', default=[], metavar='EXT', help='include an indexed extension')
     parser.add_argument('--all', action='store_true', help='include every CORE case, extension and format rule')
+    parser.add_argument('--b00-wave-root', type=Path,
+                        help='join historical B00 scenario hashes from retained wave directories')
     args = parser.parse_args(argv)
     try:
         output = build_projection(load_inputs(args), {case.upper() for case in args.case},
-                                  {fmt.lower().removeprefix('.') for fmt in args.format}, args.all)
+                                  {fmt.lower().removeprefix('.') for fmt in args.format}, args.all, args.b00_wave_root)
     except ProjectionError as error:
         print(f'CORE projection refused: {error}', file=sys.stderr)
         return 1
-    except (OSError, ValueError, TypeError, KeyError, BadZipFile) as error:
+    except (OSError, ValueError, TypeError, KeyError, RecursionError, BadZipFile) as error:
         print(f'CORE projection refused: could not load or join inputs ({type(error).__name__})', file=sys.stderr)
         return 1
     json.dump(output, sys.stdout, ensure_ascii=False, separators=(',', ':'))

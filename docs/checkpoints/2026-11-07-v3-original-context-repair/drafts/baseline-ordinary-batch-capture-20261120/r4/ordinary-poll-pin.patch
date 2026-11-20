@@ -1,0 +1,82 @@
+--- a/bot_tester.py
++++ b/bot_tester.py
+@@ -13751,30 +13751,51 @@
+         path = self.poll_intent_path(run)
+         if path.with_suffix('.json.new').exists():
+             raise Uncertain('Ordinary poll settlement is incomplete')
++        pin = run.get('poll_intent_pin')
+         if not path.exists():
++            if 'poll_intent_pin' in run:
++                raise Uncertain('Pinned ordinary poll intent is missing')
+             return None
+-        intent = self.store.get(path)
+-        if (not isinstance(intent, dict) or set(intent) != {'context_sha256', 'head', 'offset', 'outcome'}
++        if (not isinstance(pin, dict) or set(pin) != {'generation', 'sha256'}
++                or type(pin['generation']) is not int or pin['generation'] < 1):
++            raise Uncertain('Ordinary poll intent has no coherent run pin')
++        try:
++            raw = safe_read(path)
++            intent = json.loads(raw, object_pairs_hook=unique_object)
++        except (OSError, ValueError, Refused):
++            raise Uncertain('Pinned ordinary poll intent cannot be read') from None
++        if (digest(raw) != pin['sha256'] or not isinstance(intent, dict)
++                or set(intent) != {'context_sha256', 'head', 'offset', 'outcome', 'generation'}
++                or type(intent['generation']) is not int or intent['generation'] != pin['generation']
+                 or intent['context_sha256'] != digest(encoded(self.receive_context(run)))
+                 or not isinstance(intent['head'], dict) or type(intent['offset']) is not int
+                 or intent['offset'] < run['capture_start_offset']
+                 or intent['outcome'] not in ('PENDING', 'BATCH', 'EMPTY', 'RATE_LIMITED', 'NOT_DISPATCHED')):
+-            raise Refused('Ordinary poll intent context or settlement changed')
++            raise Uncertain('Ordinary poll intent differs from its pinned generation or outcome')
+         return intent
+ 
++    def save_poll_intent(self, run, intent):
++        raw = encoded(intent)
++        self.store.write(self.poll_intent_path(run), raw)
++        # Dispatch is possible only after both writes. A split write or rollback
++        # is uncertain on reopen, even when the offset and receive head are equal.
++        run['poll_intent_pin'] = dict(generation=intent['generation'], sha256=digest(raw))
++        self.save(run)
++
+     def open_poll_intent(self, run, cursor):
+         previous = self.read_poll_intent(run)
+         if previous is not None and previous['outcome'] == 'PENDING':
+             raise Uncertain('Ordinary poll response is unresolved')
++        generation = 1 if previous is None else previous['generation'] + 1
+         intent = dict(context_sha256=digest(encoded(self.receive_context(run))),
+-                      head=run['receive_head'], offset=cursor['offset'], outcome='PENDING')
+-        self.store.put(self.poll_intent_path(run), intent)
++                      head=run['receive_head'], offset=cursor['offset'], outcome='PENDING', generation=generation)
++        self.save_poll_intent(run, intent)
+         return intent
+ 
+     def settle_poll_intent(self, run, intent, outcome):
+         if self.read_poll_intent(run) != intent:
+             raise Refused('Ordinary poll intent changed before settlement')
+-        self.store.put(self.poll_intent_path(run), dict(intent, outcome=outcome))
++        self.save_poll_intent(run, dict(intent, outcome=outcome))
+ 
+     def reconcile_poll_intent(self, run):
+         # A fully committed R2 witness can settle this exact dispatch. An intent
+@@ -13975,10 +13996,19 @@
+                     phase = 'poll_intent'
+                     dispatch_deadline = poll_started + timeout
+                     poll_intent = self.open_poll_intent(run, cursor)
+-                    cutoff = self.reply_window(run)
++                    if self.read_poll_intent(run) != poll_intent:
++                        raise Uncertain('Ordinary poll intent changed before dispatch')
++                    try:
++                        if self.store.get(self.store.root / 'cursor.json') != cursor:
++                            raise Refused('Ordinary receive cursor changed before dispatch')
++                        cutoff = self.reply_window(run)
++                        guarded = self.guard(run, http_cap=RECEIVE_POLL_HTTP_CAP)
++                    except Refused:
++                        self.settle_poll_intent(run, poll_intent, 'NOT_DISPATCHED')
++                        raise
+                     now = self.clock()
+                     poll_started = time.monotonic()
+-                    timeout = min(dispatch_deadline - poll_started, run['deadline'] - now)
++                    timeout = min(guarded, dispatch_deadline - poll_started, run['deadline'] - now)
+                     if timeout <= 0 or now >= cutoff:
+                         self.settle_poll_intent(run, poll_intent, 'NOT_DISPATCHED')
+                         continue

@@ -1,0 +1,229 @@
+--- a/bot_tester.py
++++ b/bot_tester.py
+@@ -415,6 +415,7 @@
+ USERNAME = '@jerichodevbot'
+ CANONICAL_STATE = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.local/share/friday-telegram-bot-test'
+ MAX_JSON = 1024 * 1024
++POLL_WITNESS_HEADER_LIMIT = 512
+ MAX_SOURCE = 2 * 1024 * 1024
+ MAX_FILE = 8 * 1024 * 1024
+ MAX_UPLOAD = 1024 * 1024
+@@ -12607,7 +12608,7 @@
+             expected = dict(expected, pending_message_id=message_id)
+         return expected
+ 
+-    def receive_inventory(self, run, cursor=None, terminal=False):
++    def receive_inventory(self, run, cursor=None, terminal=False, *, pending_batch=False):
+         history = self.b00_closed_partial_history(run)
+         if (not isinstance(run.get('seen'), list) or any(type(uid) is not int for uid in run['seen'])
+                 or not isinstance(run.get('observations'), list)
+@@ -12615,7 +12616,7 @@
+                 or not isinstance(run.get('message_ids'), list)):
+             raise Refused('Capture processed-state shape invalid')
+         sequence = run.get('receive_sequence')
+-        if type(sequence) is not int or not 0 <= sequence <= 3 * (run['scenario']['max_updates'] + 1):
++        if type(sequence) is not int or not 0 <= sequence <= 4 * (run['scenario']['max_updates'] + 1):
+             raise Refused('Mandatory capture receipt sequence missing or invalid')
+         global_check = cursor is None
+         if global_check:
+@@ -12652,10 +12653,31 @@
+             raise Refused('Unpaired capture/process witness outside committed receipt inventory')
+         captures = {}; processed = {}; processing = set(); offset = run['capture_start_offset']; message_ids = []
+         drain = {}; terminal_updates = None; terminal_processed = None
++        pending = {}; batch_arrived_at = None; poll_responses = set()
++        poll_prefix = 'poll-response-' + self.receive_key(run) + '-'
+         for record in reversed(records):
+             kind = record.get('kind'); uid = record.get('update_id')
+             if drain.get('complete'):
+                 raise Refused('No capture operation may follow terminal completion')
++            if kind == 'poll_batch':
++                count = record.get('update_count')
++                limit = record.get('limit')
++                batch_arrived_at = record.get('arrived_at')
++                if (drain or pending or processing or set(captures) != set(processed)
++                        or record['offset'] != offset
++                        or type(count) is not int or not len(processed) <= count <= run['scenario']['max_updates']
++                        or type(limit) is not int or limit != min(20, run['scenario']['max_updates'] - count + 1)
++                        or type(batch_arrived_at) not in (int, float)
++                        or not math.isfinite(batch_arrived_at) or batch_arrived_at < run['sent_at']):
++                    raise Refused('Invalid ordinary poll batch commitment')
++                name = poll_prefix + str(record['sequence']) + '.wire'
++                wire = self.read_poll_witness(record, name)
++                updates = self.poll_batch_updates(wire, limit, offset)
++                pending = {update['update_id']: update for update in sorted(updates, key=lambda u: u['update_id'])}
++                poll_responses.add(name)
++                continue
++            if pending and kind != 'capture':
++                raise Refused('Pending ordinary poll batch must be captured before processing')
+             if kind == 'terminal_intent':
+                 started = record.get('started_at'); timeout = record.get('timeout_seconds')
+                 count = record.get('update_count')
+@@ -12740,6 +12762,11 @@
+                 if drain and (update not in terminal_updates
+                               or arrival['arrived_at'] < drain['response']['received_at']):
+                     raise Refused('Terminal raw update or host arrival changed')
++                if pending:
++                    if (uid != next(iter(pending)) or raw != encoded(pending[uid])
++                            or arrival['arrived_at'] != batch_arrived_at):
++                        raise Refused('Ordinary poll capture differs from its original batch')
++                    del pending[uid]
+                 captures[uid] = arrival; offset = uid + 1
+             elif kind == 'processing':
+                 if uid not in captures or uid in processing or uid in processed or record['offset'] != offset:
+@@ -12753,6 +12780,16 @@
+                 processed[uid] = record; processing.remove(uid); message_ids = record['message_ids']
+             else:
+                 raise Refused('Unknown capture receipt operation')
++        actual_poll_responses = {
++            path.name for path in self.store.root.glob(poll_prefix + '*.wire*')
++            if re.fullmatch(re.escape(poll_prefix) + r'[0-9]+\.wire(?:\.new)?', path.name)
++        }
++        if actual_poll_responses != poll_responses:
++            raise Refused('Unpaired ordinary poll response; preserve wire for offline review')
++        if sequence - len(poll_responses) > 3 * (run['scenario']['max_updates'] + 1):
++            raise Refused('Capture receipt sequence exceeds the original record bound')
++        if pending and (cursor['offset'] != offset or run['status'] not in ('OBSERVING', 'RATE_LIMITED_RECEIVE')):
++            raise Refused('Pending ordinary poll outcome requires offline review')
+         stopped1667 = False
+         if processing == {261479189} and run.get('id') == 'root-settings-restarted-e109244e1a93':
+             self.settings_stopped1667_history(run)
+@@ -12802,6 +12839,8 @@
+         for uid, record in processed.items():
+             if [o for o in run.get('observations', []) if o.get('update_id') == uid] != record['observations']:
+                 raise Refused('Committed processed observations missing or changed')
++        if pending_batch:
++            return list(pending.values()), batch_arrived_at
+         return (captures, processed, drain) if terminal else (captures, processed)
+ 
+     def capture_reply(self, run, update, *, arrived_at=None):
+@@ -13660,13 +13699,73 @@
+         return ((not any(k in expected for k in ('text_equals', 'text_contains')) or any(o['kind'] == 'text' for o in run['observations']))
+                 and sum(o['kind'] == 'document' for o in run['observations']) == len(expected.get('documents', [])))
+ 
++    def poll_batch_updates(self, wire, limit, offset):
++        updates = wire.get('result') if isinstance(wire, dict) and wire.get('ok') is True else None
++        if (not isinstance(updates, list) or not 1 <= len(updates) <= limit
++                or any(not isinstance(u, dict) or type(u.get('update_id')) is not int
++                       or u['update_id'] < offset or len(encoded(u)) > 256 * 1024 for u in updates)
++                or len({u['update_id'] for u in updates}) != len(updates)):
++            raise Refused('Invalid ordinary poll response custody')
++        return updates
++
++    def poll_witness_header(self, record):
++        return encoded(dict(arrived_at=record['arrived_at'], offset=record['offset'],
++                            sequence=record['sequence'], previous=record['previous'],
++                            context_sha256=digest(encoded(record['context']))))
++
++    def read_poll_witness(self, record, name):
++        data = safe_read(self.store.root / name, MAX_JSON + POLL_WITNESS_HEADER_LIMIT)
++        if record.get('wire') != {'basename': name, 'bytes': len(data), 'sha256': digest(data)}:
++            raise Refused('Ordinary poll witness differs from its committed bytes')
++        header = self.poll_witness_header(record)
++        raw = data[len(header):]
++        if len(header) > POLL_WITNESS_HEADER_LIMIT or not data.startswith(header) or not 1 <= len(raw) <= MAX_JSON:
++            raise Refused('Ordinary poll witness differs from its committed clock or context')
++        try:
++            return json.loads(raw, object_pairs_hook=unique_object)
++        except (ValueError, UnicodeError):
++            raise Refused('Ordinary poll response is not unambiguous JSON') from None
++
++    def keep_poll_batch(self, run, cursor, updates, arrived_at, limit):
++        raw = getattr(self.api, '_last_response', None)
++        if not isinstance(raw, bytes) or not 1 <= len(raw) <= MAX_JSON:
++            raise Refused('Ordinary poll response lacks exact bounded HTTP custody')
++        try:
++            wire = json.loads(raw, object_pairs_hook=unique_object)
++        except (ValueError, UnicodeError):
++            raise Refused('Ordinary poll response is not unambiguous JSON') from None
++        if (encoded(self.poll_batch_updates(wire, limit, cursor['offset'])) != encoded(updates)
++                or self.store.get(self.store.root / 'cursor.json') != cursor
++                or type(arrived_at) not in (int, float) or not math.isfinite(arrived_at)
++                or arrived_at < run['sent_at']):
++            raise Refused('Ordinary poll response differs from its transport or original cursor')
++        record = dict(kind='poll_batch', offset=cursor['offset'], arrived_at=arrived_at,
++                      update_count=run['update_count'], limit=limit, sequence=run['receive_sequence'] + 1,
++                      previous=run['receive_head'], context=self.receive_context(run))
++        header = self.poll_witness_header(record)
++        if len(header) > POLL_WITNESS_HEADER_LIMIT:
++            raise Refused('Ordinary poll witness header exceeds its bound')
++        name = 'poll-response-' + self.receive_key(run) + '-' + str(record['sequence']) + '.wire'
++        path = self.store.root / name
++        if path.exists():
++            raise Refused('Ordinary poll response already exists; preserve first evidence')
++        data = header + raw
++        self.store.write(path, data)
++        record['wire'] = {'basename': name, 'bytes': len(data), 'sha256': digest(data)}
++        self.commit_receive(run, record)
++
++    def stage_poll_batch(self, run, updates, arrived_at):
++        for update in updates:
++            self.guard(run)
++            self.capture(update, arrived_at=arrived_at)
++
+     def poll_updates(self, run, cursor, timeout, diagnostic):
+         params = {'offset': cursor['offset'], 'timeout': 1,
+                   'limit': min(20, run['scenario']['max_updates'] - run['update_count'] + 1),
+                   'allowed_updates': ['message']}
+         try:
+             updates = self.api.call('getUpdates', params, timeout=timeout)
+-            return updates, self.clock()
++            return updates, self.clock(), None
+         except Uncertain as first:
+             # Telegram confirms only update_id < offset. Repeating the exact
+             # nonnegative offset cannot acknowledge an unseen/lost response.
+@@ -13705,9 +13804,7 @@
+                 retry['outcome'] = 'FAILED_UNKNOWN'
+                 self.save(run)
+                 raise
+-            retry['outcome'] = 'RETURNED_UNVALIDATED'
+-            self.save(run)
+-            return updates, arrived_at
++            return updates, arrived_at, retry
+ 
+     def observe(self, run):
+         if run.get('id') == 'root-s05-d745ac09dcf2':
+@@ -13734,6 +13831,10 @@
+         phase = 'preflight_budget'
+         poll_diagnostic = None
+         try:
++            if reply:
++                phase = 'replay_batch'
++                updates, arrived_at = self.receive_inventory(run, pending_batch=True)
++                self.stage_poll_batch(run, updates, arrived_at)
+             if not self.preflight_valid:
+                 if reply:
+                     # Post-send preflight is bounded by the remaining fixed window;
+@@ -13820,22 +13921,25 @@
+                 # Sample again at dispatch; only terminal intent permits a later read.
+                 if reply and self.reply_window(run) <= self.clock():
+                     continue
+-                updates, arrived_at = self.poll_updates(run, cursor, timeout, poll_diagnostic)
++                updates, arrived_at, retry = self.poll_updates(run, cursor, timeout, poll_diagnostic)
+                 phase = 'poll_batch'
+                 limit = min(20, run['scenario']['max_updates'] - run['update_count'] + 1) if reply else 20
+                 if not isinstance(updates, list) or len(updates) > limit:
+                     raise Refused('Invalid update batch')
+                 if any(not isinstance(u, dict) or type(u.get('update_id')) is not int or u['update_id'] < 0 for u in updates):
+                     raise Refused('Invalid update identifiers')
++                if reply and updates:
++                    # Preserve the original wire and clock before any update can
++                    # advance the cursor or the retry can be marked returned.
++                    phase = 'poll_batch_commit'
++                    self.keep_poll_batch(run, cursor, updates, arrived_at, limit)
++                if retry is not None:
++                    retry['outcome'] = 'RETURNED_UNVALIDATED'
++                    self.save(run)
+                 updates = sorted(updates, key=lambda u: u['update_id'])
+                 if reply:
+-                    # The response batch arrived together. Commit every raw update
+-                    # before processing can fail or cross the fixed receive cutoff.
+-                    for update in updates:
+-                        phase = 'update_guard'
+-                        self.guard(run)
+-                        phase = 'capture'
+-                        self.capture(update, arrived_at=arrived_at)
++                    phase = 'capture'
++                    self.stage_poll_batch(run, updates, arrived_at)
+                 for update in updates:
+                     phase = 'update_guard'
+                     self.guard(run)
