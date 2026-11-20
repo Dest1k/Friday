@@ -1,0 +1,297 @@
+--- a/gateway/ordinary_f04_bridge.py
++++ b/gateway/ordinary_f04_bridge.py
+@@ -8,6 +8,8 @@
+ 
+ from contextvars import ContextVar
+ from copy import deepcopy
++from datetime import datetime
++from io import BytesIO
+ import hashlib
+ import json
+ import math
+@@ -19,6 +21,9 @@
+ _CAPABILITY = 'ordinary-f04-owned-ingress-stop-terminal.v1'
+ _MAX_RECORDS = 8
+ _MAX_BYTES = 1_000_000
++_PHOTO_INPUT = 'telegram_photo'
++_PHOTO_RECEIPT = 'frw.gateway.f04-original-own-photo-ingress.v1'
++_PHOTO_FIELDS = {'file_unique_id', 'width', 'height', 'declared_bytes'}
+ _CURRENT = ContextVar('ordinary_f04_host_target', default=None)
+ 
+ 
+@@ -46,6 +51,25 @@
+     return (isinstance(value, str) and len(value) <= 32 and value.isascii()
+             and (value.lstrip('-').isdecimal() if signed else value.isdecimal())
+             and str(int(value)) == value and (int(value) != 0 if signed else int(value) > 0))
++
++
++def _content_pin(value, *, minimum=0):
++    return (isinstance(value, dict) and set(value) == {'sha256', 'size_bytes'}
++            and _hex(value['sha256']) and type(value['size_bytes']) is int
++            and minimum <= value['size_bytes'] <= _MAX_BYTES)
++
++
++def _photo_input(value):
++    return isinstance(value, dict) and value.get('kind') == _PHOTO_INPUT
++
++
++def _photo_variant(value):
++    return (isinstance(value, dict) and set(value) == _PHOTO_FIELDS
++            and _string(value['file_unique_id'], 1024)
++            and all(type(value[key]) is int and 0 < value[key] <= 10000 for key in ('width', 'height'))
++            and value['width'] + value['height'] <= 10000
++            and (value['declared_bytes'] is None or (
++                type(value['declared_bytes']) is int and 0 < value['declared_bytes'] <= _MAX_BYTES)))
+ 
+ 
+ def capability():
+@@ -84,9 +108,11 @@
+             or not _decimal(principal['thread_id'], empty=True)):
+         raise ValueError('f04_principal_shape')
+     content, window, tester = selector['input'], selector['window'], selector['tester']
+-    if (not isinstance(content, dict) or set(content) != {'sha256', 'size_bytes'}
+-            or not _hex(content['sha256']) or type(content['size_bytes']) is not int
+-            or not 0 <= content['size_bytes'] <= _MAX_BYTES or not _hex(selector['caption_sha256'])
++    if _photo_input(content):
++        input_valid = set(content) == {'kind', 'upload'} and _content_pin(content['upload'], minimum=1)
++    else:
++        input_valid = _content_pin(content)
++    if (not input_valid or not _hex(selector['caption_sha256'])
+             or not isinstance(window, dict) or set(window) != {'not_before_monotonic', 'not_after_monotonic'}
+             or not all(_number(window[k]) for k in window)
+             or not window['not_before_monotonic'] < window['not_after_monotonic'] <= base['metadata_expires_monotonic']
+@@ -217,6 +243,40 @@
+             row['error'] = 'f04_original_event_binding_rejected'
+ 
+ 
++def _selected_photo(raw, item, receipt, data, destination, source, content):
++    photos = raw.photo
++    if (raw.document is not None or raw.chat.type != 'private'
++            or getattr(raw, 'media_group_id', None) is not None
++            or getattr(raw, 'forward_origin', None) is not None
++            or raw.reply_to_message is not None
++            or not isinstance(photos, (tuple, list)) or not 1 <= len(photos) <= 16
++            or (item.get('mime_type') or '').lower() not in ('image/jpg', 'image/jpeg')
++            or receipt.get('presentation', {}).get('telegram_delivery') != 'photo'
++            or not _content_pin(content, minimum=1)):
++        raise ValueError('f04_original_own_photo_required')
++    selected = photos[-1]
++    variant = {'file_unique_id': selected.file_unique_id, 'width': selected.width,
++               'height': selected.height, 'declared_bytes': selected.file_size}
++    transfer = dict(variant, file_id=selected.file_id)
++    if (not _photo_variant(variant) or not _string(selected.file_id, 1024)
++            or receipt.get('selected_photo') != transfer
++            or not isinstance(raw.date, datetime) or raw.date.utcoffset() is None):
++        raise ValueError('f04_selected_photo_transfer_required')
++
++    relative = destination.relative_to(source._friday_user_scope.home / 'workspace')
++    if (len(relative.parts) != 2 or relative.parts[0] != 'received'
++            or relative.suffix.lower() not in ('.jpg', '.jpeg')
++            or not data.startswith(b'\xff\xd8') or not data.endswith(b'\xff\xd9')):
++        raise ValueError('f04_selected_photo_jpeg_required')
++    # Header inspection only. The ordinary OCR/tool path owns raster decoding.
++    from PIL import Image
++    with Image.open(BytesIO(data), formats=['JPEG']) as image:
++        if image.size != (variant['width'], variant['height']):
++            raise ValueError('f04_selected_photo_geometry_changed')
++    return selected, dict(selected_photo=transfer, workspace_path=relative.as_posix(),
++                          message_date_unix=int(raw.date.timestamp()))
++
++
+ def capture_verified_ingress(event, proof, staged):
+     """Consume only the actual custody consumer's immutable verified byte values.
+ 
+@@ -241,31 +301,43 @@
+         caption = raw.caption if raw.caption is not None else raw.text
+         caption = caption if caption is not None else ''
+         media = message['media']
+-        if (event.internal or event._ingress_merged or raw is None or raw.document is None
++        is_photo = _photo_input(selector['input'])
++        if (event.internal or event._ingress_merged or raw is None or (not is_photo and raw.document is None)
+                 or principal != selector['principal'] or proof.get('source_profile') not in ('', principal['runtime_profile'])
+                 or not isinstance(caption, str) or hashlib.sha256(caption.encode('utf-8')).hexdigest() != selector['caption_sha256']
+                 or len(staged) != 1 or len(media) != 1 or len(event.media_urls) != 1):
+             raise ValueError('f04_original_own_document_required')
+-        raw_path, _, data, content, receipt = staged[0]
++        raw_path, destination, data, content, receipt = staged[0]
+         item = media[0]
+         origin = item['origin']
+         if (type(data) is not bytes or item.get('local_reference') != raw_path
+-                or content != selector['input'] or item.get('content') != content
++                or (not is_photo and content != selector['input']) or item.get('content') != content
+                 or receipt.get('content') != content
+                 or receipt.get('origin') != {k: v for k, v in origin.items() if k != 'thread_id'}
+                 or len(data) != content['size_bytes'] or hashlib.sha256(data).hexdigest() != content['sha256']
+                 or origin['message_id'] != message['message_id']
+                 or message['message_id'] != str(event.message_id)
+-                or origin['file_id'] != raw.document.file_id or origin['file_unique_id'] != raw.document.file_unique_id
+                 or (origin.get('declared_bytes') is not None and origin['declared_bytes'] != len(data))):
+             raise ValueError('f04_verified_own_bytes_required')
+-        target['receipt'] = {'schema': 'frw.gateway.f04-original-own-ingress.v1',
++        photo_facts = {}
++        if is_photo:
++            attachment, photo_facts = _selected_photo(raw, item, receipt, data, destination,
++                                                     target['source'], content)
++            if (origin['declared_bytes'] != attachment.file_size or origin['bot_id'] != principal['bot_id']
++                    or origin['chat_id'] != principal['chat_id'] or origin['thread_id'] != principal['thread_id']):
++                raise ValueError('f04_selected_photo_origin_changed')
++        else:
++            attachment = raw.document
++        if origin['file_id'] != attachment.file_id or origin['file_unique_id'] != attachment.file_unique_id:
++            raise ValueError('f04_verified_own_attachment_required')
++        target['receipt'] = {'schema': _PHOTO_RECEIPT if is_photo else 'frw.gateway.f04-original-own-ingress.v1',
+             'namespace': 'native.telegram', 'principal': principal,
+             'message_id': message['message_id'], 'platform_update_id': message['platform_update_id'],
+             'reply_to_message_id': message['reply_to_message_id'],
+             'input': deepcopy(content), 'caption_sha256': selector['caption_sha256'],
+             'origin_sha256': canonical_sha256(origin), 'source_receipt_sha256': row['base']['source_receipt_sha256'],
+-            'observed_monotonic': target['ingress_monotonic'], 'verified_by': 'run_inbound_media._verified_bytes'}
++            'observed_monotonic': target['ingress_monotonic'], 'verified_by': 'run_inbound_media._verified_bytes',
++            **photo_facts}
+     except Exception:
+         row['error'] = 'f04_verified_original_ingress_rejected'
+ 
+@@ -381,11 +453,29 @@
+ 
+ def _ack(request):
+     ack = request.get('tester_ack')
+-    if (not isinstance(ack, dict) or set(ack) != {'namespace', 'send_message_id', 'ack_sha256'}
++    is_photo = _photo_input(request['selector']['input'])
++    fields = {'namespace', 'send_message_id', 'ack_sha256'}
++    if is_photo:
++        fields.add('photo')
++    if (not isinstance(ack, dict) or set(ack) != fields
+             or ack['namespace'] != 'tester.telegram' or not _decimal(ack['send_message_id'])
+             or not _hex(ack['ack_sha256'])):
+         raise ValueError('f04_genuine_tester_ack_required')
++    if is_photo:
++        photos = ack['photo']
++        if (not isinstance(photos, list) or not 1 <= len(photos) <= 16
++                or not all(_photo_variant(item) for item in photos)
++                or len({item['file_unique_id'] for item in photos}) != len(photos)):
++            raise ValueError('f04_tester_photo_projection_shape')
+     return deepcopy(ack)
++
++
++def _match_photo_ack(receipt, ack):
++    selected = receipt['selected_photo']
++    match = next((item for item in ack['photo'] if item['file_unique_id'] == selected['file_unique_id']), None)
++    if (match is None or any(match[k] != selected[k] for k in ('width', 'height'))
++            or (match['declared_bytes'] is not None and match['declared_bytes'] != receipt['input']['size_bytes'])):
++        raise ValueError('f04_tester_photo_variant_mismatch')
+ 
+ 
+ def _clock(request, row, target):
+@@ -411,6 +501,9 @@
+     target = _candidate(row)
+     actual = _native_target(target, observation, live=not target['dispatch_finalized'])
+     ack = _ack(request)
++    is_photo = _photo_input(row['base']['selector']['input'])
++    if is_photo:
++        _match_photo_ack(target['receipt'], ack)
+     clock = _clock(request, row, target)
+     binding = {'request_sha256': row['request_sha256'], 'ingress_receipt_sha256': canonical_sha256(target['receipt']),
+                'target': actual, 'tester_ack': ack, 'ordinary_clock': clock}
+@@ -422,11 +515,13 @@
+             'scope_id': row['base']['scope_id'], 'request_sha256': row['request_sha256'],
+             'ingress_receipt': deepcopy(target['receipt']), 'binding_sha256': binding_sha,
+             'target': actual, 'tester_ack': ack, 'ordinary_clock': clock, 'artifact_proofs': deepcopy(row['artifacts']),
+-            'stop_selector': deepcopy(observation.get('stop_selector'))}
++            'stop_selector': None if is_photo else deepcopy(observation.get('stop_selector'))}
+ 
+ 
+ def validate_cancel_binding(runner, request, snapshot):
+     row = _record(runner, request)
++    if _photo_input(row['base']['selector']['input']):
++        raise ValueError('f04_photo_observation_only')
+     if 'target' not in request or 'binding_sha256' not in request:
+         raise ValueError('f04_cancel_exact_bound_request_required')
+     result = readonly(runner, request, snapshot)
+@@ -440,6 +535,8 @@
+ 
+ def mark_cancelled(runner, request, generation_after, status):
+     row = _record(runner, request)
++    if _photo_input(row['base']['selector']['input']):
++        raise ValueError('f04_photo_observation_only')
+     target = _candidate(row)
+     binding = {'request_sha256': row['request_sha256'],
+                'ingress_receipt_sha256': canonical_sha256(target['receipt']),
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -234,6 +234,10 @@
+         # Keep the origin receipt too. Remapping a verified byte copy lets the
+         # native producer prove this same event on an idempotent second call.
+         retained_receipt = {'origin': dict(receipt['origin']), 'content': dict(receipt['content'])}
++        photo_selection = receipt.get('selected_photo')
++        if isinstance(photo_selection, dict):
++            # Preserve the host-only getFile witness across early re-home.
++            retained_receipt['selected_photo'] = dict(photo_selection)
+         presentation = receipt.get('presentation')
+         if isinstance(presentation, dict):
+             retained_presentation = {}
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -6323,9 +6323,9 @@
+         return await download_file(self, file_obj, source)
+ 
+     @staticmethod
+-    def _stamp_media(event, message, path, data=None, *, content=None):
++    def _stamp_media(event, message, path, data=None, *, content=None, photo_transfer=None):
+         from .telegram_file_boundary import stamp_media
+-        stamp_media(event, message, path, data, content=content)
++        stamp_media(event, message, path, data, content=content, photo_transfer=photo_transfer)
+ 
+     async def _download_observed_media(self, msg: Any, what: str):
+         """Download ``msg``'s attachment into the media cache (bounded by ``_max_doc_bytes``). Returns ``(status, cached)``:
+@@ -6827,13 +6827,15 @@
+         # Cache photo locally: Telegram's file URLs expire (~1 hour) before vision may run.
+         if msg.photo:
+             try:
+-                file_obj = await msg.photo[-1].get_file()  # PhotoSize list sorted by size; largest last
+-                image_bytes = await self._download_file(file_obj, msg.photo[-1])
++                selected = msg.photo[-1]  # PhotoSize list sorted by size; largest last
++                file_obj = await selected.get_file()
++                image_bytes = await self._download_file(file_obj, selected)
+                 ext = self._ext_from_path(file_obj.file_path, [".png", ".webp", ".gif", ".jpeg", ".jpg"], ".jpg")
+                 self._set_cached_media(
+                     event, await cache_image_from_bytes_async(bytes(image_bytes), ext=ext), f"image/{ext.lstrip('.')}", event.message_type,
+                     "[Telegram] Cached user photo at %s")
+-                self._stamp_media(event, msg, event.media_urls[0], image_bytes)
++                self._stamp_media(event, msg, event.media_urls[0], image_bytes,
++                                  photo_transfer=(selected, file_obj))
+                 await self._route_photo_event(msg, event)
+                 return
+             except Exception as e:  # health: allow BLE001 -- Nonfatal transport failure; SDK error text and traceback can expose credentials.
+--- a/plugins/platforms/telegram/telegram_file_boundary.py
++++ b/plugins/platforms/telegram/telegram_file_boundary.py
+@@ -147,7 +147,7 @@
+         _TRANSFER.reset(token)
+ 
+ 
+-def stamp_media(event, message, path, data=None, *, content=None):
++def stamp_media(event, message, path, data=None, *, content=None, photo_transfer=None):
+     from .telegram_ingress import _attachment, _id
+     if content is None and data is None:
+         return
+@@ -172,6 +172,21 @@
+         presentation["telegram_delivery"] = "document"
+     if presentation:
+         receipt["presentation"] = presentation
++    if photo_transfer is not None:
++        selected, downloaded = photo_transfer
++        downloaded_size = getattr(downloaded, "file_size", None)
++        if (getattr(message, "photo", None) and selected is file
++                and getattr(downloaded, "file_id", None) == origin["file_id"]
++                and getattr(downloaded, "file_unique_id", None) == origin["file_unique_id"]
++                and (downloaded_size is None or (
++                    type(downloaded_size) is int and downloaded_size == content["size_bytes"]))):
++            # This host-only proof describes the actual PhotoSize and getFile result.
++            # Quoted/observed photos and generic attachments never acquire it.
++            receipt["selected_photo"] = {
++                "file_id": origin["file_id"], "file_unique_id": origin["file_unique_id"],
++                "width": getattr(selected, "width", None), "height": getattr(selected, "height", None),
++                "declared_bytes": origin["declared_bytes"],
++            }
+     event._telegram_media_receipts[path] = receipt
+ 
+ 
