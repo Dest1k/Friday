@@ -135,7 +135,7 @@ def assess_closed_workbook_reply(observer, store, *, run_id, run_ref, cursor_ref
                 if recipient["name"] != output_name or item["advertised_document"].get("mime_type") != XLSX_MIME:
                     screen = {"status": "FAIL", "reason": "EXPECTED_EXACT_XLSX_NAME_AND_MIME"}
                 else:
-                    screen = assess_content(upload, raw, recipient["download"])
+                    screen = assess_content(upload, raw, recipient)
     pinned_record(observer, run_ref, expected_path=run_path)
     pinned_record(observer, cursor_ref, expected_path=cursor_path)
     return {

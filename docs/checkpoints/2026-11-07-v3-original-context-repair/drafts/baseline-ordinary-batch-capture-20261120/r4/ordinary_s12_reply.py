@@ -13,7 +13,7 @@ OUTPUT_NAME = "S12-Willow-Printable.xlsx"
 
 
 def assess_saved_printable_workbook(observer, store, *, run_id, run_ref, cursor_ref, oracle_path):
-    def assess_content(upload, raw, recipient):
+    def assess_content(upload, raw, artifact):
         original = observer.read_document_input(upload, lambda: None)
         if len(original) != 379 or digest(original) != SOURCE_SHA256:
             raise ValueError("S12 original JSON bytes changed")
@@ -24,6 +24,7 @@ def assess_saved_printable_workbook(observer, store, *, run_id, run_ref, cursor_
         oracle = ModuleType("_pinned_s12_workbook_checker")
         oracle.__file__ = str(path)
         exec(compile(source, oracle.__file__, "exec"), vars(oracle))
+        recipient = artifact["download"]
         result = oracle.check_workbook(raw, expected_sha256=recipient["sha256"])
         if (result["sha256"] != recipient["sha256"] or result["bytes"] != recipient["bytes"]
                 or result["status"] not in ("PASS", "FAIL")):
