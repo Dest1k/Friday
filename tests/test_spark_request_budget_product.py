@@ -1,5 +1,7 @@
 """Actual product composition and native config reads; no provider/worker calls."""
 import copy
+from types import SimpleNamespace
+
 import pytest
 
 from tools.configure_product import compose_product
@@ -117,6 +119,57 @@ def test_rendered_budgets_reach_actual_named_native_consumer(
     assert loaded['providers']['friday-compression']['key_env'] == 'FRIDAY_COMPRESSION_API_KEY'
     assert loaded['providers']['friday-compression']['models'][spec['compression_inference']['model']][
         'bounded_context']['server_max_input_tokens'] == 40954
+
+
+@pytest.mark.parametrize('surface', ['root', 'ordinary'])
+def test_distinct_routes_on_one_host_keep_their_thinking_wire_options(native_home, surface):
+    from agent.agent_init import _custom_provider_extra_body_for_agent
+    from agent.auxiliary_client import _build_call_kwargs
+    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.friday_credential_admission import _compression_route, local_route
+
+    spec = split_spec()
+    model = 'deepseek-v4.1-flash-1017'
+    primary_url = 'http://127.0.0.195:30000/v1'
+    compressor_url = 'http://127.0.0.195:30001/v1'
+    spec['inference'].update(base_url=primary_url, model=model,
+                            request_options={'extra_body': {'thinking': {'type': 'enabled'}}})
+    spec['compression_inference'].update(
+        base_url=compressor_url, model=model,
+        request_options={'extra_body': {'thinking': {'type': 'disabled'}}})
+    bundle = compose_product(spec)
+    loaded = native_load(native_home, bundle['config'] if surface == 'root' else ordinary(bundle))
+    main = local_route(loaded)
+    assert main == ('custom:friday-local', model, primary_url, 'FRIDAY_LLM_API_KEY')
+    assert _compression_route(loaded, main) == (
+        'custom:friday-compression', model, compressor_url, 'FRIDAY_COMPRESSION_API_KEY')
+    providers = get_compatible_custom_providers(loaded)
+    assert _custom_provider_extra_body_for_agent(
+        provider='custom:friday-local', model=model, base_url=primary_url,
+        custom_providers=providers) == {'thinking': {'type': 'enabled'}}
+    kwargs = _build_call_kwargs('custom', model, [{'role': 'user', 'content': 'Summarize.'}],
+                                base_url=compressor_url, task='compression')
+    assert kwargs['extra_body']['thinking'] == {'type': 'disabled'}
+    assert kwargs['model'] == model
+
+
+def test_thinking_mode_change_invalidates_the_persisted_usage_anchor(native_home):
+    from agent.bounded_context import bounded_usage_route_binding
+    from agent.usage_anchor import capture_usage_anchor, persisted_anchor_tokens
+
+    spec = split_spec()
+    spec['inference']['request_options'] = {'extra_body': {'thinking': {'type': 'disabled'}}}
+    before = native_load(native_home, ordinary(compose_product(spec)))
+    history = [{'role': 'user', 'content': 'Keep the current decision.'}]
+    anchor = capture_usage_anchor(800, 20, history)
+    anchor['bounded_route_binding'] = bounded_usage_route_binding(before)
+    ledger = SimpleNamespace(get_session_model_config_value=lambda *_args: anchor)
+    assert persisted_anchor_tokens(ledger, 'synthetic-session', history) == 820
+
+    spec['inference']['request_options']['extra_body']['thinking']['type'] = 'enabled'
+    after = native_load(native_home, ordinary(compose_product(spec)))
+    assert bounded_usage_route_binding(after) != anchor['bounded_route_binding']
+    assert persisted_anchor_tokens(ledger, 'synthetic-session', history) is None
 
 
 @pytest.mark.parametrize('surface', ['root', 'ordinary'])

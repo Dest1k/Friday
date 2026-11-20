@@ -64,3 +64,24 @@ def test_independent_compressor_policy_is_never_inherited_from_primary():
         compression_inference=compressor, compression_multipass=MULTIPASS)
     assert config['providers']['friday-compression']['request_budget_seconds']['total'] == 60
     assert 'request_budget_seconds' not in config['auxiliary']['compression']
+
+
+@pytest.mark.parametrize('alternate_url', [
+    PRIMARY['base_url'] + '/',
+    'HTTP://127.0.0.195:030000/v1',
+])
+def test_compressor_cannot_reuse_the_primary_endpoint(alternate_url):
+    compressor = dict(COMPRESSOR, base_url=alternate_url)
+    with pytest.raises(ValueError, match='separate_compression_endpoint_required'):
+        build_config(**PRIMARY, compression_inference=compressor, compression_multipass=MULTIPASS)
+
+
+@pytest.mark.parametrize('body', [
+    {'thinking': False},
+    {'thinking': {'type': 'auto'}},
+    {'thinking': {'type': 'enabled', 'model': 'foreign'}},
+    {'thinking': {'type': 'disabled'}, 'chat_template_kwargs': {'enable_thinking': True}},
+])
+def test_thinking_wire_options_reject_unknown_or_mixed_shapes(body):
+    with pytest.raises(ValueError, match='explicit_.*thinking.*_required'):
+        build_config(**PRIMARY, request_options={'extra_body': body})

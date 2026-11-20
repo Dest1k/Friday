@@ -84,8 +84,15 @@ def validate_request_options(value):
         raise ValueError('explicit_reasoning_effort_required')
     body = result.get('extra_body', {})
     if type(body) is not dict or not set(body) <= {
-            'top_k', 'min_p', 'repetition_penalty', 'chat_template_kwargs'}:
+            'top_k', 'min_p', 'repetition_penalty', 'chat_template_kwargs', 'thinking'}:
         raise ValueError('supported_model_extra_body_required')
+    if 'thinking' in body:
+        thinking = body['thinking']
+        if (type(thinking) is not dict or set(thinking) != {'type'}
+                or thinking['type'] not in ('enabled', 'disabled')):
+            raise ValueError('explicit_thinking_mode_required')
+        if 'chat_template_kwargs' in body:
+            raise ValueError('explicit_single_thinking_dialect_required')
     for k in ('temperature', 'top_p', 'presence_penalty', 'min_p', 'repetition_penalty'):
         source = result if k in ('temperature', 'top_p', 'presence_penalty') else body
         if k not in source:
@@ -238,6 +245,10 @@ def build_config(*, base_url, model, key_env, context, max_input,
         if exact is not _NO_EXACT_RENDERER:
             exact = validate_exact_renderer(exact)
         compressor = build_config(**compressor_input)
+        compressor_url = urlsplit(compressor['model']['base_url'])
+        if (compressor_url.scheme, ipaddress.ip_address(compressor_url.hostname), compressor_url.port) == (
+                url.scheme, address, port):
+            raise ValueError('separate_compression_endpoint_required')
         config['providers']['friday-compression'] = copy.deepcopy(compressor['providers']['friday-local'])
         if exact is not _NO_EXACT_RENDERER:
             bounded = config['providers']['friday-compression']['models'][compressor_input['model']]['bounded_context']
