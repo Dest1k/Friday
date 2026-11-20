@@ -1,0 +1,747 @@
+--- a/hermes_cli/friday_workspace_document_pdf.py
++++ b/hermes_cli/friday_workspace_document_pdf.py
+@@ -3,6 +3,7 @@
+ Uses the established document toolchain, authenticated native process custody,
+ revision checks and create-only publisher. No user-supplied command or filter.
+ """
++import contextlib
+ import hashlib
+ import json
+ import os
+@@ -18,11 +19,30 @@
+ # SinglePageSheets is a fixed Calc export policy: all each-sheet contents must
+ # fit one searchable page and pass the independent source/value/geometry oracle.
+ CALC_FILTER = 'pdf:calc_pdf_Export:{"SinglePageSheets":{"type":"boolean","value":"true"},"ExportFormFields":{"type":"boolean","value":"false"}}'
++CALC_PRINT_FILTER = 'pdf:calc_pdf_Export:{"SinglePageSheets":{"type":"boolean","value":"false"},"ExportFormFields":{"type":"boolean","value":"false"}}'
+ OPERATIONS = {'odt_pdf': ('odt', 'pdf:writer_pdf_Export'),
+               'xlsx_pdf': ('xlsx', CALC_FILTER), 'ods_pdf': ('ods', CALC_FILTER)}
+ MAX_OUTPUT = 1_000_000
+ MAX_EVIDENCE = 4_000_000
+ LIBRARY = '/usr/lib/x86_64-linux-gnu/libqpdf.so.30'
++_CALC_INPUT_LIMIT = 65536
++_CALC_FONT = '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf'
++_CALC_FONT_INDEX = 22
++_CALC_FONT_DIR = '/friday-pdf-trusted-fonts'
++_CALC_FONT_MOUNT = f'{_CALC_FONT_DIR}/{_CALC_FONT_INDEX}.ttf'
++_CALC_FONT_CONFIG = b'''<?xml version="1.0"?>
++<fontconfig>
++  <dir>/friday-pdf-trusted-fonts</dir>
++  <cachedir>/tmp/friday-calc-fontconfig-cache</cachedir>
++  <selectfont>
++    <acceptfont>
++      <glob>/friday-pdf-trusted-fonts</glob>
++      <glob>/friday-pdf-trusted-fonts/22.ttf</glob>
++    </acceptfont>
++    <rejectfont><glob>*</glob></rejectfont>
++  </selectfont>
++</fontconfig>
++'''
+ 
+ 
+ def _request(content):
+@@ -48,19 +68,21 @@
+     return result
+ 
+ 
+-def _office_command(operation):
+-    if operation not in OPERATIONS:
++def _office_command(operation, *, projected=False):
++    if operation not in OPERATIONS or projected and operation != 'xlsx_pdf':
+         raise ValueError('pdf_operation_unsupported')
+     source, filter_name = OPERATIONS[operation]
++    if projected:
++        filter_name = CALC_PRINT_FILTER
+     return [OFFICE, '--headless', '--norestore', '--nodefault', '--nolockcheck',
+             '--nofirststartwizard', '-env:UserInstallation=file:///work/home/profile',
+             '--convert-to', filter_name, '--outdir', '/work/out', '/work/input.' + source]
+ 
+ 
+-def _argv(work, toolchain, operation):
++def _argv(work, toolchain, operation, *, calc_receipt=None):
+     # Keep this adapter local; the existing DOCX renderer is not widened.
+     from hermes_cli.friday_workspace_pdf import _PREFIX, ExportRefused
+-    if operation not in OPERATIONS:
++    if operation not in OPERATIONS or calc_receipt is not None and operation != 'xlsx_pdf':
+         raise ExportRefused('pdf_operation_unsupported')
+     source = OPERATIONS[operation][0]
+     argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--new-session',
+@@ -77,13 +99,25 @@
+              '--ro-bind', '/usr/share', _PREFIX + '/.host-share',
+              '--ro-bind', str(toolchain / 'share-merged'), '/usr/share', '--dir', '/etc']
+     for item in ('/etc/fonts', '/etc/ld.so.cache', '/var/cache/fontconfig'):
++        if calc_receipt is not None and item != '/etc/ld.so.cache':
++            continue
+         if Path(item).exists():
+             argv += ['--ro-bind', item, item]
+-    argv += ['--bind', str(work), '/work',
+-             '--ro-bind', str(work / ('input.' + source)), '/work/input.' + source,
++    if calc_receipt is not None:
++        for path in ('/usr/share/fonts', '/usr/local/share/fonts', _PREFIX + '/.host-share/fonts',
++                     _PREFIX + '/.host-share/fontconfig', _PREFIX + '/share-merged/fonts',
++                     _PREFIX + '/root/usr/share/fonts', _PREFIX + '/root/usr/lib/libreoffice/share/fonts'):
++            argv += ['--tmpfs', path, '--remount-ro', path]
++        argv += ['--dir', _CALC_FONT_DIR, '--ro-bind', _CALC_FONT, _CALC_FONT_MOUNT]
++    argv += ['--bind', str(work), '/work']
++    if calc_receipt is not None:
++        argv += ['--ro-bind', str(work / 'fonts.conf'), '/work/fonts.conf']
++    argv += ['--ro-bind', str(work / ('input.' + source)), '/work/input.' + source,
+              '--ro-bind', str(work / 'renderer.py'), '/renderer.py',
+              '--chdir', '/work', '--remount-ro', '/', '--',
+              '/usr/bin/python3', '-I', '-B', '-S', '/renderer.py', '--render', operation]
++    if calc_receipt is not None:
++        argv.append(json.dumps(calc_receipt, separators=(',', ':')))
+     return argv
+ 
+ 
+@@ -99,7 +133,16 @@
+         raise ExportRefused('pdf_engine_unavailable') from None
+ 
+ 
+-def _read_output(work, expected_source_sha):
++def _unique_receipt_fields(items):
++    fields = {}
++    for key, value in items:
++        if key in fields:
++            raise ValueError('pdf_calc_print_receipt')
++        fields[key] = value
++    return fields
++
++
++def _read_output(work, expected_source_sha, *, expected_render_sha=None):
+     from hermes_cli.friday_workspace_pdf import _private_bytes, ExportRefused
+     root = output = None
+     try:
+@@ -116,9 +159,19 @@
+             raise ExportRefused('invalid_pdf_output')
+         info = _private_bytes(root, 'pdfinfo', 8192)
+         bbox = _private_bytes(root, 'bbox.xhtml', MAX_EVIDENCE)
+-        receipt = json.loads(_private_bytes(root, 'validated.json', MAX_EVIDENCE))
+-        if (type(receipt) is not dict or set(receipt) != {'source_sha256', 'pdf_sha256', 'structure'} or
++        receipt = json.loads(
++            _private_bytes(root, 'validated.json', MAX_EVIDENCE),
++            object_pairs_hook=_unique_receipt_fields if expected_render_sha is not None else None,
++        )
++        fields = {'source_sha256', 'pdf_sha256', 'structure'}
++        if expected_render_sha is not None:
++            fields.add('render_input_sha256')
++            staged = _private_bytes(root, 'input.xlsx', _CALC_INPUT_LIMIT)
++            if hashlib.sha256(staged).hexdigest() != expected_render_sha:
++                raise ExportRefused('invalid_pdf_output')
++        if (type(receipt) is not dict or set(receipt) != fields or
+                 receipt['source_sha256'] != expected_source_sha or
++                receipt.get('render_input_sha256') != expected_render_sha or
+                 receipt['pdf_sha256'] != hashlib.sha256(pdf).hexdigest()):
+             raise ExportRefused('invalid_pdf_output')
+         return pdf, info, bbox, receipt['structure']
+@@ -131,6 +184,22 @@
+             os.close(root)
+ 
+ 
++def _run_calc_print(cap, work, toolchain, source_sha, render_sha):
++    from hermes_cli.friday_workspace_pdf import _run, ExportRefused
++    try:
++        fd, identity = _open_host_font(_CALC_FONT, TRUSTED_FONTS[_CALC_FONT])
++    except (OSError, ValueError):
++        raise ExportRefused('pdf_calc_print_font_unavailable') from None
++    try:
++        receipt = dict(source_sha256=source_sha, render_input_sha256=render_sha,
++                       font_identity=identity)
++        _run(cap, _argv(work, toolchain, 'xlsx_pdf', calc_receipt=receipt), work)
++        if _font_identity(os.fstat(fd)) != identity:
++            raise ExportRefused('pdf_calc_print_font_changed')
++    finally:
++        os.close(fd)
++
++
+ def render(cap, data, operation):
+     from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
+     from hermes_cli.friday_workspace_revision import check
+@@ -139,6 +208,18 @@
+         raise ExportRefused('pdf_operation_unsupported')
+     check(cap)
+     plan = preflight(data, OPERATIONS[operation][0], checkpoint=lambda: check(cap))
++    staged = None
++    if operation == 'xlsx_pdf':
++        from hermes_cli.friday_workspace_calc_print import ProjectionUnsupported, project
++        try:
++            staged = project(data)
++        except ProjectionUnsupported:
++            # The existing Calc path still governs workbooks outside this layout.
++            pass
++    render_input = data if staged is None else staged
++    render_sha = None if staged is None else hashlib.sha256(staged).hexdigest()
++    if staged is not None and (not 0 < len(staged) <= _CALC_INPUT_LIMIT or render_sha == plan['source_sha256']):
++        raise ExportRefused('pdf_calc_print_input')
+     _parser_available()
+     toolchain = _toolchain()
+     work = Path(tempfile.mkdtemp(prefix='friday-document-pdf-'))
+@@ -146,14 +227,22 @@
+         work.chmod(0o700)
+         for name in ('out', 'home', 'tmp'):
+             (work / name).mkdir(mode=0o700)
+-        for name, value in (('input.' + OPERATIONS[operation][0], data),
+-                            ('renderer.py', Path(__file__).read_bytes())):
++        files = [('input.' + OPERATIONS[operation][0], render_input), ('renderer.py', Path(__file__).read_bytes())]
++        if staged is not None:
++            files.append(('fonts.conf', _CALC_FONT_CONFIG))
++        for name, value in files:
+             (work / name).write_bytes(value)
+             (work / name).chmod(0o600)
+-        _run(cap, _argv(work, toolchain, operation), work)
+-        pdf, info, bbox, structure = _read_output(work, plan['source_sha256'])
++        if staged is None:
++            _run(cap, _argv(work, toolchain, operation), work)
++        else:
++            _run_calc_print(cap, work, toolchain, plan['source_sha256'], render_sha)
++        pdf, info, bbox, structure = _read_output(work, plan['source_sha256'], expected_render_sha=render_sha)
+         details = verify(plan, info, bbox, structure, checkpoint=lambda: check(cap))
+         check(cap)
++        if staged is not None:
++            return pdf, dict(details, office_filter=CALC_PRINT_FILTER, source_sha256=plan['source_sha256'],
++                             render_input_sha256=render_sha, runtime_qualified=False)
+         return pdf, dict(details, office_filter=OPERATIONS[operation][1],
+                          source_sha256=plan['source_sha256'], runtime_qualified=False)
+     finally:
+@@ -207,7 +296,7 @@
+         return json.dumps(dict(success=False, error='document_pdf_stopped', effect_disposition='none'))
+ 
+ 
+-def _pdf_structure(path):
++def _pdf_structure(path, *, calc_font=None):
+     """Read only inside the bounded networkless child; native qpdf, no repair."""
+     import ctypes as C
+     lib = C.CDLL(LIBRARY)
+@@ -242,7 +331,7 @@
+         pages = lib.qpdf_get_num_pages(handle)
+         if not 1 <= pages <= 64:
+             raise ValueError('pdf_page_limit')
+-        visibility = _visible_pdf_profile(lib, handle, pages)
++        visibility = _visible_pdf_profile(lib, handle, pages, calc_font=calc_font)
+         if lib.qpdf_has_error(handle) or lib.qpdf_more_warnings(handle):
+             raise ValueError('invalid_pdf_output')
+         return dict(pages=pages, engine='libqpdf-12.3.2', visibility=visibility)
+@@ -533,11 +622,137 @@
+         except (ValueError,IndexError,st.error): raise ValueError('pdf_font_unsupported') from None
+         result=(hints,canonical);self.cache[gid]=result;return result
+ 
++_FONT_LIMIT = 4_000_000
++
++
++def _font_identity(info):
++    # UID and GID are validated in the host namespace. Their mapped values in
++    # the confined parser neither identify the donor nor establish trust.
++    return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_size,
++            info.st_mtime_ns, info.st_ctime_ns)
++
++
++def _font_bytes_checked(fd, parent, leaf, digest, expected, *, host):
++    before = os.fstat(fd)
++    identity = _font_identity(before)
++    if (identity != expected or not stat.S_ISREG(before.st_mode)
++            or before.st_nlink != 1 or before.st_mode & 0o022
++            or not 0 < before.st_size <= _FONT_LIMIT
++            or host and (before.st_uid, before.st_gid) != (0, 0)):
++        raise ValueError('pdf_trusted_font_identity')
++    data = bytearray()
++    while len(data) <= before.st_size:
++        chunk = os.read(fd, min(65536, before.st_size + 1 - len(data)))
++        if not chunk:
++            break
++        data.extend(chunk)
++    after = os.fstat(fd)
++    named = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
++    if (len(data) != before.st_size or identity != _font_identity(after)
++            or identity != _font_identity(named)
++            or host and (after.st_uid, after.st_gid, named.st_uid, named.st_gid) != (0, 0, 0, 0)):
++        raise ValueError('pdf_trusted_font_identity')
++    if hashlib.sha256(data).hexdigest() != digest:
++        raise ValueError('pdf_trusted_font_digest')
++    return bytes(data)
++
++
++def _open_host_font(path, digest):
++    if (type(path) is not str or path not in TRUSTED_FONTS
++            or TRUSTED_FONTS[path] != digest or not path.startswith('/usr/share/fonts/')):
++        raise ValueError('pdf_trusted_font_path')
++    path = Path(path)
++    if '..' in path.parts:
++        raise ValueError('pdf_trusted_font_path')
++    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
++    with contextlib.ExitStack() as directories:
++        parent = os.open('/', flags)
++        directories.callback(os.close, parent)
++        for part in (*path.parts[1:-1], None):
++            info = os.fstat(parent)
++            if (info.st_uid, info.st_gid) != (0, 0) or info.st_mode & 0o022:
++                raise ValueError('pdf_trusted_font_path')
++            if part is not None:
++                parent = os.open(part, flags, dir_fd=parent)
++                directories.callback(os.close, parent)
++        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
++        try:
++            identity = _font_identity(os.fstat(fd))
++            _font_bytes_checked(fd, parent, path.name, digest, identity, host=True)
++        except BaseException:
++            os.close(fd)
++            raise
++    return fd, identity
++
++
++def _calc_mount_readonly(fd, destination):
++    with open(f'/proc/self/fdinfo/{fd}', 'rb') as stream:
++        info = stream.read(4097)
++    ids = re.findall(rb'^mnt_id:[ \t]+([0-9]+)$', info, re.M)
++    if len(info) > 4096 or len(ids) != 1:
++        raise ValueError('pdf_calc_print_mount')
++    with open('/proc/self/mountinfo', 'rb') as stream:
++        mountinfo = stream.read(1_048_577)
++    if len(mountinfo) > 1_048_576:
++        raise ValueError('pdf_calc_print_mount')
++    matches = [line.split() for line in mountinfo.splitlines() if line.split(maxsplit=1)[:1] == ids]
++    if (len(matches) != 1 or len(matches[0]) < 6 or matches[0][4] != os.fsencode(destination)
++            or b'ro' not in matches[0][5].split(b',') or b'rw' in matches[0][5].split(b',')
++            or not os.fstatvfs(fd).f_flag & os.ST_RDONLY):
++        raise ValueError('pdf_calc_print_mount')
++
++
++def _calc_font_bytes(identity):
++    parent = os.open(_CALC_FONT_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++    try:
++        leaf = f'{_CALC_FONT_INDEX}.ttf'
++        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
++        try:
++            _calc_mount_readonly(fd, _CALC_FONT_MOUNT)
++            return _font_bytes_checked(fd, parent, leaf, TRUSTED_FONTS[_CALC_FONT], tuple(identity), host=False)
++        finally:
++            os.close(fd)
++    finally:
++        os.close(parent)
++
++
++def _calc_mounted_bytes(destination, limit):
++    fd = os.open(destination, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
++    with os.fdopen(fd, 'rb') as stream:
++        _calc_mount_readonly(fd, destination)
++        before = _font_identity(os.fstat(fd))
++        data = stream.read(limit + 1)
++        _, _, mode, links, size, _, _ = before
++        if (not stat.S_ISREG(mode) or links != 1 or mode & 0o077 or
++                not 0 < len(data) <= limit or len(data) != size or
++                before != _font_identity(os.fstat(fd)) or
++                before != _font_identity(os.stat(destination, follow_symlinks=False))):
++            raise ValueError('pdf_calc_print_input')
++        return data
++
++
++def _calc_child_receipt(operation, encoded):
++    if operation != 'xlsx_pdf' or not 0 < len(encoded) <= 512:
++        raise ValueError('pdf_calc_print_receipt')
++    receipt = json.loads(encoded, object_pairs_hook=_unique_receipt_fields)
++    fields = ('source_sha256', 'render_input_sha256')
++    if (type(receipt) is not dict or set(receipt) != {*fields, 'font_identity'} or
++            any(type(receipt[key]) is not str or re.fullmatch('[0-9a-f]{64}', receipt[key]) is None
++                for key in fields) or receipt['source_sha256'] == receipt['render_input_sha256']):
++        raise ValueError('pdf_calc_print_receipt')
++    identity = receipt['font_identity']
++    if (type(identity) is not list or len(identity) != 7 or
++            any(type(value) is not int or not 0 <= value < 1 << 64 for value in identity)):
++        raise ValueError('pdf_calc_print_receipt')
++    return receipt
++
++
+ class _GlyphProof:
+     """FreeType outline identity against one trusted face for ALL used glyphs."""
+-    def __init__(self):
++    def __init__(self, calc_font=None):
+         import ctypes as C
+         self.C = C
++        self.calc_font = calc_font
+         class Vector(C.Structure): _fields_ = [('x', C.c_long), ('y', C.c_long)]
+         class Generic(C.Structure): _fields_ = [('data', C.c_void_p), ('finalizer', C.c_void_p)]
+         class Box(C.Structure): _fields_ = [(x, C.c_long) for x in ('xMin','yMin','xMax','yMax')]
+@@ -600,6 +815,12 @@
+ 
+     def inventory(self):
+         if self.trusted: return self.trusted
++        if self.calc_font is not None:
++            face = self.face(self.calc_font)
++            if self.lib.FT_Select_Charmap(face, 0x756e6963):
++                raise ValueError('pdf_trusted_fonts_unavailable')
++            self.trusted.append((face, {}))
++            return self.trusted
+         for path, digest in TRUSTED_FONTS.items():
+             fd=None
+             try:
+@@ -1076,7 +1297,7 @@
+     if operands or array is not None or stack or in_text or path or segments or current_point is not None or pending_clip or not runs:raise ValueError('pdf_content_unsupported')
+     return runs
+ 
+-def _visible_pdf_profile(lib, handle, page_count):
++def _visible_pdf_profile(lib, handle, page_count, *, calc_font=None):
+     """Native qpdf object inspection and bounded, fail-closed paint proof."""
+     import ctypes as C
+     P, U, I, S = C.c_void_p, C.c_uint, C.c_int, C.c_char_p
+@@ -1193,7 +1414,7 @@
+         gidmap={code:cmap[18+code] for code in mapping}
+         if any(code not in widths or widths[code]<=0 for code in mapping):
+             raise ValueError('pdf_font_unsupported')
+-        proof=_GlyphProof()
++        proof=_GlyphProof(calc_font)
+         try:
+             glyphs=proof.prove(raw_font,mapping,gidmap,widths,mapping)
+         finally:proof.close()
+@@ -1252,7 +1473,7 @@
+             gidmap={c:int.from_bytes(raw[c*2:c*2+2],'big') for c in mapping if c*2+2<=len(raw)}
+         elif name(gids)=='/Identity':gidmap={c:c for c in mapping}
+         else:raise ValueError('pdf_font_unsupported')
+-        proof=_GlyphProof()
++        proof=_GlyphProof(calc_font)
+         try:
+             glyphs=proof.prove(raw_font,mapping,gidmap,{c:widths.get(c,default) for c in mapping},mapping)
+         finally:proof.close()
+@@ -1360,6 +1581,8 @@
+                                   name(page_mode) == '/UseOutlines' and is_null(outlines)):
+         raise ValueError('pdf_catalog_unsupported')
+     tree, mark = get(root, '/StructTreeRoot'), get(root, '/MarkInfo')
++    # As in PDF dictionary lookup, qpdf treats explicit null values as absent.
++    calc_untagged = calc_font is not None and not ({'/StructTreeRoot', '/MarkInfo'} & keys(root))
+     marked_pages, page_tags = {}, {}
+     if is_null(tree) != is_null(mark): raise ValueError('pdf_catalog_unsupported')
+     if not is_null(tree):
+@@ -1440,12 +1663,14 @@
+                 raise ValueError('pdf_visibility_limit')
+             allowed = {'/Type', '/Parent', '/MediaBox', '/CropBox', '/Rotate', '/Resources'}
+             allowed |= {'/Contents', '/StructParents', '/Tabs'} if depth == 1 else {'/Kids', '/Count'}
++            node_keys = keys(node)
+             if depth == 1:
+                 struct_parent, tabs = get(node, '/StructParents'), get(node, '/Tabs')
++                calc_tabs = calc_untagged and not ({'/StructParents', '/Annots'} & node_keys)
+                 if (not is_null(struct_parent) and (is_null(tree) or marked_pages.get(integer(struct_parent, 63)) != page_id) or
+-                        not is_null(tabs) and (is_null(struct_parent) or name(tabs) != '/S')):
++                        not is_null(tabs) and (is_null(struct_parent) and not calc_tabs or name(tabs) != '/S')):
+                     raise ValueError('pdf_page_features_unsupported')
+-            if keys(node) - allowed or name(get(node, '/Type')) != ('/Page' if depth == 1 else '/Pages'):
++            if node_keys - allowed or name(get(node, '/Type')) != ('/Page' if depth == 1 else '/Pages'):
+                 raise ValueError('pdf_page_features_unsupported')
+             for key in ('/MediaBox', '/CropBox', '/Rotate', '/Resources'):
+                 value = get(node, key)
+@@ -1486,7 +1711,8 @@
+                 fonts[font_key]={'kind':'base14'}
+             else:raise ValueError('pdf_font_unsupported')
+         kinds={f['kind'] for f in fonts.values()}
+-        if len(kinds)!=1:raise ValueError('pdf_font_unsupported')
++        if len(kinds)!=1 or calc_font is not None and kinds != {'embedded'}:
++            raise ValueError('pdf_font_unsupported')
+         contents = get(page, '/Contents')
+         streams = array(contents, 256) if lib.qpdf_oh_is_array(handle, contents) else [contents]
+         if not streams:
+@@ -1522,10 +1748,12 @@
+     return dict(profile=VISIBLE_PROFILE, pages=pages)
+ 
+ 
+-def _render_child(operation):
++def _render_child(operation, calc_receipt=None):
+     import resource
+     if operation not in OPERATIONS:
+         raise ValueError('pdf_operation_unsupported')
++    if calc_receipt is not None:
++        calc_receipt = _calc_child_receipt(operation, calc_receipt)
+     os.umask(0o077)
+     os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:2])
+     for key, value in ((resource.RLIMIT_AS, 1024**3), (resource.RLIMIT_CPU, 35),
+@@ -1545,12 +1773,22 @@
+            'XDG_CACHE_HOME': '/work/home/cache', 'XDG_CONFIG_HOME': '/work/home/config',
+            'XDG_RUNTIME_DIR': '/work/tmp',
+            'LD_LIBRARY_PATH': program + ':' + prefix + '/root/usr/lib/x86_64-linux-gnu'}
+-    subprocess.run(_office_command(operation), env=env, stdin=subprocess.DEVNULL,
++    calc_font = None
++    if calc_receipt is not None:
++        calc_font = _calc_font_bytes(calc_receipt['font_identity'])
++        config = _calc_mounted_bytes('/work/fonts.conf', len(_CALC_FONT_CONFIG))
++        if config != _CALC_FONT_CONFIG:
++            raise ValueError('pdf_calc_print_config')
++        stage = _calc_mounted_bytes('/work/input.xlsx', _CALC_INPUT_LIMIT)
++        if hashlib.sha256(stage).hexdigest() != calc_receipt['render_input_sha256']:
++            raise ValueError('pdf_calc_print_input')
++        env.update(FONTCONFIG_FILE='/work/fonts.conf', FONTCONFIG_PATH='/work')
++    subprocess.run(_office_command(operation, projected=calc_receipt is not None), env=env, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=True)
+     path = Path('/work/out/input.pdf')
+     if not 0 < path.stat().st_size <= MAX_OUTPUT:
+         raise ValueError('invalid_pdf_output')
+-    structure = _pdf_structure(path)
++    structure = _pdf_structure(path, calc_font=calc_font)
+     for command, name, limit in (
+         (['/usr/bin/pdfinfo', '/work/out/input.pdf'], 'pdfinfo', 8192),
+         (['/usr/bin/pdftotext', '-enc', 'UTF-8', '-bbox-layout', '-cropbox', '/work/out/input.pdf', '-'], 'bbox.xhtml', MAX_EVIDENCE),
+@@ -1560,16 +1798,23 @@
+                            stderr=subprocess.DEVNULL, timeout=3, check=True)
+         if not 0 < Path('/work/' + name).stat().st_size <= limit:
+             raise ValueError('invalid_pdf_evidence')
+-    source = Path('/work/input.' + OPERATIONS[operation][0]).read_bytes()
+-    Path('/work/validated.json').write_text(json.dumps(dict(
+-        source_sha256=hashlib.sha256(source).hexdigest(),
+-        pdf_sha256=hashlib.sha256(path.read_bytes()).hexdigest(), structure=structure)), encoding='ascii')
++    receipt = dict(pdf_sha256=hashlib.sha256(path.read_bytes()).hexdigest(), structure=structure)
++    if calc_receipt is None:
++        source = Path('/work/input.' + OPERATIONS[operation][0]).read_bytes()
++        receipt['source_sha256'] = hashlib.sha256(source).hexdigest()
++    else:
++        stage = _calc_mounted_bytes('/work/input.xlsx', _CALC_INPUT_LIMIT)
++        render_sha = hashlib.sha256(stage).hexdigest()
++        if render_sha != calc_receipt['render_input_sha256']:
++            raise ValueError('pdf_calc_print_input')
++        receipt.update(source_sha256=calc_receipt['source_sha256'], render_input_sha256=render_sha)
++    Path('/work/validated.json').write_text(json.dumps(receipt), encoding='ascii')
+ 
+ 
+ if __name__ == '__main__':
+-    if len(sys.argv) != 3 or sys.argv[1] != '--render':
++    if len(sys.argv) not in (3, 4) or sys.argv[1] != '--render':
+         raise SystemExit(2)
+     try:
+-        _render_child(sys.argv[2])
++        _render_child(*sys.argv[2:])
+     except BaseException:
+         raise SystemExit(1)
+--- /dev/null
++++ b/hermes_cli/friday_workspace_calc_print.py
+@@ -0,0 +1,238 @@
++"""Private print-layout derivative for the current minimal XLSX producer shape."""
++
++from copy import copy
++from io import BytesIO
++import re
++from struct import error as StructError
++from xml.etree import ElementTree as ET
++from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
++from zlib import error as ZlibError
++
++
++class ProjectionUnsupported(ValueError):
++    """The original workbook is outside the admitted print projection shape."""
++
++
++_SPREADSHEET = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
++_OFFICE_RELS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
++_PACKAGE_RELS = "http://schemas.openxmlformats.org/package/2006/relationships"
++_CONTENT_TYPES = "http://schemas.openxmlformats.org/package/2006/content-types"
++_SPREADSHEET_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml"
++_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
++_WORKBOOK = "xl/workbook.xml"
++_SHEET = "xl/worksheets/sheet1.xml"
++_STYLES = "xl/styles.xml"
++_PLAIN_TEXT = re.compile(r"[A-Za-zА-Яа-яЁё0-9]+(?: [A-Za-zА-Яа-яЁё0-9]+)*")
++
++# These are the actual minimal producer descriptors and empty Normal style.
++# XML prefixes, attribute order and formatting whitespace may vary.
++_BASE_PARTS = {
++    "[Content_Types].xml": f"""
++        <Types xmlns="{_CONTENT_TYPES}">
++          <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
++          <Default Extension="xml" ContentType="application/xml"/>
++          <Override PartName="/xl/workbook.xml" ContentType="{_SPREADSHEET_TYPE}.sheet.main+xml"/>
++          <Override PartName="/xl/styles.xml" ContentType="{_SPREADSHEET_TYPE}.styles+xml"/>
++          <Override PartName="/xl/worksheets/sheet1.xml" ContentType="{_SPREADSHEET_TYPE}.worksheet+xml"/>
++        </Types>""",
++    "_rels/.rels": f"""
++        <Relationships xmlns="{_PACKAGE_RELS}">
++          <Relationship Id="rId1" Type="{_OFFICE_RELS}/officeDocument" Target="xl/workbook.xml"/>
++        </Relationships>""",
++    _WORKBOOK: f"""
++        <workbook xmlns="{_SPREADSHEET}" xmlns:r="{_OFFICE_RELS}">
++          <sheets><sheet r:id="rId1" name="Data" sheetId="1"/></sheets>
++        </workbook>""",
++    "xl/_rels/workbook.xml.rels": f"""
++        <Relationships xmlns="{_PACKAGE_RELS}">
++          <Relationship Id="rId1" Type="{_OFFICE_RELS}/worksheet" Target="worksheets/sheet1.xml"/>
++          <Relationship Id="styles" Type="{_OFFICE_RELS}/styles" Target="styles.xml"/>
++        </Relationships>""",
++    _STYLES: f"""
++        <styleSheet xmlns="{_SPREADSHEET}">
++          <numFmts count="0"/>
++          <fonts count="1"><font/></fonts>
++          <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
++          <borders count="1"><border/></borders>
++          <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
++          <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
++          <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
++        </styleSheet>""",
++}
++_PART_NAMES = {*_BASE_PARTS, _SHEET}
++
++
++class _PlainXML(ET.TreeBuilder):
++    def doctype(self, name, pubid, system):
++        raise ProjectionUnsupported("XML document type declaration")
++
++    def comment(self, text):
++        raise ProjectionUnsupported("XML comment")
++
++    def pi(self, target, text):
++        raise ProjectionUnsupported("XML processing instruction")
++
++
++def _parse(data: bytes) -> ET.Element:
++    # Require the producer's text encoding before parsing it.
++    try:
++        data.decode("utf-8")
++        parser = ET.XMLParser(encoding="utf-8", target=_PlainXML())
++        return ET.fromstring(data, parser=parser)
++    except (ET.ParseError, UnicodeError) as error:
++        raise ProjectionUnsupported("malformed XLSX XML") from error
++
++
++def _has_no_text(text: str | None) -> bool:
++    return not (text or "").strip(" \t\r\n")
++
++
++def _same_shape(actual: ET.Element, expected: ET.Element) -> bool:
++    return (
++        actual.tag == expected.tag
++        and actual.attrib == expected.attrib
++        and _has_no_text(actual.text)
++        and _has_no_text(actual.tail)
++        and len(actual) == len(expected)
++        and all(_same_shape(a, e) for a, e in zip(actual, expected))
++    )
++
++
++def _tag(name: str) -> str:
++    return f"{{{_SPREADSHEET}}}{name}"
++
++
++def _expect(
++    element: ET.Element, name: str, attrib: dict[str, str], children: int,
++) -> None:
++    if (
++        element.tag != _tag(name)
++        or element.attrib != attrib
++        or len(element) != children
++        or not _has_no_text(element.tail)
++        or (name != "t" and not _has_no_text(element.text))
++    ):
++        raise ProjectionUnsupported(f"unexpected worksheet {name} structure")
++
++
++def _check_sheet(sheet: ET.Element) -> None:
++    _expect(sheet, "worksheet", {}, 1)
++    sheet_data = sheet[0]
++    _expect(sheet_data, "sheetData", {}, 3)
++    for row_number, row in enumerate(sheet_data, 1):
++        _expect(row, "row", {"r": str(row_number)}, 2)
++        for column, cell in zip("AB", row):
++            _expect(cell, "c", {"r": f"{column}{row_number}", "t": "inlineStr"}, 1)
++            _expect(cell[0], "is", {}, 1)
++            inline_text = cell[0][0]
++            _expect(inline_text, "t", {_XML_SPACE: "preserve"}, 0)
++            text = inline_text.text or ""
++            if len(text) > 12 or not _PLAIN_TEXT.fullmatch(text):
++                raise ProjectionUnsupported("inline text outside the print layout bound")
++
++
++def _project_sheet(sheet: ET.Element) -> bytes:
++    sheet_data = sheet[0]
++    settings = ET.Element(_tag("sheetPr"))
++    ET.SubElement(settings, _tag("pageSetUpPr"), fitToPage="0")
++    sheet.insert(0, settings)
++
++    columns = ET.Element(_tag("cols"))
++    ET.SubElement(columns, _tag("col"), min="1", max="2", width="32", customWidth="1")
++    sheet.insert(1, columns)
++    for row in sheet_data:
++        row.attrib.update(ht="42", customHeight="1")
++        for cell in row:
++            cell.set("s", "1")
++
++    ET.SubElement(
++        sheet, _tag("pageMargins"),
++        left="0.7", right="0.7", top="0.75", bottom="0.75", header="0.3", footer="0.3",
++    )
++    ET.SubElement(sheet, _tag("pageSetup"), paperSize="9", orientation="portrait", scale="100")
++    return ET.tostring(sheet, encoding="utf-8", xml_declaration=True)
++
++
++def _project_styles(styles: ET.Element) -> bytes:
++    normal_font = styles.find(_tag("fonts"))[0]
++    ET.SubElement(normal_font, _tag("sz"), val="11")
++    ET.SubElement(normal_font, _tag("color"), rgb="FF000000")
++    ET.SubElement(normal_font, _tag("name"), val="Noto Sans")
++
++    cell_formats = styles.find(_tag("cellXfs"))
++    cell_formats.set("count", "2")
++    centered_format = ET.SubElement(
++        cell_formats, _tag("xf"), dict(cell_formats[0].attrib),
++        applyFont="1", applyAlignment="1",
++    )
++    ET.SubElement(
++        centered_format, _tag("alignment"),
++        horizontal="center", vertical="center", wrapText="0", shrinkToFit="0",
++    )
++    return ET.tostring(styles, encoding="utf-8", xml_declaration=True)
++
++
++def _read_parts(source: bytes) -> tuple[list[ZipInfo], dict[str, bytes]]:
++    if (
++        not isinstance(source, bytes)
++        or len(source) > 16384
++        or not source.startswith(b"PK\x03\x04")
++        or source[-22:-18] != b"PK\x05\x06"
++    ):
++        raise ProjectionUnsupported("unexpected XLSX archive envelope")
++    try:
++        with ZipFile(BytesIO(source)) as archive:
++            entries = archive.infolist()
++            if (
++                len(entries) != len(_PART_NAMES)
++                or {entry.filename for entry in entries} != _PART_NAMES
++                or archive.comment
++                or any(
++                    entry.flag_bits
++                    or entry.extra
++                    or entry.comment
++                    or entry.orig_filename != entry.filename
++                    or entry.file_size > 4096
++                    or entry.compress_type not in {ZIP_DEFLATED, ZIP_STORED}
++                    for entry in entries
++                )
++            ):
++                raise ProjectionUnsupported("unexpected XLSX package members or options")
++            return entries, {entry.filename: archive.read(entry) for entry in entries}
++    except ProjectionUnsupported:
++        raise
++    except (BadZipFile, EOFError, OSError, StructError, ValueError, ZlibError) as error:
++        raise ProjectionUnsupported("malformed XLSX archive") from error
++
++
++def _write_parts(entries: list[ZipInfo], parts: dict[str, bytes]) -> bytes:
++    staged = BytesIO()
++    with ZipFile(staged, "w") as archive:
++        for entry in entries:
++            archive.writestr(copy(entry), parts[entry.filename])
++    return staged.getvalue()
++
++
++def project(source: bytes) -> bytes:
++    """Stage an in-memory print copy after the caller's normal XLSX source guard."""
++    entries, parts = _read_parts(source)
++    # Admit only the producer's unambiguous ZIP envelope. ZipFile alone can
++    # ignore local header differences, gaps and trailing compressed bytes.
++    if _write_parts(entries, parts) != source:
++        raise ProjectionUnsupported("unexpected XLSX archive representation")
++    parsed = {name: _parse(data) for name, data in parts.items()}
++    for name, template in _BASE_PARTS.items():
++        expected = ET.fromstring(template)
++        if name == _WORKBOOK:
++            sheet = parsed[name].find(f"{_tag('sheets')}/{_tag('sheet')}")
++            if sheet is not None and "name" in sheet.attrib:
++                # The normal source guard validates the user's sheet name.
++                expected[0][0].set("name", sheet.attrib["name"])
++        if not _same_shape(parsed[name], expected):
++            raise ProjectionUnsupported(f"unexpected XLSX descriptor or style: {name}")
++    sheet = parsed[_SHEET]
++    _check_sheet(sheet)
++
++    parts[_STYLES] = _project_styles(parsed[_STYLES])
++    parts[_SHEET] = _project_sheet(sheet)
++    return _write_parts(entries, parts)
