@@ -14,6 +14,9 @@ HERE = Path(__file__).resolve().parent
 DRIVER_SHA256 = "126fa16c8b22e814d19b876933310e63657abfeaaa20d45d06075ae959a0ce6e"
 BINDING_SCHEMA = "frw.Root.ordinary-preclock.v1"
 REVIEWED_PHASES = {
+    "f08405d046b402e776c2c3396e9c71a086634630c00e6c54ea5c5775e30bd93a": (
+        "S-16", "ad7f146cbea062b859ee92d4a526f2518c13e0d7551904b7184a2e9c578ffb04",
+    ),
     "5e3d70ffbdf095714b69482012c139933ebd79fa01d749c1d824acb7ae017f56": (
         "S-06", "c39445d8bac51a91bcd13023e11775554c1ebdc0cf8179c04018d3c507c989c1",
     ),
@@ -55,6 +58,12 @@ REVIEWED_PHASES = {
     ),
 }
 PRESERVED_RUNS = {
+    "S-16": (
+        ("root-b00-s151-s16-20261102-r1",
+         "55f31b74d739af8280b80b8d0b8a4f03e47bff854d03cdf0ca4485a18ccd062b", "EVIDENCE_READY"),
+        ("root-s16-c0661ce4883f",
+         "b7fcb56f10f319bcd98f403477bad1793256b869bef48999af5011fd485c0eac", "OBSERVING"),
+    ),
     "S-06": (
         ("root-b00-s151-s06-20261102-r1",
          "96878a30e519d8c4fa7a134a6b93d8dc209ae231e1db1c8d845b88538d9888ee", "EVIDENCE_READY"),
