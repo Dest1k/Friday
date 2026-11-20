@@ -1,4 +1,4 @@
-"""Check a reviewed D05 or D11 preparation under the existing Once locks."""
+"""Check an exact reviewed document preparation under the existing Once locks."""
 
 import argparse
 from hashlib import sha256
@@ -14,18 +14,38 @@ HERE = Path(__file__).resolve().parent
 DRIVER_SHA256 = "126fa16c8b22e814d19b876933310e63657abfeaaa20d45d06075ae959a0ce6e"
 BINDING_SCHEMA = "frw.Root.ordinary-preclock.v1"
 REVIEWED_PHASES = {
+    "9b6f6df645c3d07d0b695022349db4b7c81ea2d004c83a64847c63f7d408d78e": (
+        "D-04", "1ac3a16f3d6ae8b28eb16f8045fe364794277ac787fbc6089f5d3fb54532592d",
+    ),
     "2a5c503fbe0505cf617f15ddb3c935104b96994173234ab16ea5d948c414c449": (
         "D-05", "7f52f6fd77aae6744e9eead13f201827e49d5a808bac5cbad19004ea99c0af55",
+    ),
+    "c8b18c77a422fba386b1f52dd68c7e66ab8761e02bf45135666a1e30e125c0e9": (
+        "D-09", "19d9fd461d3648493a6129d875d9df93f222934d2b5d86c25da4b808818a5ad2",
     ),
     "b99effc9a4cab5b11ce17b23260564a42f5f269f1fba3d94c3a505e0a5266414": (
         "D-11", "0e6c22c0484ec102d5a521c46bc931b7f16a6cf7125aaf7825ea347b4607ec3f",
     ),
 }
 PRESERVED_RUNS = {
-    "D-05": ("root-b00-d05-deadline-1-physical-01-r16",
-             "6bd41bc954634d52ea4ea2b7e0aa59f62a2b0c352c2e1862f10a355ef5e1af22", "STOPPED"),
-    "D-11": ("root-b00-d11-styled-report-1-physical-01-r17",
-             "00d47966a411e12af48a541c741f3fe374788d275ddc30fa1d0264c85832dfde", "EVIDENCE_READY"),
+    "D-04": (
+        ("root-b00-d04-summary-1-physical-01-r17",
+         "edbc77bb9e78240477c5ba84824544c446036f2cf67d191f492cd9eb828313ed", "EVIDENCE_READY"),
+    ),
+    "D-05": (
+        ("root-b00-d05-deadline-1-physical-01-r16",
+         "6bd41bc954634d52ea4ea2b7e0aa59f62a2b0c352c2e1862f10a355ef5e1af22", "STOPPED"),
+    ),
+    "D-09": (
+        ("root-b00-d09-translate-1-physical-01-r16",
+         "bf772b96ef6bb664b516122f90a27edbd1da50ce25fe5fc5bcfaf0821b3fb7d5", "STOPPED"),
+        ("d09-translation-check-01-r55",
+         "275bfdffc52fea6771abd059d6c2ceb32db05b302a36d2fa736b05e2a736dc15", "EVIDENCE_READY"),
+    ),
+    "D-11": (
+        ("root-b00-d11-styled-report-1-physical-01-r17",
+         "00d47966a411e12af48a541c741f3fe374788d275ddc30fa1d0264c85832dfde", "EVIDENCE_READY"),
+    ),
 }
 
 
@@ -51,10 +71,10 @@ def check_history(actor, current, case, contract, authority):
                and history["cursor_sha256"] == contract["cursor"]["sha256"]
                and history["history_count"] == len(inventory),
                "PRECLOCK_COLLISION_REPORT_DOES_NOT_MATCH_CURRENT_HISTORY_AND_CURSOR")
-    prior_id, prior_sha, prior_status = PRESERVED_RUNS[case]
-    old = inventory.get(prior_id, {})
-    actor.need((old.get("sha256"), old.get("status"), old.get("send_state")) == (prior_sha, prior_status, "sent"),
-               "PRECLOCK_PRESERVED_HISTORICAL_RUN_CHANGED")
+    for prior_id, prior_sha, prior_status in PRESERVED_RUNS[case]:
+        old = inventory.get(prior_id, {})
+        actor.need((old.get("sha256"), old.get("status"), old.get("send_state")) == (prior_sha, prior_status, "sent"),
+                   "PRECLOCK_PRESERVED_HISTORICAL_RUN_CHANGED")
 
 
 def check_binding(driver, actor, reference):
