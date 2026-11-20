@@ -1,0 +1,171 @@
+--- a/maintain_core296_once.py
++++ b/maintain_core296_once.py
+@@ -329,6 +329,16 @@
+
+
+-def active_identity(unit):
+-    row=ops['service'](unit)
++def active_identity(unit, *, deadline=None, verify_launch=False):
++    if verify_launch:
++        names = ('LoadState', 'ActiveState', 'SubState', 'ControlPID', 'UnitFileState',
++                 'RuntimeMaxUSec', 'NRestarts', 'MainPID', 'InvocationID', 'ControlGroup',
++                 'ExecMainStartTimestampMonotonic')
++        result = ops['command'](['/usr/bin/systemctl', '--user', 'show', unit,
++                                 '--property=' + ','.join(names)], deadline=deadline)
++        require(result.returncode == 0, 'd02_gateway_unit_readback_refused')
++        row = dict(line.split('=', 1) for line in result.stdout.decode().splitlines())
++        require(set(row) == set(names), 'd02_gateway_unit_readback_unproved')
++    else:
++        row=ops['service'](unit, deadline=deadline)
+     require(all(row[k]==v for k,v in {'LoadState':'loaded','ActiveState':'active','SubState':'running',
+         'ControlPID':'0','UnitFileState':'enabled','RuntimeMaxUSec':'infinity','NRestarts':'0'}.items()), 'permanent_unit_not_healthy:'+unit)
+@@ -336,5 +346,11 @@
+     ticks=birth(pid)
+     require('0::'+row['ControlGroup'] in (Path('/proc')/str(pid)/'cgroup').read_text().splitlines(), 'permanent_unit_cgroup_changed')
+-    return dict(pid=pid,birth_ticks=ticks,boot_id=BOOT,invocation_id=row['InvocationID'],cgroup=row['ControlGroup'],enabled_active=True,runtime_max='infinity')
++    identity = dict(pid=pid,birth_ticks=ticks,boot_id=BOOT,invocation_id=row['InvocationID'],cgroup=row['ControlGroup'],enabled_active=True,runtime_max='infinity')
++    if verify_launch:
++        started_us = row['ExecMainStartTimestampMonotonic']
++        require(started_us.isascii() and started_us.isdecimal() and int(started_us) > 0,
++                'd02_gateway_monotonic_start_unproved')
++        identity['exec_start_us'] = int(started_us)
++    return identity
+
+
+@@ -611,5 +627,66 @@
+
+
+-def restart_service(unit, old, receipt, j):
++def prepare_d02_startup_receipt():
++    from types import SimpleNamespace
++    sources = BOUND['d02_startup_sources']
++    require(set(sources) == {'observer', 'current', 'projection', 'actor'},
++            'exact_d02_startup_source_roles_required')
++    verified = {}
++    for role, ref in sources.items():
++        require(set(ref) == {'path', 'sha256', 'bytes'}, 'exact_d02_startup_source_reference_required')
++        raw = protected_bytes(ref['path'], ref['sha256'], limit=262144)
++        require(len(raw) == ref['bytes'], 'd02_startup_source_size_changed')
++        scope = dict(__name__='_d02_maintenance_' + role, __file__=ref['path'])
++        exec(compile(raw, ref['path'], 'exec'), scope)
++        verified[role] = SimpleNamespace(**scope)
++    observer, current, projection, actor = (verified[key] for key in ('observer', 'current', 'projection', 'actor'))
++    require(observer.SCHEMA == 'frw.Root.D02.native-gateway-start-observation.v1'
++            and projection.HOME == H, 'd02_startup_owner_contract_changed')
++    destination = B / 'D02-GATEWAY-START-OWNER.json'
++    def capture(active, deadline, journal):
++        require(journal['state'] == 'COMMITTED_AND_DEFAULT_CHECKED' and journal['publisher_code'] == 0
++                and journal['candidate_startup_cutoff'] == 'CROSSED_BEFORE_FIRST_CANDIDATE_START'
++                and journal['selected_receipt'] == EXPECTED['receipt']
++                and journal['selected_layers'] == AFTER_LAYERS
++                and journal['request_sha256'] == REQUEST_SHA,
++                'd02_owner_observation_needs_committed_successor')
++        binding = {'metadata_sha256': EXPECTED, 'home': str(H), 'layer_count': AFTER_LAYERS}
++
++        def read_generation(stop):
++            observer.remaining(stop)
++            def read_checked(path, **kwargs):
++                observer.remaining(stop)
++                raw = actor.read(path, **kwargs)
++                observer.remaining(stop)
++                return raw
++
++            io = SimpleNamespace(checked_read=read_checked, decode=actor.parse)
++            code_sha, _roles, receiver, overlay = current.installed_roles(io, H, binding, projection)
++            require(receiver, 'd02_owner_observation_needs_installed_receiver')
++            return dict(code_sha=code_sha, receipt_sha256=EXPECTED['receipt'], overlay_sha256=overlay)
++
++        def read_active(stop):
++            actual = active_identity(GW, deadline=stop, verify_launch=True)
++            gateway_snapshot(actual)
++            return actual
++
++        ref = observer.retain_owner(H, active, read_generation=read_generation,
++                                    read_active=read_active, deadline=deadline,
++                                    write_private=lambda row: actor.new(destination, actor.encoded(row)))
++        observer.remaining(deadline)
++        require(ref['path'] == str(destination), 'd02_startup_observation_destination_changed')
++        proof = actor.doc(ref)
++        require(proof['identity'] == dict(pid=active['pid'], start_time=active['birth_ticks'],
++                                        boot_id=active['boot_id'])
++                and proof['invocation_id'] == active['invocation_id']
++                and read_active(deadline) == active,
++                'd02_startup_observation_candidate_changed')
++        observer.remaining(deadline)
++        return ref
++
++    return destination, capture
++
++
++def restart_service(unit, old, receipt, j, *, d02_startup=None):
+     name='gateway' if unit==GW else 'dashboard'
+     begun=time.monotonic(); end=begun+180
+@@ -617,9 +694,14 @@
+     j['starts'][name]={'state':'REQUEST_CONSUMED','deadline_monotonic':end}
+     ops['save']()
++    if d02_startup is not None:
++        require(unit == GW and j['state'] == 'COMMITTED_AND_DEFAULT_CHECKED',
++                'd02_startup_requires_one_candidate_gateway_start')
++        stopped_identity(unit, old, deadline=end)
++        launch_us = (time.monotonic_ns() + 999) // 1000
+     cmd=ops['command'](['/usr/bin/systemctl','--user','start','--no-block',unit], deadline=end)
+     require(cmd.returncode==0,'permanent_service_start_command_failed')
+     while time.monotonic()<end:
+         try:
+-            identity=active_identity(unit)
++            identity=active_identity(unit, deadline=end)
+         except (RuntimeError,FileNotFoundError):
+             time.sleep(0.25)
+@@ -638,7 +720,24 @@
+                 time.sleep(0.25)
+                 continue
+-        require(active_identity(unit)==identity,'service_identity_changed_during_start_readback')
+-        j['starts'][name].update(state='VERIFIED',identity=identity)
++        require(active_identity(unit, deadline=end)==identity,'service_identity_changed_during_start_readback')
++        record = j['starts'][name]
++        record.update(state='VERIFIED', identity=identity)
++        if d02_startup is not None:
++            record['d02_native_owner'] = {'state': 'ATTEMPT_CUSTODY', 'dispatch_monotonic_us': launch_us}
+         ops['save']()
++        if d02_startup is not None:
++            proof = record['d02_native_owner']
++            try:
++                observed = active_identity(unit, deadline=end, verify_launch=True)
++                require({key: observed[key] for key in identity} == identity,
++                        'd02_gateway_launch_readback_changed_identity')
++                if observed['exec_start_us'] < launch_us:
++                    proof.update(state='REFUSED', failure_type='StartPrecedesDispatch')
++                else:
++                    ref = d02_startup(observed, end, j)
++                    proof.update(state='OBSERVED', reference=ref, exec_start_us=observed['exec_start_us'])
++            except Exception as error:
++                proof.update(state='REFUSED', failure_type=type(error).__name__)
++            ops['save']()
+         return identity
+     raise RuntimeError('permanent_service_cold_start_deadline:'+unit)
+@@ -661,4 +760,5 @@
+     os.environ.update(HERMES_HOME=str(H),HERMES_GATEWAY_LOCK_DIR='/home/jericho/.local/state/hermes/gateway-locks',GIT_OPTIONAL_LOCKS='0',PYTHONDONTWRITEBYTECODE='1')
+     req,c,ci,p,pi,current,previous=product_source()
++    d02_destination, d02_startup = prepare_d02_startup_receipt()
+     restore=load_code(ROLLBACK_GUARD,ROLLBACK_GUARD_SHA)
+     ops=load_code(F/'run_native241_once.py','59488df15cdaac691450cee60e2ab647f82a123602d192d33bbd4be2c9718a7c')
+@@ -682,4 +782,5 @@
+                      'DEFAULT-CHECK.stdout','DEFAULT-CHECK.stderr'):
+             require(not os.path.lexists(B/item), 'new_operation_output_slot_consumed:'+item)
++        require(not os.path.lexists(d02_destination), 'd02_startup_observation_slot_consumed')
+         a=running_admission(req,scope)
+         a["selected_preimages"]=selected_preimages(req,previous)
+@@ -809,8 +910,12 @@
+
+             require(units==restore['unit_binding'](),'unit_cas_changed_before_gateway_start')
+-            active=restart_service(GW,a['services']['gateway'],wanted,j)
++            active=restart_service(GW,a['services']['gateway'],wanted,j,
++                                   d02_startup=d02_startup if rc == 0 else None)
+             require(units==restore['unit_binding'](),'unit_cas_changed_after_gateway_start')
+             restart_service(DASH,a['services']['dashboard'],wanted,j)
+             require(units==restore['unit_binding'](),'unit_cas_changed_after_dashboard_start')
++            if rc == 0:
++                require(active_identity(GW, deadline=j['absolute_deadline_monotonic']) == active,
++                        'd02_gateway_changed_before_closure')
+             native=ro_native['fresh_native'](gateway_snapshot(active)); dbs=original['readonly_databases']()
+             contract['validate_global_quiescence'](native['global_work'],dbs,active,current_monotonic=time.monotonic())
