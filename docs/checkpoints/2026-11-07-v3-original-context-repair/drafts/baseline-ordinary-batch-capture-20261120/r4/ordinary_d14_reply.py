@@ -122,33 +122,68 @@ def inspect_saved_xlsx(observer, raw, artifact_sha, inspector_path):
     }
 
 
-def assess_saved_workbook(observer, store, *, run_id, run_ref, cursor_ref, inspector_path):
-    """Read the actual recipient file and text using the same original window."""
+def _sent_run(observer, store, run_id, run_ref):
     if type(run_id) is not str or not re.fullmatch("[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id):
         raise ValueError("Exact D14 saved run ID required")
-    run_path, cursor_path = store.run_path(run_id), store.root / "cursor.json"
+    run_path = store.run_path(run_id)
     run = pinned_record(observer, run_ref, expected_path=run_path)
-    cursor = pinned_record(observer, cursor_ref, expected_path=cursor_path)
     scenario = run["scenario"]
     if (run.get("id") != run_id or run.get("scenario_sha256") != SCENARIO_SHA256
             or digest(observer.encoded(scenario)) != SCENARIO_SHA256
             or digest(scenario["steps"][0]["request"].encode()) != REQUEST_SHA256
             or type(run.get("step")) is not int or run["step"] != 0
             or type(run.get("send_attempts")) is not int or run["send_attempts"] != 1
-            or run.get("send_state") != "sent" or run.get("sent_ids") != [run.get("sent_message_id")]
-            or run.get("status") != "EVIDENCE_READY" or run.get("capture_window_complete") is not True):
-        raise ValueError("Exact closed D14 retained-pair run and one send required")
+            or run.get("send_state") != "sent" or run.get("sent_ids") != [run.get("sent_message_id")]):
+        raise ValueError("Exact D14 retained-pair run and one confirmed send required")
     created, deadline = datetime.fromisoformat(run["created_at"]), run["deadline"]
     if (created.utcoffset() is None or type(deadline) not in (int, float) or not math.isfinite(deadline)
             or abs(deadline - created.timestamp() - 300) > 1):
         raise ValueError("D14 original tester deadline does not match 300 seconds")
-    runner = observer.Runner(store, None)
-    runner.verify_reply_custody(run, cursor)
+    return run_path, run
+
+
+def _original_text_ack(runner, run):
     ack = original_ack(runner, run)
-    if (ack.get("message_id") != run["sent_message_id"] or ack.get("date") != run["sent_date"]
-            or ack.get("chat", {}).get("id") != scenario["peer_id"] or ack["chat"].get("type") != "private"
+    if (type(ack.get("from", {}).get("id")) is not int
+            or ack.get("message_id") != run["sent_message_id"] or type(ack.get("date")) is not int
+            or ack["date"] <= 0 or ack["date"] != run["sent_date"]
+            or ack.get("chat", {}).get("id") != run["scenario"]["peer_id"] or ack["chat"].get("type") != "private"
+            or ack.get("reply_to_message") is not None or ack.get("forward_origin") is not None
             or MEDIA.intersection(ack)):
         raise ValueError("D14 original text ACK or private route differs")
+    return ack
+
+
+def read_text_ack(observer, store, *, run_id, run_ref):
+    """Read the protected sender's proof independently of response closure."""
+    run_path, run = _sent_run(observer, store, run_id, run_ref)
+    runner = observer.Runner(store, None)
+    runner.verify_capture_context(run)
+    runner.verify_window(run)
+    ack = _original_text_ack(runner, run)
+    pinned_record(observer, run_ref, expected_path=run_path)
+    return {
+        "run_id": run_id, "run_sha256": run_ref["sha256"], "scenario_sha256": SCENARIO_SHA256,
+        "tester_sent_message_id": run["sent_message_id"], "telegram_date": ack["date"],
+        "tester_id": run["scenario"]["tester_id"], "receiver_bot_id": run["scenario"]["peer_id"],
+        "request_sha256": REQUEST_SHA256, "text_bytes": len(ack["text"].encode("utf-8")),
+        "request_body_sha256": run["request_metadata"]["body_sha256"],
+        "ack": run["sent_api_ack_reference"], "task": run["sent_task_reference"],
+        "original_window": run["sent_window_reference"], "native_ingress_join": "OPEN",
+    }
+
+
+def assess_saved_workbook(observer, store, *, run_id, run_ref, cursor_ref, inspector_path):
+    """Read the actual recipient file and text using the same original window."""
+    run_path, run = _sent_run(observer, store, run_id, run_ref)
+    if run.get("status") != "EVIDENCE_READY" or run.get("capture_window_complete") is not True:
+        raise ValueError("Exact closed D14 retained-pair run and one send required")
+    cursor_path = store.root / "cursor.json"
+    cursor = pinned_record(observer, cursor_ref, expected_path=cursor_path)
+    scenario = run["scenario"]
+    runner = observer.Runner(store, None)
+    runner.verify_reply_custody(run, cursor)
+    ack = _original_text_ack(runner, run)
     captures, _, drain = runner.receive_inventory(run, cursor, terminal=True)
     poll = runner.read_poll_intent(run)
     terminal = drain.get("complete")
