@@ -1,0 +1,148 @@
+"""Check a reviewed D05 or D11 preparation under the existing Once locks."""
+
+import argparse
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+import re
+import sys
+from types import ModuleType
+
+
+HERE = Path(__file__).resolve().parent
+DRIVER_SHA256 = "126fa16c8b22e814d19b876933310e63657abfeaaa20d45d06075ae959a0ce6e"
+BINDING_SCHEMA = "frw.Root.ordinary-preclock.v1"
+REVIEWED_PHASES = {
+    "2a5c503fbe0505cf617f15ddb3c935104b96994173234ab16ea5d948c414c449": (
+        "D-05", "7f52f6fd77aae6744e9eead13f201827e49d5a808bac5cbad19004ea99c0af55",
+    ),
+    "b99effc9a4cab5b11ce17b23260564a42f5f269f1fba3d94c3a505e0a5266414": (
+        "D-11", "0e6c22c0484ec102d5a521c46bc931b7f16a6cf7125aaf7825ea347b4607ec3f",
+    ),
+}
+PRESERVED_RUNS = {
+    "D-05": ("root-b00-d05-deadline-1-physical-01-r16",
+             "6bd41bc954634d52ea4ea2b7e0aa59f62a2b0c352c2e1862f10a355ef5e1af22", "STOPPED"),
+    "D-11": ("root-b00-d11-styled-report-1-physical-01-r17",
+             "00d47966a411e12af48a541c741f3fe374788d275ddc30fa1d0264c85832dfde", "EVIDENCE_READY"),
+}
+
+
+def existing_driver():
+    path = HERE / "ordinary_s01_root.py"
+    with path.open("rb") as source:
+        data = source.read(65537)
+    if sha256(data).hexdigest() != DRIVER_SHA256:
+        raise ValueError("PRECLOCK_EXISTING_DRIVER_CHANGED")
+    driver = ModuleType("_reviewed_ordinary_preclock_driver")
+    driver.__file__ = str(path)
+    exec(compile(data, driver.__file__, "exec"), vars(driver))
+    return driver
+
+
+def check_history(actor, current, case, contract, authority):
+    history = current.document(contract["scope"]["history"])
+    inventory = {
+        name: {key: row[key] for key in ("sha256", "status", "send_state", "deadline")}
+        for name, row in authority["history"].items()
+    }
+    actor.need(history["history_inventory_sha256"] == current.digest(current.encoded(inventory))
+               and history["cursor_sha256"] == contract["cursor"]["sha256"]
+               and history["history_count"] == len(inventory),
+               "PRECLOCK_COLLISION_REPORT_DOES_NOT_MATCH_CURRENT_HISTORY_AND_CURSOR")
+    prior_id, prior_sha, prior_status = PRESERVED_RUNS[case]
+    old = inventory.get(prior_id, {})
+    actor.need((old.get("sha256"), old.get("status"), old.get("send_state")) == (prior_sha, prior_status, "sent"),
+               "PRECLOCK_PRESERVED_HISTORICAL_RUN_CHANGED")
+
+
+def check_binding(driver, actor, reference):
+    value = actor.doc(reference)
+    actor.need(value.get("schema") == BINDING_SCHEMA and value.get("status") == "ROOT_READONLY_QUALIFICATION"
+               and value.get("operator") == "Root",
+               "PRECLOCK_EXPLICIT_QUALIFICATION_REQUIRED")
+    work = actor.canonical_path(value["workdir"])
+    package = Path(reference["path"]).parent
+    actor.protected_directory(package)
+    actor.need(work.parent == package and not work.is_relative_to(driver.HOME) and not work.is_relative_to(actor.STATE),
+               "PRECLOCK_DISJOINT_PRIVATE_WORK_DIRECTORY_REQUIRED")
+    identity = driver.protected_work_identity(actor, work)
+    actor.need(identity == value["work_identity"], "PRECLOCK_WORK_DIRECTORY_CHANGED")
+    slot_identity = value["slot_identity"]
+    actor.need(type(slot_identity) is dict and set(slot_identity) == {"device", "inode", "uid", "mode", "nlink"},
+               "PRECLOCK_EXACT_SLOT_IDENTITY_REQUIRED")
+
+    current = driver.installed_module(actor, "ordinary_current", driver.CURRENT_SHA)
+    composer = driver.installed_module(actor, "ordinary_admission_source", driver.COMPOSER_SHA)
+    once_module = driver.installed_module(actor, "ordinary_once", driver.ONCE_SHA)
+    actor.need(value["checker"]["sha256"] == driver.CURRENT_SHA and value["source"]["sha256"] == driver.R4_SHA,
+               "PRECLOCK_EXACT_BASE_AND_CHECKER_REQUIRED")
+    phase = actor.doc(value["phase"])
+    scenario = phase["scenario"]
+    normalized = current.digest(current.encoded(scenario))
+    run_id = value["run_id"]
+    actor.need(type(run_id) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id)
+               and phase["scenario_sha256"] == normalized and normalized in REVIEWED_PHASES,
+               "PRECLOCK_EXACT_REVIEWED_PHASE_REQUIRED")
+    case, observer_sha = REVIEWED_PHASES[normalized]
+    contract, authority, prepare = (
+        current.document(value[name]) for name in ("contract", "authority", "prepare")
+    )
+    actor.need(authority.get("qualification_only") is True and contract.get("qualification_only") is True
+               and authority["run_scenarios"] == {run_id: normalized}
+               and not authority.get("ordered_predecessors")
+               and contract.get("authority") == value["authority"]
+               and prepare["current_observer"]["sha256"] == observer_sha,
+               "PRECLOCK_EXACT_QUALIFICATION_AUTHORITY_AND_OBSERVER_REQUIRED")
+    check_history(actor, current, case, contract, authority)
+    profile = f"telegram-bot-{scenario['tester_id']}"
+    directories, paths = driver.disk_paths(work, actor.STATE, profile)
+    disk, resources = value["disk_scope"], value["resources"]
+    actor.need(disk["directory_roots"] == directories and disk["file_paths"] == paths
+               and type(disk["max_entries"]) is int and 0 < disk["max_entries"] <= 100000
+               and type(disk["sample_seconds"]) in (int, float) and 0 < disk["sample_seconds"] <= 1
+               and set(resources) == set(driver.RESOURCE_LIMITS)
+               and all(type(resources[key]) is int and 0 < resources[key] <= cap
+                       for key, cap in driver.RESOURCE_LIMITS.items()),
+               "PRECLOCK_BOUND_DISK_SCOPE_REQUIRED")
+    class ReadonlyOnce(once_module.Once):
+        def observer(self, directory, role, slot_owner, clock=None, invocation=None):
+            actor.need(role == "preclock" and clock is None and invocation is None
+                       and directory.parent == work and driver.protected_work_identity(actor, work) == identity,
+                       "PRECLOCK_WORK_DIRECTORY_CHANGED")
+            actor.protected_directory(directory)
+            return super().observer(directory, role, slot_owner)
+
+    once = ReadonlyOnce(actor, current, composer, reference)
+    result = driver.preclock(once)
+    actor.need(driver.protected_work_identity(actor, work) == identity and not list(work.iterdir()),
+               "PRECLOCK_WORK_DIRECTORY_CHANGED")
+    return {**result, "state": "ORDINARY_R4_READONLY_QUALIFIED", "case": case,
+            "run_id": run_id, "scenario_sha256": normalized}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binding")
+    parser.add_argument("sha256")
+    args = parser.parse_args(argv)
+    driver = existing_driver()
+    if (Path(sys.executable) != driver.PYTHON or not sys.flags.isolated or not sys.flags.no_site
+            or not sys.dont_write_bytecode or sys.flags.optimize):
+        raise ValueError("PRECLOCK_EXACT_INTERPRETER_REQUIRED")
+    os.umask(0o077)
+    actor = driver.load_actor()
+    _, reference = actor.exact_file(args.binding, args.sha256)
+    report = check_binding(driver, actor, reference)
+    sys.stdout.buffer.write(actor.encoded(report))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (Exception, KeyboardInterrupt) as error:
+        # Exceptions originating in private current observers may include input data.
+        detail = str(error) if type(error) is ValueError and re.fullmatch(r"PRECLOCK_[A-Z_]+", str(error)) else type(error).__name__
+        print(json.dumps({"state": "PRECLOCK_REFUSED", "code": detail, "execution_authorized": False}), file=sys.stderr)
+        sys.exit(2)
