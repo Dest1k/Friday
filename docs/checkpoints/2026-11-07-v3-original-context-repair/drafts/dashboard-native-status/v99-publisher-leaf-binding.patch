@@ -1,0 +1,157 @@
+--- a/friday_v3_layer_publication.py
++++ b/friday_v3_layer_publication.py
+@@ -10503,7 +10503,7 @@
+ _V99_DASHBOARD_VERIFIER = "1c27f8ee4eb0148fbca9f5733c6bc589583b9123a30d7b4634d37c6266abeff4"
+ 
+ 
+-def _v99_dashboard_object(raw):
++def _v99_dashboard_object(raw, *, leaf_input=False):
+     def unique(pairs):
+         result = {}
+         for key, value in pairs:
+@@ -10512,7 +10512,9 @@
+         return result
+ 
+     body = json.loads(raw, object_pairs_hook=unique)
+-    require(type(body) is dict and encoded(body) == raw, "transaction_v99_dashboard_noncanonical_object")
++    canonical = ((json.dumps(body, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n").encode()
++                 if leaf_input else encoded(body))
++    require(type(body) is dict and canonical == raw, "transaction_v99_dashboard_noncanonical_object")
+     return body
+ 
+ 
+@@ -10520,7 +10522,7 @@
+     return type(value) is str and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+ 
+ 
+-def _v99_dashboard_read_pin(pin, *, stable=False, immutable=False):
++def _v99_dashboard_read_pin(pin, *, stable=False, immutable=False, private=False):
+     """Read the named buffer and compare the builder's custody when it supplied one."""
+     require(type(pin) is dict and type(pin.get("path")) is str and _v99_dashboard_digest(pin.get("sha256")),
+             "transaction_v99_dashboard_bad_pin")
+@@ -10533,11 +10535,13 @@
+             not parent["st_mode"] & 0o022 or immutable
+             and stat.S_IMODE(parent["st_mode"]) == 0o775 and parent["st_gid"] == os.getgid()),
+             "transaction_v99_dashboard_pin_parent_changed")
++    require(not private or stat.S_IMODE(parent["st_mode"]) == 0o700,
++            "transaction_v99_dashboard_private_parent_changed")
+     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+         info = os.fstat(stream.fileno())
+         require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
+                 and not info.st_mode & 0o022 and 0 <= info.st_size <= 32 * 1024**2
+-                and (not parent["st_mode"] & 0o020 or stat.S_IMODE(info.st_mode) == 0o600),
++                and (not (private or parent["st_mode"] & 0o020) or stat.S_IMODE(info.st_mode) == 0o600),
+                 "transaction_v99_dashboard_pin_custody_changed")
+         raw = stream.read(info.st_size + 1)
+         row = identity(info, fields)
+@@ -10551,10 +10555,10 @@
+     return raw
+ 
+ 
+-def _v99_dashboard_reference(ref, sha=None, *, immutable=False):
++def _v99_dashboard_reference(ref, sha=None, *, immutable=False, private=False):
+     require(type(ref) is dict and set(ref) == {"path", "sha256"}
+             and (sha is None or ref["sha256"] == sha), "transaction_v99_dashboard_reference_required")
+-    return _v99_dashboard_read_pin(ref, immutable=immutable)
++    return _v99_dashboard_read_pin(ref, immutable=immutable, private=private)
+ 
+ 
+ def _v99_dashboard_ca_checked(historical_marker, read_set):
+@@ -10592,7 +10596,12 @@
+         require(set(original) == set(self.reader_request) == set(request)
+                 and all(original[key] == self.reader_request[key] for key in original if key not in derived),
+                 "transaction_v99_dashboard_reader_request_changed")
+-        _v99_dashboard_reference(h["accepted_reader_ref"], _V99_DASHBOARD_READER)
++        reader = json.loads(_v99_dashboard_reference(h["accepted_reader_ref"], _V99_DASHBOARD_READER))
++        reader_pins = json.loads(_v99_dashboard_read_pin(reader["artifacts"]["READONLY-PINS.json"]))
++        require(h["reader_request_ref"] == reader_pins["request_ref"]
++                and h["original_request_ref"] == reader_pins["original_request_ref"]
++                and self.reader_request["current_input"] == self.reader_request["candidate_input"] == reader_pins["input_ref"],
++                "transaction_v99_dashboard_accepted_reader_ref_changed")
+         _v99_dashboard_reference(h["verifier_ref"], _V99_DASHBOARD_VERIFIER)
+         roles = self.read_set = h["application_read_set"]
+         require(type(roles) is dict and set(roles) == _V99_DASHBOARD_ROLES,
+@@ -10602,7 +10611,8 @@
+                     "transaction_v99_dashboard_read_path_changed")
+         mapped = {"marker": "FRIDAY-INSTALL.json", "configuration": "config.yaml", "profile": "FRIDAY-PROFILE.json"}
+         require(all(request[key] == ({"path": roles[mapped[key]]["path"], "sha256": roles[mapped[key]]["sha256"]}
+-                                     if key in mapped else self.reader_request[key]) for key in request)
++                                     if key in mapped else self.reader_request[key])
++                    for key in request if key not in {"current_input", "candidate_input"})
+                 and request["marker"]["sha256"] != self.reader_request["marker"]["sha256"]
+                 and request["native_unit"]["path"] != str(_V99_DASHBOARD_UNIT),
+                 "transaction_v99_dashboard_active_request_changed")
+@@ -10637,6 +10647,7 @@
+                             "input_sha256": request["previous_input"]["sha256"]}
+                 and applied.get("current") == {role: pin["sha256"] for role, pin in roles.items()},
+                 "transaction_v99_dashboard_applied_proof_changed")
++        self._bind_leaf(request, applied)
+ 
+         self.order = [
+             "hermes-agent/" + CURRENT_SOURCE_NINETY_NINTH_NATIVE_FILES[0]["path"],
+@@ -10654,10 +10665,54 @@
+                         and type(pin["bytes"]) is int and pin["bytes"] >= 0 and pin["mode"] == 0o600
+                         for pin in self.after.values()), "transaction_v99_dashboard_write_scope_changed")
+ 
++    def _bind_leaf(self, request, applied):
++        # The accepted builder keeps the old reader request for V98 replay.
++        # Only the published successor declaration carries the new route.
++        old_ref = self.reader_request["current_input"]
++        leaf_ref = request["current_input"]
++        require(request["candidate_input"] == leaf_ref
++                and leaf_ref["path"] != old_ref["path"] and leaf_ref["sha256"] != old_ref["sha256"]
++                and leaf_ref["path"] != request["previous_input"]["path"]
++                and leaf_ref["sha256"] != request["previous_input"]["sha256"]
++                and not Path(leaf_ref["path"]).is_relative_to(self.home),
++                "transaction_v99_dashboard_distinct_leaf_required")
++        expected = _v99_dashboard_object(_v99_dashboard_reference(old_ref))
++        leaf_raw = _v99_dashboard_reference(leaf_ref, private=True)
++        leaf = _v99_dashboard_object(leaf_raw, leaf_input=True)
++        dashboard = expected["product"]["dashboard"]
++        require((dashboard["host"], dashboard["public_url"]) == (applied["old_host"], applied["old_public_url"])
++                and expected["project_files"] == request["project_inventory"]
++                and expected["home"] == str(self.home),
++                "transaction_v99_dashboard_legacy_declaration_changed")
++        roles = {"cafile": "dashboard-tls/ca.pem", "certfile": "dashboard-tls/server.pem",
++                 "keyfile": "dashboard-tls/server.key"}
++        tls_inputs = leaf.get("dashboard_tls")
++        require(dashboard["tls"] == roles and type(tls_inputs) is dict and set(tls_inputs) == set(roles),
++                "transaction_v99_dashboard_leaf_tls_shape_changed")
++        parents = set()
++        for role, name in roles.items():
++            pin = tls_inputs[role]
++            path = Path(pin["path"])
++            require(pin["sha256"] == self.read_set[name]["sha256"]
++                    and path.name == Path(name).name and not path.is_relative_to(self.home),
++                    "transaction_v99_dashboard_leaf_tls_pin_changed")
++            _v99_dashboard_reference(pin, private=True)
++            parents.add(path.parent)
++        require(len(parents) == 1, "transaction_v99_dashboard_leaf_tls_parent_changed")
++        dashboard.update(host=applied["host"], public_url=applied["public_url"])
++        expected["dashboard_tls"] = tls_inputs
++        require(encoded(leaf) == encoded(expected), "transaction_v99_dashboard_leaf_declaration_changed")
++        self.leaf_ref = dict(leaf_ref)
++        self.leaf_raw = leaf_raw
++        self.leaf_tls_refs = tuple(dict(pin) for pin in tls_inputs.values())
++
+     def recheck(self, *, published=False):
+         require(_v99_dashboard_reference(self.handoff_ref) == self.raw
++                and _v99_dashboard_reference(self.leaf_ref, private=True) == self.leaf_raw
+                 and _v99_dashboard_reference(self.body["applied_ref"]) == self.applied_raw,
+                 "transaction_v99_dashboard_proof_drift")
++        for pin in self.leaf_tls_refs:
++            _v99_dashboard_reference(pin, private=True)
+         for pin in self.history.values():
+             _v99_dashboard_read_pin(pin, stable=True)
+         require(not os.path.lexists(Path(self.history["request.json"]["path"]).with_name("rolled-back.json")),
+@@ -10711,6 +10766,10 @@
+                     "transaction_v99_dashboard_owned_after_changed:" + role)
+ 
+     def consumer(self, phase, value, request, request_ref, transaction):
++        # Join the consumer to the exact approved new declaration at every boundary.
++        require(encoded(value) == encoded(json.loads(self.leaf_raw))
++                and request["current_input"] == request["candidate_input"] == self.leaf_ref,
++                "transaction_v99_dashboard_consumer_leaf_changed")
+         # Isolate even trusted observer values from the pending transaction state.
+         require(self.inspector(phase, value=json.loads(encoded(value)), request=json.loads(encoded(request)),
+                 request_reference=dict(request_ref), reader_request_ref=dict(self.body["reader_request_ref"]),

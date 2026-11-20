@@ -1,0 +1,164 @@
+--- a/build-v99-dashboard-request.py
++++ b/build-v99-dashboard-request.py
+@@ -2,8 +2,8 @@
+ """Bind the accepted V99 request to one separately applied Dashboard route.
+ 
+ An operator supplies the exact accepted Reader RESULT, application record and
+-bound publisher. This builder emits one source handoff. It has no install or
+-publication entry point.
++bound publisher, plus independently pinned leaf projection inputs. This builder
++emits one source handoff. It has no install or publication entry point.
+ """
+ import argparse
+ from contextlib import contextmanager
+@@ -22,6 +22,7 @@
+ READER_RESULT = "7ac17e92d287760d7c31c0f1c40ed7d8c59a63857b6198cbc764d5be3cd1a529"
+ PUBLISHER = "4b1c752c7cba622ef2cbd29fcf334cd5618ffd27faac42c2d7943510f4eb8056"
+ CAS_BASE = "5ec6d400ef561508beb80f77c3f6569e9f83e46177059cb10e361b3d67c80027"
++DASHBOARD_LEAF_PROJECTOR = "5e09a2577791bdc3214a06cc463cb0521b1b84e123fc47c517055d91a5c034d6"
+ HELPER = "scripts/friday_ordinary_install.py"
+ ROUTE_FIELDS = {"marker": "FRIDAY-INSTALL.json", "configuration": "config.yaml", "profile": "FRIDAY-PROFILE.json"}
+ HISTORICAL = {"request.json": "REQUEST", "intent.json": "INTENT", "committed.json": "COMMITTED",
+@@ -108,15 +109,19 @@
+     return {"path": str(path), "absent": True, "parent_identity": parent}
+ 
+ 
+-def read_reference(ref, sha=None):
++def capture_reference(ref, sha=None, *, mode=None):
+     require(type(ref) is dict and set(ref) in ({"path", "sha256"}, {"path", "sha256", "bytes"})
+             and type(ref["sha256"]) is str and re.fullmatch("[0-9a-f]{64}", ref["sha256"]) is not None
+             and (sha is None or ref["sha256"] == sha),
+             "v99_builder_reference_required")
+-    raw, row = capture(ref["path"], sha=ref["sha256"], static=True)
++    raw, row = capture(ref["path"], sha=ref["sha256"], mode=mode, static=True)
+     require("bytes" not in ref or type(ref["bytes"]) is int and ref["bytes"] == row["bytes"],
+             "v99_builder_reference_size_changed")
+-    return raw
++    return raw, row
++
++
++def read_reference(ref, sha=None):
++    return capture_reference(ref, sha)[0]
+ 
+ 
+ def pair(row):
+@@ -244,6 +249,38 @@
+     return pins
+ 
+ 
++def bind_dashboard_leaf(*, projector, reader, baseline_ref, leaf_ref, tls_input_refs, original, route, read_set):
++    require(leaf_ref["sha256"] != baseline_ref["sha256"]
++            and not Path(leaf_ref["path"]).is_relative_to(route["home"]),
++            "v99_builder_separate_leaf_input_required")
++    before_root = route["before_root"]
++    previous_marker = reader.CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER
++    previous_unit = reader._V99_DASHBOARD_OLD_UNIT
++    applied_pins = {role: row["sha256"] for role, row in read_set.items()}
++    projected, proof = projector.project_v99_dashboard_input(
++        baseline_ref=baseline_ref, predecessor_ref=original["previous_input"], leaf_ref=leaf_ref,
++        tls_input_refs=tls_input_refs, applied_read_pins=applied_pins,
++        before_root=before_root, before_unit=before_root / "hermes-dashboard.service",
++        before_marker=route["before_marker"], after_root=route["home"], after_unit=route["unit"],
++        previous_marker_sha256=previous_marker, previous_unit_sha256=previous_unit,
++        old_host=reader._V99_DASHBOARD_OLD_HOST, old_public_url=reader._V99_DASHBOARD_OLD_URL,
++        host=reader._V99_DASHBOARD_NEW_HOST, public_url=reader._V99_DASHBOARD_NEW_URL)
++    require(proof["state"] == "DASHBOARD_ADDRESS_ONLY_PROJECTION_VERIFIED"
++            and proof["publication_authorized"] is False
++            and proof["source_receipt_sha256"] == reader.CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_RECEIPT
++            and proof["previous"] == {**route["before"], "FRIDAY-INSTALL.json": previous_marker, "unit": previous_unit}
++            and proof["current"] == route["current"] == applied_pins,
++            "v99_builder_leaf_projection_binding_changed")
++    require(digest(projected) == leaf_ref["sha256"]
++            and exact_object(projected)["project_files"] == original["project_inventory"],
++            "v99_builder_leaf_inventory_changed")
++
++    request = dict(original, current_input=leaf_ref, candidate_input=leaf_ref)
++    for field, role in ROUTE_FIELDS.items():
++        request[field] = pair(read_set[role])
++    return request
++
++
+ def marker_after(before, request, receipt_sha256):
+     marker = dict(before)
+     marker["input_sha256"] = request["current_input"]["sha256"]
+@@ -272,7 +309,8 @@
+     return after
+ 
+ 
+-def build_request(*, reader_result, publisher, cas_basis, applied_ref, native_source):
++def build_request(*, reader_result, publisher, cas_basis, applied_ref, native_source,
++                  projector_ref, leaf_ref, tls_input_refs):
+     require(sys.flags.isolated and sys.dont_write_bytecode, "v99_builder_requires_isolated_no_bytecode")
+     pins, stock, original, previous, current, project = prepared_inputs(reader_result)
+     guard = load_provider(publisher, PUBLISHER, "_v99_exact_historical_publication_checks")
+@@ -316,11 +354,22 @@
+     require(len(selected) == 1 and next(iter(selected)) == "hermes_cli/friday_prompt_scope.py",
+             "v99_builder_touched_native_scope_changed")
+ 
++    require(type(projector_ref) is dict and projector_ref.get("sha256") == DASHBOARD_LEAF_PROJECTOR,
++            "v99_builder_leaf_projector_binding_required")
++    # Capture these independently supplied inputs and the two already pinned
++    # declarations before running the projection. Keep them out of the write set.
++    leaf_refs = [(ref, None) for ref in (pins["input_ref"], original["previous_input"], projector_ref)]
++    leaf_refs.extend((ref, 0o600) for ref in (leaf_ref, *tls_input_refs.values()))
++    leaf_read_set = [capture_reference(ref, mode=mode)[1] for ref, mode in leaf_refs]
++    projector = load_provider(projector_ref["path"], DASHBOARD_LEAF_PROJECTOR, "_v99_exact_dashboard_leaf_projection")
+     native_prefixes = ("hermes_constants", "hermes_cli")
+     require(not any(name in native_prefixes or name.startswith("hermes_cli.") for name in sys.modules),
+             "v99_builder_native_import_already_loaded")
+     with verified_imports(native_source, receipt["files"], native_prefixes):
+         reader._v99_dashboard_verify_projection(route, Path(native_source))
++        candidate_request = bind_dashboard_leaf(
++            projector=projector, reader=reader, baseline_ref=pins["input_ref"], leaf_ref=leaf_ref,
++            tls_input_refs=tls_input_refs, original=original, route=route, read_set=read_set)
+     require(route_snapshot(route) == read_set and write_targets(
+         home, baseline, original, read_set["FRIDAY-INSTALL.json"]) == before,
+         "v99_builder_final_read_or_write_set_changed")
+@@ -328,13 +377,12 @@
+         _, observed = capture(row["path"], sha=row["sha256"], mode=row["mode"])
+         require(observed == row, "v99_builder_final_history_identity_changed")
+ 
+-    candidate_request = dict(original)
+-    for field, role in ROUTE_FIELDS.items():
+-        candidate_request[field] = pair(read_set[role])
+     _, helper = capture(project / HELPER, sha=pins["helper_ref"]["sha256"])
+     marker_pin = read_set["FRIDAY-INSTALL.json"]
+     marker_raw, observed = capture(marker_pin["path"], sha=marker_pin["sha256"], mode=marker_pin["mode"])
+     require(observed == marker_pin, "v99_builder_final_marker_identity_changed")
++    require([capture_reference(ref, mode=mode)[1] for ref, mode in leaf_refs] == leaf_read_set,
++            "v99_builder_final_leaf_read_set_changed")
+     active_marker = exact_object(marker_raw)
+     after = afterimage_pins(baseline, historical_marker, active_marker, stock, candidate_request, helper)
+     return {
+@@ -363,6 +411,13 @@
+     parser.add_argument("--applied-record", required=True, type=Path)
+     parser.add_argument("--applied-record-sha256", required=True)
+     parser.add_argument("--native-source", required=True, type=Path)
++    parser.add_argument("--leaf-projector", required=True, type=Path)
++    parser.add_argument("--leaf-projector-sha256", required=True)
++    parser.add_argument("--leaf-input", required=True, type=Path)
++    parser.add_argument("--leaf-input-sha256", required=True)
++    tls_roles = (("cafile", "ca"), ("certfile", "cert"), ("keyfile", "key"))
++    for role, label in tls_roles:
++        parser.add_argument(f"--dashboard-tls-{label}", dest=role, required=True, nargs=2, metavar=("PATH", "SHA256"))
+     parser.add_argument("--output", required=True, type=Path)
+     args = parser.parse_args(argv)
+     output_directory = canonical(args.output.parent)
+@@ -370,9 +425,16 @@
+             and output_directory.is_relative_to(Path(__file__).resolve().parent),
+             "v99_builder_output_outside_task_directory")
+     require(not os.path.lexists(args.output), "v99_builder_output_occupied")
++    tls_input_refs = {}
++    for role, _ in tls_roles:
++        path, sha = getattr(args, role)
++        tls_input_refs[role] = {"path": path, "sha256": sha}
+     handoff = build_request(reader_result=args.reader_result, publisher=args.publisher, cas_basis=args.cas_basis,
+         applied_ref={"path": str(args.applied_record), "sha256": args.applied_record_sha256},
+-        native_source=args.native_source)
++        native_source=args.native_source,
++        projector_ref={"path": str(args.leaf_projector), "sha256": args.leaf_projector_sha256},
++        leaf_ref={"path": str(args.leaf_input), "sha256": args.leaf_input_sha256},
++        tls_input_refs=tls_input_refs)
+     parent_pin(args.output.parent)
+     require(args.output.is_absolute() and not args.output.is_relative_to(handoff["publisher_request"]["home"]),
+             "v99_builder_output_outside_installed_home_required")
