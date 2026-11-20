@@ -1,0 +1,44 @@
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -1760,13 +1760,39 @@
+         """
+         adapter = self
+ 
++        def invalidate_window(reason):
++            window = getattr(adapter, "_ordinary_dm_wire_window", None)
++            if window is not None:
++                try:
++                    window.lost(reason)
++                except Exception:
++                    adapter._ordinary_dm_wire_window = None
++
+         class _InstrumentedPollingRequest(type(request)):
+             __slots__ = ()
+ 
+             async def do_request(self, *args, **kwargs):
+                 generation = _POLLING_GENERATION_CONTEXT.get()
+-                result = await super().do_request(*args, **kwargs)
++                started = time.monotonic()
++                try:
++                    result = await super().do_request(*args, **kwargs)
++                except BaseException:
++                    invalidate_window("native_poll_failed")
++                    raise
+                 adapter._observe_polling_request_result(self, generation, result)
++                window = getattr(adapter, "_ordinary_dm_wire_window", None)
++                if window is not None:
++                    try:
++                        window.observe_response(
++                            generation=generation,
++                            accepting=(not adapter._teardown_started
++                                       and adapter._polling_progress_accepting
++                                       and generation == adapter._polling_generation),
++                            parameters=kwargs["request_data"].parameters,
++                            started=started, completed=time.monotonic(), result=result,
++                        )
++                    except Exception:
++                        invalidate_window("native_poll_observation_failed")
+                 return result
+ 
+         request.__class__ = _InstrumentedPollingRequest
