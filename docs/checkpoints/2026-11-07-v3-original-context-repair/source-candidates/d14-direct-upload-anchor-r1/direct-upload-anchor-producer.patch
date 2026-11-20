@@ -1,0 +1,131 @@
+--- a/gateway/run_attachment_presentation.py
++++ b/gateway/run_attachment_presentation.py
+@@ -8,6 +8,7 @@
+ from pathlib import PurePosixPath
+ 
+ ATTACHMENT_PRESENTATIONS_KEY = "friday_attachment_presentations"
++DIRECT_UPLOAD_KEY = "friday_direct_upload"
+ _SCHEMA = "friday.ordinary-attachment-presentations.v1"
+ _SOURCE_ATTR = "_friday_original_document_names"
+ 
+@@ -107,6 +108,61 @@
+         if record is not None:
+             files.append(record)
+     return files
++
++
++def attachment_display_metadata(event, presentations):
++    """Carry direct native upload proof separately from legacy presentation."""
++    if presentations is None:
++        return {}
++    display = {ATTACHMENT_PRESENTATIONS_KEY: presentations}
++    if (event is None or getattr(event, "internal", True)
++            or getattr(event, "_ingress_merged", True)):
++        return display
++
++    from hermes_cli.friday_user_scope import ScopeDenied, _same_scope, ordinary_file_scope
++    try:
++        cap = ordinary_file_scope()
++    except ScopeDenied:
++        return display
++    source = getattr(event, "source", None)
++    owned = getattr(event, "_friday_owned_attachment_paths", None)
++    message_id = getattr(event, "message_id", None)
++    receipts = getattr(event, "_telegram_media_receipts", None)
++    if (cap is None or cap.principal[0] != "telegram"
++            or not _same_scope(getattr(source, "_friday_user_scope", None), cap)
++            or not isinstance(owned, tuple) or len(owned) != 2
++            or not _same_scope(owned[0], cap) or not isinstance(owned[1], frozenset)
++            or not isinstance(message_id, str) or re.fullmatch(r"[1-9][0-9]{0,31}", message_id) is None
++            or message_id != getattr(source, "message_id", None)
++            or not isinstance(receipts, dict)):
++        return display
++
++    files = _metadata_files(presentations, cap)
++    if not files or files != presentations["files"]:
++        return display
++    direct = []
++    for record in files:
++        absolute = str(cap.home / "workspace" / record["path"])
++        receipt = receipts.get(absolute)
++        if absolute not in owned[1] or not isinstance(receipt, dict):
++            return display
++        origin, presentation = receipt.get("origin"), receipt.get("presentation")
++        if (not isinstance(origin, dict) or origin.get("bot_id") != cap.principal[2]
++                or origin.get("chat_id") != source.chat_id or not isinstance(presentation, dict)
++                or _file_record(record["path"], receipt.get("content"),
++                                presentation.get("original_filename")) != record):
++            return display
++        if origin.get("message_id") == message_id:
++            direct.append(record)
++
++    if len(direct) == 1:
++        display[DIRECT_UPLOAD_KEY] = {
++            "schema": "friday.ordinary-direct-upload.v1",
++            "scope": _scope(cap),
++            "source_message_id": message_id,
++            "file": direct[0],
++        }
++    return display
+ 
+ 
+ def prepare_attachment_presentations(event, source, history, *, retained=()):
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -1831,12 +1831,12 @@
+         }
+         if prepared.persist_user_display_kind:
+             _user_entry["display_kind"] = prepared.persist_user_display_kind
+-        attachment_presentations = getattr(prepared, "attachment_presentations", None)
+-        if prepared.persistence_owner or attachment_presentations is not None:
++        from gateway.run_attachment_presentation import attachment_display_metadata
++        attachments = attachment_display_metadata(event, getattr(prepared, "attachment_presentations", None))
++        if prepared.persistence_owner or attachments:
+             _user_entry["display_metadata"] = {
+                 **({"gateway_input_owner": prepared.persistence_owner} if prepared.persistence_owner else {}),
+-                **({"friday_attachment_presentations": attachment_presentations}
+-                   if attachment_presentations is not None else {}),
++                **attachments,
+             }
+         if getattr(event, "message_id", None):
+             _user_entry["message_id"] = str(event.message_id)
+@@ -2258,6 +2258,7 @@
+             if ((getattr(event, "metadata", None) or {}).get("hermes_plugin_pinned")
+                 and not await self._plugin_pinned_event_current(event, _turn_source, session_id=_run_start_session_id)):
+                 return
++            from gateway.run_attachment_presentation import attachment_display_metadata
+             agent_result = await self._run_agent(
+                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
+                 session_id=_run_start_session_id, session_key=session_key,
+@@ -2271,8 +2272,7 @@
+                 reply_expected=event.reply_expected,
+                 persist_user_display_metadata={
+                     "gateway_input_owner": prepared.persistence_owner,
+-                    **({"friday_attachment_presentations": prepared.attachment_presentations}
+-                       if getattr(prepared, "attachment_presentations", None) is not None else {}),
++                    **attachment_display_metadata(event, getattr(prepared, "attachment_presentations", None)),
+                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
+                 message_type=event.message_type,
+                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+@@ -4013,7 +4013,9 @@
+             next_channel_prompt, next_source = self._pinned_channel_inputs(
+                 next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
+             )
+-            from gateway.run_attachment_presentation import prepare_attachment_presentations_for_turn
++            from gateway.run_attachment_presentation import (
++                attachment_display_metadata, prepare_attachment_presentations_for_turn,
++            )
+             next_attachment_presentations = await prepare_attachment_presentations_for_turn(
+                 pending_event, next_source, updated_history, store=self.async_session_store,
+                 session_id=session_id, session_key=next_session_key)
+@@ -4084,8 +4086,8 @@
+                 persist_user_display_kind=next_display_kind,
+                 reply_expected=next_reply_expected,
+                 persist_user_display_metadata={
+-                    **({"friday_attachment_presentations": next_attachment_presentations}
+-                       if pending_event is not None and next_attachment_presentations is not None else {}),
++                    **(attachment_display_metadata(pending_event, next_attachment_presentations)
++                       if pending_event is not None else {}),
+                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+             )
+         except asyncio.CancelledError:
