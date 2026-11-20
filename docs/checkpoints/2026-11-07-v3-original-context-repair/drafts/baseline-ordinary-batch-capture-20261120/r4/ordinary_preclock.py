@@ -14,6 +14,9 @@ HERE = Path(__file__).resolve().parent
 DRIVER_SHA256 = "126fa16c8b22e814d19b876933310e63657abfeaaa20d45d06075ae959a0ce6e"
 BINDING_SCHEMA = "frw.Root.ordinary-preclock.v1"
 REVIEWED_PHASES = {
+    "3cd7e07aea3857a1b5f9b02b0516ad2904b3a42f3bfe213e808e1a0444228645": (
+        "S-08", "1cc9bde8a4192d19b4024b59a65e76b405798e96d2673a464c2cd33e981ce5d2",
+    ),
     "45e1732b0d49020182a3a9f2d67056b8c11d9c0f314240de077eb6fd19a13641": (
         "D-01", "d9f4e553cae93e483f7998f4627c6cd2ec2bf18c957cb7d9796738bcbd25fcaf",
     ),
@@ -64,6 +67,14 @@ REVIEWED_PHASES = {
     ),
 }
 PRESERVED_RUNS = {
+    "S-08": (
+        ("root-b00-s08-edit-59448919bcc8",
+         "ceb5190a1cff3b19a19b32a554a8e4c4e82d4237fb2dc121a0f02529633fd5ab", "EVIDENCE_READY"),
+        ("root-b00-s08-recalculate-ed743ae31ef9",
+         "903ec90d836aa85ad3e6fa0ac131430a7160a750c2e809cc8652148d1e6168e6", "EVIDENCE_READY"),
+        ("root-b00-s151-s08-20261102-r2",
+         "bec96423ff5ebf451ed99a5cd89ce2e54d510ca54ec23a69d05a475bd8c4a02c", "EVIDENCE_READY"),
+    ),
     "D-01": (
         ("b27-d01-upload-summary-r1",
          "7c8625f4c9f837ed7a462b3cc6927862ae749b42c95a376e53bfae3df129fc69", "STOPPED"),
@@ -168,6 +179,17 @@ PRESERVED_RUNS = {
     ),
 }
 
+# S08 has two additional distinct, consumed history states.
+PRESERVED_NONSENT_RUNS = {
+    "S-08": (
+        ("root-b00-s151-s08-20261102-r1",
+         "2b23954a1dd68a753d522e3683142353040808673fa2f423caf5d9527889e738", "PRE_REQUEST_REFUSED", "refused_pre_request"),
+        ("root-source110-fresh-xlsx-cell-edit-r1",
+         "6efc5fcfcfd3b9fddf7e9bd0765b2119fd6994eff3cc527ee84f2fb5e51376ee", "UNKNOWN_SEND", "unknown"),
+    ),
+}
+
+
 
 def existing_driver():
     path = HERE / "ordinary_s01_root.py"
@@ -191,9 +213,10 @@ def check_history(actor, current, case, contract, authority):
                and history["cursor_sha256"] == contract["cursor"]["sha256"]
                and history["history_count"] == len(inventory),
                "PRECLOCK_COLLISION_REPORT_DOES_NOT_MATCH_CURRENT_HISTORY_AND_CURSOR")
-    for prior_id, prior_sha, prior_status in PRESERVED_RUNS[case]:
+    sent = tuple((*entry, "sent") for entry in PRESERVED_RUNS[case])
+    for prior_id, prior_sha, prior_status, send_state in sent + PRESERVED_NONSENT_RUNS.get(case, ()):
         old = inventory.get(prior_id, {})
-        actor.need((old.get("sha256"), old.get("status"), old.get("send_state")) == (prior_sha, prior_status, "sent"),
+        actor.need((old.get("sha256"), old.get("status"), old.get("send_state")) == (prior_sha, prior_status, send_state),
                    "PRECLOCK_PRESERVED_HISTORICAL_RUN_CHANGED")
 
 
