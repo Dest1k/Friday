@@ -527,8 +527,11 @@ def project_prepared(args, output, selected_cases):
             scenario = observer['validate_scenario'](json.loads(plan_bytes, object_pairs_hook=unique_object))
             require(hashlib.sha256(observer['encoded'](scenario)).hexdigest() == expected,
                     f'normalized scenario does not match selected preparation for {label}')
-            inputs = []
+            inputs, observations = [], []
             for step_index, step in enumerate(scenario['steps']):
+                observation = step.get('observe', {})
+                observations.append({'step': step_index, 'mode': observation.get('mode'),
+                                     'window_seconds': observation.get('window_seconds')})
                 upload = step.get('input')
                 if upload is not None:
                     data = observer['read_document_input'](upload, lambda: None)
@@ -536,7 +539,8 @@ def project_prepared(args, output, selected_cases):
         except observer['Refused'] as error:
             raise ProjectionError(f'selected passive plan or attachment refused by exact R4 for {label}') from error
         plans.append({'label': label, 'plan': plan_ref, 'plan_ref': pointer, 'scenario_sha256': expected,
-                      'scenario_ref': scenario_pointer, 'steps': len(scenario['steps']), 'uploads': inputs})
+                      'scenario_ref': scenario_pointer, 'deadline_seconds': scenario['deadline_seconds'],
+                      'steps': len(scenario['steps']), 'observations': observations, 'uploads': inputs})
 
     for role, pointer in args.prepared_artifact:
         prepared_label(role, labels)
