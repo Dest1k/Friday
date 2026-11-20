@@ -1,0 +1,29 @@
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -72,14 +72,14 @@
+     return raw
+ 
+ 
+-def _private_doc(reference, read_owned, *, name=None, sized=True):
++def _private_doc(reference, read_owned, *, name=None, sized=True, limit=65536):
+     keys = {"path", "sha256", "bytes"} if sized else {"path", "sha256"}
+     require(type(reference) is dict and set(reference) == keys and _hex(reference["sha256"]),
+             "d02_control_protected_reference")
+     path = Path(reference["path"])
+     require(str(path) == reference["path"] and path.is_absolute() and path.resolve(strict=True) == path
+             and ".." not in path.parts and (name is None or path.name == name), "d02_control_protected_path")
+-    raw = _private_bytes(path, read_owned, 65536)
++    raw = _private_bytes(path, read_owned, limit)
+     require((not sized or type(reference["bytes"]) is int and len(raw) == reference["bytes"])
+             and sha256(raw).hexdigest() == reference["sha256"], "d02_control_protected_bytes_changed")
+     result = json.loads(raw, object_pairs_hook=_unique)
+@@ -162,7 +162,8 @@
+         driver, driver_path = self.doc(intent["binding"])
+         options, _ = self.doc(request["receiver_options"])
+         phase, _ = self.doc(driver["phase"])
+-        authority, _ = self.doc(driver["authority"])
++        # The original R4 history may exceed the local control request limit.
++        authority, _ = self.doc(driver["authority"], limit=_RUN_JSON_LIMIT)
+         work = Path(driver["workdir"])
+         run_id, scenario_sha = intent["run_id"], intent["scenario_sha256"]
+         require(type(run_id) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id)

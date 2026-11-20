@@ -1,0 +1,510 @@
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -518,6 +518,7 @@
+     owner_is_current: Callable[[], bool]
+     updater: object
+     loop: asyncio.AbstractEventLoop
++    ingress_scope: object = None
+ 
+ 
+ @dataclasses.dataclass(frozen=True, slots=True)
+@@ -526,6 +527,7 @@
+     window: object
+     first_offset: int
+     armed_monotonic: float
++    ingress: object = None
+ 
+ 
+ class _PollingLifecycleAbort(RuntimeError):
+@@ -758,10 +760,14 @@
+ 
+     def _mark_disconnected(self) -> None:
+         self._drop_delayed_deliveries = True
++        from gateway.ordinary_dm_ingress import lost_ingress
++        lost_ingress(self, "ingress_adapter_disconnected")
+         super()._mark_disconnected()
+ 
+     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
+         self._drop_delayed_deliveries = True
++        from gateway.ordinary_dm_ingress import lost_ingress
++        lost_ingress(self, "ingress_adapter_fatal")
+         super()._set_fatal_error(code, message, retryable=retryable)
+         # Permanent fatal: no reconnect will drain, so discard the hold queue (later holds are refused).
+         # Discard the hold queue now and refuse further holds (teardown salvage / late enqueue must not
+@@ -1693,6 +1699,8 @@
+         """Mark polling closed: no progress accepted, send path degraded."""
+         self._polling_progress_accepting = False
+         self._send_path_degraded = True
++        from gateway.ordinary_dm_ingress import lost_ingress
++        lost_ingress(self, "ingress_polling_fenced")
+ 
+     def _begin_polling_generation(self) -> tuple[int, asyncio.Event]:
+         """Start accepting progress for a new getUpdates polling generation."""
+@@ -1782,7 +1790,7 @@
+         return None
+ 
+     def _reserve_ordinary_dm_wire_window(self, *, claim_sha256, user_id, generation,
+-                                        expires_monotonic, max_updates, owner_is_current):
++                                        expires_monotonic, max_updates, owner_is_current, ingress_scope=None):
+         """Queue an already authorized claim on the gateway loop. None means pending only."""
+         now = time.monotonic()
+         updater = self._ordinary_dm_wire_updater(generation)
+@@ -1803,10 +1811,13 @@
+         if (pending is not None or getattr(self, "_ordinary_dm_wire_arm", None) is not None
+                 or getattr(self, "_ordinary_dm_wire_window", None) is not None or claim_sha256 in claimed):
+             raise ValueError("Telegram wire claim already reserved or another claim still held")
++        if ingress_scope is not None:
++            from gateway.ordinary_dm_ingress import ingress_scope as pin_scope
++            ingress_scope = pin_scope(ingress_scope)
+         claimed.add(claim_sha256)
+         self._ordinary_dm_wire_pending = _OrdinaryDMWireClaim(
+             claim_sha256, user_id, generation, expires_monotonic, max_updates,
+-            owner_is_current, updater, asyncio.get_running_loop(),
++            owner_is_current, updater, asyncio.get_running_loop(), ingress_scope,
+         )
+ 
+     def _ordinary_dm_wire_native_parameters(self, request, generation, kwargs):
+@@ -1866,7 +1877,11 @@
+                 generation=generation, user_id=claim.user_id, first_offset=offset,
+                 armed_at=armed_at, expires=claim.expires_monotonic, max_updates=claim.max_updates,
+             )
+-            self._ordinary_dm_wire_arm = _OrdinaryDMWireArm(claim, window, offset, armed_at)
++            ingress = None
++            if claim.ingress_scope is not None:
++                from gateway.ordinary_dm_ingress import OrdinaryDMIngressOutcomes
++                ingress = OrdinaryDMIngressOutcomes(self, claim, window, armed_at)
++            self._ordinary_dm_wire_arm = _OrdinaryDMWireArm(claim, window, offset, armed_at, ingress)
+             self._ordinary_dm_wire_window = window
+             return armed_at
+         except (Exception, asyncio.CancelledError):
+@@ -1912,6 +1927,14 @@
+             "expires_monotonic": claim.expires_monotonic,
+         }
+ 
++    def _ordinary_dm_wire_ingress_readback(self, claim_sha256):
++        """Private projection only; the provider owns dispatch closure."""
++        arm = getattr(self, "_ordinary_dm_wire_arm", None)
++        if (arm is None or arm.ingress is None or type(claim_sha256) is not str
++                or arm.claim.claim_sha256 != claim_sha256):
++            return None
++        return arm.ingress.readback()
++
+     def _retire_ordinary_dm_wire_window(self, claim_sha256):
+         """Release only an exact terminal arm after the protected caller retains its evidence."""
+         arm = getattr(self, "_ordinary_dm_wire_arm", None)
+@@ -1947,6 +1970,9 @@
+ 
+         def invalidate_window(window, reason):
+             if window is not None and window is getattr(adapter, "_ordinary_dm_wire_window", None):
++                arm = getattr(adapter, "_ordinary_dm_wire_arm", None)
++                if arm is not None and arm.ingress is not None:
++                    arm.ingress.lost(reason)
+                 try:
+                     window.lost(reason)
+                 except Exception:
+@@ -7320,7 +7346,11 @@
+ 
+     def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:
+         from .telegram_message_event import build_message_event
+-        return build_message_event(self, message, msg_type, update_id)
++        event = build_message_event(self, message, msg_type, update_id)
++        if getattr(self, "_ordinary_dm_wire_arm", None) is not None:
++            from gateway.ordinary_dm_ingress import built_event
++            built_event(self, event)
++        return event
+ 
+     # -- Message reactions (processing lifecycle) --
+ 
+diff --git a/plugins/platforms/telegram/telegram_held_inbound.py b/plugins/platforms/telegram/telegram_held_inbound.py
+--- a/plugins/platforms/telegram/telegram_held_inbound.py
++++ b/plugins/platforms/telegram/telegram_held_inbound.py
+@@ -6,6 +6,7 @@
+ import weakref
+ from typing import Optional
+ 
++from gateway.ordinary_dm_ingress import held_event, lost_ingress
+ from gateway.platforms.event import MessageEvent
+ from gateway.platforms.helpers import cancel_task
+ 
+@@ -43,6 +44,7 @@
+         the event is wrong: by the time we reach enqueue/flush, python-telegram-bot has already acked the
+         update and advanced the offset — silent permanent loss, no log, no error.
+         """
++        held_event(self, event)
+         if self._is_permanent_fatal():
+             logger.warning(
+                 "[Telegram] Discarding inbound under non-retryable fatal (%s, %d chars)", where, len(getattr(event, "text", None) or ""))
+@@ -61,6 +63,7 @@
+         max_n = int(getattr(self, "HELD_INBOUND_MAX", 64) or 64)
+         while len(held) >= max_n:
+             dropped = held.pop(0)
++            held_event(self, dropped, dropped=True)
+             logger.warning(
+                 "[Telegram] Held-inbound queue full (%d); dropping oldest (%d chars)", max_n, len(getattr(dropped, "text", None) or ""))
+         held.append(event)
+@@ -75,6 +78,7 @@
+     def adopt_held_inbound(self, predecessor: "TelegramHeldInboundMixin") -> None:
+         """Take over the hold queue of the instance the runner just replaced with us (#132829): it only
+         drains on its own ``_mark_connected``, which never comes; later holds there forward here."""
++        lost_ingress(predecessor, "ingress_adapter_replaced")
+         self._held_inbound_successor = None  # we own the queue again: a reverse link would forward in a cycle
+         predecessor._held_inbound_successor = weakref.ref(self)
+         held = getattr(predecessor, "_held_inbound_events", None) or []
+diff --git a/gateway/run_inbound_consumer.py b/gateway/run_inbound_consumer.py
+--- a/gateway/run_inbound_consumer.py
++++ b/gateway/run_inbound_consumer.py
+@@ -44,13 +44,21 @@
+             if ordinary_file_scope() is not None:
+                 from gateway.run_inbound_media import rehome_inbound_media
+                 rehome_inbound_media(event)
+-            from gateway.admitted_ingress import admitted_ingress
+-            results = await ainvoke_hook(
+-                POST_ADMISSION_HOOK, session_key=session_key,
+-                platform=source.platform.value if source.platform else "",
+-                source=source.to_dict(), message_id=event.message_id, text=event.text or "",
+-                admitted_ingress=admitted_ingress(event, source, session_key),
+-            )
++            from gateway.admitted_ingress import admitted_ingress, admitted_ingress_with_telegram_payload
++            from gateway.ordinary_dm_ingress import routed_event, routed_write
++
++            selected = routed_event(event, source, session_key)
++            if selected is None:
++                proof, payload = admitted_ingress(event, source, session_key), None
++            else:
++                proof, payload = admitted_ingress_with_telegram_payload(event, source, session_key)
++            with routed_write(selected, proof, payload):
++                results = await ainvoke_hook(
++                    POST_ADMISSION_HOOK, session_key=session_key,
++                    platform=source.platform.value if source.platform else "",
++                    source=source.to_dict(), message_id=event.message_id, text=event.text or "",
++                    admitted_ingress=proof,
++                )
+     except asyncio.CancelledError:
+         raise
+     except Exception:
+diff --git a/plugins/friday_rework/__init__.py b/plugins/friday_rework/__init__.py
+--- a/plugins/friday_rework/__init__.py
++++ b/plugins/friday_rework/__init__.py
+@@ -8,7 +8,8 @@
+     host = register_host(ctx, admission)
+     from .result_tool import register_result_tool
+     register_result_tool(ctx, host)
+-    ctx.register_hook("post_gateway_admission", admission.record)
++    from gateway.ordinary_dm_ingress import routed_admission_callback
++    ctx.register_hook("post_gateway_admission", routed_admission_callback(admission))
+     ctx.register_middleware("tool_execution", native_call_scope)
+     ctx.register_tool(
+         name="friday_work",
+diff --git a/gateway/ordinary_dm_ingress.py b/gateway/ordinary_dm_ingress.py
+new file mode 100644
+--- /dev/null
++++ b/gateway/ordinary_dm_ingress.py
+@@ -0,0 +1,307 @@
++"""Bounded, process-local evidence for an already armed Telegram wire window."""
++from __future__ import annotations
++
++import asyncio
++from contextlib import contextmanager
++from contextvars import ContextVar
++from copy import deepcopy
++from dataclasses import dataclass
++from functools import wraps
++from pathlib import PurePosixPath
++import time
++from types import MappingProxyType
++
++from gateway.session_identity import identity_of
++
++_ROUTE = frozenset(("session_key", "source_profile", "transport_profile", "runtime_profile"))
++_SCOPE = _ROUTE | {"bot_id", "authorization_home", "runtime_home"}
++_DELIVERY = ContextVar("ordinary_dm_routed_writer", default=None)
++
++
++def ingress_scope(value):
++    """Pin the private caller's route. This function grants no authorization."""
++    if (type(value) is not dict or set(value) != _SCOPE or type(value["bot_id"]) is not int
++            or not 0 < value["bot_id"] < 2**63
++            or any(type(value[key]) is not str or "\x00" in value[key] or len(value[key]) > 512
++                   for key in _SCOPE - {"bot_id"})
++            or not all(value[key].strip() for key in _ROUTE - {"source_profile"})):
++        raise ValueError("Exact ordinary DM ingress scope required")
++    for key in ("authorization_home", "runtime_home"):
++        path = PurePosixPath(value[key])
++        if not path.is_absolute() or str(path) != value[key] or ".." in path.parts or path.anchor != "/":
++            raise ValueError("Exact ordinary DM home required")
++    return MappingProxyType(dict(value))
++
++
++@dataclass
++class _RoutedWrite:
++    evidence: OrdinaryDMIngressOutcomes
++    update: int
++    proof: dict
++    expected_proof: dict
++    payload: dict
++    task: asyncio.Task
++    active: bool = True
++    invoked: bool = False
++
++
++class OrdinaryDMIngressOutcomes:
++    def __init__(self, adapter, claim, window, armed):
++        self.adapter = adapter
++        self.claim = claim
++        self.window = window
++        self.armed = armed
++        self.scope = claim.ingress_scope
++        self.bot = claim.updater.bot
++        if type(self.bot.id) is not int or self.bot.id != self.scope["bot_id"]:
++            raise ValueError("Selected Telegram receiving bot changed")
++        self._seal = object()
++        self._built = set()
++        self._held = set()
++        self._commits = {}
++        self._admissions = None
++        self._unknown = None
++        self._revision = 0
++
++    def lost(self, reason):
++        if self._unknown is None:
++            self._unknown = reason
++            self._revision += 1
++
++    def _wire(self):
++        claim, adapter = self.claim, self.adapter
++        arm = getattr(adapter, "_ordinary_dm_wire_arm", None)
++        now = time.monotonic()
++        try:
++            if (self._unknown is not None or arm is None or arm.ingress is not self
++                    or arm.window is not self.window
++                    or getattr(adapter, "_ordinary_dm_wire_window", None) is not self.window
++                    or asyncio.get_running_loop() is not claim.loop
++                    or adapter._ordinary_dm_wire_updater(claim.generation) is not claim.updater
++                    or getattr(adapter, "_bot", None) is not self.bot
++                    or not self.armed <= now < claim.expires_monotonic
++                    or claim.owner_is_current() is not True):
++                self.lost("ingress_owner_generation_or_window_lost")
++                return None
++            wire = self.window.snapshot(now, current_generation=claim.generation, accepting=True)
++            if wire["state"] == "UNKNOWN":
++                self.lost("ingress_wire_coverage_lost")
++                return None
++            return wire
++        except (Exception, asyncio.CancelledError):
++            self.lost("ingress_observation_failed")
++            return None
++
++    def _selected_source(self, source):
++        user = str(self.claim.user_id)
++        return (getattr(getattr(source, "platform", None), "value", None) == "telegram"
++                and (source.chat_type, source.user_id, source.chat_id, source.thread_id or "")
++                == ("dm", user, user, ""))
++
++    def built(self, event):
++        if not self._selected_source(event.source):
++            return
++        wire = self._wire()
++        update = event.platform_update_id
++        if wire is None or type(update) is not int or update not in wire["target_update_ids"]:
++            return
++        if (event.internal or event.raw_message is None or event._ingress_update_id != update
++                or update in self._built or len(self._built) >= self.claim.max_updates):
++            self.lost("ingress_duplicate_or_unbound_native_event")
++            return
++        self._built.add(update)
++        event._ordinary_dm_ingress_stamp = (self._seal, update)
++        self._revision += 1
++
++    def _stamp(self, event):
++        stamp = getattr(event, "_ordinary_dm_ingress_stamp", None)
++        if type(stamp) is tuple and len(stamp) == 2 and stamp[0] is self._seal:
++            return stamp[1]
++        return None
++
++    def held(self, event, *, dropped=False):
++        update = self._stamp(event)
++        if update is None:
++            if self._selected_source(event.source):
++                wire = self._wire()
++                claimed = getattr(event, "_ingress_update_id", None)
++                if wire is not None and (claimed in wire["target_update_ids"]
++                        or event._ingress_merged and claimed is None):
++                    self.lost("ingress_unbound_held_event")
++            return
++        if dropped:
++            self.lost("ingress_selected_held_queue_overflow")
++        if update not in self._held:
++            self._held.add(update)
++            self._revision += 1
++        if event._ingress_merged:
++            self.lost("ingress_held_event_was_merged")
++
++    def select(self, event, source, identity, session_key):
++        update = self._stamp(event)
++        if update is None or not self._wire():
++            return None
++        if (event.internal or event._ingress_merged or event.source is not source
++                or type(event.platform_update_id) is not int or event.platform_update_id != update
++                or type(event._ingress_update_id) is not int or event._ingress_update_id != update
++                or not self._selected_source(source)
++                or session_key != self.scope["session_key"]
++                or (source.profile or "") != self.scope["source_profile"]
++                or identity.adapter() is not self.adapter or identity.transport_inferred
++                or str(identity.authorization_home) != self.scope["authorization_home"]
++                or str(identity.runtime_home) != self.scope["runtime_home"]
++                or identity.transport_profile != self.scope["transport_profile"]
++                or identity.runtime_profile != self.scope["runtime_profile"]
++                or event.raw_message is None or event.raw_message.get_bot() is not self.bot):
++            self.lost("ingress_selected_route_or_event_changed")
++            return None
++        return update
++
++    def attempt(self, update, proof, payload):
++        if update is None or payload is None or proof is None or not self._wire():
++            return None
++        message = proof["message"]
++        user = str(self.claim.user_id)
++        if (proof["platform"] != "telegram" or any(proof[key] != self.scope[key] for key in _ROUTE)
++                or (message["bot_id"], message["user_id"], message["chat_id"], message["thread_id"],
++                    message["platform_update_id"]) != (str(self.scope["bot_id"]), user, user, "", str(update))):
++            self.lost("ingress_native_receipt_route_changed")
++            return None
++        return _RoutedWrite(self, update, proof, deepcopy(proof), payload, asyncio.current_task())
++
++    def readback(self):
++        wire = self._wire()
++        if wire is None:
++            return {"state": "UNKNOWN", "reason": self._unknown}
++        ids = wire["target_update_ids"]
++        missing = tuple(update for update in ids if update not in self._commits and update not in self._held)
++        if wire["state"] != "LOCAL_WIRE_CLOSED" or missing:
++            return {"state": "UNKNOWN", "reason": "ingress_window_or_dispositions_incomplete",
++                    "missing_update_ids": missing}
++        return {
++            "state": "OBSERVED_PENDING_CALLER_CLOSURE",
++            "claim_sha256": self.claim.claim_sha256,
++            "generation": self.claim.generation,
++            "armed_monotonic": self.armed,
++            "expires_monotonic": self.claim.expires_monotonic,
++            "revision": self._revision,
++            "wire": wire,
++            "held_update_ids": tuple(update for update in ids if update in self._held),
++            "committed_pairs": tuple(self._commits[update] for update in ids if update in self._commits),
++            "admissions": self._admissions,
++        }
++
++
++def _ingress(adapter):
++    arm = getattr(adapter, "_ordinary_dm_wire_arm", None)
++    return getattr(arm, "ingress", None)
++
++
++def built_event(adapter, event):
++    evidence = _ingress(adapter)
++    if evidence is not None:
++        try:
++            evidence.built(event)
++        except (Exception, asyncio.CancelledError):
++            evidence.lost("ingress_event_observation_failed")
++
++
++def held_event(adapter, event, *, dropped=False):
++    evidence = _ingress(adapter)
++    if evidence is not None:
++        try:
++            evidence.held(event, dropped=dropped)
++        except (Exception, asyncio.CancelledError):
++            evidence.lost("ingress_hold_observation_failed")
++
++
++def lost_ingress(adapter, reason):
++    evidence = _ingress(adapter)
++    if evidence is not None:
++        evidence.lost(reason)
++
++
++def routed_event(event, source, session_key):
++    evidence = None
++    try:
++        identity = identity_of(source)
++        if identity is not None:
++            evidence = _ingress(identity.adapter())
++        if evidence is not None:
++            update = evidence.select(event, source, identity, session_key)
++            if update is not None:
++                return evidence, update
++    except (Exception, asyncio.CancelledError):
++        if evidence is not None:
++            evidence.lost("ingress_routed_selection_failed")
++    return None
++
++
++@contextmanager
++def routed_write(selected, proof, payload):
++    attempt = None
++    if selected is not None:
++        evidence, update = selected
++        try:
++            attempt = evidence.attempt(update, proof, payload)
++        except (Exception, asyncio.CancelledError):
++            evidence.lost("ingress_routed_receipt_observation_failed")
++    token = _DELIVERY.set(attempt)
++    try:
++        yield
++    finally:
++        if attempt is not None:
++            attempt.active = False
++        _DELIVERY.reset(token)
++
++
++def routed_admission_callback(admissions):
++    """Keep the registered callback's signature and ordinary None return."""
++    ordinary = admissions.record
++
++    @wraps(ordinary)
++    def callback(**kwargs):
++        attempt = _DELIVERY.get()
++        if (attempt is None or not attempt.active
++                or kwargs.get("admitted_ingress") is not attempt.proof):
++            return ordinary(**kwargs)
++        evidence = attempt.evidence
++        from hermes_constants import get_hermes_home
++
++        def current_store():
++            return (attempt.active and asyncio.current_task() is attempt.task
++                    and evidence._wire() is not None
++                    and str(get_hermes_home()) == evidence.scope["runtime_home"]
++                    and (evidence._admissions is None or evidence._admissions is admissions))
++
++        try:
++            eligible = (current_store() and not attempt.invoked and attempt.update not in evidence._commits
++                        and attempt.proof == attempt.expected_proof)
++        except (RuntimeError, ValueError):
++            eligible = False
++        if not eligible:
++            evidence.lost("ingress_routed_store_or_callback_changed")
++            return ordinary(**kwargs)
++        attempt.invoked = True
++        try:
++            committed = admissions.record_payload_commit(
++                admitted_ingress=attempt.expected_proof, session_key=kwargs["session_key"],
++                message_id=kwargs["message_id"], source=kwargs["source"],
++                platform=kwargs["platform"], telegram_payload_v1=attempt.payload,
++            )
++        except BaseException:
++            evidence.lost("ingress_writer_return_unknown")
++            raise
++        try:
++            if (committed is None or not current_store()
++                    or committed.durable.state is not admissions.state or committed.update_id != str(attempt.update)):
++                evidence.lost("ingress_missing_foreign_or_late_writer_return")
++            else:
++                evidence._admissions = admissions
++                evidence._commits[attempt.update] = committed
++                evidence._revision += 1
++        except (Exception, asyncio.CancelledError):
++            evidence.lost("ingress_writer_return_unproved")
++        return None
++
++    return callback

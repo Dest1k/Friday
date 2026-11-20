@@ -1,0 +1,104 @@
+diff --git a/gateway/d02_receiver_control.py b/gateway/d02_receiver_control.py
+index fba3b15..9b337b8 100644
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -121,12 +121,12 @@ def _held_slot(path, identity, owner):
+ 
+ 
+ class ReceiverControl:
+-    def __init__(self, *, home, slot, store, read_owned, select_adapter, check_rights):
++    def __init__(self, *, home, slot, store, read_owned, select_route, check_rights):
+         self.home = Path(home)
+         self.slot = Path(slot)
+         self.store = Path(store)
+         self.read_owned = read_owned
+-        self.select_adapter = select_adapter
++        self.select_route = select_route
+         self.check_rights = check_rights
+ 
+     def doc(self, reference, **options):
+@@ -256,7 +256,7 @@ class ReceiverControl:
+                 and arm["receipt"] == current, "d02_control_arm_readback_changed")
+         return arm, current
+ 
+-    async def _arm(self, request, intent, driver, options, scenario, work, adapter, deadline):
++    async def _arm(self, request, intent, driver, options, scenario, work, adapter, ingress_scope, deadline):
+         require(not os.path.lexists(work / "clock.json"), "d02_control_clock_already_started")
+         self._durable_reservation(work, intent, request["receiver_options"], driver["work_identity"])
+         _held_slot(self.slot, driver["slot_identity"], intent["parent"])
+@@ -276,8 +276,9 @@ class ReceiverControl:
+             _held_slot(self.slot, driver["slot_identity"], intent["parent"])
+             if submitted and not ready.is_set():
+                 current, _, _, _, current_work = self._owner(request)
++                current_adapter, current_scope = self.select_route(options["profile"], options["principal"])
+                 require(current == intent and work == current_work
+-                        and self.select_adapter(options["profile"], options["principal"]) is adapter,
++                        and current_adapter is adapter and current_scope == ingress_scope,
+                         "d02_control_native_arm_owner_changed")
+                 self._reservation_current(intent, request, work)
+                 self._rights_current(options, "arm", deadline)
+@@ -289,7 +290,7 @@ class ReceiverControl:
+             adapter._reserve_ordinary_dm_wire_window(claim_sha256=claim_sha,
+                 user_id=int(options["principal"]["user_id"]), generation=generation,
+                 expires_monotonic=options["observer_expires_monotonic"], max_updates=scenario["max_updates"],
+-                owner_is_current=owner_is_current)
++                owner_is_current=owner_is_current, ingress_scope=ingress_scope)
+             submitted = True
+             await asyncio.wait_for(ready.wait(), timeout=max(0, deadline - time.monotonic()))
+             _held_slot(self.slot, driver["slot_identity"], intent["parent"])
+@@ -372,12 +373,13 @@ class ReceiverControl:
+         deadline = min(transport_deadline, request["expires_monotonic"])
+         intent, driver, options, scenario, work = self._owner(request)
+         action = request["action"]
+-        adapter = self.select_adapter(options["profile"], options["principal"])
++        adapter, ingress_scope = self.select_route(options["profile"], options["principal"])
+         phase = {"arm": "arm", "confirm": "dispatch", "cutoff": "post_dispatch"}[action]
+         self._rights_current(options, phase, deadline)
+         require(time.monotonic() < deadline, "d02_control_dispatch_expired")
+         if action == "arm":
+-            receipt = await self._arm(request, intent, driver, options, scenario, work, adapter, deadline)
++            receipt = await self._arm(
++                request, intent, driver, options, scenario, work, adapter, ingress_scope, deadline)
+             return {"accepted": True, "query_id": request["query_id"], "action": action,
+                     "state": "ARMED", "receipt": receipt}
+         expires = options["observer_expires_monotonic"]
+@@ -431,8 +433,11 @@ def ordinary_d02_receiver_verb(runner, loop):
+     def select(profile, principal):
+         user = principal["user_id"]
+         adapter = runner.adapters.get(Platform.TELEGRAM)
+-        require(adapter is not None and principal["transport_profile"] == "default"
+-                and str(adapter._bot.id) == principal["account_id"], "d02_control_receiving_bot")
++        require(adapter is not None and principal["transport_profile"] == "default",
++                "d02_control_receiving_bot")
++        bot_id = adapter._bot.id
++        require(type(bot_id) is int and 0 < bot_id < 2**63 and str(bot_id) == principal["account_id"],
++                "d02_control_receiving_bot")
+         source = SessionSource(platform=Platform.TELEGRAM, chat_id=user, chat_type="dm", user_id=user, is_bot=True)
+         identity = resolve_identity(source, runner=runner, adapter=adapter, transport_profile="default", primary_home=home)
+         require(identity.adapter() is adapter and identity.multiplexed and not identity.transport_inferred
+@@ -441,7 +446,17 @@ def ordinary_d02_receiver_verb(runner, loop):
+                 "d02_control_live_route_changed")
+         ordinary, pairings = receiving_pairing_store(runner, source)
+         require(ordinary is True and pairings is not None, "d02_control_live_receiving_pairing")
+-        return adapter
++        session_key = runner._session_key_for_source(source)
++        require(type(session_key) is str and session_key, "d02_control_live_session_key")
++        return adapter, {
++            "session_key": session_key,
++            "source_profile": source.profile or "",
++            "transport_profile": identity.transport_profile,
++            "runtime_profile": identity.runtime_profile,
++            "bot_id": bot_id,
++            "authorization_home": str(identity.authorization_home),
++            "runtime_home": str(identity.runtime_home),
++        }
+ 
+     def rights(options, phase, deadline):
+         check_receiver_state(home, profile=options["profile"], expected_principal=options["principal"],
+@@ -449,5 +464,5 @@ def ordinary_d02_receiver_verb(runner, loop):
+             pairing=pairing, phase=phase, deadline=deadline)
+ 
+     controller = ReceiverControl(home=home, slot=slot, store=store, read_owned=read_owned,
+-                                 select_adapter=select, check_rights=rights)
++                                 select_route=select, check_rights=rights)
+     return lambda params: controller.handle(params, loop)
