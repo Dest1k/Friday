@@ -1,0 +1,75 @@
+--- a/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/dashboard-native-status/verify_route_projection.py
++++ b/docs/checkpoints/2026-11-07-v3-original-context-repair/drafts/dashboard-native-status/verify_route_projection.py
+@@ -190,11 +190,14 @@
+     }
+ 
+ 
+-def project_v99_dashboard_input(*, baseline_ref, tls_input_refs, applied_read_pins, **route):
++def project_v99_dashboard_input(*, baseline_ref, tls_input_refs, applied_read_pins,
++                                predecessor_ref=None, leaf_ref=None, **route):
+     """Derive a durable candidate input from an independently accepted applied route.
+ 
+     This function returns bytes to validate and pin. The caller binds them into
+     the ordinary successor request and keeps the canonical predecessor unchanged.
++    When reading a bound leaf, both input pins are independently supplied. The
++    successor view also checks the pins in the published request and marker.
+     """
+     from hermes_cli.friday_dashboard_owner import read_owned
+ 
+@@ -210,8 +213,11 @@
+         return raw
+ 
+     value = exact_object(read_pinned_private(baseline_ref, 2 * 1024**2))
+-    require(route.get("successor") is None and value["home"] == str(route["after_root"]),
+-            "Dashboard leaf input requires the applied predecessor")
++    successor = route.get("successor")
++    require(value["home"] == str(route["after_root"])
++            and (predecessor_ref is None) == (leaf_ref is None)
++            and (successor is None or leaf_ref is not None),
++            "Dashboard leaf input requires the applied predecessor and paired input pins")
+     dashboard = value["product"]["dashboard"]
+     require(set(dashboard) == {"host", "port", "public_url", "operator", "tls"}
+             and dashboard["host"] == route["old_host"]
+@@ -226,6 +232,13 @@
+         {"path": str(before_marker), "sha256": proof["previous"][MARKER]}, 2 * 1024**2))
+     historical_profile = exact_object(read_pinned_private(
+         {"path": str(before_root / PROFILE), "sha256": proof["previous"][PROFILE]}, 65536))
++    if predecessor_ref is not None:
++        predecessor = exact_object(read_pinned_private(predecessor_ref, 2 * 1024**2))
++        require(historical_marker["input_sha256"] == predecessor_ref["sha256"]
++                and historical_marker["ordinary_gateway"]["operator_entry"]["input"] == predecessor_ref
++                and encoded({key: item for key, item in value.items() if key != "project_files"})
++                    == encoded({key: item for key, item in predecessor.items() if key != "project_files"}),
++                "Dashboard candidate baseline differs from the canonical predecessor declaration")
+     declared_dashboard = historical_profile["native_dashboard"]
+     require(all(dashboard[name] == declared_dashboard[name] for name in dashboard)
+             and {relative: value["dashboard_tls"][role]["sha256"] for role, relative in TLS_PATHS.items()}
+@@ -253,4 +266,27 @@
+ 
+     dashboard.update(host=route["host"], public_url=route["public_url"])
+     value["dashboard_tls"] = deepcopy(tls_input_refs)
+-    return encoded(value), proof
++    leaf = encoded(value)
++    if leaf_ref is not None:
++        require(predecessor_ref["path"] != leaf_ref["path"]
++                and predecessor_ref["sha256"] != leaf_ref["sha256"]
++                and read_pinned_private(leaf_ref, 2 * 1024**2) == leaf,
++                "Dashboard successor leaf differs from the verified declaration")
++    if successor is not None:
++        home = Path(value["home"])
++        tx = home / "preparation" / ("ordinary-source-update-v45-" + successor["request_sha256"][:16])
++        request = exact_object(read_pinned_private(
++            {"path": str(tx / "request.json"), "sha256": successor["request_sha256"]}, 2 * 1024**2))
++        marker = exact_object(read_pinned_private(
++            {"path": str(home / MARKER), "sha256": successor["marker_sha256"]}, 2 * 1024**2))
++        applied_refs = {
++            role: {"path": str(home / name), "sha256": proof["current"][name]}
++            for role, name in (("marker", MARKER), ("configuration", CONFIG), ("profile", PROFILE))
++        }
++        require(request.get("home") == str(home) and request.get("previous_input") == predecessor_ref
++                and request.get("current_input") == request.get("candidate_input") == leaf_ref
++                and all(request.get(role) == ref for role, ref in applied_refs.items())
++                and marker["input_sha256"] == leaf_ref["sha256"]
++                and marker["ordinary_gateway"]["operator_entry"]["input"] == leaf_ref,
++                "Dashboard successor request or marker does not bind the verified leaf")
++    return leaf, proof
