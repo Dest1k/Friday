@@ -1,0 +1,40 @@
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2435,7 +2435,8 @@
+     'Example: {"source":"input.csv","encoding":"utf-8","delimiter":";",'
+     '"type_policy":{"columns":["text","text","decimal_comma","date_dmy","text"],"header_rows":1},"sheet":"Data"}. '
+     'List one explicit column type in source order; header_rows is 0 or 1. '
+-    'Use decimal_comma for 1200,50 and date_dmy for exact DD.MM.YYYY; '
++    'Use decimal_comma for 1200,50 or 1 200,50 and date_dmy for exact DD.MM.YYYY. '
++    'Grouped amounts require exact three-digit groups and a consistent space, nonbreaking space, or narrow nonbreaking space. '
+     'decimal accepts dot-decimal strings and date accepts ISO YYYY-MM-DD. '
+     'Text IDs, long IDs and comments must use text: leading zeros, whitespace, line breaks and '
+     '=,+,-,@ prefixes remain literal strings, never inferred formulas. '
+diff --git a/tools/scoped_delimited_table.py b/tools/scoped_delimited_table.py
+--- a/tools/scoped_delimited_table.py
++++ b/tools/scoped_delimited_table.py
+@@ -24,6 +24,10 @@
+ MAX_COLS = 64
+ MAX_CELLS = 4096
+ XSTRING_ESCAPE = re.compile(r'_[xX][0-9A-Fa-f]{4}_')
++DECIMAL_COMMA_LITERAL = re.compile(
++    r'-?(?:0|[1-9][0-9]*|[1-9][0-9]{0,2}([ \u00a0\u202f])[0-9]{3}(?:\1[0-9]{3})*)(?:,[0-9]+)?'
++)
++DECIMAL_COMMA_NORMALIZE = str.maketrans({',': '.', ' ': None, '\u00a0': None, '\u202f': None})
+ 
+ 
+ class DelimitedRefused(ODSError):
+@@ -147,9 +151,10 @@
+             refuse('delimited_boolean_literal')
+         return raw == 'true'
+     if kind == 'decimal_comma':
+-        if not re.fullmatch(r'-?(?:0|[1-9][0-9]*)(?:,[0-9]+)?', raw):
++        if not DECIMAL_COMMA_LITERAL.fullmatch(raw):
+             refuse('delimited_typed_literal')
+-        kind = 'decimal'; raw = raw.replace(',', '.')
++        kind = 'decimal'
++        raw = raw.translate(DECIMAL_COMMA_NORMALIZE)
+     elif kind == 'date_dmy':
+         if not re.fullmatch(r'[0-9]{2}\.[0-9]{2}\.[0-9]{4}', raw):
+             refuse('delimited_typed_literal')
