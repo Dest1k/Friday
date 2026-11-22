@@ -130,6 +130,24 @@ def parse_args(argv=None):
 
 def build_request(args):
     consumer = publication()
+    consumer.require_d02_source_binding(args.layer_names)
+    d02 = consumer.CURRENT_SOURCE_D02_LAYER in args.layer_names
+    if d02:
+        consumer.require(
+            args.layer is not None
+            and args.current_source_project_update is not None
+            and args.current_source_native_predecessor is not None,
+            "transaction_current_source_d02_previous_request_required")
+        predecessor_ref = consumer.d02_predecessor_ref(args.home)
+        consumer.require(str(args.current_source_native_predecessor) == predecessor_ref["path"],
+                         "transaction_current_source_d02_previous_request_pin_changed")
+        layer = consumer.CURRENT_SOURCE_D02_LAYER
+        source_pins = {
+            path: consumer.digest(consumer.owned_file(args.candidate_project / path))
+            for path in (f"patches/hermes/{layer}-manifest.json", f"patches/hermes/{layer}.patch",
+                         consumer.CURRENT_SOURCE_D02_HELPER, *consumer.CURRENT_SOURCE_D02_PLUGIN_AFTER)
+        }
+        consumer.require_d02_source_binding(args.layer_names, source_pins)
     ninety_sixth_layer = consumer.CURRENT_SOURCE_NINETY_SIXTH_LAYER
     consumer.require_ninety_sixth_source_binding(args.layer_names)
     ninety_sixth = ninety_sixth_layer in args.layer_names
@@ -1237,15 +1255,16 @@ def build_request(args):
     publication().require_twenty_fifth_source_binding(args.layer_names)
     home, candidate = args.home, args.candidate_project
     marker_path = home / "FRIDAY-INSTALL.json"
-    bound_current = forty_third or forty_fourth or forty_fifth or forty_sixth or forty_seventh or forty_eighth or forty_ninth or fiftieth or fifty_first or fifty_second or fifty_third or fifty_fourth or fifty_fifth or fifty_sixth or fifty_seventh or fifty_eighth or fifty_ninth or sixtieth or sixty_first or sixty_second or sixty_third or sixty_fourth or sixty_fifth or sixty_sixth or sixty_seventh or sixty_eighth or sixty_ninth or seventieth or seventy_first or seventy_second or seventy_third or seventy_fourth or seventy_fifth or seventy_sixth or seventy_seventh or seventy_eighth or seventy_ninth or eightieth or eighty_first or eighty_second or eighty_third or eighty_fourth or eighty_fifth or eighty_sixth or eighty_seventh or eighty_eighth or eighty_ninth or ninetieth or ninety_first or ninety_second or ninety_third or ninety_fourth or ninety_fifth or ninety_sixth or ninety_seventh or ninety_eighth or ninety_ninth
-    if ninety_ninth:
-        metadata_refs = consumer.ninety_ninth_metadata_refs(home, core296_schema)
+    bound_current = forty_third or forty_fourth or forty_fifth or forty_sixth or forty_seventh or forty_eighth or forty_ninth or fiftieth or fifty_first or fifty_second or fifty_third or fifty_fourth or fifty_fifth or fifty_sixth or fifty_seventh or fifty_eighth or fifty_ninth or sixtieth or sixty_first or sixty_second or sixty_third or sixty_fourth or sixty_fifth or sixty_sixth or sixty_seventh or sixty_eighth or sixty_ninth or seventieth or seventy_first or seventy_second or seventy_third or seventy_fourth or seventy_fifth or seventy_sixth or seventy_seventh or seventy_eighth or seventy_ninth or eightieth or eighty_first or eighty_second or eighty_third or eighty_fourth or eighty_fifth or eighty_sixth or eighty_seventh or eighty_eighth or eighty_ninth or ninetieth or ninety_first or ninety_second or ninety_third or ninety_fourth or ninety_fifth or ninety_sixth or ninety_seventh or ninety_eighth or ninety_ninth or d02
+    if ninety_ninth or d02:
+        metadata_refs = consumer.d02_metadata_refs(home) if d02 else consumer.ninety_ninth_metadata_refs(home, core296_schema)
+        edge = "d02" if d02 else "ninety_ninth"
         metadata_raw = {}
         for key in ("source_receipt", "marker", "stamp"):
             ref = metadata_refs[key]
             raw = consumer.owned_file(ref["path"])
             consumer.require(consumer.digest(raw) == ref["sha256"],
-                             "transaction_current_source_ninety_ninth_previous_metadata_pin_changed:" + key)
+                             f"transaction_current_source_{edge}_previous_metadata_pin_changed:" + key)
             metadata_raw[key] = raw
         receipt_ref, marker_ref, stamp_ref = (metadata_refs[key] for key in ("source_receipt", "marker", "stamp"))
         receipt = json.loads(metadata_raw["source_receipt"])
@@ -1968,7 +1987,7 @@ def build_request(args):
         "layer_names": list(args.layer_names),
         "marker": marker_ref if bound_current else pin(marker_path),
         "source_receipt": receipt_ref if bound_current else pin(home / "hermes-agent.source.json"),
-        "stamp": stamp_ref if (forty_fourth or forty_fifth or forty_sixth or forty_seventh or forty_eighth or forty_ninth or fiftieth or fifty_first or fifty_second or fifty_third or fifty_fourth or fifty_fifth or fifty_sixth or fifty_seventh or fifty_eighth or fifty_ninth or sixtieth or sixty_first or sixty_second or sixty_third or sixty_fourth or sixty_fifth or sixty_sixth or sixty_seventh or sixty_eighth or sixty_ninth or seventieth or seventy_first or seventy_second or seventy_third or seventy_fourth or seventy_fifth or seventy_sixth or seventy_seventh or seventy_eighth or seventy_ninth or eightieth or eighty_first or eighty_second or eighty_third or eighty_fourth or eighty_fifth or eighty_sixth or eighty_seventh or eighty_eighth or eighty_ninth or ninetieth or ninety_first or ninety_second or ninety_third or ninety_fourth or ninety_fifth or ninety_sixth or ninety_seventh or ninety_eighth or ninety_ninth) else pin(home / "hermes-agent/install-stamp.json"),
+        "stamp": stamp_ref if (forty_fourth or forty_fifth or forty_sixth or forty_seventh or forty_eighth or forty_ninth or fiftieth or fifty_first or fifty_second or fifty_third or fifty_fourth or fifty_fifth or fifty_sixth or fifty_seventh or fifty_eighth or fifty_ninth or sixtieth or sixty_first or sixty_second or sixty_third or sixty_fourth or sixty_fifth or sixty_sixth or sixty_seventh or sixty_eighth or sixty_ninth or seventieth or seventy_first or seventy_second or seventy_third or seventy_fourth or seventy_fifth or seventy_sixth or seventy_seventh or seventy_eighth or seventy_ninth or eightieth or eighty_first or eighty_second or eighty_third or eighty_fourth or eighty_fifth or eighty_sixth or eighty_seventh or eighty_eighth or eighty_ninth or ninetieth or ninety_first or ninety_second or ninety_third or ninety_fourth or ninety_fifth or ninety_sixth or ninety_seventh or ninety_eighth or ninety_ninth or d02) else pin(home / "hermes-agent/install-stamp.json"),
         "configuration": pin(home / "config.yaml"),
         "profile": pin(home / "FRIDAY-PROFILE.json"),
         "launcher": pin(home / "hermes-agent/.hermes/bin/hermes"),
@@ -2016,7 +2035,10 @@ def build_request(args):
         }
         if getattr(args, "current_source_native_predecessor", None) is not None:
             predecessor_raw = consumer.owned_file(args.current_source_native_predecessor)
-            if ninety_ninth:
+            if d02:
+                consumer.require(consumer.digest(predecessor_raw) == predecessor_ref["sha256"],
+                                 "transaction_current_source_d02_previous_request_changed")
+            elif ninety_ninth:
                 consumer.require(consumer.digest(predecessor_raw) == predecessor_ref["sha256"],
                                  "transaction_current_source_ninety_ninth_previous_request_changed")
             elif ninety_eighth:
@@ -2244,6 +2266,7 @@ def build_request(args):
                 consumer.CURRENT_SOURCE_NINETY_SIXTH_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_SEVENTH_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_SEVENTH_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA,
+                consumer.CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_D02_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_FOURTH_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_FIFTH_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_THIRD_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_FOURTH_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_SECOND_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_THIRD_SUCCESSOR_SCHEMA,
@@ -2302,6 +2325,8 @@ def build_request(args):
                              "transaction_current_source_exact_ninety_eighth_edge_required")
             consumer.require(ninety_ninth == (previous_schema == consumer.CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA),
                              "transaction_current_source_exact_ninety_ninth_edge_required")
+            consumer.require(d02 == (previous_schema == consumer.CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA),
+                             "transaction_current_source_exact_d02_edge_required")
             consumer.require(ninety_fifth == (previous_schema == consumer.CURRENT_SOURCE_NINETY_FOURTH_SUCCESSOR_SCHEMA),
                              "transaction_current_source_exact_ninety_fifth_edge_required")
             consumer.require(ninety_fourth == (previous_schema == consumer.CURRENT_SOURCE_NINETY_THIRD_SUCCESSOR_SCHEMA),
@@ -2612,7 +2637,8 @@ def build_request(args):
                     == request["current_source_successor"]["root_project_update"],
                     "transaction_current_source_forty_first_predecessor_lineage_changed")
             request["current_source_successor"].update({
-                "schema": core296_schema if ninety_ninth else supported[previous_schema],
+                "schema": (consumer.CURRENT_SOURCE_D02_SUCCESSOR_SCHEMA if d02
+                           else core296_schema if ninety_ninth else supported[previous_schema]),
                 "previous_native_update": pin(args.current_source_native_predecessor,
                                               predecessor_raw if bound_current else None),
             })
@@ -2625,6 +2651,9 @@ def build_request(args):
     consumer.require_ninety_eighth_source_binding(args.layer_names, request=request)
     if ninety_eighth:
         consumer.require_ninety_eighth_predecessor(request, previous, raw=predecessor_raw)
+    consumer.require_d02_source_binding(args.layer_names, request=request)
+    if d02:
+        consumer.require_d02_predecessor(request, previous, raw=predecessor_raw)
     consumer.require_ninety_ninth_source_binding(args.layer_names, request=request)
     if ninety_ninth:
         consumer.require_ninety_ninth_predecessor(request, previous, raw=predecessor_raw)
@@ -2796,6 +2825,8 @@ def build_request(args):
     layers = consumer.read_layers(candidate, receipt, home, current["project_files"], names)
     if not consumer.bundle_already_applied(layers, home / "hermes-agent", receipt, request):
         consumer.check_preimages(layers, home / "hermes-agent", receipt["files"])
+    if d02:
+        consumer.check_plugin_preimages(request, previous, current, marker, home)
     if "current_source_successor" in request:
         consumer.current_source_consumer_checked(current, request, candidate)
     return request

@@ -6,6 +6,7 @@ native supervision and adapter readiness are separate controller prerequisites.
 from __future__ import annotations
 
 from contextvars import ContextVar
+from dataclasses import dataclass
 import copy
 import hashlib
 import json
@@ -16,6 +17,7 @@ from .associations import Associations, _sync_directory
 from .boundary import bound_owner, parse_brief, work_handler
 
 KEY = "admitted_ingress.v1"
+_PAYLOAD_KEY = "admitted_ingress_payload.v1"
 CALL_FIELDS = ("task_id", "session_id", "turn_id", "api_request_id", "tool_call_id")
 _call = ContextVar("friday_native_call", default=None)
 
@@ -149,35 +151,96 @@ def native_call_scope(*, tool_name, args, next_call, **context):
         _call.reset(token)
 
 
+def _receipt_document(document):
+    if (not isinstance(document, dict) or set(document) != {"schema_version", "receipts"}
+            or type(document["schema_version"]) is not int or document["schema_version"] != 1
+            or not isinstance(document["receipts"], dict)):
+        raise ValueError("invalid_ingress_store")
+    for key, value in document["receipts"].items():
+        if key != _receipt_key(_snapshot(value)):
+            raise ValueError("invalid_ingress_store")
+    return document
+
+
+def _payload_value(snapshot, payload):
+    if (type(payload) is not dict or set(payload) != {"kind", "sha256", "date"}
+            or payload["kind"] not in ("caption", "text")
+            or not isinstance(payload["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", payload["sha256"]) is None
+            or type(payload["date"]) is not int or not 0 < payload["date"] < 2**63
+            or snapshot["platform"] != "telegram" or snapshot.get("chat_type") != "dm"):
+        raise ValueError("invalid_ingress_payload")
+    message = snapshot["message"]
+    if message["chat_id"] != message["user_id"] or message["thread_id"]:
+        raise ValueError("foreign_ingress_payload")
+    media = message["media"]
+    if payload["kind"] == "text":
+        if media:
+            raise ValueError("invalid_ingress_payload_media")
+    else:
+        if len(media) != 1:
+            raise ValueError("invalid_ingress_payload_media")
+        origin, content = media[0]["origin"], media[0].get("content")
+        if (origin is None or content is None or origin["message_id"] != message["message_id"]
+                or type(origin["declared_bytes"]) is not int
+                or not 0 < content["size_bytes"] == origin["declared_bytes"]):
+            raise ValueError("foreign_ingress_payload_document")
+    return dict(payload)
+
+
+def _payload_map(value, receipts):
+    if type(value) is not dict or any(key not in receipts for key in value):
+        raise ValueError("invalid_ingress_payload_store")
+    for key, payload in value.items():
+        _payload_value(receipts[key], payload)
+    return value
+
+
+def _record_snapshot(admitted_ingress, session_key, message_id, source, platform):
+    snapshot = _snapshot(admitted_ingress)
+    message = snapshot["message"]
+    if (platform != snapshot["platform"] or session_key != snapshot["session_key"]
+            or message_id != message["message_id"] or not isinstance(source, dict)
+            or any((source.get(k) or "") != message[k] for k in ("user_id", "chat_id", "thread_id", "message_id"))
+            or (source.get("profile") or "") != snapshot["source_profile"]):
+        raise ValueError("ingress_source_mismatch")
+    chat_type = source.get("chat_type")
+    if (not isinstance(chat_type, str) or chat_type not in {"dm", "group", "channel", "thread"}
+            or ("chat_type" in snapshot and snapshot["chat_type"] != chat_type)):
+        raise ValueError("ingress_source_mismatch")
+    snapshot["chat_type"] = chat_type
+    return snapshot
+
+
+_PAIR_COMMIT_SEAL = object()
+
+
+@dataclass(frozen=True, eq=False)
+class _IngressPairCommit:
+    receipt_key: str
+    update_id: str
+    pair_sha256: str
+    durable: object
+    _seal: object
+
+
+def _pair_sha256(snapshot, payload):
+    return hashlib.sha256(_encoded([snapshot, payload])).hexdigest()
+
+
 class IngressAdmissions:
     def __init__(self, state):
         self.state = state
         self.associations = Associations(state)
 
     def _read(self):
-        document = self.associations.state_get(KEY, {"schema_version": 1, "receipts": {}})
-        if (not isinstance(document, dict) or set(document) != {"schema_version", "receipts"}
-                or type(document["schema_version"]) is not int or document["schema_version"] != 1
-                or not isinstance(document["receipts"], dict)):
-            raise ValueError("invalid_ingress_store")
-        for key, value in document["receipts"].items():
-            if key != _receipt_key(_snapshot(value)):
-                raise ValueError("invalid_ingress_store")
-        return document
+        return _receipt_document(self.associations.state_get(KEY, {"schema_version": 1, "receipts": {}}))
 
-    def record(self, *, admitted_ingress=None, session_key, message_id, source, platform, **_):
-        snapshot = _snapshot(admitted_ingress)
-        message = snapshot["message"]
-        if (platform != snapshot["platform"] or session_key != snapshot["session_key"]
-                or message_id != message["message_id"] or not isinstance(source, dict)
-                or any((source.get(k) or "") != message[k] for k in ("user_id", "chat_id", "thread_id", "message_id"))
-                or (source.get("profile") or "") != snapshot["source_profile"]):
-            raise ValueError("ingress_source_mismatch")
-        chat_type = source.get("chat_type")
-        if (not isinstance(chat_type, str) or chat_type not in {"dm", "group", "channel", "thread"}
-                or ("chat_type" in snapshot and snapshot["chat_type"] != chat_type)):
-            raise ValueError("ingress_source_mismatch")
-        snapshot["chat_type"] = chat_type
+    def record(self, *, admitted_ingress=None, session_key, message_id, source, platform,
+               telegram_payload_v1=None, **_):
+        snapshot = _record_snapshot(admitted_ingress, session_key, message_id, source, platform)
+        if telegram_payload_v1 is not None:
+            return self._record_with_payload(snapshot, _payload_value(snapshot, telegram_payload_v1))
         with self.associations._locked():
             document = self._read()
             key = _receipt_key(snapshot)
@@ -189,6 +252,75 @@ class IngressAdmissions:
             document["receipts"][key] = snapshot
             self.associations.state_set(KEY, document)
             _sync_directory(Path(self.state.data_dir))
+
+    def record_payload_commit(self, *, admitted_ingress, session_key, message_id, source, platform,
+                              telegram_payload_v1):
+        """Return a new pair's native close evidence after the original writer settles."""
+        snapshot = _record_snapshot(admitted_ingress, session_key, message_id, source, platform)
+        payload = _payload_value(snapshot, telegram_payload_v1)
+        return self._record_with_payload(snapshot, payload, return_commit=True)
+
+    def _payload_state(self):
+        from hermes_cli.friday_admin_control import _CURRENT as admin_scope
+        from hermes_cli.friday_cli_work import is_cli
+
+        association = self.associations
+        if (association.state is not self.state or association._operator is not None
+                or association._cli_authority is not None or is_cli()
+                or admin_scope.get() is not None):
+            raise PermissionError("invalid_ingress_payload_storage_scope")
+        association._check_local_state()
+        return association.state
+
+    def _record_with_payload(self, snapshot, payload, *, return_commit=False):
+        from hermes_cli.friday_native_state import RetainedStateTransaction
+
+        key = _receipt_key(snapshot)
+        state = self._payload_state()
+        with self.associations._locked():
+            if self._payload_state() is not state:
+                raise PermissionError("invalid_ingress_payload_storage_scope")
+            with RetainedStateTransaction(state, cutoff=None, lock_deadline=None,
+                                          lock_budget=self.associations._lock_allowance.get()) as transaction:
+                document = _receipt_document(transaction.data.get(KEY, {"schema_version": 1, "receipts": {}}))
+                receipts = document["receipts"]
+                payloads = _payload_map(transaction.data.get(_PAYLOAD_KEY, {}), receipts)
+                if key not in receipts:
+                    updated = {"schema_version": 1, "receipts": {**receipts, key: snapshot}}
+                    transaction.replace(KEY, updated, ingress_payloads={**payloads, key: payload})
+                elif receipts[key] == snapshot and (key not in payloads or payloads[key] == payload):
+                    # Preserve a legacy receipt and avoid writing on replay.
+                    return
+                else:
+                    updated = None
+            if self._payload_state() is not state:
+                raise PermissionError("invalid_ingress_payload_storage_scope")
+            if updated is None:
+                raise ValueError("ingress_identity_conflict")
+        if return_commit:
+            return _IngressPairCommit(key, snapshot["message"]["platform_update_id"],
+                                      _pair_sha256(snapshot, payload), transaction.witness(),
+                                      _PAIR_COMMIT_SEAL)
+
+    def observe_payload_pair(self, *, admitted_ingress, session_key, message_id, source, platform,
+                             telegram_payload_v1, lock_deadline=None):
+        """Compare one stored pair without claiming a durable commit or retrying it."""
+        snapshot = _record_snapshot(admitted_ingress, session_key, message_id, source, platform)
+        payload = _payload_value(snapshot, telegram_payload_v1)
+        key = _receipt_key(snapshot)
+        state = self._payload_state()
+        data, identity = state._read_storage_readonly(lock_deadline=lock_deadline, with_identity=True)
+        if self._payload_state() is not state:
+            raise PermissionError("invalid_ingress_payload_storage_scope")
+        receipts = _receipt_document(data.get(KEY, {"schema_version": 1, "receipts": {}}))["receipts"]
+        payloads = _payload_map(data.get(_PAYLOAD_KEY, {}), receipts)
+        if key not in receipts:
+            status = "ABSENT"
+        elif receipts[key] != snapshot or (key in payloads and payloads[key] != payload):
+            status = "CONFLICT"
+        else:
+            status = "PRESENT" if key in payloads else "RECEIPT_ONLY"
+        return {"pair": status, "state": identity}
 
     def match(self, owner, *, task_id, session_id):
         call = _call.get()

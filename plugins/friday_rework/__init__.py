@@ -8,7 +8,8 @@ def register(ctx):
     host = register_host(ctx, admission)
     from .result_tool import register_result_tool
     register_result_tool(ctx, host)
-    ctx.register_hook("post_gateway_admission", admission.record)
+    from gateway.ordinary_dm_ingress import routed_admission_callback
+    ctx.register_hook("post_gateway_admission", routed_admission_callback(admission))
     ctx.register_middleware("tool_execution", native_call_scope)
     ctx.register_tool(
         name="friday_work",
