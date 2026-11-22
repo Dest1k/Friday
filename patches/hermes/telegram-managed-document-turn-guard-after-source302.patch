@@ -1,0 +1,890 @@
+--- a/gateway/delivery_ledger.py
++++ b/gateway/delivery_ledger.py
+@@ -315,8 +315,14 @@
+ 
+ 
+ def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
+-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> bool:
+-    """Record a final response. Telegram never replaces a prior delivery fence."""
++                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
++                      initial_attempting: bool = False) -> bool:
++    """Record a final response. Telegram never replaces a prior delivery fence.
++
++    The turn-owned state keeps a Telegram reply out of generic send and resume
++    recovery. The managed turn's own recovery phase holds its model output.
++    """
++    state = "attempting_turn_owned" if platform == "telegram" and initial_attempting else "pending"
+     now, (pid, started) = time.time(), _owner_stamp()
+     with _DB_LOCK, _transaction() as conn:
+         cursor = conn.execute(
+@@ -324,9 +330,9 @@
+                (obligation_id, session_key, platform, chat_id, thread_id,
+                 content, state, attempts, created_at, updated_at,
+                 owner_pid, owner_started_at, adapter_profile)
+-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
++               VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)""",
+             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
+-             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
++             content, state, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+         # Same transaction, same connection: the cron ledgers prune this way too
+         # (cron/delivery_queue._prune_terminal_unlocked, cron/executions._prune_unlocked).
+         _prune_unlocked(conn, now)
+@@ -377,11 +383,12 @@
+     with _DB_LOCK, _transaction() as conn:
+         conn.execute(
+             """UPDATE delivery_obligations SET state=CASE
++                   WHEN platform='telegram' AND state='attempting_turn_owned' THEN 'uncertain_turn_owned'
+                    WHEN platform='telegram' AND ? THEN 'failed_unsent'
+                    WHEN platform='telegram' AND NOT ? THEN 'uncertain' ELSE 'failed' END,
+                    updated_at=?, last_error=?
+                WHERE obligation_id=? AND (platform!='telegram' OR
+-                 (state='attempting' AND owner_pid IS ? AND owner_started_at IS ?))""",
++                 (state IN ('attempting', 'attempting_turn_owned') AND owner_pid IS ? AND owner_started_at IS ?))""",
+             (bool(no_effect),
+              bool(no_effect or classify_dead_error(error)),
+              time.time(), error[:500] if error else None, obligation_id, pid, started))
+@@ -414,7 +421,7 @@
+             """UPDATE delivery_obligations
+                SET state=?, updated_at=?, last_error=?
+                WHERE obligation_id=? AND (platform!='telegram' OR
+-                 (state='attempting' AND owner_pid IS ? AND owner_started_at IS ?))""",
++                 (state IN ('attempting', 'attempting_turn_owned') AND owner_pid IS ? AND owner_started_at IS ?))""",
+             (state, time.time(), error[:500] if error else None, obligation_id, *_owner_stamp()))
+ 
+ 
+@@ -457,6 +464,8 @@
+     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
+     claimed: List[Dict[str, Any]] = []
+     with _DB_LOCK, _transaction() as conn:
++        # The turn-owned states are excluded: even adopting a row would clear a
++        # session-wide resume flag that may now belong to a different turn.
+         rows = conn.execute(
+             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
+                       content, state, attempts, created_at,
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -1659,6 +1659,48 @@
+ def _append_text(existing: Optional[str], new: Optional[str]) -> str:
+     """``existing\\nnew`` when both non-empty; the non-empty one otherwise."""
+     return f"{existing}\n{new}" if existing else new
++
++
++@dataclass
++class _OrdinaryFifoDelivery:
++    """The current adapter dispatch's one-shot handoff from the runner."""
++    task: asyncio.Task
++    guard_binding: tuple[str, asyncio.Event]
++    event: MessageEvent | None = None
++    source: SessionSource | None = None
++    run: tuple[str, int] | None = None
++
++
++class _OrdinaryFifoTextOwnerLost(Exception):
++    """The original managed FIFO writer can no longer send the supplemental text."""
++
++
++@dataclass(frozen=True)
++class _OrdinaryFifoTextAuthority:
++    """Internal, invocation-local permission for the selected Telegram SDK call."""
++    adapter: "BasePlatformAdapter"
++    bot: Any
++    is_current: Callable[[], bool]
++    chat_id: str
++    thread_id: str | None
++    reply_to: str | None
++
++    def require_current(self, adapter, sdk_route=None, *, require_reply=True):
++        if (adapter is not self.adapter or self.bot is None
++                or getattr(adapter, "_bot", None) is not self.bot or not self.is_current()):
++            raise _OrdinaryFifoTextOwnerLost()
++        if sdk_route is None:
++            return
++        thread = sdk_route.get("message_thread_id")
++        thread = str(thread) if thread is not None else None
++        reply = sdk_route.get("reply_to_message_id")
++        if reply is None and isinstance(sdk_route.get("reply_parameters"), dict):
++            reply = sdk_route["reply_parameters"].get("message_id")
++        if (str(sdk_route.get("chat_id")) != self.chat_id or thread != self.thread_id
++                or sdk_route.get("direct_messages_topic_id") is not None
++                or ((require_reply or reply is not None) and
++                    (reply is None or self.reply_to is None or str(reply) != self.reply_to))):
++            raise _OrdinaryFifoTextOwnerLost()
+ 
+ 
+ @dataclass
+@@ -4002,6 +4044,7 @@
+         guard = interrupt_event or asyncio.Event()
+         session_guard_change(self, session_key, self._active_sessions.get(session_key), guard)
+         self._active_sessions[session_key] = guard
++        event._friday_document_guard = (session_key, guard)
+         task = asyncio.create_task(self._process_message_background(event, session_key))
+         if not self._track_session_task(session_key, task):
+             self._session_tasks.pop(session_key, None)
+@@ -4310,7 +4353,9 @@
+ 
+     async def _record_delivery_obligation(
+         self, event: MessageEvent, session_key: str, text_content: str,
+-        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
++        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool, *,
++        initial_attempting: bool = False,
++    ) -> Optional[str]:
+         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
+         next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
+         or None."""
+@@ -4330,16 +4375,19 @@
+                 _ledger_id = getattr(event, "message_id", "")
+             obligation_id = compute_obligation_id(
+                 session_key, str(_ledger_id or ""), text_content)
++            initial_state = {"initial_attempting": True} if initial_attempting else {}
+             recorded = await asyncio.to_thread(
+                 record_obligation, obligation_id=obligation_id, session_key=session_key,
+                 platform=str(getattr(source.platform, "value", source.platform)),
+                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
+                 content=text_content,
+-                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
++                adapter_profile=getattr(delivery_adapter, "_owner_profile", None), **initial_state)
+             telegram = str(getattr(source.platform, "value", source.platform)) == "telegram"
+             if telegram and not recorded:
+                 raise RuntimeError("delivery_requires_reconciliation")
+-            attempting = await asyncio.to_thread(mark_attempting, obligation_id)
++            # A task-local authority cannot survive restart. Its row must already be
++            # fenced even if this task is cancelled at the return of the insert.
++            attempting = recorded if initial_attempting else await asyncio.to_thread(mark_attempting, obligation_id)
+             if telegram and not attempting:
+                 raise RuntimeError("delivery_requires_reconciliation")
+             return obligation_id
+@@ -4351,7 +4399,8 @@
+ 
+     async def _finalize_delivery_obligation(
+         self, obligation_id: str, result: Any, event: MessageEvent,
+-        delivery_adapter: "BasePlatformAdapter") -> None:
++        delivery_adapter: "BasePlatformAdapter", *, allow_redelivery: bool = True,
++    ) -> None:
+         """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
+         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
+         before this failure landed; atomic claiming keeps it idempotent). On any other rejection arm
+@@ -4366,9 +4415,9 @@
+                 await asyncio.to_thread(mark_delivered, obligation_id)
+                 return
+             error = str(getattr(result, "error", "") or "")
+-            await asyncio.to_thread(mark_failed, obligation_id, error,
+-                                    no_effect=telegram_text_no_effect(result))
+-            if platform == "telegram" and not telegram_text_no_effect(result):
++            can_retry = allow_redelivery and telegram_text_no_effect(result)
++            await asyncio.to_thread(mark_failed, obligation_id, error, no_effect=can_retry)
++            if platform == "telegram" and not can_retry:
+                 return  # ambiguous attempts stay fenced; no timer/reconnect replay
+             if is_reconnect_only(error):
+                 redeliver = getattr(
+@@ -4462,6 +4511,7 @@
+         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
+         reply_to: Optional[str], is_ephemeral_response: bool = False,
+         defer_turn_marker_release: bool = False,
++        ownership: _OrdinaryFifoTextAuthority | None = None,
+     ) -> "tuple[SendResult, BasePlatformAdapter]":
+         """The delivery-ledger bracket every final text goes through, on the CURRENT transport
+         (a reconnect may have replaced this adapter): record the obligation before the send,
+@@ -4477,23 +4527,35 @@
+                     len(text_content), event.source.chat_id)
+         from gateway.delivery_ledger import delivery_acknowledged, telegram_text_send_scope
+         telegram = str(getattr(event.source.platform, "value", event.source.platform)) == "telegram"
++        owned_record = {"initial_attempting": True} if ownership is not None else {}
+         try:
++            if ownership is not None:
++                ownership.require_current(delivery_adapter)
+             obligation_id = await self._record_delivery_obligation(
+-                event, session_key, text_content, delivery_adapter, is_ephemeral_response)
++                event, session_key, text_content, delivery_adapter, is_ephemeral_response, **owned_record)
++        except _OrdinaryFifoTextOwnerLost:
++            return SendResult(success=False, error="delivery_owner_changed", retryable=False), delivery_adapter
+         except Exception:
+             return SendResult(success=False, error="delivery_not_admitted"), delivery_adapter
+         # A text ledger owns only the text. Pending managed attachments still
+         # require this same active owner for their host-phase/CAS preflight.
+         if obligation_id is not None and not defer_turn_marker_release:
+             await self._release_turn_marker(event)  # the ledger now owns text-only crash recovery
+-        with telegram_text_send_scope(telegram and obligation_id is not None):
+-            result = await delivery_adapter._send_with_retry(
+-                chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
++        try:
++            if ownership is not None:
++                ownership.require_current(delivery_adapter)
++                metadata = {**metadata, "_friday_fifo_text_authority": ownership}
++            with telegram_text_send_scope(telegram and (obligation_id is not None or ownership is not None)):
++                result = await delivery_adapter._send_with_retry(
++                    chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
++        except _OrdinaryFifoTextOwnerLost:
++            result = SendResult(success=False, error="delivery_owner_changed", retryable=False)
+         if telegram and obligation_id is not None and getattr(result, "success", False) and not delivery_acknowledged("telegram", result):
+             result = SendResult(success=False, error="delivery_ack_unconfirmed")
+         stop_reply_clock(delivery_adapter, event.source.chat_id, result)
+         if obligation_id is not None:
+-            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
++            policy = {"allow_redelivery": False} if ownership is not None else {}
++            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter, **policy)
+         return result, delivery_adapter
+ 
+     async def _release_turn_marker(self, event: MessageEvent) -> None:
+@@ -4506,12 +4568,15 @@
+     async def _send_final_text(
+         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
+         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable, *,
+-        defer_turn_marker_release: bool = False) -> None:
++        defer_turn_marker_release: bool = False,
++        ownership: _OrdinaryFifoTextAuthority | None = None,
++    ) -> None:
+         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
++        policy = {"ownership": ownership} if ownership is not None else {}
+         result, delivery_adapter = await self.send_final_ledgered(
+             event, session_key, text_content, metadata,
+             reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response,
+-            defer_turn_marker_release=defer_turn_marker_release)
++            defer_turn_marker_release=defer_turn_marker_release, **policy)
+         record_delivery(result)
+         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
+             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
+@@ -4634,11 +4699,13 @@
+     async def _fire_post_delivery_callback(
+         self, session_key: str, interrupt_event: asyncio.Event, *, delivery_receipt="unknown",
+     ) -> None:
+-        """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
+-        read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
+-        would let stale runs fire a fresher run's callbacks."""
+-        _post_cb = self.pop_post_delivery_callback(
+-            session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
++        """Run the one-shot callback for the run stamped on the active guard."""
++        generation = getattr(interrupt_event, "_hermes_run_generation", None)
++        callback = self.pop_post_delivery_callback(session_key, generation=generation)
++        await self._run_post_delivery_callback(callback, delivery_receipt=delivery_receipt)
++
++    async def _run_post_delivery_callback(self, _post_cb, *, delivery_receipt) -> None:
++        """Invoke a callback already removed from the session slot, with bounded cleanup."""
+         if callable(_post_cb):
+             try:
+                 with contextlib.suppress(asyncio.TimeoutError, Exception):
+@@ -4685,6 +4752,23 @@
+         delivery_completed = False
+         dispatch_returned = False
+         delivery_results = []
++        dispatch_event = event
++        fifo_delivery = None
++        fifo_run = None
++        fifo_callback = None
++        fifo_can_drain = False
++        runner = self.gateway_runner
++
++        def fifo_owner_current():
++            run_key, generation = fifo_run
++            return (event.source is fifo_delivery.source
++                    and getattr(event, "_friday_document_guard", None) is fifo_delivery.guard_binding
++                    and self._session_tasks.get(session_key) is fifo_delivery.task
++                    and not fifo_delivery.task.cancelling()
++                    and self._active_sessions.get(session_key) is interrupt_event
++                    and not interrupt_event.is_set()
++                    and runner is not None and self.gateway_runner is runner
++                    and runner._is_session_run_current(run_key, generation))
+ 
+         def _record_delivery(result):
+             nonlocal delivery_attempted, delivery_succeeded
+@@ -4702,7 +4786,28 @@
+             await self._run_processing_hook("on_processing_start", event)
+             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
+             event._status_streamed_final_confirmed = False  # a retried event needs its own receipt
+-            response = await self._message_handler(event)
++            binding = getattr(event, "_friday_document_guard", None)
++            task = asyncio.current_task()
++            # The runner admits the source after this adapter dispatch starts.
++            if (self.platform == Platform.TELEGRAM and task is not None
++                    and type(binding) is tuple and len(binding) == 2
++                    and binding[0] == session_key and binding[1] is interrupt_event):
++                fifo_delivery = _OrdinaryFifoDelivery(task, binding)
++                dispatch_event._friday_fifo_delivery = fifo_delivery
++            try:
++                response = await self._message_handler(event)
++            finally:
++                if fifo_delivery is not None:
++                    dispatch_event._friday_fifo_delivery = None
++                    if fifo_delivery.run is not None:
++                        dispatch_event._turn_marker_handoff = False
++                        event = fifo_delivery.event
++                        fifo_run = fifo_delivery.run
++                        # Own this callback before any await can let a newer run replace its slot.
++                        fifo_callback = self.pop_post_delivery_callback(session_key, generation=fifo_run[1])
++                        _thread_metadata = _thread_metadata_for_event(event)
++            if fifo_run is not None and not fifo_owner_current():
++                return  # The parked trigger never becomes a fallback delivery route.
+             # A muted diagnostic wake ran for the session; its reply is not presented. The
+             # policy read binds the routed profile; delivery itself stays in the launch scope.
+             with self._media_delivery_scope(event.source):
+@@ -4721,6 +4826,8 @@
+             else:
+                 extracted = await self._extract_response_content(
+                     response, event, session_key, is_ephemeral_response=is_ephemeral_response)
++                if fifo_run is not None and not fifo_owner_current():
++                    return
+                 text_content, media_files = extracted.text_content, extracted.media_files
+                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
+                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+@@ -4728,19 +4835,27 @@
+                 if self._wants_auto_tts(
+                         event, session_key, interrupt_event, text_content, media_files):
+                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
++                    if fifo_run is not None and not fifo_owner_current():
++                        for path in set(_tts_paths + ([_tts_requested_path] if _tts_requested_path else [])):
++                            with contextlib.suppress(OSError):
++                                os.remove(path)
++                        return
+                 # TTS plays before text; generated files are removed afterwards.
+                 _tts_caption_delivered = False
+                 for _tts_index, _tts_path in enumerate(_tts_paths):
+                     try:
+-                        _tts_caption_delivered |= await self._play_tts_file(
+-                            event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
+-                            _record_delivery)
++                        if fifo_run is None or fifo_owner_current():
++                            _tts_caption_delivered |= await self._play_tts_file(
++                                event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
++                                _record_delivery)
+                     finally:
+                         with contextlib.suppress(OSError):
+                             os.remove(_tts_path)
+                 if not _tts_paths and _tts_requested_path is not None:
+                     with contextlib.suppress(OSError):
+                         os.remove(_tts_requested_path)
++                if fifo_run is not None and not fifo_owner_current():
++                    return
+                 # Suspend the typing refresh before the first delivery attempt, not just in
+                 # the turn's finally (#117300): if the final send stalls (platform accepted it
+                 # but the HTTP ack never returns), control never reaches the finally, and
+@@ -4771,12 +4886,48 @@
+                 # Only an ineligible caption falls back; never resend after a lost ACK.
+                 if not _document_caption_handled:
+                     if text_content and not _tts_caption_delivered:
++                        managed_attachments = (
++                            getattr(event.source, "_friday_user_scope", None) is not None
++                            and bool(extracted.media_files or extracted.local_files or extracted.images))
++                        policy = {}
++                        if (fifo_run is not None and managed_attachments and not is_ephemeral_response
++                                and (media_files or extracted.local_files)):
++                            from gateway.run_plugin_delivery import freeze_route
++                            source = event.source
++                            chat, thread = str(source.chat_id), str(source.thread_id) if source.thread_id else None
++                            anchor = _reply_anchor_for_event(event)
++                            try:
++                                sealed_route = freeze_route(getattr(source, "_friday_document_route", None))
++                            except (TypeError, ValueError):
++                                sealed_route = None
++
++                            def text_owner_current():
++                                if not fifo_owner_current() or sealed_route is None:
++                                    return False
++                                native = sealed_route["source"]
++                                try:
++                                    return (runner._delivery_adapter_for(source) is self
++                                            and freeze_route(source._friday_document_route) == sealed_route
++                                            and str(getattr(getattr(self, "_bot", None), "id", "")) == sealed_route["bot_id"]
++                                            and native["platform"] == source.platform.value
++                                            and native["chat_type"] == source.chat_type
++                                            and native["user_id"] == source.user_id
++                                            and native["chat_id"] == source.chat_id == chat
++                                            and native["thread_id"] == source.thread_id == thread
++                                            and native["message_id"] == source.message_id == str(anchor)
++                                            and _reply_anchor_for_event(event) == anchor)
++                                except Exception:
++                                    return False
++
++                            policy["ownership"] = _OrdinaryFifoTextAuthority(
++                                self, getattr(self, "_bot", None), text_owner_current, chat,
++                                None if thread == "1" else thread, str(anchor) if anchor is not None else None)
+                         await self._send_final_text(
+                             event, session_key, text_content, _final_thread_metadata,
+                             is_ephemeral_response, _ephemeral_ttl, _record_delivery,
+-                            defer_turn_marker_release=(
+-                                getattr(event.source, "_friday_user_scope", None) is not None
+-                                and bool(extracted.media_files or extracted.local_files or extracted.images)))
++                            defer_turn_marker_release=managed_attachments, **policy)
++                    if fifo_run is not None and not fifo_owner_current():
++                        return
+                     await self._deliver_attachments(
+                         event, extracted, _final_thread_metadata,
+                         anything_sent=delivery_attempted or _tts_caption_delivered,
+@@ -4785,12 +4936,18 @@
+             await self._release_turn_marker(event)
+             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+             # Clean up the per-turn streaming-TTS flag.
++            generation = fifo_run[1] if fifo_run is not None else getattr(
++                interrupt_event, "_hermes_run_generation", None)
+             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
+-                session_key, getattr(interrupt_event, "_hermes_run_generation", None),
+-                event=event) or "")
++                session_key, generation, event=event) or "")
++            if fifo_run is not None and not fifo_owner_current():
++                return
+             await self._run_processing_hook(
+                 "on_processing_complete", event,
+                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
++            if fifo_run is not None:
++                dispatch_returned = fifo_can_drain = True
++                return  # Settle this event and its receipt before handing off the pending slot.
+             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
+             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
+             await self._flush_text_debounce_now(session_key)
+@@ -4808,23 +4965,30 @@
+             dispatch_returned = True
+         except asyncio.CancelledError:
+             expected = asyncio.current_task() in self._expected_cancelled_tasks
+-            await self._run_processing_hook(
+-                "on_processing_complete", event,
+-                ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
++            if fifo_run is None:
++                await self._run_processing_hook(
++                    "on_processing_complete", event,
++                    ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
+             raise
+         except BaseException as e:
+-            await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+-            _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
++            if fifo_run is None or fifo_owner_current():
++                await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
++                if fifo_run is None or fifo_owner_current():
++                    _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
+             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
+             if isinstance(e, (SystemExit, KeyboardInterrupt)):
+                 raise
++            fifo_can_drain = isinstance(e, Exception)
+         finally:
+             await self._release_turn_marker(event)
+             event._turn_marker_handoff = False  # a later run of this object clears its own marker
+             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
+             # alive.
+-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
++            if fifo_run is None or fifo_owner_current():
++                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
++            elif typing_task is not None and not typing_task.done():
++                typing_task.cancel()
+             # Callback execution also occurs on exceptions and empty responses;
+             # neither is evidence that a final answer reached the user. A partial
+             # attachment batch cannot authorize deletion merely because text landed.
+@@ -4844,17 +5008,39 @@
+                     "forbidden", "not_found", "too_long", "bad_format", "rate_limited",
+                 } for item in delivery_results):
+                     receipt = "failed"
+-            await self._fire_post_delivery_callback(session_key, interrupt_event, delivery_receipt=receipt)
+-            # Callback work or a late refresh may have recreated typing — one final bounded stop.
+-            await self._stop_typing_refresh(
+-                event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
+-            # Flush any timer that missed the in-band drain, then reconcile ownership.
+-            await self._flush_text_debounce_now(session_key)
+-            self._finish_session_task(session_key, interrupt_event)
+-            if dispatch_returned:
+-                finished = getattr(self, "_ordinary_dm_dispatch_finished", None)
+-                if finished is not None:
+-                    finished(event, session_key)
++            if fifo_run is None:
++                await self._fire_post_delivery_callback(session_key, interrupt_event, delivery_receipt=receipt)
++                # Keep the direct dispatch's existing cleanup order.
++                await self._stop_typing_refresh(
++                    event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
++                await self._flush_text_debounce_now(session_key)
++                self._finish_session_task(session_key, interrupt_event)
++                if dispatch_returned:
++                    finished = getattr(self, "_ordinary_dm_dispatch_finished", None)
++                    if finished is not None:
++                        finished(event, session_key)
++            else:
++                await self._run_post_delivery_callback(fifo_callback, delivery_receipt=receipt)
++                if fifo_owner_current():
++                    await self._stop_typing_refresh(
++                        event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
++                if fifo_owner_current():
++                    await self._flush_text_debounce_now(session_key)
++                # No await between this ownership check, the completion witness and handoff.
++                if fifo_owner_current() and fifo_can_drain:
++                    if dispatch_returned:
++                        finished = getattr(self, "_ordinary_dm_dispatch_finished", None)
++                        if finished is not None:
++                            finished(event, session_key)
++                    pending_event = self._pending_messages.get(session_key)
++                    if pending_event is not None:
++                        delay = self._requeue_backoff_delay(session_key, pending_event, event)
++                        # The guarded child takes the slot after confirming ownership.
++                        self._spawn_drain_task(pending_event, session_key, delay=delay, owned_handoff=True)
++                # For an invalidated turn, retire only our own guard and leave pending untouched.
++                if (self._session_tasks.get(session_key) is fifo_delivery.task
++                        and self._active_sessions.get(session_key) is interrupt_event):
++                    self._cleanup_finished_session_task(session_key, interrupt_event)
+ 
+     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
+     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
+@@ -4892,7 +5078,7 @@
+         return delay
+ 
+     def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str,
+-                          delay: float = 0.0) -> None:
++                          delay: float = 0.0, *, owned_handoff: bool = False) -> None:
+         """Hand the session to a fresh task for a queued follow-up — never recurse (chained
+         follow-ups grew the C stack to SIGSEGV). Clearing (not deleting) the Event keeps the guard
+         live for concurrent inbound; ownership moves so stale-lock detection works. With ``delay``
+@@ -4903,19 +5089,31 @@
+         # Capture the guard this drain owns now: a /stop//new guard swapped in during the
+         # back-off must survive the slot-empty exit (#48300).
+         guard = self._active_sessions.get(session_key)
+-        self._track_session_task(
+-            session_key,
+-            asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
++        kwargs = {"owned_handoff": True} if owned_handoff else {}
++        self._track_session_task(session_key, asyncio.create_task(
++            self._drain_after(pending_event, session_key, delay, guard, **kwargs)))
+ 
+     async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
+-                           guard: Optional[asyncio.Event]) -> None:
++                           guard: Optional[asyncio.Event], *, owned_handoff: bool = False) -> None:
++        def still_owner():
++            task = asyncio.current_task()
++            return (task is not None and not task.cancelling() and guard is not None and not guard.is_set()
++                    and self._active_sessions.get(session_key) is guard
++                    and self._session_tasks.get(session_key) is task)
++
+         if delay > 0:
+             await asyncio.sleep(delay)
++            if owned_handoff and not still_owner():
++                return
+             await self._flush_text_debounce_now(session_key)  # as every other task exit does
++        if owned_handoff and not still_owner():
++            return
++        if delay > 0 or owned_handoff:
+             pending_event = self._pending_messages.pop(session_key, None)
+-            if pending_event is None:  # consumed elsewhere during the back-off
++            if pending_event is None:  # consumed elsewhere before this task took the slot
+                 self._cleanup_finished_session_task(session_key, guard)
+                 return
++        pending_event._friday_document_guard = (session_key, guard) if guard is not None else None
+         await self._process_message_background(pending_event, session_key)
+ 
+     def _clear_session_guard(self, session_key: str) -> None:
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -22,7 +22,7 @@
+ from agent.i18n import t
+ from agent.friday_baseline_bridge import atracked
+ from gateway.config import Platform
+-from gateway.platforms.base import EphemeralReply
++from gateway.platforms.base import EphemeralReply, _OrdinaryFifoDelivery
+ from gateway.platforms.event import MessageEvent, MessageType
+ from gateway.run_busy import approval_input_words
+ from gateway.run_common import _UNSET
+@@ -1291,17 +1291,59 @@
+             # Same session key by construction; carry the orphan's own source so reply anchors /
+             # thread metadata point at the message actually being answered.
+             _rescued_source = getattr(_rescued, "source", None)
++            if (_rescued is not event and getattr(_rescued_source, "platform", None) == Platform.TELEGRAM
++                    and getattr(_rescued_source, "_friday_user_scope", None) is not None):
++                # An orphan must never reuse the guard from an earlier dispatch of that event.
++                _rescued._friday_document_guard = None
++                try:
++                    self._hm_handoff_rescued_document_guard(event, source, _rescued, _orphan_adapter, _quick_key)
++                except Exception:
++                    # Refuse document authority without undoing the already-restaged FIFO.
++                    logger.debug("FIFO orphan document guard handoff refused")
+             source = _rescued_source if _rescued_source is not None else source
+             return _rescued, source, bool(getattr(_rescued, "internal", False))
+         except Exception:
+             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
+             return event, source, is_internal
+ 
++    def _hm_handoff_rescued_document_guard(self, event, source, rescued, adapter, quick_key):
++        """Transfer only the live adapter task's guard; the orphan proves its own ingress."""
++        from gateway.session_identity import identity_of
++        from hermes_cli.friday_user_scope import _same_scope
++
++        rescued_source = rescued.source
++        if (rescued.internal or event.source is not source or source is rescued_source
++                or source.platform != Platform.TELEGRAM
++                or not _same_scope(getattr(source, "_friday_user_scope", None),
++                                   rescued_source._friday_user_scope)):
++            return
++        binding = getattr(event, "_friday_document_guard", None)
++        if type(binding) is not tuple or len(binding) != 2:
++            return
++        adapter_key, guard = binding
++        task = asyncio.current_task()
++        if (not isinstance(adapter_key, str) or not adapter_key or not isinstance(guard, asyncio.Event)
++                or task is None or task.cancelling() or adapter.gateway_runner is not self
++                or adapter._session_tasks.get(adapter_key) is not task
++                or adapter._active_sessions.get(adapter_key) is not guard or guard.is_set()):
++            return
++        for owner in (source, rescued_source):
++            identity = identity_of(owner)
++            if identity is None or identity.transport_inferred or identity.adapter() is not adapter:
++                return
++        if (self._session_key_for_source(source) != quick_key
++                or self._session_key_for_source(rescued_source) != quick_key
++                or adapter._event_session_key(rescued) != adapter_key):
++            return
++        rescued._friday_document_guard = binding
++        event._friday_document_guard = None  # The arriving event is parked; its next dispatch binds afresh.
++
+     @atracked("friday-inbound-pending")
+     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+         """Handle an incoming message from any platform: auth → command check → running-agent
+         interrupt → get/create session → build context → run agent → return response."""
+         from gateway.run import _AGENT_PENDING_SENTINEL
++        dispatch_event = event
+         _admitted = await self._hm_admit_event(event)
+         if _admitted is None:
+             return None
+@@ -1364,6 +1406,8 @@
+             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
+             return _limit_message
+ 
++        dispatch_guard_binding = getattr(dispatch_event, "_friday_document_guard", None)
++        fifo_trigger = event
+         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
+ 
+         _claim_state = self._session_state(_quick_key)
+@@ -1378,6 +1422,22 @@
+         _run_generation = self._begin_session_run_generation(_quick_key)
+ 
+         try:
++            fifo_delivery = getattr(dispatch_event, "_friday_fifo_delivery", None)
++            if (event is not fifo_trigger and isinstance(fifo_delivery, _OrdinaryFifoDelivery)
++                    and fifo_delivery.task is asyncio.current_task()
++                    and dispatch_guard_binding is fifo_delivery.guard_binding
++                    and source.platform == Platform.TELEGRAM
++                    and getattr(source, "_friday_user_scope", None) is not None):
++                # Even a failed guard transfer must never present the orphan reply as the parked event.
++                # The adapter validates the exact transferred guard again before any late effects.
++                fifo_delivery.event = event
++                fifo_delivery.source = source
++                fifo_delivery.run = (_quick_key, _run_generation)
++                event._status_streamed_final_confirmed = False
++                event._streamed_final_response = None
++                event._turn_marker_handoff = False
++            else:
++                fifo_delivery = None
+             if not is_internal:  # fail-open plugin consume, inside the claimed slot (#129958)
+                 from gateway.run_inbound_consumer import run_post_admission_hook
+                 _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
+@@ -1402,7 +1462,12 @@
+                     )
+                 except Exception as _goal_exc:
+                     logger.debug("post-turn hook failed: %s", _goal_exc)
+-                return _agent_result
++            if (fifo_delivery is not None
++                    and getattr(dispatch_event, "_friday_document_guard", None) is None
++                    and getattr(event, "_friday_document_guard", None) is dispatch_guard_binding):
++                # The adapter clears this turn's marker after recording delivery disposition.
++                event._turn_marker_handoff = True
++            return _agent_result
+         finally:
+             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
+             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
+--- a/gateway/run_plugin_delivery.py
++++ b/gateway/run_plugin_delivery.py
+@@ -242,16 +242,31 @@
+     from gateway.session_identity import identity_of
+     cap = current(required=True)
+     route = freeze_route(getattr(source, '_friday_document_route', None))
++    guard_binding = getattr(source, '_friday_document_guard', None)
++    if guard_binding is None:
++        raise ValueError('ordinary_document_turn_guard_required')
++    session_key, guard = guard_binding
++    run_binding = getattr(source, '_friday_document_run', None)
++    if run_binding is None:
++        raise ValueError('ordinary_document_run_required')
++    run_key, generation = run_binding
++    if not run_key or type(generation) is not int or generation < 1:
++        raise ValueError('ordinary_document_run_required')
+     runner = getattr(adapter, 'gateway_runner', None)
+     context = SimpleNamespace(_manager=SimpleNamespace(home_path=cap.home))
+     def check():
+         cap.check()
++        if (getattr(source, '_friday_document_guard', None) is not guard_binding
++                or adapter._active_sessions.get(session_key) is not guard or guard.is_set()
++                or getattr(source, '_friday_document_run', None) is not run_binding
++                or runner is None or not runner._is_session_run_current(run_key, generation)):
++            raise ValueError('ordinary_document_turn_no_longer_current')
+         identity = identity_of(source)
+         if (current(required=True) is not cap or ordinary_file_source() is not source
+                 or source.platform != Platform.TELEGRAM or identity is None or identity.transport_inferred
+                 or identity.runtime_home != cap.home or identity.runtime_profile != cap.profile
+                 or identity.transport_profile != cap.principal[1] or source.user_id != cap.principal[3]
+-                or runner is None or getattr(adapter, 'gateway_runner', None) is not runner
++                or getattr(adapter, 'gateway_runner', None) is not runner
+                 or str(getattr(getattr(adapter, '_bot', None), 'id', '')) != cap.principal[2]):
+             raise ValueError('original_source_required')
+         actual = freeze_route({'transport_profile': identity.transport_profile,
+@@ -299,6 +314,7 @@
+         stage = 'recovery_owner'
+         await _mark_ordinary_file_recovery(runner, source, cap, route,
+             [{'relative_path': relative, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}])
++        check()
+         stage = 'journal_reservation'
+         state, selection, reserved = _begin_ordinary_document(cap, relative, data, route, name)
+     except Exception as exc:
+@@ -479,6 +495,9 @@
+     cap = ordinary_file_scope()
+     if cap is None or source.platform != Platform.TELEGRAM:
+         return
++    # Native continuations may reuse this mutable source. Require fresh ingress.
++    source._friday_document_guard = None
++    source._friday_document_route = None
+     proof = admitted_ingress(event, source, '')
+     if not isinstance(proof, dict):
+         return
+@@ -492,6 +511,7 @@
+             or source.user_id != cap.principal[3]
+             or any(message.get(k) != v for k, v in expected.items())):
+         return
++    source._friday_document_guard = getattr(event, '_friday_document_guard', None)
+     source._friday_document_route = freeze_route({
+         'transport_profile': cap.principal[1], 'runtime_profile': cap.profile,
+         'bot_id': cap.principal[2], 'source': {'platform': source.platform.value,
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -2136,6 +2136,7 @@
+             source._friday_document_turn = (
+                 getattr(event, '_gateway_active_turn_session_key', None),
+                 getattr(event, '_gateway_active_turn_token', None))
++            source._friday_document_run = (_quick_key, run_generation)
+ 
+         # An unreadable store is not an empty conversation: stop before the agent invents continuity
+         # from []. Restore task-local context here (before the broad cleanup finally).
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -154,6 +154,7 @@
+     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
+     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
+     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
++    _OrdinaryFifoTextAuthority, _OrdinaryFifoTextOwnerLost,
+ )
+ 
+ # Telegram truncates ``answerCallbackQuery`` text at 200 chars; ``BotCommand`` descriptions at 256.
+@@ -1533,9 +1534,10 @@
+         try:
+             # Raw Bot API result: return_type=Message would make PTB deserialize a 10.1 shape it doesn't
+             # fully model; a post-delivery parse error ≠ send failure.
+-            msg = await _await_with_thread_deadline(
+-                self._bot.do_api_request("sendRichMessage", api_kwargs=payload),
+-                timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
++            msg = await self._await_text_sdk_call(
++                lambda: self._bot.do_api_request("sendRichMessage", api_kwargs=payload), metadata, payload)
++        except _OrdinaryFifoTextOwnerLost:
++            return SendResult(success=False, error="delivery_owner_changed", retryable=False)
+         except Exception as exc:
+             if self._rich_rejected(exc, "sendRichMessage", "MarkdownV2"):
+                 return None
+@@ -3801,20 +3803,43 @@
+         except ImportError:
+             return False
+ 
+-    async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: Dict[str, Any]):
++    async def _await_text_sdk_call(
++        self, make_call: Callable[[], Awaitable[Any]], metadata: Optional[Dict[str, Any]], sdk_route: Dict[str, Any],
++        *, require_reply: bool = True,
++    ) -> Any:
++        authority = (metadata or {}).get("_friday_fifo_text_authority")
++        if isinstance(authority, _OrdinaryFifoTextAuthority):
++            async def send_owned():
++                # The deadline runs this coroutine in a child task. Check after that scheduling gap.
++                if self._reply_to_mode == "off":
++                    raise _OrdinaryFifoTextOwnerLost()
++                authority.require_current(self, sdk_route, require_reply=require_reply)
++                return await make_call()
++            call = send_owned()
++        else:
++            call = make_call()
++        return await _await_with_thread_deadline(
++            call, timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
++
++    async def _send_chunk_markdown_or_plain(
++        self, chunk: str, send_kwargs: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None,
++        *, require_reply: bool = True,
++    ):
+         """MarkdownV2 first; on a parse/markdown rejection resend as stripped plain text."""
+         try:
+-            return await _await_with_thread_deadline(
+-                self._bot.send_message(text=chunk, parse_mode=ParseMode.MARKDOWN_V2, **send_kwargs),
+-                timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
++            return await self._await_text_sdk_call(
++                lambda: self._bot.send_message(text=chunk, parse_mode=ParseMode.MARKDOWN_V2, **send_kwargs),
++                metadata, send_kwargs, require_reply=require_reply)
++        except _OrdinaryFifoTextOwnerLost:
++            raise
+         except Exception as md_error:
+             if telegram_text_send_fenced() and not self._text_no_effect_exception(md_error):
+                 raise
+             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+-                return await _await_with_thread_deadline(
+-                    self._bot.send_message(text=_strip_mdv2(chunk), parse_mode=None, **send_kwargs),
+-                    timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
++                return await self._await_text_sdk_call(
++                    lambda: self._bot.send_message(text=_strip_mdv2(chunk), parse_mode=None, **send_kwargs),
++                    metadata, send_kwargs, require_reply=require_reply)
+             raise
+ 
+     async def _send_chunk_with_retries(
+@@ -3826,6 +3851,7 @@
+         cases, flood cap); raises anything the caller's classifier should see."""
+         _NetErr, _BadReq, _TimedOut = error_types
+         retried_thread_not_found = False
++        owned_text = isinstance((metadata or {}).get("_friday_fifo_text_authority"), _OrdinaryFifoTextAuthority)
+         private_dm_topic_send, dm_topic_reply_to_off, reply_to_id = self._chunk_reply_routing(chat_id, reply_to, metadata, thread_id, index)
+         if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
+             return SendResult(success=False, error=self._dm_topic_missing_anchor_error(), retryable=False)
+@@ -3840,7 +3866,16 @@
+                 send_kwargs = {
+                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
+                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
+-                return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
++                if owned_text:
++                    # In ordinary first mode only continuation chunks may omit the original anchor.
++                    require_reply = index == 0 or private_dm_topic_send or self._reply_to_mode == "all"
++                    msg = await self._send_chunk_markdown_or_plain(
++                        chunk, send_kwargs, metadata, require_reply=require_reply)
++                else:
++                    msg = await self._send_chunk_markdown_or_plain(chunk, send_kwargs)
++                return msg, used_thread_fallback
++            except _OrdinaryFifoTextOwnerLost:
++                raise
+             except _NetErr as send_err:
+                 if telegram_text_send_fenced() and not self._text_no_effect_exception(send_err):
+                     raise
+@@ -3854,6 +3889,8 @@
+                             retried_thread_not_found = True
+                             logger.warning("[%s] Thread %s not found, retrying once with same thread_id", self.name, effective_thread_id)
+                             continue
++                        if owned_text:
++                            raise
+                         # Thread is genuinely gone: retry without it and prune the stale binding.
+                         logger.warning("[%s] Thread %s not found, retrying without message_thread_id", self.name, effective_thread_id)
+                         self._prune_stale_dm_topic_binding(chat_id, effective_thread_id, metadata=metadata)
+@@ -3865,6 +3902,8 @@
+                         safe_send_error = _redact_telegram_error_text(send_err)
+                         if private_dm_topic_send:
+                             return SendResult(success=False, error=safe_send_error, retryable=False)
++                        if owned_text:
++                            raise
+                         # Reply target deleted; private-topic fallback sends drop anchor + topic id together.
+                         logger.warning("[%s] Reply target deleted, retrying without reply_to: %s", self.name, safe_send_error)
+                         reply_to_id = None
+@@ -4069,8 +4108,15 @@
+         used_thread_fallback = False
+         prior = len(delivered)
+         for chunk in chunks:
+-            outcome = await self._send_chunk_with_retries(
+-                chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)
++            try:
++                outcome = await self._send_chunk_with_retries(
++                    chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)
++            except _OrdinaryFifoTextOwnerLost:
++                result = SendResult(success=False, error="delivery_owner_changed", retryable=False)
++                if delivered:
++                    result.raw_response = {"delivered_message_ids": tuple(delivered)}
++                return self._with_partial_send(
++                    result, chunks[len(delivered) - prior:], delivered, tail_certain=False)
+             if isinstance(outcome, SendResult):
+                 # Every SendResult returned here is a DEFINITE non-delivery (flood cap, DM-topic refusal);
+                 # ambiguous timeouts raise instead, so the remainder is safe to resume from.
