@@ -10,6 +10,8 @@ Use --b00-wave-root to join historical B00 scenarios from a local wave archive.
 The joined archive also reports recorded observation and deadline ranges for
 one scenario per phase on the shared serial slot.
 With --b00-fixture, match explicit copies to the fixture pins.
+With --b00-preparation, join a pinned offline evidence input without changing
+the archived phase projection or assigning any dispatch or acceptance state.
 Use --prepared-result, --prepared-plan and --prepared-r4 to verify selected
 passive plans from an already pinned private preparation result for one case.
 The original requests and oracles stay in their source files. The projection
@@ -35,7 +37,9 @@ CHECKPOINT = Path(__file__).resolve().parent
 CASE_ANCHORS = 'evidence/astra-20261112/remaining-core-original-criteria-review.json'
 PACKAGE_ANCHORS = 'evidence/sol-20261110/conditional-archive-links-root-review.json'
 PREPARED_R4_SHA256 = '44577894f0669d305d2cd713048928c7ccbce265a40f1f6d09080b1fb62228bd'
+B00_D07_RETAINED_RESULT_SHA256 = '6f7dbf652063b726a4b65963cde9d570b93681c968d16d24fafc152eadceedfe'
 B00_PLANNING_KEY = 'b219_finite_executable_expansion'
+B00_PREPARATION_SCHEMA = 'frw.b00.offline-preparation.v1'
 WORKER_CASES = {
     'W-13': 'DSH', 'R-11': 'DSH', 'W-14': 'A0', 'R-12': 'A0', 'R-13': 'DSH/A0 handoff',
 }
@@ -339,11 +343,9 @@ def b00_historical_timing(history):
             deadlines.append([binding['recorded_deadline_seconds'] for binding in capsules])
         windows = []
         for binding in capsules:
-            parts = [step.get('recorded_observation_seconds') for step in binding['steps']]
-            if None not in parts:
-                seconds = sum(parts)
-                if seconds <= binding['recorded_deadline_seconds']:
-                    windows.append(seconds)
+            window = b00_observation_window(binding)
+            if window is not None:
+                windows.append(window)
         if windows:
             observation.append(windows)
 
@@ -362,6 +364,14 @@ def b00_historical_timing(history):
         'observation_windows': serial_envelope(observation),
         'deadline_envelopes': serial_envelope(deadlines),
     }
+
+
+def b00_observation_window(binding):
+    if binding['capsule']:
+        parts = [step.get('recorded_observation_seconds') for step in binding['steps']]
+        if None not in parts and sum(parts) <= binding['recorded_deadline_seconds']:
+            return sum(parts)
+    return None
 
 
 def project_b00_planning(case_ledger, catalog, b00, catalog_fixtures, fixture_pins):
@@ -608,6 +618,239 @@ def project_prepared(args, output, selected_cases):
     }
 
 
+def b00_evidence(raw_refs):
+    records, refs, labels = {}, {}, set()
+    for label, pin in raw_refs.items():
+        prepared_label(label, labels)
+        raw, refs[label] = prepared_file(pin['path'], pin, 8_388_608, label)
+        if 'source_path' in pin:
+            refs[label]['source_path'] = pin['source_path']
+        records[label] = json.loads(raw, object_pairs_hook=unique_object)
+    return records, refs
+
+
+def b00_evidence_at(records, reference):
+    label, delimiter, pointer = reference.partition('#')
+    require(delimiter and label in records, 'unknown B00 evidence reference')
+    return prepared_pointer(records[label], pointer) if pointer else records[label]
+
+
+def b00_retained_run(phase, row, records, link, fixture_pins, refs):
+    reference, match_kind = link['reference'], link['match']
+    record = b00_evidence_at(records, reference)
+    expected = record['scenario_sha256']
+    scenario = record['scenario']
+    require(matches_b00_scenario(scenario, expected), f'{phase}: retained run scenario digest mismatch')
+    if match_kind == 'wave_authority':
+        matches = [binding for binding in row['history']['bindings']
+                   if binding['run_id'] == record['id'] and binding['scenario_sha256'] == expected
+                   and binding['capsule'] is None]
+        require(len(matches) == 1, f'{phase}: retained run fails exact archived authority/scenario join')
+        identity = matches[0]['source']
+    else:
+        pinned = row['operation']['scenario_pin']
+        serialized = json.dumps(scenario, ensure_ascii=True, indent=2) + '\n'
+        require(match_kind == 'ledger_raw' and pinned
+                and hashlib.sha256(serialized.encode()).hexdigest() == pinned['sha256'],
+                f'{phase}: retained run does not reconstruct the exact ledger scenario pin')
+        identity = 'exact_ledger_scenario_from_retained_run'
+    path = Path(refs[reference.partition('#')[0]]['path'])
+    details = b00_capsule_details(
+        ('run_record', path, '/scenario', scenario), path.parent, fixture_pins)
+    del details['capsule_ref']
+    retained_fields = ('status', 'acceptance', 'artifact_acceptance', 'reply_outcome', 'send_state',
+                       'capture_window_complete', 'sent_message_id', 'message_ids', 'sent_at',
+                       'capture_until', 'deadline', 'repeat_count', 'send_attempts')
+    return {
+        **details, 'evidence': reference, 'run_id': record['id'], 'scenario_sha256': expected,
+        'identity': identity, 'tester_record': {field: record[field] for field in retained_fields if field in record},
+        'new_execution_credit': 0, 'replay_authorized': False,
+    }
+
+
+def b00_passive_variants(manifest, phases, b00_r4):
+    variants = {}
+    seen_hashes = set()
+    for package, spec in manifest.items():
+        labels = spec['plans']
+        args = argparse.Namespace(
+            prepared_result=spec['result'], prepared_r4=b00_r4,
+            prepared_plan=[(label, *plan['pointers']) for label, plan in labels.items()],
+            prepared_artifact=spec.get('artifacts', []), prepared_dependency=spec.get('dependencies', []),
+        )
+        case = {'id': spec['case']}
+        project_prepared(args, {'cases': [case]}, {spec['case']})
+        prepared = case['selected_preparation']
+        for plan in prepared['plans']:
+            label = plan['label']
+            meta = labels[label]
+            phase = meta['phase']
+            require(phase in phases and phase.startswith(spec['case'] + '-'),
+                    f'{label}: invalid B00 variant phase')
+            operation = phases[phase]['operation']
+            source = operation['scenario_pin']
+            digest = plan['scenario_sha256']
+            relation = meta['relation']
+            require(label not in variants and digest not in seen_hashes
+                    and (source is None or source['sha256'] != digest)
+                    and not any(item['scenario_sha256'] == digest for item in phases[phase]['history']['bindings'])
+                    and relation in {'separate_variant', 'exact_ledger_inputs_passive_wrapper'},
+                    f'{label}: duplicate B00 variant or original scenario identity')
+            if relation == 'exact_ledger_inputs_passive_wrapper':
+                raw, _ = prepared_file(plan['plan']['path'], plan['plan'], 2_000_000, label)
+                steps = json.loads(raw, object_pairs_hook=unique_object)['steps']
+                require(len(steps) == 1
+                        and hashlib.sha256(steps[0]['input']['caption'].encode()).hexdigest()
+                        == operation['request_sha256']
+                        and [item['sha256'] for item in plan['uploads']]
+                        == [item['sha256'] for item in operation['documents']],
+                        f'{label}: passive reconstruction differs from exact ledger request or inputs')
+            dep = meta['predecessor']
+            required = phases[phase]['predecessor_phases']
+            local_predecessors = {label for label, candidate in labels.items() if candidate['phase'] in required}
+            if dep and 'phase' in dep and phase == 'D-14-02' and relation == 'exact_ledger_inputs_passive_wrapper':
+                # This package reconstructs only the two follow-ons. The first phase is an external lineage anchor.
+                require(dep['phase'] == 'D-14-01' and dep['phase'] in required and dep['condition'],
+                        f'{label}: invalid B00 variant predecessor')
+            elif (phase == 'D-07-02' and prepared['result']['sha256'] == B00_D07_RETAINED_RESULT_SHA256):
+                # The independently pinned retained-history trial has its own external v1 custody.
+                require(dep is None and meta.get('independent_scope'), f'{label}: separate retained scope is required')
+            elif required:
+                require(dep and dep.get('variant') in local_predecessors and dep['condition'],
+                        f'{label}: exact B00 predecessor variant is required')
+            else:
+                require(dep is None, f'{label}: unexpected B00 variant predecessor')
+            variants[label] = {
+                **plan, 'phase': phase, 'relation': relation, 'predecessor': dep,
+                'independent_scope': meta.get('independent_scope'),
+                'package': package, 'source_result': prepared['result'],
+                'r4': prepared['r4'], 'grader_inputs': prepared['artifacts'],
+                'admission': 'UNBOUND', 'acceptance': 'UNASSESSED', 'new_execution_credit': 0,
+            }
+            seen_hashes.add(digest)
+    return variants
+
+
+def project_b00_preparation(output, b00, fixture_pins, fixture_paths, preparation):
+    path, digest = preparation
+    raw, manifest_ref = prepared_file(path, {'sha256': digest}, 2_000_000, 'B00 preparation input')
+    manifest = json.loads(raw, object_pairs_hook=unique_object)
+    require(manifest['schema'] == B00_PREPARATION_SCHEMA, 'unexpected B00 preparation schema')
+    fixture_refs = manifest['fixture_arguments']
+    require([str(path.absolute()) for path in fixture_paths] == [ref['path'] for ref in fixture_refs]
+            and all(index in fixture_pins.get((ref['bytes'], ref['sha256']), [])
+                    for index, ref in enumerate(fixture_refs, 1)),
+            'B00 explicit fixture path, size or SHA-256 differs from the preparation pin')
+    coverage = output['summary']['b00_planning']
+    require(coverage['attachment_references'] == coverage['attachment_references_with_verified_bytes'] == 34,
+            'expected 34 verified B00 planning attachment references')
+    records, evidence_refs = b00_evidence(manifest['evidence'])
+    resume = records['handoff-section']
+    require(resume == manifest['resume'] and resume['section'] == 5
+            and resume['r4']['path'] == manifest['r4'] and resume['r4']['sha256'] == PREPARED_R4_SHA256,
+            'B00 resume binding differs from pinned handoff and R4')
+    handoff = resume['handoff']
+    handoff_bytes = read_pinned(Path(handoff['path']), handoff, 'B00 handoff')
+    require(b'\n## 5.' in handoff_bytes, 'B00 handoff section 5 is missing')
+    phases = {}
+    for case_index, case in enumerate(output['cases']):
+        if 'b00' not in case:
+            continue
+        data = case['b00']
+        for index, (operation, history) in enumerate(zip(
+                data['planning_operations'], data['historical_scenarios'], strict=True)):
+            phase = operation['phase']
+            require(phase == history['phase'] and phase not in phases, 'duplicate or mismatched B00 phase')
+            prefix = f'/cases/{case_index}/b00'
+            phases[phase] = {
+                'operation': operation, 'history': history, 'criteria': case['criteria_refs'],
+                'planning_ref': f'{prefix}/planning_operations/{index}',
+                'archive_ref': f'{prefix}/historical_scenarios/{index}',
+            }
+    retained_timing = output['summary']['b00_archived_serial_timing']
+    archive = {'timing': retained_timing, 'phases': [row['history'] for row in phases.values()]}
+    archive_sha = hashlib.sha256(json.dumps(archive, sort_keys=True, ensure_ascii=True,
+                                            separators=(',', ':')).encode()).hexdigest()
+    require(archive_sha == manifest['archive_projection_sha256'], 'B00 archived projection differs from pin')
+    timed = {phase for phase, row in phases.items()
+             if any(b00_observation_window(binding) is not None for binding in row['history']['bindings'])}
+    reserved = {phase for phase in phases if phase.startswith('D-03-')}
+    outstanding = phases.keys() - timed - reserved
+    require((len(phases), len(timed), len(reserved), len(outstanding)) == (62, 26, 3, 33)
+            and not timed & reserved and set(manifest['phase_evidence']) == outstanding,
+            'B00 preparation must cover the exact 33 remaining phase identities')
+
+    for phase in outstanding:
+        row = phases[phase]
+        op = row['operation']
+        details = manifest['phase_evidence'][phase]
+        require(details['phase'] == phase, 'mismatched B00 preparation phase identity')
+        required = {parent for clause in op['prior_clause_phases'] for parent in clause['earlier_phase_candidates']}
+        if 'same_clause_predecessor' in op:
+            required.add(op['same_clause_predecessor']['phase'])
+        additional = details.get('additional_predecessors', {})
+        for parent, reference in additional.items():
+            b00_evidence_at(records, reference)
+            require(parent in phases and parent.rsplit('-', 1)[0] == phase.rsplit('-', 1)[0]
+                    and parent < phase, f'{phase}: invalid additional predecessor')
+        row['predecessor_phases'] = required | additional.keys()
+
+    variants = b00_passive_variants(manifest['preparations'], {key: phases[key] for key in outstanding},
+                                   manifest['r4'])
+    rows = []
+    for phase, row in phases.items():
+        if phase not in outstanding:
+            rows.append({'phase': phase, 'disposition': 'D03_RESERVED' if phase in reserved else 'ARCHIVE_RETAINED',
+                         'archive_ref': row['archive_ref']})
+            continue
+        details = manifest['phase_evidence'][phase]
+        refs = details.get('evidence', [])
+        for reference in refs:
+            b00_evidence_at(records, reference)
+        blockers = details['blockers']
+        require(blockers and len({item['code'] for item in blockers}) == len(blockers)
+                and all(item['clearance'] and item['cause'] for item in blockers),
+                f'{phase}: missing or duplicate B00 blocker')
+        require(all(item['evidence'] in refs for item in blockers), f'{phase}: unresolved B00 blocker evidence')
+        operation, history = row['operation'], row['history']
+        retained_link = details.get('retained_run')
+        retained = b00_retained_run(phase, row, records, retained_link, fixture_pins,
+                                    evidence_refs) if retained_link else None
+        if operation['source'] == 'original_clause_only':
+            require(any(item['code'] == 'ORIGINAL_CLAUSE_ONLY' for item in blockers),
+                    f'{phase}: missing clause-only clearance')
+        grade_refs = details.get('grading_evidence', [])
+        require(set(grade_refs) <= set(refs), f'{phase}: unresolved B00 grading evidence')
+        rows.append({
+            'phase': phase, 'disposition': 'BLOCKED', 'criteria_refs': row['criteria'],
+            'planning_ref': row['planning_ref'], 'archive_ref': row['archive_ref'],
+            'fixture_refs': [attachment['ref'] for attachment in operation['documents']],
+            'original_scenario': {
+                'registry': b00['source_registry'], 'planning_pin': operation['scenario_pin'],
+                'case_input_pin': operation['case_input_pin'], 'archive_availability': history['availability'],
+                'retained_run': retained,
+            },
+            'predecessors': {
+                'original_clause_candidates': operation['prior_clause_phases'],
+                'documented_same_clause': operation.get('same_clause_predecessor'),
+                'additional_evidence': details.get('additional_predecessors', {}),
+                'live_owned_receipts': 'UNBOUND',
+            },
+            'grader': {'criteria_refs': row['criteria'], 'original_instance': 'UNBOUND',
+                       'retained_or_variant_refs': grade_refs, 'new_live_grade': 'UNASSESSED'},
+            'clocks': {'current_observation_seconds': None, 'current_deadline_seconds': None},
+            'resume': resume, 'blockers': blockers, 'evidence': refs,
+            'passive_variants': [label for label, plan in variants.items() if plan['phase'] == phase],
+            'admission': 'UNBOUND', 'new_execution_credit': 0,
+        })
+    output['b00_offline_preparation'] = {
+        'input': manifest_ref, 'fixture_arguments': fixture_refs, 'evidence': evidence_refs,
+        'archive_projection_sha256': archive_sha, 'phase_rows': rows, 'passive_variants': variants,
+        'summary': dict(Counter(row['disposition'] for row in rows)),
+        'live_dispatch_authorized': False,
+    }
+
+
 def project_cases(catalog, ledger, b00, fixture_families, catalog_sha):
     definitions = indexed_rows(catalog['cases'], 'id', 170, 'original cases')
     retained = indexed_rows(ledger['rows'], 'case_id', 170, 'case ledger')
@@ -833,7 +1076,8 @@ def format_conditions(ledger, formats, case_ids):
     }
 
 
-def build_projection(inputs, selected_cases, selected_formats, select_all, b00_wave_root=None, b00_fixtures=()):
+def build_projection(inputs, selected_cases, selected_formats, select_all, b00_wave_root=None, b00_fixtures=(),
+                     b00_preparation=None):
     case_catalog, format_catalog, case_ledger, extension_ledger, b00, fixture_families, sources, catalog_fixtures = inputs
     cases = project_cases(case_catalog, case_ledger, b00, fixture_families, sources['case_catalog']['sha256'])
     fixture_pins = b00_fixture_pins(b00_fixtures)
@@ -901,6 +1145,9 @@ def build_projection(inputs, selected_cases, selected_formats, select_all, b00_w
             ]
     if select_all or selected_formats:
         output['formats'] = [row for extension, row in formats.items() if select_all or extension in selected_formats]
+    if b00_preparation:
+        require(select_all and b00_wave_root is not None, 'B00 preparation requires --all and --b00-wave-root')
+        project_b00_preparation(output, b00, fixture_pins, b00_fixtures, b00_preparation)
     return output
 
 
@@ -915,6 +1162,8 @@ def main(argv=None):
                         help='join historical B00 scenario hashes from retained wave directories')
     parser.add_argument('--b00-fixture', type=Path, action='append', default=[],
                         help='match an explicit local copy against planning or historical attachment pins; repeatable')
+    parser.add_argument('--b00-preparation', nargs=2, metavar=('FILE', 'SHA256'),
+                        help='join pinned offline phase evidence with the full B00 archive')
     parser.add_argument('--prepared-result', nargs=2, metavar=('FILE', 'SHA256'),
                         help='read the exact already accepted private RESULT for one selected case')
     parser.add_argument('--prepared-r4', type=Path, help='exact composed passive R4 used to validate selected plans')
@@ -930,7 +1179,7 @@ def main(argv=None):
         selected_cases = {case.upper() for case in args.case}
         output = build_projection(load_inputs(args), selected_cases,
                                   {fmt.lower().removeprefix('.') for fmt in args.format}, args.all,
-                                  args.b00_wave_root, args.b00_fixture)
+                                  args.b00_wave_root, args.b00_fixture, args.b00_preparation)
         project_prepared(args, output, selected_cases)
     except ProjectionError as error:
         print(f'CORE projection refused: {error}', file=sys.stderr)
