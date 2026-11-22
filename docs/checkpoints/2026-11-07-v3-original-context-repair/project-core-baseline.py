@@ -14,6 +14,8 @@ Use --prepared-result, --prepared-plan and --prepared-r4 to verify selected
 passive plans from an already pinned private preparation result for one case.
 The original requests and oracles stay in their source files. The projection
 carries no current admission or dispatch state.
+For non-B00 cases and format work, BLOCKED describes missing prospective
+bindings. Each gap has a clearance condition in current_binding_clearance.
 """
 
 import argparse
@@ -38,6 +40,38 @@ WORKER_CASES = {
     'W-13': 'DSH', 'R-11': 'DSH', 'W-14': 'A0', 'R-12': 'A0', 'R-13': 'DSH/A0 handoff',
 }
 FORMAT_OPERATIONS = {'read', 'create', 'edit', 'extract', 'summarize', 'recall', 'preserve'}
+CURRENT_BINDING_CLEARANCE = {
+    'candidate': 'Pin the candidate actually used by the planned observation, including the source for an offline check.',
+    'physical scenario and execution route': (
+        'Bind the original steps, evidence capture and matching checker to the physical route. '
+        'For R4, verify the normalized scenario, exact attachments and qualified ordinary ingress.'
+    ),
+    'historical effect reconciliation': (
+        'Reconcile retained acknowledgements and unresolved effects before planning any new effect. '
+        'Where a predecessor is required, verify its outcome and retained input in the required case and conversation scope.'
+    ),
+    'exact original fixture binding': (
+        'Select and verify the original fixture bytes or initial state for the planned observation.'
+    ),
+    'fixture instance absent from case ledger row': (
+        'Resolve the original fixture family and case criteria to an exact input or initial state for the selected trial.'
+    ),
+    'current candidate and physical execution binding': (
+        'Pin the candidate, then bind the literal variant and operation to its scenario, checker and evidence route. '
+        'Verify any required same-scope predecessor. For R4, verify the normalized scenario, exact attachments and qualified ingress.'
+    ),
+    'applicability disposition': (
+        'Determine applicability for this candidate, variant and operation. '
+        'Record evidence or a reviewed non-applicability rationale. Historical applicability covers its exact prior binding.'
+    ),
+    'fixture instance absent from ledger row': (
+        'Resolve and verify the exact original input or initial state for the literal variant and operation.'
+    ),
+    'conditional conversion scope': (
+        'Resolve the stated condition or resolution_needed against the actual artifact, candidate support and explicit '
+        'user request. Identify concrete source variants and destination criteria, keeping requested native output gaps visible.'
+    ),
+}
 TRIAL_POLICY = {
     'source': 'original_directive:75',
     'default': 'one baseline trial per applicable instance',
@@ -660,6 +694,10 @@ def project_cases(catalog, ledger, b00, fixture_families, catalog_sha):
                 'sent_exact_hash_in_snapshot': b00_row['sent_steps'],
                 'binding_needed': 'Resolve each phase to its exact scenario and qualify same-conversation predecessors where required.',
             }
+        else:
+            projected['current_binding_status'] = 'BLOCKED'
+            if row['fixture_instances']:
+                projected['missing_current_bindings'].append('exact original fixture binding')
         core[case_id] = projected
     return core
 
@@ -674,15 +712,17 @@ def project_operation(row, reference, criteria_ref):
         'historical_candidate': row['candidate'],
         'case_templates': row['case_templates'],
         'gap_ids': row['gap_ids'],
+        'current_binding_status': 'BLOCKED',
         **list_references(row, reference, ('attempts', 'evidence')),
     }
-    missing = ['current candidate and physical execution binding']
-    if row['applicability'] == 'UNRESOLVED_REVIEW_REQUIRED':
-        missing.append('applicability disposition')
+    missing = ['current candidate and physical execution binding', 'applicability disposition']
+    if row.get('attempts') or row.get('evidence') or row.get('first_failure'):
+        missing.append('historical effect reconciliation')
     if row['fixture'] is None:
         missing.append('fixture instance absent from ledger row')
     else:
         projected['fixture_ref'] = f'{reference}/fixture'
+        missing.append('exact original fixture binding')
     projected['missing_current_bindings'] = missing
     if row.get('not_applicable_rationale') or row.get('not_applicable_reviewer'):
         projected['applicability_decision_ref'] = reference
@@ -780,11 +820,13 @@ def format_conditions(ledger, formats, case_ids):
             'open conversion case link is missing')
     return {
         'conditional_pdf_families': [
-            {**row, 'source': f'extension_ledger#/conditional_pdf_family_obligations/{index}'}
+            {**row, 'source': f'extension_ledger#/conditional_pdf_family_obligations/{index}',
+             'current_binding_status': 'BLOCKED', 'missing_current_bindings': ['candidate', 'conditional conversion scope']}
             for index, row in conditional.values()
         ],
         'open_directed_conversions': [
-            {**row, 'source': f'extension_ledger#/open_directed_conversion_obligations/{index}'}
+            {**row, 'source': f'extension_ledger#/open_directed_conversion_obligations/{index}',
+             'current_binding_status': 'BLOCKED', 'missing_current_bindings': ['candidate', 'conditional conversion scope']}
             for index, row in enumerate(ledger['open_directed_conversion_obligations'])
         ],
         'cross_cut_requirements': ledger['cross_cut_requirements'],
@@ -847,6 +889,8 @@ def build_projection(inputs, selected_cases, selected_formats, select_all, b00_w
                 case['b00']['historical_scenarios'] = [
                     {'phase': phase, **history[phase]} for phase in case['b00']['listed_order']]
     format_cases_selected = bool(selected_cases & {'F-04', 'F-05', 'F-06', 'F-07', 'F-08'})
+    if select_all or selected_formats or selected_cases.difference(b00_plans) or format_cases_selected:
+        output['current_binding_clearance'] = CURRENT_BINDING_CLEARANCE
     if select_all or selected_formats or format_cases_selected:
         output['format_conditions'] = conditions
         if selected_formats and not (select_all or format_cases_selected):

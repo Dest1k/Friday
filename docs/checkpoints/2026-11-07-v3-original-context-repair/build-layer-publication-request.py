@@ -184,16 +184,17 @@ def build_request(args):
                          f"patches/hermes/{ninety_eighth_layer}.patch")
         }
         consumer.require_ninety_eighth_source_binding(args.layer_names, source_pins)
-    ninety_ninth_layer = consumer.CURRENT_SOURCE_NINETY_NINTH_LAYER
     consumer.require_ninety_ninth_source_binding(args.layer_names)
-    ninety_ninth = ninety_ninth_layer in args.layer_names
+    core296_schema = consumer.core296_successor_schema(args.layer_names)
+    ninety_ninth = core296_schema is not None
     if ninety_ninth:
+        ninety_ninth_layer = consumer.core296_successor_layer(core296_schema)
         consumer.require(
             args.layer is not None
             and getattr(args, "current_source_project_update", None) is not None
             and getattr(args, "current_source_native_predecessor", None) is not None,
             "transaction_current_source_ninety_eighth_predecessor_required")
-        predecessor_ref = consumer.ninety_ninth_predecessor_ref(args.home)
+        predecessor_ref = consumer.ninety_ninth_predecessor_ref(args.home, core296_schema)
         consumer.require(str(args.current_source_native_predecessor) == predecessor_ref["path"],
                          "transaction_current_source_ninety_ninth_previous_request_pin_changed")
         source_pins = {
@@ -1238,7 +1239,7 @@ def build_request(args):
     marker_path = home / "FRIDAY-INSTALL.json"
     bound_current = forty_third or forty_fourth or forty_fifth or forty_sixth or forty_seventh or forty_eighth or forty_ninth or fiftieth or fifty_first or fifty_second or fifty_third or fifty_fourth or fifty_fifth or fifty_sixth or fifty_seventh or fifty_eighth or fifty_ninth or sixtieth or sixty_first or sixty_second or sixty_third or sixty_fourth or sixty_fifth or sixty_sixth or sixty_seventh or sixty_eighth or sixty_ninth or seventieth or seventy_first or seventy_second or seventy_third or seventy_fourth or seventy_fifth or seventy_sixth or seventy_seventh or seventy_eighth or seventy_ninth or eightieth or eighty_first or eighty_second or eighty_third or eighty_fourth or eighty_fifth or eighty_sixth or eighty_seventh or eighty_eighth or eighty_ninth or ninetieth or ninety_first or ninety_second or ninety_third or ninety_fourth or ninety_fifth or ninety_sixth or ninety_seventh or ninety_eighth or ninety_ninth
     if ninety_ninth:
-        metadata_refs = consumer.ninety_ninth_metadata_refs(home)
+        metadata_refs = consumer.ninety_ninth_metadata_refs(home, core296_schema)
         metadata_raw = {}
         for key in ("source_receipt", "marker", "stamp"):
             ref = metadata_refs[key]
@@ -2611,7 +2612,7 @@ def build_request(args):
                     == request["current_source_successor"]["root_project_update"],
                     "transaction_current_source_forty_first_predecessor_lineage_changed")
             request["current_source_successor"].update({
-                "schema": supported[previous_schema],
+                "schema": core296_schema if ninety_ninth else supported[previous_schema],
                 "previous_native_update": pin(args.current_source_native_predecessor,
                                               predecessor_raw if bound_current else None),
             })

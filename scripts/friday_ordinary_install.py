@@ -4069,6 +4069,34 @@ CURRENT_SOURCE_SEVENTY_NINTH_PREVIOUS_INTENT = 'UNBOUND'
 CURRENT_SOURCE_SEVENTY_NINTH_PREVIOUS_COMMITTED = 'UNBOUND'
 CURRENT_SOURCE_SEVENTY_NINTH_PREVIOUS_HELPER = 'UNBOUND'
 
+
+CURRENT_SOURCE_WRITE_RECOVERY_LAYER = 'write-crash-compaction-recovery-after-source296'
+CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.write-recovery-v98.v1'
+CORE296_SUCCESSOR_SCHEMAS = (CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA, CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA)
+CURRENT_SOURCE_WRITE_RECOVERY_MANIFEST = '6087e2f2c6f0d4f2bbade496cec40c23bd45a4a1253a9fa7cfe0ca117761efdb'
+CURRENT_SOURCE_WRITE_RECOVERY_PATCH = 'd820093d3123e91e34363c3c256bd796f93972aea4dcec0545243855a4d05d6b'
+CURRENT_SOURCE_WRITE_RECOVERY_NATIVE = {'agent/bounded_context.py': ('4f4cb477017e6566339aaa1ea9bd624f47cf1f51a0bdae156539b6a4fdc4308b',
+                              'b9a9dd89d3a6fe7e7a1f38919dc21de4776117fd7d64be6ff37615eafed37908',
+                              93100,
+                              False),
+ 'agent/replay_cleanup.py': ('dabd75f006ec16389a0b0f61d41e8eb41aa1052ffa818379ae3f6e89c24f02fe',
+                             'de566cf53cd379010508f2a3f88332e8501f0026937e069ea30f545f4f3007b3',
+                             12426,
+                             False),
+ 'hermes_state_messages.py': ('003e826d33fd8dcb454df275d4d72deba5053e1667f842066ab99fe5e28a9b84',
+                              '8ecb38977ce2b7c6bceb3acdcebd972d6289543048ab8076151956883e7bb708',
+                              135344,
+                              False)}
+CURRENT_SOURCE_WRITE_RECOVERY_PREDECESSOR = {'request': 'd8a9425112f8e4ccd49c518f992d978294c7d49f54ca77dc87a8b9207ece8003',
+ 'intent': '07783559d23b4704d4051da0d828bf2a63b032fc24ae10a2911c9c5bc71de66c',
+ 'committed': '95119ab48bca3a3fda2a8fd982587d4aeccc68e18d883aa94196f82cbd8e49da',
+ 'input': '6f6eca5cd9df93b599bef60114c681d02e7682a754b3cbe85bc0577ef4094aab',
+ 'helper': '6dae46246ddf0b871d3bd4cbeafa7f730b2fe4d3593b06bcb00e0d6f0c4f32de',
+ 'marker': '84763876011ab9cfc823ca53fcf686d5142fa33f3ad8d7edced9f4786db677b7',
+ 'receipt': '130684bfc13b4836c31de18da3b372939e598db2c4b1a602f95e8f90e4722a77',
+ 'stamp': 'bdf04a3117c76a6530757eebd05db24aae542954d557b56547cf6a085a9bac5f'}
+
+
 # Selected native240 release over the exact closed native239 predecessor.
 CURRENT_SOURCE_FORTY_SECOND_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.v42'
 CURRENT_SOURCE_FORTY_SECOND_LAYER = 'xlsx-print-layout-widths-after-source239'
@@ -7422,29 +7450,50 @@ def _current_source_ninety_eighth_successor_checked(value, request, *, cli_only,
 
 
 
-def _current_source_ninety_ninth_bindings_checked():
+def _core296_predecessor_pins(schema):
+    if schema == CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_WRITE_RECOVERY_PREDECESSOR
+    return {
+        'request': CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_REQUEST,
+        'intent': CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_INTENT,
+        'committed': CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_COMMITTED,
+        'input': CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_INPUT,
+        'helper': CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_HELPER,
+        'marker': CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER,
+        'receipt': CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_RECEIPT,
+        'stamp': CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_STAMP,
+    }
+
+
+def _core296_source_pins(schema):
+    if schema == CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA:
+        return (CURRENT_SOURCE_WRITE_RECOVERY_LAYER, CURRENT_SOURCE_WRITE_RECOVERY_MANIFEST,
+            CURRENT_SOURCE_WRITE_RECOVERY_PATCH, CURRENT_SOURCE_WRITE_RECOVERY_NATIVE)
+    return (CURRENT_SOURCE_NINETY_NINTH_LAYER, CURRENT_SOURCE_NINETY_NINTH_MANIFEST,
+        CURRENT_SOURCE_NINETY_NINTH_PATCH, CURRENT_SOURCE_NINETY_NINTH_NATIVE)
+
+
+def _current_source_ninety_ninth_bindings_checked(schema=CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA):
     """Require the private pins from the closed installation that v99 extends."""
     f = api()
-    source_pins = (CURRENT_SOURCE_NINETY_NINTH_MANIFEST, CURRENT_SOURCE_NINETY_NINTH_PATCH)
-    f.require(bool(CURRENT_SOURCE_NINETY_NINTH_NATIVE) and all(type(pin) is str
+    _, manifest_pin, patch_pin, native = _core296_source_pins(schema)
+    f.require(bool(native) and all(type(pin) is str
         and len(pin) == 64 and all(c in '0123456789abcdef' for c in pin)
-        for pin in source_pins), 'ordinary_current_successor_ninety_ninth_source_binding_required')
-    pins = (CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_REQUEST, CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_INPUT,
-        CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_RECEIPT, CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_STAMP,
-        CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER, CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_INTENT,
-        CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_COMMITTED, CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_HELPER)
+        for pin in (manifest_pin, patch_pin)), 'ordinary_current_successor_ninety_ninth_source_binding_required')
     f.require(all(type(pin) is str and len(pin) == 64 and all(c in '0123456789abcdef' for c in pin)
-        for pin in pins), 'ordinary_current_successor_ninety_ninth_actual296_binding_required')
+        for pin in _core296_predecessor_pins(schema).values()), 'ordinary_current_successor_ninety_ninth_actual296_binding_required')
 
 
 def _current_source_ninety_ninth_successor_checked(value, request, *, cli_only, source_update):
     """Authenticate closed CP296 before selecting its single CP297 successor."""
-    _current_source_ninety_ninth_bindings_checked()
     f = api()
     home = f.canonical(value['home'])
     context = request['current_source_successor']
+    schema = context.get('schema')
+    _current_source_ninety_ninth_bindings_checked(schema)
+    core296_pins = _core296_predecessor_pins(schema)
     f.require(set(context) == {'schema', 'root_project_update', 'previous_native_update'}
-        and context['schema'] == CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA,
+        and schema in CORE296_SUCCESSOR_SCHEMAS,
         'ordinary_current_successor_context_required')
     f.require(type(request['current_input']) is dict and type(request['previous_input']) is dict
         and set(request['current_input']) == set(request['previous_input']) == {'path', 'sha256'}
@@ -7453,12 +7502,12 @@ def _current_source_ninety_ninth_successor_checked(value, request, *, cli_only, 
         'ordinary_current_successor_distinct_candidate_required')
     ninety_eighth_ref = context['previous_native_update']
     ninety_eighth_tx = home/'preparation'/('ordinary-source-update-v45-'+
-        CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_REQUEST[:16])
+        core296_pins['request'][:16])
     f.require(type(ninety_eighth_ref) is dict and ninety_eighth_ref ==
-        {'path': str(ninety_eighth_tx/'request.json'), 'sha256': CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_REQUEST},
+        {'path': str(ninety_eighth_tx/'request.json'), 'sha256': core296_pins['request']},
         'ordinary_current_successor_exact_ninety_ninth_previous_required')
     ninety_eighth_request = _current_source_json(ninety_eighth_tx/'request.json',
-        expected_sha256=CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_REQUEST)
+        expected_sha256=core296_pins['request'])
     _current_source_request_metadata(ninety_eighth_request, home)
     ninety_eighth_context = ninety_eighth_request['current_source_successor']
     f.require(encoded(request['previous_input']) == encoded(ninety_eighth_request['current_input'])
@@ -7468,13 +7517,13 @@ def _current_source_ninety_ninth_successor_checked(value, request, *, cli_only, 
         'ordinary_current_successor_ninety_eighth_edge_required')
     f.require(_current_source_cp_transactions(home, ninety_eighth_request['current_input']) == ninety_eighth_tx,
         'ordinary_current_successor_ninety_eighth_canonical_request_required')
-    f.require(ninety_eighth_ref['sha256'] == CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_REQUEST
-        and ninety_eighth_request['current_input']['sha256'] == CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_INPUT,
+    f.require(ninety_eighth_ref['sha256'] == core296_pins['request']
+        and ninety_eighth_request['current_input']['sha256'] == core296_pins['input'],
         'ordinary_current_successor_exact_ninety_ninth_previous_required')
     f.require(f.digest(f.owned_file(ninety_eighth_tx/'intent.json', private=True))
-        == CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_INTENT
+        == core296_pins['intent']
         and f.digest(f.owned_file(ninety_eighth_tx/'committed.json', private=True))
-        == CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_COMMITTED,
+        == core296_pins['committed'],
         'ordinary_current_successor_exact_ninety_ninth_previous_proof_required')
     _current_source_cp_proof(home, ninety_eighth_tx, ninety_eighth_request, committed=True)
     marker = _current_source_json(home/f.MARKER)
@@ -7482,16 +7531,16 @@ def _current_source_ninety_ninth_successor_checked(value, request, *, cli_only, 
         selected_tx = _current_source_cp_transactions(home, request['current_input'])
         f.require(selected_tx is not None, 'ordinary_current_successor_leaf_journal_required')
         marker = _current_source_json(selected_tx/'before'/f.MARKER,
-            expected_sha256=CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER)
+            expected_sha256=core296_pins['marker'])
     else:
         marker = _current_source_json(home/f.MARKER,
-            expected_sha256=CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER)
+            expected_sha256=core296_pins['marker'])
     proof = _CurrentSourceNinetyNinthHistory(ninety_eighth_ref, ninety_eighth_context['previous_native_update'],
         context['root_project_update'], request['previous_input'], context,
         _seal=_CURRENT_SOURCE_NINETY_NINTH_HISTORY_SEAL)
     ninety_eighth = _current_source_ninety_eighth_successor_checked(
         _current_source_json(ninety_eighth_request['current_input']['path'],
-            expected_sha256=CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_INPUT),
+            expected_sha256=core296_pins['input']),
         ninety_eighth_request, cli_only=cli_only, source_update=ninety_eighth_request,
         historical_marker=marker, _ninety_ninth_history=proof)
     return _current_native_source_edge_checked(value, cli_only=cli_only,
@@ -13593,8 +13642,8 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
             and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA:
         _current_source_ninety_eighth_bindings_checked()
     if type(source_update) is dict and type(source_update.get('current_source_successor')) is dict \
-            and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA:
-        _current_source_ninety_ninth_bindings_checked()
+            and source_update['current_source_successor'].get('schema') in CORE296_SUCCESSOR_SCHEMAS:
+        _current_source_ninety_ninth_bindings_checked(source_update['current_source_successor']['schema'])
     if type(source_update) is dict and type(source_update.get('current_source_successor')) is dict \
             and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_NINETY_SIXTH_SUCCESSOR_SCHEMA:
         _current_source_ninety_sixth_bindings_checked()
@@ -13837,7 +13886,7 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
         return _current_source_ninety_seventh_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
     if context.get('schema') == CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA:
         return _current_source_ninety_eighth_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
-    if context.get('schema') == CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA:
+    if context.get('schema') in CORE296_SUCCESSOR_SCHEMAS:
         return _current_source_ninety_ninth_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
     if context.get('schema') == CURRENT_SOURCE_NINETY_SIXTH_SUCCESSOR_SCHEMA:
         return _current_source_ninety_sixth_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
@@ -14099,8 +14148,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
             and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA:
         _current_source_ninety_eighth_bindings_checked()
     if type(source_update) is dict and type(source_update.get('current_source_successor')) is dict \
-            and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA:
-        _current_source_ninety_ninth_bindings_checked()
+            and source_update['current_source_successor'].get('schema') in CORE296_SUCCESSOR_SCHEMAS:
+        _current_source_ninety_ninth_bindings_checked(source_update['current_source_successor']['schema'])
     if type(source_update) is dict and type(source_update.get('current_source_successor')) is dict \
             and source_update['current_source_successor'].get('schema') == CURRENT_SOURCE_NINETY_SIXTH_SUCCESSOR_SCHEMA:
         _current_source_ninety_sixth_bindings_checked()
@@ -14347,8 +14396,12 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     if ninety_seventh: _current_source_ninety_seventh_bindings_checked()
     ninety_eighth = continuation and context.get('schema') == CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA
     if ninety_eighth: _current_source_ninety_eighth_bindings_checked()
-    ninety_ninth = continuation and context.get('schema') == CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA
-    if ninety_ninth: _current_source_ninety_ninth_bindings_checked()
+    core296_schema = context.get('schema')
+    ninety_ninth = continuation and core296_schema in CORE296_SUCCESSOR_SCHEMAS
+    if ninety_ninth:
+        _current_source_ninety_ninth_bindings_checked(core296_schema)
+        core296_pins = _core296_predecessor_pins(core296_schema)
+        core296_layer, core296_manifest, core296_patch, core296_native = _core296_source_pins(core296_schema)
     ninety_sixth = continuation and context.get('schema') == CURRENT_SOURCE_NINETY_SIXTH_SUCCESSOR_SCHEMA
     if ninety_sixth: _current_source_ninety_sixth_bindings_checked()
     ninety_fifth = continuation and context.get('schema') == CURRENT_SOURCE_NINETY_FIFTH_SUCCESSOR_SCHEMA
@@ -14521,7 +14574,7 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     f.require(type(context) is dict
         and set(context) == ({'schema','root_project_update','previous_native_update'} if continuation
             else {'schema','root_project_update'})
-        and context['schema'] == (CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA if ninety_ninth else
+        and context['schema'] == (core296_schema if ninety_ninth else
                 CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA if ninety_eighth else
                 CURRENT_SOURCE_NINETY_SEVENTH_SUCCESSOR_SCHEMA if ninety_seventh else
                 CURRENT_SOURCE_NINETY_SIXTH_SUCCESSOR_SCHEMA if ninety_sixth else
@@ -15686,9 +15739,10 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
             and _ninety_ninth_history.ninety_seventh_reference == encoded(context['previous_native_update'])
             and _ninety_ninth_history.root_reference == encoded(context['root_project_update'])
             and _ninety_ninth_history.selected_previous == encoded(request['current_input'])
-            and _ninety_ninth_history.selected_context == encoded({'schema': CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA,
-                'root_project_update': context['root_project_update'],
-                'previous_native_update': ninety_eighth_ref})
+            and _ninety_ninth_history.selected_context in (
+                encoded({'schema': schema, 'root_project_update': context['root_project_update'],
+                    'previous_native_update': ninety_eighth_ref})
+                for schema in CORE296_SUCCESSOR_SCHEMAS)
             and encoded(prior_edge['request']['current_input']) == encoded(request['previous_input']),
             'ordinary_current_successor_authenticated_ninety_eighth_history_required')
         _current_source_cp_proof(home, ninety_eighth_tx, request, committed=True)
@@ -16970,8 +17024,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     f.require(not ninety_eighth or (expected_before_receipt == CURRENT_SOURCE_NINETY_EIGHTH_PREVIOUS_RECEIPT
         and expected_before_stamp == CURRENT_SOURCE_NINETY_EIGHTH_PREVIOUS_STAMP),
         'ordinary_current_successor_exact_ninety_eighth_before_metadata_required')
-    f.require(not ninety_ninth or (expected_before_receipt == CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_RECEIPT
-        and expected_before_stamp == CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_STAMP),
+    f.require(not ninety_ninth or (expected_before_receipt == core296_pins['receipt']
+        and expected_before_stamp == core296_pins['stamp']),
         'ordinary_current_successor_exact_ninety_ninth_before_metadata_required')
 
 
@@ -17163,7 +17217,7 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_ninety_seventh_before_marker_required')
     f.require(not ninety_eighth or request['marker']['sha256'] == CURRENT_SOURCE_NINETY_EIGHTH_PREVIOUS_MARKER,
         'ordinary_current_successor_exact_ninety_eighth_before_marker_required')
-    f.require(not ninety_ninth or request['marker']['sha256'] == CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_MARKER,
+    f.require(not ninety_ninth or request['marker']['sha256'] == core296_pins['marker'],
         'ordinary_current_successor_exact_ninety_ninth_before_marker_required')
 
 
@@ -17377,7 +17431,7 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_ninety_seventh_layer_required')
     f.require(not ninety_eighth or names == [CURRENT_SOURCE_NINETY_EIGHTH_LAYER],
         'ordinary_current_successor_exact_ninety_eighth_layer_required')
-    f.require(not ninety_ninth or names == [CURRENT_SOURCE_NINETY_NINTH_LAYER],
+    f.require(not ninety_ninth or names == [core296_layer],
         'ordinary_current_successor_exact_ninety_ninth_layer_required')
 
 
@@ -17571,7 +17625,7 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_ninety_seventh_before_helper_required')
     f.require(not ninety_eighth or old.get(PROJECT_DSH_CURRENT_HELPER) == CURRENT_SOURCE_NINETY_EIGHTH_PREVIOUS_HELPER,
         'ordinary_current_successor_exact_ninety_eighth_before_helper_required')
-    f.require(not ninety_ninth or old.get(PROJECT_DSH_CURRENT_HELPER) == CURRENT_SOURCE_NINETY_NINTH_PREVIOUS_HELPER,
+    f.require(not ninety_ninth or old.get(PROJECT_DSH_CURRENT_HELPER) == core296_pins['helper'],
         'ordinary_current_successor_exact_ninety_ninth_before_helper_required')
 
 
@@ -18040,8 +18094,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     f.require(not ninety_eighth or (files.get(manifest_name) == CURRENT_SOURCE_NINETY_EIGHTH_MANIFEST
         and files.get(patch_name) == CURRENT_SOURCE_NINETY_EIGHTH_PATCH),
         'ordinary_current_successor_exact_ninety_eighth_layer_images_required')
-    f.require(not ninety_ninth or (files.get(manifest_name) == CURRENT_SOURCE_NINETY_NINTH_MANIFEST
-        and files.get(patch_name) == CURRENT_SOURCE_NINETY_NINTH_PATCH),
+    f.require(not ninety_ninth or (files.get(manifest_name) == core296_manifest
+        and files.get(patch_name) == core296_patch),
         'ordinary_current_successor_exact_ninety_ninth_layer_images_required')
 
 
@@ -18307,7 +18361,7 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_ninety_seventh_native_scope_required')
     f.require(not ninety_eighth or touched == list(CURRENT_SOURCE_NINETY_EIGHTH_NATIVE),
         'ordinary_current_successor_exact_ninety_eighth_native_scope_required')
-    f.require(not ninety_ninth or touched == list(CURRENT_SOURCE_NINETY_NINTH_NATIVE),
+    f.require(not ninety_ninth or touched == list(core296_native),
         'ordinary_current_successor_exact_ninety_ninth_native_scope_required')
 
 
@@ -18616,8 +18670,12 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
                 'ordinary_current_successor_exact_ninety_eighth_native_images_required')
 
         if ninety_ninth:
-            f.require((row.get('before_sha256'),row['sha256'],row['bytes'],row['new_file']) == CURRENT_SOURCE_NINETY_NINTH_NATIVE[name],
+            f.require((row.get('before_sha256'),row['sha256'],row['bytes'],row['new_file']) == core296_native[name],
                 'ordinary_current_successor_exact_ninety_ninth_native_images_required')
+            if core296_schema == CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA and historical_marker is None:
+                mode = 0o644 if not leaf and name == 'agent/replay_cleanup.py' else 0o600
+                f.require(stat.S_IMODE((source / name).lstat().st_mode) == mode,
+                    'ordinary_current_successor_write_recovery_native_mode_changed')
 
 
         after = dict(prior) if prior is not None else {}

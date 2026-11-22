@@ -1,0 +1,78 @@
+--- a/agent/replay_cleanup.py
++++ b/agent/replay_cleanup.py
+@@ -117,10 +117,13 @@
+     return cleaned
+ 
+ 
+-def strip_dangling_tool_call_tail(agent_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++def strip_dangling_tool_call_tail(
++    agent_history: List[Dict[str, Any]], *, preserve_read_only: bool = False
++) -> List[Dict[str, Any]]:
+     """Strip a trailing ``assistant(tool_calls)`` with NO answers — a call that killed the gateway itself
+     (``docker restart``) left zero ``tool`` rows, invisible to ``strip_interrupted_tool_tails``. A partially
+-    answered block still resumes. Read-only tails are dropped; side-effecting ones get UNKNOWN-effect results.
++    answered block still resumes. Side-effecting tails get UNKNOWN-effect results; callers that will
++    subsequently repair read-only calls can preserve those tails for that pass.
+ 
+     On resume the model sees an unanswered tool call at the tail and naturally re-issues it — which restarts
+     the gateway again, producing the infinite reboot loop in #49201. ``strip_interrupted_tool_tails`` does
+@@ -140,6 +143,8 @@
+             recovered.append(make_tool_result_message(name, content, _call_id(call), effect_disposition=disposition))
+         logger.warning("Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them")
+         return recovered
++    if preserve_read_only:
++        return agent_history
+     logger.debug("Stripping dangling unanswered read-only assistant(tool_calls) tail (%d call(s))", len(tool_calls))
+     return agent_history[:-1]
+ 
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -1728,6 +1728,11 @@
+         messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+         if repair_alternation and messages:
+             from agent.agent_runtime_helpers import repair_message_sequence
++            from agent.replay_cleanup import strip_dangling_tool_call_tail
++
++            # Preserve the side-effect uncertainty before sequence repair can prune its call.
++            # This is a replay projection; the original SQLite rows stay as recorded.
++            messages = strip_dangling_tool_call_tail(messages, preserve_read_only=True)
+             repaired = repair_message_sequence(None, messages)
+             if repaired:
+                 logger.info("Repaired %d message-alternation violation(s) while "
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -8,6 +8,7 @@
+ from __future__ import annotations
+
+ from agent.friday_baseline_bridge import physical_create
++from agent.message_metadata import DB_ROW_SNAPSHOT
+
+ from dataclasses import dataclass, replace
+ from contextlib import contextmanager
+@@ -1128,13 +1129,16 @@
+     incoming = context.get("incoming") if isinstance(context, dict) else None
+     if isinstance(incoming, dict):
+         from agent.conversation_compression import _strip_marker_for_comparison
++        # In-place compaction re-inserts the current user row and refreshes
++        # its SQLite snapshot. Neither identifies the user turn on the wire.
++        projection_keys = ("api_content", "_row_id", "_submit_row_session_id", DB_ROW_SNAPSHOT)
+         def user_identity(row):
+             # Turn-start compaction precedes the native sidecar stamp. Match
+             # its still-immutable user row, then derive expected stamped bytes
+             # from the protected original plus this turn's known context.
+             # Never adopt the incoming sidecar as the protected expectation.
+             row = dict(row)
+-            for key in ("api_content", "_row_id", "_submit_row_session_id"):
++            for key in projection_keys:
+                 row.pop(key, None)
+             return _strip_marker_for_comparison([row])
+         # The current ask is stored twice: the protected contract holds its TRANSCRIPT text
+@@ -1148,7 +1152,7 @@
+         def _sent_projection(row):
+             row = dict(row)
+             own_sent = row.get("api_content")
+-            for key in ("api_content", "_row_id", "_submit_row_session_id"):
++            for key in projection_keys:
+                 row.pop(key, None)
+             if isinstance(own_sent, str) and own_sent and isinstance(row.get("content"), str):
+                 row["content"] = own_sent
