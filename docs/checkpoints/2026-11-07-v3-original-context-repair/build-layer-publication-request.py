@@ -2267,6 +2267,7 @@ def build_request(args):
                 consumer.CURRENT_SOURCE_NINETY_SEVENTH_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_NINTH_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_D02_SUCCESSOR_SCHEMA,
+                consumer.CURRENT_SOURCE_D02_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_FOURTH_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_FIFTH_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_THIRD_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_FOURTH_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_SECOND_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_THIRD_SUCCESSOR_SCHEMA,
@@ -2323,8 +2324,11 @@ def build_request(args):
                              "transaction_current_source_exact_ninety_seventh_edge_required")
             consumer.require(ninety_eighth == (previous_schema == consumer.CURRENT_SOURCE_NINETY_SEVENTH_SUCCESSOR_SCHEMA),
                              "transaction_current_source_exact_ninety_eighth_edge_required")
-            consumer.require(ninety_ninth == (previous_schema == consumer.CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA),
+            word_after_d02 = core296_schema == consumer.CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA
+            consumer.require((ninety_ninth and not word_after_d02) == (previous_schema == consumer.CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA),
                              "transaction_current_source_exact_ninety_ninth_edge_required")
+            consumer.require(word_after_d02 == (previous_schema == consumer.CURRENT_SOURCE_D02_SUCCESSOR_SCHEMA),
+                             "transaction_current_source_exact_word_after_d02_edge_required")
             consumer.require(d02 == (previous_schema == consumer.CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA),
                              "transaction_current_source_exact_d02_edge_required")
             consumer.require(ninety_fifth == (previous_schema == consumer.CURRENT_SOURCE_NINETY_FOURTH_SUCCESSOR_SCHEMA),
