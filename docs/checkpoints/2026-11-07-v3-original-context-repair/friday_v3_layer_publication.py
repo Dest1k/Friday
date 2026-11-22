@@ -162,6 +162,7 @@ LAYER_NAMES = (
     'write-crash-compaction-recovery-after-source296',
     'd02-receiver-wire-closure-after-source296',
     'word-standalone-versions-after-source298',
+    'd02-bounded-rights-after-source299',
 )
 # Draft binding barrier: no request generation or publication may read the installed
 # home for this selected edge until the exact frozen manifest and patch are supplied.
@@ -7384,10 +7385,78 @@ CURRENT_SOURCE_WORD_AFTER_D02_PREDECESSOR = {
     "receipt": "dea9e350d8ec21d67c0be82dd4fe0a638d1a0e9862412e78e35cc305b15089c2",
     "stamp": "af48e13fa6e3c3ce3340c0288ac90eddde65e9ef826ff3e8e19b96bad082dfa7",
 }
-WORD_AND_RECOVERY_SUCCESSOR_SCHEMAS = (*CORE296_SUCCESSOR_SCHEMAS, CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA)
+CURRENT_SOURCE_D02_RIGHTS_LAYER = 'd02-bounded-rights-after-source299'
+CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.d02-bounded-rights-after-word.v1'
+CURRENT_SOURCE_D02_RIGHTS_MANIFEST = 'b8b677055372045e636013128b4a4386bcb2aebfa33e404c43867d2e0f0dc0f0'
+CURRENT_SOURCE_D02_RIGHTS_PATCH = 'af28951427f9a695c824cbbea245ca26fefbb867dcc1ca0205a42afeb9464043'
+CURRENT_SOURCE_D02_RIGHTS_PREDECESSOR = {'request': 'ed4821a6f6e3bdd2ad8270af735a568abd7c61bfce1ad0459009387414b54386',
+ 'intent': '6caaf0d596c0a8baf02d38c6f0ee928f8d436e271ffea10db4954b100237d707',
+ 'committed': '81b9a3241f516666bd8edbb6b81ebfc1cff374801dfdcd2c5722982dfee7180b',
+ 'input': '85d95503dfda058bc443d4759e2327c32a9d98e135e6646c833a8d32a7953ae1',
+ 'helper': '7f5f769db603cadfb78b14a1e2a8842b78b82b391bf6c0ca148257b28863faf9',
+ 'marker': '3f5bc06c2b9b51e4ca33ee4496389bbe90cc679c3e4f340804f5db02b75fb4ea',
+ 'receipt': '5423a0637ebcfde2bcd85fe163fc10d0bf55b892c648bb40efccae9d59d5dacf',
+ 'stamp': 'd50afe47f877fd0f5ab0578bc28737ce9ac31c1cab0b67e3397157072a3bf5de'}
+CURRENT_SOURCE_D02_RIGHTS_PREREQUISITES = {'patches/hermes/d02-receiver-wire-closure-after-source296.patch': '492f2144a7019bb58f4d481bd91f87e2b0a0836b4df44b28aea81b4dcfb5eddc',
+ 'patches/hermes/multipass-checkpoint-carrier-binding-after-source295.patch': '98478beca7666668dfbdb3dd381338f1bfd5b20e8e4889ef5804a347d3f01140',
+ 'patches/hermes/word-standalone-versions-after-source298.patch': '6577fe82a22db8cc4eeccc374ce58b56e6cafae0c3923068050c51c1fdecfaea',
+ 'patches/hermes/write-crash-compaction-recovery-after-source296.patch': 'd820093d3123e91e34363c3c256bd796f93972aea4dcec0545243855a4d05d6b'}
+CURRENT_SOURCE_D02_RIGHTS_NATIVE = ({'before_sha256': '515c2264e4633ec4874be37d492fb247a87948c2dd30bd6c98aa274e52c60359',
+  'bytes': 40492,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/d02_receiver_control.py',
+  'sha256': '3e67e84a1b39c6b8e29aa67016e961817abecb3d446c5b93fdae0a9537a405c6'},
+ {'before_sha256': '9ad52892c57d61a23b2f52b8fb4243012fd10f0de63a9f48666a57ea3497e08f',
+  'bytes': 11974,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/d02_receiver_state.py',
+  'sha256': 'a3dedaa65f56b2677ec79c3c55ef2a4ba7a441026ef58f75b4c24c5eb2844c93'},
+ {'before_sha256': '67591e76cc6e698c172f8ddf46cbb09457d3e8414affef70d078d31836465b67',
+  'bytes': 9248,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/ordinary_dm_dispatch_closure.py',
+  'sha256': '6977c6ce276dd0d61563c85cc5aca6a1887fd197abebf02b91ad9cc69c650393'},
+ {'before_sha256': '1b4d1f09b5c4c76e57bb92e6fc8d14f6c160a87ce586e1f5c9aa4ddc7448ca9b',
+  'bytes': 211741,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/config.py',
+  'sha256': '0e9b3463088c35cffdb122a9f747a77887c8bfd2057cb8ce64fa8bc51da95f9d'},
+ {'before_sha256': 'afd6fe8fd51a170887977286b9ef7a92a7aa76286b817b7a56075069ddab3582',
+  'bytes': 15009,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/friday_product_access.py',
+  'sha256': '1c82fa1f35f28819134966358f8515403d938770a68cb4aa884f845430823f37'},
+ {'before_sha256': 'cc110099a8f4f991faa70a1eefa0d8ef43b6f2083d0fb86a287731b15956fe86',
+  'bytes': 8064,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/managed_scope.py',
+  'sha256': '72326eadcb2ead7e60b824ecebf827e19346a13c0bf9c6de5616aef173319767'},
+ {'before_sha256': 'd88538d56fee51a0405c040ae7a769ca8a2a3d400946f1dd70df27e32f1ba0af',
+  'bytes': 26471,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/plugins_state.py',
+  'sha256': 'ad362da134f29a10dc88d60b26578bdf7623b33ba1e185662f39f1a17c9c7e47'},
+ {'before_sha256': 'f4e075671d07982c761c7c894334d43adefb52d7759d4790f839ffc45d94a46c',
+  'bytes': 125315,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/profiles.py',
+  'sha256': '05083e374dcf7b3ccf86700da431890cd27d647a176c971fa4605452fcf0dfbc'})
+CURRENT_SOURCE_D02_RIGHTS_MODE_0644 = ('hermes_cli/friday_product_access.py', 'hermes_cli/profiles.py')
+WORD_AND_RECOVERY_SUCCESSOR_SCHEMAS = (*CORE296_SUCCESSOR_SCHEMAS, CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA,
+    CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA)
 
 
 def core296_successor_schema(layer_names):
+    if CURRENT_SOURCE_D02_RIGHTS_LAYER in layer_names:
+        return CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA
     if CURRENT_SOURCE_WORD_AFTER_D02_LAYER in layer_names:
         return CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA
     if CURRENT_SOURCE_WRITE_RECOVERY_LAYER in layer_names:
@@ -7398,12 +7467,16 @@ def core296_successor_schema(layer_names):
 
 
 def core296_successor_layer(schema):
+    if schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_D02_RIGHTS_LAYER
     if schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA:
         return CURRENT_SOURCE_WORD_AFTER_D02_LAYER
     return CURRENT_SOURCE_WRITE_RECOVERY_LAYER if schema == CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA else CURRENT_SOURCE_NINETY_NINTH_LAYER
 
 
 def _core296_predecessor_pins(schema):
+    if schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_D02_RIGHTS_PREDECESSOR
     if schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA:
         return CURRENT_SOURCE_WORD_AFTER_D02_PREDECESSOR
     if schema == CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA:
@@ -7420,6 +7493,8 @@ def _core296_predecessor_pins(schema):
 
 
 def _core296_source_pins(schema):
+    if schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_D02_RIGHTS_MANIFEST, CURRENT_SOURCE_D02_RIGHTS_PATCH, CURRENT_SOURCE_D02_RIGHTS_NATIVE
     if schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA:
         return (CURRENT_SOURCE_WORD_AFTER_D02_MANIFEST_SHA256, CURRENT_SOURCE_NINETY_NINTH_PATCH_SHA256,
                 CURRENT_SOURCE_NINETY_NINTH_NATIVE_FILES)
@@ -7480,8 +7555,12 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
                 and request.get("current_input") != request.get("previous_input"),
                 "transaction_current_source_ninety_ninth_input_pin_changed")
         project_files = request.get("project_inventory")
-        before_layers, native_count, project_after = (298, 17916, 680) if (
-            schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA) else (296, 17911, 675)
+        if schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA:
+            before_layers, native_count, project_after = 299, 17916, 682
+        elif schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA:
+            before_layers, native_count, project_after = 298, 17916, 680
+        else:
+            before_layers, native_count, project_after = 296, 17911, 675
         require(request.get("installed_layers") == before_layers and request.get("installed_files") == native_count
                 and type(project_files) is dict and len(project_files) == project_after,
                 "transaction_current_source_ninety_ninth_inventory_count_changed")
@@ -7499,20 +7578,31 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
 def require_ninety_ninth_predecessor(request, previous, *, raw=None):
     schema = request["current_source_successor"]["schema"]
     pins = _core296_predecessor_pins(schema)
-    word_after_d02 = schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA
+    if schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA:
+        predecessor_layer = CURRENT_SOURCE_WORD_AFTER_D02_LAYER
+        predecessor_schema = CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA
+        predecessor_layers, predecessor_files, predecessor_projects = 298, 17916, 680
+    elif schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA:
+        predecessor_layer = CURRENT_SOURCE_D02_LAYER
+        predecessor_schema = CURRENT_SOURCE_D02_SUCCESSOR_SCHEMA
+        predecessor_layers, predecessor_files, predecessor_projects = 297, 17911, 678
+    else:
+        predecessor_layer = CURRENT_SOURCE_NINETY_EIGHTH_LAYER
+        predecessor_schema = CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA
+        predecessor_layers, predecessor_files, predecessor_projects = 295, 17911, 673
     return _require_source_predecessor(request, previous, raw=raw, edge="ninety_ninth",
         predecessor_ref=ninety_ninth_predecessor_ref(request["home"], schema),
         helper_sha256=pins["helper"], committed_sha256=pins["committed"],
         receipt_sha256=pins["receipt"], intent_sha256=pins["intent"],
-        predecessor_layer=CURRENT_SOURCE_D02_LAYER if word_after_d02 else CURRENT_SOURCE_NINETY_EIGHTH_LAYER,
-        predecessor_schema=CURRENT_SOURCE_D02_SUCCESSOR_SCHEMA if word_after_d02 else CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA,
-        predecessor_layers=297 if word_after_d02 else 295, predecessor_project_count=678 if word_after_d02 else 673)
+        predecessor_layer=predecessor_layer, predecessor_schema=predecessor_schema,
+        predecessor_layers=predecessor_layers, predecessor_native_count=predecessor_files,
+        predecessor_project_count=predecessor_projects)
 
 
 def _require_source_predecessor(request, previous, *, raw, edge, predecessor_ref,
                                 helper_sha256, committed_sha256, receipt_sha256, intent_sha256,
                                 predecessor_layer, predecessor_schema, predecessor_layers,
-                                predecessor_project_count):
+                                predecessor_project_count, predecessor_native_count=17911):
     context = request["current_source_successor"]
     ref = context["previous_native_update"]
     require(ref == predecessor_ref,
@@ -7529,7 +7619,8 @@ def _require_source_predecessor(request, previous, *, raw, edge, predecessor_ref
     predecessor = json.loads(raw)
     require(type(predecessor) is dict and predecessor.get("schema") == SCHEMA_EXPLICIT
             and predecessor.get("layer_names") == [predecessor_layer]
-            and predecessor.get("installed_layers") == predecessor_layers and predecessor.get("installed_files") == 17911,
+            and predecessor.get("installed_layers") == predecessor_layers
+            and predecessor.get("installed_files") == predecessor_native_count,
             f"transaction_current_source_{edge}_predecessor_lineage_changed")
     previous_context = predecessor.get("current_source_successor")
     require(type(previous_context) is dict
@@ -9488,7 +9579,12 @@ def check_project_inventory(request, previous_input, current_input):
     if core296_schema is not None:
         pins = _core296_predecessor_pins(core296_schema)
         helper = CURRENT_SOURCE_NINETY_NINTH_HELPER
-        old_count, new_count = (678, 680) if core296_schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA else (673, 675)
+        if core296_schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA:
+            old_count, new_count = 680, 682
+        elif core296_schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA:
+            old_count, new_count = 678, 680
+        else:
+            old_count, new_count = 673, 675
         require(len(previous_files) == old_count and len(current_files) == new_count
                 and current_files.keys() - previous_files.keys() == additions
                 and previous_files.get(helper) == pins["helper"]
@@ -10270,7 +10366,12 @@ def read_layers(candidate_root, receipt, home, project_files, layer_names):
                     "transaction_current_source_ninety_ninth_native_scope_changed")
             v98 = f"patches/hermes/{CURRENT_SOURCE_NINETY_EIGHTH_LAYER}"
             prerequisites = {v98 + ".patch": CURRENT_SOURCE_NINETY_EIGHTH_PATCH_SHA256}
-            if core296_schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA:
+            if core296_schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA:
+                predecessor = f"patches/hermes/{CURRENT_SOURCE_WORD_AFTER_D02_LAYER}"
+                prerequisites = CURRENT_SOURCE_D02_RIGHTS_PREREQUISITES
+                manifest_sha256 = CURRENT_SOURCE_WORD_AFTER_D02_MANIFEST_SHA256
+                patch_sha256 = CURRENT_SOURCE_NINETY_NINTH_PATCH_SHA256
+            elif core296_schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA:
                 predecessor = f"patches/hermes/{CURRENT_SOURCE_D02_LAYER}"
                 prerequisites.update({
                     predecessor + ".patch": CURRENT_SOURCE_D02_PATCH_SHA256,
@@ -11497,6 +11598,9 @@ def run(request, request_path, request_sha256):
             if core296_schema == CURRENT_SOURCE_WRITE_RECOVERY_SUCCESSOR_SCHEMA:
                 for row in native:
                     before_pins[str(source / row["path"])]["mode"] = write_recovery_before_mode(row["path"])
+            elif core296_schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA:
+                for name in CURRENT_SOURCE_D02_RIGHTS_MODE_0644:
+                    before_pins[str(source / name)]["mode"] = 0o644
         if ninety_fifth:
             layer = CURRENT_SOURCE_NINETY_FIFTH_LAYER
             expected_targets = {
@@ -12373,7 +12477,12 @@ def run(request, request_path, request_sha256):
         require(len(projected["layers"]) == 298 and len(projected["files"]) == 17916,
                 "transaction_current_source_d02_projected_inventory_count_changed")
     if ninety_ninth:
-        layer_count, native_count = (299, 17916) if core296_schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA else (297, 17911)
+        if core296_schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA:
+            layer_count, native_count = 300, 17916
+        elif core296_schema == CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA:
+            layer_count, native_count = 299, 17916
+        else:
+            layer_count, native_count = 297, 17911
         require(len(projected["layers"]) == layer_count and len(projected["files"]) == native_count,
                 "transaction_current_source_ninety_ninth_projected_inventory_count_changed")
     if ninety_fifth:
@@ -12503,11 +12612,12 @@ def run(request, request_path, request_sha256):
             "current_source_successor": request["current_source_successor"]} if current_context else {}),
     })
 
+    authenticated_writes = d02 or core296_schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA
     try:
         # 10a. the source files of the layers
         for path in touched:
             data = owned_file(Path(staging) / path)
-            if d02:
+            if authenticated_writes:
                 require(digest(data) == final_state[path], "transaction_staged_bytes_changed:" + path)
             publish_with_journal(Path(source) / path, data, 0o600)
         write_atomic(staging_root / "published.json", encoded({"files": [str(p) for p in published]}), 0o600)
@@ -12531,13 +12641,13 @@ def run(request, request_path, request_sha256):
                                  | new_patches)
         plugin_set = sorted(request["plugin_set"])
         plugin_additions = sorted(request["plugin_additions"])
-        authenticated_d02_bytes = {}
+        authenticated_project_bytes = {}
         for name in project_updates + plugin_set + plugin_additions:
             candidate_bytes = owned_file(Path(candidate) / name)
             require(digest(candidate_bytes) == current_files[name],
                     "transaction_candidate_bytes_changed:" + name)
-            if d02:
-                authenticated_d02_bytes[name] = candidate_bytes
+            if authenticated_writes:
+                authenticated_project_bytes[name] = candidate_bytes
         # files the request places at an explicit path inside the home (the staged native
         # runtime source, for example): the path is relative to the home and never escapes it
         staged_files = request.get("staged_files") or []
@@ -12561,7 +12671,7 @@ def run(request, request_path, request_sha256):
             "files": project_updates,
         })
         for name in project_updates:
-            data = authenticated_d02_bytes[name] if d02 else owned_file(Path(candidate) / name)
+            data = authenticated_project_bytes[name] if authenticated_writes else owned_file(Path(candidate) / name)
             publish_with_journal(Path(home) / name, data, 0o600)
         write_atomic(staging_root / "published-project-updates.json",
                      encoded({"files": project_updates}), 0o600)
@@ -12573,14 +12683,14 @@ def run(request, request_path, request_sha256):
             "files": plugin_set + plugin_additions,
         })
         for name in plugin_set:
-            data = authenticated_d02_bytes[name] if d02 else owned_file(Path(candidate) / name)
+            data = authenticated_project_bytes[name] if authenticated_writes else owned_file(Path(candidate) / name)
             publish_with_journal(Path(home) / name, data, 0o600)
         if request.get("fail_during_plugins"):
             # a controlled failure in the middle of the plugin publication, used to prove that
             # the rollback covers the plugin set as well
             raise Refused("transaction_controlled_failure_during_plugins")
         for name in plugin_additions:
-            data = authenticated_d02_bytes[name] if d02 else owned_file(Path(candidate) / name)
+            data = authenticated_project_bytes[name] if authenticated_writes else owned_file(Path(candidate) / name)
             target = Path(home) / name
             private_parents(home, name)
             publish_with_journal(target, data, 0o600)

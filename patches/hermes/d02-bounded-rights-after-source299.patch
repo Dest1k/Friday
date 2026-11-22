@@ -1,0 +1,1150 @@
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -2,6 +2,7 @@
+ 
+ import asyncio
+ import concurrent.futures
++from contextvars import copy_context
+ from hashlib import sha256
+ import json
+ import math
+@@ -147,15 +148,39 @@
+         self.read_owned = read_owned
+         self.select_route = select_route
+         self.check_rights = check_rights
++        self._private_job = None
+ 
+     def doc(self, reference, **options):
+         return _private_doc(reference, self.read_owned, **options)
+ 
+-    def _rights_current(self, options, phase, transport_deadline):
+-        # Do not spend the long-poll transport budget holding a native loop turn.
++    async def _run_private(self, deadline, fn, *args):
++        require(time.monotonic() < deadline, "d02_control_private_work_expired")
++        # Socket handlers synchronously await the owning loop from its default
++        # executor. A nested submission to that pool can starve its own caller.
++        require(self._private_job is None or self._private_job.done(), "d02_control_private_work_owned")
++        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="friday-d02")
++        try:
++            job = self._private_job = executor.submit(copy_context().run, fn, *args)
++        finally:
++            executor.shutdown(wait=False)
++        async with asyncio.timeout_at(deadline):
++            return await asyncio.wrap_future(job)
++
++    @staticmethod
++    def _rights_current(witness, transport_deadline):
+         deadline = min(transport_deadline, time.monotonic() + _LOCAL_RIGHTS_SECONDS)
+-        self.check_rights(options, phase, deadline)
++        witness(deadline)
+         require(time.monotonic() < deadline, "d02_control_rights_check_expired")
++        return deadline
++
++    def _current_owner(self, request, owner, adapter, ingress_scope, witness, deadline):
++        bound = self._rights_current(witness, deadline)
++        _, _, options, _, _ = owner
++        selected, scope = self.select_route(options["profile"], options["principal"])
++        require(self._owner(request) == owner and selected is adapter and scope == ingress_scope,
++                "d02_control_owner_or_route_changed")
++        witness(bound)
++        return bound
+ 
+     def _request(self, reference):
+         value, _ = self.doc(reference, sized=False)
+@@ -265,48 +290,78 @@
+                 and arm["receipt"] == current, "d02_control_arm_readback_changed")
+         return arm, current
+ 
+-    async def _arm(self, request, intent, driver, options, scenario, work, adapter, ingress_scope, deadline):
++    async def _arm(self, request, owner, adapter, ingress_scope, witness, deadline):
++        intent, driver, options, scenario, work = owner
++        self._current_owner(request, owner, adapter, ingress_scope, witness, deadline)
+         require(not os.path.lexists(work / "clock.json"), "d02_control_clock_already_started")
+         self._durable_reservation(work, intent, request["receiver_options"], driver["work_identity"])
+-        _held_slot(self.slot, driver["slot_identity"], intent["parent"])
+-        require(time.monotonic() < deadline, "d02_control_arm_intent_expired")
+-        ready = asyncio.Event()
+         loop = asyncio.get_running_loop()
++        ready = loop.create_future()
+         submitted = False
+-        waiting = True
++        checked = False
++        completed = False
++        valid = True
+         claim_sha = intent["claim"]["sha256"]
+         generation = adapter._polling_generation
++        expires = options["observer_expires_monotonic"]
++
++        def confirm_acceptance():
++            if ready.done():
++                return
++            try:
++                self._rights_current(witness, deadline)
++                receipt = self._arm_from(adapter, claim_sha, expires)
++            except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
++                ready.set_exception(exc)
++            else:
++                ready.set_result(receipt)
+ 
+         def owner_is_current():
+             now = time.monotonic()
+-            if now >= options["observer_expires_monotonic"] or not ready.is_set() and (
+-                    not waiting or now >= deadline):
++            if not valid or now >= expires or not completed and (now >= deadline or ready.cancelled()):
+                 return False
+             _held_slot(self.slot, driver["slot_identity"], intent["parent"])
+-            if submitted and not ready.is_set():
+-                current, _, _, _, current_work = self._owner(request)
+-                current_adapter, current_scope = self.select_route(options["profile"], options["principal"])
+-                require(current == intent and work == current_work
+-                        and current_adapter is adapter and current_scope == ingress_scope,
+-                        "d02_control_native_arm_owner_changed")
+-                self._reservation_current(intent, request, work)
+-                self._rights_current(options, "arm", deadline)
+-                require(time.monotonic() < deadline, "d02_control_native_arm_expired")
+-                loop.call_soon(ready.set)
+             return True
++
++        def authorize_native_arm():
++            nonlocal checked
++            if not owner_is_current():
++                return False
++            bound = self._current_owner(request, owner, adapter, ingress_scope, witness, deadline)
++            self._reservation_current(intent, request, work)
++            witness(bound)
++            if submitted and not checked:
++                checked = True
++                loop.call_soon(confirm_acceptance)
++            return True
++
++        def current_for_adapter():
++            if checked:
++                return owner_is_current()
++            return authorize_native_arm()
+ 
+         try:
+             adapter._reserve_ordinary_dm_wire_window(claim_sha256=claim_sha,
+                 user_id=int(options["principal"]["user_id"]), generation=generation,
+-                expires_monotonic=options["observer_expires_monotonic"], max_updates=scenario["max_updates"],
+-                owner_is_current=owner_is_current, ingress_scope=ingress_scope)
++                expires_monotonic=expires, max_updates=scenario["max_updates"],
++                owner_is_current=current_for_adapter, ingress_scope=ingress_scope)
+             submitted = True
+-            await asyncio.wait_for(ready.wait(), timeout=max(0, deadline - time.monotonic()))
+-            _held_slot(self.slot, driver["slot_identity"], intent["parent"])
+-            require(time.monotonic() < deadline, "d02_control_arm_readback_expired")
+-            return self._arm_from(adapter, claim_sha, options["observer_expires_monotonic"])
++            async with asyncio.timeout_at(deadline):
++                receipt = await ready
++            self._current_owner(request, owner, adapter, ingress_scope, witness, deadline)
++            self._reservation_current(intent, request, work)
++            require(self._arm_from(adapter, claim_sha, expires) == receipt and time.monotonic() < deadline,
++                    "d02_control_native_arm_readback_changed")
++            completed = True
++            return receipt
+         finally:
+-            waiting = False
++            valid = completed
++            if not ready.done():
++                ready.cancel()
++            if not completed:
++                pending = getattr(adapter, "_ordinary_dm_wire_pending", None)
++                if pending is not None and pending.owner_is_current is current_for_adapter:
++                    adapter._ordinary_dm_wire_pending = None
+ 
+     @staticmethod
+     def _check_ack_window(run, ack, window, scenario):
+@@ -429,9 +484,10 @@
+                 "d02_control_settlement_snapshot_missing")
+         return data["revision"], sha256(encode_closed_wire(data["wire"])).hexdigest()
+ 
+-    async def _finalize(self, request, intent, driver, options, scenario, work, adapter, ingress_scope, deadline):
++    async def _finalize(self, request, owner, adapter, ingress_scope, deadline):
+         from .ordinary_dm_dispatch_closure import join_settled_ordinary_dm
+ 
++        intent, driver, options, scenario, work = owner
+         proof, path = self.doc(request["proof"], name="receiver-terminal-intent.json")
+         require(path.parent == work
+                 and set(proof) == {"run_id", "scenario_sha256", "arm", "clock", "cutoff",
+@@ -459,8 +515,11 @@
+         wait_deadline = min(deadline, cutoff + _POLL_DRAIN)
+         require(time.monotonic() < deadline, "d02_control_terminal_budget_exhausted")
+ 
+-        def current():
+-            _held_slot(self.slot, driver["slot_identity"], intent["parent"])
++        def current(witness=None):
++            if witness is not None:
++                self._rights_current(witness, deadline)
++            require(self._owner(request) == owner, "d02_control_terminal_claim_changed")
++            self._reservation_current(intent, request, work)
+             self._terminal_consumer(proof, intent, work)
+             self.doc(request["proof"], name="receiver-terminal-intent.json")
+             self.doc(proof["cutoff"], name="receiver-cutoff.json")
+@@ -472,10 +531,9 @@
+                     "d02_control_terminal_owner_or_scope_changed")
+ 
+         current()
+-        await asyncio.wait_for(asyncio.to_thread(
+-            _write_private, work, "receiver-terminal-reservation.json",
++        await self._run_private(deadline, _write_private, work, "receiver-terminal-reservation.json",
+             {"intent": request["proof"], "claim_sha256": claim_sha, "no_retry": True},
+-            driver["work_identity"]), timeout=max(0, deadline - time.monotonic()))
++            driver["work_identity"])
+         current()
+         state = await adapter._wait_ordinary_dm_wire_settlement(claim_sha, wait_deadline)
+         require(state == "SETTLED", "d02_control_native_dispatch_unresolved")
+@@ -483,13 +541,15 @@
+         self.doc(proof["run"], name=intent["run_id"] + ".json", limit=_RUN_JSON_LIMIT)
+         self.doc(proof["cursor"], name="cursor.json", limit=_RUN_JSON_LIMIT)
+         revision, wire = self._closed_snapshot(adapter, claim_sha)
+-        joined = join_settled_ordinary_dm(adapter, claim_sha256=claim_sha, wire_sha256=wire,
++        joined, witness = await join_settled_ordinary_dm(adapter, claim_sha256=claim_sha, wire_sha256=wire,
+             disposition_revision=revision, cutoff=cutoff, options=options, scenario=scenario,
+-            transport_deadline=min(deadline, time.monotonic() + _LOCAL_RIGHTS_SECONDS))
++            transport_deadline=deadline, run_private=self._run_private)
+         require(joined["state"] == "D02_NATIVE_DISPATCH_SETTLED_PAIRS_RESOLVED"
+                 and joined["claim_sha256"] == claim_sha and joined["wire_sha256"] == wire
+                 and joined["generation"] == arm.claim.generation and joined["disposition_revision"] == revision,
+                 "d02_control_protected_settlement_unresolved")
++        current(witness)
++        self._rights_current(witness, deadline)
+         evidence = {"schema": "frw.gateway.d02-native-settlement.v1", "intent": request["proof"],
+                     "run_id": intent["run_id"], "scenario_sha256": intent["scenario_sha256"],
+                     "claim_sha256": claim_sha, "wire_sha256": wire, "generation": arm.claim.generation,
+@@ -499,13 +559,13 @@
+                     "observations": joined["observations"], "no_retry": True}
+         # The private write may finish after caller loss. That remains UNKNOWN;
+         # only the exact live recheck below allows retirement and confirmation.
+-        reference = await asyncio.wait_for(asyncio.to_thread(
+-            _write_private, work, "receiver-terminal-native.json", evidence, driver["work_identity"]),
+-            timeout=max(0, deadline - time.monotonic()))
+-        current()
++        reference = await self._run_private(deadline, _write_private, work,
++            "receiver-terminal-native.json", evidence, driver["work_identity"])
++        current(witness)
+         self.doc(reference, name="receiver-terminal-native.json", limit=_RUN_JSON_LIMIT)
+         self.doc(proof["run"], name=intent["run_id"] + ".json", limit=_RUN_JSON_LIMIT)
+         self.doc(proof["cursor"], name="cursor.json", limit=_RUN_JSON_LIMIT)
++        self._rights_current(witness, deadline)
+         require(arm.ingress._settlement_state() == "SETTLED"
+                 and self._closed_snapshot(adapter, claim_sha) == (revision, wire)
+                 and time.monotonic() < deadline and adapter._retire_ordinary_dm_wire_window(claim_sha) is True,
+@@ -515,32 +575,36 @@
+     async def dispatch(self, reference, transport_deadline):
+         request = self._request(reference)
+         deadline = min(transport_deadline, request["expires_monotonic"])
+-        intent, driver, options, scenario, work = self._owner(request)
++        owner = self._owner(request)
++        intent, driver, options, scenario, work = owner
++        expires = options["observer_expires_monotonic"]
++        deadline = min(deadline, expires)
+         action = request["action"]
+-        adapter, ingress_scope = self.select_route(options["profile"], options["principal"])
++        if action != "arm":
++            adapter, ingress_scope = self.select_route(options["profile"], options["principal"])
+         if action == "finalize":
+-            reference = await self._finalize(
+-                request, intent, driver, options, scenario, work, adapter, ingress_scope, deadline)
++            reference = await self._finalize(request, owner, adapter, ingress_scope, deadline)
+             return {"accepted": True, "query_id": request["query_id"], "action": action,
+                     "state": "RECEIVER_CLOSED_RETAINED", "receipt": reference}
+         phase = {"arm": "arm", "confirm": "dispatch", "cutoff": "post_dispatch"}[action]
+-        self._rights_current(options, phase, deadline)
+-        require(time.monotonic() < deadline, "d02_control_dispatch_expired")
++        arm = None if action == "arm" else adapter._ordinary_dm_wire_arm
++        witness = await self._run_private(deadline, self.check_rights, options, phase, deadline)
++        self._rights_current(witness, deadline)
+         if action == "arm":
+-            receipt = await self._arm(
+-                request, intent, driver, options, scenario, work, adapter, ingress_scope, deadline)
++            adapter, ingress_scope = self.select_route(options["profile"], options["principal"])
++            receipt = await self._arm(request, owner, adapter, ingress_scope, witness, deadline)
+             return {"accepted": True, "query_id": request["query_id"], "action": action,
+                     "state": "ARMED", "receipt": receipt}
+-        expires = options["observer_expires_monotonic"]
++        bound = self._current_owner(request, owner, adapter, ingress_scope, witness, deadline)
++        require(arm is not None and adapter._ordinary_dm_wire_arm is arm,
++                "d02_control_current_arm_changed")
+         if action == "confirm":
+             _, receipt = self._arm_receipt(request["proof"], intent, request, work, adapter, expires)
+-            _held_slot(self.slot, driver["slot_identity"], intent["parent"])
+-            require(time.monotonic() < deadline, "d02_control_confirm_expired")
++            witness(bound)
+             return {"accepted": True, "query_id": request["query_id"], "action": action,
+                     "state": "ARMED", "receipt": receipt}
+         window, cutoff = self._ack_cutoff(request, intent, work, adapter, expires, scenario)
+-        _held_slot(self.slot, driver["slot_identity"], intent["parent"])
+-        require(time.monotonic() < deadline, "d02_control_cutoff_expired")
++        witness(bound)
+         window.bind_cutoff(cutoff)
+         return {"accepted": True, "query_id": request["query_id"], "action": action,
+                 "state": "CUTOFF_BOUND"}
+@@ -570,7 +634,7 @@
+     from gateway.session import SessionSource
+     from gateway.session_identity import resolve_identity
+     from gateway import pairing
+-    from hermes_cli import friday_product_access as access, friday_user_scope as scope
++    from hermes_cli import config, friday_product_access as access, friday_user_scope as scope
+     from hermes_cli.friday_dashboard_owner import read_owned
+     from hermes_cli.friday_ordinary_gateway import receiving_pairing_store
+     from hermes_cli.plugins_state import PluginState
+@@ -581,6 +645,13 @@
+     store = Path.home() / ".local/share/friday-telegram-bot-test"
+ 
+     def select(profile, principal):
++        path = home / "config.yaml"
++        with scope.authority(home), config.require_current_config_storage_cached(path):
++            selected = select_cached(profile, principal)
++            config.current_config_storage_cached(path)
++            return selected
++
++    def select_cached(profile, principal):
+         user = principal["user_id"]
+         adapter = runner.adapters.get(Platform.TELEGRAM)
+         require(adapter is not None and principal["transport_profile"] == "default",
+@@ -609,9 +680,10 @@
+         }
+ 
+     def rights(options, phase, deadline):
+-        check_receiver_state(home, profile=options["profile"], expected_principal=options["principal"],
++        _, _, current = check_receiver_state(home, profile=options["profile"], expected_principal=options["principal"],
+             rights=options["rights"], state=PluginState("friday_rework"), access=access, scope=scope,
+-            pairing=pairing, phase=phase, deadline=deadline)
++            pairing=pairing, phase=phase, deadline=deadline, keep_current_check=True)
++        return current
+ 
+     controller = ReceiverControl(home=home, slot=slot, store=store, read_owned=read_owned,
+                                  select_route=select, check_rights=rights)
+--- a/gateway/d02_receiver_state.py
++++ b/gateway/d02_receiver_state.py
+@@ -5,6 +5,7 @@
+ Use the returned buffer internally for receipt matching, never in RPC output.
+ """
+ 
++from contextlib import nullcontext
+ from hashlib import sha256
+ import json
+ import math
+@@ -30,6 +31,11 @@
+ 
+ def _signature(info):
+     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
++
++
++def _directory_signature(path):
++    info = path.lstat()
++    return info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid
+ 
+ 
+ def _file_pin(path, expected):
+@@ -63,7 +69,9 @@
+              and directory.resolve(strict=True) == directory, "d02_private_state_scope_changed")
+     path = directory / "state.json"
+     before = _signature(path.lstat())
+-    data, observed = state._read_storage_readonly(lock_deadline=deadline, with_identity=True, strict_json=True)
++    data, observed = state._read_storage_readonly(
++        lock_deadline=deadline, with_identity=True, strict_json=True, decode_after_unlock=True)
++    _require(time.monotonic() < deadline, "d02_current_rights_observation_expired")
+     _require(tuple(observed["inode"]) == before[:2] and _signature(path.lstat()) == before,
+              "d02_state_changed_during_authority_observation")
+     _require(all(list(observed[key]) == expected[key] for key in ("directory", "lock_inode")),
+@@ -95,13 +103,18 @@
+                  and all(type(part) is int and part >= 0 for part in identity), "d02_exact_state_identity_required")
+ 
+ 
+-def check_receiver_state(home, *, profile, expected_principal, rights, state, access, scope, pairing, phase, deadline):
++def check_receiver_state(home, *, profile, expected_principal, rights, state, access, scope, pairing,
++                         phase, deadline, keep_current_check=False):
+     """Validate current rights and return the locked routed receipt buffer.
+ 
+     Arm and dispatch compare the original whole-file pins of both stores.
+     After dispatch the original policy, pairing, exact selected access row
+     and both namespaces still apply. The routed writer's new inode is allowed
+     there. The caller owns boot, original claim, route and exact receipt proof.
++
++    A read-only observer can request a third return value, a synchronous CAS
++    check for the exact observation. The caller supplies its remaining local
++    deadline and rechecks live loop-owned state before using the observation.
+     """
+     _require(phase in ("arm", "dispatch", "post_dispatch"), "d02_exact_authority_phase_required")
+     _require(type(deadline) in (int, float) and math.isfinite(deadline) and time.monotonic() < deadline,
+@@ -133,10 +146,20 @@
+     principal = tuple(expected_principal[key] for key in principal_fields)
+     pre_dispatch = phase != "post_dispatch"
+ 
+-    with scope.authority(home):
++    policy_cache = nullcontext()
++    if keep_current_check:
++        from hermes_cli import config
++
++        policy_cache = config.require_current_config_storage_cached(paths["root_config"])
++    with scope.authority(home), policy_cache:
++        if keep_current_check:
++            policy_config = config.current_config_storage_cached(paths["root_config"])
+         _require(_route_allowed(access, expected_principal, profile), "d02_current_account_policy_changed")
+         active = pairing.get_hermes_dir("platforms/pairing", "pairing", home=home) / "telegram-approved.json"
+         _require(active == home / rights["active_pairing"], "d02_active_pairing_layout_changed")
++        if keep_current_check:
++            pairing_directories = {path: _directory_signature(path) for path in active.parents
++                                   if path.is_relative_to(home)}
+         active_before = _signature(active.lstat())
+         approvals = pairing._approved_json_storage_readonly(active, home)
+         _require(bool(pairing._matching_ids("telegram", approvals, expected_principal["user_id"])),
+@@ -159,12 +182,34 @@
+         data, routed, routed_path, routed_before = _read_bound_state(state, selected_profile, rights["routed_state"],
+                                          pre_dispatch=pre_dispatch, deadline=deadline)
+ 
+-    _require(auth_observed["directory"] != routed["directory"]
+-             and _namespace_current(auth_path, auth_observed) and _namespace_current(routed_path, routed)
+-             and pairing.get_hermes_dir("platforms/pairing", "pairing", home=home) / "telegram-approved.json" == active
+-             and _signature(active.lstat()) == active_before
+-             and _signature(auth_path.lstat()) == auth_before and _signature(routed_path.lstat()) == routed_before
+-             and all(path.resolve(strict=True) == path and _signature(path.lstat()) == static[name]
+-                     for name, path in paths.items()) and time.monotonic() < deadline,
+-             "d02_current_rights_observation_expired_or_changed")
+-    return data, {"authorization": auth_observed, "routed": routed}
++    def _check_files(bound):
++        _require(auth_observed["directory"] != routed["directory"]
++                 and _namespace_current(auth_path, auth_observed) and _namespace_current(routed_path, routed)
++                 and pairing.get_hermes_dir("platforms/pairing", "pairing", home=home) / "telegram-approved.json" == active
++                 and _signature(active.lstat()) == active_before
++                 and _signature(auth_path.lstat()) == auth_before and _signature(routed_path.lstat()) == routed_before
++                 and all(path.resolve(strict=True) == path and _signature(path.lstat()) == static[name]
++                         for name, path in paths.items()) and time.monotonic() < bound,
++                 "d02_current_rights_observation_expired_or_changed")
++
++    def check_current(local_deadline):
++        _require(type(local_deadline) in (int, float) and math.isfinite(local_deadline),
++                 "d02_exact_current_deadline_required")
++        bound = min(local_deadline, deadline)
++        _require(time.monotonic() < bound, "d02_current_rights_observation_expired")
++        with scope.authority(home):
++            _require(config.current_config_storage_cached(paths["root_config"]) is policy_config,
++                     "d02_current_policy_source_changed")
++            _require(state.directory_storage_readonly == auth_path.parent, "d02_private_state_scope_changed")
++        with scope.authority(selected_profile):
++            _require(state.directory_storage_readonly == routed_path.parent, "d02_private_state_scope_changed")
++        _require(all(_directory_signature(path) == prior for path, prior in pairing_directories.items()),
++                 "d02_current_pairing_namespace_changed")
++        _check_files(bound)
++
++    observed = {"authorization": dict(auth_observed), "routed": dict(routed)}
++    if keep_current_check:
++        check_current(deadline)
++        return data, observed, check_current
++    _check_files(deadline)
++    return data, observed
+--- a/gateway/ordinary_dm_dispatch_closure.py
++++ b/gateway/ordinary_dm_dispatch_closure.py
+@@ -14,6 +14,7 @@
+ from hermes_cli import friday_product_access as access, friday_user_scope as scope
+ from hermes_constants import get_hermes_home
+ 
++_LOCAL_RECHECK_SECONDS = 0.2
+ _ROUTE = ("session_key", "source_profile", "transport_profile", "runtime_profile")
+ 
+ 
+@@ -91,71 +92,84 @@
+                      directory, directory / ".state.json.lock", directory / "state.json")))
+ 
+ 
+-def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, disposition_revision, cutoff,
+-                             options, scenario, transport_deadline):
++async def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, disposition_revision, cutoff,
++                                   options, scenario, transport_deadline, run_private):
+     """Return private matcher inputs at a protected boundary already authenticated by Root.
+ 
+-    Invoke synchronously on the owning loop. Keep the returned receipt pairs in
+-    the existing private evidence path. This function neither retires the arm
+-    nor decides an ACK match, authorizes an effect, or writes anything.
++    Capture and recheck native state on its owning loop around the single
++    read-only receipt join. Keep the pairs and current witness private.
+     """
+     if (type(disposition_revision) is not int or disposition_revision < 0
+             or not _number(cutoff) or not _number(transport_deadline)):
+-        return _unknown("d02_invalid_dispatch_join_binding")
++        return _unknown("d02_invalid_dispatch_join_binding"), None
+     try:
+         arm = adapter._ordinary_dm_wire_arm
+         if (arm is None or arm.ingress is None or type(claim_sha256) is not str
+                 or arm.claim.claim_sha256 != claim_sha256):
+-            return _unknown("d02_exact_dispatch_arm_required")
++            return _unknown("d02_exact_dispatch_arm_required"), None
+         deadline = min(transport_deadline, arm.claim.expires_monotonic, time.monotonic() + 2)
+         if time.monotonic() >= deadline:
+-            return _unknown("d02_dispatch_join_expired")
++            return _unknown("d02_dispatch_join_expired"), None
+         before, raw = _snapshot(adapter, arm, claim_sha256, wire_sha256, disposition_revision, cutoff)
+         evidence = arm.ingress
+         admissions = before["admissions"]
+         if admissions is not evidence._admissions or admissions is None:
+-            return _unknown("d02_exact_routed_writer_required")
++            return _unknown("d02_exact_routed_writer_required"), None
+         home, profile, routed, principal = _exact_route(adapter, evidence, options, scenario)
+         package, separator, name = type(admissions).__module__.rpartition(".")
+         if not separator or name != "admission":
+-            return _unknown("d02_exact_routed_writer_package_required")
++            return _unknown("d02_exact_routed_writer_package_required"), None
+         consumer = import_module(".d02_wire_receipts", package)
+         state = admissions.state
+ 
+-        def read_verified(selected_state, bound):
+-            if selected_state is not state:
+-                raise ValueError("d02_routed_writer_state_changed")
+-            data, observed = check_receiver_state(
+-                home, profile=profile, expected_principal=principal, rights=options["rights"],
+-                state=state, access=access, scope=scope, pairing=pairing, phase="post_dispatch",
+-                deadline=bound,
+-            )
+-            return data, observed["routed"]
++        generation = arm.claim.generation
++        armed_at = arm.armed_monotonic
++        expires = arm.claim.expires_monotonic
++        route = {key: evidence.scope[key] for key in _ROUTE}
+ 
+-        with scope.authority(routed):
+-            if Path(get_hermes_home()) != routed:
+-                return _unknown("d02_receipt_join_home_not_bound")
+-            storage = _storage_signature(state)
+-            joined = consumer.read_closed_wire_receipts(
+-                admissions, wire_bytes=raw, wire_sha256=wire_sha256, generation=arm.claim.generation,
+-                armed_at=arm.armed_monotonic, cutoff=cutoff, expires=arm.claim.expires_monotonic,
+-                scenario=scenario, route={key: evidence.scope[key] for key in _ROUTE},
+-                committed_pairs=before["committed_pairs"], held_update_ids=before["held_update_ids"],
+-                lock_deadline=deadline, _protected_reader=read_verified,
+-            )
+-            if _storage_signature(state) != storage:
+-                return _unknown("d02_routed_store_changed_during_join")
++        def read_pairs():
++            witness = None
++
++            def read_verified(selected_state, bound):
++                nonlocal witness
++                if selected_state is not state:
++                    raise ValueError("d02_routed_writer_state_changed")
++                data, observed, witness = check_receiver_state(
++                    home, profile=profile, expected_principal=principal, rights=options["rights"],
++                    state=state, access=access, scope=scope, pairing=pairing, phase="post_dispatch",
++                    deadline=bound, keep_current_check=True,
++                )
++                return data, observed["routed"]
++
++            with scope.authority(routed):
++                if Path(get_hermes_home()) != routed:
++                    raise ValueError("d02_receipt_join_home_not_bound")
++                storage = _storage_signature(state)
++                joined = consumer.read_closed_wire_receipts(
++                    admissions, wire_bytes=raw, wire_sha256=wire_sha256, generation=generation,
++                    armed_at=armed_at, cutoff=cutoff, expires=expires, scenario=scenario, route=route,
++                    committed_pairs=before["committed_pairs"], held_update_ids=before["held_update_ids"],
++                    lock_deadline=deadline, _protected_reader=read_verified,
++                )
++                if _storage_signature(state) != storage:
++                    raise ValueError("d02_routed_store_changed_during_join")
++            return joined, witness
++
++        joined, witness = await run_private(deadline, read_pairs)
++        if joined["state"] != "WIRE_RECEIPT_PAIRS_RESOLVED" or witness is None:
++            return _unknown("d02_protected_pairs_unresolved"), None
++        bound = min(deadline, time.monotonic() + _LOCAL_RECHECK_SECONDS)
++        witness(bound)
+         after, final_raw = _snapshot(adapter, arm, claim_sha256, wire_sha256, disposition_revision, cutoff)
+         _exact_route(adapter, evidence, options, scenario)
+         if (time.monotonic() >= deadline or admissions.state is not state
+                 or after["admissions"] is not admissions or before["committed_pairs"] != after["committed_pairs"]
+-                or final_raw != raw):
+-            return _unknown("d02_dispatch_join_drift")
+-        if joined["state"] != "WIRE_RECEIPT_PAIRS_RESOLVED":
+-            return _unknown("d02_protected_pairs_unresolved")
++                or after["held_update_ids"] != before["held_update_ids"] or final_raw != raw):
++            return _unknown("d02_dispatch_join_drift"), None
++        witness(bound)
+         return {"state": "D02_NATIVE_DISPATCH_SETTLED_PAIRS_RESOLVED", "reason": None,
+                 "claim_sha256": claim_sha256, "generation": arm.claim.generation,
+                 "wire_sha256": wire_sha256, "disposition_revision": disposition_revision,
+-                "store_identity": joined["store_identity"], "observations": joined["observations"]}
++                "store_identity": joined["store_identity"], "observations": joined["observations"]}, witness
+     except (OSError, RuntimeError, ValueError, AttributeError, TypeError, KeyError, IndexError, ImportError):
+-        return _unknown("d02_native_dispatch_or_protected_join_unproved")
++        return _unknown("d02_native_dispatch_or_protected_join_unproved"), None
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -26,6 +26,7 @@
+ import time
+ import unicodedata
+ from contextlib import contextmanager, suppress
++from contextvars import ContextVar
+ from dataclasses import dataclass
+ from decimal import Decimal, InvalidOperation
+ from pathlib import Path
+@@ -179,6 +180,8 @@
+ _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
+ # Disk-read-only policy loads must not warm the initializer/recovery cache.
+ _STORAGE_READONLY_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
++_CURRENT_STORAGE_CONFIG: ContextVar[Optional[tuple[Path, Dict[str, Any]]]] = ContextVar(
++    "_CURRENT_STORAGE_CONFIG", default=None)
+ # path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
+ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
+ 
+@@ -1596,7 +1599,7 @@
+     return _get_secret(name)
+ 
+ 
+-def _env_expand_match(m: re.Match) -> str:
++def _env_expand_match(m: re.Match, env_snapshot=None) -> str:
+     """Expand one ``${VAR}`` (legacy bare name) or ``${env:VAR}`` (Cursor-style SecretRef).
+     Other SecretRef sources (``file:``, ``bitwarden:``, ``vault:``...) are NOT resolved here:
+     external backends inject their values into the environment at startup (the ``secrets:``
+@@ -1613,7 +1616,12 @@
+                 "startup, so reference the variable as ${env:NAME} instead",
+                 raw, inner.split(":", 1)[0])
+         return raw  # non-env source, or empty ``${env:}``
+-    val = _env_ref_lookup(name)
++    if env_snapshot is None:
++        val = _env_ref_lookup(name)
++    else:
++        if name not in env_snapshot:
++            env_snapshot[name] = _env_ref_lookup(name)
++        val = env_snapshot[name]
+     if val is not None:
+         return val
+     if inner.startswith("env:"):
+@@ -1638,14 +1646,15 @@
+     return ref
+ 
+ 
+-def _expand_env_vars(obj):
+-    """Recursively expand ``${VAR}`` / ``${env:VAR}`` in string values (keys/non-strings untouched)."""
++def _expand_env_vars(obj, env_snapshot=None):
++    """Expand string values, optionally recording the exact values used by a storage read."""
+     if isinstance(obj, str):
+-        return _ENV_REF_RE.sub(_env_expand_match, obj)
++        expand = _env_expand_match if env_snapshot is None else lambda match: _env_expand_match(match, env_snapshot)
++        return _ENV_REF_RE.sub(expand, obj)
+     if isinstance(obj, dict):
+-        return {k: _expand_env_vars(v) for k, v in obj.items()}
++        return {key: _expand_env_vars(value, env_snapshot) for key, value in obj.items()}
+     if isinstance(obj, list):
+-        return [_expand_env_vars(item) for item in obj]
++        return [_expand_env_vars(item, env_snapshot) for item in obj]
+     return obj
+ 
+ 
+@@ -1994,7 +2003,7 @@
+     return _read_raw_config_impl(want_deepcopy=True)
+ 
+ 
+-def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
++def read_user_config_raw(config_path: Optional[Path] = None, *, expected_signature=None) -> Dict[str, Any]:
+     """Read a user ``config.yaml`` EXACTLY as written (no defaults/overlay/expansion, no cache).
+     ONLY legal for write-back round-trips and raw-file diagnostics — behavioral reads must use
+     load_config()/load_config_readonly()."""
+@@ -2002,8 +2011,17 @@
+         config_path = get_config_path()
+     try:
+         with open(config_path, encoding="utf-8-sig") as f:
+-            data = fast_safe_load(f) or {}
++            if expected_signature is not None and _storage_signature(os.fstat(f.fileno())) != expected_signature:
++                raise OSError("raw configuration file changed before reading")
++            data = fast_safe_load(f)
++            if expected_signature is not None:
++                if _storage_signature(os.fstat(f.fileno())) != expected_signature:
++                    raise OSError("raw configuration file changed while reading")
++                if data is not None and not isinstance(data, dict):
++                    raise yaml.YAMLError("top-level configuration must be a mapping")
+     except FileNotFoundError:
++        if expected_signature is not None:
++            raise
+         return {}
+     return data if isinstance(data, dict) else {}
+ 
+@@ -2297,13 +2315,15 @@
+     return lkg_copy
+ 
+ 
+-def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
++def _merge_managed_overlay(expanded: Dict[str, Any], *, managed_config=None,
++                           env_snapshot=None) -> Tuple[Dict[str, Any], Any]:
+     """Apply the managed-scope overlay; returns ``(merged, managed_config_or_falsy)``.
+     Managed wins at the leaf and is applied AFTER user expansion so a user ``${VAR}`` cannot shadow
+     a managed literal: managed values expand only against the process environment. This
+     deliberately inverts the usual env-over-config precedence for the keys the managed layer pins
+     (docs/design/managed-scope.md §4.1)."""
+-    managed_config = managed_scope.load_managed_config()
++    if managed_config is None:
++        managed_config = managed_scope.load_managed_config()
+     if not managed_config:
+         return expanded, managed_config
+     # Same canonicalization as the user config BEFORE merging (parity with
+@@ -2312,7 +2332,7 @@
+     if isinstance(managed_normalized.get("model"), str):
+         managed_normalized = dict(managed_normalized)
+         managed_normalized["model"] = {"default": managed_normalized["model"]}
+-    return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
++    return _deep_merge(expanded, _expand_env_vars(managed_normalized, env_snapshot)), managed_config
+ 
+ 
+ def _load_config_cache_hit(path_key: str, cache_sig: Any, *, cache=None) -> Optional[Dict[str, Any]]:
+@@ -2324,6 +2344,9 @@
+     cached = (_LOAD_CONFIG_CACHE if cache is None else cache).get(path_key)
+     if cached is None or cache_sig is None or cached[:8] != cache_sig:
+         return None
++    if cache is _STORAGE_READONLY_LOAD_CONFIG_CACHE and len(cached) >= 11:
++        if cached[10] != _storage_config_sources(Path(path_key)):
++            return None
+     hit = cached[8]
+     if isinstance(hit, FailedConfigRead) and isinstance(hit.read_error, OSError):
+         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
+@@ -2340,15 +2363,84 @@
+     return None
+ 
+ 
++def _validate_config_storage_home(home):
++    from hermes_constants import assert_named_profile_home_live
++    from hermes_cli.config_home import validate_home_readonly
++
++    assert_named_profile_home_live(home)
++    validate_home_readonly(home)
++
++
++def _storage_signature(info):
++    return (info.st_dev, *file_signature(info))
++
++
++def _storage_config_sources(config_path):
++    """Paths and identities for the effective file inputs to a storage cache entry."""
++    try:
++        root = _storage_signature(config_path.stat())
++        managed_dir = managed_scope.get_managed_dir()
++        managed_path = (managed_dir / "config.yaml").absolute() if managed_dir else None
++        try:
++            managed_file = _storage_signature(managed_path.stat()) if managed_path else None
++        except FileNotFoundError:
++            managed_file = None
++        return root, managed_path, managed_file
++    except OSError:
++        return None
++
++
++def _storage_secret_scope_matches(home):
++    from agent.secret_scope import current_secret_scope, current_secret_scope_home
++
++    return current_secret_scope() is None or current_secret_scope_home() == str(home)
++
++
++def current_config_storage_cached(expected_path):
++    """Get a current strict storage cache entry or refuse without parsing or locking."""
++    path = get_config_path()
++    if path != expected_path:
++        raise ValueError("current_storage_config_home_changed")
++    _validate_config_storage_home(path.parent)
++    if not _storage_secret_scope_matches(path.parent):
++        raise ValueError("current_storage_config_foreign_secret_scope")
++    sources = _storage_config_sources(path)
++    entry = _STORAGE_READONLY_LOAD_CONFIG_CACHE.get(str(path))
++    if (sources is None or entry is None or len(entry) < 12 or entry[10] != sources
++            or entry[11] is not True
++            or not all(_env_ref_lookup(name) == value for name, value in entry[9].items())
++            or _STORAGE_READONLY_LOAD_CONFIG_CACHE.get(str(path)) is not entry):
++        raise ValueError("current_storage_config_unavailable")
++    guard = _CURRENT_STORAGE_CONFIG.get()
++    if guard is not None and (path != guard[0] or entry[8] is not guard[1]):
++        raise ValueError("current_storage_config_generation_changed")
++    return entry[8]
++
++
++@contextmanager
++def require_current_config_storage_cached(path):
++    """Constrain this protected caller and nested readers to one home and cache generation."""
++    config = current_config_storage_cached(path)
++    token = _CURRENT_STORAGE_CONFIG.set((path, config))
++    try:
++        yield
++    finally:
++        _CURRENT_STORAGE_CONFIG.reset(token)
++
++
++def current_config_storage_cache_required():
++    return _CURRENT_STORAGE_CONFIG.get() is not None
++
++
+ def _load_config_impl(*, want_deepcopy: bool, storage_readonly: bool = False) -> Dict[str, Any]:
++    guard = _CURRENT_STORAGE_CONFIG.get()
++    if guard is not None:
++        hit = current_config_storage_cached(guard[0])
++        return copy.deepcopy(hit) if want_deepcopy else hit
+     cache = _STORAGE_READONLY_LOAD_CONFIG_CACHE if storage_readonly else _LOAD_CONFIG_CACHE
+     if storage_readonly:
+         # Validate even on cache hits: a tombstone or lost mount revokes a read.
+-        from hermes_constants import assert_named_profile_home_live
+-        from hermes_cli.config_home import validate_home_readonly
+-        home = get_hermes_home()
+-        assert_named_profile_home_live(home)
+-        validate_home_readonly(home)
++        _validate_config_storage_home(get_hermes_home())
+     # Lock-free fast path for cache hits — same publication contract as `_read_raw_config_impl`
+     # above (whole-tuple replace, `_CONFIG_LOCK` only serializes rebuilds and writers). A hit costs
+     # ~0.024ms; behind a lock held by `save_config()` the same read measured 10010ms, and on a
+@@ -2379,11 +2471,17 @@
+             return copy.deepcopy(hit) if want_deepcopy else hit
+ 
+         config = copy.deepcopy(DEFAULT_CONFIG)
++        observed_sources = _storage_config_sources(config_path) if storage_readonly else None
++        sources = observed_sources
+ 
+         if user_sig is not None:
+             try:
+                 with open(config_path, encoding="utf-8-sig") as f:
++                    if sources is not None and _storage_signature(os.fstat(f.fileno())) != sources[0]:
++                        sources = None
+                     parsed_config = fast_safe_load(f)
++                    if sources is not None and _storage_signature(os.fstat(f.fileno())) != sources[0]:
++                        sources = None
+                 if storage_readonly and parsed_config is not None and not isinstance(parsed_config, dict):
+                     raise TypeError("top-level configuration must be a mapping")
+                 user_config = parsed_config or {}
+@@ -2418,18 +2516,50 @@
+                 return copy.deepcopy(fallback) if want_deepcopy else fallback
+ 
+         normalized = _canonicalize_config(config)
+-        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+-        if not storage_readonly:
++        env_snapshot = None
++        if storage_readonly:
++            resolved_managed = None
++            if sources is not None:
++                _, managed_path, managed_signature = sources
++                if managed_path is not None and managed_signature is not None:
++                    resolved_managed = managed_scope._load_managed_config_at(managed_path, managed_signature)
++                    if not isinstance(resolved_managed, dict):
++                        sources = None
++                        resolved_managed = {}
++                else:
++                    resolved_managed = {}
++                if observed_sources != _storage_config_sources(config_path):
++                    # Preserve the ordinary loader's current-overlay fallback on source turnover.
++                    sources = None
++                    resolved_managed = None
++            env_snapshot = {}
++            expanded, managed_config = _merge_managed_overlay(
++                _expand_env_vars(normalized, env_snapshot),
++                managed_config=resolved_managed, env_snapshot=env_snapshot)
++        else:
++            expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+             _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
++        if storage_readonly and (not _storage_secret_scope_matches(config_path.parent)
++                                 or observed_sources != _storage_config_sources(config_path)):
++            # An ordinary fallback under an ineligible or changing source must not
++            # prevent a later ordinary read from building current protected provenance.
++            return expanded
+         if cache_sig is not None:
+             # The cache stores its own deepcopy so load_config() callers can mutate freely while
+             # load_config_readonly() callers all see the same stable object. The env snapshot
+             # records the values this expansion was made against so later loads detect drift.
+             cached_copy = copy.deepcopy(expanded)
+-            env_snapshot = _env_ref_snapshot(normalized)
+-            if managed_config:
+-                _env_ref_snapshot(managed_config, env_snapshot)
+-            cache[path_key] = (*cache_sig, cached_copy, env_snapshot)
++            if env_snapshot is None:
++                env_snapshot = _env_ref_snapshot(normalized)
++                if managed_config:
++                    _env_ref_snapshot(managed_config, env_snapshot)
++            entry = (*cache_sig, cached_copy, env_snapshot)
++            if storage_readonly:
++                # Record the source binding even for ordinary fallback entries.
++                # Only a strict, current parse can supply a protected read.
++                certified = sources is not None and user_sig is not None and sources[0][1:] == user_sig
++                entry += (observed_sources, certified)
++            cache[path_key] = entry
+             # Readonly path returns the same object later calls will see (identity invariant).
+             if not want_deepcopy:
+                 return cached_copy
+--- a/hermes_cli/friday_product_access.py
++++ b/hermes_cli/friday_product_access.py
+@@ -27,19 +27,25 @@
+ 
+ 
+ def settings():
+-    from hermes_cli.config import get_config_path, load_config_storage_readonly, require_readable_config_before_write
++    from hermes_cli.config import (
++        current_config_storage_cache_required, get_config_path, load_config_storage_readonly,
++        require_readable_config_before_write,
++    )
+     from utils import load_yaml_file_readonly
+     # Preserve fail-closed current-file validation without reparsing the entire
+     # worker inventory on every policy read. The native read-only YAML cache
+     # invalidates on inode, size, mtime and ctime; it does not cache parse errors.
+-    path = get_config_path()
+-    try:
+-        raw = load_yaml_file_readonly(path)
+-    except Exception:
+-        require_readable_config_before_write(path)
+-    else:
+-        if raw is not None and not isinstance(raw, dict):
++    # A protected cache-only read already requires a successful strict parse of
++    # the exact current raw file. A miss must never enter either raw parser.
++    if not current_config_storage_cache_required():
++        path = get_config_path()
++        try:
++            raw = load_yaml_file_readonly(path)
++        except Exception:
+             require_readable_config_before_write(path)
++        else:
++            if raw is not None and not isinstance(raw, dict):
++                require_readable_config_before_write(path)
+     value = (load_config_storage_readonly().get("plugins") or {}).get("entries", {}).get("friday_rework", {})
+     return value.get("settings", {})
+ 
+--- a/hermes_cli/managed_scope.py
++++ b/hermes_cli/managed_scope.py
+@@ -69,7 +69,7 @@
+         _ENV_CACHE.clear()
+ 
+ 
+-def _cached_read(path: Path, cache: Dict[str, tuple], parse):
++def _cached_read(path: Path, cache: Dict[str, tuple], parse, expected_key=None):
+     """Shared stat-signature-keyed read; returns a deepcopy of the parsed value.
+ 
+     ``None`` when the file is absent or fails to parse (fail-open). A parse failure is logged
+@@ -80,7 +80,9 @@
+         st = path.stat()
+     except OSError:
+         return None  # absent
+-    key = file_signature(st)
++    key = (st.st_dev, *file_signature(st))
++    if expected_key is not None and key != expected_key:
++        return None
+     path_key = str(path)
+     with _CACHE_LOCK:
+         hit = cache.get(path_key)
+@@ -107,9 +109,32 @@
+     return parsed if isinstance(parsed, dict) else {}
+ 
+ 
++def _load_managed_config_at(path: Path, expected_key=None):
++    if expected_key is None:
++        try:
++            info = path.stat()
++        except OSError:
++            return None
++        expected_key = (info.st_dev, *file_signature(info))
++
++    def parse(config_path):
++        with config_path.open(encoding="utf-8-sig") as stream:
++            before = os.fstat(stream.fileno())
++            parsed = fast_safe_load(stream)
++            after = os.fstat(stream.fileno())
++        signature = (before.st_dev, *file_signature(before))
++        if signature != (after.st_dev, *file_signature(after)) or signature != expected_key:
++            raise OSError("managed configuration file changed while reading")
++        return {} if parsed is None else parsed
++
++    return _cached_read(path, _CONFIG_CACHE, parse, expected_key)
++
++
+ def load_managed_config() -> dict:
+     """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
+-    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8-sig")) or {})
++    managed_dir = get_managed_dir()
++    parsed = _load_managed_config_at(managed_dir / "config.yaml") if managed_dir else None
++    return parsed if isinstance(parsed, dict) else {}
+ 
+ 
+ def load_managed_env() -> Dict[str, str]:
+--- a/hermes_cli/plugins_state.py
++++ b/hermes_cli/plugins_state.py
+@@ -338,8 +338,13 @@
+         return self._read_storage_readonly(lock_deadline=lock_deadline, lock_budget=lock_budget).get(key, default)
+ 
+     def _read_storage_readonly(self, *, lock_deadline=None, lock_budget=None, with_identity=False,
+-                               strict_json=False):
+-        """Read one bounded, private state snapshot under the original native lock."""
++                               strict_json=False, decode_after_unlock=False):
++        """Capture one bounded snapshot under the original native lock.
++
++        A protected observer can decode privately after releasing the lock. It
++        receives the original snapshot only if its file and namespace remain
++        current throughout decode and hashing.
++        """
+         if lock_deadline is not None and (isinstance(lock_deadline, bool)
+                 or not isinstance(lock_deadline, (float, int)) or not math.isfinite(lock_deadline)):
+             raise ValueError("lock_deadline must be a finite monotonic timestamp")
+@@ -351,20 +356,40 @@
+         directory = self.directory_storage_readonly
+         path = directory / "state.json"
+         lock_path = directory / ".state.json.lock"
++
++        def private(info, *, directory=False):
++            kind = stat.S_ISDIR if directory else stat.S_ISREG
++            if (not kind(info.st_mode) or info.st_uid != os.getuid()
++                    or stat.S_IMODE(info.st_mode) != (0o700 if directory else 0o600)
++                    or not directory and info.st_nlink != 1):
++                raise PermissionError("unsafe_storage_readonly_state")
++
++        def identity(info):
++            return info.st_dev, info.st_ino
++
++        def signature(info):
++            return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
++
++        def decode(raw):
++            value = raw.decode("utf-8-sig")
++            if strict_json:
++                return json.loads(value, object_pairs_hook=_unique_storage_object,
++                                  parse_constant=_invalid_storage_constant)
++            return json.loads(value)
++
++        def decoded_result(data, raw, directory_info, lock_info, file_info):
++            if with_identity:
++                return data, {"directory": identity(directory_info), "lock_inode": identity(lock_info),
++                              "inode": identity(file_info), "sha256": sha256(raw).hexdigest(),
++                              "bytes": len(raw)}
++            return data
++
+         with _thread_state_lock(_PLUGIN_STATE_LOCKS_GUARD, lock_deadline, lock_budget):
+             thread_lock = _PLUGIN_STATE_LOCKS.setdefault(str(lock_path), threading.RLock())
+         with _thread_state_lock(thread_lock, lock_deadline, lock_budget):
+             dirfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+             try:
+                 di = os.fstat(dirfd)
+-                def private(info, *, directory=False):
+-                    kind = stat.S_ISDIR if directory else stat.S_ISREG
+-                    if (not kind(info.st_mode) or info.st_uid != os.getuid()
+-                            or stat.S_IMODE(info.st_mode) != (0o700 if directory else 0o600)
+-                            or not directory and info.st_nlink != 1):
+-                        raise PermissionError("unsafe_storage_readonly_state")
+-                def identity(info):
+-                    return info.st_dev, info.st_ino
+                 private(di, directory=True)
+                 lockfd = os.open(".state.json.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                                  dir_fd=dirfd)
+@@ -394,25 +419,17 @@
+                                     raw = stream.read(self.quota_bytes + 1)
+                                 if len(raw) > self.quota_bytes:
+                                     raise ValueError("storage_readonly_state_quota")
+-                                text = raw.decode("utf-8-sig")
+-                                if strict_json:
+-                                    data = json.loads(text, object_pairs_hook=_unique_storage_object,
+-                                                      parse_constant=_invalid_storage_constant)
+-                                else:
+-                                    data = json.loads(text)
++                                if not decode_after_unlock:
++                                    data = decode(raw)
+                                 after = os.fstat(statefd); private(after)
+                                 linked = os.stat("state.json", dir_fd=dirfd, follow_symlinks=False); private(linked)
+-                                signature = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                                 if signature(before) != signature(after) or signature(after) != signature(linked):
+                                     raise PermissionError("storage_readonly_state_changed")
+-                                if not isinstance(data, dict):
++                                if not decode_after_unlock and not isinstance(data, dict):
+                                     raise ValueError("storage_readonly_state_root_not_object")
+                                 check()
+-                                if with_identity:
+-                                    return data, {"directory": identity(di), "lock_inode": identity(li),
+-                                                  "inode": identity(after), "sha256": sha256(raw).hexdigest(),
+-                                                  "bytes": len(raw)}
+-                                return data
++                                if not decode_after_unlock:
++                                    return decoded_result(data, raw, di, li, after)
+                             finally:
+                                 os.close(statefd)
+                         finally:
+@@ -422,6 +439,22 @@
+                     os.close(lockfd)
+             finally:
+                 os.close(dirfd)
++
++        # Descriptor checks above bind the exact bytes; these matching named
++        # identities detect drift during off-lock validation.
++        data = decode(raw)
++        if not isinstance(data, dict):
++            raise ValueError("storage_readonly_state_root_not_object")
++        result = decoded_result(data, raw, di, li, after)
++        if self.directory_storage_readonly != directory:
++            raise PermissionError("storage_readonly_namespace_changed")
++        for name, prior, signature_fn in ((directory, di, identity), (lock_path, li, identity),
++                                         (path, after, signature)):
++            current = name.lstat()
++            private(current, directory=name == directory)
++            if signature_fn(current) != signature_fn(prior):
++                raise PermissionError("storage_readonly_state_changed_after_unlock")
++        return result
+ 
+     @property
+     def path(self) -> Path:
+--- a/hermes_cli/profiles.py
++++ b/hermes_cli/profiles.py
+@@ -1093,7 +1093,7 @@
+ #: One signature/result per home: the webhook and
+ #: api-server callers run :func:`profiles_to_serve` per inbound request, so the reader
+ #: must not re-parse a profile's config.yaml every time.
+-_STANDALONE_MEMO: Dict[str, Tuple[Optional[tuple], Optional[bool]]] = {}
++_STANDALONE_MEMO: Dict[str, Tuple[Optional[tuple], Optional[bool], bool]] = {}
+ _STANDALONE_WARNED = False
+ 
+ _STANDALONE_DEFAULT_WARNING = (
+@@ -1105,38 +1105,48 @@
+     (``gateway.standalone: true``)? Memoised by file signature. The DEFAULT profile is
+     never standalone — it IS the host — and warns once per process if the key is set there."""
+     global _STANDALONE_WARNED
++    from hermes_cli.config import current_config_storage_cache_required
+     from hermes_yaml import YAMLError
+     from utils import file_signature
+ 
++    cache_required = current_config_storage_cache_required()
+     home = Path(home)
+     cfg_path = home / "config.yaml"
+     key = str(home)
+     try:
+-        signature = file_signature(cfg_path.stat())
++        info = cfg_path.stat()
++        signature = (info.st_dev, *file_signature(info))
+     except FileNotFoundError:
+         signature = None
+     except OSError as exc:
++        if cache_required:
++            raise
+         signature = ("stat-error", exc.errno)
+-        if _STANDALONE_MEMO.get(key) != (signature, False):
++        if _STANDALONE_MEMO.get(key) != (signature, False, False):
+             logger.warning("Cannot read gateway.standalone from %s (%s); treating as not standalone",
+                            cfg_path, type(exc).__name__)
+-        _STANDALONE_MEMO[key] = (signature, False)
++        _STANDALONE_MEMO[key] = (signature, False, False)
+         return False
+     cached = _STANDALONE_MEMO.get(key)
++    if cache_required and signature is None:
++        return False  # Native policy for an absent config.
+     if cached is not None and cached[0] == signature and cached[1] is not None:
+-        return cached[1]
++        if not cache_required or cached[2]:
++            return cached[1]
++    if cache_required:
++        raise ValueError("current_standalone_policy_unavailable")
+     value = None
+     if signature is not None:
+         from hermes_cli.config import read_user_config_raw
+         try:
+-            cfg = read_user_config_raw(cfg_path) or {}
++            cfg = read_user_config_raw(cfg_path, expected_signature=signature) or {}
+         except (YAMLError, OSError, UnicodeError) as exc:
+             if cached is None or cached[0] != signature:
+                 logger.warning("Cannot read gateway.standalone from %s (%s); treating as not standalone",
+                                cfg_path, type(exc).__name__)
+             # Access can recover without changing the signature. None retains the
+             # warning receipt without caching a transient failure as config.
+-            _STANDALONE_MEMO[key] = (signature, False if isinstance(exc, YAMLError) else None)
++            _STANDALONE_MEMO[key] = (signature, False if isinstance(exc, YAMLError) else None, False)
+             return False
+         if isinstance(cfg.get("gateway"), dict):
+             value = cfg["gateway"].get("standalone")
+@@ -1146,7 +1156,7 @@
+             logger.warning(_STANDALONE_DEFAULT_WARNING)
+             _STANDALONE_WARNED = True
+         result = False
+-    _STANDALONE_MEMO[key] = (signature, result)
++    _STANDALONE_MEMO[key] = (signature, result, True)
+     return result
+ 
+ 
