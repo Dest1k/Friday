@@ -1,6 +1,7 @@
 """Telegram provider-wire regression for native write crash recovery and compaction."""
 import asyncio
 from contextlib import closing
+from copy import deepcopy
 from functools import wraps
 import json
 import sys
@@ -16,9 +17,18 @@ from test_ordinary_sse_disconnect import (
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Reuses the Linux SIGKILL fixture")
-@pytest.mark.parametrize("boundary", ["before-flush", "after-flush"])
-@pytest.mark.parametrize("compress", [False, True], ids=["uncompressed", "compressed"])
-def test_telegram_inbound_after_write_crash(tmp_path, monkeypatch, offline_chat, boundary, compress, record_property):
+@pytest.mark.parametrize("boundary,compress,alteration", [
+    pytest.param("before-flush", False, None, id="uncompressed-before-flush"),
+    pytest.param("after-flush", False, None, id="uncompressed-after-flush"),
+    pytest.param("before-flush", True, None, id="compressed-before-flush"),
+    pytest.param("after-flush", True, None, id="compressed-after-flush"),
+    pytest.param("before-flush", True, "text", id="compressed-replaced-current-text"),
+    pytest.param("before-flush", True, "uid", id="compressed-replaced-current-uid"),
+])
+def test_telegram_inbound_after_write_crash(tmp_path, monkeypatch, offline_chat, boundary, compress, alteration,
+                                           record_property):
+    from agent import conversation_loop
+    from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID
     from gateway.config import GatewayConfig, Platform, PlatformConfig
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
@@ -215,6 +225,59 @@ def test_telegram_inbound_after_write_crash(tmp_path, monkeypatch, offline_chat,
             assert any(row["compacted"] and row["content"] == prior_replies[2] for row in archive)
             return carrier["id"], carrier["content"]
 
+    post_commit_rows = []
+    guard_error = "bounded_context: formatter removed or rewrote protected authority/user/tool rows"
+    altered_text = "Read a different test artifact."
+    assemble = conversation_loop.assemble_api_request
+
+    @wraps(assemble)
+    def observe_post_commit_request(agent, **kwargs):
+        if (phase != "telegram" or not agent._last_compaction_in_place or post_commit_rows):
+            return assemble(agent, **kwargs)
+        carrier_id, _ = committed_summary()
+        messages = kwargs["messages"]
+        idx = kwargs["current_turn_user_idx"]
+        current = messages[idx]
+        head, tail = agent.context_compressor._bounded_protected_rows
+        protected, = [row for row in head + tail if row.get(MESSAGE_UID) == current[MESSAGE_UID]]
+        original = deepcopy(protected)
+        assert protected["role"] == current["role"] == "user"
+        assert protected["content"] == current["content"] and current["content"].endswith(CRASH_READ_PROMPT)
+        assert protected.get("api_content") == current.get("api_content")
+        assert protected["_row_id"] != current["_row_id"] and current["_row_id"] > carrier_id
+        assert protected[DB_ROW_SNAPSHOT] and current[DB_ROW_SNAPSHOT]
+        assert protected[DB_ROW_SNAPSHOT] != current[DB_ROW_SNAPSHOT]
+        with closing(SessionDB(db_path, read_only=True)) as db:
+            durable, = [row for row in db.get_messages(session_id) if row["id"] == current["_row_id"]]
+            assert durable[MESSAGE_UID] == current[MESSAGE_UID]
+            assert durable["content"].endswith(CRASH_READ_PROMPT)
+
+        # Change only the request builder's copy after the real commit. The
+        # protected original and the user row being persisted keep their identity.
+        if alteration:
+            messages = list(messages)
+            messages[idx] = dict(current)
+            if alteration == "text":
+                assert current["api_content"].endswith(CRASH_READ_PROMPT)
+                messages[idx]["content"] = current["content"].replace(CRASH_READ_PROMPT, altered_text)
+                messages[idx]["api_content"] = current["api_content"].replace(CRASH_READ_PROMPT, altered_text)
+            else:
+                messages[idx][MESSAGE_UID] = "d348bce343294e4482cf564715bdceaa1"
+                assert messages[idx][MESSAGE_UID] != current[MESSAGE_UID]
+        assembled = assemble(agent, **{**kwargs, "messages": messages})
+        incoming = agent._bounded_compaction_request_context["incoming"]
+        assert incoming[MESSAGE_UID] == messages[idx][MESSAGE_UID]
+        expected_text = altered_text if alteration == "text" else CRASH_READ_PROMPT
+        assert incoming["content"].endswith(expected_text)
+        assert assembled.api_messages[-1]["role"] == "user"
+        assert assembled.api_messages[-1]["content"].endswith(expected_text)
+        assert protected == original
+        post_commit_rows.append((carrier_id, current["_row_id"], current[MESSAGE_UID]))
+        return assembled
+
+    if compress:
+        monkeypatch.setattr(conversation_loop, "assemble_api_request", observe_post_commit_request)
+
     def assert_write_state(messages):
         calls, results = write_pair(messages)
         assert len(calls) == len(results) == 1
@@ -235,6 +298,34 @@ def test_telegram_inbound_after_write_crash(tmp_path, monkeypatch, offline_chat,
     monkeypatch.setattr("tools.tirith_security.ensure_installed", lambda **_kwargs: None)
     phase = "telegram"
     assert asyncio.run(run_inbound(CRASH_READ_PROMPT, "42")) == session_id
+    if compress:
+        assert len(post_commit_rows) == 1
+        carrier_id, user_row_id, uid = post_commit_rows[0]
+        assert carrier_id == committed_summary()[0]
+        record_property("retained_compaction_row_id", carrier_id)
+        record_property("current_physical_row_id_changed", True)
+        record_property("current_snapshot_changed", True)
+    if alteration:
+        assert len(compressor_requests) == 1
+        assert not requests["telegram"], telegram_events
+        assert any(kind == "send" and guard_error in event["content"]
+                   for kind, event in telegram_events), telegram_events
+        assert writes == child_entries and len(writes) == 1 and not reads
+        assert artifact.read_bytes() == CRASH_CONTENT.encode("utf-8")
+        with closing(SessionDB(db_path, read_only=True)) as db:
+            rows = db.get_messages(session_id)
+            durable, = [row for row in rows if row["id"] == user_row_id]
+            assert durable[MESSAGE_UID] == uid and durable["content"].endswith(CRASH_READ_PROMPT)
+            assert [row["id"] for row in rows if row.get("platform_message_id") == "42"
+                    and row["role"] == "user"] == [user_row_id]
+            assert_write_state(db.get_messages_as_conversation(session_id))
+            assert not any(row.get("tool_call_id") == CRASH_READ_ID for row in rows)
+        record_property("alteration", alteration)
+        record_property("guard_error", guard_error)
+        record_property("gateway_model_requests", len(requests["telegram"]))
+        record_property("new_tool_handler_entries", 0)
+        return
+
     if compress:
         assert len(compressor_requests) == 1
         assert committed_at_dispatch == [committed_summary()], telegram_events
