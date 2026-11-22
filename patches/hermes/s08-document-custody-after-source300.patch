@@ -1,0 +1,571 @@
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -141,6 +141,13 @@
+ 
+ 
+ class ReceiverControl:
++    request_schema = SCHEMA
++    options_schema = OPTIONS_SCHEMA
++    driver_schema = "frw.Root.D02.owned-ordinary-driver.v1"
++    exact_phases = frozenset(PHASES)
++    terminal_schema = "frw.gateway.d02-native-settlement.v1"
++    wire_options = {}
++
+     def __init__(self, *, home, slot, store, read_owned, select_route, check_rights):
+         self.home = Path(home)
+         self.slot = Path(slot)
+@@ -187,7 +194,7 @@
+         require(set(value) == {"schema", "operator", "action", "query_id", "boot_id", "gateway",
+                                "created_monotonic", "expires_monotonic", "arm_intent",
+                                "receiver_options", "proof"}
+-                and value["schema"] == SCHEMA and value["operator"] == "Root"
++                and value["schema"] == self.request_schema and value["operator"] == "Root"
+                 and value["action"] in ("arm", "confirm", "cutoff", "finalize") and _hex(value["query_id"], 32)
+                 and (value["proof"] is None) == (value["action"] == "arm"),
+                 "d02_control_exact_request")
+@@ -211,11 +218,11 @@
+         work = Path(driver["workdir"])
+         run_id, scenario_sha = intent["run_id"], intent["scenario_sha256"]
+         require(type(run_id) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id)
+-                and scenario_sha in PHASES and phase["scenario_sha256"] == scenario_sha
++                and scenario_sha in self.exact_phases and phase["scenario_sha256"] == scenario_sha
+                 and sha256(_encode(phase["scenario"])).hexdigest() == scenario_sha,
+                 "d02_control_exact_d02_phase")
+         require(set(intent) == {"run_id", "scenario_sha256", "claim", "parent", "binding", "no_retry"}
+-                and driver["schema"] == "frw.Root.D02.owned-ordinary-driver.v1"
++                and driver["schema"] == self.driver_schema
+                 and driver["status"] == "ROOT_BOUND_ONE_FUTURE_OPERATION" and driver["operator"] == "Root"
+                 and work.parent == driver_path.parent and claim_path.parent == intent_path.parent == work
+                 and _work_identity(work.lstat()) == driver["work_identity"]
+@@ -243,7 +250,7 @@
+                 and claim["readonly_qualification"]["send_called"] is False,
+                 "d02_control_exact_active_once_authority")
+         require(set(options) == {"schema", "principal", "profile", "rights", "observer_expires_monotonic"}
+-                and options["schema"] == OPTIONS_SCHEMA and _now(options["observer_expires_monotonic"])
++                and options["schema"] == self.options_schema and _now(options["observer_expires_monotonic"])
+                 and options["observer_expires_monotonic"] <= request["created_monotonic"] + 600
+                 and str(phase["scenario"]["peer_id"]) == options["principal"]["account_id"]
+                 and str(phase["scenario"]["tester_id"]) == options["principal"]["user_id"]
+@@ -344,7 +351,7 @@
+             adapter._reserve_ordinary_dm_wire_window(claim_sha256=claim_sha,
+                 user_id=int(options["principal"]["user_id"]), generation=generation,
+                 expires_monotonic=expires, max_updates=scenario["max_updates"],
+-                owner_is_current=current_for_adapter, ingress_scope=ingress_scope)
++                owner_is_current=current_for_adapter, ingress_scope=ingress_scope, **self.wire_options)
+             submitted = True
+             async with asyncio.timeout_at(deadline):
+                 receipt = await ready
+@@ -398,7 +405,7 @@
+         cutoff = self._original_cutoff(request["proof"], intent, work, scenario, receipt)
+         return adapter._ordinary_dm_wire_window, cutoff
+ 
+-    def _original_cutoff(self, reference, intent, work, scenario, receipt, *, terminal_run=None):
++    def _original_cutoff(self, reference, intent, work, scenario, receipt, *, terminal_run=None, verified=None):
+         proof, proof_path = self.doc(reference, name="receiver-cutoff-intent.json")
+         clock, clock_path = self.doc(proof["clock"], name="clock.json")
+         run_id = intent["run_id"]
+@@ -440,6 +447,8 @@
+                     "d02_control_current_ack_bytes")
+             retained[field] = json.loads(content, object_pairs_hook=_unique)
+         self._check_ack_window(run, retained["ack"], retained["send_window"], scenario)
++        if verified is not None:
++            verified.update(run=run, ack=retained["ack"])
+         return cutoff
+ 
+     def _terminal_consumer(self, proof, intent, work):
+@@ -483,6 +492,9 @@
+         require(type(data) is dict and data["state"] == "OBSERVED_PENDING_CALLER_CLOSURE",
+                 "d02_control_settlement_snapshot_missing")
+         return data["revision"], sha256(encode_closed_wire(data["wire"])).hexdigest()
++
++    def _terminal_extra(self, arm, route, scenario, joined, verified, deadline):
++        return {}
+ 
+     async def _finalize(self, request, owner, adapter, ingress_scope, deadline):
+         from .ordinary_dm_dispatch_closure import join_settled_ordinary_dm
+@@ -508,8 +520,9 @@
+         original, _ = self.doc(cutoff_record["intent"], name="receiver-cutoff-intent.json")
+         require(original["arm"] == proof["arm"] and original["clock"] == proof["clock"],
+                 "d02_control_original_terminal_clock_changed")
++        verified = {}
+         cutoff = self._original_cutoff(cutoff_record["intent"], intent, work, scenario, retained,
+-                                       terminal_run=proof["run"])
++                                       terminal_run=proof["run"], verified=verified)
+         require(arm.window._cutoff == cutoff, "d02_control_terminal_cutoff_changed")
+         deadline = min(deadline, cutoff + _RESERVE, expires)
+         wait_deadline = min(deadline, cutoff + _POLL_DRAIN)
+@@ -550,13 +563,14 @@
+                 "d02_control_protected_settlement_unresolved")
+         current(witness)
+         self._rights_current(witness, deadline)
+-        evidence = {"schema": "frw.gateway.d02-native-settlement.v1", "intent": request["proof"],
++        evidence = {"schema": self.terminal_schema, "intent": request["proof"],
+                     "run_id": intent["run_id"], "scenario_sha256": intent["scenario_sha256"],
+                     "claim_sha256": claim_sha, "wire_sha256": wire, "generation": arm.claim.generation,
+                     "disposition_revision": revision,
+                     "route": {name: ingress_scope[name] for name in
+                               ("session_key", "source_profile", "transport_profile", "runtime_profile")},
+                     "observations": joined["observations"], "no_retry": True}
++        evidence.update(self._terminal_extra(arm, evidence["route"], scenario, joined, verified, deadline))
+         # The private write may finish after caller loss. That remains UNKNOWN;
+         # only the exact live recheck below allows retirement and confirmation.
+         reference = await self._run_private(deadline, _write_private, work,
+@@ -628,7 +642,7 @@
+             return {"accepted": False, "error": "d02_receiver_control_refused", "no_retry": True}
+ 
+ 
+-def ordinary_d02_receiver_verb(runner, loop):
++def _ordinary_receiver_verb(runner, loop, *, control_type):
+     """Bind only the installed process home and existing Telegram route."""
+     from gateway.config import Platform
+     from gateway.session import SessionSource
+@@ -685,6 +699,10 @@
+             pairing=pairing, phase=phase, deadline=deadline, keep_current_check=True)
+         return current
+ 
+-    controller = ReceiverControl(home=home, slot=slot, store=store, read_owned=read_owned,
++    controller = control_type(home=home, slot=slot, store=store, read_owned=read_owned,
+                                  select_route=select, check_rights=rights)
+     return lambda params: controller.handle(params, loop)
++
++
++def ordinary_d02_receiver_verb(runner, loop):
++    return _ordinary_receiver_verb(runner, loop, control_type=ReceiverControl)
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -40,6 +40,8 @@
+     handoff: str = "unstarted"
+     writer_task: object = None
+     settled: bool = False
++    s08_document: object = None
++    s08_raw: object = None
+ 
+ 
+ @dataclass
+@@ -111,7 +113,7 @@
+                 and (source.chat_type, source.user_id, source.chat_id, source.thread_id or "")
+                 == ("dm", user, user, ""))
+ 
+-    def built(self, event):
++    def built(self, event, *, native_update=None):
+         if not self._selected_source(event.source):
+             return
+         wire = self._wire()
+@@ -122,7 +124,14 @@
+                 or update in self._built or len(self._built) >= self.claim.max_updates):
+             self.lost("ingress_duplicate_or_unbound_native_event")
+             return
+-        self._built[update] = _Dispatch(ref(event))
++        document = None
++        if getattr(self.claim, "require_s08_document", False):
++            from gateway.s08_document_custody import capture_document
++
++            document = capture_document(self.adapter, native_update, event,
++                                        actor=self.claim.user_id, bot_id=self.scope["bot_id"])
++        self._built[update] = _Dispatch(ref(event), s08_document=document,
++                                       s08_raw=event.raw_message if document is not None else None)
+         event._ordinary_dm_ingress_stamp = (self._seal, update)
+         self._revision += 1
+ 
+@@ -155,7 +164,9 @@
+         update = self._stamp(event)
+         if update is None or not self._wire():
+             return None
+-        if (self._built[update].event_ref() is not event or event.internal
++        record = self._built[update]
++        if (record.event_ref() is not event or event.internal
++                or record.s08_document is not None and record.s08_raw is not event.raw_message
+                 or event._ingress_merged or event.source is not source
+                 or type(event.platform_update_id) is not int or event.platform_update_id != update
+                 or type(event._ingress_update_id) is not int or event._ingress_update_id != update
+@@ -213,6 +224,7 @@
+             self.lost("ingress_background_writer_not_same_task")
+             return
+         record.writer_task = None
++        record.s08_raw = None
+         record.settled = True
+         self._revision += 1
+         self._changed.set()
+@@ -305,11 +317,14 @@
+     return getattr(arm, "ingress", None)
+ 
+ 
+-def built_event(adapter, event):
++def built_event(adapter, event, *, native_update=None):
+     evidence = _ingress(adapter)
+     if evidence is not None:
+         try:
+-            evidence.built(event)
++            if native_update is None:
++                evidence.built(event)
++            else:
++                evidence.built(event, native_update=native_update)
+         except (Exception, asyncio.CancelledError):
+             evidence.lost("ingress_event_observation_failed")
+ 
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -5702,10 +5702,12 @@
+         from hermes_cli.plugins_gateway_control import plugin_control_verb
+         from gateway.ordinary_turn_projection import ordinary_turn_readonly_verb, ordinary_turn_cancel_verb, ordinary_f04_metadata_verb
+         from gateway.d02_receiver_control import ordinary_d02_receiver_verb
++        from gateway.s08_receiver_control import ordinary_s08_receiver_verb
+         _control_server = GatewayControlServer(
+             verb_handlers={"ordinary-turn-readonly": ordinary_turn_readonly_verb(runner, _main_loop),
+                            "ordinary-turn-cancel": ordinary_turn_cancel_verb(runner, _main_loop),
+                            "ordinary-d02-receiver": ordinary_d02_receiver_verb(runner, _main_loop),
++                           "ordinary-s08-receiver": ordinary_s08_receiver_verb(runner, _main_loop),
+                            "ordinary-f04-arm": ordinary_f04_metadata_verb(runner, _main_loop, "arm"),
+                            "ordinary-f04-disarm": ordinary_f04_metadata_verb(runner, _main_loop, "disarm"),
+                            "plugin-control": plugin_control_verb(runner, _main_loop),
+diff --git a/gateway/s08_document_custody.py b/gateway/s08_document_custody.py
+new file mode 100644
+--- /dev/null
++++ b/gateway/s08_document_custody.py
+@@ -0,0 +1,143 @@
++"""Authenticated observations for the exact S08 upload on its owned native arm."""
++
++from datetime import datetime
++from hashlib import sha256
++import json
++
++SCENARIO_SHA256 = "3cd7e07aea3857a1b5f9b02b0516ad2904b3a42f3bfe213e808e1a0444228645"
++SOURCE_SHA256 = "06562cb3a7001ce6973727c72ad51dd433106e2a7ce068eb0c1fa36d8d9c712e"
++SOURCE_BYTES = 27799
++PAYLOAD_DOMAIN = b"friday.telegram.payload.v1\x00caption\x00"
++TERMINAL_SCHEMA = "frw.gateway.s08-native-settlement.v1"
++_EXCLUDED_MESSAGE_FIELDS = (
++    "message_thread_id", "reply_to_message", "external_reply", "edit_date", "media_group_id",
++    "forward_origin", "sender_chat", "via_bot", "business_connection_id", "text",
++    "audio", "video", "animation", "voice", "video_note", "sticker",
++)
++
++
++def require(condition, reason):
++    if not condition:
++        raise ValueError(reason)
++
++
++def _positive(value):
++    return type(value) is int and 0 < value < 2**63
++
++
++def _opaque(value):
++    return type(value) is str and 0 < len(value) <= 256 and all(33 <= ord(c) <= 126 for c in value)
++
++
++def _caption_digest(value):
++    require(type(value) is str and "\x00" not in value, "s08_exact_caption")
++    raw = value.encode("utf-8")
++    require(0 < len(raw) <= 16384, "s08_exact_caption")
++    return sha256(PAYLOAD_DOMAIN + raw).hexdigest()
++
++
++def upload_plan(scenario):
++    raw = (json.dumps(scenario, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n").encode("utf-8")
++    require(sha256(raw).hexdigest() == SCENARIO_SHA256, "s08_exact_scenario")
++    step, = scenario["steps"]
++    upload = step["input"]
++    require(upload["kind"] == "document" and upload["sha256"] == SOURCE_SHA256
++            and upload["stat"]["size_bytes"] == SOURCE_BYTES, "s08_exact_upload")
++    return upload
++
++
++def _plain_document(message):
++    topic = message.get("is_topic_message")
++    return (all(message.get(field) is None for field in _EXCLUDED_MESSAGE_FIELDS)
++            and message.get("photo") is None and (topic is None or topic is False))
++
++
++def sender_witness(ack, scenario):
++    """Use the original R4 ACK after its native window and file pins are checked."""
++    upload = upload_plan(scenario)
++    message_id, date = ack["message_id"], ack["date"]
++    actor, peer = scenario["tester_id"], scenario["peer_id"]
++    document = ack["document"]
++    planned = upload["caption"]
++    caption = ack["caption"]
++    # The stock sender permits one terminal LF omitted by Telegram.
++    require(caption == planned or planned.endswith("\n")
++            and not planned.endswith(("\n\n", "\r\n")) and caption == planned[:-1], "s08_ack_caption_changed")
++    require(_positive(message_id) and _positive(date) and _plain_document(ack)
++            and _positive(ack["from"]["id"]) and _positive(ack["chat"]["id"])
++            and ack["from"]["id"] == actor and ack["from"]["is_bot"] is True
++            and ack["chat"]["type"] == "private" and ack["chat"]["id"] == peer
++            and type(document["file_size"]) is int and document["file_size"] == SOURCE_BYTES
++            and document["file_name"] == upload["filename"] and document["mime_type"] == upload["mime_type"]
++            and _opaque(document["file_id"]) and _opaque(document["file_unique_id"]), "s08_exact_ack_document")
++    return {"sender_message_id": str(message_id), "date": date, "caption_sha256": _caption_digest(caption),
++            "file_unique_id": document["file_unique_id"], "file_name": document["file_name"],
++            "mime_type": document["mime_type"], "declared_bytes": document["file_size"]}
++
++
++def capture_document(adapter, update, event, *, actor, bot_id):
++    """Capture ingress only from the actual unmodified PTB media callback."""
++    from telegram import Chat, Document, Message, Update, User
++
++    require(type(update) is Update and type(update.message) is Message
++            and update.message is event.raw_message and update.get_bot() is adapter._bot,
++            "s08_original_sdk_update_required")
++    message = update.message
++    document = message.document
++    user, chat = message.from_user, message.chat
++    require(type(document) is Document and type(user) is User and type(chat) is Chat
++            and message.get_bot() is adapter._bot and document.get_bot() is adapter._bot
++            and user.get_bot() is adapter._bot and chat.get_bot() is adapter._bot
++            and _positive(actor) and _positive(bot_id) and actor != bot_id
++            and user.id == actor and user.is_bot is True and chat.id == actor and chat.type == "private"
++            and _positive(update.update_id) and _positive(message.message_id) and adapter._bot.id == bot_id
++            and event.platform_update_id == event._ingress_update_id == update.update_id
++            and event.message_type.value == "document" and event.message_id == str(message.message_id)
++            and event.reply_to_message_id is None and not event.internal and not event._ingress_merged,
++            "s08_exact_sdk_route")
++    raw_fields = {field: getattr(message, field) for field in _EXCLUDED_MESSAGE_FIELDS}
++    raw_fields.update(photo=message.photo or None, is_topic_message=message.is_topic_message)
++    require(_plain_document(raw_fields)
++            and type(message.date) is datetime and message.date.utcoffset() is not None
++            and message.date.microsecond == 0 and type(document.file_size) is int
++            and document.file_size == SOURCE_BYTES and _opaque(document.file_id)
++            and _opaque(document.file_unique_id) and _opaque(document.file_name) and _opaque(document.mime_type),
++            "s08_exact_sdk_document")
++    date = int(message.date.timestamp())
++    require(_positive(date), "s08_exact_sdk_date")
++    return {"update_id": str(update.update_id), "native_message_id": str(message.message_id),
++            "bot_id": str(bot_id), "actor_id": str(actor), "date": date,
++            "caption_sha256": _caption_digest(message.caption), "file_id": document.file_id,
++            "file_unique_id": document.file_unique_id, "file_name": document.file_name,
++            "mime_type": document.mime_type, "declared_bytes": document.file_size}
++
++
++def match_ingress(ack, scenario, route, observations, sdk, *, target_update_ids):
++    """Bind one complete settled wire update to one original sender and receiving document."""
++    wanted = sender_witness(ack, scenario)
++    require(type(observations) in (list, tuple) and len(observations) == 1
++            and type(sdk) is dict and tuple(target_update_ids) == (int(sdk["update_id"]),),
++            "s08_exact_one_closed_native_update_required")
++    compared = ("date", "caption_sha256", "file_unique_id", "file_name", "mime_type", "declared_bytes")
++    require(all(sdk[key] == wanted[key] for key in compared)
++            and sdk["actor_id"] == str(scenario["tester_id"]) and sdk["bot_id"] == str(scenario["peer_id"]),
++            "s08_original_ack_sdk_document_mismatch")
++    (receipt, payload), = observations
++    message = receipt["message"]
++    media, = message["media"]
++    require(receipt["platform"] == "telegram" and receipt["chat_type"] == "dm"
++            and all(receipt[key] == route[key] for key in
++                    ("session_key", "source_profile", "transport_profile", "runtime_profile"))
++            and (message["platform_update_id"], message["message_id"], message["bot_id"],
++                 message["user_id"], message["chat_id"], message["thread_id"], message["reply_to_message_id"])
++            == (sdk["update_id"], sdk["native_message_id"], sdk["bot_id"], sdk["actor_id"],
++                sdk["actor_id"], "", "")
++            and payload == {"kind": "caption", "date": sdk["date"], "sha256": sdk["caption_sha256"]},
++            "s08_registered_pair_changed")
++    origin = media["origin"]
++    require(all(origin[key] == message[key] for key in ("bot_id", "chat_id", "thread_id", "message_id"))
++            and all(origin[key] == sdk[key] for key in ("file_id", "file_unique_id", "declared_bytes"))
++            and media["mime_type"] == sdk["mime_type"]
++            and media["content"] == {"sha256": SOURCE_SHA256, "size_bytes": SOURCE_BYTES},
++            "s08_registered_media_not_original_xlsx")
++    return receipt, wanted
+diff --git a/gateway/s08_receiver_control.py b/gateway/s08_receiver_control.py
+new file mode 100644
+--- /dev/null
++++ b/gateway/s08_receiver_control.py
+@@ -0,0 +1,49 @@
++"""One exact S08 control protocol on the existing bounded ordinary receiver."""
++
++from .d02_receiver_control import ReceiverControl, _ordinary_receiver_verb
++from .s08_document_custody import SCENARIO_SHA256, TERMINAL_SCHEMA, match_ingress, require, sender_witness
++from .s08_session_fence import capture_session_fence
++
++
++class S08ReceiverControl(ReceiverControl):
++    request_schema = "frw.gateway.s08-owned-receiver-control.v1"
++    options_schema = "frw.Root.S08.receiver-options.v1"
++    driver_schema = "frw.Root.S08.owned-ordinary-driver.v1"
++    exact_phases = frozenset((SCENARIO_SHA256,))
++    terminal_schema = TERMINAL_SCHEMA
++    wire_options = {"require_s08_document": True}
++
++    @staticmethod
++    def _check_ack_window(run, ack, window, scenario):
++        ReceiverControl._check_ack_window(run, ack, window, scenario)
++        if run["sent_api_ack_reference"]["representation"] == "botapi-wire-envelope-json":
++            ack = ack["result"]
++        sender_witness(ack, scenario)
++
++    def _terminal_extra(self, arm, route, scenario, joined, verified, deadline):
++        wire = arm.ingress.readback()["wire"]
++        require(wire["state"] == "LOCAL_WIRE_CLOSED" and len(wire["target_update_ids"]) == 1,
++                "s08_exact_closed_wire_required")
++        update, = wire["target_update_ids"]
++        sdk = arm.ingress._built[update].s08_document
++        run, ack = verified["run"], verified["ack"]
++        if run["sent_api_ack_reference"]["representation"] == "botapi-wire-envelope-json":
++            ack = ack["result"]
++        receipt, sender = match_ingress(ack, scenario, route, joined["observations"], sdk,
++                                        target_update_ids=wire["target_update_ids"])
++        fence = capture_session_fence(arm.ingress.adapter.gateway_runner, arm.ingress.scope, receipt,
++                                      started=sender["date"], cutoff=run["capture_until"], deadline=deadline)
++        return {
++            "s08_turn_fence": fence,
++            "s08_original_ack": run["sent_api_ack_reference"],
++            "s08_sender_message_id": sender["sender_message_id"],
++            "s08_receiver_update_id": receipt["message"]["platform_update_id"],
++            "s08_receiver_message_id": receipt["message"]["message_id"],
++            "s08_date": sender["date"],
++            "s08_input_sha256": receipt["message"]["media"][0]["content"]["sha256"],
++            "s08_input_bytes": receipt["message"]["media"][0]["content"]["size_bytes"],
++        }
++
++
++def ordinary_s08_receiver_verb(runner, loop):
++    return _ordinary_receiver_verb(runner, loop, control_type=S08ReceiverControl)
+diff --git a/gateway/s08_session_fence.py b/gateway/s08_session_fence.py
+new file mode 100644
+--- /dev/null
++++ b/gateway/s08_session_fence.py
+@@ -0,0 +1,76 @@
++"""Read the settled S08 row fence from the exact WAL-backed routed session."""
++
++from contextlib import closing
++import os
++from pathlib import Path
++import re
++import sqlite3
++import stat
++import time
++
++from .s08_document_custody import require
++
++
++def _sqlite_identity(path):
++    directory = path.parent.lstat()
++    require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid()
++            and directory.st_mode & 0o022 == 0 and path.parent.resolve(strict=True) == path.parent,
++            "s08_exact_routed_db_directory")
++    results = []
++    # A read-only WAL connection needs the existing sidecars. A missing
++    # sidecar is an unavailable fence, never a request to create one.
++    for candidate in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
++        info = candidate.lstat()
++        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
++                and info.st_mode & 0o077 == 0, "s08_exact_routed_db_files")
++        identity = [info.st_dev, info.st_ino]
++        if candidate.suffix != ".db-shm":
++            identity.extend((info.st_size, info.st_mtime_ns, info.st_ctime_ns))
++        results.append(identity)
++    return results
++
++
++def read_fence_rows(db, *, session_id, message_id, started, cutoff):
++    anchors = db.execute(
++        """SELECT id,timestamp FROM messages WHERE session_id=? AND role='user'
++               AND platform_message_id=? ORDER BY id LIMIT 2""", (session_id, message_id),
++    ).fetchall()
++    tail = db.execute("SELECT id,timestamp FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 1",
++                      (session_id,)).fetchone()
++    require(len(anchors) == 1 and tail is not None and 0 < anchors[0][0] < tail[0]
++            and started <= anchors[0][1] <= tail[1] <= cutoff, "s08_exact_terminal_row_fence")
++    return anchors[0][0], tail[0]
++
++
++def capture_session_fence(runner, scope, receipt, *, started, cutoff, deadline):
++    """Capture only row bounds at native terminal settlement on the owning loop."""
++    key = scope["session_key"]
++    entries = runner.session_store._entries
++    entry = entries.get(key)
++    message = receipt["message"]
++    home = Path(scope["runtime_home"])
++    require(entry is not None and entry.session_key == key and entry.active_turn_token is None
++            and entry.transport_profile == scope["transport_profile"]
++            and entry.origin is not None and getattr(entry.origin.platform, "value", None) == "telegram"
++            and (entry.origin.chat_type, entry.origin.user_id, entry.origin.chat_id, entry.origin.thread_id or "")
++                == ("dm", message["user_id"], message["chat_id"], "")
++            and isinstance(entry.session_id, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", entry.session_id),
++            "s08_exact_settled_routing_entry")
++    session_id = entry.session_id
++    path = home / "state.db"
++    local_deadline = min(deadline, time.monotonic() + 0.12)
++    identity = _sqlite_identity(path)
++    require(time.monotonic() < local_deadline, "s08_row_fence_deadline")
++    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=0)) as db:
++        db.set_progress_handler(lambda: int(time.monotonic() >= local_deadline), 100)
++        db.execute("PRAGMA query_only=ON")
++        db.execute("BEGIN")
++        if db.execute("PRAGMA journal_mode").fetchone() != ("wal",):
++            raise ValueError("s08_wal_snapshot_required")
++        anchor, terminal = read_fence_rows(db, session_id=session_id, message_id=message["message_id"],
++                                           started=started, cutoff=cutoff)
++    require(time.monotonic() < local_deadline and _sqlite_identity(path) == identity
++            and runner.session_store._entries is entries and entries.get(key) is entry
++            and entry.session_id == session_id and entry.active_turn_token is None, "s08_row_fence_drift")
++    return {"session_id": session_id, "user_row_id": anchor, "terminal_row_id": terminal,
++            "sqlite_identity": identity, "runtime_home": str(home)}
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -519,6 +519,7 @@
+     updater: object
+     loop: asyncio.AbstractEventLoop
+     ingress_scope: object = None
++    require_s08_document: bool = False
+ 
+ 
+ @dataclasses.dataclass(frozen=True, slots=True)
+@@ -1793,7 +1794,8 @@
+         return None
+ 
+     def _reserve_ordinary_dm_wire_window(self, *, claim_sha256, user_id, generation,
+-                                        expires_monotonic, max_updates, owner_is_current, ingress_scope=None):
++                                        expires_monotonic, max_updates, owner_is_current, ingress_scope=None,
++                                        require_s08_document=False):
+         """Queue an already authorized claim on the gateway loop. None means pending only."""
+         now = time.monotonic()
+         updater = self._ordinary_dm_wire_updater(generation)
+@@ -1802,6 +1804,7 @@
+                 or type(user_id) is not int or not 0 < user_id < 2**63
+                 or type(expires_monotonic) not in (int, float) or not now < expires_monotonic <= now + 600
+                 or type(max_updates) is not int or not 1 <= max_updates <= 200
++                or type(require_s08_document) is not bool or require_s08_document and ingress_scope is None
+                 or not callable(owner_is_current) or owner_is_current() is not True):
+             raise ValueError("Invalid authorized Telegram wire claim")
+         pending = getattr(self, "_ordinary_dm_wire_pending", None)
+@@ -1820,7 +1823,7 @@
+         claimed.add(claim_sha256)
+         self._ordinary_dm_wire_pending = _OrdinaryDMWireClaim(
+             claim_sha256, user_id, generation, expires_monotonic, max_updates,
+-            owner_is_current, updater, asyncio.get_running_loop(), ingress_scope,
++            owner_is_current, updater, asyncio.get_running_loop(), ingress_scope, require_s08_document,
+         )
+ 
+     def _ordinary_dm_wire_native_parameters(self, request, generation, kwargs):
+@@ -7110,7 +7113,13 @@
+                 await self._cache_observed_media(msg, _event)
+                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
+             return
+-        event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
++        arm = getattr(self, "_ordinary_dm_wire_arm", None)
++        s08_update = update if arm is not None and arm.claim.require_s08_document else None
++        if s08_update is None:
++            event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
++        else:
++            event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id,
++                                              native_update=s08_update)
+         if msg.caption:
+             from plugins.platforms.telegram.telegram_context import group_trigger_text
+             event.text = group_trigger_text(self, msg, expand_link_entities(msg))
+@@ -7378,12 +7387,13 @@
+         from .telegram_ingress import message_provenance
+         return message_provenance(self, event)
+ 
+-    def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:
++    def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None,
++                             *, native_update=None) -> MessageEvent:
+         from .telegram_message_event import build_message_event
+         event = build_message_event(self, message, msg_type, update_id)
+         if getattr(self, "_ordinary_dm_wire_arm", None) is not None:
+             from gateway.ordinary_dm_ingress import built_event
+-            built_event(self, event)
++            built_event(self, event, native_update=native_update)
+         return event
+ 
+     # -- Message reactions (processing lifecycle) --
