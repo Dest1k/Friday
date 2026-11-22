@@ -406,7 +406,7 @@ CRASH_READ_PROMPT = "Read the existing test artifact and report its contents."
 DONE = b"data: [DONE]\n\n"
 
 
-def crash_child(tmp_path, boundary, events_fd):
+def crash_child(tmp_path, boundary, events_fd, session_id):
     """Run one native turn. The chosen persistence boundary cannot resume."""
     with pytest.MonkeyPatch.context() as monkeypatch:
         new_agent, SessionDB, registry = build_offline_chat(tmp_path, monkeypatch)
@@ -459,19 +459,19 @@ def crash_child(tmp_path, boundary, events_fd):
             return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=EventStream(frames))
 
         monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
-        with closing(SessionDB(tmp_path / "state.db")) as db, closing(new_agent(db, CRASH_SESSION)) as agent:
-            history = db.get_messages_as_conversation(CRASH_SESSION)
+        with closing(SessionDB(tmp_path / "state.db")) as db, closing(new_agent(db, session_id)) as agent:
+            history = db.get_messages_as_conversation(session_id)
             agent.run_conversation(CRASH_WRITE_PROMPT, conversation_history=history)
         raise AssertionError("The interrupted child turn returned")
 
 
-def kill_at_crash_boundary(tmp_path, boundary, inspect_barrier):
+def kill_at_crash_boundary(tmp_path, boundary, inspect_barrier, *, session_id=CRASH_SESSION):
     """Keep the handler-entry event in the parent, which also owns the later client."""
     loader = '''
 import json, runpy, sys
 from pathlib import Path
 sys.path[:] = json.loads(sys.argv[1])
-runpy.run_path(sys.argv[2])["crash_child"](Path(sys.argv[3]), sys.argv[4], int(sys.argv[5]))
+runpy.run_path(sys.argv[2])["crash_child"](Path(sys.argv[3]), sys.argv[4], int(sys.argv[5]), sys.argv[6])
 '''
     reader, writer = os.pipe()
     process = None
@@ -479,7 +479,7 @@ runpy.run_path(sys.argv[2])["crash_child"](Path(sys.argv[3]), sys.argv[4], int(s
         try:
             process = subprocess.Popen(
                 [sys.executable, "-I", "-B", "-c", loader, json.dumps(sys.path),
-                 str(Path(__file__).resolve()), str(tmp_path), boundary, str(writer)],
+                 str(Path(__file__).resolve()), str(tmp_path), boundary, str(writer), session_id],
                 pass_fds=(writer,), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             )
         finally:
