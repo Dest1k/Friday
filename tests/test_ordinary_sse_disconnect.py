@@ -1,10 +1,17 @@
 """Native Chat Completions SSE and SQLite regression using a synthetic HTTP transport."""
 from contextlib import closing
 from functools import wraps
-from time import monotonic_ns
 import json
+import os
+from pathlib import Path
+import select
+import signal
 import socket
 import sqlite3
+import subprocess
+import sys
+from threading import Event
+from time import monotonic, monotonic_ns
 from unittest.mock import patch
 
 import httpx
@@ -41,8 +48,7 @@ def sqlite_snapshot(db_path, session_id):
         ).fetchall()
 
 
-@pytest.fixture
-def offline_chat(tmp_path, monkeypatch):
+def build_offline_chat(tmp_path, monkeypatch):
     def deny_network(*args, **kwargs):
         pytest.fail("Offline SSE fixture attempted network access")
 
@@ -97,6 +103,11 @@ def offline_chat(tmp_path, monkeypatch):
         )
 
     return new_agent, SessionDB, registry
+
+
+@pytest.fixture
+def offline_chat(tmp_path, monkeypatch):
+    return build_offline_chat(tmp_path, monkeypatch)
 
 
 def test_incomplete_sse_tool_call_does_not_survive_sqlite_reopen(tmp_path, monkeypatch, offline_chat):
@@ -383,3 +394,242 @@ def test_sse_eof_after_committed_write(tmp_path, monkeypatch, offline_chat, exha
     assert artifact.read_text(encoding="utf-8") == fact
     assert sqlite_snapshot(db_path, session_id)[:len(committed_rows)] == committed_rows
     record_property("write_handler_entries_including_reopened_agent", len(write_entries))
+
+
+CRASH_SESSION = "sse-write-crash"
+CRASH_WRITE_ID = "call_before_crash"
+CRASH_READ_ID = "call_after_crash"
+CRASH_FILENAME = "crash-fixture.txt"
+CRASH_CONTENT = "The fixture survives the writer process.\n"
+CRASH_WRITE_PROMPT = "Create the test artifact for the interrupted turn."
+CRASH_READ_PROMPT = "Read the existing test artifact and report its contents."
+DONE = b"data: [DONE]\n\n"
+
+
+def crash_child(tmp_path, boundary, events_fd):
+    """Run one native turn. The chosen persistence boundary cannot resume."""
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        new_agent, SessionDB, registry = build_offline_chat(tmp_path, monkeypatch)
+        from agent import tool_executor
+        entry = registry.get_entry("write_file")
+        write_file = entry.handler
+
+        @wraps(write_file)
+        def observe_write(args, **kwargs):
+            os.write(events_fd, b"W")
+            return write_file(args, **kwargs)
+
+        flush = tool_executor._flush_session_db_after_tool_progress
+
+        def stop_at_boundary():
+            assert (tmp_path / CRASH_FILENAME).read_bytes() == CRASH_CONTENT.encode("utf-8")
+            os.write(events_fd, b"B")
+            Event().wait()
+
+        @wraps(flush)
+        def observe_flush(agent, messages, *, stage):
+            if stage != "tool result write_file":
+                return flush(agent, messages, stage=stage)
+            if boundary == "before-flush":
+                stop_at_boundary()
+            result = flush(agent, messages, stage=stage)
+            assert result is True
+            stop_at_boundary()
+            return result
+
+        monkeypatch.setattr(entry, "handler", observe_write)
+        monkeypatch.setattr(tool_executor, "_flush_session_db_after_tool_progress", observe_flush)
+
+        sent = False
+
+        def respond(_transport, request):
+            nonlocal sent
+            if request.method == "GET" and request.url.host == httpx.URL(BASE).host:
+                return httpx.Response(404, json={"error": "Synthetic provider metadata"})
+            assert request.method == "POST" and str(request.url) == BASE + "/chat/completions"
+            assert not sent, "Child reached a second model request"
+            sent = True
+            body = json.loads(request.content)
+            assert body["stream"] is True
+            assert body["messages"][-1]["content"] == CRASH_WRITE_PROMPT
+            assert "write_file" in [tool["function"]["name"] for tool in body["tools"]]
+            arguments = json.dumps({"path": CRASH_FILENAME, "content": CRASH_CONTENT})
+            frames = [chunk(tool_delta("write_file", CRASH_WRITE_ID, arguments)),
+                      chunk(finish="tool_calls"), DONE]
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=EventStream(frames))
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+        with closing(SessionDB(tmp_path / "state.db")) as db, closing(new_agent(db, CRASH_SESSION)) as agent:
+            history = db.get_messages_as_conversation(CRASH_SESSION)
+            agent.run_conversation(CRASH_WRITE_PROMPT, conversation_history=history)
+        raise AssertionError("The interrupted child turn returned")
+
+
+def kill_at_crash_boundary(tmp_path, boundary, inspect_barrier):
+    """Keep the handler-entry event in the parent, which also owns the later client."""
+    loader = '''
+import json, runpy, sys
+from pathlib import Path
+sys.path[:] = json.loads(sys.argv[1])
+runpy.run_path(sys.argv[2])["crash_child"](Path(sys.argv[3]), sys.argv[4], int(sys.argv[5]))
+'''
+    reader, writer = os.pipe()
+    process = None
+    try:
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-I", "-B", "-c", loader, json.dumps(sys.path),
+                 str(Path(__file__).resolve()), str(tmp_path), boundary, str(writer)],
+                pass_fds=(writer,), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            )
+        finally:
+            os.close(writer)
+        deadline = monotonic() + 25
+        events = bytearray()
+        while not events.endswith(b"B"):
+            ready, _, _ = select.select([reader], [], [], max(0, deadline - monotonic()))
+            assert ready, "Timed out before the crash barrier"
+            event = os.read(reader, 1)
+            assert event, f"Child exited before the crash barrier (status {process.poll()})"
+            events.extend(event)
+        assert events == b"WB"
+        assert process.poll() is None
+        barrier_data = inspect_barrier()
+        assert process.poll() is None
+        process.kill()
+        assert process.wait(timeout=5) == -signal.SIGKILL
+        ready, _, _ = select.select([reader], [], [], 2)
+        assert ready and os.read(reader, 1) == b""
+        return [process.pid for event in events if event == ord("W")], barrier_data
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        os.close(reader)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires a Linux process and SIGKILL")
+@pytest.mark.parametrize("boundary", ["before-flush", "after-flush"])
+def test_native_resume_after_write_process_crash(tmp_path, monkeypatch, offline_chat, boundary, record_property):
+    from hermes_cli.oneshot import _load_resume_target
+
+    new_agent, SessionDB, registry = offline_chat
+    db_path = tmp_path / "state.db"
+    artifact = tmp_path / CRASH_FILENAME
+    phase = "seed"
+    requests = {"seed": [], "new": []}
+    writes = []
+    reads = []
+    expected_results = int(boundary == "after-flush")
+
+    write_entry = registry.get_entry("write_file")
+    write_file = write_entry.handler
+    read_entry = registry.get_entry("read_file")
+    read_file = read_entry.handler
+
+    @wraps(write_file)
+    def observe_write(args, **kwargs):
+        writes.append(os.getpid())
+        return write_file(args, **kwargs)
+
+    @wraps(read_file)
+    def observe_read(args, **kwargs):
+        reads.append(args.get("path"))
+        return read_file(args, **kwargs)
+
+    monkeypatch.setattr(write_entry, "handler", observe_write)
+    monkeypatch.setattr(read_entry, "handler", observe_read)
+
+    def respond(_transport, request):
+        if request.method == "GET" and request.url.host == httpx.URL(BASE).host:
+            return httpx.Response(404, json={"error": "Synthetic provider metadata"})
+        assert request.method == "POST" and str(request.url) == BASE + "/chat/completions"
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        requests[phase].append(body["messages"])
+        number = len(requests[phase])
+        if phase == "seed":
+            assert number == 1
+            frames = [chunk({"content": "The earlier conversation is retained."}, "stop"), DONE]
+        elif number == 1:
+            arguments = json.dumps({"path": CRASH_FILENAME})
+            frames = [chunk(tool_delta("read_file", CRASH_READ_ID, arguments)), chunk(finish="tool_calls"), DONE]
+        else:
+            assert number == 2
+            frames = [chunk({"content": "The existing file was read."}, "stop"), DONE]
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=EventStream(frames))
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    with closing(SessionDB(db_path)) as db, closing(new_agent(db, CRASH_SESSION)) as agent:
+        seed = agent.run_conversation("Record this unrelated conversation context.")
+        assert seed["completed"] is True
+        prior = sqlite_snapshot(db_path, CRASH_SESSION)
+        assert len(prior) == 2
+    assert not artifact.exists()
+
+    def write_pair(messages):
+        calls = [call for msg in messages if msg["role"] == "assistant"
+                 for call in msg.get("tool_calls") or [] if call["id"] == CRASH_WRITE_ID]
+        results = [msg for msg in messages if msg["role"] == "tool" and msg.get("tool_call_id") == CRASH_WRITE_ID]
+        return calls, results
+
+    def inspect_barrier():
+        assert artifact.read_bytes() == CRASH_CONTENT.encode("utf-8")
+        with closing(SessionDB(db_path, read_only=True)) as reader:
+            history = reader.get_messages_as_conversation(CRASH_SESSION)
+            calls, results = write_pair(history)
+            assert len(calls) == 1 and len(results) == expected_results
+            assert calls[0]["function"]["name"] == "write_file"
+            assert json.loads(calls[0]["function"]["arguments"]) == {"path": CRASH_FILENAME, "content": CRASH_CONTENT}
+            if results:
+                receipt = json.loads(results[0]["content"])
+                assert receipt["verified"] is True
+                assert receipt["bytes_written"] == len(CRASH_CONTENT.encode("utf-8"))
+                assert receipt["resolved_path"] == str(artifact)
+            assert reader.session_lifecycle_statuses([CRASH_SESSION])[CRASH_SESSION] == "interrupted"
+            assert history[-1]["role"] == ("tool" if results else "assistant")
+        rows = sqlite_snapshot(db_path, CRASH_SESSION)
+        assert rows[:len(prior)] == prior and len(rows) == len(prior) + 2 + expected_results
+        return rows
+
+    child_writes, before_kill = kill_at_crash_boundary(tmp_path, boundary, inspect_barrier)
+    writes.extend(child_writes)
+    assert inspect_barrier() == before_kill
+
+    phase = "new"
+    with closing(SessionDB(db_path)) as db:
+        # Same loader used by the supported one-shot --resume path.
+        resolved, history, _metadata = _load_resume_target(db, CRASH_SESSION)
+        assert resolved == CRASH_SESSION
+        assert requests["new"] == [] and len(writes) == 1
+        assert db.session_lifecycle_statuses([CRASH_SESSION])[CRASH_SESSION] == "interrupted"
+        with closing(new_agent(db, resolved)) as resumed:
+            assert requests["new"] == [] and writes == child_writes
+            result = resumed.run_conversation(CRASH_READ_PROMPT, conversation_history=history)
+        assert result["completed"] is True and result["final_response"] == "The existing file was read."
+        transcript = db.get_messages_as_conversation(CRASH_SESSION)
+        assert transcript[-2]["tool_call_id"] == CRASH_READ_ID
+        assert CRASH_CONTENT.strip() in transcript[-2]["content"]
+        assert len(write_pair(transcript)[1]) == expected_results
+
+    assert writes == child_writes and len(child_writes) == 1 and reads == [CRASH_FILENAME]
+    assert len(requests["new"]) == 2
+    first = requests["new"][0]
+    assert first[-1]["role"] == "user" and first[-1]["content"] == CRASH_READ_PROMPT
+    wire_calls, wire_results = write_pair(first)
+    assert len(wire_calls) == len(wire_results) == 1
+    if expected_results:
+        receipt = json.loads(wire_results[0]["content"])
+        assert receipt["verified"] is True and receipt["resolved_path"] == str(artifact)
+    else:
+        assert "effect is UNKNOWN" in wire_results[0]["content"]
+        assert "Inspect current state before retrying" in wire_results[0]["content"]
+    retained = sqlite_snapshot(db_path, CRASH_SESSION)
+    assert retained[:len(before_kill)] == before_kill
+    assert artifact.read_bytes() == CRASH_CONTENT.encode("utf-8")
+    record_property("crashed_turn_status", "interrupted")
+    record_property("durable_write_results", expected_results)
+    record_property("write_entries_across_processes", len(writes))
+    record_property("recovery_wire_latest_user", first[-1]["content"])
+    record_property("recovery_wire_write_result", "verified" if expected_results else "unknown")
+    record_property("crash_rows_unchanged_after_new_turn", retained[:len(before_kill)] == before_kill)

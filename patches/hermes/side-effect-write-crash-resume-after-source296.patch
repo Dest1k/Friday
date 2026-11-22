@@ -1,0 +1,41 @@
+--- a/agent/replay_cleanup.py
++++ b/agent/replay_cleanup.py
+@@ -117,10 +117,13 @@
+     return cleaned
+ 
+ 
+-def strip_dangling_tool_call_tail(agent_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++def strip_dangling_tool_call_tail(
++    agent_history: List[Dict[str, Any]], *, preserve_read_only: bool = False
++) -> List[Dict[str, Any]]:
+     """Strip a trailing ``assistant(tool_calls)`` with NO answers — a call that killed the gateway itself
+     (``docker restart``) left zero ``tool`` rows, invisible to ``strip_interrupted_tool_tails``. A partially
+-    answered block still resumes. Read-only tails are dropped; side-effecting ones get UNKNOWN-effect results.
++    answered block still resumes. Side-effecting tails get UNKNOWN-effect results; callers that will
++    subsequently repair read-only calls can preserve those tails for that pass.
+ 
+     On resume the model sees an unanswered tool call at the tail and naturally re-issues it — which restarts
+     the gateway again, producing the infinite reboot loop in #49201. ``strip_interrupted_tool_tails`` does
+@@ -140,6 +143,8 @@
+             recovered.append(make_tool_result_message(name, content, _call_id(call), effect_disposition=disposition))
+         logger.warning("Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them")
+         return recovered
++    if preserve_read_only:
++        return agent_history
+     logger.debug("Stripping dangling unanswered read-only assistant(tool_calls) tail (%d call(s))", len(tool_calls))
+     return agent_history[:-1]
+ 
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -1728,6 +1728,11 @@
+         messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+         if repair_alternation and messages:
+             from agent.agent_runtime_helpers import repair_message_sequence
++            from agent.replay_cleanup import strip_dangling_tool_call_tail
++
++            # Preserve the side-effect uncertainty before sequence repair can prune its call.
++            # This is a replay projection; the original SQLite rows stay as recorded.
++            messages = strip_dangling_tool_call_tail(messages, preserve_read_only=True)
+             repaired = repair_message_sequence(None, messages)
+             if repaired:
+                 logger.info("Repaired %d message-alternation violation(s) while "
