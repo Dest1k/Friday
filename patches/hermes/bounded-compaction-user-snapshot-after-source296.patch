@@ -1,0 +1,37 @@
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -8,6 +8,7 @@
+ from __future__ import annotations
+
+ from agent.friday_baseline_bridge import physical_create
++from agent.message_metadata import DB_ROW_SNAPSHOT
+
+ from dataclasses import dataclass, replace
+ from contextlib import contextmanager
+@@ -1128,13 +1129,16 @@
+     incoming = context.get("incoming") if isinstance(context, dict) else None
+     if isinstance(incoming, dict):
+         from agent.conversation_compression import _strip_marker_for_comparison
++        # In-place compaction re-inserts the current user row and refreshes
++        # its SQLite snapshot. Neither identifies the user turn on the wire.
++        projection_keys = ("api_content", "_row_id", "_submit_row_session_id", DB_ROW_SNAPSHOT)
+         def user_identity(row):
+             # Turn-start compaction precedes the native sidecar stamp. Match
+             # its still-immutable user row, then derive expected stamped bytes
+             # from the protected original plus this turn's known context.
+             # Never adopt the incoming sidecar as the protected expectation.
+             row = dict(row)
+-            for key in ("api_content", "_row_id", "_submit_row_session_id"):
++            for key in projection_keys:
+                 row.pop(key, None)
+             return _strip_marker_for_comparison([row])
+         # The current ask is stored twice: the protected contract holds its TRANSCRIPT text
+@@ -1148,7 +1152,7 @@
+         def _sent_projection(row):
+             row = dict(row)
+             own_sent = row.get("api_content")
+-            for key in ("api_content", "_row_id", "_submit_row_session_id"):
++            for key in projection_keys:
+                 row.pop(key, None)
+             if isinstance(own_sent, str) and own_sent and isinstance(row.get("content"), str):
+                 row["content"] = own_sent
