@@ -1,0 +1,1302 @@
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -1301,6 +1301,15 @@
+     if function_name == "read_file" and not blocked:
+         from hermes_cli.friday_workspace_revision import prepare_read_delivery
+         prepare_read_delivery(tool_message)
++        original_call = getattr(agent, "_tool_result_calls", {}).get((effective_task_id, tool_call_id))
++        if not is_error and getattr(original_call, "_s14_xlsx_pending", None) is not None:
++            from agent.context_compressor import _DB_PERSISTED_MARKER
++            from tools.scoped_xlsx_turn import _accept_xlsx_turn_result
++
++            if (tool_message.get(_DB_PERSISTED_MARKER) is True
++                    and tool_message.get("tool_call_id") == tool_call_id
++                    and tool_message.get("content") == function_result):
++                _accept_xlsx_turn_result(agent, ref, function_result, persisted_result)
+ 
+     if not blocked:
+         # ``tool.completed`` projects AFTER the canonical append + flush so resume can
+diff --git a/gateway/d02_receiver_control.py b/gateway/d02_receiver_control.py
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -21,6 +21,8 @@
+     "088d47d6a8efbf63068bb8fff13c69af05478a20156960811ac1d170db46c4cf",
+     "bab05e12b1465b984bf58acfd8b25507162b31c135dbb3623623951a06b10a05",
+ }
++_S14_SCENARIO = "e686e76c9d251bdda7e84056111c59c227b1489ffecf1a60142a21fb27fb546d"
++_S14_HISTORY = {"root-b00-s151-s14-20261102-r1", "root-s07-ff77de72d79b"}
+ ARM_SECONDS = 24
+ SHORT_SECONDS = 1.2
+ _LOCAL_RIGHTS_SECONDS = 0.2
+@@ -144,7 +146,7 @@
+     request_schema = SCHEMA
+     options_schema = OPTIONS_SCHEMA
+     driver_schema = "frw.Root.D02.owned-ordinary-driver.v1"
+-    exact_phases = frozenset(PHASES)
++    exact_phases = frozenset(PHASES | {_S14_SCENARIO})
+     terminal_schema = "frw.gateway.d02-native-settlement.v1"
+     wire_options = {}
+ 
+@@ -249,6 +251,9 @@
+                 and claim["readonly_qualification"]["new_called"] is False
+                 and claim["readonly_qualification"]["send_called"] is False,
+                 "d02_control_exact_active_once_authority")
++        if scenario_sha == _S14_SCENARIO:
++            require(_S14_HISTORY <= authority["history"].keys(),
++                    "s14_control_retained_history_required")
+         require(set(options) == {"schema", "principal", "profile", "rights", "observer_expires_monotonic"}
+                 and options["schema"] == self.options_schema and _now(options["observer_expires_monotonic"])
+                 and options["observer_expires_monotonic"] <= request["created_monotonic"] + 600
+@@ -347,11 +352,14 @@
+                 return owner_is_current()
+             return authorize_native_arm()
+ 
++        wire_options = self.wire_options
++        if intent["scenario_sha256"] == _S14_SCENARIO:
++            wire_options = {**wire_options, "selected_s14": (_S14_SCENARIO, intent["run_id"])}
+         try:
+             adapter._reserve_ordinary_dm_wire_window(claim_sha256=claim_sha,
+                 user_id=int(options["principal"]["user_id"]), generation=generation,
+                 expires_monotonic=expires, max_updates=scenario["max_updates"],
+-                owner_is_current=current_for_adapter, ingress_scope=ingress_scope, **self.wire_options)
++                owner_is_current=current_for_adapter, ingress_scope=ingress_scope, **wire_options)
+             submitted = True
+             async with asyncio.timeout_at(deadline):
+                 receipt = await ready
+@@ -398,6 +406,32 @@
+                 and run["send_timeout_seconds"] == _CLOCK_TIMING["ack_seconds"]
+                 and run["capture_until"] + _CLOCK_TIMING["reserve_seconds"] <= run["deadline"],
+                 "d02_control_retained_window_binding")
++
++    @staticmethod
++    def _s14_ack(run, ack, scenario):
++        if run["sent_api_ack_reference"]["representation"] == "botapi-wire-envelope-json":
++            ack = ack["result"]
++        upload = scenario["steps"][0]["input"]
++        caption = ack["caption"]
++        plan = upload["caption"]
++        document = ack["document"]
++        require(type(caption) is str and (caption == plan or plan.endswith("\n")
++                and not plan.endswith(("\n\n", "\r\n")) and caption == plan[:-1])
++                and ack.get("is_topic_message") in (None, False)
++                and all(ack.get(name) is None for name in (
++                    "message_thread_id", "reply_to_message", "external_reply", "text", "edit_date",
++                    "media_group_id", "forward_origin", "sender_chat", "via_bot", "business_connection_id",
++                    "photo", "audio", "animation", "video", "voice", "video_note", "sticker"))
++                and document["file_name"] == upload["filename"]
++                and document["mime_type"] == upload["mime_type"] and type(document["file_size"]) is int
++                and document["file_size"] == upload["stat"]["size_bytes"]
++                and all(type(document[name]) is str and re.fullmatch(r"[!-~]{1,256}", document[name])
++                        for name in ("file_unique_id", "file_id")),
++                "s14_control_original_document_ack_required")
++        return {"date": ack["date"],
++                "caption_sha256": sha256(b"friday.telegram.payload.v1\x00caption\x00" + caption.encode()).hexdigest(),
++                "file_unique_id": document["file_unique_id"], "file_name": document["file_name"],
++                "mime_type": document["mime_type"], "declared_bytes": document["file_size"]}
+ 
+     def _ack_cutoff(self, request, intent, work, adapter, expires, scenario):
+         proof, _ = self.doc(request["proof"], name="receiver-cutoff-intent.json")
+@@ -447,6 +481,10 @@
+                     "d02_control_current_ack_bytes")
+             retained[field] = json.loads(content, object_pairs_hook=_unique)
+         self._check_ack_window(run, retained["ack"], retained["send_window"], scenario)
++        if intent["scenario_sha256"] == _S14_SCENARIO:
++            s14_ack = self._s14_ack(run, retained["ack"], scenario)
++            if verified is not None:
++                verified["s14_ack"] = s14_ack
+         if verified is not None:
+             verified.update(run=run, ack=retained["ack"])
+         return cutoff
+@@ -495,6 +533,36 @@
+ 
+     def _terminal_extra(self, arm, route, scenario, joined, verified, deadline):
+         return {}
++
++    @staticmethod
++    def _s14_terminal(arm, intent, observations, sender):
++        from .s14_pair_custody import read_terminal
++
++        claim_sha = intent["claim"]["sha256"]
++        run_id = intent["run_id"]
++        require(arm.claim.selected_s14 == (_S14_SCENARIO, run_id),
++                "s14_control_exact_selected_arm_required")
++        require(arm.ingress._settlement_state() == "SETTLED",
++                "s14_control_singleton_closed_dispatch_required")
++        wire = arm.ingress.readback()["wire"]
++        ids = wire["target_update_ids"]
++        require(wire["state"] == "LOCAL_WIRE_CLOSED" and len(ids) == len(observations) == 1,
++                "s14_control_singleton_closed_dispatch_required")
++        terminal = read_terminal(arm.ingress, claim_sha)
++        require(type(terminal) is dict and terminal["schema"] == "friday.s14.native-typed-input-owned-pair.v1"
++                and terminal["claim_sha256"] == claim_sha and terminal["run_id"] == run_id,
++                "s14_control_exact_native_terminal_required")
++        sdk = terminal["input"]["sdk"]
++        (receipt, _), = observations
++        message = receipt["message"]
++        require(all(type(sdk[key]) is type(value) and sdk[key] == value for key, value in sender.items())
++                and (sdk["update_id"], sdk["native_message_id"], sdk["bot_id"], sdk["actor_id"])
++                == (str(ids[0]), message["message_id"], message["bot_id"], message["user_id"])
++                and message["platform_update_id"] == sdk["update_id"]
++                and message["chat_id"] == sdk["actor_id"],
++                "s14_control_durable_ingress_receipt_changed")
++        return {"s14_terminal": terminal, "s14_target_update_ids": list(ids),
++                "s14_scope": dict(arm.ingress.scope)}
+ 
+     async def _finalize(self, request, owner, adapter, ingress_scope, deadline):
+         from .ordinary_dm_dispatch_closure import join_settled_ordinary_dm
+@@ -528,7 +596,7 @@
+         wait_deadline = min(deadline, cutoff + _POLL_DRAIN)
+         require(time.monotonic() < deadline, "d02_control_terminal_budget_exhausted")
+ 
+-        def current(witness=None):
++        def current(witness=None, *, retired=False):
+             if witness is not None:
+                 self._rights_current(witness, deadline)
+             require(self._owner(request) == owner, "d02_control_terminal_claim_changed")
+@@ -538,9 +606,17 @@
+             self.doc(proof["cutoff"], name="receiver-cutoff.json")
+             self.doc(cutoff_record["intent"], name="receiver-cutoff-intent.json")
+             seen, scope = self.select_route(options["profile"], options["principal"])
+-            current_arm, _ = self._terminal_arm(adapter, claim_sha, expires, ingress_scope)
+-            require(seen is adapter and scope == ingress_scope and current_arm is arm
+-                    and arm.window._cutoff == cutoff and time.monotonic() < deadline,
++            if retired:
++                require(adapter._ordinary_dm_wire_arm is None and adapter._ordinary_dm_wire_window is None
++                        and arm.claim.owner_is_current() is True
++                        and adapter._ordinary_dm_wire_updater(arm.claim.generation) is arm.claim.updater
++                        and adapter._bot is arm.ingress.bot,
++                        "s14_control_strict_retirement_unproved")
++            else:
++                current_arm, _ = self._terminal_arm(adapter, claim_sha, expires, ingress_scope)
++                require(current_arm is arm and arm.window._cutoff == cutoff,
++                        "d02_control_terminal_owner_or_scope_changed")
++            require(seen is adapter and scope == ingress_scope and time.monotonic() < deadline,
+                     "d02_control_terminal_owner_or_scope_changed")
+ 
+         current()
+@@ -571,6 +647,9 @@
+                               ("session_key", "source_profile", "transport_profile", "runtime_profile")},
+                     "observations": joined["observations"], "no_retry": True}
+         evidence.update(self._terminal_extra(arm, evidence["route"], scenario, joined, verified, deadline))
++        s14 = intent["scenario_sha256"] == _S14_SCENARIO
++        if s14:
++            evidence.update(self._s14_terminal(arm, intent, joined["observations"], verified["s14_ack"]))
+         # The private write may finish after caller loss. That remains UNKNOWN;
+         # only the exact live recheck below allows retirement and confirmation.
+         reference = await self._run_private(deadline, _write_private, work,
+@@ -580,10 +659,18 @@
+         self.doc(proof["run"], name=intent["run_id"] + ".json", limit=_RUN_JSON_LIMIT)
+         self.doc(proof["cursor"], name="cursor.json", limit=_RUN_JSON_LIMIT)
+         self._rights_current(witness, deadline)
++        if s14:
++            fresh = self._s14_terminal(arm, intent, joined["observations"], verified["s14_ack"])
++            require(all(evidence[key] == value for key, value in fresh.items()),
++                    "s14_control_terminal_changed_after_write")
++        retire = {"selected_arm": arm, "accept_before": deadline} if s14 else {}
+         require(arm.ingress._settlement_state() == "SETTLED"
+                 and self._closed_snapshot(adapter, claim_sha) == (revision, wire)
+-                and time.monotonic() < deadline and adapter._retire_ordinary_dm_wire_window(claim_sha) is True,
++                and time.monotonic() < deadline
++                and adapter._retire_ordinary_dm_wire_window(claim_sha, **retire) is True,
+                 "d02_control_exact_terminal_retirement_unproved")
++        if s14:
++            current(witness, retired=True)
+         return reference
+ 
+     async def dispatch(self, reference, transport_deadline):
+diff --git a/gateway/ordinary_dm_ingress.py b/gateway/ordinary_dm_ingress.py
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -42,6 +42,59 @@
+     settled: bool = False
+     s08_document: object = None
+     s08_raw: object = None
++    xlsx_native: object = None
++    xlsx_turn: object = None
++
++
++@dataclass
++class _SelectedXLSXTurn:
++    ingress: OrdinaryDMIngressOutcomes
++    record: _Dispatch
++    runner: object
++    update: int
++    token: object
++    scope: object
++    published: object
++    session_id: str
++    witness: object = None
++    terminal: object = None
++
++    def run(self, callback):
++        from tools.scoped_xlsx_turn import observe_xlsx_turn
++
++        with observe_xlsx_turn(self, self.session_id, self.token.owner_key,
++                              self.scope, self.published) as witness:
++            self.witness = witness
++            return callback()
++
++    def observe_completion(self, event, worker, response):
++        from gateway.run_inbound_media import read_published_xlsx_input
++
++        try:
++            key, generation = self.token.owner_key, self.token.generation
++            state = self.runner._peek_session_state(key)
++            source = event.source
++            if (self.ingress.select(event, source, identity_of(source), key) != self.update
++                    or self.record.writer_task() is not asyncio.current_task()
++                    or state is None or state.turn.event is not event
++                    or state.persistent.run_generation != generation
++                    or state.turn.lease_tokens.get(generation) is not self.token
++                    or self.token.session_id != self.session_id
++                    or self.record.xlsx_native[0] is not event.raw_message
++                    or self.ingress._capture_xlsx(self.record.xlsx_native[1], event) != self.record.xlsx_native
++                    or self.token.released is not False or self.token.lease.holder is not self.token
++                    or not self.token.lease.lock.locked() or not worker.worker_done.is_set()
++                    or not worker.executor_task.done() or worker.executor_task.cancelled()
++                    or worker.timeout_fired.is_set() or worker.executor_task.result() is not response
++                    or type(response) is not dict or response.get("completed") is not True
++                    or response.get("failed") or response.get("interrupted")
++                    or read_published_xlsx_input(event) != self.published):
++                return
++            self.terminal = self.witness.read_settled(self) if self.witness is not None else None
++        except Exception:
++            self.terminal = None
++        finally:
++            self.witness = None
+ 
+ 
+ @dataclass
+@@ -73,9 +126,79 @@
+         self._commits = {}
+         self._admissions = None
+         self._receipt_source = None
++        self._s14_output = None
+         self._unknown = None
+         self._revision = 0
+         self._changed = changed
++        self._xlsx_input = None
++
++    def _enable_selected_xlsx(self, claim_sha256, scenario_sha256):
++        """Bind the protected original wire arm to the exact Alder plan."""
++        from tools.scoped_xlsx_turn import SCENARIO_SHA256, SOURCE_SHA256, SOURCE_BYTES
++
++        wire = self._wire()
++        if (claim_sha256 != self.claim.claim_sha256 or scenario_sha256 != SCENARIO_SHA256
++                or self.claim.require_s08_document or self._xlsx_input is not None
++                or self._built or wire is None or wire["state"] != "OPEN" or wire["target_update_ids"]):
++            raise ValueError("s14_original_empty_wire_arm_required")
++        self._xlsx_input = SOURCE_SHA256, SOURCE_BYTES
++
++    def _capture_xlsx(self, native_update, event):
++        from gateway.s08_document_custody import capture_document
++        from tools.scoped_xlsx_turn import CAPTION_SHA256, SOURCE_NAME, SOURCE_MIME
++
++        sdk = capture_document(self.adapter, native_update, event, actor=self.claim.user_id,
++                               bot_id=self.scope["bot_id"], source_bytes=self._xlsx_input[1])
++        if (sdk["file_name"], sdk["mime_type"], sdk["caption_sha256"]) != (
++                SOURCE_NAME, SOURCE_MIME, CAPTION_SHA256):
++            raise ValueError("s14_exact_sdk_xlsx_required")
++        return event.raw_message, native_update, sdk
++
++    def _read_settled_xlsx(self, claim_sha256, *, expected_wire=None):
++        """Supply bounded process-local facts to the protected receiver before retirement."""
++        if claim_sha256 != self.claim.claim_sha256 or self._settlement_state() != "SETTLED":
++            return None
++        wire = self._wire()
++        if (wire is None or len(wire["target_update_ids"]) != 1
++                or (expected_wire is not None and wire != expected_wire)):
++            return None
++        update, = wire["target_update_ids"]
++        record = self._built[update]
++        target = record.xlsx_turn
++        if (target is None or target.terminal is None or target.token.released is not True
++                or target.runner is not self.adapter.gateway_runner
++                or target.runner.adapters.get(self.adapter.platform) is not self.adapter
++                or target.token.owner_key != self.scope['session_key']
++                or target.token.session_id != target.session_id or not target.token.lease.idle):
++            return None
++        state = target.runner._peek_session_state(target.token.owner_key)
++        if (state is None or state.persistent.run_generation != target.token.generation
++                or state.turn.event is not None or target.token.generation in state.turn.lease_tokens):
++            return None
++        from gateway.run_inbound_media import verify_published_xlsx_input
++        from hermes_cli.friday_user_scope import _CURRENT, authority
++
++        cap = target.scope
++        ambient = _CURRENT.get()
++        if ((ambient is not None and ambient is not cap)
++                or str(cap.home) != self.scope['runtime_home']
++                or str(cap.authorization_home) != self.scope['authorization_home']
++                or cap.profile != self.scope['runtime_profile']):
++            return None
++        def still_current():
++            return (target.runner is self.adapter.gateway_runner
++                    and target.runner.adapters.get(self.adapter.platform) is self.adapter and self._wire() == wire)
++
++        # The protected control-thread receiver has no routed task context.
++        # Re-enter only the selected, already bound home for the synchronous check.
++        try:
++            with authority(cap.home):
++                if not verify_published_xlsx_input(cap, target.published, still_current=still_current):
++                    return None
++        except Exception:
++            return None
++        return {**target.terminal, "sdk": dict(record.xlsx_native[2]),
++                "turn_generation": target.token.generation, "sdk_and_worker_settled": True}
+ 
+     def lost(self, reason):
+         if self._unknown is None:
+@@ -130,8 +253,10 @@
+ 
+             document = capture_document(self.adapter, native_update, event,
+                                         actor=self.claim.user_id, bot_id=self.scope["bot_id"])
++        xlsx_native = self._capture_xlsx(native_update, event) if self._xlsx_input is not None else None
+         self._built[update] = _Dispatch(ref(event), s08_document=document,
+-                                       s08_raw=event.raw_message if document is not None else None)
++                                       s08_raw=event.raw_message if document is not None else None,
++                                       xlsx_native=xlsx_native)
+         event._ordinary_dm_ingress_stamp = (self._seal, update)
+         self._revision += 1
+ 
+@@ -225,6 +350,12 @@
+             return
+         record.writer_task = None
+         record.s08_raw = None
++        if record.xlsx_native is not None:
++            raw, native_update, sdk = record.xlsx_native
++            if event.raw_message is not raw or self._capture_xlsx(native_update, event)[2] != sdk:
++                self.lost("ingress_xlsx_native_dispatch_event_changed")
++                return
++            record.xlsx_native = None, None, sdk
+         record.settled = True
+         self._revision += 1
+         self._changed.set()
+@@ -239,6 +370,23 @@
+                     message["platform_update_id"]) != (str(self.scope["bot_id"]), user, user, "", str(update))):
+             self.lost("ingress_native_receipt_route_changed")
+             return None
++
++        if self._xlsx_input is not None:
++            sdk = self._built[update].xlsx_native[2]
++            media = message["media"]
++            if (len(media) != 1 or message["message_id"] != sdk["native_message_id"]
++                    or message["reply_to_message_id"] != ""
++                    or payload != {"kind": "caption", "date": sdk["date"], "sha256": sdk["caption_sha256"]}):
++                self.lost("s14_original_sdk_receipt_changed")
++                return None
++            item = media[0]
++            origin = item["origin"]
++            if (item["mime_type"] != sdk["mime_type"]
++                    or item["content"] != {"sha256": self._xlsx_input[0], "size_bytes": self._xlsx_input[1]}
++                    or any(origin[key] != message[key] for key in ("bot_id", "chat_id", "thread_id", "message_id"))
++                    or any(origin[key] != sdk[key] for key in ("file_id", "file_unique_id", "declared_bytes"))):
++                self.lost("s14_original_sdk_attachment_changed")
++                return None
+         return _RoutedWrite(self, update, proof, deepcopy(proof), payload, source, asyncio.current_task())
+ 
+     def readback(self):
+@@ -390,6 +538,61 @@
+     return None
+ 
+ 
++def selected_xlsx_publication(event):
++    """Collect descriptor provenance only for this selected original arm."""
++    if getattr(event, "_ordinary_dm_ingress_stamp", None) is None:
++        return False
++    source = event.source
++    identity = identity_of(source)
++    evidence = _ingress(identity.adapter()) if identity is not None else None
++    if evidence is None or evidence._xlsx_input is None:
++        return False
++    update = evidence.select(event, source, identity, evidence.scope["session_key"])
++    return update is not None and evidence._built[update].xlsx_native is not None
++
++
++def _select_xlsx_worker(runner, event, source, session_id, key, generation):
++    """Bind only the exact admitted SDK event in its original background writer."""
++    evidence = None
++    try:
++        identity = identity_of(source)
++        evidence = _ingress(identity.adapter()) if identity is not None else None
++        if evidence is None or evidence._xlsx_input is None:
++            return None
++        update = evidence.select(event, source, identity, key)
++        if update is None:
++            return None
++        record = evidence._built[update]
++        state = runner._peek_session_state(key)
++        token = state.turn.lease_tokens.get(generation) if state is not None else None
++        if (record.xlsx_native is None or record.xlsx_native[0] is not event.raw_message
++                or evidence._capture_xlsx(record.xlsx_native[1], event) != record.xlsx_native
++                or record.xlsx_turn is not None or record.settled or record.writer_task is None
++                or record.writer_task() is not asyncio.current_task() or update not in evidence._commits
++                or runner is not evidence.adapter.gateway_runner
++                or runner.adapters.get(evidence.adapter.platform) is not evidence.adapter
++                or not runner._is_session_run_current(key, generation)
++                or state.turn.event is not event or token is None or token.released is not False
++                or token.session_id != session_id or token.owner_key != key or token.generation != generation
++                or token.lease.holder is not token or not token.lease.lock.locked()):
++            evidence.lost("ingress_selected_xlsx_writer_or_lease_changed")
++            return None
++        from gateway.run_inbound_media import read_published_xlsx_input
++        from hermes_cli.friday_user_scope import current
++
++        source_input = read_published_xlsx_input(event)
++        if source_input is None or (source_input.sha256, source_input.size_bytes) != evidence._xlsx_input:
++            evidence.lost("ingress_selected_xlsx_publication_changed")
++            return None
++        record.xlsx_turn = _SelectedXLSXTurn(evidence, record, runner, update, token,
++                                           current(required=True), source_input, session_id)
++        return record.xlsx_turn
++    except Exception:
++        if evidence is not None:
++            evidence.lost("ingress_selected_xlsx_worker_observation_failed")
++        return None
++
++
+ @contextmanager
+ def routed_write(selected, proof, payload):
+     attempt = None
+diff --git a/gateway/run_inbound_media.py b/gateway/run_inbound_media.py
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -10,6 +10,7 @@
+ import shutil
+ import stat
+ import uuid
++from dataclasses import dataclass
+ from pathlib import Path
+ from typing import TYPE_CHECKING
+ 
+@@ -22,6 +23,21 @@
+ # Match the ordinary own-workspace read_file backend. A cache receipt is never
+ # a capability to expose an arbitrary host file or an unbounded download.
+ _READABLE_ATTACHMENT_BYTES = 1_000_000
++
++
++@dataclass(frozen=True, slots=True)
++class PublishedXLSXInput:
++    """Host evidence from the verified workspace file descriptor."""
++
++    path: Path
++    sha256: str
++    size_bytes: int
++    source_identity: tuple[int, ...]
++
++
++def _file_identity(info):
++    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
++            info.st_ctime_ns, info.st_mode, info.st_nlink, info.st_uid, info.st_gid)
+ 
+ 
+ def _owned(info, *, directory=False):
+@@ -51,7 +67,7 @@
+         raise
+ 
+ 
+-def _verified_bytes(directory, parts, content):
++def _verified_bytes(directory, parts, content, *, capture_path=None):
+     from hermes_cli.friday_user_scope import ScopeDenied
+     fd = os.dup(directory)
+     try:
+@@ -77,8 +93,15 @@
+             if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                     after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                 raise ScopeDenied()
+-            if len(data) != content['size_bytes'] or hashlib.sha256(data).hexdigest() != content['sha256']:
++            digest = hashlib.sha256(data).hexdigest()
++            if len(data) != content['size_bytes'] or digest != content['sha256']:
+                 raise ScopeDenied()
++            if capture_path is not None:
++                identity = _file_identity(after)
++                named = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
++                if identity != _file_identity(before) or identity != _file_identity(named):
++                    raise ScopeDenied()
++                return PublishedXLSXInput(capture_path, digest, len(data), identity)
+             return bytes(data)
+         finally:
+             os.close(item)
+@@ -86,26 +109,35 @@
+         os.close(fd)
+ 
+ 
+-def _publish_received(directory, name, data, content):
++def _publish_received(directory, name, data, content, *, capture_path=None):
+     """Publish complete bytes without replacing an existing user file."""
++    from hermes_cli.friday_user_scope import ScopeDenied
+     temporary = 'incoming_' + uuid.uuid4().hex
+     item = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600, dir_fd=directory)
+     try:
+-        with os.fdopen(item, 'wb') as stream:
+-            stream.write(data)
+-            stream.flush()
+-            os.fsync(stream.fileno())
+-        try:
+-            os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+-        except FileExistsError:
+-            pass
++        try:
++            with os.fdopen(item, 'wb', closefd=False) as stream:
++                stream.write(data)
++                stream.flush()
++                os.fsync(stream.fileno())
++            created = True
++            try:
++                os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
++            except FileExistsError:
++                created = False
++        finally:
++            os.unlink(temporary, dir_fd=directory)
++        # Also verifies an existing deterministic name on retries; never trust an
++        # existing pathname just because its name contains a digest.
++        verified = _verified_bytes(directory, (name,), content, capture_path=capture_path)
++        if capture_path is not None and created and verified.source_identity != _file_identity(os.fstat(item)):
++            raise ScopeDenied()
++        os.fsync(directory)
++        if capture_path is not None:
++            return verified, created
+     finally:
+-        os.unlink(temporary, dir_fd=directory)
+-    # Also verifies an existing deterministic name on retries; never trust an
+-    # existing pathname just because its name contains a digest.
+-    _verified_bytes(directory, (name,), content)
+-    os.fsync(directory)
++        os.close(item)
+ 
+ 
+ def _rehome_user_attachments(event, cap):
+@@ -198,6 +230,14 @@
+         finally:
+             os.close(root_fd)
+         staged.append((raw, destination, data, content, receipt))
++    document = getattr(getattr(event, 'raw_message', None), 'document', None)
++    from gateway.ordinary_dm_ingress import selected_xlsx_publication
++    capture_xlsx = (selected_xlsx_publication(event) and len(staged) == 1 and staged[0][1].suffix == '.xlsx'
++                   and getattr(document, 'mime_type', None) == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
++                   and media[0]['origin'].get('message_id') == message.get('message_id')
++                   and getattr(document, 'file_id', None) == media[0]['origin']['file_id']
++                   and getattr(document, 'file_unique_id', None) == media[0]['origin']['file_unique_id'])
++    published_xlsx = None
+     cap.check()
+     root_fd = _workspace_directory(cap)
+     try:
+@@ -210,7 +250,8 @@
+             _owned(os.fstat(received_fd), directory=True)
+             for _, destination, data, content, _ in staged:
+                 cap.check()
+-                _publish_received(received_fd, destination.name, data, content)
++                published_xlsx = _publish_received(received_fd, destination.name, data, content,
++                                                  capture_path=destination if capture_xlsx else None)
+             cap.check()
+             # Do not publish a path for a directory exchanged during the copy.
+             current_fd = _absolute_directory(received)
+@@ -220,6 +261,15 @@
+                     raise ScopeDenied()
+             finally:
+                 os.close(current_fd)
++            if capture_xlsx:
++                current_workspace = _workspace_directory(cap)
++                try:
++                    named_workspace = os.stat(workspace, follow_symlinks=False)
++                    if (not os.path.samestat(os.fstat(root_fd), os.fstat(current_workspace))
++                            or not os.path.samestat(os.fstat(root_fd), named_workspace)):
++                        raise ScopeDenied()
++                finally:
++                    os.close(current_workspace)
+         finally:
+             os.close(received_fd)
+     finally:
+@@ -267,6 +317,72 @@
+     # Presentation-only provenance from the verified copy above. Media paths
+     # and byte receipts keep their absolute identity; this grants no file access.
+     event._friday_owned_attachment_paths = (cap, frozenset(rewritten))
++    if published_xlsx is not None:
++        evidence, created = published_xlsx
++        record = (event, cap, staged[0][1], evidence)
++        previous = getattr(event, '_friday_published_xlsx_input', record if created else None)
++        # A verified retry retains the original event's provenance. Only an
++        # actual publication can establish it on the first call.
++        if (previous is not None and previous[0] is event and _same_scope(previous[1], cap)
++                and previous[2:] == record[2:]):
++            event._friday_published_xlsx_input = record
++        else:
++            event._friday_published_xlsx_input = None
++
++
++def read_published_xlsx_input(event: MessageEvent) -> PublishedXLSXInput | None:
++    """Read this original event's verified XLSX evidence within the admitted user scope."""
++    from hermes_cli.friday_user_scope import ScopeDenied, _same_scope, current
++    record = getattr(event, '_friday_published_xlsx_input', None)
++    if record is None or record[0] is not event:
++        return None
++    _, owner, destination, evidence = record
++    try:
++        cap = current(required=True)
++        if (not _same_scope(owner, cap)
++                or not _same_scope(getattr(event.source, '_friday_user_scope', None), cap)
++                or event.media_urls != [str(destination)]
++                or destination.parent != cap.home / 'workspace' / 'received'):
++            return None
++        if verify_published_xlsx_input(cap, evidence):
++            return evidence
++    except (ScopeDenied, OSError, ValueError):
++        return None
++
++
++def verify_published_xlsx_input(cap, evidence, *, still_current=None):
++    """Recheck canonical workspace, received directory and leaf across the exact read."""
++    from contextlib import ExitStack
++    from hermes_cli.friday_user_scope import _workspace_directory
++
++    cap.check()
++    if evidence.path.parent != cap.home / 'workspace' / 'received':
++        return False
++    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
++    with ExitStack() as owned:
++        workspace = _workspace_directory(cap)
++        owned.callback(os.close, workspace)
++        directory = os.open('received', flags, dir_fd=workspace)
++        owned.callback(os.close, directory)
++        _owned(os.fstat(directory), directory=True)
++        content = {'sha256': evidence.sha256, 'size_bytes': evidence.size_bytes}
++        verified = _verified_bytes(directory, (evidence.path.name,), content, capture_path=evidence.path)
++        cap.check()
++        if still_current is not None and not still_current():
++            return False
++        current_workspace = _workspace_directory(cap)
++        owned.callback(os.close, current_workspace)
++        current_directory = os.open('received', flags, dir_fd=current_workspace)
++        owned.callback(os.close, current_directory)
++        _owned(os.fstat(current_directory), directory=True)
++        leaf = os.stat(evidence.path.name, dir_fd=current_directory, follow_symlinks=False)
++        named_workspace = os.stat(cap.home / 'workspace', follow_symlinks=False)
++        named_directory = os.stat('received', dir_fd=current_workspace, follow_symlinks=False)
++        return (verified == evidence and _file_identity(leaf) == evidence.source_identity
++                and os.path.samestat(os.fstat(workspace), os.fstat(current_workspace))
++                and os.path.samestat(os.fstat(workspace), named_workspace)
++                and os.path.samestat(os.fstat(directory), os.fstat(current_directory))
++                and os.path.samestat(os.fstat(directory), named_directory))
+ 
+ 
+ def owned_attachment_model_path(event, path):
+diff --git a/gateway/run_plugin_delivery.py b/gateway/run_plugin_delivery.py
+--- a/gateway/run_plugin_delivery.py
++++ b/gateway/run_plugin_delivery.py
+@@ -281,7 +281,7 @@
+     return cap, runner, context, freeze_route(route), check
+ 
+ 
+-async def deliver_ordinary_document(adapter, source, path, *, caption=None, file_name=None):
++async def deliver_ordinary_document(adapter, source, path, *, caption=None, file_name=None, _s14_pair=None):
+     """Managed ordinary MEDIA uses the plugin's exact original-route byte send.
+ 
+     No worker, synthetic task or product activation is introduced. The native
+@@ -345,10 +345,14 @@
+         from hermes_cli.friday_native_state import encoded
+         candidate = copy.deepcopy(reserved)
+         candidate['files'][selection].update(state='DELIVERED', receipt=receipt)
+-        _ordinary_commit(state, candidate, reserved,
+-                         journals=(('candidate', encoded({'selection': selection, 'receipt': receipt})),))
++        native_candidate = encoded({'selection': selection, 'receipt': receipt})
++        _ordinary_commit(state, candidate, reserved, journals=(('candidate', native_candidate),))
+         await _ordinary_transcript(runner, session_id, relative, 'DELIVERED', receipt['sha256'])
+-        return SendResult(success=True, message_id=receipt['message_id'], raw_response=receipt)
++        result = SendResult(success=True, message_id=receipt['message_id'], raw_response=receipt)
++        if _s14_pair is not None:
++            from gateway.s14_pair_custody import record_candidate
++            record_candidate(_s14_pair, source, receipt, native_candidate, check)
++        return result
+     except Exception:
+         return SendResult(success=False, error='document_delivery_UNKNOWN')
+ 
+@@ -382,8 +386,11 @@
+     if caption is not None and (len(paths) != 1 or not _ordinary_caption_fits(caption)):
+         # No effect occurred: the caller may use its usual full-text + files path.
+         return False
++    from gateway.s14_pair_custody import begin
++    pair = begin(adapter, source, paths, caption, _ordinary_authority)
++    pair_kwargs = {'_s14_pair': pair} if pair is not None else {}
+     for path in paths:
+-        result = await deliver_ordinary_document(adapter, source, path, caption=caption)
++        result = await deliver_ordinary_document(adapter, source, path, caption=caption, **pair_kwargs)
+         if record_delivery is not None: record_delivery(result)
+         if not result.success and result.error != 'gateway_document_caption_rejected':
+             # A requested file's outcome is an ordinary reply, independently of
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -2277,6 +2277,7 @@
+                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
+                 message_type=event.message_type,
+                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
++                _selected_sdk_event=event,
+             )
+             _turn_seconds = time.monotonic() - _turn_started_monotonic
+ 
+@@ -4448,6 +4449,7 @@
+         reply_expected: Optional[bool] = None,
+         scheduled_heartbeat: bool = False,
+         title_user_message: Optional[str] = None,
++        _selected_sdk_event: Optional[MessageEvent] = None,
+     ) -> Dict[str, Any]:
+         """Run the agent; returns the full run_conversation result dict.
+ 
+@@ -4515,12 +4517,22 @@
+ 
+         response = None
+         try:
+-            # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
+-            worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
++            run_sync = turn_runner.run_sync
++            selected_xlsx = None
++            if _selected_sdk_event is not None and hasattr(_selected_sdk_event, "_ordinary_dm_ingress_stamp"):
++                from gateway.ordinary_dm_ingress import _select_xlsx_worker
++                selected_xlsx = _select_xlsx_worker(self, _selected_sdk_event, source, session_id,
++                                                  session_key, run_generation)
++            if selected_xlsx is not None:
++                from functools import partial
++                run_sync = partial(selected_xlsx.run, run_sync)
++            worker = self._run_agent_start_turn_worker(turn_ctx, run_sync)
+             from gateway.ordinary_f04_bridge import observe_worker as _f04_worker
+             _f04_worker(self, turn_ctx, worker)
+             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
+             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
++            if selected_xlsx is not None:
++                selected_xlsx.observe_completion(_selected_sdk_event, worker, response)
+             if turn_ctx._telegram_status is not None:
+                 turn_ctx._telegram_status.finish(response)
+             if isinstance(response, dict):
+diff --git a/gateway/s08_document_custody.py b/gateway/s08_document_custody.py
+--- a/gateway/s08_document_custody.py
++++ b/gateway/s08_document_custody.py
+@@ -75,7 +75,7 @@
+             "mime_type": document["mime_type"], "declared_bytes": document["file_size"]}
+ 
+ 
+-def capture_document(adapter, update, event, *, actor, bot_id):
++def capture_document(adapter, update, event, *, actor, bot_id, source_bytes=SOURCE_BYTES):
+     """Capture ingress only from the actual unmodified PTB media callback."""
+     from telegram import Chat, Document, Message, Update, User
+ 
+@@ -100,7 +100,7 @@
+     require(_plain_document(raw_fields)
+             and type(message.date) is datetime and message.date.utcoffset() is not None
+             and message.date.microsecond == 0 and type(document.file_size) is int
+-            and document.file_size == SOURCE_BYTES and _opaque(document.file_id)
++            and document.file_size == source_bytes and _opaque(document.file_id)
+             and _opaque(document.file_unique_id) and _opaque(document.file_name) and _opaque(document.mime_type),
+             "s08_exact_sdk_document")
+     date = int(message.date.timestamp())
+diff --git a/gateway/s14_pair_custody.py b/gateway/s14_pair_custody.py
+new file mode 100644
+--- /dev/null
++++ b/gateway/s14_pair_custody.py
+@@ -0,0 +1,195 @@
++"""Selected ordinary S14 pair evidence from the exact gateway output writer."""
++
++from __future__ import annotations
++
++import asyncio
++from copy import deepcopy
++from dataclasses import dataclass, field
++from hashlib import sha256
++import re
++
++
++_SCENARIO = "e686e76c9d251bdda7e84056111c59c227b1489ffecf1a60142a21fb27fb546d"
++_NAMES = {"S14-Alder-Report.txt", "S14-Alder-Report.pdf"}
++
++
++@dataclass
++class _Selection:
++    run_id: str
++    pair: _Pair | None = None
++    refused: bool = False
++
++
++@dataclass
++class _Pair:
++    evidence: object
++    selection: _Selection
++    update: int
++    record: object
++    source: object
++    runner: object
++    cap: object
++    route: dict
++    run: tuple
++    answer: tuple
++    answer_id: str
++    candidate_sha256: dict = field(default_factory=dict)
++    message_ids: set = field(default_factory=set)
++
++
++def enable(ingress, claim_sha256, scenario_sha256, run_id):
++    """Bind the protected receiver's case before SDK capture. Carry no send authority."""
++    wire = ingress._wire()
++    if (claim_sha256 != ingress.claim.claim_sha256 or scenario_sha256 != _SCENARIO
++            or type(run_id) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id)
++            or ingress._s14_output is not None or ingress._built or wire is None
++            or wire["state"] != "OPEN" or wire["target_update_ids"]):
++        raise ValueError("Selected S14 pair admission is unavailable")
++    ingress._s14_output = _Selection(run_id)
++
++
++def begin(adapter, source, paths, caption, authority):
++    """Bind exactly one two-document batch on the original SDK writer."""
++    from gateway.ordinary_dm_ingress import _ingress
++    from gateway.session_identity import identity_of
++    from hermes_cli.friday_native_state import encoded
++
++    evidence = _ingress(adapter)
++    selection = getattr(evidence, "_s14_output", None)
++    if selection is None or source is not evidence._receipt_source:
++        return None
++    if selection.refused or selection.pair is not None or len(paths) != 2 or caption is not None:
++        selection.refused = True
++        return None
++    try:
++        wire = evidence._wire()
++        if wire is None or len(wire["target_update_ids"]) != 1:
++            raise ValueError("Selected S14 wire update required")
++        update, = wire["target_update_ids"]
++        record = evidence._built[update]
++        event = record.event_ref()
++        cap, runner, _, route, _ = authority(adapter, source)
++        run = source._friday_document_run
++        answer = source._friday_document_turn
++        key = evidence.scope["session_key"]
++        session_id = source._friday_document_session_id
++        if (event is None or update not in evidence._commits
++                or evidence.select(event, source, identity_of(source), key) != update
++                or record.writer_task is None or record.writer_task() is not asyncio.current_task()
++                or record.settled or run[0] != key or type(session_id) is not str or not session_id
++                or type(answer) is not tuple or len(answer) != 2
++                or answer[0] != key or type(answer[1]) is not str or not answer[1]
++                or getattr(event, "_gateway_active_turn_session_key", None) != key
++                or getattr(event, "_gateway_active_turn_token", None) != answer[1]):
++            raise ValueError("Selected S14 writer or answer changed")
++        answer_id = sha256(encoded(["friday.s14.answer.v1", selection.run_id, update,
++                                   run[1], session_id, answer])).hexdigest()
++        selection.pair = _Pair(evidence, selection, update, record, source, runner, cap,
++                               route, run, answer, answer_id)
++        return selection.pair
++    except Exception:
++        selection.refused = True
++        return None
++
++
++def record_candidate(pair, source, receipt, native_candidate, check):
++    """Observe native DELIVERED only after the CAS and transcript both complete."""
++    if pair.selection.refused:
++        return
++    try:
++        name = receipt["file_name"]
++        message_id = receipt["message_id"]
++        wire = pair.evidence._wire()
++        if (wire is None or tuple(wire["target_update_ids"]) != (pair.update,)
++                or source is not pair.source or source._friday_document_run is not pair.run
++                or source._friday_document_turn is not pair.answer
++                or pair.record.writer_task is None or pair.record.writer_task() is not asyncio.current_task()
++                or pair.record.settled or pair.runner is not pair.evidence.adapter.gateway_runner
++                or name not in _NAMES or name in pair.candidate_sha256
++                or type(message_id) is not str or not re.fullmatch(r"[1-9][0-9]*", message_id)
++                or message_id in pair.message_ids
++                or receipt["state"] != "DELIVERED" or receipt["kind"] != "document"
++                or (receipt["bot_id"], receipt["chat_id"], receipt["thread_id"], receipt["reply_to"])
++                != (pair.route["bot_id"], pair.route["source"]["chat_id"],
++                    pair.route["source"]["thread_id"], pair.route["source"]["message_id"])):
++            raise ValueError("Selected S14 candidate or owner changed")
++        check()
++        pair.candidate_sha256[name] = sha256(native_candidate).hexdigest()
++        pair.message_ids.add(message_id)
++    except Exception:
++        pair.selection.refused = True
++
++
++def read_settled(ingress, claim_sha256):
++    """Project joined native candidate pins to the protected terminal reader."""
++    selection = ingress._s14_output
++    if (selection is None or selection.refused or selection.pair is None
++            or claim_sha256 != ingress.claim.claim_sha256 or ingress._settlement_state() != "SETTLED"):
++        return None
++    from hermes_cli.friday_user_scope import _CURRENT, authority
++
++    pair = selection.pair
++    wire = ingress._wire()
++    cap = pair.cap
++    ambient = _CURRENT.get()
++    if (wire is None or tuple(wire["target_update_ids"]) != (pair.update,)
++            or pair.record is not ingress._built.get(pair.update) or not pair.record.settled
++            or pair.runner is not ingress.adapter.gateway_runner
++            or not pair.runner._is_session_run_current(*pair.run)
++            or pair.candidate_sha256.keys() != _NAMES
++            or (ambient is not None and ambient is not cap)
++            or str(cap.home) != ingress.scope["runtime_home"]
++            or str(cap.authorization_home) != ingress.scope["authorization_home"]
++            or cap.profile != ingress.scope["runtime_profile"]):
++        return None
++    try:
++        with authority(cap.home):
++            cap.check()
++    except Exception:
++        return None
++    if (ingress._wire() != wire or pair.runner is not ingress.adapter.gateway_runner
++            or not pair.runner._is_session_run_current(*pair.run)):
++        return None
++    return {"scenario_sha256": _SCENARIO, "run_id": selection.run_id, "generation": pair.run[1],
++            "answer_id": pair.answer_id, "route": deepcopy(pair.route), "candidate_sha256": dict(pair.candidate_sha256)}
++
++
++def enable_terminal(ingress, claim_sha256, scenario_sha256, run_id):
++    """Arm the selected observation leaves together before input capture."""
++    try:
++        ingress._enable_selected_xlsx(claim_sha256, scenario_sha256)
++        enable(ingress, claim_sha256, scenario_sha256, run_id)
++    except Exception:
++        ingress.lost("s14_exact_input_and_output_selection_not_armed")
++        raise
++
++
++def read_terminal(ingress, claim_sha256):
++    """Compose the original admitted input and same-answer pair for protected FINALIZE."""
++    if claim_sha256 != ingress.claim.claim_sha256:
++        return None
++    wire = ingress._wire()
++    if wire is None or len(wire["target_update_ids"]) != 1:
++        return None
++    output = read_settled(ingress, claim_sha256)
++    if output is None:
++        return None
++    source_input = ingress._read_settled_xlsx(claim_sha256, expected_wire=wire)
++    if source_input is None:
++        return None
++    update, = wire["target_update_ids"]
++    sdk = source_input["sdk"]
++    pair = ingress._s14_output.pair
++    document = pair.record.xlsx_turn
++    route = output["route"]
++    source = route["source"]
++    if (document is None or document.runner is not pair.runner or document.scope is not pair.cap
++            or source_input["scenario_sha256"] != output["scenario_sha256"]
++            or source_input["turn_generation"] != output["generation"]
++            or source_input["session_id"] != pair.source._friday_document_session_id
++            or source_input["session_key"] != pair.run[0] or sdk["update_id"] != str(update)
++            or sdk["native_message_id"] != source["message_id"] or sdk["bot_id"] != route["bot_id"]
++            or sdk["actor_id"] != source["user_id"] or sdk["actor_id"] != source["chat_id"]):
++        return None
++    return {"schema": "friday.s14.native-typed-input-owned-pair.v1", "run_id": output["run_id"],
++            "claim_sha256": claim_sha256, "input": source_input, "output": output}
+diff --git a/hermes_cli/friday_user_scope.py b/hermes_cli/friday_user_scope.py
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -973,6 +973,7 @@
+             encryption_metadata = None
+             source_sha256 = None
+             fb2_locations = None
++            xlsx_call = None
+             def misnamed_docx(data, claimed_format, checkpoint):
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+                 checkpoint()
+@@ -1004,6 +1005,10 @@
+             if document_format:
+                 from tools.read_extract import extract_scoped_document_bytes, ScopedExtractionError
+                 identity_required = document_format in OOXML_PASSWORD_FORMATS or document_format in ('mpp','mpt','mdb','accdb','djvu','djv','wpd','wps','pages','numbers','key','xps','oxps','dbf','dif','slk','sxw','stw','sxc','stc','sxi','sti','fb2','abw','odm','odf','pdf','odt','ott','ods','ots','odp','otp','odb','msg','pub','eml','ics','vcf')
++                if document_format == 'xlsx':
++                    from tools.scoped_xlsx_turn import start_selected_xlsx_read
++                    xlsx_call = start_selected_xlsx_read(cap, path.as_posix(), task_id, pagination)
++                    identity_required |= xlsx_call is not None
+                 document_snapshot = workspace_document(str(root / path), max_bytes=1000000,
+                                                        with_identity=identity_required)
+                 data = document_snapshot[0]
+@@ -1209,6 +1214,9 @@
+                         break
+                 rendered = encode()
+                 record_read(rendered)
++                if xlsx_call is not None:
++                    from tools.scoped_xlsx_turn import note_selected_xlsx_read
++                    note_selected_xlsx_read(xlsx_call, document_snapshot, result, rendered)
+                 return rendered
+             if char_offset:
+                 raise ScopeDenied()
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -521,6 +521,7 @@
+     loop: asyncio.AbstractEventLoop
+     ingress_scope: object = None
+     require_s08_document: bool = False
++    selected_s14: tuple[str, str] | None = None
+ 
+ 
+ @dataclasses.dataclass(frozen=True, slots=True)
+@@ -1797,7 +1798,7 @@
+ 
+     def _reserve_ordinary_dm_wire_window(self, *, claim_sha256, user_id, generation,
+                                         expires_monotonic, max_updates, owner_is_current, ingress_scope=None,
+-                                        require_s08_document=False):
++                                        require_s08_document=False, selected_s14=None):
+         """Queue an already authorized claim on the gateway loop. None means pending only."""
+         now = time.monotonic()
+         updater = self._ordinary_dm_wire_updater(generation)
+@@ -1809,6 +1810,10 @@
+                 or type(require_s08_document) is not bool or require_s08_document and ingress_scope is None
+                 or not callable(owner_is_current) or owner_is_current() is not True):
+             raise ValueError("Invalid authorized Telegram wire claim")
++        if selected_s14 is not None:
++            if (ingress_scope is None or require_s08_document or type(selected_s14) is not tuple
++                    or len(selected_s14) != 2 or any(type(value) is not str for value in selected_s14)):
++                raise ValueError("Invalid selected S14 wire claim")
+         pending = getattr(self, "_ordinary_dm_wire_pending", None)
+         if (pending is not None and (pending.updater is not updater or pending.generation != generation
+                                     or now >= pending.expires_monotonic)):
+@@ -1825,7 +1830,7 @@
+         claimed.add(claim_sha256)
+         self._ordinary_dm_wire_pending = _OrdinaryDMWireClaim(
+             claim_sha256, user_id, generation, expires_monotonic, max_updates,
+-            owner_is_current, updater, asyncio.get_running_loop(), ingress_scope, require_s08_document,
++            owner_is_current, updater, asyncio.get_running_loop(), ingress_scope, require_s08_document, selected_s14,
+         )
+ 
+     def _ordinary_dm_wire_native_parameters(self, request, generation, kwargs):
+@@ -1893,6 +1898,16 @@
+                 ingress = OrdinaryDMIngressOutcomes(self, claim, window, armed_at, changed)
+             self._ordinary_dm_wire_arm = _OrdinaryDMWireArm(claim, window, offset, armed_at, ingress)
+             self._ordinary_dm_wire_window = window
++            if claim.selected_s14 is not None:
++                # The producer must see its exact bound owner. No poll can yield before selection.
++                try:
++                    from gateway.s14_pair_custody import enable_terminal
++
++                    scenario_sha, run_id = claim.selected_s14
++                    enable_terminal(ingress, claim.claim_sha256, scenario_sha, run_id)
++                except (Exception, asyncio.CancelledError):
++                    self._ordinary_dm_wire_window = self._ordinary_dm_wire_arm = None
++                    raise
+             return armed_at
+         except (Exception, asyncio.CancelledError):
+             return None
+@@ -1954,7 +1969,7 @@
+             return "UNKNOWN"
+         return await arm.ingress.wait_for_settlement(deadline)
+ 
+-    def _retire_ordinary_dm_wire_window(self, claim_sha256):
++    def _retire_ordinary_dm_wire_window(self, claim_sha256, *, selected_arm=None, accept_before=None):
+         """Release only an exact terminal arm after the protected caller retains its evidence."""
+         arm = getattr(self, "_ordinary_dm_wire_arm", None)
+         if arm is None or type(claim_sha256) is not str or arm.claim.claim_sha256 != claim_sha256:
+@@ -1964,10 +1979,18 @@
+             if (asyncio.get_running_loop() is not claim.loop
+                     or getattr(self, "_ordinary_dm_wire_window", None) is not window):
+                 return False
++            if selected_arm is not None and (arm is not selected_arm or claim.selected_s14 is None
++                    or claim.owner_is_current() is not True):
++                return False
+             accepting = self._ordinary_dm_wire_updater(claim.generation) is claim.updater
+-            state = window.snapshot(time.monotonic(), current_generation=self._polling_generation,
++            now = time.monotonic()
++            state = window.snapshot(now, current_generation=self._polling_generation,
+                                     accepting=accepting)["state"]
+-            if state not in ("UNKNOWN", "LOCAL_WIRE_CLOSED"):
++            if selected_arm is not None:
++                if (state != "LOCAL_WIRE_CLOSED" or not accepting
++                        or not time.monotonic() < min(accept_before, claim.expires_monotonic)):
++                    return False
++            elif state not in ("UNKNOWN", "LOCAL_WIRE_CLOSED"):
+                 return False
+         except Exception:
+             return False
+@@ -7160,12 +7183,13 @@
+                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
+             return
+         arm = getattr(self, "_ordinary_dm_wire_arm", None)
+-        s08_update = update if arm is not None and arm.claim.require_s08_document else None
+-        if s08_update is None:
++        capture_native = arm is not None and (arm.claim.require_s08_document
++                                              or arm.ingress is not None and arm.ingress._xlsx_input is not None)
++        if not capture_native:
+             event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
+         else:
+             event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id,
+-                                              native_update=s08_update)
++                                              native_update=update)
+         if msg.caption:
+             from plugins.platforms.telegram.telegram_context import group_trigger_text
+             event.text = group_trigger_text(self, msg, expand_link_entities(msg))
+diff --git a/tools/scoped_xlsx_turn.py b/tools/scoped_xlsx_turn.py
+new file mode 100644
+--- /dev/null
++++ b/tools/scoped_xlsx_turn.py
+@@ -0,0 +1,169 @@
++"""Protected host observations of the exact selected native Alder read."""
++
++from contextlib import contextmanager
++from contextvars import ContextVar
++from hashlib import sha256
++import json
++from threading import Lock
++
++SCENARIO_SHA256 = "e686e76c9d251bdda7e84056111c59c227b1489ffecf1a60142a21fb27fb546d"
++SOURCE_SHA256 = "689808642856d0b880cb0556e313fa0dd69db9f3845a77f5b33d5999798a5853"
++CAPTION_SHA256 = "fba4fb0b3e0dab4e9952b4b0bd7a66a4e34ad3c66798f895933121e759168fe5"
++SOURCE_BYTES = 2335
++SOURCE_NAME = "S14-Alder-Orders-r02.xlsx"
++SOURCE_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
++TYPED_CELLS = 35
++_TURN = ContextVar("s14_xlsx_turn", default=None)
++
++
++def _call_identity(call):
++    return call.task_id, call.call_id, call.session_id, call.session_key, call.turn_id
++
++
++def _owned_call(call, agent):
++    from agent.web_call_context import _current, same_web_authority
++    from tools.approval_context import get_current_session_key
++
++    if agent is None:
++        return False
++    session_id = getattr(agent, "session_id", "")
++    if (_current.get() is not call or getattr(call, "agent", None) is not agent
++            or call.session_id != session_id
++            or call.session_key != (get_current_session_key(default="") or session_id)
++            or call.turn_id != getattr(agent, "_current_turn_id", "")
++            or call.run_deadline != getattr(agent, "_web_run_deadline", None)
++            or call.turn is not getattr(agent, "_web_turn", None)
++            or getattr(agent, "_tool_result_calls", {}).get((call.task_id, call.call_id)) is not call
++            or getattr(agent, "_tool_result_call_stamp", None) != (call.session_id, call.turn_id, call.run_deadline)
++            or not all(type(value) is str and value for value in _call_identity(call))
++            or getattr(agent, "_interrupt_requested", False)
++            or getattr(agent, "_friday_reply_effect_unknown", False)
++            or call.turn.failure is not None or not same_web_authority(call)):
++        return False
++    try:
++        call.check()
++    except (RuntimeError, TimeoutError):
++        return False
++    return True
++
++
++class _SelectedRead:
++    def __init__(self, marker, session_id, session_key, cap, published):
++        self.marker = marker
++        self.session = session_id, session_key
++        self.cap = cap
++        self.published = published
++        self.path = published.path.relative_to(cap.home / "workspace").as_posix()
++        self.lock = Lock()
++        self.attempt = None
++        self.pending = None
++        self.terminal = None
++        self.closed = False
++        self.invalid = False
++
++    def read_settled(self, marker):
++        with self.lock:
++            if marker is not self.marker or not self.closed or self.invalid or self.terminal is None:
++                return None
++            return dict(self.terminal)
++
++
++@contextmanager
++def observe_xlsx_turn(marker, session_id, session_key, cap, published):
++    """Carry the selected event's read evidence through the existing worker context."""
++    witness = _SelectedRead(marker, session_id, session_key, cap, published)
++    token = _TURN.set(witness)
++    completed = False
++    try:
++        yield witness
++        completed = True
++    finally:
++        _TURN.reset(token)
++        with witness.lock:
++            witness.attempt = witness.pending = None
++            witness.invalid |= not completed
++            witness.closed = True
++
++
++def start_selected_xlsx_read(cap, path, task_id, pagination):
++    from agent.web_call_context import _current
++
++    witness = _TURN.get()
++    if witness is None or path != witness.path:
++        return None
++    call = _current.get()
++    if call is None:
++        return None
++    with call.turn.lock, witness.lock:
++        if (witness.invalid or witness.closed or witness.attempt is not None
++                or cap is not witness.cap or task_id != call.task_id
++                or witness.session != (call.session_id, call.session_key)
++                or pagination[0] != 1 or pagination[2] != 0
++                or not _owned_call(call, getattr(call, "agent", None))):
++            witness.invalid = True
++            return None
++        witness.attempt = call
++        call._s14_xlsx_pending = witness
++        return call
++
++
++def note_selected_xlsx_read(call, snapshot, result, rendered):
++    witness = _TURN.get()
++    if witness is None:
++        return
++    with call.turn.lock, witness.lock:
++        if (witness.invalid or witness.closed or witness.attempt is not call
++                or not _owned_call(call, getattr(call, "agent", None))):
++            return
++        data, path, identity = snapshot
++        published = witness.published
++        metadata = result.get("extraction") or {}
++        cells = metadata.get("cell_records") or {}
++        if (path != witness.path or identity != published.source_identity
++                or len(data) != published.size_bytes or sha256(data).hexdigest() != published.sha256
++                or result.get("success") is not True or result.get("partial") is not False
++                or result.get("format") != "xlsx" or result.get("scope") != "own_user_workspace"
++                or result.get("extracted_document") is not True or result.get("path") != path
++                or result.get("source_sha256") != published.sha256
++                or metadata.get("native_container") is not True or metadata.get("unsupported") != []
++                or cells.get("included_records") != TYPED_CELLS
++                or cells.get("observed_cells") != TYPED_CELLS or cells.get("truncated") is not False
++                or any(cells.get(key) != 0 for key in (
++                    "rows_omitted_by_preview_limit", "cells_omitted_by_column_limit",
++                    "records_with_truncated_fields", "unresolved_literal_records", "omitted_records"))
++                or result.get("next_char_offset") != 0
++                or result.get("next_offset") != result.get("total_lines", 0) + 1
++                or not result.get("content")):
++            witness.invalid = True
++            return
++        witness.pending = sha256(rendered.encode("utf-8")).hexdigest()
++
++
++def _accept_xlsx_turn_result(agent, ref, function_result, persisted_result):
++    """Seal the exact canonical managed result after the original tool row flush."""
++    from agent.web_call_context import _current
++
++    witness = _TURN.get()
++    call = _current.get()
++    if witness is None or call is None:
++        return
++    with call.turn.lock, witness.lock:
++        if (witness.invalid or witness.closed or witness.attempt is not call
++                or (call.task_id, call.call_id) != (ref.task_id, ref.call_id)
++                or not _owned_call(call, agent)):
++            return
++        if (witness.terminal is not None or witness.pending is None
++                or type(function_result) is not str or len(function_result) > 100000
++                or persisted_result != function_result
++                or sha256(function_result.encode("utf-8")).hexdigest() != witness.pending):
++            witness.invalid = True
++            return
++        call_pin = json.dumps(_call_identity(call), ensure_ascii=True, separators=(",", ":")).encode()
++        published = witness.published
++        witness.terminal = {
++            "scenario_sha256": SCENARIO_SHA256,
++            "session_id": call.session_id, "session_key": call.session_key, "turn_id": call.turn_id,
++            "source_sha256": published.sha256, "source_bytes": published.size_bytes,
++            "sealed_webcall_sha256": sha256(call_pin).hexdigest(),
++            "managed_result_sha256": witness.pending, "typed_cells": TYPED_CELLS,
++        }
