@@ -14,6 +14,8 @@ With --b00-preparation, join a pinned offline evidence input without changing
 the archived phase projection or assigning any dispatch or acceptance state.
 Use --prepared-result, --prepared-plan and --prepared-r4 to verify selected
 passive plans from an already pinned private preparation result for one case.
+Use --prepared-projection repeatedly to join those single-case projections
+into a selected or full queue, rechecking the original preparation inputs.
 The original requests and oracles stay in their source files. The projection
 carries no current admission or dispatch state.
 For non-B00 cases and format work, BLOCKED describes missing prospective
@@ -557,17 +559,13 @@ def prepared_label(label, seen):
     seen.add(label)
 
 
-def project_prepared(args, output, selected_cases):
-    if not (args.prepared_result or args.prepared_r4 or args.prepared_plan
-            or args.prepared_artifact or args.prepared_dependency):
-        return
-    require(len(selected_cases) == 1 and args.prepared_result and args.prepared_r4 and args.prepared_plan,
-            'prepared projection requires one --case, a pinned result, selected R4 and at least one plan')
+def verify_preparation(args, case_id):
+    require(args.prepared_result and args.prepared_r4 and args.prepared_plan,
+            'case preparation requires a pinned result, selected R4 and at least one plan')
     result_path, result_sha = args.prepared_result
     raw, result_ref = prepared_file(result_path, {'sha256': result_sha}, 2_000_000, 'preparation result')
     record = json.loads(raw, object_pairs_hook=unique_object)
     require(type(record) is dict, 'preparation result must be an object')
-    case_id = next(iter(selected_cases))
     case_ref = prepared_case_reference(record, case_id)
     observer_raw, observer_ref = prepared_file(args.prepared_r4, {'sha256': PREPARED_R4_SHA256}, 2_000_000, 'selected R4')
     observer = {'__file__': observer_ref['path'], '__name__': '_pinned_core_prepared_r4'}
@@ -610,12 +608,51 @@ def project_prepared(args, output, selected_cases):
         prepared_label(role, labels)
         _, artifact = prepared_file(path, {'sha256': checksum}, 8_388_608, role)
         artifacts[role] = {**artifact, 'externally_pinned': True}
-    case = next(row for row in output['cases'] if row['id'] == case_id)
-    case['selected_preparation'] = {
+    return {
         'state': 'PASSIVE_PLANS_AND_REFERENCES_VERIFIED', 'result': result_ref, 'case_ref': case_ref, 'r4': observer_ref,
         'plans': plans, 'artifacts': artifacts, 'order': 'explicit selection order',
         'admission': 'UNBOUND', 'historical_effects_reconciled': False,
     }
+
+
+def project_prepared(args, output, selected_cases):
+    single_case = any((args.prepared_result, args.prepared_r4, args.prepared_plan,
+                       args.prepared_artifact, args.prepared_dependency))
+    cases = {case['id']: case for case in output.get('cases', ())}
+    if single_case:
+        require(len(selected_cases) == 1, 'direct preparation requires one --case')
+        case_id = next(iter(selected_cases))
+        cases[case_id]['selected_preparation'] = verify_preparation(args, case_id)
+    for path, checksum in args.prepared_projection:
+        raw, ref = prepared_file(path, {'sha256': checksum}, 2_000_000, 'single-case projection')
+        projection = json.loads(raw, object_pairs_hook=unique_object)
+        require(type(projection) is dict and projection.get('sources') == output['sources'],
+                'selected preparation has different primary source pins')
+        rows = projection['cases']
+        require(type(rows) is list and len(rows) == 1, 'exactly one projected case is required')
+        row, = rows
+        case_id = row['id']
+        case = cases.get(case_id)
+        require(case is not None and 'selected_preparation' not in case,
+                'prepared case must be selected exactly once')
+        require(all(row[key] == case[key] for key in ('steps_ref', 'criteria_refs', 'fixture_ref')),
+                f'{case_id}: prepared case has different criteria or fixture references')
+        preparation = row['selected_preparation']
+        result = preparation['result']
+        artifacts = preparation['artifacts']
+        selection = argparse.Namespace(
+            prepared_result=(result['path'], result['sha256']),
+            prepared_r4=preparation['r4']['path'],
+            prepared_plan=[(plan['label'], plan['plan_ref'], plan['scenario_ref']) for plan in preparation['plans']],
+            prepared_artifact=[(role, item['result_ref']) for role, item in artifacts.items()
+                               if 'result_ref' in item],
+            prepared_dependency=[(role, item['path'], item['sha256']) for role, item in artifacts.items()
+                                 if item.get('externally_pinned') is True],
+        )
+        verified = verify_preparation(selection, case_id)
+        require(verified == preparation, f'{case_id}: rechecked preparation differs from the selected projection')
+        case['selected_preparation'] = verified
+        case['selected_preparation_projection'] = ref
 
 
 def b00_evidence(raw_refs):
@@ -678,9 +715,7 @@ def b00_passive_variants(manifest, phases, b00_r4):
             prepared_plan=[(label, *plan['pointers']) for label, plan in labels.items()],
             prepared_artifact=spec.get('artifacts', []), prepared_dependency=spec.get('dependencies', []),
         )
-        case = {'id': spec['case']}
-        project_prepared(args, {'cases': [case]}, {spec['case']})
-        prepared = case['selected_preparation']
+        prepared = verify_preparation(args, spec['case'])
         for plan in prepared['plans']:
             label = plan['label']
             meta = labels[label]
@@ -1174,6 +1209,8 @@ def main(argv=None):
                         help='verify the exact artifact reference for a reply checker, prerequisite or other input')
     parser.add_argument('--prepared-dependency', nargs=3, action='append', default=[], metavar=('ROLE', 'FILE', 'SHA256'),
                         help='verify a dependency pinned by existing evidence outside the prepared result')
+    parser.add_argument('--prepared-projection', nargs=2, action='append', default=[], metavar=('FILE', 'SHA256'),
+                        help='recheck and join a pinned single-case preparation into the selected queue; repeatable')
     args = parser.parse_args(argv)
     try:
         selected_cases = {case.upper() for case in args.case}
