@@ -1,0 +1,57 @@
+--- a/hermes_cli/friday_workspace_presentation.py
++++ b/hermes_cli/friday_workspace_presentation.py
+@@ -276,6 +276,45 @@
+             raise ExportRefused('odp_pdf_output_profile')
+ 
+ 
++def _impress_pptx_input(data):
++    from io import BytesIO
++    from xml.dom.minidom import parseString
++    from xml.etree import ElementTree as ET
++    from tools.scoped_presentation_write import _parts, _rewrite, _xml
++
++    # Impress' PPTX detection requires a default namespace on this OPC part.
++    # The original package has already passed native input validation.
++    name = '[Content_Types].xml'
++    namespace = 'http://schemas.openxmlformats.org/package/2006/content-types'
++    with ZipFile(BytesIO(data)) as package:
++        if name not in package.namelist():
++            return data
++        raw = package.read(name)
++    with parseString(raw) as document:
++        element = document.documentElement
++        if element.prefix is None or element.namespaceURI != namespace or element.localName != 'Types':
++            return data
++    root = _xml(raw)
++    tags = {
++        f'{{{namespace}}}Default': ('Default', {'Extension', 'ContentType'}),
++        f'{{{namespace}}}Override': ('Override', {'PartName', 'ContentType'}),
++    }
++    if root.attrib or (root.text or '').strip():
++        return data
++    normalized = ET.Element('Types', {'xmlns': namespace})
++    normalized.text = root.text
++    for entry in root:
++        kind = tags.get(entry.tag)
++        if (kind is None or set(entry.attrib) != kind[1] or len(entry)
++                or (entry.text or '').strip() or (entry.tail or '').strip()):
++            return data
++        node = ET.SubElement(normalized, kind[0], entry.attrib)
++        node.text, node.tail = entry.text, entry.tail
++    infos, parts = _parts(data)
++    rendered = ET.tostring(normalized, encoding='utf-8', xml_declaration=True)
++    return _rewrite(infos, parts, {name: rendered})
++
++
+ def render(cap, data, operation, *, details=None):
+     from hermes_cli.friday_workspace_pdf import _read_pdf, _run, _toolchain
+     from hermes_cli.friday_workspace_revision import check
+@@ -289,6 +328,8 @@
+         expected_pages = direct_pdf_page_count(data)
+     else:
+         validate_native(data, spec['input'])
++        if operation == 'pptx_odp':
++            data = _impress_pptx_input(data)
+     family = 'presentation' if operation in ('pptx_odp', 'odp_pdf') else 'default'
+     toolchain = _toolchain(family=family)
+     work = Path(tempfile.mkdtemp(prefix='friday-presentation-convert-'))

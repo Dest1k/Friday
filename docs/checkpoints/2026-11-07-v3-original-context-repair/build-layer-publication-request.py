@@ -207,6 +207,7 @@ def build_request(args):
     ninety_ninth = core296_schema is not None
     strict_s14 = core296_schema == consumer.CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA
     d13 = core296_schema == consumer.CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA
+    f04_pptx = core296_schema == consumer.CURRENT_SOURCE_F04_PPTX_SUCCESSOR_SCHEMA
     d02_f04 = core296_schema == consumer.CURRENT_SOURCE_D02_F04_SUCCESSOR_SCHEMA
     receipt_continuity = core296_schema == consumer.CURRENT_SOURCE_RECEIPT_CONTINUITY_SUCCESSOR_SCHEMA
     if ninety_ninth:
@@ -2283,6 +2284,7 @@ def build_request(args):
                 consumer.CURRENT_SOURCE_S13_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA,
+                consumer.CURRENT_SOURCE_D02_F04_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_F04_PPTX_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_RECEIPT_CONTINUITY_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_D02_F04_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_RECEIPT_CONTINUITY_SUCCESSOR_SCHEMA,
                 consumer.CURRENT_SOURCE_NINETY_FOURTH_SUCCESSOR_SCHEMA: consumer.CURRENT_SOURCE_NINETY_FIFTH_SUCCESSOR_SCHEMA,
@@ -2344,6 +2346,8 @@ def build_request(args):
             word_after_d02 = core296_schema == consumer.CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA
             d02_rights = core296_schema == consumer.CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA
             s08 = core296_schema == consumer.CURRENT_SOURCE_S08_SUCCESSOR_SCHEMA
+            consumer.require(f04_pptx == (previous_schema == consumer.CURRENT_SOURCE_D02_F04_SUCCESSOR_SCHEMA),
+                             "transaction_current_source_exact_f04_pptx_edge_required")
             consumer.require(d02_f04 == (previous_schema == consumer.CURRENT_SOURCE_RECEIPT_CONTINUITY_SUCCESSOR_SCHEMA),
                              "transaction_current_source_exact_d02_f04_edge_required")
             consumer.require(receipt_continuity == (previous_schema == consumer.CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA),
@@ -2360,7 +2364,7 @@ def build_request(args):
                              "transaction_current_source_exact_s13_edge_required")
             consumer.require(s08 == (previous_schema == consumer.CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA),
                              "transaction_current_source_exact_s08_edge_required")
-            consumer.require((ninety_ninth and not word_after_d02 and not d02_rights and not s08 and not s13 and not s14 and not strict_s14 and not d13 and not receipt_continuity and not d02_f04)
+            consumer.require((ninety_ninth and not word_after_d02 and not d02_rights and not s08 and not s13 and not s14 and not strict_s14 and not d13 and not receipt_continuity and not d02_f04 and not f04_pptx)
                              == (previous_schema == consumer.CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA),
                              "transaction_current_source_exact_ninety_ninth_edge_required")
             consumer.require(word_after_d02 == (previous_schema == consumer.CURRENT_SOURCE_D02_SUCCESSOR_SCHEMA),
