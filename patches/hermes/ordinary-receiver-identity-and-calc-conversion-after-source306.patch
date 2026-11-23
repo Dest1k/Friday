@@ -1,0 +1,280 @@
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -107,6 +107,12 @@
+     return dict(device=info.st_dev, inode=info.st_ino, uid=info.st_uid, mode=mode)
+ 
+ 
++def _same_work_identity(info, expected):
++    native = _work_identity(info)
++    # Root's protected directory record includes the file type in st_mode.
++    return native == expected or {**native, "mode": info.st_mode} == expected
++
++
+ def _held_slot(path, identity, owner):
+     require(type(owner) is dict and set(owner) == {"pid", "start_time", "boot_id"}
+             and _kernel(owner["pid"]) == owner and path.resolve(strict=True) == path,
+@@ -129,7 +135,7 @@
+     require(len(raw) <= _RUN_JSON_LIMIT, "d02_control_terminal_receipt_too_large")
+     directory = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+     try:
+-        require(_work_identity(os.fstat(directory)) == identity, "d02_control_workdir_changed")
++        require(_same_work_identity(os.fstat(directory), identity), "d02_control_workdir_changed")
+         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                      0o600, dir_fd=directory)
+         with os.fdopen(fd, "wb") as stream:
+@@ -227,7 +233,7 @@
+                 and driver["schema"] == self.driver_schema
+                 and driver["status"] == "ROOT_BOUND_ONE_FUTURE_OPERATION" and driver["operator"] == "Root"
+                 and work.parent == driver_path.parent and claim_path.parent == intent_path.parent == work
+-                and _work_identity(work.lstat()) == driver["work_identity"]
++                and _same_work_identity(work.lstat(), driver["work_identity"])
+                 and not work.is_relative_to(self.home) and not work.is_relative_to(self.store)
+                 and driver["run_id"] == claim["run_id"] == run_id and claim["scenario_sha256"] == scenario_sha
+                 and claim["parent"] == intent["parent"] and claim["binding"] == intent["binding"]
+--- a/tools/scoped_spreadsheet_conversion.py
++++ b/tools/scoped_spreadsheet_conversion.py
+@@ -532,7 +532,12 @@
+         refuse('conversion_office_default_unsupported')
+ 
+ 
+-def _office_default_metadata(book, *, retained_calc=False):
++def _office_plain_formula(node, allow_aca_false):
++    # Explicit false is the inactive default for an ordinary formula.
++    return not len(node) and (not node.attrib or (allow_aca_false and node.attrib == {'aca':'false'}))
++
++
++def _office_default_metadata(book, *, retained_calc=False, plain_ods_pair=False):
+     """Check all generated workbook/sheet metadata before scalar projection.
+ 
+     The enclosing scalar profile intentionally keeps its original source policy.
+@@ -563,17 +568,23 @@
+     if calc.tag != '{http://schemas.libreoffice.org/}extCalcPr' or (calc.tail or '').strip():
+         refuse('conversion_office_default_unsupported')
+     _passive(calc, {'stringRefSyntax':'CalcA1ExcelA1'})
++    pair_defaults = False
++    if plain_ods_pair and len(book.sheet_parts) == 2:
++        second = book.xml[list(book.sheet_parts.values())[1]]
++        view = second.find(q(S,'sheetViews')+'/'+q(S,'sheetView'))
++        pair_defaults = view is not None and view.get('zoomScalePageLayoutView') == '60'
+     for index,part in enumerate(book.sheet_parts.values()):
+         tree = book.xml[part]
+         _office_metadata_shape(tree, ('sheetPr','dimension','sheetViews','sheetFormatPr','sheetData',
+                                      'printOptions','pageMargins','pageSetup','headerFooter'))
++        secondary_defaults = pair_defaults and index == 1
+         defaults = {
+           'sheetPr': ({'filterMode':'false'}, (('pageSetUpPr',{'fitToPage':'false'},()),)),
+           'sheetViews': ({}, (('sheetView', {
+             'showFormulas':'false','showGridLines':'true','showRowColHeaders':'true','showZeros':'true',
+             'rightToLeft':'false','tabSelected':'true' if index == 0 else 'false',
+             'showOutlineSymbols':'true','defaultGridColor':'true','view':'normal','topLeftCell':'A1',
+-            'colorId':'64','zoomScale':'100','zoomScaleNormal':'100','zoomScalePageLayoutView':'100',
++            'colorId':'64','zoomScale':'100','zoomScaleNormal':'100','zoomScalePageLayoutView':'60' if secondary_defaults else '100',
+             'workbookViewId':'0'}, (('selection', {'pane':'topLeft','activeCell':'A1',
+                                                    'activeCellId':'0','sqref':'A1'}, ()),)),)),
+           'sheetFormatPr': ({'defaultColWidth':'11.53515625','defaultRowHeight':'12.8',
+@@ -590,6 +601,9 @@
+             defaults['pageMargins'] = ({'left':'0.747916666666667','right':'0.747916666666667',
+                 'top':'0.984027777777778','bottom':'0.984027777777778',
+                 'header':'0.511811023622047','footer':'0.511811023622047'},())
++        if retained_calc or secondary_defaults:
++            # For the secondary sheet in this ODS import Calc uses the inactive Page
++            # Layout zoom and omits the explicit start at page one.
+             for key in ('firstPageNumber','useFirstPageNumber'):
+                 del defaults['pageSetup'][0][key]
+         for name,(attrs,children) in defaults.items():
+@@ -609,7 +623,9 @@
+                 if (cell.text or '').strip(): refuse('conversion_office_default_unsupported')
+                 for child in cell:
+                     if (child.tail or '').strip(): refuse('conversion_office_default_unsupported')
+-                    if child.tag in (q(S,'v'), q(S,'f')) and (child.attrib or len(child)):
++                    if child.tag == q(S,'v') and (child.attrib or len(child)):
++                        refuse('conversion_office_default_unsupported')
++                    if child.tag == q(S,'f') and not _office_plain_formula(child,pair_defaults):
+                         refuse('conversion_office_default_unsupported')
+         from tools.scoped_ods import colname
+         first = (min(r for r,c in refs), min(c for r,c in refs)) if refs else (1,1)
+@@ -626,6 +642,7 @@
+         for child,name,text in zip(header,('oddHeader','oddFooter'),texts):
+             if child.tag != q(S,name) or child.attrib or len(child) or (child.text or '') != text:
+                 refuse('conversion_office_default_unsupported')
++    return pair_defaults
+ 
+ 
+ def _xlsx_source_metadata(book):
+@@ -682,7 +699,7 @@
+                 refuse('conversion_worksheet_features_unsupported')
+ 
+ 
+-def _xlsx(data, checkpoint, *, office_generated=False, retained_calc=False):
++def _xlsx(data, checkpoint, *, office_generated=False, retained_calc=False, plain_ods_pair=False):
+     book = ooxml(data, 'xlsx', writing=True, checkpoint=checkpoint,
+                  allow_empty_workbook_protection=True)
+     allowed = {'[Content_Types].xml','_rels/.rels','xl/workbook.xml','xl/_rels/workbook.xml.rels',
+@@ -709,8 +726,11 @@
+     props = root.find(q(S,'workbookPr'))
+     if props is not None and props.get('date1904','0') not in ('0','false'):
+         refuse('conversion_date_epoch_unsupported')
+-    if office_generated: _office_default_metadata(book,retained_calc=retained_calc)
+-    else: _xlsx_source_metadata(book)
++    allow_aca_false = False
++    if office_generated:
++        allow_aca_false = _office_default_metadata(book,retained_calc=retained_calc,plain_ods_pair=plain_ods_pair)
++    else:
++        _xlsx_source_metadata(book)
+     styles = _office_default_styles(book,retained_calc=retained_calc) if office_generated else _xlsx_styles(book)
+     strings = []
+     if book.shared_strings_part:
+@@ -788,7 +808,8 @@
+                 form = cell.find(q(S,'f')); raw = cell.find(q(S,'v')); inline = cell.find(q(S,'is'))
+                 typ = cell.get('t','n')
+                 if form is not None:
+-                    if form.attrib or len(form) or typ not in ('n',) or inline is not None or style not in ('general','number'):
++                    if (not _office_plain_formula(form,allow_aca_false) or typ != 'n'
++                            or inline is not None or style not in ('general','number')):
+                         refuse('conversion_formula_type_unsupported')
+                     parsed = parse_formula(form.text or '', 'xlsx', name)
+                     # Empty OOXML <v/> denotes an absent formula cache. Keep
+@@ -1135,7 +1156,7 @@
+                 node.text = None
+ 
+ 
+-def _ods_imported_profile(book, rich_signature=None):
++def _ods_imported_profile(book, rich_signature=None, *, plain_xlsx_pair=False):
+     """Closed two/three-sheet Calc import defaults, independent of cell payloads.
+ 
+     Every passive tree is fingerprinted in full after binding only page aliases,
+@@ -1178,7 +1199,18 @@
+     master = styles.find(q(O,'master-styles'))
+     if master is None:
+         refuse('conversion_imported_ods_styles_unsupported')
++    statistics = deepcopy(book.xml['meta.xml'])
++    metadata_tags = (q(meta,'creation-date'),q(dc,'date'),q(meta,'initial-creator'))
++    # Calc can omit the entire author/clock group for a plain XLSX import.
++    # Its other passive trees must match the same observed destination bundle.
++    minimal_metadata = plain_xlsx_pair and sheet_count == 2 and all(
++        statistics.find('.//'+tag) is None for tag in metadata_tags)
+     pages = [node for node in master if node.get(q(ST,'display-name'),'').startswith('PageStyle_')]
++    if minimal_metadata:
++        # Check original name resolution before assigning per-sheet aliases.
++        master_aliases = [page.get(q(ST,'name')) for page in master]
++        if any(master_aliases.count(page.get(q(ST,'name'))) != 1 for page in pages):
++            refuse('conversion_imported_ods_styles_unsupported')
+     tables = [node for node in automatic if node.get(q(ST,'family')) == 'table']
+     if len(pages) != len(names) or len(tables) != len(names):
+         refuse('conversion_imported_ods_styles_unsupported')
+@@ -1200,7 +1232,6 @@
+         refuse('conversion_imported_ods_styles_unsupported')
+     _date(dates[0].get(q(T,'date-value')))
+     dates[0].set(q(T,'date-value'),'@calendar-date@')
+-    statistics = deepcopy(book.xml['meta.xml'])
+     counts = list(statistics.iter(q(meta,'document-statistic')))
+     if len(counts) != 1 or set(counts[0].attrib) != {q(meta,k) for k in ('table-count','cell-count','object-count')} or counts[0].get(q(meta,'object-count')) != '0':
+         refuse('conversion_imported_ods_metadata_unsupported')
+@@ -1210,17 +1241,23 @@
+         if not re.fullmatch(r'[1-9][0-9]{0,3}',value or '') or int(value)>maximum:
+             refuse('conversion_imported_ods_metadata_unsupported')
+         declared.append(int(value)); counts[0].set(q(meta,name),'@inventory-count@')
+-    for tag in (q(meta,'creation-date'),q(dc,'date')):
+-        nodes = list(statistics.iter(tag))
+-        if len(nodes) != 1 or nodes[0].attrib or len(nodes[0]) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,9})?',nodes[0].text or ''):
++    if minimal_metadata:
++        # These master pages are linked by name. Bind each to its worksheet
++        # above, then order the two named pages without moving other entries.
++        ordered = iter(sorted(pages, key=lambda page: page.get(q(ST,'name'))))
++        master[:] = [next(ordered) if page in pages else page for page in master]
++    else:
++        for tag in metadata_tags[:2]:
++            nodes = list(statistics.iter(tag))
++            if len(nodes) != 1 or nodes[0].attrib or len(nodes[0]) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,9})?',nodes[0].text or ''):
++                refuse('conversion_imported_ods_metadata_unsupported')
++            _date(nodes[0].text[:10]); nodes[0].text='@metadata-clock@'
++        creators = list(statistics.iter(q(meta,'initial-creator')))
++        if (len(creators) != 1 or creators[0].attrib or len(creators[0])
++                or not 1 <= len((creators[0].text or '').encode()) <= 256
++                or any(ord(c)<32 for c in creators[0].text or '')):
+             refuse('conversion_imported_ods_metadata_unsupported')
+-        _date(nodes[0].text[:10]); nodes[0].text='@metadata-clock@'
+-    creators = list(statistics.iter(q(meta,'initial-creator')))
+-    if (len(creators) != 1 or creators[0].attrib or len(creators[0])
+-            or not 1 <= len((creators[0].text or '').encode()) <= 256
+-            or any(ord(c)<32 for c in creators[0].text or '')):
+-        refuse('conversion_imported_ods_metadata_unsupported')
+-    creators[0].text='@bounded-author@'
++        creators[0].text='@bounded-author@'
+     settings = deepcopy(book.xml['settings.xml']); extents = []
+     for node in settings.iter(q(config,'config-item')):
+         if node.get(q(config,'name')) in ('VisibleAreaWidth','VisibleAreaHeight'):
+@@ -1265,8 +1302,9 @@
+              'META-INF/manifest.xml':book.xml['META-INF/manifest.xml'],
+              'content:font-face-decls':content.find(q(O,'font-face-decls')),
+              'content:automatic-styles':automatic}
++    passive_bundle = _ODS_PLAIN_XLSX_PAIR_PASSIVE if minimal_metadata else _ODS_IMPORTED_PASSIVE[sheet_count]
+     for part,tree in trees.items():
+-        if _ods_tree_digest(tree) != _ODS_IMPORTED_PASSIVE[sheet_count][part]:
++        if _ods_tree_digest(tree) != passive_bundle[part]:
+             refuse('conversion_imported_ods_passive_part_unsupported')
+     if hashlib.sha256(book.parts['manifest.rdf']).hexdigest() != _ODS_IMPORTED_RDF:
+         refuse('conversion_imported_ods_passive_part_unsupported')
+@@ -1324,14 +1362,26 @@
+ _ODS_IMPORTED_PASSIVE = {2: {'styles.xml': 'c893735da17d3e15b82adadbd7968a0d3734e6fcec17e8f295cb984566bf7921', 'meta.xml': '979e8cb60e364b791ff1f030e777cfa116140898dc5e56737def5f5e04f93ce1', 'settings.xml': 'b77eeb4f7e3fdc86e5c296e3803581592c6e66022c7ac965d43f892598fbfb5c', 'META-INF/manifest.xml': '589d6e270f367c4e2bc75a6a9015f9cb1e32f077480088f9f96f2bd543ecd18c', 'content:font-face-decls': '012b44d0995e9655873bf8b4281fcbdecc93577f0e1d2b9e21168cb3ee5037c9', 'content:automatic-styles': '6dadef4d2caec6076420e786b646981fb2b214ff08a21e9de24014e23b3f7783'}, 3: {'styles.xml': '431428f73f2cb1a3acac838d34bf7c550913996a01b63b478ef9fcd7fed0e10d', 'meta.xml': '979e8cb60e364b791ff1f030e777cfa116140898dc5e56737def5f5e04f93ce1', 'settings.xml': 'b77eeb4f7e3fdc86e5c296e3803581592c6e66022c7ac965d43f892598fbfb5c', 'META-INF/manifest.xml': '589d6e270f367c4e2bc75a6a9015f9cb1e32f077480088f9f96f2bd543ecd18c', 'content:font-face-decls': '012b44d0995e9655873bf8b4281fcbdecc93577f0e1d2b9e21168cb3ee5037c9', 'content:automatic-styles': 'f34652c4078c895d3cdca0bd79ebcc198caa4dcdf53a491d6e3561a5cbbef5e2'}}
+ 
+ 
+-def _ods_generated_profile(book, *, calc_source=False, rich_signature=None):
++# Two-sheet Calc export from the plain XLSX input profile. These hashes cover
++# complete normalized passive trees and are selected together as one bundle.
++_ODS_PLAIN_XLSX_PAIR_PASSIVE = {
++    'styles.xml': 'ecdf67e55fc998bf94d40e494fa80ddfb16e1a3695cbce8b7a42d8d601f194e5',
++    'meta.xml': _ODS_CALC_PASSIVE['meta.xml'],
++    'settings.xml': _ODS_CALC_PASSIVE['settings.xml'],
++    'META-INF/manifest.xml': _ODS_CALC_PASSIVE['META-INF/manifest.xml'],
++    'content:font-face-decls': '85d965d171976400127126c6152c6130b4f6e3c08f25d9662dd6362b8580ed43',
++    'content:automatic-styles': '74b39c7cedad2bb8a5a9f463c240ffad36471cf33ddb8692332dd995ca2bd9ee',
++}
++
++
++def _ods_generated_profile(book, *, calc_source=False, rich_signature=None, plain_xlsx_pair=False):
+     from copy import deepcopy
+     config = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
+     meta = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
+     parts = {'mimetype','content.xml','styles.xml','meta.xml','settings.xml',
+              'META-INF/manifest.xml','manifest.rdf','Thumbnails/thumbnail.png'}
+     if len(book.sheets) in (2,3):
+-        return _ods_imported_profile(book,rich_signature)
++        return _ods_imported_profile(book,rich_signature,plain_xlsx_pair=plain_xlsx_pair)
+     if set(book.parts) != parts or len(book.sheets) != 1:
+         refuse('conversion_generated_ods_package_unsupported')
+     _ods_generated_xml_guard(book.parts)
+@@ -1448,13 +1498,17 @@
+     return used
+ 
+ 
+-def _ods(data, checkpoint, *, office_generated=False, calc_source=False, rich_signature=None):
++def _ods(data, checkpoint, *, office_generated=False, calc_source=False, rich_signature=None, plain_xlsx_pair=False):
+     book = Spreadsheet(data,'ods',checkpoint)
+     if book.unsupported: refuse('conversion_active_or_linked_content')
+     _formula_namespaces(book.parts['content.xml'])
+     if set(book.parts)-{'mimetype','content.xml','styles.xml','meta.xml','settings.xml','META-INF/manifest.xml', 'manifest.rdf','Thumbnails/thumbnail.png'}:
+         refuse('conversion_package_features_unsupported')
+-    used_style = _ods_generated_profile(book,calc_source=calc_source,rich_signature=rich_signature) if office_generated or calc_source else _ods_styles(book)
++    if office_generated or calc_source:
++        used_style = _ods_generated_profile(book,calc_source=calc_source,rich_signature=rich_signature,
++                                            plain_xlsx_pair=plain_xlsx_pair)
++    else:
++        used_style = _ods_styles(book)
+     content = book.xml['content.xml']
+     _attrs(content, (q(O,'version'),))
+     _children(content, (q(O,x) for x in ('font-face-decls','automatic-styles','body')),
+@@ -1595,8 +1649,11 @@
+                 actual = _scalar_inventory(data,target,checkpoint,False,signature)
+             except ConversionRefused:
+                 if target not in ('xlsx','ods'): raise
+-                actual = (_xlsx(data,checkpoint,office_generated=True) if target == 'xlsx'
+-                          else _ods(data,checkpoint,office_generated=True,rich_signature=signature))
++                plain_pair = len(source.sheets) == 2 and not source.rich_signature
++                actual = (_xlsx(data,checkpoint,office_generated=True,
++                                plain_ods_pair=plain_pair and source.source_format == 'ods') if target == 'xlsx'
++                          else _ods(data,checkpoint,office_generated=True,rich_signature=signature,
++                                    plain_xlsx_pair=plain_pair and source.source_format == 'xlsx'))
+         actual = _with_rich(actual, signature, target)
+         from tools.scoped_spreadsheet_rich import compare_rich
+         compare_rich(source.rich_signature, actual.rich_signature,
