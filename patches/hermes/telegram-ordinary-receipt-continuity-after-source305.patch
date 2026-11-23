@@ -1,0 +1,346 @@
+--- a/plugins/platforms/telegram/receipt_writer_lease.py
++++ b/plugins/platforms/telegram/receipt_writer_lease.py
+@@ -1,7 +1,10 @@
+ """Exact acquisition fence for Telegram intake and its physical receipt writer."""
+ 
+ import asyncio
++from contextlib import contextmanager
++import json
+ import os
++from secrets import token_hex
+ import stat
+ 
+ 
+@@ -45,14 +48,168 @@
+     return info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mtime_ns, info.st_size
+ 
+ 
++def _require(condition):
++    if not condition:
++        raise ReceiptWriterBusy("telegram_unsafe_receipt_path")
++
++
++def _owned_file(info):
++    return stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
++
++
+ def validate_receipt_path(path):
+     try:
+         info = path.lstat()
+     except FileNotFoundError:
+         return
+-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+-            or info.st_nlink != 1 or info.st_mode & 0o022):
+-        raise ReceiptWriterBusy("telegram_unsafe_receipt_path")
++    _require(_owned_file(info) and not (info.st_mode & 0o022))
++
++
++_IDENTITY_FIELDS = ("dev", "ino", "mode", "uid", "nlink", "size", "mtime_ns", "ctime_ns")
++
++
++def _identity(info):
++    return tuple(getattr(info, "st_" + field) for field in _IDENTITY_FIELDS)
++
++
++def _entry(directory, name):
++    try:
++        return os.stat(name, dir_fd=directory, follow_symlinks=False)
++    except FileNotFoundError:
++        return None
++
++
++class _PrivateReceipt:
++    """Keep the canonical private receipt and locked sidecar on one acquisition."""
++
++    def __init__(self, path, lease_fd):
++        self.path = path
++        self.lease_fd = lease_fd
++        self.directory_identity = self._home_identity(path.parent.lstat())
++        lease = os.fstat(lease_fd)
++        _require(_owned_file(lease) and stat.S_IMODE(lease.st_mode) == 0o600)
++        self.lease_identity = _identity(lease)
++        with self._directory() as directory:
++            entry = _entry(directory, path.name)
++            if entry is not None:
++                _require(_owned_file(entry)
++                         and (not (entry.st_mode & 0o022) or stat.S_IMODE(entry.st_mode) == 0o664))
++            self.receipt_identity = _identity(entry) if entry is not None else None
++            self.legacy = entry is not None and stat.S_IMODE(entry.st_mode) == 0o664
++            if self.legacy:
++                # Refuse a malformed legacy file before either intake route can start.
++                self._read(directory)
++
++    @staticmethod
++    def _home_identity(info):
++        _require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
++                 and stat.S_IMODE(info.st_mode) == 0o700)
++        return info.st_dev, info.st_ino
++
++    def _check_custody(self, directory):
++        home = self.path.parent
++        _require(self._home_identity(os.fstat(directory)) == self.directory_identity
++                 and home.resolve(strict=True) == home
++                 and self._home_identity(home.lstat()) == self.directory_identity)
++        lease = _entry(directory, self.path.name + ".receipt-lease")
++        _require(lease is not None and _identity(lease) == self.lease_identity
++                 and _identity(os.fstat(self.lease_fd)) == self.lease_identity)
++
++    @contextmanager
++    def _directory(self):
++        directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
++        try:
++            self._check_custody(directory)
++            yield directory
++        finally:
++            os.close(directory)
++
++    def _check_receipt(self, directory, expected):
++        entry = _entry(directory, self.path.name)
++        _require((_identity(entry) if entry is not None else None) == expected)
++
++    def _read(self, directory):
++        self._check_receipt(directory, self.receipt_identity)
++        if self.receipt_identity is None:
++            self._check_custody(directory)
++            self._check_receipt(directory, None)
++            return None
++        fd = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
++                     dir_fd=directory)
++        try:
++            opened = os.fstat(fd)
++            _require(_identity(opened) == self.receipt_identity)
++            with os.fdopen(fd, "rb", closefd=False) as receipt:
++                raw = receipt.read(opened.st_size + 1)
++            _require(len(raw) == opened.st_size)
++            if self.legacy:
++                from .update_admission import _decode_legacy_receipt
++
++                try:
++                    payload = _decode_legacy_receipt(raw)
++                except (ValueError, OverflowError, RecursionError):
++                    raise ReceiptWriterBusy("telegram_unsafe_receipt_path") from None
++            else:
++                try:
++                    payload = json.loads(raw.decode("utf-8-sig"))
++                except (ValueError, RecursionError):
++                    payload = None
++            self._check_custody(directory)
++            self._check_receipt(directory, self.receipt_identity)
++            _require(_identity(os.fstat(fd)) == self.receipt_identity)
++            return payload
++        finally:
++            os.close(fd)
++
++    def load(self):
++        with self._directory() as directory:
++            return self._read(directory)
++
++    def publish(self, payload):
++        published = False
++        try:
++            with self._directory() as directory:
++                self._check_receipt(directory, self.receipt_identity)
++                name = f".telegram-receipt-{token_hex(16)}.tmp"
++                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
++                             0o600, dir_fd=directory)
++                try:
++                    os.fchmod(fd, 0o600)
++                    with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as receipt:
++                        json.dump(payload, receipt, ensure_ascii=False, indent=None)
++                        receipt.flush()
++                        os.fsync(fd)
++                    staged = os.fstat(fd)
++                    entry = _entry(directory, name)
++                    _require(_owned_file(staged) and stat.S_IMODE(staged.st_mode) == 0o600
++                             and entry is not None and _identity(entry) == _identity(staged))
++                    self._check_custody(directory)
++                    self._check_receipt(directory, self.receipt_identity)
++                    os.replace(name, self.path.name, src_dir_fd=directory, dst_dir_fd=directory)
++                    published = True
++
++                    # Rename changes ctime. The retained descriptor identifies the exact new inode.
++                    written = _identity(os.fstat(fd))
++                    _require(written[:-1] == _identity(staged)[:-1])
++                    os.fsync(directory)
++                    self._check_custody(directory)
++                    self._check_receipt(directory, written)
++                    _require(_identity(os.fstat(fd)) == written)
++                    return written
++                finally:
++                    try:
++                        if not published:
++                            retained = _entry(directory, name)
++                            opened = os.fstat(fd)
++                            if (retained is not None
++                                    and (retained.st_dev, retained.st_ino) == (opened.st_dev, opened.st_ino)):
++                                os.unlink(name, dir_fd=directory)
++                    finally:
++                        os.close(fd)
++        except (OSError, ReceiptWriterBusy) as error:
++            if published:
++                raise ReceiptWriterBusy("telegram_receipt_published_unproved") from error
++            raise
+ 
+ 
+ class ReceiptWriterLease:
+@@ -86,6 +243,7 @@
+         self.settlement_revocation = None
+         self.path_fd = None
+         self.receipt_path = None
++        self.private_receipt = None
+         self.legacy_path = _get_scope_lock_path("telegram-bot-token", token)
+         self.token_fd = _take(self.legacy_path.with_name(self.legacy_path.name + ".receipt-lease"))
+ 
+@@ -100,9 +258,17 @@
+         if self.closing or self.failed or self.application is not None or self.legacy_fingerprint is None:
+             raise ReceiptWriterBusy("telegram_exact_receipt_acquisition_required")
+         self.path_fd = _take(path.with_name(path.name + ".receipt-lease"))
+-        validate_receipt_path(path)
++        from hermes_cli.friday_dashboard_owner import SOURCE
++
++        bot_id = str(bot_id)
++        if (path.parent == SOURCE.parent and path.is_absolute() and bot_id.isascii() and bot_id.isdecimal()
++                and path.name == f"telegram_update_receipts_{bot_id}.json"
++                and stat.S_IMODE(path.parent.lstat().st_mode) == 0o700):
++            self.private_receipt = _PrivateReceipt(path, self.path_fd)
++        else:
++            validate_receipt_path(path)
+         self.receipt_path = path
+-        self.bot_id = str(bot_id)
++        self.bot_id = bot_id
+         self.application = app
+         # A recycled adapter must load the new acquisition's durable state.
+         self.adapter._seen_update_ids.clear()
+@@ -259,8 +425,13 @@
+         if self.writer is not None or self.path_fd is None or path != self.receipt_path or self.failed:
+             self.write_failed = True
+             raise ReceiptWriterBusy("telegram_exclusive_receipt_writer_unproved")
+-        validate_receipt_path(path)
++        private = self.private_receipt
++        if private is None:
++            validate_receipt_path(path)
++
+         def write():
++            if private is not None:
++                return private.publish(payload)
+             function(path, payload, **kwargs)
+             if self.settlement is not None:
+                 from .d13_writer_settlement import written_receipt_identity
+@@ -278,10 +449,18 @@
+     def _writer_done(self, future):
+         # This future is never cancelled by waiters. Its completion witnesses
+         # the executor's return, even if the flushing coroutine was cancelled.
++        private = self.private_receipt
+         if future.cancelled() or future.exception() is not None:
+             self.write_failed = True
++            if private is not None:
++                self.failed = True
++        elif private is None:
++            self.written_receipt = future.result()
+         else:
+-            self.written_receipt = future.result()
++            private.receipt_identity = future.result()
++            private.legacy = False
++            if self.settlement is not None:
++                self.written_receipt = dict(zip(_IDENTITY_FIELDS, private.receipt_identity))
+         if self.writer is future:
+             self.writer = None
+         self.finish_if_settled()
+--- a/plugins/platforms/telegram/update_admission.py
++++ b/plugins/platforms/telegram/update_admission.py
+@@ -25,6 +25,8 @@
+ from gateway.platforms.helpers import bounded_put
+ from utils import atomic_json_write, fsync_directory
+ 
++from .receipt_writer_lease import ReceiptWriterBusy
++
+ logger = logging.getLogger(__name__)
+ 
+ _DEFAULT_BLOCK = object()
+@@ -42,21 +44,48 @@
+     return adapter._update_receipt_dir / f"telegram_update_receipts_{bot_id}.json"
+ 
+ 
+-def _load_receipts(adapter, bot_id) -> None:
++def _decode_legacy_receipt(raw):
++    """Accept the ordinary receipt's two known maps and their native row types."""
++    def unique(pairs):
++        result = dict(pairs)
++        if len(result) != len(pairs):
++            raise ValueError("telegram_duplicate_receipt_key")
++        return result
++
++    payload = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique)
++    if type(payload) is not dict or set(payload) not in ({"update_ids"}, {"update_ids", _HOLD_RECEIPTS_FIELD}):
++        raise ValueError("telegram_legacy_receipt_schema")
++    for key, rows in payload.items():
++        if type(rows) is not dict or any(
++            not uid.isascii() or not (uid if key == _HOLD_RECEIPTS_FIELD else uid.removeprefix("-")).isdecimal()
++            or type(stamp) not in ((float,) if key == _HOLD_RECEIPTS_FIELD else (int, float))
++            or not math.isfinite(stamp)
++            for uid, stamp in rows.items()
++        ):
++            raise ValueError("telegram_legacy_receipt_row")
++    return payload
++
++
++def _load_receipts(adapter, bot_id, lease) -> None:
+     """Seed completed history from disk once per bot, before its first admission check."""
+     if bot_id in adapter._update_receipts_loaded:
+         return
+-    adapter._update_receipts_loaded.add(bot_id)
+-    path = _receipt_path(adapter, bot_id)
+-    try:
+-        with open(path, encoding="utf-8-sig", opener=lambda name, flags: os.open(
+-                name, flags | os.O_NOFOLLOW | os.O_NONBLOCK)) as receipt:
+-            payload = json.load(receipt)
+-    except FileNotFoundError:
+-        return
+-    except (OSError, ValueError):
+-        logger.warning("[Telegram] Ignoring unreadable update receipts at %s", path, exc_info=True)
+-        return
++    private = lease.private_receipt
++    if private is not None:
++        payload = private.load()
++        adapter._update_receipts_loaded.add(bot_id)
++    else:
++        adapter._update_receipts_loaded.add(bot_id)
++        path = _receipt_path(adapter, bot_id)
++        try:
++            with open(path, encoding="utf-8-sig", opener=lambda name, flags: os.open(
++                    name, flags | os.O_NOFOLLOW | os.O_NONBLOCK)) as receipt:
++                payload = json.load(receipt)
++        except FileNotFoundError:
++            return
++        except (OSError, ValueError):
++            logger.warning("[Telegram] Ignoring unreadable update receipts at %s", path, exc_info=True)
++            return
+     if not isinstance(payload, dict):
+         return
+     cutoff = time.time() - RECEIPT_TTL_SECONDS
+@@ -114,8 +143,9 @@
+                 payload[_HOLD_RECEIPTS_FIELD] = protected.copy()
+         path = _receipt_path(adapter, bot_id)
+         try:
+-            mkdir_under_hermes_home(path.parent)
+-            await lease.write(atomic_json_write, path, payload, indent=None)
++            if lease.private_receipt is None:
++                mkdir_under_hermes_home(path.parent)
++            await lease.write(atomic_json_write, path, payload, indent=None, mode=0o600)
+         except Exception:
+             lease.write_failed = True
+             logger.warning("[Telegram] Failed to persist update receipts to %s", path, exc_info=True)
+@@ -347,7 +377,12 @@
+             lease.failed = True
+             return
+         key = f"{bot_id}:{update.update_id}"
+-        _load_receipts(self.adapter, bot_id)
++        try:
++            _load_receipts(self.adapter, bot_id, lease)
++        except (OSError, ReceiptWriterBusy):
++            lease.failed = True
++            logger.warning("[Telegram] Update receipt custody lost before admission", exc_info=True)
++            return
+         # Dispatch happened even when preparation fails before the group-99 observer.
+         self.adapter._updates_dispatched_total += 1
+         seen = self.adapter._seen_update_ids
