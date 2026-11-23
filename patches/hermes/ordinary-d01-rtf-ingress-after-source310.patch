@@ -1,0 +1,574 @@
+--- /dev/null
++++ b/gateway/d01_rtf_custody.py
+@@ -0,0 +1,72 @@
++"""Selected D01 RTF ingress and publication facts on the existing ordinary arm."""
++
++from dataclasses import dataclass
++import time
++
++from .s08_document_custody import capture_document, require
++
++SCENARIO_SHA256 = "45e1732b0d49020182a3a9f2d67056b8c11d9c0f314240de077eb6fd19a13641"
++SOURCE_SHA256 = "008f55eddd87fe35f7a40413d97eecba9a293d2029db9a32420d0973001b3535"
++SOURCE_BYTES = 1919
++SOURCE_MIME = "application/rtf"
++SOURCE_NAME = "D01-Shlyuz-Serebryanoy-kosy-SK-D01-683.rtf"
++CAPTION_SHA256 = "15201312e5d5424c7bec946cd2d45000fd1e0fb015112dfb9a097fc42a1f92e3"
++TERMINAL_SCHEMA = "frw.gateway.d01-rtf-native-settlement.v1"
++
++
++@dataclass(frozen=True, slots=True)
++class SelectedRTFCandidate:
++    sdk: dict
++    observed_monotonic: float
++    raw: object
++    update: object
++
++    @classmethod
++    def capture(cls, ingress, update, event):
++        sdk = capture_document(ingress.adapter, update, event, actor=ingress.claim.user_id,
++                               bot_id=ingress.scope["bot_id"], source_bytes=SOURCE_BYTES)
++        require((sdk["file_name"], sdk["mime_type"], sdk["caption_sha256"])
++                == (SOURCE_NAME, SOURCE_MIME, CAPTION_SHA256), "d01_rtf_exact_sdk_document")
++        return cls(sdk, time.monotonic(), event.raw_message, update)
++
++    def is_original(self, ingress, event):
++        if self.raw is not event.raw_message or self.update is None:
++            return False
++        return self.capture(ingress, self.update, event).sdk == self.sdk
++
++    def caption(self):
++        return {"kind": "caption", "date": self.sdk["date"], "sha256": self.sdk["caption_sha256"]}
++
++
++def match_document(sdk, message):
++    media = message["media"]
++    if (len(media) != 1 or tuple(message[field] for field in (
++            "platform_update_id", "message_id", "bot_id", "user_id", "chat_id", "thread_id",
++            "reply_to_message_id")) != (sdk["update_id"], sdk["native_message_id"], sdk["bot_id"],
++                                       sdk["actor_id"], sdk["actor_id"], "", "")):
++        return False
++    item = media[0]
++    origin = item["origin"]
++    return (item["mime_type"] == sdk["mime_type"]
++            and item["content"] == {"sha256": SOURCE_SHA256, "size_bytes": SOURCE_BYTES}
++            and all(origin[key] == message[key] for key in ("bot_id", "chat_id", "thread_id", "message_id"))
++            and all(origin[key] == sdk[key] for key in ("file_id", "file_unique_id", "declared_bytes")))
++
++
++def selected_publication(event, message):
++    from .ordinary_dm_ingress import _ingress
++    from .session_identity import identity_of
++
++    if getattr(event, "_ordinary_dm_ingress_stamp", None) is None:
++        return False
++    try:
++        source = event.source
++        identity = identity_of(source)
++        ingress = _ingress(identity.adapter()) if identity is not None else None
++        if ingress is None or ingress.claim.selected_d01_rtf is None:
++            return False
++        update = ingress.select(event, source, identity, ingress.scope["session_key"])
++        candidate = ingress._built[update].d01_rtf_native if update is not None else None
++        return candidate is not None and candidate.is_original(ingress, event) and match_document(candidate.sdk, message)
++    except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
++        return False
+--- /dev/null
++++ b/gateway/d01_rtf_receiver_control.py
+@@ -0,0 +1,124 @@
++"""Exact D01 RTF receiver control on the existing bounded ordinary window."""
++
++from dataclasses import dataclass
++from hashlib import sha256
++import time
++
++from .d01_rtf_custody import CAPTION_SHA256, SCENARIO_SHA256, TERMINAL_SCHEMA, match_document
++from .d02_receiver_control import ReceiverControl, _encode, _ordinary_receiver_verb, require
++from .run_inbound_media import verify_published_d01_rtf_input
++
++
++@dataclass(frozen=True, slots=True)
++class _BoundCutoff:
++    run_id: str
++    cutoff: float
++    original_proof_sha256: str
++    sender_message_id: int
++    sender: dict
++    ack_started: float
++    ack_completed: float
++
++
++def _original_cutoff(window_cutoff, verified, scenario):
++    run = verified["run"]
++    sender = ReceiverControl._ordinary_document_ack(
++        run, verified["ack"], scenario, "d01_rtf_exact_original_document_ack")
++    before, after = verified["ack_monotonic"]
++    require(sender["caption_sha256"] == CAPTION_SHA256 and 0 < sender["date"] < 2**63
++            and type(sender["date"]) is int and window_cutoff == after + 180,
++            "d01_rtf_exact_original_ack_cutoff")
++    proof = {
++        "ack": run["sent_api_ack_reference"], "window": run["sent_window_reference"],
++        "clock": verified["original_clock"], "wall_cutoff": run["capture_until"],
++        "task": run["sent_task_reference"],
++    }
++    return _BoundCutoff(run["id"], window_cutoff, sha256(_encode(proof)).hexdigest(),
++                        run["sent_message_id"], sender, before, after)
++
++
++class D01RTFReceiverControl(ReceiverControl):
++    request_schema = "frw.gateway.d01-rtf-owned-receiver-control.v1"
++    options_schema = "frw.Root.D01RTF.receiver-options.v1"
++    driver_schema = "frw.Root.D01RTF.owned-ordinary-driver.v1"
++    exact_phases = frozenset((SCENARIO_SHA256,))
++    terminal_schema = TERMINAL_SCHEMA
++    strict_terminal_extra = True
++
++    def _wire_options(self, intent):
++        return {"selected_d01_rtf": (SCENARIO_SHA256, intent["run_id"])}
++
++    @staticmethod
++    def _check_ack_window(run, ack, window, scenario):
++        ReceiverControl._check_ack_window(run, ack, window, scenario)
++        sender = ReceiverControl._ordinary_document_ack(
++            run, ack, scenario, "d01_rtf_exact_original_document_ack")
++        require(sender["caption_sha256"] == CAPTION_SHA256 and type(sender["date"]) is int
++                and 0 < sender["date"] < 2**63, "d01_rtf_exact_original_document_ack")
++
++    def _bind_terminal_cutoff(self, arm, window, cutoff, verified):
++        ingress = arm.ingress
++        run = verified["run"]
++        binding = _original_cutoff(cutoff, verified, run["scenario"])
++        wire = ingress._wire()
++        require(arm.claim.selected_d01_rtf == (SCENARIO_SHA256, binding.run_id)
++                and arm.window is window is ingress.window and ingress._d01_rtf_cutoff is None
++                and wire is not None and wire["state"] == "OPEN" and time.monotonic() < cutoff,
++                "d01_rtf_exact_open_cutoff_required")
++        window.bind_cutoff(cutoff)
++        ingress._d01_rtf_cutoff = binding
++
++    def _terminal_extra(self, arm, route, scenario, joined, verified, deadline):
++        ingress = arm.ingress
++        wire = ingress._wire()
++        require(wire is not None and wire["state"] == "LOCAL_WIRE_CLOSED"
++                and ingress._settlement_state() == "SETTLED"
++                and len(wire["target_update_ids"]) == 1 and len(joined["observations"]) == 1,
++                "d01_rtf_exact_closed_singleton_required")
++        bound = ingress._d01_rtf_cutoff
++        require(bound is not None and arm.claim.selected_d01_rtf == (SCENARIO_SHA256, bound.run_id)
++                and bound == _original_cutoff(arm.window._cutoff, verified, scenario)
++                and wire["empty_boundary"][0] >= bound.cutoff,
++                "d01_rtf_original_cutoff_or_ack_changed")
++        update, = wire["target_update_ids"]
++        record = ingress._built[update]
++        candidate, publication = record.d01_rtf_native, record.d01_rtf_publication
++        require(candidate is not None and publication is not None and candidate.raw is None
++                and bound.ack_started <= candidate.observed_monotonic < bound.cutoff
++                and all(candidate.sdk[key] == value for key, value in bound.sender.items()),
++                "d01_rtf_original_ack_sdk_document_mismatch")
++        (receipt, raw_caption), = joined["observations"]
++        message = receipt["message"]
++        sdk = candidate.sdk
++        require(sdk["update_id"] == str(update) and raw_caption == candidate.caption()
++                and receipt["platform"] == "telegram" and receipt["chat_type"] == "dm"
++                and all(receipt[key] == value for key, value in route.items())
++                and match_document(sdk, message)
++                and message["media"][0]["local_reference"] == str(publication.evidence.path),
++                "d01_rtf_exact_durable_route_pair_required")
++
++        def current():
++            return (time.monotonic() < deadline and ingress._wire() == wire
++                    and ingress._settlement_state() == "SETTLED" and ingress._d01_rtf_cutoff is bound)
++
++        require(current() and verify_published_d01_rtf_input(publication, still_current=current)
++                and current(), "d01_rtf_original_publication_identity_changed")
++        item = publication.evidence
++        return {
++            "d01_rtf_wire": wire,
++            "d01_rtf_first_offset": arm.first_offset,
++            "d01_rtf_original_ack": verified["run"]["sent_api_ack_reference"],
++            "d01_rtf_sender_message_id": str(bound.sender_message_id),
++            "d01_rtf_receiver_update_id": sdk["update_id"],
++            "d01_rtf_receiver_message_id": sdk["native_message_id"],
++            "d01_rtf_receiver_observed_monotonic": candidate.observed_monotonic,
++            "d01_rtf_publication": {
++                "path": str(item.path), "sha256": item.sha256, "bytes": item.size_bytes,
++                "source_identity": list(item.source_identity),
++                "directory_identities": [list(identity) for identity in publication.directories],
++            },
++        }
++
++
++def ordinary_d01_rtf_receiver_verb(runner, loop):
++    return _ordinary_receiver_verb(runner, loop, control_type=D01RTFReceiverControl)
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -180,6 +180,7 @@
+     exact_phases = frozenset({_S14_SCENARIO, _D02_PHASE1, _D05_SCENARIO})
+     terminal_schema = "frw.gateway.d02-native-settlement.v1"
+     wire_options = {}
++    strict_terminal_extra = False
+ 
+     def __init__(self, *, home, slot, store, read_owned, select_route, check_rights):
+         self.home = Path(home)
+@@ -357,6 +358,9 @@
+                 and arm["receipt"] == current, "d02_control_arm_readback_changed")
+         return arm, current
+ 
++    def _wire_options(self, intent):
++        return self.wire_options
++
+     async def _arm(self, request, owner, adapter, ingress_scope, witness, deadline):
+         intent, driver, options, scenario, work = owner
+         self._current_owner(request, owner, adapter, ingress_scope, witness, deadline)
+@@ -407,7 +411,7 @@
+                 return owner_is_current()
+             return authorize_native_arm()
+ 
+-        wire_options = self.wire_options
++        wire_options = self._wire_options(intent)
+         if intent["scenario_sha256"] == _S14_SCENARIO:
+             wire_options = {**wire_options, "selected_s14": (_S14_SCENARIO, intent["run_id"])}
+         elif intent["scenario_sha256"] == _D05_SCENARIO:
+@@ -557,6 +561,8 @@
+                 verified["d05_ack"] = sender
+         if verified is not None:
+             verified.update(run=run, ack=retained["ack"], original_clock=proof["clock"])
++            if self.strict_terminal_extra:
++                verified["ack_monotonic"] = (before, after)
+         return cutoff
+ 
+     def _terminal_consumer(self, proof, intent, work):
+@@ -600,6 +606,9 @@
+         require(type(data) is dict and data["state"] == "OBSERVED_PENDING_CALLER_CLOSURE",
+                 "d02_control_settlement_snapshot_missing")
+         return data["revision"], sha256(encode_closed_wire(data["wire"])).hexdigest()
++
++    def _bind_terminal_cutoff(self, arm, window, cutoff, verified):
++        window.bind_cutoff(cutoff)
+ 
+     def _terminal_extra(self, arm, route, scenario, joined, verified, deadline):
+         return {}
+@@ -692,6 +701,7 @@
+         require(arm.window._cutoff == cutoff, "d02_control_terminal_cutoff_changed")
+         s14 = intent["scenario_sha256"] == _S14_SCENARIO
+         d05 = intent["scenario_sha256"] == _D05_SCENARIO
++        strict = s14 or d05 or self.strict_terminal_extra
+         deadline = min(deadline, cutoff + _RESERVE, expires)
+         wait_deadline = min(deadline, cutoff + _POLL_DRAIN)
+         require(time.monotonic() < deadline, "d02_control_terminal_budget_exhausted")
+@@ -751,7 +761,8 @@
+                     "route": {name: ingress_scope[name] for name in
+                               ("session_key", "source_profile", "transport_profile", "runtime_profile")},
+                     "observations": joined["observations"], "no_retry": True}
+-        evidence.update(self._terminal_extra(arm, evidence["route"], scenario, joined, verified, deadline))
++        terminal_extra = self._terminal_extra(arm, evidence["route"], scenario, joined, verified, deadline)
++        evidence.update(terminal_extra)
+         if s14:
+             evidence.update(self._s14_terminal(arm, intent, joined["observations"], verified["s14_ack"]))
+         if d05:
+@@ -781,7 +792,14 @@
+                     "d05_control_original_sender_changed_after_write")
+             require_d05_finalize_binding(arm.ingress, claim_sha, intent["run_id"], fresh_sender["d05_ack"],
+                                          fresh_sender["run"]["capture_until"], fresh_cutoff)
+-        strict = s14 or d05
++        if self.strict_terminal_extra:
++            fresh_sender = {}
++            fresh_cutoff = self._original_cutoff(cutoff_record["intent"], intent, work, scenario, retained,
++                                                  terminal_run=proof["run"], verified=fresh_sender)
++            require(fresh_cutoff == cutoff and fresh_sender == verified
++                    and self._terminal_extra(arm, evidence["route"], scenario, joined,
++                                             fresh_sender, deadline) == terminal_extra,
++                    "ordinary_control_selected_terminal_changed_after_write")
+         retire = {"selected_arm": arm, "accept_before": deadline} if strict else {}
+         require(arm.ingress._settlement_state() == "SETTLED"
+                 and self._closed_snapshot(adapter, claim_sha) == (revision, wire)
+@@ -897,9 +915,11 @@
+             bind_d05_cutoff(arm.ingress, intent["claim"]["sha256"], intent["run_id"],
+                             verified["d05_ack"], verified["run"]["capture_until"], cutoff)
+         else:
+-            window, cutoff = self._ack_cutoff(request, intent, work, adapter, expires, scenario)
++            verified = {} if self.strict_terminal_extra else None
++            window, cutoff = self._ack_cutoff(request, intent, work, adapter, expires, scenario,
++                                              verified=verified)
+             witness(bound)
+-            window.bind_cutoff(cutoff)
++            self._bind_terminal_cutoff(arm, window, cutoff, verified)
+         return {"accepted": True, "query_id": request["query_id"], "action": action,
+                 "state": "CUTOFF_BOUND"}
+ 
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -5,7 +5,7 @@
+ from contextlib import contextmanager
+ from contextvars import ContextVar
+ from copy import deepcopy
+-from dataclasses import dataclass
++from dataclasses import dataclass, replace
+ from functools import wraps
+ import math
+ from pathlib import PurePosixPath
+@@ -50,6 +50,8 @@
+     xlsx_turn: object = None
+     d05_native: object = None
+     d05_worker_checked: bool = False
++    d01_rtf_native: object = None
++    d01_rtf_publication: object = None
+ 
+ 
+ @dataclass
+@@ -140,6 +142,7 @@
+         self._d05_cutoff = None
+         self._d05_wait = None
+         self._d05_worker_binding = None
++        self._d01_rtf_cutoff = None
+ 
+     def _enable_selected_xlsx(self, claim_sha256, scenario_sha256):
+         """Bind the protected original wire arm to the exact Alder plan."""
+@@ -313,9 +316,15 @@
+                                         actor=self.claim.user_id, bot_id=self.scope["bot_id"])
+         xlsx_native = self._capture_xlsx(native_update, event) if self._xlsx_input is not None else None
+         d05_native = self._capture_d05(native_update, event) if self._d05_worker_binding is not None else None
++        d01_rtf_native = None
++        if getattr(self.claim, "selected_d01_rtf", None) is not None:
++            from gateway.d01_rtf_custody import SelectedRTFCandidate
++
++            d01_rtf_native = SelectedRTFCandidate.capture(self, native_update, event)
+         self._built[update] = _Dispatch(ref(event), s08_document=document,
+                                        s08_raw=event.raw_message if document is not None else None,
+-                                       xlsx_native=xlsx_native, d05_native=d05_native)
++                                       xlsx_native=xlsx_native, d05_native=d05_native,
++                                       d01_rtf_native=d01_rtf_native)
+         event._ordinary_dm_ingress_stamp = (self._seal, update)
+         self._revision += 1
+ 
+@@ -431,6 +440,14 @@
+                 self.lost("ingress_d05_native_dispatch_event_changed")
+                 return
+             record.d05_native = None, None, sdk
++        if record.d01_rtf_native is not None:
++            from gateway.run_inbound_media import d01_rtf_publication_current
++
++            if (not record.d01_rtf_native.is_original(self, event)
++                    or not d01_rtf_publication_current(event, record.d01_rtf_publication)):
++                self.lost("ingress_d01_rtf_original_publication_changed")
++                return
++            record.d01_rtf_native = replace(record.d01_rtf_native, raw=None, update=None)
+         record.settled = True
+         self._revision += 1
+         self._changed.set()
+@@ -469,6 +486,21 @@
+                                    "sha256": native[2]["caption_sha256"]}):
+                 self.lost("ingress_d05_original_sdk_receipt_changed")
+                 return None
++        if getattr(self.claim, "selected_d01_rtf", None) is not None:
++            from gateway.d01_rtf_custody import match_document
++            from gateway.run_inbound_media import read_published_d01_rtf_input
++
++            record = self._built[update]
++            event = record.event_ref()
++            native = record.d01_rtf_native
++            publication = read_published_d01_rtf_input(event) if event is not None else None
++            if (native is None or event is None or not native.is_original(self, event)
++                    or not match_document(native.sdk, message) or payload != native.caption()
++                    or publication is None or record.d01_rtf_publication is not None
++                    or message["media"][0]["local_reference"] != str(publication.evidence.path)):
++                self.lost("ingress_d01_rtf_original_sdk_or_publication_changed")
++                return None
++            record.d01_rtf_publication = publication
+         return _RoutedWrite(self, update, proof, deepcopy(proof), payload, source, asyncio.current_task())
+ 
+     def readback(self):
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -5718,11 +5718,13 @@
+         from gateway.ordinary_turn_projection import ordinary_turn_readonly_verb, ordinary_turn_cancel_verb, ordinary_f04_metadata_verb
+         from gateway.d02_receiver_control import ordinary_d02_receiver_verb
+         from gateway.s08_receiver_control import ordinary_s08_receiver_verb
++        from gateway.d01_rtf_receiver_control import ordinary_d01_rtf_receiver_verb
+         _control_server = GatewayControlServer(
+             verb_handlers={"ordinary-turn-readonly": ordinary_turn_readonly_verb(runner, _main_loop),
+                            "ordinary-turn-cancel": ordinary_turn_cancel_verb(runner, _main_loop),
+                            "ordinary-d02-receiver": ordinary_d02_receiver_verb(runner, _main_loop),
+                            "ordinary-s08-receiver": ordinary_s08_receiver_verb(runner, _main_loop),
++                           "ordinary-d01-rtf-receiver": ordinary_d01_rtf_receiver_verb(runner, _main_loop),
+                            "ordinary-f04-arm": ordinary_f04_metadata_verb(runner, _main_loop, "arm"),
+                            "ordinary-f04-disarm": ordinary_f04_metadata_verb(runner, _main_loop, "disarm"),
+                            "plugin-control": plugin_control_verb(runner, _main_loop),
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -33,6 +33,15 @@
+     sha256: str
+     size_bytes: int
+     source_identity: tuple[int, ...]
++
++
++@dataclass(frozen=True, slots=True)
++class PublishedD01RTFInput:
++    """Private custody of the original publication in its admitted workspace."""
++
++    evidence: PublishedXLSXInput
++    directories: tuple[tuple[int, int], tuple[int, int]]
++    owner: object
+ 
+ 
+ def _file_identity(info):
+@@ -253,8 +262,11 @@
+                    and getattr(document, 'file_unique_id', None) == media[0]['origin']['file_unique_id'])
+     capture_docx = (len(staged) == 1 and staged[0][1].suffix == '.docx'
+                     and selected_d05_publication(event, message))
+-    # F04 and D05 descriptor evidence is supplemental to the admitted attachment.
+-    optional_capture = capture_docx or (capture_xlsx and not capture_s14)
++    from gateway.d01_rtf_custody import selected_publication as selected_d01_rtf
++    capture_rtf = (len(staged) == 1 and staged[0][1].suffix == '.rtf'
++                   and selected_d01_rtf(event, message))
++    # Supplemental observation cannot prevent the ordinary attachment from being admitted.
++    optional_capture = capture_docx or capture_rtf or (capture_xlsx and not capture_s14)
+     published_input = None
+     directories = None
+     cap.check()
+@@ -271,7 +283,7 @@
+                 cap.check()
+                 published_input = _publish_received(
+                     received_fd, destination.name, data, content,
+-                    capture_path=destination if capture_xlsx or capture_docx else None,
++                    capture_path=destination if capture_xlsx or capture_docx or capture_rtf else None,
+                     optional_capture=optional_capture,
+                 )
+             cap.check()
+@@ -292,7 +304,7 @@
+                         if (not os.path.samestat(workspace_info, os.fstat(current_workspace))
+                                 or not os.path.samestat(workspace_info, named_workspace)):
+                             raise ScopeDenied()
+-                        if capture_docx:
++                        if capture_docx or capture_rtf:
+                             directories = (_directory_identity(workspace_info), _directory_identity(pinned))
+                     finally:
+                         os.close(current_workspace)
+@@ -347,7 +359,13 @@
+     # Presentation-only provenance from the verified copy above. Media paths
+     # and byte receipts keep their absolute identity; this grants no file access.
+     event._friday_owned_attachment_paths = (cap, frozenset(rewritten))
+-    if capture_docx:
++    if capture_rtf:
++        if published_input is None:
++            event._friday_published_d01_rtf_input = None
++        else:
++            _remember_published_input(event, cap, staged[0][1], published_input,
++                                      '_friday_published_d01_rtf_input', directories)
++    elif capture_docx:
+         if published_input is None:
+             event._friday_published_docx_input = None
+         else:
+@@ -385,6 +403,43 @@
+ def read_published_docx_input(event: MessageEvent) -> PublishedXLSXInput | None:
+     """Reopen the original D05 publication within its pinned scope and directories."""
+     return _read_published_input(event, "_friday_published_docx_input", pin_directories=True)
++
++
++def read_published_d01_rtf_input(event: MessageEvent) -> PublishedD01RTFInput | None:
++    """Read a descriptor witness only while the original routed scope is active."""
++    attribute = "_friday_published_d01_rtf_input"
++    evidence = _read_published_input(event, attribute, pin_directories=True)
++    if evidence is None:
++        return None
++    _, owner, _, _, directories = getattr(event, attribute)
++    return PublishedD01RTFInput(evidence, directories, owner)
++
++
++def d01_rtf_publication_current(event, publication):
++    """Bind the background completion to the descriptor observed before the turn."""
++    from hermes_cli.friday_user_scope import _same_scope
++
++    record = getattr(event, "_friday_published_d01_rtf_input", None)
++    if publication is None or record is None:
++        return False
++    original, owner, path, evidence, directories = record
++    return (original is event and _same_scope(owner, publication.owner)
++            and _same_scope(getattr(event.source, '_friday_user_scope', None), publication.owner)
++            and event.media_urls == [str(path)] and evidence == publication.evidence
++            and directories == publication.directories)
++
++
++def verify_published_d01_rtf_input(publication, *, still_current):
++    """Reopen the same owned inode without a new scope or file capability."""
++    from hermes_cli.friday_user_scope import _CURRENT, authority
++
++    cap = publication.owner
++    ambient = _CURRENT.get()
++    if ambient is not None and ambient is not cap:
++        return False
++    with authority(cap.home):
++        return _verify_published_input(cap, publication.evidence, still_current=still_current,
++                                       expected_directories=publication.directories)
+ 
+ 
+ def _read_published_input(event, attribute, *, pin_directories=False):
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -523,6 +523,7 @@
+     require_s08_document: bool = False
+     selected_s14: tuple[str, str] | None = None
+     selected_d05: tuple[str, str] | None = None
++    selected_d01_rtf: tuple[str, str] | None = None
+ 
+ 
+ @dataclasses.dataclass(frozen=True, slots=True)
+@@ -1801,7 +1802,8 @@
+ 
+     def _reserve_ordinary_dm_wire_window(self, *, claim_sha256, user_id, generation,
+                                         expires_monotonic, max_updates, owner_is_current, ingress_scope=None,
+-                                        require_s08_document=False, selected_s14=None, selected_d05=None):
++                                        require_s08_document=False, selected_s14=None, selected_d05=None,
++                                        selected_d01_rtf=None):
+         """Queue an already authorized claim on the gateway loop. None means pending only."""
+         now = time.monotonic()
+         updater = self._ordinary_dm_wire_updater(generation)
+@@ -1826,6 +1828,15 @@
+                     or selected_d05[0] != SCENARIO_SHA256
+                     or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", selected_d05[1]) is None):
+                 raise ValueError("Invalid selected D05 wire claim")
++        if selected_d01_rtf is not None:
++            from gateway.d01_rtf_custody import SCENARIO_SHA256
++
++            if (ingress_scope is None or require_s08_document or selected_s14 is not None
++                    or selected_d05 is not None or type(selected_d01_rtf) is not tuple
++                    or len(selected_d01_rtf) != 2 or any(type(value) is not str for value in selected_d01_rtf)
++                    or selected_d01_rtf[0] != SCENARIO_SHA256
++                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", selected_d01_rtf[1]) is None):
++                raise ValueError("Invalid selected D01 RTF wire claim")
+         pending = getattr(self, "_ordinary_dm_wire_pending", None)
+         if (pending is not None and (pending.updater is not updater or pending.generation != generation
+                                     or now >= pending.expires_monotonic)):
+@@ -1843,7 +1854,7 @@
+         self._ordinary_dm_wire_pending = _OrdinaryDMWireClaim(
+             claim_sha256, user_id, generation, expires_monotonic, max_updates,
+             owner_is_current, updater, asyncio.get_running_loop(), ingress_scope, require_s08_document, selected_s14,
+-            selected_d05,
++            selected_d05, selected_d01_rtf,
+         )
+ 
+     def _ordinary_dm_wire_native_parameters(self, request, generation, kwargs):
+@@ -1998,12 +2009,13 @@
+             if (asyncio.get_running_loop() is not claim.loop
+                     or getattr(self, "_ordinary_dm_wire_window", None) is not window):
+                 return False
+-            if claim.selected_d05 is not None and (selected_arm is None
++            strict = claim.selected_d05 is not None or claim.selected_d01_rtf is not None
++            if strict and (selected_arm is None
+                     or type(accept_before) not in (int, float)
+                     or not 0 < accept_before <= claim.expires_monotonic):
+                 return False
+             if selected_arm is not None and (arm is not selected_arm
+-                    or claim.selected_s14 is None and claim.selected_d05 is None
++                    or claim.selected_s14 is None and not strict
+                     or claim.owner_is_current() is not True):
+                 return False
+             accepting = self._ordinary_dm_wire_updater(claim.generation) is claim.updater
+@@ -7415,6 +7427,7 @@
+             return
+         arm = getattr(self, "_ordinary_dm_wire_arm", None)
+         capture_native = arm is not None and (arm.claim.require_s08_document or arm.claim.selected_d05 is not None
++                                              or arm.claim.selected_d01_rtf is not None
+                                               or arm.ingress is not None and arm.ingress._xlsx_input is not None)
+         if not capture_native:
+             event = self._build_message_event(msg, message_type, update_id=update.update_id)
