@@ -1,0 +1,2336 @@
+--- /dev/null
++++ b/gateway/d02_mayak_source.py
+@@ -0,0 +1,133 @@
++"""Exact phase-one source context shared by the D02 caller and receiver."""
++
++from hashlib import sha256
++import json
++import math
++from pathlib import Path
++
++ORIGIN_SHA = '3c801861fd6c6d22623a15680d7ec1af2c399efae3a645073bfa45162704ffff'
++PHASE_SHA = '8a567aeecec62ffe04a7dcec95c030346838a8fe710f16a695737d3f5b053bc4'
++FIXTURE_SHA = 'c5b490ccc4d56ca13279f5c3cc55cbf0f72283b60f5612af75987cb1f2b8e8f3'
++RUN = 'root-d02-mayak-structured-phase1-20261123'
++SCHEMA = 'frw.Root.D02.mayak-phase1-source-context.v2'
++RECEIVER_ROLE = 'gateway/d02_mayak_source.py'
++OPTIONS_SCHEMA = 'frw.Root.D02.receiver-options.v1'
++RETIRED_PHASES = frozenset({
++    '088d47d6a8efbf63068bb8fff13c69af05478a20156960811ac1d170db46c4cf',
++    'bab05e12b1465b984bf58acfd8b25507162b31c135dbb3623623951a06b10a05',
++})
++RETIRED_RUNS = frozenset(('root-d02-alt-odt-01-v3-20261121', 'root-d02-alt-odt-02-v3-20261121'))
++RETIRED_ROOT = Path('/home/jericho/.cache/FRW-ASTRA-D02-DISTINCT-R4-OPERATIONS-20261121')
++RETIRED_CLAIM = '31808317666cf399ff2ab0994112c013fee0d05c713a5695a943921a0f1d6bd7'
++
++
++def retired_effect(run, phase, work, claim_sha):
++    return (run in RETIRED_RUNS or phase in RETIRED_PHASES or claim_sha == RETIRED_CLAIM
++            or Path(work).is_relative_to(RETIRED_ROOT))
++
++
++def digest(value):
++    return sha256((json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False) + '\n').encode()).hexdigest()
++
++
++def need(ok, code):
++    if not ok:
++        raise ValueError(code)
++
++
++def check_origin(context, reader):
++    origin_ref = context['origin']
++    need(origin_ref['sha256'] == ORIGIN_SHA, 'D02_MAYAK_FORGED_SOURCE_ORIGIN')
++    origin = reader(origin_ref)
++    need(digest(origin) == ORIGIN_SHA, 'D02_MAYAK_FORGED_SOURCE_ORIGIN')
++    need(origin['scenario']['sha256'] == PHASE_SHA and origin['fixture']['sha256'] == FIXTURE_SHA,
++         'D02_MAYAK_WRONG_SOURCE_PHASE')
++    return origin
++
++
++def check_claim_context(reference, *, driver_ref, authority, contract, scenario, run, work,
++                        read, gateway, options_ref, options, now=None, clock_exists=False):
++    scope = contract['scope']
++    installation = scope['installation']
++    package = Path(driver_ref['path']).parent
++    need(reference == authority.get('d02_successor_context') == scope.get('d02_successor_context')
++         and Path(reference['path']) == package / 'd02-source-context.json',
++         'D02_MAYAK_EXACT_PROTECTED_CONTEXT_REQUIRED')
++    context = read(reference)
++    need(context['schema'] == SCHEMA and context['run_id'] == run == RUN
++         and context['scenario_sha256'] == digest(scenario) == PHASE_SHA
++         and scenario['steps'][0]['input']['sha256'] == FIXTURE_SHA
++         and context['workdir'] == str(work), 'D02_MAYAK_WRONG_SOURCE_PHASE')
++    need(Path(context['origin']['path']) == package / 'source-origin.json',
++         'D02_MAYAK_WRONG_ORIGIN_PATH')
++    check_origin(context, read)
++    boot = authority['boot_id']
++    auth_gateway = {key: authority['gateway'][key] for key in ('pid', 'start_time')}
++    owner_ref = installation['native_owner_observation']
++    owner = read(owner_ref)
++    receipt = installation['metadata_sha256']['receipt']
++    need(context['owner'] == owner_ref
++         and context['gateway'] == installation['gateway'] == dict(auth_gateway, boot_id=boot) == gateway
++         and context['invocation_id'] == owner['invocation_id']
++         and owner['identity'] == gateway
++         and owner['schema'] == 'frw.Root.D02.native-gateway-start-observation.v1'
++         and owner['transport'] == 'unix-peer-credentials'
++         and context['receipt_sha256'] == owner['identify']['friday_owner']['source']['receipt'] == receipt
++         and context['scope_sha256'] == scope['scope_sha256']
++         and context['session_id'] == scope['selected_session_id']
++         and context['cursor'] == contract['cursor']
++         and context['history_sha256'] == digest(authority['history'])
++         and authority.get('ordered_predecessors', {}) == {}, 'D02_MAYAK_STALE_SOURCE_CONTEXT')
++    need(context['created_at'] == authority['created_at'] and context['expires_at'] == authority['expires_at'],
++         'D02_MAYAK_STALE_SOURCE_CONTEXT')
++    start, end = context['created_at'], context['expires_at']
++    need(all(type(value) in (int, float) and math.isfinite(value) for value in (start, end))
++         and 0 < end - start <= 600, 'D02_MAYAK_STALE_SOURCE_CONTEXT')
++    if now is not None:
++        need(not clock_exists, 'D02_MAYAK_EXISTING_FIRST_CLOCK')
++        need(start <= now < end, 'D02_MAYAK_STALE_SOURCE_CONTEXT')
++    check_protected_projection(context, scope, scenario, read=read, options_ref=options_ref, options=options)
++    return context
++
++
++def check_protected_projection(context, scope, scenario, *, read, options_ref, options):
++    reference = context['projection']
++    package = Path(scope['d02_successor_context']['path']).parent
++    need(Path(reference['path']) == package / 'd02-scope-projection.json'
++         and reference['sha256'] == scope['scope_sha256'],
++         'D02_MAYAK_EXACT_RIGHTS_PROJECTION_REQUIRED')
++    need(context['receiver_options'] == options_ref
++         and Path(options_ref['path']).parent == package
++         and options_ref['sha256'] == digest(options),
++         'D02_MAYAK_EXACT_CONTEXT_OPTIONS_REQUIRED')
++    projected = read(reference)
++    check_projection(context, scope, scenario, projected)
++    user, account = str(scenario['tester_id']), str(scenario['peer_id'])
++    rights, pins = projected['rights'], options['rights']
++    principal = dict(platform='telegram', transport_profile='default', account_id=account, user_id=user,
++                     enabled=True, role='user', generation=rights['generation'])
++    root_config, profile_config = projected['config_sha256']
++    need(options['schema'] == OPTIONS_SCHEMA and options['profile'] == 'telegram-bot-' + user
++         and options['principal'] == principal and type(principal['generation']) is int
++         and principal['generation'] > 0 and digest(principal) == rights['access_row_sha256']
++         and pins['source_receipt'] == context['receipt_sha256']
++         and pins['root_config'] == root_config and pins['profile_config'] == profile_config
++         and pins['isolation_binding_sha256'] == rights['binding_sha256']
++         and pins['scope_marker'] == rights['scope_marker_sha256']
++         and pins['active_pairing'] == rights['active_pairing'],
++         'D02_MAYAK_OPTIONS_RIGHTS_PROJECTION_MISMATCH')
++    # Store inode/digest CAS and fresh permission checks remain receiver-owned.
++    return projected
++
++
++def check_projection(context, scope, scenario, observed):
++    need(context['schema'] == SCHEMA and context['run_id'] == RUN
++         and context['scenario_sha256'] == digest(scenario) == observed['phase_sha256'] == PHASE_SHA
++         and observed['source_sha256'] == FIXTURE_SHA
++         and context['scope_sha256'] == scope['scope_sha256'] == digest(observed)
++         and context['gateway'] == observed['native_identity']
++         and context['receipt_sha256'] == observed['metadata_sha256']['receipt']
++         and context['session_id'] == observed['session_id'] == scope['selected_session_id']
++         and context['rights_sha256'] == digest(observed['rights']),
++         'D02_MAYAK_STALE_SOURCE_CONTEXT')
++    return True
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -13,14 +13,11 @@
+ import time
+ 
+ from .d02_receiver_state import check_receiver_state
++from .d02_mayak_source import PHASE_SHA as _D02_PHASE1, check_claim_context, retired_effect
+ 
+ 
+ SCHEMA = "frw.gateway.d02-owned-receiver-control.v1"
+ OPTIONS_SCHEMA = "frw.Root.D02.receiver-options.v1"
+-PHASES = {
+-    "088d47d6a8efbf63068bb8fff13c69af05478a20156960811ac1d170db46c4cf",
+-    "bab05e12b1465b984bf58acfd8b25507162b31c135dbb3623623951a06b10a05",
+-}
+ _S14_SCENARIO = "e686e76c9d251bdda7e84056111c59c227b1489ffecf1a60142a21fb27fb546d"
+ _S14_HISTORY = {"root-b00-s151-s14-20261102-r1", "root-s07-ff77de72d79b"}
+ ARM_SECONDS = 24
+@@ -148,11 +145,37 @@
+     return {"path": str(work / name), "bytes": len(raw), "sha256": sha256(raw).hexdigest()}
+ 
+ 
++
++_D02_RUN1 = 'root-d02-mayak-structured-phase1-20261123'
++_D02_WORK1 = Path('/home/jericho/.cache/FRW-ASTRA-D02-MAYAK-STRUCTURED-20261123/upload/operation')
++_D02_UPLOAD1 = ('c5b490ccc4d56ca13279f5c3cc55cbf0f72283b60f5612af75987cb1f2b8e8f3', 'D02-Mayak-v1-seeded-headings.offline.odt')
++
++
++def _d02_successor_route(run_id, scenario_sha, work, scenario, authority, *, active):
++    steps = scenario['steps']
++    if len(steps) != 1:
++        return False
++    step = steps[0]
++    upload = step.get('input')
++    if type(upload) is not dict:
++        return False
++    return (scenario_sha == _D02_PHASE1
++            and authority.get('run_scenarios') == {run_id: scenario_sha}
++            and authority.get('qualification_only') is (not active)
++            and (not active or (run_id == _D02_RUN1 and Path(work) == _D02_WORK1
++                and authority.get('accepted') is True and authority.get('operator') == 'Root'
++                and authority.get('no_old_task_replay') is True))
++            and (upload.get('sha256'), upload.get('filename')) == _D02_UPLOAD1
++            and upload.get('mime_type') == 'application/vnd.oasis.opendocument.text'
++            and scenario.get('deadline_seconds') == 300
++            and step['observe'].get('window_seconds') == 180)
++
++
+ class ReceiverControl:
+     request_schema = SCHEMA
+     options_schema = OPTIONS_SCHEMA
+     driver_schema = "frw.Root.D02.owned-ordinary-driver.v1"
+-    exact_phases = frozenset(PHASES | {_S14_SCENARIO})
++    exact_phases = frozenset({_S14_SCENARIO, _D02_PHASE1})
+     terminal_schema = "frw.gateway.d02-native-settlement.v1"
+     wire_options = {}
+ 
+@@ -217,14 +240,16 @@
+ 
+     def _owner(self, request):
+         intent, intent_path = self.doc(request["arm_intent"], name="receiver-arm-intent.json")
++        driver, driver_path = self.doc(intent["binding"])
++        work = Path(driver["workdir"])
++        run_id, scenario_sha = intent["run_id"], intent["scenario_sha256"]
++        require(not retired_effect(run_id, scenario_sha, work, intent['claim']['sha256']),
++                'd02_control_consumed_or_dependent_v3')
+         claim, claim_path = self.doc(intent["claim"], name="claim.json")
+-        driver, driver_path = self.doc(intent["binding"])
+         options, _ = self.doc(request["receiver_options"])
+         phase, _ = self.doc(driver["phase"])
+         # The original R4 history may exceed the local control request limit.
+         authority, _ = self.doc(driver["authority"], limit=_RUN_JSON_LIMIT)
+-        work = Path(driver["workdir"])
+-        run_id, scenario_sha = intent["run_id"], intent["scenario_sha256"]
+         require(type(run_id) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id)
+                 and scenario_sha in self.exact_phases and phase["scenario_sha256"] == scenario_sha
+                 and sha256(_encode(phase["scenario"])).hexdigest() == scenario_sha,
+@@ -257,6 +282,17 @@
+                 and claim["readonly_qualification"]["new_called"] is False
+                 and claim["readonly_qualification"]["send_called"] is False,
+                 "d02_control_exact_active_once_authority")
++        if scenario_sha == _D02_PHASE1:
++            require(_d02_successor_route(run_id, scenario_sha, work, phase['scenario'], authority, active=True),
++                    'd02_control_exact_successor_registration')
++            contract, _ = self.doc(driver['contract'])
++            require(contract['authority'] == driver['authority'], 'd02_control_exact_successor_authority')
++            initial = request['action'] == 'arm'
++            check_claim_context(driver.get('d02_successor_context'), driver_ref=intent['binding'],
++                authority=authority, contract=contract, scenario=phase['scenario'], run=run_id, work=work,
++                read=lambda ref: self.doc(ref)[0], gateway=dict(request['gateway'], boot_id=request['boot_id']),
++                options_ref=request['receiver_options'], options=options, now=time.time() if initial else None,
++                clock_exists=os.path.lexists(work / 'clock.json'))
+         if scenario_sha == _S14_SCENARIO:
+             require(_S14_HISTORY <= authority["history"].keys(),
+                     "s14_control_retained_history_required")
+--- a/agent/session_persistence.py
++++ b/agent/session_persistence.py
+@@ -6,6 +6,7 @@
+ 
+ import logging
+ import re
++import sys
+ from contextlib import nullcontext
+ 
+ from typing import Any, Dict, List, Optional, Tuple
+@@ -344,15 +345,27 @@
+     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
+     if not batch_rows:
+         return
++    from gateway.ordinary_d05_turn import after_canonical_append, before_canonical_append
++
+     agent._db_flush_phase = "append_messages_batch"
+-    agent._session_db.append_messages_batch(
+-        session_id=agent.session_id, messages=batch_rows,
++    db, session_id = agent._session_db, agent.session_id
++    holder = getattr(agent, "_active_session_turn_lease_holder", None)
++    capture = before_canonical_append(agent, batch_rows, db, session_id, holder)
++    inserted = db.append_messages_batch(
++        session_id=session_id, messages=batch_rows,
+         compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
+-        turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
++        turn_lease_holder=holder,
+         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
+     )
+     agent._db_flush_phase = "sync_flushed_markers"
+     sync_flushed_message_markers(batch_msgs, batch_rows)
++    after_canonical_append(capture, agent, batch_rows, batch_msgs, inserted)
++    witness = sys.modules.get("gateway.ordinary_f04_xlsx")
++    if witness is not None:
++        try:
++            witness.observe_persisted_batch(agent, batch_msgs, batch_rows, holder)
++        except Exception:
++            pass
+     agent._db_flush_phase = "drop_shadowed_checkpoints"
+     if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
+         # The insert already rewrote the older rows (SessionDB._drop_shadowed_checkpoint_rows); mirror it on
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -1295,8 +1295,26 @@
+                 span.errors.append("native_metadata_callback:" + type(callback_error).__name__)
+             logging.debug("Tool result metadata callback error: %s", callback_error)
+     messages.append(tool_message)
++    f04_flush = None
++    if function_name == "write_file" and not blocked and not is_error:
++        with contextlib.suppress(Exception):
++            from gateway.ordinary_f04_xlsx import prepare_flush
++
++            f04_flush = prepare_flush(agent, ref, function_result, tool_message, messages)
+     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
+         return None
++
++    if function_name in ("read_file", "write_file"):
++        from gateway.ordinary_d05_turn import canonical_tool_result
++
++        canonical_tool_result(agent, ref, tool_message, messages, function_result, persisted_result,
++                              observed and not blocked and not is_error)
++
++    if f04_flush is not None:
++        with contextlib.suppress(Exception):
++            from gateway.ordinary_f04_xlsx import accept_flush
++
++            accept_flush(agent, ref, function_result, tool_message, messages, f04_flush)
+ 
+     if function_name == "read_file" and not blocked:
+         from hermes_cli.friday_workspace_revision import prepare_read_delivery
+--- a/agent/turn_facade_lease.py
++++ b/agent/turn_facade_lease.py
+@@ -296,6 +296,8 @@
+     lease = DurableTurnLease(agent, db, session_id, holder)
+     agent._active_session_turn_lease_holder = holder
+     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
++    from gateway.ordinary_d05_turn import bind_durable_lease
++    bind_durable_lease(lease, relay_turn_id)
+     try:
+         # Read the row only now: the previous holder may have created or deleted it while this
+         # turn waited, so an answer from before admission can be stale either way.
+--- /dev/null
++++ b/gateway/ordinary_d05_turn.py
+@@ -0,0 +1,502 @@
++"""Process-local evidence from one selected D05 worker and its canonical commits."""
++
++import asyncio
++from contextvars import ContextVar
++from copy import deepcopy
++from dataclasses import dataclass
++import json
++import math
++from pathlib import Path, PurePosixPath
++import re
++from threading import Lock, get_ident
++import time
++
++SCENARIO_SHA256 = "2a5c503fbe0505cf617f15ddb3c935104b96994173234ab16ea5d948c414c449"
++SOURCE_SHA256 = "724cb13c4fb6a1f3c740e521940e38dbad80b3dabf82ab19568bb86226b981a7"
++SOURCE_BYTES = 5212
++SOURCE_NAME = "D05-Linden-Deadline.docx"
++SOURCE_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
++OUTPUT_NAME = "D05-Linden-Deadline-Edited.docx"
++_READ_FIELDS = (
++    "success", "path", "scope", "format", "extracted_document", "source_sha256",
++    "total_lines", "partial", "next_offset", "next_char_offset",
++)
++_WRITE_FIELDS = (
++    "success", "format", "path", "scope", "create_only", "verified", "bytes_written", "sha256",
++    "source", "source_sha256", "source_unchanged", "paragraph", "replacements",
++    "unchanged_parts_preserved",
++)
++_TURN = ContextVar("ordinary_d05_selected_turn", default=None)
++
++
++@dataclass(frozen=True, slots=True)
++class WorkerBinding:
++    """Created only by the protected receiver after exact original SDK/publication checks."""
++
++    scenario_sha256: str
++    claim_sha256: str
++    raw_message: object
++    sdk: dict
++    published: object
++    check_publication: object
++    started: float
++    cutoff: float
++    deadline: float
++
++
++def _require(value):
++    if not value:
++        raise ValueError("d05_owned_canonical_turn_unavailable")
++
++
++def _object(raw):
++    def distinct(pairs):
++        result = dict(pairs)
++        _require(len(result) == len(pairs))
++        return result
++
++    _require(type(raw) is str and 0 < len(raw) <= 100000)
++    value = json.loads(raw, object_pairs_hook=distinct)
++    _require(type(value) is dict)
++    return value
++
++
++def _relative_docx(value):
++    _require(type(value) is str and 0 < len(value) <= 4096
++             and all(ord(char) >= 32 and char not in "\\\x7f" for char in value))
++    path = PurePosixPath(value)
++    _require(not path.is_absolute() and path.as_posix() == value and path.name.endswith(".docx")
++             and path.parts and all(not part.startswith(".") for part in path.parts))
++    return value
++
++
++def _uid(value):
++    return type(value) is str and 0 < len(value) <= 256 and all(33 <= ord(c) <= 126 for c in value)
++
++
++def select_worker(evidence, binding, runner, event, source, identity, session_id, key, generation):
++    """Select the original native writer that already owns the exact ingress and gateway lease."""
++    from gateway.run_attachment_presentation import _scope
++    from hermes_cli.friday_user_scope import current
++
++    update = evidence.select(event, source, identity, key)
++    _require(update is not None and type(generation) is int and generation > 0)
++    record = evidence._built[update]
++    state = runner._peek_session_state(key)
++    _require(state is not None and record.writer_task is not None and not record.settled
++             and record.writer_task() is asyncio.current_task() and update in evidence._commits
++             and runner is evidence.adapter.gateway_runner
++             and runner.adapters.get(evidence.adapter.platform) is evidence.adapter
++             and getattr(record, "_d05_selected_worker", None) is None
++             and getattr(evidence, "_xlsx_input", None) is None)
++    pin = binding(event, update)
++    _require(type(pin) is WorkerBinding and pin.scenario_sha256 == SCENARIO_SHA256
++             and pin.claim_sha256 == evidence.claim.claim_sha256 and pin.raw_message is event.raw_message
++             and type(pin.sdk) is dict and pin.sdk.get("update_id") == str(update)
++             and pin.sdk.get("native_message_id") == str(event.message_id)
++             and pin.sdk.get("actor_id") == str(evidence.claim.user_id)
++             and pin.sdk.get("bot_id") == str(evidence.scope["bot_id"])
++             and (pin.sdk.get("file_name"), pin.sdk.get("mime_type"), pin.sdk.get("declared_bytes"))
++             == (SOURCE_NAME, SOURCE_MIME, SOURCE_BYTES)
++             and all(type(value) in (float, int) and math.isfinite(value)
++                     for value in (pin.started, pin.cutoff, pin.deadline))
++             and pin.started <= time.time() <= pin.cutoff
++             and time.monotonic() < min(pin.deadline, evidence.claim.expires_monotonic))
++    cap = current(required=True)
++    _require(cap is getattr(source, "_friday_user_scope", None)
++             and cap.principal == ("telegram", evidence.scope["transport_profile"],
++                                   pin.sdk["bot_id"], pin.sdk["actor_id"])
++             and str(cap.home) == evidence.scope["runtime_home"]
++             and str(cap.authorization_home) == evidence.scope["authorization_home"]
++             and cap.profile == evidence.scope["runtime_profile"])
++    _require(pin.check_publication(event) == pin.published
++             and (pin.published.sha256, pin.published.size_bytes) == (SOURCE_SHA256, SOURCE_BYTES)
++             and pin.published.source_identity)
++    relative = pin.published.path.relative_to(cap.home / "workspace").as_posix()
++    _require(re.fullmatch(r"received/telegram_[0-9a-f]{64}_[A-Za-z0-9_.-]{1,80}\.docx", relative))
++    upload = {
++        "schema": "friday.ordinary-direct-upload.v1", "scope": _scope(cap),
++        "source_message_id": pin.sdk["native_message_id"],
++        "file": {"path": relative, "sha256": SOURCE_SHA256, "size_bytes": SOURCE_BYTES,
++                 "file_name": SOURCE_NAME},
++    }
++    token = state.turn.lease_tokens.get(generation)
++    turn = _SelectedTurn(evidence, record, runner, event, session_id, key, generation, token, cap,
++                         pin, upload)
++    _require(turn._current())
++    record._d05_selected_worker = turn
++    return turn
++
++
++class _SelectedTurn:
++    def __init__(self, evidence, record, runner, event, sid, key, generation, token, cap, pin, upload):
++        self.evidence, self.record, self.runner, self.event = evidence, record, runner, event
++        self.sid, self.key, self.generation, self.token, self.cap = sid, key, generation, token, cap
++        self.pin, self.upload = pin, upload
++        self.lock = Lock()
++        self.worker_thread = self.lease = self.turn_id = self.user = None
++        self.invalid = self.closed = self.completed = False
++        self.answer_response = self.answer_identity = self.delivery_writer = None
++        self.rows, self.calls, self.events = {}, {}, []
++        self.effect_messages, self.effect_latched = [], False
++        self.read_cursor, self.read_total, self.edit = (1, 0), None, None
++
++    def _current(self):
++        state = self.runner._peek_session_state(self.key)
++        token = self.token
++        return (state is not None and state.turn.event is self.event and token is not None
++                and state.turn.lease_tokens.get(self.generation) is token
++                and self.runner._is_session_run_current(self.key, self.generation)
++                and token.session_id == self.sid and token.owner_key == self.key
++                and token.generation == self.generation and token.released is False
++                and token.lease.holder is token and token.lease.lock.locked()
++                and self.event.raw_message is self.pin.raw_message
++                and self.pin.started <= time.time() <= self.pin.cutoff
++                and time.monotonic() < min(self.pin.deadline, self.evidence.claim.expires_monotonic))
++
++    def _scope_current(self):
++        from gateway.run_attachment_presentation import _scope
++        from hermes_cli.friday_user_scope import current
++
++        return current(required=True) is self.cap and _scope(self.cap) == self.upload["scope"]
++
++    def _owned(self, agent):
++        from hermes_cli.friday_user_scope import check_agent
++
++        _require(not self.closed and not self.invalid and self._current() and self._scope_current()
++                 and self.lease is not None and self.lease.agent is agent
++                 and self.lease.db is agent._session_db
++                 and agent._active_session_turn_lease_holder == self.lease.holder
++                 and not self.lease.stop.is_set()
++                 and (agent.session_id, agent._current_turn_id) == (self.sid, self.turn_id))
++        check_agent(agent)
++
++    def observe(self, callback, *args):
++        with self.lock:
++            if self.closed or self.invalid:
++                return None
++            try:
++                return callback(*args)
++            except Exception:
++                self.invalid = True
++                return None
++
++    def run(self, callback):
++        token = _TURN.set(self)
++        self.worker_thread = get_ident()
++        returned = False
++        try:
++            outcome = callback()
++            returned = True
++            return outcome
++        finally:
++            _TURN.reset(token)
++            with self.lock:
++                self.closed = True
++                self.invalid |= not returned or bool(self.calls)
++                self.calls.clear()
++                self.effect_messages.clear()
++                self.lease = None
++
++    def _bind_lease(self, lease, relay_turn_id):
++        from hermes_cli.friday_user_scope import current
++
++        _require(self.lease is None and self._current() and get_ident() == self.worker_thread
++                 and current(required=True) is self.cap and lease.session_id == self.sid
++                 and lease.db is lease.agent._session_db
++                 and Path(lease.db.db_path) == self.cap.home / "state.db"
++                 and lease.agent._active_session_turn_lease_holder == lease.holder
++                 and _uid(lease.holder) and _uid(relay_turn_id))
++        self.lease, self.turn_id = lease, relay_turn_id
++
++    def _before_append(self, agent, rows, db, session_id, holder):
++        from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID
++
++        self._owned(agent)
++        _require(get_ident() == self.worker_thread and len(rows) <= 130
++                 and db is self.lease.db and session_id == self.sid and holder == self.lease.holder
++                 and all({"_row_id", DB_ROW_SNAPSHOT, MESSAGE_UID}.isdisjoint(row) for row in rows))
++        return holder
++
++    def _after_append(self, agent, rows, messages, inserted, holder):
++        from agent.context_compressor import _DB_PERSISTED_MARKER
++        from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID
++
++        self._owned(agent)
++        _require(get_ident() == self.worker_thread and holder == self.lease.holder
++                 and inserted == len(rows) == len(messages))
++        for row, message in zip(rows, messages):
++            row_id, stamp, uid = row["_row_id"], row["timestamp"], row[MESSAGE_UID]
++            _require(type(row_id) is int and row_id > max(self.rows, default=0)
++                     and not row.get(CANONICAL_ROW) and _uid(uid)
++                     and uid not in {data[1] for data in self.rows.values()}
++                     and message.get(_DB_PERSISTED_MARKER) is True
++                     and message.get("_row_id") == row_id and message.get(MESSAGE_UID) == uid
++                     and type(stamp) in (int, float) and self.pin.started <= stamp <= self.pin.cutoff
++                     and _uid(row.get(DB_ROW_SNAPSHOT)) and len(self.rows) < 132)
++            if row["role"] == "user":
++                _require(self.user is None and row["platform_message_id"] == self.upload["source_message_id"]
++                         and (row.get("display_metadata") or {}).get("friday_direct_upload") == self.upload)
++                self.user = {"row_id": row_id, "message_uid": uid, "timestamp": stamp,
++                             "platform_message_id": row["platform_message_id"], "direct_upload": self.upload}
++            self.rows[row_id] = (row["role"], uid, stamp, row[DB_ROW_SNAPSHOT])
++        self.effect_messages.extend(messages)
++        if (self.edit is not None and self.read_cursor is None
++                and rows[-1]["role"] == "assistant" and not rows[-1].get("tool_calls")):
++            self._check_effect_rows(agent, allow_sticky=True)
++
++    def _registered_result(self, call, name, args, task_id, rendered):
++        from tools.scoped_xlsx_turn import _matches_current_call
++
++        agent = call.agent
++        self._owned(agent)
++        self._check_effect_rows(agent, allow_sticky=bool(self.events))
++        _require(_matches_current_call(call, agent) and (call.session_id, call.session_key, call.turn_id)
++                 == (self.sid, self.key, self.turn_id) and call.task_id == task_id and self.user is not None
++                 and not self.calls and len(self.events) < 64 and type(args) is dict
++                 and all(call.call_id != event["call_id"] for event, _, _ in self.events))
++        result = _object(rendered)
++        _require(result["success"] is True and result["scope"] == "own_user_workspace"
++                 and "effect_disposition" not in result and _relative_docx(args["path"]) == result["path"])
++        if name == "read_file":
++            next_cursor, read_total = self._read_page(args, result)
++            edit = self.edit
++        else:
++            edit = self._located_edit(args, result)
++            next_cursor, read_total = (1, 0), None
++        self.calls[call.call_id] = (call, name, deepcopy(args), rendered, next_cursor, read_total, edit)
++
++    def _check_effect_rows(self, agent, *, allow_sticky):
++        """Use the stock collector's bounded row identities without changing effect classification."""
++        from agent.context_compressor import _DB_PERSISTED_MARKER
++        from agent.message_metadata import MESSAGE_UID
++
++        observed = getattr(agent, "_friday_reply_effect_messages", ())
++        sticky = getattr(agent, "_friday_reply_effect_unknown", False)
++        _require(not getattr(agent, "_friday_no_dispatch_tool_calls", ())
++                 and not getattr(agent, "_friday_reply_withheld", False)
++                 and not getattr(agent, "_friday_reply_boundary_failure", None)
++                 and (not self.effect_latched or sticky))
++        if not observed:
++            _require(not sticky)
++            return
++        _require((not sticky or allow_sticky) and type(observed) is list and len(observed) == len(self.rows))
++        for message, expected, (row_id, (role, uid, _, _)) in zip(
++                observed, self.effect_messages, self.rows.items()):
++            _require(message is expected and message.get(_DB_PERSISTED_MARKER) is True and message.get("_row_id") == row_id
++                     and message.get(MESSAGE_UID) == uid and message.get("role") == role
++                     and (role != "tool" or message.get("effect_disposition") is None))
++        self.effect_latched |= bool(sticky)
++
++    def _read_page(self, args, result):
++        path, digest = self.edit or (self.upload["file"]["path"], SOURCE_SHA256)
++        cursor = (args.get("offset", 1), args.get("char_offset", 0))
++        following = (result["next_offset"], result["next_char_offset"])
++        total = result["total_lines"]
++        _require({"path"} <= args.keys() <= {"path", "offset", "char_offset", "limit"}
++                 and ("limit" not in args or type(args["limit"]) is int and args["limit"] > 0)
++                 and self.read_cursor is not None and cursor == self.read_cursor
++                 and all(type(value) is int for value in (*cursor, *following))
++                 and result["path"] == path and result["source_sha256"] == digest
++                 and result["format"] == "docx" and result["extracted_document"] is True
++                 and type(total) is int and 0 < total <= 100000
++                 and (self.read_total is None or self.read_total == total)
++                 and cursor < following <= (total + 1, 0) and 0 <= following[1] <= 1000000
++                 and result["partial"] is (following != (total + 1, 0)))
++        return (following if result["partial"] else None), total
++
++    def _located_edit(self, args, result):
++        source = self.upload["file"]["path"]
++        specification = _object(args["content"])
++        path, digest = result["path"], result["sha256"]
++        _require(self.edit is None and self.read_cursor is None and self.events
++                 and args.keys() == {"path", "format", "content"} and args["format"] == "word_located_edit"
++                 and specification == {"source": source, "source_sha256": SOURCE_SHA256, "paragraph": 3,
++                                       "old_text": "18.05.2027", "new_text": "19.05.2027"}
++                 and type(specification["paragraph"]) is int and Path(path).name == OUTPUT_NAME
++                 and result["format"] == "word_located_edit" and result["source"] == source
++                 and result["source_sha256"] == SOURCE_SHA256 and result["paragraph"] == 3
++                 and type(result["paragraph"]) is int and type(result["replacements"]) is int
++                 and result["replacements"] == 1 and type(result["bytes_written"]) is int
++                 and result["bytes_written"] > 0 and type(digest) is str and digest != SOURCE_SHA256
++                 and re.fullmatch(r"[0-9a-f]{64}", digest)
++                 and all(result[key] is True for key in ("verified", "create_only", "source_unchanged",
++                                                         "unchanged_parts_preserved")))
++        return path, digest
++
++    def _tool_commit(self, agent, ref, message, messages, rendered, persisted, successful):
++        from agent.context_compressor import _DB_PERSISTED_MARKER
++        from agent.message_metadata import MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS
++        from tools.scoped_xlsx_turn import _matches_current_call
++
++        self._owned(agent)
++        call, name, args, original, cursor, total, edit = self.calls.pop(ref.call_id)
++        self._check_effect_rows(agent, allow_sticky=True)
++        _require(successful and self.user is not None and get_ident() == self.worker_thread
++                 and len(self.rows) == 3 + 2 * len(self.events)
++                 and len(messages) >= 2 and messages[-1] is message and _matches_current_call(call, agent)
++                 and not getattr(ref, "trace", ())
++                 and (name, args, call.task_id) == (ref.name, ref.args, ref.task_id)
++                 and message["content"] == rendered == persisted == original
++                 and message.get("effect_disposition") is None
++                 and message.get("tool_call_id") == call.call_id)
++        # The reader requires one assistant call row immediately followed by its result.
++        assistant = messages[-2]
++        call_dict, = assistant["tool_calls"]
++        function = call_dict["function"]
++        call_row, result_row = assistant["_row_id"], message["_row_id"]
++        call_stamp, result_stamp = self.rows[call_row][2], self.rows[result_row][2]
++        previous = self.events[-1][0] if self.events else self.user
++        previous_id = previous.get("result_row_id", self.user["row_id"])
++        previous_stamp = previous.get("result_timestamp", self.user["timestamp"])
++        occurrence = assistant[TOOL_CALL_UIDS][call.call_id]
++        result_uid = message[MESSAGE_UID]
++        _require(assistant.get(_DB_PERSISTED_MARKER) is True and message.get(_DB_PERSISTED_MARKER) is True
++                 and (self.rows[call_row][0], self.rows[result_row][0]) == ("assistant", "tool")
++                 and assistant[MESSAGE_UID] == self.rows[call_row][1]
++                 and result_uid == self.rows[result_row][1]
++                 and _uid(occurrence) and _uid(result_uid) and message[TOOL_CALL_UID] == occurrence
++                 and call_dict["id"] == call.call_id and function["name"] == name
++                 and _object(function["arguments"]) == args and previous_id < call_row < result_row
++                 and previous_stamp <= call_stamp <= result_stamp <= self.pin.cutoff)
++        self.read_cursor, self.read_total, self.edit = cursor, total, edit
++        self.events.append(({
++            "call_row_id": call_row, "result_row_id": result_row, "call_id": call.call_id,
++            "call_uid": occurrence, "result_uid": result_uid, "tool_name": name,
++            "call_timestamp": call_stamp, "result_timestamp": result_stamp,
++        }, args, original))
++
++    def observe_completion(self, event, worker, response):
++        from gateway.session_identity import identity_of
++
++        try:
++            _require(self.closed and not self.invalid and self._current() and self._scope_current()
++                     and self.event is event
++                     and self.record.writer_task() is asyncio.current_task()
++                     and self.evidence.select(event, event.source, identity_of(event.source), self.key)
++                     == int(self.pin.sdk["update_id"])
++                     and self.pin.check_publication(event) == self.pin.published
++                     and worker.worker_done.is_set() and worker.executor_task.done()
++                     and not worker.executor_task.cancelled() and not worker.timeout_fired.is_set()
++                     and worker.executor_task.result() is response and type(response) is dict
++                     and response.get("completed") is True and not response.get("failed")
++                     and not response.get("interrupted") and self.user is not None
++                     and len(self.events) >= 3 and self.edit is not None and self.read_cursor is None)
++            end = next(reversed(self.rows))
++            _require(end > self.events[-1][0]["result_row_id"] and self.rows[end][0] == "assistant")
++            self.completed = True
++            self.answer_identity = self.delivery_identity(event)
++            self.answer_response = response
++        except Exception:
++            self.invalid = True
++
++    def delivery_identity(self, event):
++        """Preserve the original gateway token identity for the existing final writer."""
++        try:
++            if (self.completed and not self.invalid and self.event is event
++                    and self._current() and self._scope_current()):
++                answer = next(reversed(self.rows))
++                return self.key, self.sid, self.generation, self.turn_id, self.token, answer, self.rows[answer][1]
++        except Exception:
++            return None
++        return None
++
++    def project(self, db, fence):
++        """Reproject only the committed rows in the caller's protected S08-style WAL snapshot."""
++        from agent.transcript_repair import transcript_row_snapshot
++
++        _require(self.completed and not self.invalid and db.in_transaction
++                 and db.execute("PRAGMA query_only").fetchone()[0] == 1
++                 and db.execute("PRAGMA database_list").fetchone()[2] == str(self.cap.home / "state.db")
++                 and fence["session_id"] == self.sid and fence["runtime_home"] == str(self.cap.home)
++                 and fence["user_row_id"] == self.user["row_id"])
++        end = next(reversed(self.rows))
++        _require(self.events[-1][0]["result_row_id"] < end <= fence["terminal_row_id"])
++        selected = [self.user["row_id"]]
++        for event, _, _ in self.events:
++            selected.extend((event["call_row_id"], event["result_row_id"]))
++        # A host-owned delivery receipt may extend the fence after the worker's answer.
++        expected = [*selected, end]
++        _require(list(self.rows) == expected)
++        rows = db.execute(
++            "SELECT * FROM messages WHERE session_id = ? AND id BETWEEN ? AND ? ORDER BY id LIMIT 132",
++            (self.sid, selected[0], end),
++        ).fetchall()
++        _require([row["id"] for row in rows] == expected and rows[-1]["role"] == "assistant"
++                 and not rows[-1]["tool_calls"])
++        for row in rows:
++            _require(row["active"] == 1 and row["compacted"] == 0
++                     and (row["role"], row["message_uid"], row["timestamp"], transcript_row_snapshot(row))
++                     == self.rows[row["id"]]
++                     and db.execute(
++                         "SELECT count(*) FROM messages WHERE session_id = ? AND message_uid = ? AND active = 1",
++                         (self.sid, row["message_uid"]),
++                     ).fetchone()[0] == 1)
++        user = rows[0]
++        _require(user["platform_message_id"] == self.upload["source_message_id"]
++                 and _object(user["display_metadata"])["friday_direct_upload"] == self.upload)
++        projection, seen, occurrences = [], {user["message_uid"]}, []
++        for index, (event, args, rendered) in enumerate(self.events):
++            assistant, tool = rows[index * 2 + 1:index * 2 + 3]
++            call_dict, = json.loads(assistant["tool_calls"])
++            occ, uid = event["call_uid"], event["result_uid"]
++            _require(call_dict["id"] == tool["tool_call_id"] == event["call_id"]
++                     and call_dict["function"]["name"] == tool["tool_name"] == event["tool_name"]
++                     and _object(call_dict["function"]["arguments"]) == args
++                     and _object(assistant["tool_call_uids"])[event["call_id"]] == tool["tool_call_uid"] == occ
++                     and tool["message_uid"] == uid and len({occ, uid} - seen) == 2
++                     and tool["content"] == rendered and tool["effect_disposition"] is None)
++            seen.update((occ, uid))
++            occurrences.append(occ)
++            result = _object(rendered)
++            if event["tool_name"] == "write_file":
++                args = {**args, "content": _object(args["content"])}
++                keys = _WRITE_FIELDS
++            else:
++                keys = _READ_FIELDS
++            projection.append({**event, "arguments": deepcopy(args), "result": {k: result[k] for k in keys}})
++        placeholders = ",".join("?" for _ in occurrences)
++        duplicate = db.execute(
++            "SELECT 1 FROM messages WHERE session_id = ? AND role = 'tool' AND active = 1 "
++            f"AND tool_call_uid IN ({placeholders}) GROUP BY tool_call_uid HAVING count(*) > 1 LIMIT 1",
++            (self.sid, *occurrences),
++        ).fetchone()
++        _require(duplicate is None)
++        return {"session_key": self.key, "session_id": self.sid, "turn_generation": self.generation,
++                "turn_id": self.turn_id, "user": deepcopy(self.user), "events": projection}
++
++
++def bind_durable_lease(lease, relay_turn_id):
++    turn = _TURN.get()
++    if turn is not None:
++        turn.observe(turn._bind_lease, lease, relay_turn_id)
++
++
++def before_canonical_append(agent, rows, db, session_id, holder):
++    turn = _TURN.get()
++    if turn is not None:
++        holder = turn.observe(turn._before_append, agent, rows, db, session_id, holder)
++        if holder is not None:
++            return turn, holder
++    return None
++
++
++def after_canonical_append(capture, agent, rows, messages, inserted):
++    if capture is not None:
++        turn, holder = capture
++        turn.observe(turn._after_append, agent, rows, messages, inserted, holder)
++
++
++def registered_file_result(name, args, task_id, result):
++    turn = _TURN.get()
++    if turn is not None:
++        from agent.web_call_context import _current
++
++        turn.observe(turn._registered_result, _current.get(), name, args, task_id, result)
++    return result
++
++
++def canonical_tool_result(agent, ref, message, messages, rendered, persisted, successful):
++    turn = _TURN.get()
++    if turn is not None:
++        turn.observe(turn._tool_commit, agent, ref, message, messages, rendered, persisted, successful)
+--- /dev/null
++++ b/gateway/ordinary_d05_writer.py
+@@ -0,0 +1,330 @@
++"""Join the selected D05 canonical worker to its stock final document writer."""
++
++import asyncio
++from copy import deepcopy
++from dataclasses import dataclass
++from hashlib import sha256
++from math import isfinite
++from pathlib import Path
++import re
++import time
++
++_OUTPUT_NAME = "D05-Linden-Deadline-Edited.docx"
++
++
++@dataclass(slots=True)
++class _Writer:
++    worker: object
++    source: object
++    route: dict
++    run: tuple
++    marker: tuple
++    guard_binding: tuple
++    relative: str
++    digest: str
++    size: int
++    row: int
++    uid: str
++    update: int
++    token: object
++    task: object
++    streamed: bool
++    unwound: bool = False
++    attempted: bool = False
++    refused: bool = False
++    candidate: tuple[str, float, int, str] | None = None
++
++
++def prepare(runner, event, source, session_id, key, generation, response, agent_result):
++    """Hand the original worker response to a final writer while its token is still held."""
++    from gateway.ordinary_dm_ingress import _ingress
++
++    try:
++        adapter = runner._delivery_adapter_for(source)
++        evidence = _ingress(adapter)
++        if evidence is None or not callable(getattr(evidence, "_d05_worker_binding", None)):
++            return
++        from gateway.ordinary_d05_turn import _object, _relative_docx
++        from gateway.platforms.base import _strip_media_directives
++        from gateway.run_plugin_delivery import _ordinary_authority
++        from gateway.session_identity import identity_of
++
++        update = evidence.select(event, source, identity_of(source), key)
++        worker = getattr(evidence._built.get(update), "_d05_selected_worker", None)
++        if worker is None or worker.answer_response is not agent_result:
++            return
++        # Consume this preparation even if any later guard fails.
++        worker.answer_response = None
++        key0, sid, gen, _, token, row, uid = worker.answer_identity
++        state = runner._peek_session_state(key)
++        cap, owner, _, route, _ = _ordinary_authority(adapter, source)
++        wire = evidence._wire()
++        if ((key0, sid, gen) != (key, session_id, generation)
++                or owner is not runner or cap is not worker.cap or worker.event is not event
++                or worker.record.writer_task() is not asyncio.current_task()
++                or worker.record.settled or evidence._receipt_source is not source
++                or wire is None or tuple(wire["target_update_ids"]) != (update,)
++                or worker.token is not token or state.turn.lease_tokens.get(generation) is not token
++                or token.released or token.lease.holder is not token or not token.lease.lock.locked()
++                or not worker._scope_current() or not _in_window(worker)
++                or worker.pin.check_publication(event) != worker.pin.published
++                or type(response) is not str
++                or agent_result.get("failed") or agent_result.get("interrupted")
++                or agent_result.get("queued_terminal_inbound_id")
++                or agent_result.get("media_already_delivered")):
++            return
++        # Use the same extractors as stock final file recovery.
++        media, remaining = adapter.extract_media(response)
++        images, remaining = adapter.extract_images(remaining)
++        files, _ = adapter.extract_local_files(_strip_media_directives(remaining).strip())
++        edits = [_object(rendered) for item, _, rendered in worker.events if item["tool_name"] == "write_file"]
++        edit, = edits
++        relative = _relative_docx(edit["path"])
++        if (images or Path(relative).name != _OUTPUT_NAME
++                or set([path for path, _ in media] + files)
++                != {str(cap.home / "workspace" / relative)}
++                or type(edit["bytes_written"]) is not int or edit["bytes_written"] <= 0
++                or not re.fullmatch(r"[0-9a-f]{64}", edit["sha256"])):
++            return
++        run, marker = source._friday_document_run, source._friday_document_turn
++        guard = source._friday_document_guard
++        if (run != (key, generation) or marker != (key, event._gateway_active_turn_token)
++                or not marker[1] or guard[0] != key
++                or route["source"]["message_id"] != worker.pin.sdk["native_message_id"]):
++            return
++        worker.delivery_writer = _Writer(worker, source, route, run, marker, guard, relative,
++                                         edit["sha256"], edit["bytes_written"], row, uid, update,
++                                         token, worker.record.writer_task,
++                                         bool(agent_result.get("already_sent")))
++    except Exception:
++        # Collection adds no authority or outcome to the stock writer.
++        return
++
++
++def _in_window(worker):
++    return (worker.pin.started <= time.time() <= worker.pin.cutoff
++            and time.monotonic() < min(worker.pin.deadline, worker.evidence.claim.expires_monotonic))
++
++
++def _idle_state(writer):
++    worker, token = writer.worker, writer.token
++    state = worker.runner._peek_session_state(worker.key)
++    return (state is not None and worker.token is token
++            and worker.runner._is_session_run_current(*writer.run)
++            and state.turn.event is None and state.turn.agent is None and not state.turn.lease_tokens
++            and token.released is True and token.lease.idle)
++
++
++def _idle_owner(writer):
++    return writer.unwound and _idle_state(writer)
++
++
++def _dispatch_owner(writer):
++    worker, source = writer.worker, writer.source
++    evidence, record, runner = worker.evidence, worker.record, worker.runner
++    adapter = evidence.adapter
++    wire = evidence._wire()
++    task = asyncio.current_task()
++    return (wire is not None and tuple(wire["target_update_ids"]) == (writer.update,)
++            and evidence._built.get(writer.update) is record and not record.settled
++            and evidence._receipt_source is source and record.event_ref() is worker.event
++            and worker.event.source is source and worker.event.raw_message is worker.pin.raw_message
++            and task is not None and not task.cancelling()
++            and record.writer_task is writer.task and writer.task() is task
++            and adapter._session_tasks.get(worker.key) is task
++            and adapter.gateway_runner is runner and runner.adapters.get(adapter.platform) is adapter
++            and runner._is_session_run_current(*writer.run)
++            and source._friday_document_run is writer.run and source._friday_document_turn is writer.marker
++            and source._friday_document_guard is writer.guard_binding
++            and adapter._active_sessions.get(worker.key) is writer.guard_binding[1]
++            and not writer.guard_binding[1].is_set()
++            and source._friday_document_session_id == worker.sid)
++
++
++def observe_dispatch_unwind(runner, event, key, generation, token, cleared, released):
++    """Retain the exact native lease release for this prepared dispatch."""
++    from gateway.ordinary_dm_ingress import _ingress
++
++    writer = None
++    try:
++        evidence = _ingress(runner._delivery_adapter_for(event.source))
++        if evidence is None:
++            return
++        wire = evidence._wire()
++        update, = wire["target_update_ids"]
++        worker = getattr(evidence._built.get(update), "_d05_selected_worker", None)
++        if worker is None or worker.event is not event:
++            return
++        writer = worker.delivery_writer
++        if writer is None or writer.refused:
++            return
++        # A stream owns its document ACK before unwind. An ordinary final sends after unwind.
++        phase_ok = writer.candidate is not None if writer.streamed else not writer.attempted
++        if (writer.unwound or not phase_ok or worker.runner is not runner
++                or (key, generation) != writer.run or token is not writer.token
++                or cleared is not True or released is not True or not _dispatch_owner(writer)
++                or not _idle_state(writer)):
++            writer.refused = True
++            return
++        writer.unwound = True
++    except Exception:
++        if writer is not None:
++            writer.refused = True
++
++
++def _live(writer):
++    worker, token = writer.worker, writer.token
++    if (not _dispatch_owner(writer)
++            or getattr(worker.event, "_gateway_active_turn_token", None) != writer.marker[1]
++            or not worker._scope_current() or not _in_window(worker)):
++        return False
++    if not writer.streamed:
++        return _idle_owner(writer)
++    state = worker.runner._peek_session_state(worker.key)
++    return (not writer.unwound and state is not None and worker.token is token
++            and state.turn.lease_tokens.get(worker.generation) is token
++            and token.released is False and token.lease.holder is token and token.lease.lock.locked())
++
++
++def begin(adapter, source, paths):
++    """Observe one single-file final dispatch. Leave other stock sends untouched."""
++    from gateway.ordinary_dm_ingress import _ingress
++
++    evidence = _ingress(adapter)
++    if evidence is None or source is not getattr(evidence, "_receipt_source", None):
++        return None
++    writer = None
++    try:
++        wire = evidence._wire()
++        update, = wire["target_update_ids"]
++        worker = getattr(evidence._built.get(update), "_d05_selected_worker", None)
++        writer = getattr(worker, "delivery_writer", None)
++        if writer is None:
++            return None
++        if (writer.refused or writer.attempted or writer.source is not source or not _live(writer)
++                or paths != [str(worker.cap.home / "workspace" / writer.relative)]):
++            writer.refused = True
++            return None
++        writer.attempted = True
++        return writer
++    except Exception:
++        if writer is not None:
++            writer.refused = True
++        return None
++
++
++def snapshot(writer, source, cap, route, relative, name, data):
++    """Check the exact private bytes the native writer has frozen for Telegram."""
++    if writer.refused:
++        return
++    try:
++        if (writer.source is not source or writer.worker.cap is not cap or not _live(writer)
++                or (writer.route, writer.relative, _OUTPUT_NAME) != (route, relative, name)
++                or (writer.digest, writer.size) != (sha256(data).hexdigest(), len(data))):
++            writer.refused = True
++    except Exception:
++        writer.refused = True
++
++
++def record_candidate(writer, source, receipt, native_candidate, stamp, row_identity, check):
++    """Retain one acknowledged document only after the existing native CAS."""
++    from hermes_cli.friday_native_state import encoded
++
++    if writer.refused:
++        return
++    try:
++        worker, route = writer.worker, writer.route
++        session_id, delivered_row, delivered_uid = row_identity
++        message_id = receipt["message_id"]
++        expected = {"state": "DELIVERED", "kind": "document", "sha256": writer.digest,
++                    "bytes": writer.size, "file_name": _OUTPUT_NAME, "bot_id": route["bot_id"],
++                    "chat_id": route["source"]["chat_id"], "thread_id": route["source"]["thread_id"],
++                    "reply_to": route["source"]["message_id"], "message_id": message_id}
++        selection = sha256(encoded([worker.cap.key, writer.relative])).hexdigest()
++        if (source is not writer.source or not writer.attempted or writer.candidate is not None
++                or session_id != worker.sid or type(delivered_row) is not int or delivered_row <= writer.row
++                or type(delivered_uid) is not str or not re.fullmatch(r"[0-9a-f]{32}", delivered_uid)
++                or delivered_uid == writer.uid
++                or not _live(writer) or receipt != expected or type(message_id) is not str
++                or not re.fullmatch(r"[1-9][0-9]*", message_id) or message_id == expected["reply_to"]
++                or native_candidate != encoded({"selection": selection, "receipt": expected})
++                or not worker.pin.started <= stamp <= worker.pin.cutoff):
++            writer.refused = True
++            return
++        check()
++        writer.candidate = sha256(native_candidate).hexdigest(), stamp, delivered_row, delivered_uid
++    except Exception:
++        writer.refused = True
++
++
++def read_terminal(evidence, claim_sha256, run_id, db, fence, *, deadline):
++    """Project on the authenticated receiver's owning loop, with its retained WAL fence."""
++    from gateway.run_attachment_presentation import _scope
++    from hermes_cli.friday_native_state import encoded
++    from hermes_cli.friday_user_scope import _CURRENT, authority
++    from gateway.ordinary_d05_turn import _object
++
++    try:
++        if (claim_sha256 != evidence.claim.claim_sha256
++                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id)
++                or type(deadline) not in (int, float) or not isfinite(deadline)
++                or time.monotonic() >= min(deadline, evidence.claim.expires_monotonic)
++                or evidence._settlement_state() != "SETTLED"):
++            return None
++        wire = evidence._wire()
++        update, = wire["target_update_ids"]
++        record = evidence._built[update]
++        worker = record._d05_selected_worker
++        writer = worker.delivery_writer
++        cap = worker.cap
++        ambient = _CURRENT.get()
++        if (writer is None or writer.refused or writer.candidate is None or writer.update != update
++                or not record.settled or record.writer_task is not None or not _idle_owner(writer)
++                or evidence.adapter.gateway_runner is not worker.runner
++                or worker.runner.adapters.get(evidence.adapter.platform) is not evidence.adapter
++                or worker.event.raw_message is not worker.pin.raw_message
++                or evidence._receipt_source is not writer.source or (ambient is not None and ambient is not cap)
++                or str(cap.home) != evidence.scope["runtime_home"]
++                or str(cap.authorization_home) != evidence.scope["authorization_home"]
++                or cap.profile != evidence.scope["runtime_profile"]):
++            return None
++        candidate_sha, timestamp, delivered_row, delivered_uid = writer.candidate
++        with authority(cap.home):
++            cap.check()
++            if _scope(cap) != worker.upload["scope"]:
++                return None
++            turn = worker.project(db, fence)
++            answer = db.execute("SELECT message_uid, role, active, compacted FROM messages "
++                                "WHERE session_id = ? AND id = ?", (worker.sid, writer.row)).fetchone()
++            hidden = db.execute("SELECT id, message_uid, display_metadata FROM messages WHERE session_id = ? "
++                                "AND id > ? AND id <= ? AND role = 'assistant' AND display_kind = 'hidden' "
++                                "AND timestamp = ? AND active = 1 AND compacted = 0 LIMIT 2",
++                                (worker.sid, writer.row, fence["terminal_row_id"], timestamp)).fetchall()
++            foreign = db.execute("SELECT 1 FROM messages WHERE session_id = ? AND id > ? AND id <= ? "
++                                 "AND active = 1 AND (role IN ('user', 'tool') OR "
++                                 "(tool_calls IS NOT NULL AND tool_calls != '[]')) LIMIT 1",
++                                 (worker.sid, writer.row, fence["terminal_row_id"])).fetchone()
++            if (answer is None or tuple(answer) != (writer.uid, "assistant", 1, 0) or len(hidden) != 1
++                    or foreign is not None
++                    or tuple(hidden[0])[:2] != (delivered_row, delivered_uid)
++                    or _object(hidden[0][2]) != {"friday_file_delivery_observation": {
++                        "path": writer.relative, "sha256": writer.digest, "state": "DELIVERED"}}
++                    or db.execute("SELECT count(*) FROM messages WHERE session_id = ? AND message_uid = ? "
++                                  "AND active = 1", (worker.sid, delivered_uid)).fetchone()[0] != 1):
++                return None
++        if (time.monotonic() >= min(deadline, evidence.claim.expires_monotonic)
++                or evidence._wire() != wire or evidence._settlement_state() != "SETTLED"
++                or not _idle_owner(writer)):
++            return None
++        out = {"session_key": worker.key, "session_id": worker.sid, "generation": worker.generation,
++               "turn_id": worker.turn_id, "answer_id": sha256(encoded([
++                   "friday.d05.answer.v1", run_id, claim_sha256, update, worker.key, worker.sid,
++                   worker.generation, worker.turn_id, writer.row, writer.uid])).hexdigest(),
++               "answer_row_id": writer.row, "answer_row_uid": writer.uid,
++               "delivered_row_id": delivered_row, "delivered_row_uid": delivered_uid,
++               "candidate_sha256": candidate_sha, "route": deepcopy(writer.route),
++               "relative_path": writer.relative, "send_count": 1}
++        return {"schema": "friday.d05.native-typed-input-owned-edit.v2", "run_id": run_id,
++                "claim_sha256": claim_sha256, "sdk": deepcopy(worker.pin.sdk), "turn": turn, "output": out}
++    except Exception:
++        return None
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -608,6 +608,21 @@
+         return None
+ 
+ 
++def _select_d05_worker(runner, event, source, session_id, key, generation):
++    """The protected admission seam is absent on stock ingress instances."""
++    try:
++        identity = identity_of(source)
++        evidence = _ingress(identity.adapter()) if identity is not None else None
++        binding = getattr(evidence, "_d05_worker_binding", None)
++        if callable(binding):
++            from gateway.ordinary_d05_turn import select_worker
++
++            return select_worker(evidence, binding, runner, event, source, identity, session_id, key, generation)
++    except Exception:
++        return None
++    return None
++
++
+ @contextmanager
+ def routed_write(selected, proof, payload):
+     attempt = None
+--- a/gateway/ordinary_f04_bridge.py
++++ b/gateway/ordinary_f04_bridge.py
+@@ -6,6 +6,7 @@
+ """
+ from __future__ import annotations
+ 
++import asyncio
+ from contextvars import ContextVar
+ from copy import deepcopy
+ from datetime import datetime
+@@ -16,6 +17,7 @@
+ from pathlib import Path
+ import re
+ import time
++from weakref import ref
+ 
+ _REQUEST = 'frw.gateway.f04-owned-request.v1'
+ _CAPABILITY = 'ordinary-f04-owned-ingress-stop-terminal.v1'
+@@ -233,6 +235,12 @@
+                   'receipt': None, 'dispatch_finalized': False, 'worker_done': None,
+                   'executor_task': None, 'worker_ctx': None, 'worker_settled': False,
+                   'delivery_guard': delivery_guard, 'lease_before': _lease_dict(token)}
++        from gateway.ordinary_f04_xlsx import selected
++
++        if selected(row):
++            task = asyncio.current_task()
++            target['dispatch_task'] = None if task is None else ref(task)
++            target['dispatch_guard'] = getattr(event, '_friday_document_guard', None)
+         row['candidates'].append(target)
+         if len(row['candidates']) != 1:
+             raise ValueError('f04_multiple_ingress')
+@@ -632,7 +640,43 @@
+         row['error'] = 'f04_actual_document_ack_rejected'
+ 
+ 
+-def dispatch_finalized(runner, event, key, generation):
++def capture_dispatch_unwind(runner, event, key, generation):
++    """Identify the exact selected dispatch owner before native running-state clear."""
++    try:
++        target = getattr(event, '_ordinary_f04_host_target', None)
++        task_ref = target.get('dispatch_task') if isinstance(target, dict) else None
++        if task_ref is None or target['dispatch_finalized'] or target['row']['disarmed']:
++            return None
++        task = asyncio.current_task()
++        source = target['source']
++        state = runner._peek_session_state(key)
++        token = target['token']
++        binding = target['dispatch_guard']
++        stamp = getattr(event, '_ordinary_f04_original_stamp', None)
++        adapter = runner._delivery_adapter_for(source)
++        if (target['runner'] is not runner or target['event'] is not event or event.source is not source
++                or key != target['session_key'] or generation != target['generation']
++                or task is None or task_ref() is not task or task.cancelling()
++                or type(binding) is not tuple or len(binding) != 2 or binding[0] != key
++                or getattr(event, '_friday_document_guard', None) is not binding
++                or adapter is None or adapter.gateway_runner is not runner
++                or adapter._session_tasks.get(binding[0]) is not task
++                or adapter._active_sessions.get(binding[0]) is not binding[1]
++                or binding[1] is not target['delivery_guard'] or binding[1].is_set()
++                or getattr(binding[1], '_hermes_run_generation', None) != generation
++                or type(stamp) is not tuple or len(stamp) != 3 or stamp[0] is not event.raw_message
++                or stamp[1] != event.platform_update_id
++                or state is None or state.persistent.run_generation != generation or state.turn.event is not event
++                or state.turn.lease_tokens.get(generation) is not token or token.released is not False
++                or token.lease.holder is not token or not token.lease.lock.locked()):
++            return None
++        return token
++    except Exception:
++        return None
++
++
++def dispatch_finalized(runner, event, key, generation, *, native_token=None,
++                       running_cleared=False, lease_released=False):
+     target = getattr(event, '_ordinary_f04_host_target', None)
+     if not isinstance(target, dict) or target['runner'] is not runner:
+         return
+@@ -646,6 +690,14 @@
+             raise ValueError('f04_original_lease_not_settled')
+         target['dispatch_finalized'] = True
+         target['finalized_monotonic'] = time.monotonic()
++        if native_token is token and running_cleared is True and lease_released is True:
++            state = runner._peek_session_state(key)
++            if (state is not None and state.persistent.run_generation == generation
++                    and state.turn.event is None and state.turn.ctx is None and state.turn.agent is None
++                    and not state.turn.lease_tokens):
++                target['native_unwind_monotonic'] = target['finalized_monotonic']
++        target.pop('dispatch_task', None)
++        target.pop('dispatch_guard', None)
+         target['worker_settled'] = _worker_settled(target)
+         if target['worker_settled']:
+             # Completion is irreversible; release the Future's returned model graph.
+@@ -694,6 +746,11 @@
+               'dispatch_finalized': target['dispatch_finalized'], 'worker_settled': _worker_settled(target), 'artifact_proofs': deepcopy(row['artifacts']),
+               'artifact_state': 'ACK_RETAINED' if len(row['artifacts']) == 1 else ('MISSING' if not row['artifacts'] else 'AMBIGUOUS'),
+               'fresh_observation_sha256': canonical_sha256(observation)}
++    from gateway.ordinary_f04_xlsx import selected, terminal_witness
++
++    if selected(row):
++        result['xlsx_ods_witness'] = (terminal_witness(target, current, result)
++                                      if target.get('native_unwind_monotonic') is not None else None)
+     result['terminal_sha256'] = canonical_sha256(result)
+     return result
+ 
+@@ -711,6 +768,7 @@
+         target['ctx'] = target['source'] = target['event'] = target['worker_ctx'] = None
+         target['worker_settled'] = _worker_settled(target)
+         target['worker_done'] = target['executor_task'] = target['delivery_guard'] = None
++        target.pop('xlsx_result', None)
+         if _CURRENT.get() is target:
+             _CURRENT.set(None)
+     return {'schema': 'frw.gateway.f04-owned-disarm.v1', 'state': 'DISARMED',
+--- /dev/null
++++ b/gateway/ordinary_f04_xlsx.py
+@@ -0,0 +1,500 @@
++"""Process-local proof for the selected F04 XLSX to ODS conversion."""
++from contextlib import closing
++from contextvars import ContextVar
++from hashlib import sha256
++import json
++from pathlib import Path, PurePosixPath
++import sqlite3
++from threading import Lock
++import time
++
++SCENARIO = "7301001a1d04dec4202c2bf93eb6402387f85b4a33dbe7c8159de40e6f70ba00"
++INPUT = {"sha256": "549a864146edc9f2eaafd25ba25c0ba439c7259835421f44a3187e628f37a2b9",
++         "size_bytes": 2272}
++CAPTION = "c904383a56e972a51313260fd1a315e81f9c0a144bbc5b0482f2644019adad86"
++MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
++_SELECTED = ContextVar("ordinary_f04_xlsx_selected_worker", default=None)
++_WRITE = ContextVar("ordinary_f04_xlsx_registered_write", default=None)
++
++
++def selected(row):
++    selector = row["base"]["selector"]
++    return selector["input"] == INPUT and selector["caption_sha256"] == CAPTION
++
++
++def selected_publication(event):
++    target = getattr(event, "_ordinary_f04_host_target", None)
++    if not isinstance(target, dict) or target["event"] is not event:
++        return False
++    row = target["row"]
++    document = getattr(event.raw_message, "document", None)
++    return (not row["disarmed"] and row["error"] is None and selected(row)
++            and getattr(document, "file_name", None) == "north-ledger.xlsx"
++            and getattr(document, "mime_type", None) == MIME)
++
++
++def _digest(value):
++    return sha256(value.encode("utf-8")).hexdigest()
++
++
++def _held(target, ctx):
++    state = target["runner"]._peek_session_state(target["session_key"])
++    token = target["token"]
++    return (not target["row"]["disarmed"] and target["row"]["error"] is None
++            and target["row"]["cancel"] is None and not target["dispatch_finalized"]
++            and time.monotonic() < target["row"]["base"]["metadata_expires_monotonic"]
++            and state is not None and state.turn.event is target["event"]
++            and state.persistent.run_generation == target["generation"] == ctx.run_generation == token.generation
++            and ctx.session_id == token.session_id == target["session_id"]
++            and ctx.session_key == token.owner_key == target["session_key"]
++            and str(ctx.inbound_message_id) == target["receipt"]["message_id"]
++            and state.turn.lease_tokens.get(token.generation) is token
++            and token.released is False and token.lease.holder is token and token.lease.lock.locked())
++
++
++class _Witness:
++    def __init__(self, target, ctx, cap, source):
++        self.target, self.ctx, self.cap, self.source = target, ctx, cap, source
++        self.path = source.path.relative_to(cap.home / "workspace").as_posix()
++        self.lock = Lock()
++        self.attempted = self.invalid = self.closed = False
++        self.pending = self.proof = self.flush_ticket = None
++        self.persistence = self.persisted_db = None
++        self.effect_owner = None
++
++    def run(self, callback):
++        marker = _SELECTED.set(self)
++        returned = False
++        try:
++            result = callback()
++            returned = True
++            return result
++        finally:
++            _SELECTED.reset(marker)
++            with self.lock:
++                self.closed = True
++                if not returned or self.invalid:
++                    self.proof = None
++                self.pending = self.flush_ticket = self.persistence = None
++
++    def owns(self, call, agent):
++        from tools.scoped_xlsx_turn import _owned_call
++
++        return self._matches_worker(call, agent) and _owned_call(call, agent)
++
++    def _matches_worker(self, call, agent):
++        from hermes_cli.friday_user_scope import current
++
++        return (not self.closed and not self.invalid and call is not None and agent is not None
++                and self.ctx.agent_holder[0] is agent and _held(self.target, self.ctx)
++                and (self.target.get("worker_ctx") is None or self.target["worker_ctx"] is self.ctx)
++                and current(required=True) is self.cap
++                and (call.session_id, call.session_key) == (self.ctx.session_id, self.ctx.session_key))
++
++    def owns_persisted(self, call, agent, prepared, ref, message):
++        from tools.scoped_xlsx_turn import _matches_current_call
++
++        if prepared is None or self.flush_ticket is not prepared:
++            return False
++        self.flush_ticket = None
++        pinned_call, pinned_agent, pinned_ref, pinned_message, pending, db = prepared
++        return (call is pinned_call and agent is pinned_agent and ref is pinned_ref and message is pinned_message
++                and self.pending is pending and agent._session_db is db
++                and getattr(agent, "_active_session_turn_lease_holder", None) == pending[1]
++                and self._matches_worker(call, agent) and _matches_current_call(call, agent))
++
++    def finish_worker(self, worker, response):
++        target = self.target
++        with self.lock:
++            if (self.closed and self.proof is not None and _held(target, self.ctx)
++                    and target["worker_ctx"] is self.ctx
++                    and target["worker_done"] is worker.worker_done and worker.worker_done.is_set()
++                    and target["executor_task"] is worker.executor_task and worker.executor_task.done()
++                    and not worker.executor_task.cancelled() and not worker.timeout_fired.is_set()
++                    and worker.executor_task.result() is response and type(response) is dict
++                    and response.get("completed") is True and not response.get("failed")
++                    and not response.get("interrupted") and self._only_selected_effect()):
++                target["xlsx_result"] = (self.cap, self.source, self.proof, self.persisted_db)
++            self.proof = self.effect_owner = None
++
++    def _only_selected_effect(self):
++        agent, assistant, result = self.effect_owner
++        observed = getattr(agent, "_friday_reply_effect_messages", ())
++        return (self.ctx.agent_holder[0] is agent
++                and any(row is assistant for row in observed)
++                and not _other_effects_unknown(observed, result, agent))
++
++
++def select_worker(runner, event, ctx):
++    from gateway.run_inbound_media import read_published_xlsx_input
++    from hermes_cli.friday_user_scope import current
++
++    try:
++        if not selected_publication(event):
++            return None
++        target = event._ordinary_f04_host_target
++        if (target["runner"] is not runner or target["receipt"] is None
++                or not _held(target, ctx) or target["receipt"]["input"] != INPUT):
++            return None
++        source = read_published_xlsx_input(event)
++        if source is None or (source.sha256, source.size_bytes) != (INPUT["sha256"], INPUT["size_bytes"]):
++            return None
++        return _Witness(target, ctx, current(required=True), source)
++    except Exception:
++        return None
++
++
++def registered_write(args, task_id, callback):
++    """Run the stock registered handler once, observing only the selected format."""
++    witness = _SELECTED.get()
++    if witness is None or args.get("format") != "spreadsheet_convert":
++        return callback()
++    from agent.web_call_context import _current
++
++    call = _current.get()
++    try:
++        with witness.lock:
++            if not witness.owns(call, getattr(call, "agent", None)) or call.task_id != task_id:
++                write = None
++            elif witness.attempted:
++                witness.invalid = True
++                write = None
++            else:
++                witness.attempted = True
++                requested = PurePosixPath(args["path"])
++                if requested.is_absolute():
++                    requested = requested.relative_to(witness.cap.home / "workspace")
++                holder = getattr(call.agent, "_active_session_turn_lease_holder", None)
++                write = {"path": requested.as_posix(), "holder": holder, "source": False, "result": None}
++    except Exception:
++        write = None
++    if write is None:
++        return callback()
++    marker = _WRITE.set(write)
++    try:
++        result = callback()
++    finally:
++        _WRITE.reset(marker)
++    try:
++        with call.turn.lock, witness.lock:
++            if (witness.owns(call, call.agent) and write["source"] and write["holder"]
++                    and getattr(call.agent, "_active_session_turn_lease_holder", None) == write["holder"]
++                    and type(result) is str and len(result) <= 16384
++                    and write["result"] is not None and _digest(result) == write["result"]["managed_result_sha256"]):
++                witness.pending = (call, write["holder"], write["result"])
++    except Exception:
++        pass
++    return result
++
++
++def observe_source(cap, item, relative, data, identity):
++    witness, write = _SELECTED.get(), _WRITE.get()
++    if witness is None or write is None:
++        return
++    source = witness.source
++    try:
++        write["source"] = (cap is witness.cap and item == source.path and relative == witness.path
++                           and identity == source.source_identity and len(data) == source.size_bytes
++                           and sha256(data).hexdigest() == source.sha256)
++    except Exception:
++        write["source"] = False
++
++
++def observe_result(result):
++    """Called only after native XLSX→ODS _publish passes its two source CAS checks."""
++    witness, write = _SELECTED.get(), _WRITE.get()
++    if witness is None or write is None or not write["source"]:
++        return
++    try:
++        value = json.loads(result) if type(result) is str and len(result) <= 16384 else {}
++        path = value.get("path")
++        digest = value.get("sha256")
++        size = value.get("bytes_written")
++        if (value.get("success") is True and value.get("verified") is True and value.get("create_only") is True
++                and value.get("scope") == "own_user_workspace" and value.get("format") == "ods"
++                and value.get("export_mode") == "xlsx_ods" and value.get("office_filter") == "ods:calc8"
++                and value.get("source_unchanged") is True and value.get("source") == witness.path
++                and value.get("source_sha256") == witness.source.sha256 and type(path) is str
++                and path == write["path"] and PurePosixPath(path).name == "north-ledger.ods"
++                and type(size) is int and 0 < size <= 50_000_000
++                and type(digest) is str and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)):
++            write["result"] = {"tool": "write_file", "operation": "spreadsheet_convert",
++                "export_mode": "xlsx_ods", "office_filter": "ods:calc8", "artifact_path": path,
++                "artifact_sha256": digest, "artifact_bytes": size, "source_unchanged_at_publication": True,
++                "managed_result_sha256": _digest(result), "published_monotonic": time.monotonic()}
++    except Exception:
++        pass
++
++
++def prepare_flush(agent, ref, result, message, messages):
++    """Pin the selected result before the stock collector classifies its effect."""
++    from agent.web_call_context import _current
++
++    witness = _SELECTED.get()
++    call = _current.get()
++    if witness is None or call is None:
++        return None
++    with call.turn.lock, witness.lock:
++        pending = witness.pending
++        if (pending is None or witness.flush_ticket is not None or pending[0] is not call
++                or not witness.owns(call, agent) or (ref.name, ref.task_id, ref.call_id)
++                != ("write_file", call.task_id, call.call_id)
++                or type(result) is not str or len(result) > 16384 or message.get("content") != result
++                or message.get("effect_disposition") == "none"
++                or _digest(result) != pending[2]["managed_result_sha256"]
++                or agent._session_db is None
++                or getattr(agent, "_active_session_turn_lease_holder", None) != pending[1]):
++            return None
++        ticket = call, agent, ref, message, pending, agent._session_db
++        if prepare_persistence(witness, ticket, agent, message, messages) is not ticket:
++            return None
++        witness.flush_ticket = ticket
++        return ticket
++
++
++def _sole_write_call(tool_calls, call_id):
++    from agent.tool_result_classification import tool_call_identity
++
++    return (isinstance(tool_calls, list) and len(tool_calls) == 1
++            and tool_call_identity(tool_calls[0]) == (call_id, "write_file"))
++
++
++def _other_effects_unknown(rows, selected_result, agent):
++    from agent.tool_result_classification import tool_effects_unknown
++
++    if sum(row is selected_result for row in rows) != 1:
++        return True
++    # Neutralize only this result in a private classification. Preserve pairing
++    # checks, native rows and the sticky recovery flag.
++    projected = (dict(row, effect_disposition="none") if row is selected_result else row for row in rows)
++    return tool_effects_unknown(
++        projected, no_dispatch_tool_calls=getattr(agent, "_friday_no_dispatch_tool_calls", ()))
++
++
++def prepare_persistence(witness, ticket, agent, message, messages):
++    """Pin the exact native message objects before the single stock flush."""
++    from agent.context_compressor import _DB_PERSISTED_MARKER
++    from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS
++
++    if witness.persistence is not None or messages[-1] is not message:
++        return None
++    if any(key in message for key in ("_row_id", _DB_PERSISTED_MARKER, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID)):
++        return None
++    call, _, _ = witness.pending
++    db = agent._session_db
++    if Path(db.db_path) != witness.cap.home / "state.db":
++        return None
++    for index in range(len(messages) - 2, -1, -1):
++        assistant = messages[index]
++        if assistant.get("role") in ("user", "assistant"):
++            break
++    else:
++        return None
++    if assistant.get("role") != "assistant" or not _sole_write_call(assistant.get("tool_calls"), call.call_id):
++        return None
++    prior = None
++    if assistant.get(_DB_PERSISTED_MARKER) is True:
++        prior = (assistant.get("_row_id"), assistant.get(MESSAGE_UID),
++                 (assistant.get(TOOL_CALL_UIDS) or {}).get(call.call_id))
++        if type(prior[0]) is not int or not all(prior) or not assistant.get(DB_ROW_SNAPSHOT):
++            return None
++    witness.persistence = {"ticket": ticket, "db": db, "message": message, "assistant": assistant,
++                           "assistant_prior": prior, "committed": None}
++    return ticket
++
++
++def observe_persisted_batch(agent, batch_msgs, batch_rows, turn_lease_holder):
++    """Capture only the selected result from the successful native writer's batch."""
++    witness = _SELECTED.get()
++    if witness is None or witness.persistence is None:
++        return
++    from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS
++    from agent.web_call_context import _current
++    from gateway.s08_session_fence import _sqlite_identity
++
++    pending = witness.persistence
++    call, holder, proof = witness.pending
++    if (_current.get() is not call or agent._session_db is not pending["db"]
++            or turn_lease_holder != holder or agent.session_id != call.session_id
++            or pending["committed"] is not None):
++        return
++    assistant, message = pending["assistant"], pending["message"]
++    result_row = assistant_row = None
++    for live, row in zip(batch_msgs, batch_rows, strict=True):
++        if live is message:
++            if result_row is not None:
++                return
++            result_row = row
++        elif live is assistant:
++            if assistant_row is not None:
++                return
++            assistant_row = row
++    if result_row is None:
++        return
++    prior = pending["assistant_prior"]
++    if (prior is None) != (assistant_row is not None):
++        return
++    if assistant_row is None:
++        assistant_row = assistant
++    assistant_id = assistant_row.get("_row_id")
++    assistant_uid = assistant_row.get(MESSAGE_UID)
++    tool_id = result_row.get("_row_id")
++    tool_uid = result_row.get(MESSAGE_UID)
++    occurrence = result_row.get(TOOL_CALL_UID)
++    if (type(assistant_id) is not int or type(tool_id) is not int or not 0 < assistant_id < tool_id
++            or not all(type(value) is str and value for value in (assistant_uid, tool_uid, occurrence))
++            or not assistant_row.get(DB_ROW_SNAPSHOT) or not result_row.get(DB_ROW_SNAPSHOT)
++            or not _sole_write_call(assistant_row.get("tool_calls"), call.call_id)
++            or (assistant_row.get(TOOL_CALL_UIDS) or {}).get(call.call_id) != occurrence
++            or result_row.get("role") != "tool" or result_row.get("tool_name") != "write_file"
++            or result_row.get("tool_call_id") != call.call_id or result_row.get("effect_disposition") == "none"
++            or type(result_row.get("content")) is not str or len(result_row["content"]) > 16384
++            or _digest(result_row["content"]) != proof["managed_result_sha256"]
++            or (prior is not None and prior != (assistant_id, assistant_uid, occurrence))):
++        return
++    rows = [assistant_row, *batch_rows] if prior is not None else batch_rows
++    if _other_effects_unknown(rows, result_row, agent):
++        return
++    identity = _sqlite_identity(Path(pending["db"].db_path))
++    pending["committed"] = (assistant_id, assistant_uid, tool_id, tool_uid, occurrence, tuple(identity[0][:2]))
++
++
++def accept_flush(agent, ref, result, message, messages, prepared=None):
++    """Seal only the selected native call and its committed assistant→tool pair."""
++    witness = _SELECTED.get()
++    if witness is None or witness.pending is None or prepared is None:
++        return
++    from agent.web_call_context import _current
++
++    call, holder, proof = witness.pending
++    if _current.get() is not call:
++        return
++    try:
++        with call.turn.lock, witness.lock:
++            persistence, witness.persistence = witness.persistence, None
++            if (persistence is None or persistence["ticket"] is not prepared
++                    or persistence["db"] is not agent._session_db or persistence["message"] is not message
++                    or persistence["committed"] is None
++                    or not witness.owns_persisted(call, agent, prepared, ref, message)
++                    or type(result) is not str or len(result) > 16384 or message.get("content") != result
++                    or _digest(result) != proof["managed_result_sha256"]):
++                return
++            assistant_id, assistant_uid, tool_id, tool_uid, occurrence, db_inode = persistence["committed"]
++            from gateway.ordinary_f04_bridge import canonical_sha256
++
++            witness.proof = {**proof, "provider_call_id": call.call_id, "occurrence_uid": occurrence,
++                "assistant_row_id": assistant_id, "tool_row_id": tool_id, "tool_message_uid": tool_uid,
++                "webcall_sha256": canonical_sha256([call.task_id, call.call_id, call.session_id,
++                                                     call.session_key, call.turn_id]),
++                "db_lease_holder_sha256": _digest(holder), "flushed_monotonic": time.monotonic()}
++            witness.persisted_db = (db_inode, assistant_uid)
++            witness.effect_owner = (agent, persistence["assistant"], message)
++            witness.pending = None
++    except Exception:
++        return
++
++
++def _verify_persisted_rows(cap, persisted_db, user, session_id, proof, deadline):
++    """Read the pinned active rows and their raw occurrence columns in one WAL snapshot."""
++    from gateway.s08_session_fence import _sqlite_identity
++
++    db_inode, assistant_uid = persisted_db
++    path = cap.home / "state.db"
++    local_deadline = min(deadline, time.monotonic() + 0.12)
++    identity = _sqlite_identity(path)
++    if tuple(identity[0][:2]) != db_inode or time.monotonic() >= local_deadline:
++        return False
++    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=0)) as db:
++        db.set_progress_handler(lambda: int(time.monotonic() >= local_deadline), 100)
++        db.execute("PRAGMA query_only=ON")
++        db.execute("BEGIN")
++        if db.execute("PRAGMA journal_mode").fetchone() != ("wal",):
++            return False
++        row = db.execute("""
++            SELECT a.message_uid,
++                CASE WHEN length(a.tool_call_uids) <= 16384 THEN a.tool_call_uids END,
++                CASE WHEN length(a.tool_calls) <= 65536 THEN a.tool_calls END,
++                t.message_uid, t.tool_call_id, t.tool_call_uid, t.tool_name,
++                CASE WHEN length(t.content) <= 16384 THEN t.content END
++            FROM messages u JOIN messages a ON a.id = ? AND a.session_id = u.session_id
++                JOIN messages t ON t.id = ? AND t.session_id = u.session_id
++            WHERE u.id = ? AND u.session_id = ? AND u.platform_message_id = ?
++                AND u.role = 'user' AND a.role = 'assistant' AND t.role = 'tool'
++                AND u.active = 1 AND a.active = 1 AND t.active = 1
++                AND u.compacted = 0 AND a.compacted = 0 AND t.compacted = 0
++                AND (t.effect_disposition IS NULL OR t.effect_disposition != 'none')
++                AND NOT EXISTS (SELECT 1 FROM messages newer WHERE newer.session_id = u.session_id
++                                AND newer.role = 'user' AND newer.id > u.id)
++                AND NOT EXISTS (SELECT 1 FROM messages clone WHERE clone.session_id = a.session_id
++                                AND clone.active = 1 AND clone.message_uid = a.message_uid AND clone.id != a.id)
++                AND NOT EXISTS (SELECT 1 FROM messages clone WHERE clone.session_id = t.session_id
++                                AND clone.active = 1 AND clone.message_uid = t.message_uid AND clone.id != t.id)
++                AND NOT EXISTS (SELECT 1 FROM messages clone WHERE clone.session_id = t.session_id
++                                AND clone.active = 1 AND clone.role = 'tool'
++                                AND clone.tool_call_uid = t.tool_call_uid AND clone.id != t.id)
++            """, (proof["assistant_row_id"], proof["tool_row_id"], user["id"], session_id,
++                  user["platform_message_id"])).fetchone()
++    if (row is None or time.monotonic() >= local_deadline or _sqlite_identity(path) != identity):
++        return False
++    owner_uid, call_uids, calls, tool_uid, call_id, occurrence, tool, content = row
++    return (owner_uid == assistant_uid
++            and (tool_uid, call_id, occurrence, tool) == (proof["tool_message_uid"],
++                proof["provider_call_id"], proof["occurrence_uid"], "write_file")
++            and json.loads(call_uids).get(call_id) == occurrence and _sole_write_call(json.loads(calls), call_id)
++            and type(content) is str and _digest(content) == proof["managed_result_sha256"])
++
++
++def terminal_witness(target, current, result):
++    """Join after the native ACK and re-open only the pinned original descriptor."""
++    saved = target.get("xlsx_result")
++    if saved is None or result["state"] != "SETTLED" or result["cancel"] is not None:
++        return None
++    try:
++        cap, source, proof, persisted_db = saved
++        from gateway.ordinary_f04_bridge import canonical_sha256
++        from gateway.run_inbound_media import verify_published_xlsx_input
++        from hermes_cli.friday_user_scope import _CURRENT, authority
++
++        ack, = result["artifact_proofs"]
++        document = ack["proof"]
++        clock = current["ordinary_clock"]
++        receipt = current["ingress_receipt"]
++        observed = time.monotonic()
++        if (ack["generation"] != target["generation"] or ack["session_id"] != target["session_id"]
++                or ack["session_key"] != target["session_key"]
++                or ack["ingress_receipt_sha256"] != canonical_sha256(receipt)
++                or (document["sha256"], document["bytes"], document["file_name"], document["reply_to"])
++                != (proof["artifact_sha256"], proof["artifact_bytes"],
++                    PurePosixPath(proof["artifact_path"]).name, receipt["message_id"])
++                or not clock["origin_monotonic"] <= receipt["observed_monotonic"] <= proof["published_monotonic"]
++                <= proof["flushed_monotonic"] <= ack["observed_monotonic"] <= observed
++                < clock["deadline_monotonic"] or current["target"]["latest_user_row"]["id"] >= proof["assistant_row_id"]
++                or (_CURRENT.get() is not None and _CURRENT.get() is not cap)):
++            return None
++
++        def still_current():
++            state = target["runner"]._peek_session_state(target["session_key"])
++            return (not target["row"]["disarmed"] and target.get("xlsx_result") is saved
++                    and target["row"]["cancel"] is None and state is not None
++                    and state.persistent.run_generation == target["generation"]
++                    and time.monotonic() < clock["deadline_monotonic"])
++
++        with authority(cap.home):
++            if not still_current() or not verify_published_xlsx_input(cap, source, still_current=still_current):
++                return None
++            if not _verify_persisted_rows(cap, persisted_db, current["target"]["latest_user_row"],
++                                          target["session_id"], proof, clock["deadline_monotonic"]):
++                return None
++            cap.check()
++        observed = time.monotonic()
++        if observed >= clock["deadline_monotonic"] or not still_current():
++            return None
++        return {"schema": "frw.gateway.f04-owned-xlsx-ods-witness.v1", "scenario_sha256": SCENARIO,
++                "binding_sha256": current["binding_sha256"], "ack_sha256": canonical_sha256(ack),
++                "generation": target["generation"], "source_path": source.path.relative_to(cap.home / "workspace").as_posix(),
++                "source_sha256": source.sha256, "source_bytes": source.size_bytes,
++                "source_descriptor_before": list(source.source_identity),
++                "source_descriptor_after_delivery": list(source.source_identity),
++                "source_after_delivery_monotonic": observed, **proof}
++    except Exception:
++        return None
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -1552,15 +1552,41 @@
+             # through the cold path; an unconditional release here would then clear the replacement
+             # sentinel/agent and lease. Reset/stop release their stale slot before installing a
+             # successor, preserving reset-zombie cleanup without granting gen-N successor authority.
+-            self._release_running_agent_state(_quick_key, run_generation=_run_generation)
+-            # Turn lease is keyed by (routing key, run generation) so this unwind can only free
+-            # the lease its own turn acquired, never a newer turn's.
+-            self._release_turn_lease(_quick_key, _run_generation)
+-            # Retain the exact original unwind only after its lease release.
+-            # Read-only closure still requires the owned resource/drain proof.
+-            if not is_external_word_request(event):
+-                from gateway.ordinary_f04_bridge import dispatch_finalized as _f04_finalized
+-                _f04_finalized(self, event, _quick_key, _run_generation)
++            self._hm_finalize_dispatch_turn(event, _quick_key, _run_generation)
++
++    def _hm_finalize_dispatch_turn(self, event, key, generation):
++        """Settle the native turn once and retain each selected observer's own evidence."""
++        f04_token = None
++        if getattr(event, "_ordinary_f04_host_target", None) is not None:
++            with suppress(Exception):
++                from gateway.ordinary_f04_bridge import capture_dispatch_unwind
++
++                f04_token = capture_dispatch_unwind(self, event, key, generation)
++        d05_observed = getattr(event, "_ordinary_dm_ingress_stamp", None) is not None
++        cleared = self._release_running_agent_state(key, run_generation=generation)
++
++        # Clearing the running slot preserves the lease map. Sample the token
++        # at the native release boundary, after F04 has checked the live owner.
++        held_token = None
++        if f04_token is not None or d05_observed:
++            with suppress(Exception):
++                held = self._held_turn_lease(key, generation)
++                if held is not None:
++                    _, tokens = held
++                    held_token = tokens.get(generation)
++        released = self._release_turn_lease(key, generation)
++        if d05_observed:
++            with suppress(Exception):
++                from gateway.ordinary_d05_writer import observe_dispatch_unwind
++
++                observe_dispatch_unwind(self, event, key, generation, held_token, cleared, released)
++        if not is_external_word_request(event):
++            from gateway.ordinary_f04_bridge import dispatch_finalized
++
++            dispatch_finalized(self, event, key, generation,
++                               native_token=f04_token if f04_token is held_token else None,
++                               running_cleared=cleared, lease_released=released)
++        return released
+ 
+     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
+         """Restore the per-session model override captured by ``/model --once`` or ``/moa``.
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -67,7 +67,7 @@
+         raise
+ 
+ 
+-def _verified_bytes(directory, parts, content, *, capture_path=None):
++def _verified_bytes(directory, parts, content, *, capture_path=None, optional_capture=False):
+     from hermes_cli.friday_user_scope import ScopeDenied
+     fd = os.dup(directory)
+     try:
+@@ -97,11 +97,16 @@
+             if len(data) != content['size_bytes'] or digest != content['sha256']:
+                 raise ScopeDenied()
+             if capture_path is not None:
+-                identity = _file_identity(after)
+-                named = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
+-                if identity != _file_identity(before) or identity != _file_identity(named):
+-                    raise ScopeDenied()
+-                return PublishedXLSXInput(capture_path, digest, len(data), identity)
++                try:
++                    identity = _file_identity(after)
++                    named = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
++                    if identity != _file_identity(before) or identity != _file_identity(named):
++                        raise ScopeDenied()
++                    return PublishedXLSXInput(capture_path, digest, len(data), identity)
++                except OSError:
++                    if not optional_capture:
++                        raise
++                    return None
+             return bytes(data)
+         finally:
+             os.close(item)
+@@ -109,7 +114,7 @@
+         os.close(fd)
+ 
+ 
+-def _publish_received(directory, name, data, content, *, capture_path=None):
++def _publish_received(directory, name, data, content, *, capture_path=None, optional_capture=False):
+     """Publish complete bytes without replacing an existing user file."""
+     from hermes_cli.friday_user_scope import ScopeDenied
+     temporary = 'incoming_' + uuid.uuid4().hex
+@@ -130,11 +135,18 @@
+             os.unlink(temporary, dir_fd=directory)
+         # Also verifies an existing deterministic name on retries; never trust an
+         # existing pathname just because its name contains a digest.
+-        verified = _verified_bytes(directory, (name,), content, capture_path=capture_path)
+-        if capture_path is not None and created and verified.source_identity != _file_identity(os.fstat(item)):
+-            raise ScopeDenied()
++        verified = _verified_bytes(directory, (name,), content, capture_path=capture_path,
++                                   optional_capture=optional_capture)
++        if capture_path is not None and verified is not None and created:
++            try:
++                if verified.source_identity != _file_identity(os.fstat(item)):
++                    raise ScopeDenied()
++            except OSError:
++                if not optional_capture:
++                    raise
++                verified = None
+         os.fsync(directory)
+-        if capture_path is not None:
++        if capture_path is not None and verified is not None:
+             return verified, created
+     finally:
+         os.close(item)
+@@ -232,11 +244,15 @@
+         staged.append((raw, destination, data, content, receipt))
+     document = getattr(getattr(event, 'raw_message', None), 'document', None)
+     from gateway.ordinary_dm_ingress import selected_xlsx_publication
+-    capture_xlsx = (selected_xlsx_publication(event) and len(staged) == 1 and staged[0][1].suffix == '.xlsx'
++    from gateway.ordinary_f04_xlsx import selected_publication as selected_f04_xlsx
++    capture_d05 = selected_xlsx_publication(event)
++    capture_xlsx = ((capture_d05 or selected_f04_xlsx(event)) and len(staged) == 1 and staged[0][1].suffix == '.xlsx'
+                    and getattr(document, 'mime_type', None) == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    and media[0]['origin'].get('message_id') == message.get('message_id')
+                    and getattr(document, 'file_id', None) == media[0]['origin']['file_id']
+                    and getattr(document, 'file_unique_id', None) == media[0]['origin']['file_unique_id'])
++    # F04's descriptor evidence is supplemental to the admitted attachment.
++    optional_capture = capture_xlsx and not capture_d05
+     published_xlsx = None
+     cap.check()
+     root_fd = _workspace_directory(cap)
+@@ -251,7 +267,8 @@
+             for _, destination, data, content, _ in staged:
+                 cap.check()
+                 published_xlsx = _publish_received(received_fd, destination.name, data, content,
+-                                                  capture_path=destination if capture_xlsx else None)
++                                                  capture_path=destination if capture_xlsx else None,
++                                                  optional_capture=optional_capture)
+             cap.check()
+             # Do not publish a path for a directory exchanged during the copy.
+             current_fd = _absolute_directory(received)
+@@ -261,15 +278,20 @@
+                     raise ScopeDenied()
+             finally:
+                 os.close(current_fd)
+-            if capture_xlsx:
+-                current_workspace = _workspace_directory(cap)
++            if published_xlsx is not None:
+                 try:
+-                    named_workspace = os.stat(workspace, follow_symlinks=False)
+-                    if (not os.path.samestat(os.fstat(root_fd), os.fstat(current_workspace))
+-                            or not os.path.samestat(os.fstat(root_fd), named_workspace)):
+-                        raise ScopeDenied()
+-                finally:
+-                    os.close(current_workspace)
++                    current_workspace = _workspace_directory(cap)
++                    try:
++                        named_workspace = os.stat(workspace, follow_symlinks=False)
++                        if (not os.path.samestat(os.fstat(root_fd), os.fstat(current_workspace))
++                                or not os.path.samestat(os.fstat(root_fd), named_workspace)):
++                            raise ScopeDenied()
++                    finally:
++                        os.close(current_workspace)
++                except OSError:
++                    if not optional_capture:
++                        raise
++                    published_xlsx = None
+         finally:
+             os.close(received_fd)
+     finally:
+@@ -328,6 +350,8 @@
+             event._friday_published_xlsx_input = record
+         else:
+             event._friday_published_xlsx_input = None
++    elif optional_capture:
++        event._friday_published_xlsx_input = None
+ 
+ 
+ def read_published_xlsx_input(event: MessageEvent) -> PublishedXLSXInput | None:
+--- a/gateway/run_plugin_delivery.py
++++ b/gateway/run_plugin_delivery.py
+@@ -281,7 +281,8 @@
+     return cap, runner, context, freeze_route(route), check
+ 
+ 
+-async def deliver_ordinary_document(adapter, source, path, *, caption=None, file_name=None, _s14_pair=None):
++async def deliver_ordinary_document(adapter, source, path, *, caption=None, file_name=None,
++                                    _s14_pair=None, _d05_writer=None):
+     """Managed ordinary MEDIA uses the plugin's exact original-route byte send.
+ 
+     No worker, synthetic task or product activation is introduced. The native
+@@ -311,6 +312,9 @@
+         session_id = getattr(source, '_friday_document_session_id', None)
+         if not isinstance(session_id, str) or not session_id:
+             raise ValueError('original_session_required')
++        if _d05_writer is not None:
++            from gateway.ordinary_d05_writer import snapshot
++            snapshot(_d05_writer, source, cap, route, relative, name, data)
+         stage = 'recovery_owner'
+         await _mark_ordinary_file_recovery(runner, source, cap, route,
+             [{'relative_path': relative, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}])
+@@ -347,7 +351,14 @@
+         candidate['files'][selection].update(state='DELIVERED', receipt=receipt)
+         native_candidate = encoded({'selection': selection, 'receipt': receipt})
+         _ordinary_commit(state, candidate, reserved, journals=(('candidate', native_candidate),))
+-        await _ordinary_transcript(runner, session_id, relative, 'DELIVERED', receipt['sha256'])
++        stamp, row_identity = await _ordinary_transcript(
++            runner, session_id, relative, 'DELIVERED', receipt['sha256'],
++            return_identity=_d05_writer is not None,
++        )
++        if _d05_writer is not None:
++            from gateway.ordinary_d05_writer import record_candidate as record_d05_candidate
++            record_d05_candidate(_d05_writer, source, receipt, native_candidate, stamp,
++                                 row_identity, check)
+         result = SendResult(success=True, message_id=receipt['message_id'], raw_response=receipt)
+         if _s14_pair is not None:
+             from gateway.s14_pair_custody import record_candidate
+@@ -389,6 +400,11 @@
+     from gateway.s14_pair_custody import begin
+     pair = begin(adapter, source, paths, caption, _ordinary_authority)
+     pair_kwargs = {'_s14_pair': pair} if pair is not None else {}
++    if pair is None:
++        from gateway.ordinary_d05_writer import begin as begin_d05_writer
++        d05 = begin_d05_writer(adapter, source, paths)
++        if d05 is not None:
++            pair_kwargs['_d05_writer'] = d05
+     for path in paths:
+         result = await deliver_ordinary_document(adapter, source, path, caption=caption, **pair_kwargs)
+         if record_delivery is not None: record_delivery(result)
+@@ -473,7 +489,7 @@
+          'display_metadata': {'friday_file_delivery_observation': {'outcome': {'state': state}}}})
+ 
+ 
+-async def _ordinary_transcript(runner, session_id, relative, state, digest):
++async def _ordinary_transcript(runner, session_id, relative, state, digest, *, return_identity=False):
+     """Keep host evidence out of assistant prose, retaining safe follow-up context.
+ 
+     These presentation fields never authorize delivery: the durable native
+@@ -484,11 +500,18 @@
+     on recovery.
+     """
+     import time
++    stamp = time.time()
+     observation = {'path': relative, 'sha256': digest, 'state': state}
+-    await runner.async_session_store.append_to_transcript(session_id,
+-        {'role': 'assistant', 'content': '', 'timestamp': time.time(),
+-         'display_kind': 'hidden',
+-         'display_metadata': {'friday_file_delivery_observation': observation}})
++    message = {'role': 'assistant', 'content': '', 'timestamp': stamp, 'display_kind': 'hidden',
++               'display_metadata': {'friday_file_delivery_observation': observation}}
++    if return_identity:
++        identity = await runner.async_session_store.append_to_transcript(
++            session_id, message, return_identity=True,
++        )
++    else:
++        await runner.async_session_store.append_to_transcript(session_id, message)
++        identity = None
++    return stamp, identity
+ 
+ 
+ def bind_ordinary_document_source(event, source):
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -1958,6 +1958,10 @@
+             response = ""
+ 
+         adapter = self._delivery_adapter_for(source)
++        if getattr(event, "_ordinary_dm_ingress_stamp", None) is not None:
++            from gateway.ordinary_d05_writer import prepare as _prepare_d05_writer
++            _prepare_d05_writer(self, event, source, session_entry.session_id, session_key,
++                                run_generation, response, agent_result)
+         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
+         _streaming_tts_done = adapter is not None and bool(
+             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
+@@ -4534,21 +4538,37 @@
+         response = None
+         try:
+             run_sync = turn_runner.run_sync
+-            selected_xlsx = None
++            selected_turn = None
+             if _selected_sdk_event is not None and hasattr(_selected_sdk_event, "_ordinary_dm_ingress_stamp"):
+-                from gateway.ordinary_dm_ingress import _select_xlsx_worker
+-                selected_xlsx = _select_xlsx_worker(self, _selected_sdk_event, source, session_id,
+-                                                  session_key, run_generation)
+-            if selected_xlsx is not None:
++                from gateway.ordinary_dm_ingress import _select_d05_worker, _select_xlsx_worker
++
++                selected_turn = _select_xlsx_worker(self, _selected_sdk_event, source, session_id,
++                                                    session_key, run_generation)
++                if selected_turn is None:
++                    selected_turn = _select_d05_worker(self, _selected_sdk_event, source, session_id,
++                                                       session_key, run_generation)
++            if selected_turn is not None:
+                 from functools import partial
+-                run_sync = partial(selected_xlsx.run, run_sync)
++                run_sync = partial(selected_turn.run, run_sync)
++            f04_xlsx = None
++            if selected_turn is None:
++                from gateway.ordinary_f04_xlsx import select_worker as _select_f04_xlsx_worker
++
++                f04_xlsx = _select_f04_xlsx_worker(self, _selected_sdk_event, turn_ctx)
++                if f04_xlsx is not None:
++                    from functools import partial
++
++                    run_sync = partial(f04_xlsx.run, run_sync)
+             worker = self._run_agent_start_turn_worker(turn_ctx, run_sync)
+             from gateway.ordinary_f04_bridge import observe_worker as _f04_worker
+             _f04_worker(self, turn_ctx, worker)
+             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
+             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+-            if selected_xlsx is not None:
+-                selected_xlsx.observe_completion(_selected_sdk_event, worker, response)
++            if selected_turn is not None:
++                selected_turn.observe_completion(_selected_sdk_event, worker, response)
++            if f04_xlsx is not None:
++                with suppress(Exception):
++                    f04_xlsx.finish_worker(worker, response)
+             if turn_ctx._telegram_status is not None:
+                 turn_ctx._telegram_status.finish(response)
+             if isinstance(response, dict):
+--- a/gateway/session_transcript.py
++++ b/gateway/session_transcript.py
+@@ -109,15 +109,22 @@
+         """Return the lock that serializes pending-queue drain boundaries."""
+         return self._lazy("_transcript_drain_lock", threading.RLock)
+ 
+-    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
++    def append_to_transcript(
++        self, session_id: str, message: Dict[str, Any], skip_db: bool = False, *,
++        return_identity: bool = False,
++    ) -> Optional[tuple[str, int, str]]:
+         """Serialize transcript draining across queue migration boundaries. A session with no usable
+         store is NOT skipped: the write is queued and counted like any other failed append, so a
+         dead/unopenable state.db escalates and spools instead of dropping turns silently
+-        (#114266)."""
++        (#114266). With return_identity, return the session, row ID and durable UID only
++        when this call commits the original message in the requested session."""
+         if skip_db:
+             return
+         with self._get_transcript_drain_lock():
+-            self._append_to_transcript_serialized(self._follow_reroutes(session_id), message)
++            target = self._follow_reroutes(session_id)
++            if return_identity and target == session_id:
++                return self._append_to_transcript_serialized(target, message, return_identity=True)
++            self._append_to_transcript_serialized(target, message)
+ 
+     def _follow_reroutes(self, session_id: str) -> str:
+         """Follow the compression reroute chain (cycle-guarded)."""
+@@ -222,7 +229,9 @@
+             self._save()
+         (getattr(self, "_session_owner_hints", None) or {}).pop(child_id, None)
+ 
+-    def _append_to_transcript_serialized(self, session_id: str, message: Dict[str, Any]) -> None:
++    def _append_to_transcript_serialized(
++        self, session_id: str, message: Dict[str, Any], *, return_identity: bool = False,
++    ) -> Optional[tuple[str, int, str]]:
+         """Append a message to a session's transcript (SQLite), draining the per-session retry
+         queue.
+ 
+@@ -231,8 +240,23 @@
+         """
+         with self._transcript_retry_lock:
+             pending = self._enqueue_transcript_message(session_id, message)
++            tracked = pending[-1] if return_identity else None
++            if tracked is not None:
++                try:
++                    from agent.message_metadata import mint_uid
++
++                    tracked["_append_message_uid"] = mint_uid()
++                except Exception:
++                    # Keep the stock append path when custody tracking is unavailable.
++                    tracked = None
+             msg = pending[0]
+-        queue_session_id = session_id
++        original_session_id = queue_session_id = session_id
++        identity = None
++
++        def _observe_commit(row_id: int) -> None:
++            nonlocal identity
++            if msg is tracked and session_id == original_session_id:
++                identity = (session_id, row_id, tracked["_append_message_uid"])
+ 
+         def _ack_head() -> bool:
+             """Pop the acknowledged head (retry lock held). True if queue drained."""
+@@ -250,7 +274,7 @@
+             # first so recovery keeps transcript order; a still-dead DB just fails both.
+             self._drain_spooled_drops(session_id)
+             try:
+-                self._append_transcript_message(session_id, msg)
++                row_id = self._append_transcript_message(session_id, msg)
+             except Exception as exc:
+                 from hermes_state import StateDbCorruptError, StateDbReplacedError
+                 from hermes_state_errors import CompressionSessionClosedError
+@@ -292,12 +316,17 @@
+                         return
+                 if self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
+                     try:
+-                        self._append_transcript_message(session_id, msg)
++                        row_id = self._append_transcript_message(session_id, msg)
+                     except Exception as retry_exc:
+                         exc = retry_exc
+                     else:
++                        _observe_commit(row_id)
+                         with self._transcript_retry_lock:
+-                            _ack_head()
++                            queue_empty = _ack_head()
++                            if return_identity and not queue_empty:
++                                msg = pending[0]
++                        if return_identity and queue_empty:
++                            return identity
+                         continue
+                 with self._transcript_retry_lock:
+                     failures = self._transcript_append_failures.get(session_id, 0) + 1
+@@ -314,12 +343,13 @@
+                         "will retry: %s", session_id, failures, len(pending), exc)
+                 return
+             else:
++                _observe_commit(row_id)
+                 with self._transcript_retry_lock:
+                     queue_empty = _ack_head()
+                     if not queue_empty:
+                         msg = pending[0]
+                 if queue_empty:
+-                    return
++                    return identity
+                 continue
+ 
+     def _spool_stalled_backlog(self, session_id: str, queue_session_id: str) -> int:
+@@ -364,7 +394,7 @@
+         except Exception as exc:
+             logger.warning("Failed to drain transcript spool for %s: %s", session_id, exc)
+ 
+-    def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> None:
++    def _append_transcript_message(self, session_id: str, message: Dict[str, Any]) -> int:
+         """Write one transcript row. Caller handles retry queuing."""
+         _db = self._db_for_session_id(session_id)
+         if _db is None:
+@@ -373,7 +403,7 @@
+             raise RuntimeError(
+                 f"no owning session store for {session_id}; deferring transcript write")
+         is_assistant = message.get("role") == "assistant"
+-        _db.append_message(
++        return _db.append_message(
+             session_id=session_id,
+             role=message.get("role", "unknown"),
+             content=message.get("content"),
+@@ -392,6 +422,7 @@
+             # #82888). DB-only; stripped from provider-bound payloads.
+             display_kind=message.get("display_kind"),
+             display_metadata=message.get("display_metadata"),
++            **({"message_uid": message["_append_message_uid"]} if "_append_message_uid" in message else {}),
+         )
+ 
+     @staticmethod
+--- a/hermes_cli/friday_workspace_spreadsheet_conversion.py
++++ b/hermes_cli/friday_workspace_spreadsheet_conversion.py
+@@ -138,11 +138,18 @@
+         except FileNotFoundError: pass
+         else: return json.dumps(dict(success=False,error='document_already_exists',effect_disposition='none'))
+         item,relative,data,identity = _read_source(source_name,cap,'.'+source)
++        if (source, target) == ('xlsx', 'ods'):
++            from gateway.ordinary_f04_xlsx import observe_result, observe_source
++
++            observe_source(cap, item, relative, data, identity)
+         rendered,facts = render(cap,data,source,target)
+         check(cap)
+         facts.update(source=relative,source_sha256=hashlib.sha256(data).hexdigest(),
+                      source_unchanged=True,macros_executed=False,export_mode=source+'_'+target)
+-        return _publish(cap,fd,leaf,path,rendered,target,(item,data,identity),facts)
++        result = _publish(cap,fd,leaf,path,rendered,target,(item,data,identity),facts)
++        if (source, target) == ('xlsx', 'ods'):
++            observe_result(result)
++        return result
+     except ScopeDenied:
+         raise
+     except (ConversionRefused,ExportRefused) as error:
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1703,8 +1703,11 @@
+                  'object matching its schema. '
+                  'No file was read or written by this call.')
+     tid = kw.get("task_id") or "default"
+-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0), pdf_form_fields=args.get("pdf_form_fields", False), password=args.get("password"), pdf_signatures=args.get("pdf_signatures", False), archive_parts=args.get("archive_parts"), png_table_headings=args.get("png_table_headings", False),
+-                          pdf_redaction_selectors=args.get("pdf_redaction_selectors", False))
++    result = read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, char_offset=args.get("char_offset", 0), pdf_form_fields=args.get("pdf_form_fields", False), password=args.get("password"), pdf_signatures=args.get("pdf_signatures", False), archive_parts=args.get("archive_parts"), png_table_headings=args.get("png_table_headings", False),
++                            pdf_redaction_selectors=args.get("pdf_redaction_selectors", False))
++    from gateway.ordinary_d05_turn import registered_file_result
++
++    return registered_file_result("read_file", args, tid, result)
+ 
+ 
+ def _handle_write_file(args, **kw):
+@@ -1729,11 +1732,23 @@
+         )
+     from hermes_cli.observability.shared_metrics_harness import record_file_edit
+ 
+-    return record_file_edit("write_file", "whole_file", lambda: write_file_tool(
+-        path=args["path"], content=args["content"], task_id=tid,
+-        cross_profile=bool(args.get("cross_profile", False)),
+-        session_id=kw.get("session_id"), format=args.get("format", "text"),
+-    ))
++    def write():
++        return record_file_edit("write_file", "whole_file", lambda: write_file_tool(
++            path=args["path"], content=args["content"], task_id=tid,
++            cross_profile=bool(args.get("cross_profile", False)),
++            session_id=kw.get("session_id"), format=args.get("format", "text"),
++        ))
++
++    if args.get("format") == "spreadsheet_convert":
++        from gateway.ordinary_f04_xlsx import registered_write
++
++        result = registered_write(args, tid, write)
++    else:
++        result = write()
++
++    from gateway.ordinary_d05_turn import registered_file_result
++
++    return registered_file_result("write_file", args, tid, result)
+ 
+ 
+ def _handle_patch(args, **kw):
+--- a/tools/scoped_xlsx_turn.py
++++ b/tools/scoped_xlsx_turn.py
+@@ -21,6 +21,12 @@
+ 
+ 
+ def _owned_call(call, agent):
++    return (not getattr(agent, "_friday_reply_effect_unknown", False)
++            and _matches_current_call(call, agent))
++
++
++def _matches_current_call(call, agent):
++    """Check native caller identity and liveness without granting a tool operation."""
+     from agent.web_call_context import _current, same_web_authority
+     from tools.approval_context import get_current_session_key
+ 
+@@ -37,7 +43,6 @@
+             or getattr(agent, "_tool_result_call_stamp", None) != (call.session_id, call.turn_id, call.run_deadline)
+             or not all(type(value) is str and value for value in _call_identity(call))
+             or getattr(agent, "_interrupt_requested", False)
+-            or getattr(agent, "_friday_reply_effect_unknown", False)
+             or call.turn.failure is not None or not same_web_authority(call)):
+         return False
+     try:
