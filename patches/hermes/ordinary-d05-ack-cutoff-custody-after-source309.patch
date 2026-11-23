@@ -1,0 +1,1036 @@
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -14,12 +14,14 @@
+ 
+ from .d02_receiver_state import check_receiver_state
+ from .d02_mayak_source import PHASE_SHA as _D02_PHASE1, check_claim_context, retired_effect
++from .ordinary_d05_turn import SCENARIO_SHA256 as _D05_SCENARIO
+ 
+ 
+ SCHEMA = "frw.gateway.d02-owned-receiver-control.v1"
+ OPTIONS_SCHEMA = "frw.Root.D02.receiver-options.v1"
+ _S14_SCENARIO = "e686e76c9d251bdda7e84056111c59c227b1489ffecf1a60142a21fb27fb546d"
+ _S14_HISTORY = {"root-b00-s151-s14-20261102-r1", "root-s07-ff77de72d79b"}
++_D05_RETIRED_RUN = "root-b00-d05-deadline-1-physical-01-r16"
+ ARM_SECONDS = 24
+ SHORT_SECONDS = 1.2
+ _LOCAL_RIGHTS_SECONDS = 0.2
+@@ -175,7 +177,7 @@
+     request_schema = SCHEMA
+     options_schema = OPTIONS_SCHEMA
+     driver_schema = "frw.Root.D02.owned-ordinary-driver.v1"
+-    exact_phases = frozenset({_S14_SCENARIO, _D02_PHASE1})
++    exact_phases = frozenset({_S14_SCENARIO, _D02_PHASE1, _D05_SCENARIO})
+     terminal_schema = "frw.gateway.d02-native-settlement.v1"
+     wire_options = {}
+ 
+@@ -296,6 +298,17 @@
+         if scenario_sha == _S14_SCENARIO:
+             require(_S14_HISTORY <= authority["history"].keys(),
+                     "s14_control_retained_history_required")
++        if scenario_sha == _D05_SCENARIO:
++            require(run_id != _D05_RETIRED_RUN and _D05_RETIRED_RUN in authority["history"],
++                    "d05_control_retained_history_required")
++            gateway = authority["gateway"]
++            require(authority["boot_id"] == request["boot_id"]
++                    and {key: gateway[key] for key in ("pid", "start_time")} == request["gateway"],
++                    "d05_control_current_admission_owner_required")
++            if request["action"] == "arm":
++                start, end = authority["created_at"], authority["expires_at"]
++                require(_now(start) and _now(end) and start <= time.time() < end,
++                        "d05_control_fresh_arm_admission_required")
+         require(set(options) == {"schema", "principal", "profile", "rights", "observer_expires_monotonic"}
+                 and options["schema"] == self.options_schema and _now(options["observer_expires_monotonic"])
+                 and options["observer_expires_monotonic"] <= request["created_monotonic"] + 600
+@@ -397,6 +410,8 @@
+         wire_options = self.wire_options
+         if intent["scenario_sha256"] == _S14_SCENARIO:
+             wire_options = {**wire_options, "selected_s14": (_S14_SCENARIO, intent["run_id"])}
++        elif intent["scenario_sha256"] == _D05_SCENARIO:
++            wire_options = {**wire_options, "selected_d05": (_D05_SCENARIO, intent["run_id"])}
+         try:
+             adapter._reserve_ordinary_dm_wire_window(claim_sha256=claim_sha,
+                 user_id=int(options["principal"]["user_id"]), generation=generation,
+@@ -451,6 +466,11 @@
+ 
+     @staticmethod
+     def _s14_ack(run, ack, scenario):
++        return ReceiverControl._ordinary_document_ack(run, ack, scenario,
++                                                       "s14_control_original_document_ack_required")
++
++    @staticmethod
++    def _ordinary_document_ack(run, ack, scenario, reason):
+         if run["sent_api_ack_reference"]["representation"] == "botapi-wire-envelope-json":
+             ack = ack["result"]
+         upload = scenario["steps"][0]["input"]
+@@ -469,16 +489,19 @@
+                 and document["file_size"] == upload["stat"]["size_bytes"]
+                 and all(type(document[name]) is str and re.fullmatch(r"[!-~]{1,256}", document[name])
+                         for name in ("file_unique_id", "file_id")),
+-                "s14_control_original_document_ack_required")
++                reason)
+         return {"date": ack["date"],
+                 "caption_sha256": sha256(b"friday.telegram.payload.v1\x00caption\x00" + caption.encode()).hexdigest(),
+                 "file_unique_id": document["file_unique_id"], "file_name": document["file_name"],
+                 "mime_type": document["mime_type"], "declared_bytes": document["file_size"]}
+ 
+-    def _ack_cutoff(self, request, intent, work, adapter, expires, scenario):
++    def _ack_cutoff(self, request, intent, work, adapter, expires, scenario, *, verified=None):
+         proof, _ = self.doc(request["proof"], name="receiver-cutoff-intent.json")
+         _, receipt = self._arm_receipt(proof["arm"], intent, request, work, adapter, expires)
+-        cutoff = self._original_cutoff(request["proof"], intent, work, scenario, receipt)
++        if verified is None:
++            cutoff = self._original_cutoff(request["proof"], intent, work, scenario, receipt)
++        else:
++            cutoff = self._original_cutoff(request["proof"], intent, work, scenario, receipt, verified=verified)
+         return adapter._ordinary_dm_wire_window, cutoff
+ 
+     def _original_cutoff(self, reference, intent, work, scenario, receipt, *, terminal_run=None, verified=None):
+@@ -527,8 +550,13 @@
+             s14_ack = self._s14_ack(run, retained["ack"], scenario)
+             if verified is not None:
+                 verified["s14_ack"] = s14_ack
++        elif intent["scenario_sha256"] == _D05_SCENARIO:
++            sender = self._ordinary_document_ack(run, retained["ack"], scenario,
++                                                  "d05_control_original_document_ack_required")
++            if verified is not None:
++                verified["d05_ack"] = sender
+         if verified is not None:
+-            verified.update(run=run, ack=retained["ack"])
++            verified.update(run=run, ack=retained["ack"], original_clock=proof["clock"])
+         return cutoff
+ 
+     def _terminal_consumer(self, proof, intent, work):
+@@ -606,6 +634,34 @@
+         return {"s14_terminal": terminal, "s14_target_update_ids": list(ids),
+                 "s14_scope": dict(arm.ingress.scope)}
+ 
++    @staticmethod
++    def _d05_terminal(arm, intent, joined, verified, deadline):
++        from .d05_session_fence import capture_d05_session_fence
++        from .ordinary_dm_ingress import _d05_document_pair
++
++        require(arm.ingress._settlement_state() == "SETTLED", "d05_control_exact_settled_ingress_required")
++        fence, terminal = capture_d05_session_fence(arm, intent, joined, verified, deadline=deadline)
++        sdk = terminal["sdk"]
++        sender = verified["d05_ack"]
++        (receipt, caption), = joined["observations"]
++        message = receipt["message"]
++        media, = message["media"]
++        scope = arm.ingress.scope
++        direct_file = terminal["turn"]["user"]["direct_upload"]["file"]
++        published = Path(scope["runtime_home"]) / "workspace" / direct_file["path"]
++        require(all(type(sdk[key]) is type(value) and sdk[key] == value for key, value in sender.items())
++                and receipt["platform"] == "telegram" and receipt["chat_type"] == "dm"
++                and all(receipt[key] == scope[key] for key in ("session_key", "source_profile",
++                                                               "transport_profile", "runtime_profile"))
++                and (sdk["update_id"], sdk["native_message_id"], sdk["bot_id"], sdk["actor_id"])
++                == (message["platform_update_id"], message["message_id"], message["bot_id"], message["user_id"])
++                and message["chat_id"] == sdk["actor_id"] and message["thread_id"] == ""
++                and _d05_document_pair(sdk, message) and media["local_reference"] == str(published)
++                and caption == {"kind": "caption", "date": sdk["date"], "sha256": sdk["caption_sha256"]},
++                "d05_control_durable_ack_ingress_changed")
++        return fence, {"d05_terminal": terminal, "d05_target_update_ids": [int(sdk["update_id"])],
++                       "d05_scope": dict(scope)}
++
+     async def _finalize(self, request, owner, adapter, ingress_scope, deadline):
+         from .ordinary_dm_dispatch_closure import join_settled_ordinary_dm
+ 
+@@ -634,6 +690,8 @@
+         cutoff = self._original_cutoff(cutoff_record["intent"], intent, work, scenario, retained,
+                                        terminal_run=proof["run"], verified=verified)
+         require(arm.window._cutoff == cutoff, "d02_control_terminal_cutoff_changed")
++        s14 = intent["scenario_sha256"] == _S14_SCENARIO
++        d05 = intent["scenario_sha256"] == _D05_SCENARIO
+         deadline = min(deadline, cutoff + _RESERVE, expires)
+         wait_deadline = min(deadline, cutoff + _POLL_DRAIN)
+         require(time.monotonic() < deadline, "d02_control_terminal_budget_exhausted")
+@@ -653,7 +711,7 @@
+                         and arm.claim.owner_is_current() is True
+                         and adapter._ordinary_dm_wire_updater(arm.claim.generation) is arm.claim.updater
+                         and adapter._bot is arm.ingress.bot,
+-                        "s14_control_strict_retirement_unproved")
++                        "d05_control_strict_retirement_unproved" if d05 else "s14_control_strict_retirement_unproved")
+             else:
+                 current_arm, _ = self._terminal_arm(adapter, claim_sha, expires, ingress_scope)
+                 require(current_arm is arm and arm.window._cutoff == cutoff,
+@@ -662,6 +720,11 @@
+                     "d02_control_terminal_owner_or_scope_changed")
+ 
+         current()
++        if d05:
++            from .ordinary_dm_ingress import require_d05_finalize_binding
++
++            require_d05_finalize_binding(arm.ingress, claim_sha, intent["run_id"], verified["d05_ack"],
++                                         verified["run"]["capture_until"], cutoff)
+         await self._run_private(deadline, _write_private, work, "receiver-terminal-reservation.json",
+             {"intent": request["proof"], "claim_sha256": claim_sha, "no_retry": True},
+             driver["work_identity"])
+@@ -689,9 +752,11 @@
+                               ("session_key", "source_profile", "transport_profile", "runtime_profile")},
+                     "observations": joined["observations"], "no_retry": True}
+         evidence.update(self._terminal_extra(arm, evidence["route"], scenario, joined, verified, deadline))
+-        s14 = intent["scenario_sha256"] == _S14_SCENARIO
+         if s14:
+             evidence.update(self._s14_terminal(arm, intent, joined["observations"], verified["s14_ack"]))
++        if d05:
++            d05_projection = self._d05_terminal(arm, intent, joined, verified, deadline)
++            evidence.update(d05_projection[1])
+         # The private write may finish after caller loss. That remains UNKNOWN;
+         # only the exact live recheck below allows retirement and confirmation.
+         reference = await self._run_private(deadline, _write_private, work,
+@@ -705,15 +770,77 @@
+             fresh = self._s14_terminal(arm, intent, joined["observations"], verified["s14_ack"])
+             require(all(evidence[key] == value for key, value in fresh.items()),
+                     "s14_control_terminal_changed_after_write")
+-        retire = {"selected_arm": arm, "accept_before": deadline} if s14 else {}
++        if d05:
++            require(self._d05_terminal(arm, intent, joined, verified, deadline) == d05_projection,
++                    "d05_control_terminal_changed_after_write")
++            # Confirm the original protected sender records after reprojection and before retirement.
++            fresh_sender = {}
++            fresh_cutoff = self._original_cutoff(cutoff_record["intent"], intent, work, scenario, retained,
++                                                  terminal_run=proof["run"], verified=fresh_sender)
++            require(fresh_cutoff == cutoff and fresh_sender == verified,
++                    "d05_control_original_sender_changed_after_write")
++            require_d05_finalize_binding(arm.ingress, claim_sha, intent["run_id"], fresh_sender["d05_ack"],
++                                         fresh_sender["run"]["capture_until"], fresh_cutoff)
++        strict = s14 or d05
++        retire = {"selected_arm": arm, "accept_before": deadline} if strict else {}
+         require(arm.ingress._settlement_state() == "SETTLED"
+                 and self._closed_snapshot(adapter, claim_sha) == (revision, wire)
+                 and time.monotonic() < deadline
+                 and adapter._retire_ordinary_dm_wire_window(claim_sha, **retire) is True,
+                 "d02_control_exact_terminal_retirement_unproved")
+-        if s14:
++        if strict:
+             current(witness, retired=True)
+         return reference
++
++    def _d05_prewire_worker_deadline(self, reference, request, intent, scenario, work, receipt):
++        if Path(reference["path"]) != work / "receiver-control-confirm-consumer-3.json":
++            return None
++        run_id = intent["run_id"]
++        raw = _private_bytes(self.store / "runs" / (run_id + ".json"), self.read_owned, _RUN_JSON_LIMIT)
++        run = json.loads(raw, object_pairs_hook=_unique)
++        require(_encode(run) == raw and run["id"] == run_id and run["step"] == 0
++                and run["scenario_sha256"] == intent["scenario_sha256"] and run["scenario"] == scenario
++                and run["status"] == "SEND_INTENT" and run["send_state"] == "intent"
++                and run["send_attempts"] == 1 and run["send_timeout_seconds"] == _CLOCK_TIMING["ack_seconds"]
++                and run.get("sent_api_ack_reference") is None
++                and all(_now(run[field]) for field in ("send_intent_at", "send_dispatch_at", "deadline")),
++                "d05_control_exact_prewire_sender_required")
++        task = run["sent_task_reference"]
++        require(task["basename"] == f"send-task-{run_id}-0-1.json", "d05_control_exact_prewire_task")
++        task_raw = _private_bytes(self.store / task["basename"], self.read_owned, _RUN_JSON_LIMIT)
++        require(len(task_raw) == task["bytes"] and sha256(task_raw).hexdigest() == task["sha256"]
++                and _encode(run["request_metadata"]) == task_raw,
++                "d05_control_exact_prewire_task")
++        clock_raw = _private_bytes(work / "clock.json", self.read_owned, _RUN_JSON_LIMIT)
++        clock = json.loads(clock_raw, object_pairs_hook=_unique)
++        monotonic, wall = time.monotonic(), time.time()
++        require(_encode(clock) == clock_raw and clock["timing"] == _CLOCK_TIMING
++                and clock["schema"] == "frw.Root.F07.finite-operation-clock.v1"
++                and clock["status"] == "ROOT_BOUND_FUTURE_OPERATION"
++                and clock["old_effects_clocks_preserved"] is True and clock["receiver_arm"] == request["proof"]
++                and clock["run_id"] == run_id and clock["scenario_sha256"] == intent["scenario_sha256"]
++                and receipt["armed_monotonic"] <= clock["started_monotonic"] <= request["created_monotonic"]
++                and clock["deadline_monotonic"] == clock["started_monotonic"] + _CLOCK_TIMING["outer_seconds"]
++                and run["send_intent_at"] <= run["send_dispatch_at"] <= wall < run["deadline"],
++                "d05_control_exact_prewire_clock")
++        invocation_path = work / "consumer-invocation.json"
++        invocation_raw = _private_bytes(invocation_path, self.read_owned, 65536)
++        clock_path = work / "clock.json"
++        locks = {}
++        for name in ("consumer.lock", "tester-token"):
++            entry = (self.store / name).lstat()
++            locks[name] = dict(device=entry.st_dev, inode=entry.st_ino, uid=entry.st_uid,
++                               mode=stat.S_IMODE(entry.st_mode), nlink=entry.st_nlink)
++        clock_ref = dict(path=str(clock_path), bytes=len(clock_raw), sha256=sha256(clock_raw).hexdigest())
++        invocation_ref = dict(path=str(invocation_path), bytes=len(invocation_raw),
++                              sha256=sha256(invocation_raw).hexdigest())
++        sender = dict(invocation=invocation_ref, clock=clock_ref, locks=locks)
++        self._terminal_consumer(sender, intent, work)
++        # The ACK and CUTOFF request have their own original deadlines. Durable
++        # custody between those steps is not part of either request budget.
++        wait_until = min(clock["deadline_monotonic"], receipt["expires_monotonic"],
++                         monotonic + (run["deadline"] - wall))
++        return wait_until, sender, run
+ 
+     async def dispatch(self, reference, transport_deadline):
+         request = self._request(reference)
+@@ -743,12 +870,36 @@
+                 "d02_control_current_arm_changed")
+         if action == "confirm":
+             _, receipt = self._arm_receipt(request["proof"], intent, request, work, adapter, expires)
+-            witness(bound)
++            if intent["scenario_sha256"] == _D05_SCENARIO:
++                prewire = self._d05_prewire_worker_deadline(reference, request, intent, scenario, work, receipt)
++                witness(bound)
++                if prewire is not None:
++                    from .ordinary_dm_ingress import authorize_d05_worker_wait
++
++                    authorize_d05_worker_wait(arm.ingress, intent["claim"]["sha256"], intent["run_id"], *prewire)
++            else:
++                witness(bound)
+             return {"accepted": True, "query_id": request["query_id"], "action": action,
+                     "state": "ARMED", "receipt": receipt}
+-        window, cutoff = self._ack_cutoff(request, intent, work, adapter, expires, scenario)
+-        witness(bound)
+-        window.bind_cutoff(cutoff)
++        if intent["scenario_sha256"] == _D05_SCENARIO:
++            from .ordinary_dm_ingress import bind_d05_cutoff, require_d05_prewire_cutoff
++
++            verified = {}
++            window, cutoff = self._ack_cutoff(request, intent, work, adapter, expires, scenario, verified=verified)
++            require(getattr(arm.claim, "selected_d05", None) == (_D05_SCENARIO, intent["run_id"])
++                    and arm.window is window and window._cutoff is None,
++                    "d05_control_exact_unbound_arm_cutoff_required")
++            current_arm, _ = self._terminal_arm(adapter, intent["claim"]["sha256"], expires, ingress_scope)
++            require(current_arm is arm, "d05_control_exact_unbound_arm_cutoff_required")
++            sender = require_d05_prewire_cutoff(arm.ingress, verified["original_clock"], verified["run"])
++            self._terminal_consumer(sender, intent, work)
++            witness(bound)
++            bind_d05_cutoff(arm.ingress, intent["claim"]["sha256"], intent["run_id"],
++                            verified["d05_ack"], verified["run"]["capture_until"], cutoff)
++        else:
++            window, cutoff = self._ack_cutoff(request, intent, work, adapter, expires, scenario)
++            witness(bound)
++            window.bind_cutoff(cutoff)
+         return {"accepted": True, "query_id": request["query_id"], "action": action,
+                 "state": "CUTOFF_BOUND"}
+ 
+--- /dev/null
++++ b/gateway/d05_session_fence.py
+@@ -0,0 +1,50 @@
++"""Project the native D05 terminal in the protected receiver's routed WAL snapshot."""
++
++from functools import partial
++
++from .d02_receiver_control import _CAPTURE, require
++from .ordinary_d05_turn import SCENARIO_SHA256
++from .ordinary_d05_writer import read_terminal
++from .s08_session_fence import project_session_fence
++
++
++def capture_d05_session_fence(arm, intent, joined, verified, *, deadline):
++    """Use the live arm and the original ACK values already verified by ReceiverControl."""
++    claim = intent["claim"]["sha256"]
++    run_id = intent["run_id"]
++    run = verified["run"]
++    ack = verified["ack"]
++    if run["sent_api_ack_reference"]["representation"] == "botapi-wire-envelope-json":
++        ack = ack["result"]
++
++    wire = arm.ingress.readback()["wire"]
++    update, = wire["target_update_ids"]
++    (receipt, _), = joined["observations"]
++    message = receipt["message"]
++    cutoff = run["capture_until"]
++    started = ack["date"]
++    require(arm.claim.selected_d05 == (SCENARIO_SHA256, run_id)
++            and arm.claim.claim_sha256 == claim == joined["claim_sha256"]
++            and arm.claim.generation == joined["generation"]
++            and intent["scenario_sha256"] == run["scenario_sha256"] == SCENARIO_SHA256
++            and run["id"] == run_id and run["status"] == "EVIDENCE_READY"
++            and run["capture_window_complete"] is True and run["send_attempts"] == 1
++            and wire["state"] == "LOCAL_WIRE_CLOSED"
++            and message["platform_update_id"] == str(update)
++            and type(started) is int and started == run["sent_date"]
++            and cutoff == run["sent_at"] + _CAPTURE and started <= cutoff,
++            "d05_exact_terminal_wal_binding_required")
++
++    fence, terminal = project_session_fence(
++        arm.ingress.adapter.gateway_runner, arm.ingress.scope, receipt,
++        started=started, cutoff=cutoff, deadline=deadline,
++        project=partial(read_terminal, arm.ingress, claim, run_id),
++    )
++    require(type(terminal) is dict
++            and terminal["schema"] == "friday.d05.native-typed-input-owned-edit.v2"
++            and terminal["run_id"] == run_id and terminal["claim_sha256"] == claim
++            and terminal["sdk"]["update_id"] == str(update)
++            and terminal["sdk"]["native_message_id"] == message["message_id"]
++            and terminal["sdk"]["date"] == started,
++            "d05_exact_terminal_wal_projection_required")
++    return fence, terminal
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -7,7 +7,9 @@
+ from copy import deepcopy
+ from dataclasses import dataclass
+ from functools import wraps
++import math
+ from pathlib import PurePosixPath
++import re
+ import time
+ from types import MappingProxyType
+ from weakref import ref
+@@ -17,6 +19,8 @@
+ _ROUTE = frozenset(("session_key", "source_profile", "transport_profile", "runtime_profile"))
+ _SCOPE = _ROUTE | {"bot_id", "authorization_home", "runtime_home"}
+ _DELIVERY = ContextVar("ordinary_dm_routed_writer", default=None)
++_D05_CAPTION_SHA256 = "e26a90c0c880b9c99d2d3600a039514b408d6adbefb5778fb48ae620c05547d0"
++_D05_SENDER_FIELDS = ("date", "caption_sha256", "file_unique_id", "file_name", "mime_type", "declared_bytes")
+ 
+ 
+ def ingress_scope(value):
+@@ -44,6 +48,8 @@
+     s08_raw: object = None
+     xlsx_native: object = None
+     xlsx_turn: object = None
++    d05_native: object = None
++    d05_worker_checked: bool = False
+ 
+ 
+ @dataclass
+@@ -131,6 +137,9 @@
+         self._revision = 0
+         self._changed = changed
+         self._xlsx_input = None
++        self._d05_cutoff = None
++        self._d05_wait = None
++        self._d05_worker_binding = None
+ 
+     def _enable_selected_xlsx(self, claim_sha256, scenario_sha256):
+         """Bind the protected original wire arm to the exact Alder plan."""
+@@ -139,6 +148,7 @@
+         wire = self._wire()
+         if (claim_sha256 != self.claim.claim_sha256 or scenario_sha256 != SCENARIO_SHA256
+                 or self.claim.require_s08_document or self._xlsx_input is not None
++                or self._d05_worker_binding is not None
+                 or self._built or wire is None or wire["state"] != "OPEN" or wire["target_update_ids"]):
+             raise ValueError("s14_original_empty_wire_arm_required")
+         self._xlsx_input = SOURCE_SHA256, SOURCE_BYTES
+@@ -153,6 +163,52 @@
+                 SOURCE_NAME, SOURCE_MIME, CAPTION_SHA256):
+             raise ValueError("s14_exact_sdk_xlsx_required")
+         return event.raw_message, native_update, sdk
++
++    def _capture_d05(self, native_update, event):
++        from gateway.ordinary_d05_turn import SOURCE_BYTES, SOURCE_MIME, SOURCE_NAME
++        from gateway.s08_document_custody import capture_document
++
++        sdk = capture_document(self.adapter, native_update, event, actor=self.claim.user_id,
++                               bot_id=self.scope["bot_id"], source_bytes=SOURCE_BYTES)
++        if (sdk["file_name"], sdk["mime_type"], sdk["caption_sha256"]) != (
++                SOURCE_NAME, SOURCE_MIME, _D05_CAPTION_SHA256):
++            raise ValueError("d05_exact_sdk_docx_required")
++        return event.raw_message, native_update, sdk
++
++    def _bind_d05_worker(self, event, update):
++        from gateway.ordinary_d05_turn import SCENARIO_SHA256, SOURCE_BYTES, SOURCE_SHA256, WorkerBinding
++        from gateway.run_inbound_media import read_published_docx_input
++
++        record = self._built[update]
++        if record.d05_worker_checked:
++            return None
++        # A worker that starts before the original ACK is bound runs normally.
++        # No later callback can retrofit a witness to that worker.
++        record.d05_worker_checked = True
++        cutoff = self._d05_cutoff
++        if cutoff is None or record.d05_native is None:
++            return None
++        sender, wall_cutoff, cutoff_monotonic = cutoff
++        started = sender[0]
++        raw, native_update, sdk = record.d05_native
++        if _d05_sender_identity(sdk) != sender:
++            return None
++
++        def check_publication(candidate):
++            wire = self._wire()
++            if (candidate is not event or event.raw_message is not raw or wire is None
++                    or tuple(wire["target_update_ids"]) != (update,)
++                    or self._d05_cutoff is not cutoff or self.window._cutoff != cutoff_monotonic
++                    or not started <= time.time() <= wall_cutoff or time.monotonic() >= cutoff_monotonic
++                    or self._capture_d05(native_update, event) != record.d05_native):
++                return None
++            return read_published_docx_input(event)
++
++        published = check_publication(event)
++        if published is None or (published.sha256, published.size_bytes) != (SOURCE_SHA256, SOURCE_BYTES):
++            return None
++        return WorkerBinding(SCENARIO_SHA256, self.claim.claim_sha256, raw, dict(sdk), published,
++                             check_publication, started, wall_cutoff, cutoff_monotonic)
+ 
+     def _read_settled_xlsx(self, claim_sha256, *, expected_wire=None):
+         """Supply bounded process-local facts to the protected receiver before retirement."""
+@@ -205,6 +261,8 @@
+             self._unknown = reason
+             self._revision += 1
+             self._changed.set()
++            if self._d05_wait is not None:
++                self._d05_wait[1].set()
+ 
+     def _wire(self):
+         claim, adapter = self.claim, self.adapter
+@@ -254,9 +312,10 @@
+             document = capture_document(self.adapter, native_update, event,
+                                         actor=self.claim.user_id, bot_id=self.scope["bot_id"])
+         xlsx_native = self._capture_xlsx(native_update, event) if self._xlsx_input is not None else None
++        d05_native = self._capture_d05(native_update, event) if self._d05_worker_binding is not None else None
+         self._built[update] = _Dispatch(ref(event), s08_document=document,
+                                        s08_raw=event.raw_message if document is not None else None,
+-                                       xlsx_native=xlsx_native)
++                                       xlsx_native=xlsx_native, d05_native=d05_native)
+         event._ordinary_dm_ingress_stamp = (self._seal, update)
+         self._revision += 1
+ 
+@@ -366,6 +425,12 @@
+                 self.lost("ingress_xlsx_native_dispatch_event_changed")
+                 return
+             record.xlsx_native = None, None, sdk
++        if record.d05_native is not None:
++            raw, native_update, sdk = record.d05_native
++            if event.raw_message is not raw or self._capture_d05(native_update, event)[2] != sdk:
++                self.lost("ingress_d05_native_dispatch_event_changed")
++                return
++            record.d05_native = None, None, sdk
+         record.settled = True
+         self._revision += 1
+         self._changed.set()
+@@ -396,6 +461,13 @@
+                     or any(origin[key] != message[key] for key in ("bot_id", "chat_id", "thread_id", "message_id"))
+                     or any(origin[key] != sdk[key] for key in ("file_id", "file_unique_id", "declared_bytes"))):
+                 self.lost("s14_original_sdk_attachment_changed")
++                return None
++        if self._d05_worker_binding is not None:
++            native = self._built[update].d05_native
++            if (native is None or not _d05_document_pair(native[2], message)
++                    or payload != {"kind": "caption", "date": native[2]["date"],
++                                   "sha256": native[2]["caption_sha256"]}):
++                self.lost("ingress_d05_original_sdk_receipt_changed")
+                 return None
+         return _RoutedWrite(self, update, proof, deepcopy(proof), payload, source, asyncio.current_task())
+ 
+@@ -553,6 +625,203 @@
+     return None
+ 
+ 
++def enable_d05_terminal(evidence, claim_sha256, scenario_sha256, run_id):
++    """Enable D05 only while the exact protected arm is empty on its owning loop."""
++    from gateway.ordinary_d05_turn import SCENARIO_SHA256
++
++    claim = evidence.claim
++    wire = evidence._wire()
++    if (claim_sha256 != claim.claim_sha256 or scenario_sha256 != SCENARIO_SHA256
++            or type(run_id) is not str or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", run_id) is None
++            or getattr(claim, "selected_d05", None) != (scenario_sha256, run_id)
++            or claim.require_s08_document or getattr(claim, "selected_s14", None) is not None
++            or evidence._xlsx_input is not None or evidence._d05_worker_binding is not None
++            or evidence._built or evidence.window._cutoff is not None
++            or wire is None or wire["state"] != "OPEN" or wire["target_update_ids"]):
++        raise ValueError("d05_original_empty_wire_arm_required")
++    evidence._d05_worker_binding = evidence._bind_d05_worker
++
++
++def _d05_bound_wire(evidence, claim_sha256, run_id, cutoff_monotonic):
++    from gateway.ordinary_d05_turn import SCENARIO_SHA256
++
++    if (claim_sha256 == evidence.claim.claim_sha256
++            and getattr(evidence.claim, "selected_d05", None) == (SCENARIO_SHA256, run_id)
++            and evidence._d05_worker_binding is not None
++            and evidence.window._cutoff == cutoff_monotonic):
++        return evidence._wire()
++    return None
++
++
++def _d05_original_attempt(clock, run):
++    # R4 samples send_dispatch_at again immediately before POST.
++    return clock, run["sent_task_reference"], run["send_intent_at"], run["deadline"], run["send_timeout_seconds"]
++
++
++def authorize_d05_worker_wait(evidence, claim_sha256, run_id, wait_until, sender, run):
++    wire = _d05_bound_wire(evidence, claim_sha256, run_id, None)
++    if (wire is None or wire["state"] != "OPEN" or wire["target_update_ids"]
++            or evidence._d05_wait is not None or not math.isfinite(wait_until)
++            or not time.monotonic() < wait_until <= evidence.claim.expires_monotonic):
++        raise ValueError("d05_exact_prewire_wait_authorization_required")
++    evidence._d05_wait = (wait_until, asyncio.Event(),
++                          deepcopy(_d05_original_attempt(sender["clock"], run)), deepcopy(sender))
++
++
++def require_d05_prewire_cutoff(evidence, clock, run):
++    wait = evidence._d05_wait
++    if wait is None or wait[2] != _d05_original_attempt(clock, run) or time.monotonic() >= wait[0]:
++        raise ValueError("d05_original_prewire_cutoff_required")
++    return deepcopy(wait[3])
++
++
++async def wait_d05_original_cutoff(runner, event, source, session_id, key, generation):
++    try:
++        return await _wait_d05_original_cutoff(runner, event, source, session_id, key, generation)
++    except Exception:
++        return False
++
++
++async def _wait_d05_original_cutoff(runner, event, source, session_id, key, generation):
++    # Yield only the admitted D05 writer, never Telegram polling or another worker.
++    identity = identity_of(source)
++    evidence = _ingress(identity.adapter()) if identity is not None else None
++    wait = getattr(evidence, "_d05_wait", None)
++    if wait is None:
++        return False
++    update = evidence.select(event, source, identity, key)
++    if update is None:
++        return False
++    record = evidence._built[update]
++    state = runner._peek_session_state(key)
++    token = state.turn.lease_tokens.get(generation) if state is not None else None
++    task = asyncio.current_task()
++
++    def owns_writer():
++        return (task is not None and not task.cancelling()
++                and record.writer_task is not None and record.writer_task() is task and not record.settled
++                and runner is evidence.adapter.gateway_runner
++                and runner.adapters.get(evidence.adapter.platform) is evidence.adapter
++                and evidence.adapter._session_tasks.get(key) is task
++                and runner._peek_session_state(key) is state and runner._is_session_run_current(key, generation)
++                and state is not None and state.turn.event is event and token is not None
++                and state.turn.lease_tokens.get(generation) is token
++                and token.session_id == session_id and token.owner_key == key and token.generation == generation
++                and token.released is False and token.lease.holder is token and token.lease.lock.locked())
++
++    def current():
++        return (evidence._d05_wait is wait and evidence._built.get(update) is record
++                and record.d05_native is not None and not record.d05_worker_checked
++                and update in evidence._commits and evidence.select(event, source, identity, key) == update)
++
++    if record.writer_task is None or record.writer_task() is not task:
++        return False
++    if not owns_writer():
++        raise asyncio.CancelledError
++    if not current():
++        return False
++    wait_until, ready, _, _ = wait
++    if ready.is_set():
++        return evidence._d05_cutoff is not None
++    try:
++        async with asyncio.timeout_at(wait_until):
++            await ready.wait()
++    except TimeoutError:
++        if not owns_writer():
++            raise asyncio.CancelledError
++        record.d05_worker_checked = True
++        return False
++    if not owns_writer():
++        raise asyncio.CancelledError
++    return evidence._d05_cutoff is not None and current()
++
++
++def _d05_sender_identity(sender):
++    return tuple(sender[field] for field in _D05_SENDER_FIELDS)
++
++
++def bind_d05_cutoff(evidence, claim_sha256, run_id, sender, wall_cutoff, cutoff_monotonic):
++    """Bind the original ACK and wire cutoff together on the owning loop."""
++    from gateway.ordinary_d05_turn import SOURCE_BYTES, SOURCE_MIME, SOURCE_NAME
++    from gateway.s08_document_custody import _opaque, _positive
++
++    if (evidence._d05_cutoff is not None or evidence.window._cutoff is not None
++            or _d05_bound_wire(evidence, claim_sha256, run_id, None) is None
++            or type(sender) is not dict or set(sender) != set(_D05_SENDER_FIELDS)
++            or not _positive(sender["date"]) or not _opaque(sender["file_unique_id"])
++            or type(sender["declared_bytes"]) is not int
++            or (sender["file_name"], sender["mime_type"], sender["declared_bytes"], sender["caption_sha256"])
++            != (SOURCE_NAME, SOURCE_MIME, SOURCE_BYTES, _D05_CAPTION_SHA256)
++            or not all(type(value) in (int, float) and math.isfinite(value)
++                       for value in (wall_cutoff, cutoff_monotonic))
++            or not sender["date"] <= time.time() <= wall_cutoff
++            or not time.monotonic() < cutoff_monotonic < evidence.claim.expires_monotonic):
++        raise ValueError("d05_original_ack_cutoff_required")
++    binding = _d05_sender_identity(sender), wall_cutoff, cutoff_monotonic
++    if evidence._d05_wait is not None and time.monotonic() >= evidence._d05_wait[0]:
++        raise ValueError("d05_original_prewire_cutoff_deadline_elapsed")
++    evidence.window.bind_cutoff(cutoff_monotonic)
++    evidence._d05_cutoff = binding
++    if evidence._d05_wait is not None:
++        evidence._d05_wait[1].set()
++
++
++def require_d05_finalize_binding(evidence, claim_sha256, run_id, sender, wall_cutoff, cutoff_monotonic):
++    """Recheck the original ACK and exact selected worker before FINALIZE can reserve."""
++    wire = _d05_bound_wire(evidence, claim_sha256, run_id, cutoff_monotonic)
++    if (wire is None or len(wire["target_update_ids"]) != 1
++            or type(sender) is not dict or set(sender) != set(_D05_SENDER_FIELDS)
++            or evidence._d05_cutoff != (_d05_sender_identity(sender), wall_cutoff, cutoff_monotonic)):
++        raise ValueError("d05_finalize_original_ack_cutoff_required")
++    update, = wire["target_update_ids"]
++    record = evidence._built.get(update)
++    worker = getattr(record, "_d05_selected_worker", None)
++    if (worker is None or worker.invalid or record.d05_native is None or update not in evidence._commits
++            or worker.record is not record or worker.evidence is not evidence
++            or worker.event is not record.event_ref() or worker.event.raw_message is not worker.pin.raw_message
++            or worker.pin.sdk != record.d05_native[2]
++            or _d05_sender_identity(worker.pin.sdk) != _d05_sender_identity(sender)
++            or (worker.pin.started, worker.pin.cutoff, worker.pin.deadline)
++            != (sender["date"], wall_cutoff, cutoff_monotonic)):
++        raise ValueError("d05_finalize_original_selected_worker_required")
++
++
++def _d05_document_pair(sdk, message):
++    from gateway.ordinary_d05_turn import SOURCE_BYTES, SOURCE_SHA256
++
++    media = message["media"]
++    if (len(media) != 1 or tuple(message[field] for field in (
++            "platform_update_id", "message_id", "bot_id", "user_id", "chat_id", "thread_id",
++            "reply_to_message_id")) != (sdk["update_id"], sdk["native_message_id"], sdk["bot_id"],
++                                       sdk["actor_id"], sdk["actor_id"], "", "")):
++        return False
++    item = media[0]
++    origin = item["origin"]
++    return (item["mime_type"] == sdk["mime_type"]
++            and item["content"] == {"sha256": SOURCE_SHA256, "size_bytes": SOURCE_BYTES}
++            and all(origin[key] == message[key] for key in ("bot_id", "chat_id", "thread_id", "message_id"))
++            and all(origin[key] == sdk[key] for key in ("file_id", "file_unique_id", "declared_bytes")))
++
++
++def selected_d05_publication(event, message):
++    """Pin descriptor provenance to the original SDK document and download receipt."""
++    if getattr(event, "_ordinary_dm_ingress_stamp", None) is None:
++        return False
++    try:
++        source = event.source
++        identity = identity_of(source)
++        evidence = _ingress(identity.adapter()) if identity is not None else None
++        if evidence is None or evidence._d05_worker_binding is None:
++            return False
++        update = evidence.select(event, source, identity, evidence.scope["session_key"])
++        native = evidence._built[update].d05_native if update is not None else None
++        return (native is not None and native[0] is event.raw_message
++                and evidence._capture_d05(native[1], event) == native
++                and _d05_document_pair(native[2], message))
++    except Exception:
++        return False
++
++
+ def selected_xlsx_publication(event):
+     """Collect descriptor provenance only for this selected original arm."""
+     if getattr(event, "_ordinary_dm_ingress_stamp", None) is None:
+@@ -609,7 +878,7 @@
+ 
+ 
+ def _select_d05_worker(runner, event, source, session_id, key, generation):
+-    """The protected admission seam is absent on stock ingress instances."""
++    """Select the original worker only on its protected D05 wire arm."""
+     try:
+         identity = identity_of(source)
+         evidence = _ingress(identity.adapter()) if identity is not None else None
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -243,17 +243,20 @@
+             os.close(root_fd)
+         staged.append((raw, destination, data, content, receipt))
+     document = getattr(getattr(event, 'raw_message', None), 'document', None)
+-    from gateway.ordinary_dm_ingress import selected_xlsx_publication
++    from gateway.ordinary_dm_ingress import selected_d05_publication, selected_xlsx_publication
+     from gateway.ordinary_f04_xlsx import selected_publication as selected_f04_xlsx
+-    capture_d05 = selected_xlsx_publication(event)
+-    capture_xlsx = ((capture_d05 or selected_f04_xlsx(event)) and len(staged) == 1 and staged[0][1].suffix == '.xlsx'
++    capture_s14 = selected_xlsx_publication(event)
++    capture_xlsx = ((capture_s14 or selected_f04_xlsx(event)) and len(staged) == 1 and staged[0][1].suffix == '.xlsx'
+                    and getattr(document, 'mime_type', None) == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    and media[0]['origin'].get('message_id') == message.get('message_id')
+                    and getattr(document, 'file_id', None) == media[0]['origin']['file_id']
+                    and getattr(document, 'file_unique_id', None) == media[0]['origin']['file_unique_id'])
+-    # F04's descriptor evidence is supplemental to the admitted attachment.
+-    optional_capture = capture_xlsx and not capture_d05
+-    published_xlsx = None
++    capture_docx = (len(staged) == 1 and staged[0][1].suffix == '.docx'
++                    and selected_d05_publication(event, message))
++    # F04 and D05 descriptor evidence is supplemental to the admitted attachment.
++    optional_capture = capture_docx or (capture_xlsx and not capture_s14)
++    published_input = None
++    directories = None
+     cap.check()
+     root_fd = _workspace_directory(cap)
+     try:
+@@ -266,9 +269,11 @@
+             _owned(os.fstat(received_fd), directory=True)
+             for _, destination, data, content, _ in staged:
+                 cap.check()
+-                published_xlsx = _publish_received(received_fd, destination.name, data, content,
+-                                                  capture_path=destination if capture_xlsx else None,
+-                                                  optional_capture=optional_capture)
++                published_input = _publish_received(
++                    received_fd, destination.name, data, content,
++                    capture_path=destination if capture_xlsx or capture_docx else None,
++                    optional_capture=optional_capture,
++                )
+             cap.check()
+             # Do not publish a path for a directory exchanged during the copy.
+             current_fd = _absolute_directory(received)
+@@ -278,20 +283,23 @@
+                     raise ScopeDenied()
+             finally:
+                 os.close(current_fd)
+-            if published_xlsx is not None:
++            if published_input is not None:
+                 try:
+                     current_workspace = _workspace_directory(cap)
+                     try:
+                         named_workspace = os.stat(workspace, follow_symlinks=False)
+-                        if (not os.path.samestat(os.fstat(root_fd), os.fstat(current_workspace))
+-                                or not os.path.samestat(os.fstat(root_fd), named_workspace)):
++                        workspace_info = os.fstat(root_fd)
++                        if (not os.path.samestat(workspace_info, os.fstat(current_workspace))
++                                or not os.path.samestat(workspace_info, named_workspace)):
+                             raise ScopeDenied()
++                        if capture_docx:
++                            directories = (_directory_identity(workspace_info), _directory_identity(pinned))
+                     finally:
+                         os.close(current_workspace)
+                 except OSError:
+                     if not optional_capture:
+                         raise
+-                    published_xlsx = None
++                    published_input = None
+         finally:
+             os.close(received_fd)
+     finally:
+@@ -339,28 +347,53 @@
+     # Presentation-only provenance from the verified copy above. Media paths
+     # and byte receipts keep their absolute identity; this grants no file access.
+     event._friday_owned_attachment_paths = (cap, frozenset(rewritten))
+-    if published_xlsx is not None:
+-        evidence, created = published_xlsx
+-        record = (event, cap, staged[0][1], evidence)
+-        previous = getattr(event, '_friday_published_xlsx_input', record if created else None)
+-        # A verified retry retains the original event's provenance. Only an
+-        # actual publication can establish it on the first call.
+-        if (previous is not None and previous[0] is event and _same_scope(previous[1], cap)
+-                and previous[2:] == record[2:]):
+-            event._friday_published_xlsx_input = record
++    if capture_docx:
++        if published_input is None:
++            event._friday_published_docx_input = None
+         else:
+-            event._friday_published_xlsx_input = None
++            _remember_published_input(event, cap, staged[0][1], published_input,
++                                      '_friday_published_docx_input', directories)
++    elif published_input is not None:
++        _remember_published_input(event, cap, staged[0][1], published_input,
++                                  '_friday_published_xlsx_input')
+     elif optional_capture:
+         event._friday_published_xlsx_input = None
+ 
+ 
++def _directory_identity(info):
++    return info.st_dev, info.st_ino
++
++
++def _remember_published_input(event, cap, destination, publication, attribute, *custody):
++    from hermes_cli.friday_user_scope import _same_scope
++
++    evidence, created = publication
++    record = (event, cap, destination, evidence, *custody)
++    previous = getattr(event, attribute, record if created else None)
++    # Only an actual publication can establish provenance on the first call.
++    if (previous is None or previous[0] is not event or not _same_scope(previous[1], cap)
++            or previous[2:] != record[2:]):
++        record = None
++    setattr(event, attribute, record)
++
++
+ def read_published_xlsx_input(event: MessageEvent) -> PublishedXLSXInput | None:
+     """Read this original event's verified XLSX evidence within the admitted user scope."""
++    return _read_published_input(event, "_friday_published_xlsx_input")
++
++
++def read_published_docx_input(event: MessageEvent) -> PublishedXLSXInput | None:
++    """Reopen the original D05 publication within its pinned scope and directories."""
++    return _read_published_input(event, "_friday_published_docx_input", pin_directories=True)
++
++
++def _read_published_input(event, attribute, *, pin_directories=False):
+     from hermes_cli.friday_user_scope import ScopeDenied, _same_scope, current
+-    record = getattr(event, '_friday_published_xlsx_input', None)
++
++    record = getattr(event, attribute, None)
+     if record is None or record[0] is not event:
+         return None
+-    _, owner, destination, evidence = record
++    _, owner, destination, evidence, *custody = record
+     try:
+         cap = current(required=True)
+         if (not _same_scope(owner, cap)
+@@ -368,13 +401,20 @@
+                 or event.media_urls != [str(destination)]
+                 or destination.parent != cap.home / 'workspace' / 'received'):
+             return None
+-        if verify_published_xlsx_input(cap, evidence):
++        directories = custody[0] if pin_directories and len(custody) == 1 else None
++        if pin_directories and directories is None:
++            return None
++        if _verify_published_input(cap, evidence, expected_directories=directories):
+             return evidence
+     except (ScopeDenied, OSError, ValueError):
+         return None
+ 
+ 
+ def verify_published_xlsx_input(cap, evidence, *, still_current=None):
++    return _verify_published_input(cap, evidence, still_current=still_current)
++
++
++def _verify_published_input(cap, evidence, *, still_current=None, expected_directories=None):
+     """Recheck canonical workspace, received directory and leaf across the exact read."""
+     from contextlib import ExitStack
+     from hermes_cli.friday_user_scope import _workspace_directory
+@@ -388,7 +428,12 @@
+         owned.callback(os.close, workspace)
+         directory = os.open('received', flags, dir_fd=workspace)
+         owned.callback(os.close, directory)
+-        _owned(os.fstat(directory), directory=True)
++        directory_info = os.fstat(directory)
++        _owned(directory_info, directory=True)
++        if (expected_directories is not None
++                and expected_directories != (_directory_identity(os.fstat(workspace)),
++                                             _directory_identity(directory_info))):
++            return False
+         content = {'sha256': evidence.sha256, 'size_bytes': evidence.size_bytes}
+         verified = _verified_bytes(directory, (evidence.path.name,), content, capture_path=evidence.path)
+         cap.check()
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -4540,11 +4540,14 @@
+             run_sync = turn_runner.run_sync
+             selected_turn = None
+             if _selected_sdk_event is not None and hasattr(_selected_sdk_event, "_ordinary_dm_ingress_stamp"):
+-                from gateway.ordinary_dm_ingress import _select_d05_worker, _select_xlsx_worker
++                from gateway.ordinary_dm_ingress import (
++                    _select_d05_worker, _select_xlsx_worker, wait_d05_original_cutoff,
++                )
+ 
+                 selected_turn = _select_xlsx_worker(self, _selected_sdk_event, source, session_id,
+                                                     session_key, run_generation)
+-                if selected_turn is None:
++                if selected_turn is None and await wait_d05_original_cutoff(
++                        self, _selected_sdk_event, source, session_id, session_key, run_generation):
+                     selected_turn = _select_d05_worker(self, _selected_sdk_event, source, session_id,
+                                                        session_key, run_generation)
+             if selected_turn is not None:
+--- a/gateway/s08_session_fence.py
++++ b/gateway/s08_session_fence.py
+@@ -44,6 +44,16 @@
+ 
+ def capture_session_fence(runner, scope, receipt, *, started, cutoff, deadline):
+     """Capture only row bounds at native terminal settlement on the owning loop."""
++    fence, _ = _capture_session_fence(runner, scope, receipt, started, cutoff, deadline, None)
++    return fence
++
++
++def project_session_fence(runner, scope, receipt, *, started, cutoff, deadline, project):
++    """Read the protected row bounds and projection in the same read-only transaction."""
++    return _capture_session_fence(runner, scope, receipt, started, cutoff, deadline, project)
++
++
++def _capture_session_fence(runner, scope, receipt, started, cutoff, deadline, project):
+     key = scope["session_key"]
+     entries = runner.session_store._entries
+     entry = entries.get(key)
+@@ -69,8 +79,13 @@
+             raise ValueError("s08_wal_snapshot_required")
+         anchor, terminal = read_fence_rows(db, session_id=session_id, message_id=message["message_id"],
+                                            started=started, cutoff=cutoff)
++        fence = {"session_id": session_id, "user_row_id": anchor, "terminal_row_id": terminal,
++                 "sqlite_identity": identity, "runtime_home": str(home)}
++        projection = None
++        if project is not None:
++            db.row_factory = sqlite3.Row
++            projection = project(db, fence, deadline=local_deadline)
+     require(time.monotonic() < local_deadline and _sqlite_identity(path) == identity
+             and runner.session_store._entries is entries and entries.get(key) is entry
+             and entry.session_id == session_id and entry.active_turn_token is None, "s08_row_fence_drift")
+-    return {"session_id": session_id, "user_row_id": anchor, "terminal_row_id": terminal,
+-            "sqlite_identity": identity, "runtime_home": str(home)}
++    return fence, projection
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -522,6 +522,7 @@
+     ingress_scope: object = None
+     require_s08_document: bool = False
+     selected_s14: tuple[str, str] | None = None
++    selected_d05: tuple[str, str] | None = None
+ 
+ 
+ @dataclasses.dataclass(frozen=True, slots=True)
+@@ -1800,7 +1801,7 @@
+ 
+     def _reserve_ordinary_dm_wire_window(self, *, claim_sha256, user_id, generation,
+                                         expires_monotonic, max_updates, owner_is_current, ingress_scope=None,
+-                                        require_s08_document=False, selected_s14=None):
++                                        require_s08_document=False, selected_s14=None, selected_d05=None):
+         """Queue an already authorized claim on the gateway loop. None means pending only."""
+         now = time.monotonic()
+         updater = self._ordinary_dm_wire_updater(generation)
+@@ -1816,6 +1817,15 @@
+             if (ingress_scope is None or require_s08_document or type(selected_s14) is not tuple
+                     or len(selected_s14) != 2 or any(type(value) is not str for value in selected_s14)):
+                 raise ValueError("Invalid selected S14 wire claim")
++        if selected_d05 is not None:
++            from gateway.ordinary_d05_turn import SCENARIO_SHA256
++
++            if (ingress_scope is None or require_s08_document or selected_s14 is not None
++                    or type(selected_d05) is not tuple or len(selected_d05) != 2
++                    or any(type(value) is not str for value in selected_d05)
++                    or selected_d05[0] != SCENARIO_SHA256
++                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", selected_d05[1]) is None):
++                raise ValueError("Invalid selected D05 wire claim")
+         pending = getattr(self, "_ordinary_dm_wire_pending", None)
+         if (pending is not None and (pending.updater is not updater or pending.generation != generation
+                                     or now >= pending.expires_monotonic)):
+@@ -1833,6 +1843,7 @@
+         self._ordinary_dm_wire_pending = _OrdinaryDMWireClaim(
+             claim_sha256, user_id, generation, expires_monotonic, max_updates,
+             owner_is_current, updater, asyncio.get_running_loop(), ingress_scope, require_s08_document, selected_s14,
++            selected_d05,
+         )
+ 
+     def _ordinary_dm_wire_native_parameters(self, request, generation, kwargs):
+@@ -1900,13 +1911,19 @@
+                 ingress = OrdinaryDMIngressOutcomes(self, claim, window, armed_at, changed)
+             self._ordinary_dm_wire_arm = _OrdinaryDMWireArm(claim, window, offset, armed_at, ingress)
+             self._ordinary_dm_wire_window = window
+-            if claim.selected_s14 is not None:
++            if claim.selected_s14 is not None or claim.selected_d05 is not None:
+                 # The producer must see its exact bound owner. No poll can yield before selection.
+                 try:
+-                    from gateway.s14_pair_custody import enable_terminal
+-
+-                    scenario_sha, run_id = claim.selected_s14
+-                    enable_terminal(ingress, claim.claim_sha256, scenario_sha, run_id)
++                    if claim.selected_d05 is not None:
++                        from gateway.ordinary_dm_ingress import enable_d05_terminal
++
++                        scenario_sha, run_id = claim.selected_d05
++                        enable_d05_terminal(ingress, claim.claim_sha256, scenario_sha, run_id)
++                    else:
++                        from gateway.s14_pair_custody import enable_terminal
++
++                        scenario_sha, run_id = claim.selected_s14
++                        enable_terminal(ingress, claim.claim_sha256, scenario_sha, run_id)
+                 except (Exception, asyncio.CancelledError):
+                     self._ordinary_dm_wire_window = self._ordinary_dm_wire_arm = None
+                     raise
+@@ -1981,7 +1998,12 @@
+             if (asyncio.get_running_loop() is not claim.loop
+                     or getattr(self, "_ordinary_dm_wire_window", None) is not window):
+                 return False
+-            if selected_arm is not None and (arm is not selected_arm or claim.selected_s14 is None
++            if claim.selected_d05 is not None and (selected_arm is None
++                    or type(accept_before) not in (int, float)
++                    or not 0 < accept_before <= claim.expires_monotonic):
++                return False
++            if selected_arm is not None and (arm is not selected_arm
++                    or claim.selected_s14 is None and claim.selected_d05 is None
+                     or claim.owner_is_current() is not True):
+                 return False
+             accepting = self._ordinary_dm_wire_updater(claim.generation) is claim.updater
+@@ -7392,7 +7414,7 @@
+                 await self.handle_message(event)
+             return
+         arm = getattr(self, "_ordinary_dm_wire_arm", None)
+-        capture_native = arm is not None and (arm.claim.require_s08_document
++        capture_native = arm is not None and (arm.claim.require_s08_document or arm.claim.selected_d05 is not None
+                                               or arm.ingress is not None and arm.ingress._xlsx_input is not None)
+         if not capture_native:
+             event = self._build_message_event(msg, message_type, update_id=update.update_id)
