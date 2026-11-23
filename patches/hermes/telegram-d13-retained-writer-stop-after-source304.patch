@@ -1,0 +1,2915 @@
+diff --git a/gateway/external_word_intent.py b/gateway/external_word_intent.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff6d2cfacaa0a02a4c86c178dc5a9e7bbdf4e27e
+--- /dev/null
++++ b/gateway/external_word_intent.py
+@@ -0,0 +1,245 @@
++"""Host-only intent for a bounded external Word request. It grants no delivery."""
++import asyncio
++from dataclasses import dataclass, field
++from hashlib import sha256
++import re
++import time
++import unicodedata
++
++
++# A direct imperative to create an external derivative in Word. Scope this
++# selector to the explicit form it supports, not subject mentions or instructions
++# obtained from attachments, quotes, restored prompts, or the model.
++_ACTION = re.compile(r"(?:(?:пожалуйста)[, ]+)?(?:сделай|подготовь|создай|составь|сформируй)\b")
++_DERIVATIVE = r"(?:сводк\w*|копи\w*|отч[её]т\w*)"
++_EXTERNAL = r"(?:внешн\w*|публичн\w*)"
++_SOURCE_PHRASE = (
++    r"(?:(?:по|из|на\s+основе)\s+"
++    r"(?:(?:приложенн\w*|исходн\w*|эт\w*|загруженн\w*)\s+)?"
++    r"(?:документ\w*|файл\w*|материал\w*)\s+)?"
++)
++_EXTERNAL_DERIVATIVE = re.compile(
++    rf"^{_SOURCE_PHRASE}(?:(?:отдельн\w*|нов\w*)\s+){{0,2}}"
++    rf"(?:{_EXTERNAL}\s+{_DERIVATIVE}|{_DERIVATIVE}\b[^,;.!?]{{0,80}}\bдля\s+{_EXTERNAL})\b"
++)
++_WORD = re.compile(r"\bв\s+(?:(?:новом|формате)\s+)?(?:docx|word)\b")
++_NEGATION = re.compile(r"\b(?:не|нельзя|запрещено)\b")
++_QUOTE_ENTITIES = {"blockquote", "expandable_blockquote", "code", "pre"}
++
++HOLD_REPLY = "Внешний DOCX не отправлен. Для выдачи нужно подтверждение готового файла."
++_INELIGIBLE = object()
++
++
++@dataclass(frozen=True)
++class _Request:
++    event_identity: int
++    raw: object = field(repr=False)
++    bot: object = field(repr=False)
++    polling_generation: int
++    ids: tuple[str, str, str, str, str]
++    text_sha256: str
++    receipt_at: float
++
++
++@dataclass(frozen=True)
++class ExternalWordIntent:
++    principal: tuple[str, str, str, str]
++    runtime_profile: str
++    admission_generation: int
++    session_key: str
++    run_generation: int
++    platform_update_id: str
++    message_id: str
++    chat_id: str
++    thread_id: str
++    request_sha256: str
++
++
++def _selects_word_copy(text):
++    if not isinstance(text, str) or not 0 < len(text) <= 4096:
++        return False
++    normalized = unicodedata.normalize("NFC", text).casefold().strip()
++    # Require the action, derivative, audience and format in one directive.
++    action = _ACTION.match(normalized)
++    if action is None:
++        return False
++    directive = re.split(r"[,.!?;\n]", normalized[action.end():], maxsplit=1)[0].strip()
++    return bool(_EXTERNAL_DERIVATIVE.match(directive) and _WORD.search(directive)
++                and not _NEGATION.search(directive))
++
++
++def _body(message):
++    # Read exactly one original SDK field. No event.text or secondary source.
++    if message.text is not None and message.caption is None:
++        return message.text, message.entities
++    if message.text is None and message.caption is not None:
++        return message.caption, message.caption_entities
++    return None, ()
++
++
++def _native_shape(message, entities):
++    return (message.chat.type == "private" and message.from_user is not None
++            and (message.text is not None or getattr(message, "document", None) is not None)
++            and getattr(message, "message_thread_id", None) is None
++            and getattr(message, "edit_date", None) is None
++            and all(not getattr(message, key, None) for key in (
++                "forward_origin", "forward_date", "forward_from", "forward_from_chat",
++                "forward_sender_name", "is_automatic_forward", "sender_chat", "via_bot",
++                "media_group_id", "business_connection_id",
++            ))
++            and not any(item.type in _QUOTE_ENTITIES for item in entities or ()))
++
++
++def hold_dispatch_clear():
++    from hermes_cli.plugins import get_plugin_manager
++
++    manager = get_plugin_manager()
++    lock = manager._discovery_lock
++    if not lock.acquire(blocking=False):
++        return False
++    try:
++        return (manager._discovered is True
++                and not manager.iter_hook_callbacks("pre_gateway_dispatch"))
++    finally:
++        lock.release()
++
++
++def selected_update_message(update):
++    """Original SDK update fields only. Callback queries can carry an unrelated message."""
++    message = (update.message or update.edited_message
++               or update.channel_post or update.edited_channel_post
++               or getattr(update, "business_message", None)
++               or getattr(update, "edited_business_message", None)
++               or getattr(update, "guest_message", None))
++    if message is not None and _selects_word_copy(_body(message)[0]):
++        return message
++    return None
++
++
++def mark_original_request(adapter, update, message, event):
++    """Only called by the registered Telegram handlers after their native gates."""
++    from plugins.platforms.telegram.telegram_ingress import _id
++
++    text, entities = _body(message)
++    if not _selects_word_copy(text):
++        return
++    # Recognized but unprovable input must not enter the ordinary output path.
++    event._external_word_request = _INELIGIBLE
++    event.allow_gateway_control = False
++    admission = adapter._update_admission
++    claim = admission.get() if admission is not None else None
++    if (claim is None or claim.external_word_closed is None
++            or update.message is not message or event.raw_message is not message
++            or event.internal or event._ingress_merged or not _native_shape(message, entities)
++            or type(update.update_id) is not int or update.update_id <= 0
++            or event._ingress_update_id != update.update_id
++            or event.platform_update_id != update.update_id):
++        return
++    try:
++        bot = message.get_bot()
++        if bot is not adapter._bot:
++            return
++        chat_id, user_id, bot_id = _id(message.chat.id), _id(message.from_user.id), _id(bot.id)
++        if user_id != chat_id or user_id == bot_id:
++            return
++        ids = (bot_id, user_id, chat_id, _id(message.message_id), _id(update.update_id))
++        if claim.key != f"{bot_id}:{ids[-1]}":
++            return
++    except (AttributeError, RuntimeError, TypeError, ValueError):
++        return
++    event._external_word_request = _Request(
++        id(event), message, bot, adapter._polling_generation, ids, sha256(text.encode()).hexdigest(),
++        claim.external_word_closed)
++
++
++def is_external_word_request(event):
++    """Scheduling barrier only, including a recognized request without proof."""
++    marker = getattr(event, "_external_word_request", None)
++    return marker is _INELIGIBLE or type(marker) is _Request
++
++
++def hold_adapter_task_current(runner, event, session_key, *, adapter=None):
++    current_task = asyncio.current_task()
++    if adapter is None:
++        owner = getattr(event, "_external_word_hold_owner", None)
++        if type(owner) is not tuple or len(owner) != 4:
++            return False
++        adapter, key, task, guard = owner
++    else:
++        # An ordinary event is asking to stage a mixed FIFO. Use its stock adapter guard.
++        binding = getattr(event, "_friday_document_guard", None)
++        if type(binding) is not tuple or len(binding) != 2:
++            return False
++        key, guard = binding
++        task = current_task
++    return (key == session_key and task is not None and task is current_task
++            and not task.cancelling() and guard is not None and not guard.is_set()
++            and adapter.gateway_runner is runner and adapter._session_tasks.get(key) is task
++            and adapter._active_sessions.get(key) is guard)
++
++
++def _check_generation(runner, event, source, session_key, generation):
++    """Revalidate the exact process-local original inside native ordinary scope."""
++    from gateway.admitted_ingress import admitted_ingress
++    from gateway.session_identity import identity_of
++    from hermes_cli.friday_product_access import current_access
++    from hermes_cli.friday_user_scope import authority, current
++    from plugins.platforms.telegram.update_admission import RECEIPT_TTL_SECONDS
++
++    request = getattr(event, "_external_word_request", None)
++    if (type(request) is not _Request or request.event_identity != id(event)
++            or request.receipt_at <= time.time() - RECEIPT_TTL_SECONDS
++            or event.internal or event._ingress_merged or event.allow_gateway_control
++            or event.source is not source or event.raw_message is not request.raw):
++        return None
++    text, entities = _body(request.raw)
++    if (not _selects_word_copy(text) or sha256(text.encode()).hexdigest() != request.text_sha256
++            or not _native_shape(request.raw, entities)):
++        return None
++    state = runner._peek_session_state(session_key)
++    if (state is None or state.turn.event is not event or type(generation) is not int or generation < 1
++            or state.persistent.run_generation != generation
++            or runner._session_key_for_source(source) != session_key):
++        return None
++    identity = identity_of(source)
++    transport = identity.adapter() if identity is not None and identity.multiplexed else None
++    owner = runner._transport_owner(source)
++    if (transport is None or owner is None or owner[0] is not transport
++            or transport._bot is not request.bot or request.raw.get_bot() is not request.bot
++            or transport._polling_generation != request.polling_generation):
++        return None
++    ingress = admitted_ingress(event, source, session_key)
++    if ingress is None or ingress["platform"] != "telegram":
++        return None
++    native = ingress["message"]
++    if (tuple(native[k] for k in ("bot_id", "user_id", "chat_id", "message_id", "platform_update_id")) != request.ids
++            or native["thread_id"] != ""):
++        return None
++    cap = current(required=True)
++    principal = ("telegram", ingress["transport_profile"], native["bot_id"], native["user_id"])
++    if (getattr(source, "_friday_user_scope", None) is not cap or cap.principal != principal
++            or source.is_bot != request.raw.from_user.is_bot or cap.profile != ingress["runtime_profile"] or cap.authorization_home != identity.authorization_home):
++        return None
++    with authority(cap.authorization_home):
++        grant = current_access()["users"].get(cap.key)
++    if (grant is None or grant["enabled"] is not True or grant["role"] != "user"
++            or grant["generation"] != cap.admission_generation):
++        return None
++    return ExternalWordIntent(principal, cap.profile, cap.admission_generation, session_key, generation,
++                              native["platform_update_id"], native["message_id"], native["chat_id"],
++                              native["thread_id"], request.text_sha256)
++
++
++def bind_generation(runner, event, source, session_key, generation):
++    if getattr(event, "_d13_word_generation", None) is not None:
++        return None
++    result = _check_generation(runner, event, source, session_key, generation)
++    if result is not None:
++        event._d13_word_generation = result
++    return result
++
++
++def hold_generation_current(runner, event, source, binding):
++    return (getattr(event, "_d13_word_generation", None) is binding
++            and _check_generation(runner, event, source, binding.session_key,
++                                  binding.run_generation) == binding)
+diff --git a/gateway/ordinary_dm_ingress.py b/gateway/ordinary_dm_ingress.py
+index b9be53d6f95ccf3308fbf651d75e18d3b1edc0c9..f411ddf4f4da88c12a49641403284dde115c9bd6 100644
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -308,6 +308,16 @@ class OrdinaryDMIngressOutcomes:
+             return None
+         return update
+ 
++    def refuse_external_word_hold(self, event):
++        if self._stamp(event) is None:
++            if not self._selected_source(event.source):
++                return False
++            wire = self._wire()
++            if wire is not None and event.platform_update_id not in wire["target_update_ids"]:
++                return False
++        self.lost("ingress_claimed_external_word_hold")
++        return True
++
+     def handoff(self, event):
+         update = self._stamp(event)
+         if update is None or self._wire() is None:
+@@ -477,6 +487,11 @@ def built_event(adapter, event, *, native_update=None):
+             evidence.lost("ingress_event_observation_failed")
+ 
+ 
++def refuse_external_word_hold(adapter, event):
++    evidence = _ingress(adapter)
++    return evidence is not None and evidence.refuse_external_word_hold(event)
++
++
+ def begin_handoff(adapter, event):
+     evidence = _ingress(adapter)
+     if evidence is not None:
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+index b19830e9bc9f13aca73e31db84dda73c2e243729..146a0f7e254709ff7cc521139a645540c40a186a 100644
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -1874,8 +1874,11 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
+     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
+     turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
+     replace."""
++    from gateway.external_word_intent import is_external_word_request
+     existing = pending_messages.get(session_key)
+     if existing:
++        if is_external_word_request(existing) or is_external_word_request(event):
++            return  # Only the native FIFO may queue a distinct external request.
+         existing_type = getattr(existing, "message_type", None)
+         existing_is_photo = existing_type == MessageType.PHOTO
+         incoming_is_photo = event.message_type == MessageType.PHOTO
+@@ -2434,9 +2437,10 @@ class BasePlatformAdapter(ABC):
+ 
+     def _apply_topic_recovery(self, event: MessageEvent) -> None:
+         """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
++        from gateway.external_word_intent import is_external_word_request
+         recover = getattr(self, "_topic_recovery_fn", None)
+         source = getattr(event, "source", None)
+-        if recover is None or source is None:
++        if recover is None or source is None or is_external_word_request(event):
+             return
+         try:
+             recovered = recover(source)
+@@ -3924,6 +3928,9 @@ class BasePlatformAdapter(ABC):
+             if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
+                 return (platform, "dm", str(source.chat_id))
+             return None
++        from gateway.external_word_intent import is_external_word_request
++        if is_external_word_request(existing) or is_external_word_request(event):
++            return False
+         existing_sender = _identity(existing)
+         return existing_sender is not None and existing_sender == _identity(event)
+ 
+@@ -4104,6 +4111,7 @@ class BasePlatformAdapter(ABC):
+         pending_event = self._pending_messages.pop(session_key, None)
+         self._release_session_guard(session_key, guard=command_guard)
+         if pending_event is not None:
++            self._promote_external_word_tail(pending_event, session_key)
+             self._start_session_processing(pending_event, session_key)
+ 
+     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
+@@ -4267,6 +4275,7 @@ class BasePlatformAdapter(ABC):
+                 for owner in owners:
+                     orphan = owner.get_pending_message(session_key)
+                     if orphan is not None:
++                        owner._promote_external_word_tail(orphan, session_key)
+                         owner._start_session_processing(orphan, session_key)
+                         break
+                 if orphan is None and not handled:
+@@ -4274,6 +4283,14 @@ class BasePlatformAdapter(ABC):
+                     return
+             if handled:
+                 return
++        from gateway.external_word_intent import is_external_word_request
++        if is_external_word_request(event):
++            return  # The authenticated busy callback did not admit this event.
++        if is_external_word_request(self._pending_messages.get(session_key)):
++            runner = getattr(self, "gateway_runner", None)
++            if runner is not None:
++                runner._queue_or_replace_pending_event(session_key, event)
++            return
+         # Without a runner FIFO, do not merge a wake into an occupied human slot
+         # (or collapse distinct wakes into one turn). Its caller can retry admission.
+         if event.internal and session_key in self._pending_messages:
+@@ -4332,9 +4349,11 @@ class BasePlatformAdapter(ABC):
+                         text_content: str, media_files: list) -> bool:
+         """Auto-TTS on voice input (voice-first), gated by /voice or voice.auto_tts;
+         skipped when streaming TTS already delivered audio this turn."""
++        from gateway.external_word_intent import is_external_word_request
+         generation = getattr(interrupt_event, "_hermes_run_generation", None)
+         return bool(
+-            self._should_auto_tts_for_chat(event.source.chat_id)
++            not is_external_word_request(event)
++            and self._should_auto_tts_for_chat(event.source.chat_id)
+             and event.message_type == MessageType.VOICE and text_content and not media_files
+             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
+ 
+@@ -4742,6 +4761,7 @@ class BasePlatformAdapter(ABC):
+                 logger.debug(
+                     "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                     self.name)
++                self._promote_external_word_tail(late_pending, session_key)
+                 self._spawn_drain_task(late_pending, session_key)
+         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
+             self._cleanup_finished_session_task(session_key, interrupt_event)
+@@ -4780,39 +4800,54 @@ class BasePlatformAdapter(ABC):
+         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
+         session_guard_change(self, session_key, self._active_sessions.get(session_key), interrupt_event)
+         self._active_sessions[session_key] = interrupt_event
+-        _thread_metadata = _thread_metadata_for_event(event)
+-        typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
++        from gateway.external_word_intent import is_external_word_request
++
++        external_word = is_external_word_request(event)
++        hold_task = asyncio.current_task() if external_word else None
++
++        def hold_owner_current():
++            return (hold_task is not None and self._session_tasks.get(session_key) is hold_task
++                    and self._active_sessions.get(session_key) is interrupt_event)
++
++        _thread_metadata = None if external_word else _thread_metadata_for_event(event)
++        typing_task = None if external_word else self._start_typing_refresh(event, interrupt_event, _thread_metadata)
+         try:
+-            await self._run_processing_hook("on_processing_start", event)
++            if not external_word:
++                await self._run_processing_hook("on_processing_start", event)
+             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
+-            event._status_streamed_final_confirmed = False  # a retried event needs its own receipt
+-            binding = getattr(event, "_friday_document_guard", None)
+-            task = asyncio.current_task()
+-            # The runner admits the source after this adapter dispatch starts.
+-            if (self.platform == Platform.TELEGRAM and task is not None
+-                    and type(binding) is tuple and len(binding) == 2
+-                    and binding[0] == session_key and binding[1] is interrupt_event):
+-                fifo_delivery = _OrdinaryFifoDelivery(task, binding)
+-                dispatch_event._friday_fifo_delivery = fifo_delivery
+-            try:
+-                response = await self._message_handler(event)
+-            finally:
+-                if fifo_delivery is not None:
+-                    dispatch_event._friday_fifo_delivery = None
+-                    if fifo_delivery.run is not None:
+-                        dispatch_event._turn_marker_handoff = False
+-                        event = fifo_delivery.event
+-                        fifo_run = fifo_delivery.run
+-                        # Own this callback before any await can let a newer run replace its slot.
+-                        fifo_callback = self.pop_post_delivery_callback(session_key, generation=fifo_run[1])
+-                        _thread_metadata = _thread_metadata_for_event(event)
+-            if fifo_run is not None and not fifo_owner_current():
+-                return  # The parked trigger never becomes a fallback delivery route.
+-            # A muted diagnostic wake ran for the session; its reply is not presented. The
+-            # policy read binds the routed profile; delivery itself stays in the launch scope.
+-            with self._media_delivery_scope(event.source):
+-                if diagnostic_wake_muted(event):
+-                    response = None
++            if external_word:
++                event._external_word_hold_owner = (self, session_key, hold_task, interrupt_event)
++                await self._message_handler(event)
++                response = None
++            else:
++                event._status_streamed_final_confirmed = False  # a retried event needs its own receipt
++                binding = getattr(event, "_friday_document_guard", None)
++                task = asyncio.current_task()
++                # The runner admits the source after this adapter dispatch starts.
++                if (self.platform == Platform.TELEGRAM and task is not None
++                        and type(binding) is tuple and len(binding) == 2
++                        and binding[0] == session_key and binding[1] is interrupt_event):
++                    fifo_delivery = _OrdinaryFifoDelivery(task, binding)
++                    dispatch_event._friday_fifo_delivery = fifo_delivery
++                try:
++                    response = await self._message_handler(event)
++                finally:
++                    if fifo_delivery is not None:
++                        dispatch_event._friday_fifo_delivery = None
++                        if fifo_delivery.run is not None:
++                            dispatch_event._turn_marker_handoff = False
++                            event = fifo_delivery.event
++                            fifo_run = fifo_delivery.run
++                            # Own this callback before any await can let a newer run replace its slot.
++                            fifo_callback = self.pop_post_delivery_callback(session_key, generation=fifo_run[1])
++                            _thread_metadata = _thread_metadata_for_event(event)
++                if fifo_run is not None and not fifo_owner_current():
++                    return  # The parked trigger never becomes a fallback delivery route.
++                # A muted diagnostic wake ran for the session; its reply is not presented. The
++                # policy read binds the routed profile; delivery itself stays in the launch scope.
++                with self._media_delivery_scope(event.source):
++                    if diagnostic_wake_muted(event):
++                        response = None
+             is_ephemeral_response = isinstance(response, EphemeralReply)
+             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
+             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+@@ -4942,12 +4977,15 @@ class BasePlatformAdapter(ABC):
+                 session_key, generation, event=event) or "")
+             if fifo_run is not None and not fifo_owner_current():
+                 return
+-            await self._run_processing_hook(
+-                "on_processing_complete", event,
+-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
++            if not external_word:
++                await self._run_processing_hook(
++                    "on_processing_complete", event,
++                    ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+             if fifo_run is not None:
+                 dispatch_returned = fifo_can_drain = True
+                 return  # Settle this event and its receipt before handing off the pending slot.
++            if external_word and (not hold_owner_current() or hold_task.cancelling()):
++                return
+             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
+             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
+             await self._flush_text_debounce_now(session_key)
+@@ -4956,26 +4994,31 @@ class BasePlatformAdapter(ABC):
+                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
+                 if not delay:  # a backed-off event stays queued until the drain task wakes
+                     self._pending_messages.pop(session_key)
++                    self._promote_external_word_tail(pending_event, session_key)
+                 logger.debug("[%s] Processing queued follow-up message", self.name)
+                 self._clear_session_guard(session_key)
+-                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
++                if not external_word:
++                    await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                 self._spawn_drain_task(pending_event, session_key, delay=delay)
+                 dispatch_returned = True
+                 return  # Drain task owns the session now.
+             dispatch_returned = True
+         except asyncio.CancelledError:
+             expected = asyncio.current_task() in self._expected_cancelled_tasks
+-            if fifo_run is None:
++            if not external_word and fifo_run is None:
+                 await self._run_processing_hook(
+                     "on_processing_complete", event,
+                     ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
+             raise
+         except BaseException as e:
+-            logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+-            if fifo_run is None or fifo_owner_current():
+-                await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
++            if external_word:
++                logger.error("[%s] External Word hold failed (%s)", self.name, type(e).__name__)
++            else:
++                logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+                 if fifo_run is None or fifo_owner_current():
+-                    _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
++                    await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
++                    if fifo_run is None or fifo_owner_current():
++                        _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
+             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
+             if isinstance(e, (SystemExit, KeyboardInterrupt)):
+                 raise
+@@ -4983,64 +5026,73 @@ class BasePlatformAdapter(ABC):
+         finally:
+             await self._release_turn_marker(event)
+             event._turn_marker_handoff = False  # a later run of this object clears its own marker
+-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
+-            # alive.
+-            if fifo_run is None or fifo_owner_current():
+-                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+-            elif typing_task is not None and not typing_task.done():
+-                typing_task.cancel()
+-            # Callback execution also occurs on exceptions and empty responses;
+-            # neither is evidence that a final answer reached the user. A partial
+-            # attachment batch cannot authorize deletion merely because text landed.
+-            receipt = "unknown"
+-            if delivery_completed and not delivery_results and getattr(event, "_status_streamed_final_confirmed", False):
+-                receipt = "confirmed"
+-            if delivery_completed and delivery_results:
+-                if all(
+-                    getattr(item, "success", False) and getattr(item, "message_id", None)
+-                    and not (isinstance(getattr(item, "raw_response", None), dict)
+-                             and (item.raw_response.get("partial_overflow") or item.raw_response.get("skipped")))
+-                    for item in delivery_results
+-                ):
+-                    receipt = "confirmed"
+-                elif any(not getattr(item, "success", False) for item in delivery_results) and all(
+-                    getattr(item, "success", False) or getattr(item, "error_kind", None) in {
+-                    "forbidden", "not_found", "too_long", "bad_format", "rate_limited",
+-                } for item in delivery_results):
+-                    receipt = "failed"
+-            if fifo_run is None:
+-                await self._fire_post_delivery_callback(session_key, interrupt_event, delivery_receipt=receipt)
+-                # Keep the direct dispatch's existing cleanup order.
+-                await self._stop_typing_refresh(
+-                    event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
+-                await self._flush_text_debounce_now(session_key)
+-                self._finish_session_task(session_key, interrupt_event)
+-                if dispatch_returned:
+-                    finished = getattr(self, "_ordinary_dm_dispatch_finished", None)
+-                    if finished is not None:
+-                        finished(event, session_key)
++            if external_word:
++                event._external_word_hold_owner = None
++                if hold_owner_current():
++                    if hold_task.cancelling():
++                        self._cleanup_finished_session_task(session_key, interrupt_event)
++                    else:
++                        await self._flush_text_debounce_now(session_key)
++                        self._finish_session_task(session_key, interrupt_event)
+             else:
+-                await self._run_post_delivery_callback(fifo_callback, delivery_receipt=receipt)
+-                if fifo_owner_current():
++                # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
++                # alive.
++                if fifo_run is None or fifo_owner_current():
++                    await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
++                elif typing_task is not None and not typing_task.done():
++                    typing_task.cancel()
++                # Callback execution also occurs on exceptions and empty responses;
++                # neither is evidence that a final answer reached the user. A partial
++                # attachment batch cannot authorize deletion merely because text landed.
++                receipt = "unknown"
++                if delivery_completed and not delivery_results and getattr(event, "_status_streamed_final_confirmed", False):
++                    receipt = "confirmed"
++                if delivery_completed and delivery_results:
++                    if all(
++                        getattr(item, "success", False) and getattr(item, "message_id", None)
++                        and not (isinstance(getattr(item, "raw_response", None), dict)
++                                 and (item.raw_response.get("partial_overflow") or item.raw_response.get("skipped")))
++                        for item in delivery_results
++                    ):
++                        receipt = "confirmed"
++                    elif any(not getattr(item, "success", False) for item in delivery_results) and all(
++                        getattr(item, "success", False) or getattr(item, "error_kind", None) in {
++                        "forbidden", "not_found", "too_long", "bad_format", "rate_limited",
++                    } for item in delivery_results):
++                        receipt = "failed"
++                if fifo_run is None:
++                    await self._fire_post_delivery_callback(session_key, interrupt_event, delivery_receipt=receipt)
++                    # Keep the direct dispatch's existing cleanup order.
+                     await self._stop_typing_refresh(
+                         event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
+-                if fifo_owner_current():
+                     await self._flush_text_debounce_now(session_key)
+-                # No await between this ownership check, the completion witness and handoff.
+-                if fifo_owner_current() and fifo_can_drain:
++                    self._finish_session_task(session_key, interrupt_event)
+                     if dispatch_returned:
+                         finished = getattr(self, "_ordinary_dm_dispatch_finished", None)
+                         if finished is not None:
+                             finished(event, session_key)
+-                    pending_event = self._pending_messages.get(session_key)
+-                    if pending_event is not None:
+-                        delay = self._requeue_backoff_delay(session_key, pending_event, event)
+-                        # The guarded child takes the slot after confirming ownership.
+-                        self._spawn_drain_task(pending_event, session_key, delay=delay, owned_handoff=True)
+-                # For an invalidated turn, retire only our own guard and leave pending untouched.
+-                if (self._session_tasks.get(session_key) is fifo_delivery.task
+-                        and self._active_sessions.get(session_key) is interrupt_event):
+-                    self._cleanup_finished_session_task(session_key, interrupt_event)
++                else:
++                    await self._run_post_delivery_callback(fifo_callback, delivery_receipt=receipt)
++                    if fifo_owner_current():
++                        await self._stop_typing_refresh(
++                            event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
++                    if fifo_owner_current():
++                        await self._flush_text_debounce_now(session_key)
++                    # No await between this ownership check, the completion witness and handoff.
++                    if fifo_owner_current() and fifo_can_drain:
++                        if dispatch_returned:
++                            finished = getattr(self, "_ordinary_dm_dispatch_finished", None)
++                            if finished is not None:
++                                finished(event, session_key)
++                        pending_event = self._pending_messages.get(session_key)
++                        if pending_event is not None:
++                            delay = self._requeue_backoff_delay(session_key, pending_event, event)
++                            # The guarded child takes the slot after confirming ownership.
++                            self._spawn_drain_task(pending_event, session_key, delay=delay, owned_handoff=True)
++                    # For an invalidated turn, retire only our own guard and leave pending untouched.
++                    if (self._session_tasks.get(session_key) is fifo_delivery.task
++                            and self._active_sessions.get(session_key) is interrupt_event):
++                        self._cleanup_finished_session_task(session_key, interrupt_event)
+ 
+     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
+     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
+@@ -5113,9 +5165,25 @@ class BasePlatformAdapter(ABC):
+             if pending_event is None:  # consumed elsewhere before this task took the slot
+                 self._cleanup_finished_session_task(session_key, guard)
+                 return
++            self._promote_external_word_tail(pending_event, session_key)
+         pending_event._friday_document_guard = (session_key, guard) if guard is not None else None
+         await self._process_message_background(pending_event, session_key)
+ 
++    def _promote_external_word_tail(self, event, session_key):
++        # This head has its own adapter task and reply anchor. Keep the next
++        # FIFO item in the slot so orphan rescue cannot substitute that item.
++        from gateway.external_word_intent import is_external_word_request
++        runner = getattr(self, "gateway_runner", None)
++        if runner is None or session_key in self._pending_messages:
++            return
++        overflow = runner._overflow_queue(session_key)
++        if overflow and (getattr(event, "_external_word_fifo_head", False)
++                         or is_external_word_request(event)
++                         or any(is_external_word_request(pending) for pending in overflow)):
++            following = runner._promote_queued_event(session_key, self, None)
++            following._external_word_fifo_head = True
++            self._pending_messages[session_key] = following
++
+     def _clear_session_guard(self, session_key: str) -> None:
+         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""
+         _active = self._active_sessions.get(session_key)
+diff --git a/gateway/run.py b/gateway/run.py
+index c4e8f7edfaa5f8b8f05c077a17aa65d5e40c4e4e..16e17131c2764790062a4a10bd55cc0c0bac7f14 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -5386,9 +5386,13 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
+ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
+     """Claim the runtime lock + PID file (O_EXCL winner is the authoritative gateway). False = lost."""
+     import atexit
++    from gateway.shutdown_watchdog import _d13_runtime_ownership_unconfirmed
+     from gateway.status import (
+-        acquire_gateway_runtime_lock, get_running_pid, release_gateway_runtime_lock,
+-        remove_pid_file, write_pid_file)
++        acquire_gateway_runtime_lock, get_running_pid, release_gateway_runtime_lock, write_pid_file,
++    )
++    if _d13_runtime_ownership_unconfirmed():
++        logger.error("D13 writer shutdown remains unconfirmed; runtime ownership retained")
++        return False
+     _current_pid = get_running_pid()
+     if _current_pid is not None and _current_pid != os.getpid():
+         logger.error("Another gateway instance (PID %d) started during our startup. "
+@@ -5403,12 +5407,23 @@ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
+         release_gateway_runtime_lock()
+         logger.error("PID file race lost to another gateway instance. Exiting.")
+         return False
+-    atexit.register(remove_pid_file)
+-    atexit.register(release_gateway_runtime_lock)
++    atexit.register(_release_gateway_runtime_on_exit)
+     _claim_host_gateway_role(force=force)
+     return True
+ 
+ 
++def _release_gateway_runtime_on_exit() -> None:
++    from gateway.shutdown_watchdog import _d13_runtime_ownership_unconfirmed
++
++    if _d13_runtime_ownership_unconfirmed():
++        from hermes_cli.observability.shared_metrics_process import stamp_exit
++        stamp_exit("crash")
++        return
++    from gateway.status import remove_pid_file, release_gateway_runtime_lock
++    remove_pid_file()
++    release_gateway_runtime_lock()
++
++
+ def _claim_host_gateway_role(force: bool = False) -> None:
+     """Take the HOST-wide gateway lock, publish the record — or REFUSE to be the second gateway.
+ 
+@@ -5807,6 +5822,30 @@ def _start_gateway_start_cron_and_housekeeping(runner):
+     return cron_stop, cron_provider, cron_thread, housekeeping_thread
+ 
+ 
++async def _join_gateway_stop_for_exit(runner) -> bool:
++    """Let the registered stop owner finish before resolving the process exit."""
++    stop_task = getattr(runner, "_stop_task", None)
++    if stop_task is None:
++        from gateway.shutdown_watchdog import _d13_runtime_ownership_unconfirmed
++
++        return not _d13_runtime_ownership_unconfirmed()
++    waiter = asyncio.current_task()
++    if stop_task is waiter:
++        logger.error("Gateway exit cannot join itself as the stop owner")
++        return False
++    try:
++        await asyncio.shield(stop_task)
++    except asyncio.CancelledError:
++        if waiter.cancelling() or not stop_task.cancelled():
++            raise
++        logger.error("Gateway exit refused: the stop owner was cancelled")
++        return False
++    except Exception as exc:
++        logger.error("Gateway exit refused: the stop owner failed (%s)", type(exc).__name__)
++        return False
++    return True
++
++
+ async def _start_gateway_shutdown_tail(
+     runner, _control_server, cron_stop: threading.Event, cron_provider,
+     cron_thread: Any, housekeeping_thread: threading.Thread,
+@@ -5852,6 +5891,9 @@ async def _start_gateway_shutdown_tail(
+     except Exception:
+         logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
+ 
++    if not await _join_gateway_stop_for_exit(runner):
++        return False
++
+     # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
+     # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
+     return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
+@@ -6034,12 +6076,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool =
+         except Exception:
+             pass
+     if runner.should_exit_cleanly:
+-        _shutdown_gateway_health_export(runner)
++        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
++        startup_exit_code = runner.exit_code
++        registered_stop = getattr(runner, "_stop_task", None) is not None
++        try:
++            stop_settled = await _join_gateway_stop_for_exit(runner)
++        finally:
++            _shutdown_gateway_health_export(runner)
+         if runner.exit_reason:
+             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
+-        # Explicit exit codes (GATEWAY_FATAL_CONFIG_EXIT_CODE) must propagate so s6 finish maps 78 → 125.
+-        if runner.exit_code is not None:
+-            raise SystemExit(runner.exit_code)
++        # s6 relies on the original typed startup refusal, independently of stop.
++        if startup_exit_code == GATEWAY_FATAL_CONFIG_EXIT_CODE:
++            raise SystemExit(startup_exit_code)
++        if not stop_settled:
++            return False
++        if registered_stop:
++            return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
++        if startup_exit_code is not None:
++            raise SystemExit(startup_exit_code)
+         return True
+     if not runner._running or runner._startup_should_abort():
+         # Startup aborted by restart/shutdown; never start cron or announce READY while stopping.
+@@ -6049,6 +6103,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool =
+                 await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
+             except Exception:
+                 logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
++            if not await _join_gateway_stop_for_exit(runner):
++                return False
+             return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
+         finally:
+             _shutdown_gateway_health_export(runner)
+@@ -6195,7 +6251,7 @@ def main():
+ 
+ 
+ def _exit_after_graceful_shutdown(exit_code: int) -> None:
+-    """Flush stdio, release the PID file + runtime lock, then hard-exit.
++    """Flush stdio and hard-exit after resolving runtime ownership.
+     ``os._exit`` (not ``sys.exit``): SystemExit runs ``Py_FinalizeEx``, which joins every non-daemon
+     thread — exactly the hang a wedged worker causes. It bypasses ``atexit``, so PID/lock release and the
+     bounded log drain (file handlers sit behind a ``QueueListener`` thread) are done here explicitly.
+@@ -6211,15 +6267,14 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
+     explicitly. Both calls are idempotent — ``remove_pid_file`` only unlinks a PID file that belongs to this
+     process, and ``release_gateway_runtime_lock`` no-ops when the lock is already released — so this is a
+     no-op on the normal shutdown path and the actual cleanup on the early-exit paths.
++    Unproved D13 writer custody keeps the runtime lock until the kernel ends
++    the process and suppresses the graceful exit record.
+     """
++    from gateway.shutdown_watchdog import _d13_runtime_ownership_unconfirmed
++
+     for stream in (sys.stdout, sys.stderr):
+         with suppress(Exception):
+             stream.flush()
+-    def _release_locks() -> None:
+-        # BEFORE the log drain (bounded, but could take its full timeout on a wedged disk); idempotent.
+-        from gateway.status import remove_pid_file, release_gateway_runtime_lock
+-        remove_pid_file()
+-        release_gateway_runtime_lock()
+ 
+     def _mark_exited() -> None:
+         # Single funnel every graceful exit passes through, so the next boot's unclean-death detector
+@@ -6235,8 +6290,12 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
+         from hermes_logging import drain_log_queue
+         drain_log_queue(timeout=1.0)
+ 
+-    for _step in (_release_locks, _mark_exited, _drain_logs):
+-        _best_effort(_step)
++    _best_effort(_release_gateway_runtime_on_exit)
++    if _d13_runtime_ownership_unconfirmed():
++        exit_code = 1
++    else:
++        _best_effort(_mark_exited)
++    _best_effort(_drain_logs)
+     os._exit(exit_code)
+ 
+ 
+diff --git a/gateway/run_busy.py b/gateway/run_busy.py
+index 8560bcf2cb4ca66477cdc601d1dcd9792b7dc462..314ff8a04c177d40f3ffe361a69ecca6fa768fc1 100644
+--- a/gateway/run_busy.py
++++ b/gateway/run_busy.py
+@@ -405,9 +405,11 @@ class GatewayBusySessionMixin:
+             getattr(existing, "message_type", None),
+             getattr(event, "message_type", None),
+         }
++        from gateway.external_word_intent import is_external_word_request
+         from gateway.session_identity import requires_original_source
+         if (
+             same_security_context
++            and not is_external_word_request(existing) and not is_external_word_request(event)
+             and (event.internal or not requires_original_source(event.source))
+             and (existing.internal or not requires_original_source(existing.source))
+             and MessageType.PHOTO in merge_types
+@@ -842,6 +844,11 @@ class GatewayBusySessionMixin:
+         if not self._admit_bot_message_for_source(event.source):
+             return True
+         event._bot_loop_admitted = True
++        from gateway.external_word_intent import is_external_word_request
++        if is_external_word_request(event):
++            if not self._draining:
++                self._queue_or_replace_pending_event(session_key, event)
++            return True
+ 
+         effective_mode = self._effective_busy_input_mode(event.source)
+         if self._draining:  # gateway restarting/stopping
+diff --git a/gateway/run_inbound.py b/gateway/run_inbound.py
+index 03c96babe0b617ba23ce1ef9dd4e3d4fe4514030..4d8645e5c7b268972f205758757427aa6c50e458 100644
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -22,6 +22,9 @@ from pathlib import Path
+ from agent.i18n import t
+ from agent.friday_baseline_bridge import atracked
+ from gateway.config import Platform
++from gateway.external_word_intent import (
++    bind_generation, hold_adapter_task_current, hold_dispatch_clear, is_external_word_request,
++)
+ from gateway.platforms.base import EphemeralReply, _OrdinaryFifoDelivery
+ from gateway.platforms.event import MessageEvent, MessageType
+ from gateway.run_busy import approval_input_words
+@@ -228,6 +231,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+             return None
+ 
+         if is_internal:
++            if is_external_word_request(event):
++                return None
+             from gateway.run_notifications_authority import admit_process_notice
+             if not admit_process_notice(self, event, source):
+                 return None
+@@ -236,12 +241,21 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
+         # counting internal/system events would keep a genuinely idle gateway awake.
+         self._scale_to_zero_note_real_inbound()
+-        event = await self._hm_pre_gateway_dispatch_hook(event, source)
+-        if event is None:
+-            return None
+-        source = event.source
++        external_word = is_external_word_request(event)
++        if external_word:
++            event.allow_gateway_control = False
++            # The legacy plugin receives the live gateway and can emit its own
++            # response. Its presence makes a fixed-only hold unavailable.
++            if (not hold_dispatch_clear()
++                    or not self._is_user_authorized_for_source(source, allow_adapter_delegation=False)):
++                return None
++        else:
++            event = await self._hm_pre_gateway_dispatch_hook(event, source)
++            if event is None:
++                return None
++            source = event.source
+ 
+-        if not self._is_user_authorized_for_source(source):
++        if not external_word and not self._is_user_authorized_for_source(source):
+             if source.user_id is None:
+                 # No user identity (Telegram service messages, channel forwards, anonymous admin
+                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
+@@ -599,7 +613,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         from gateway.platforms.base import merge_pending_message_event
+         adapter = self._delivery_adapter_for(source)
+         if adapter:
+-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
++            head = adapter._pending_messages.get(_quick_key)
++            if is_external_word_request(head) or is_external_word_request(event):
++                self._queue_or_replace_pending_event(_quick_key, event)
++            else:
++                merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+ 
+     async def _hm_busy_slash_or_photo(
+         self, event: "MessageEvent", source: SessionSource, _quick_key: str
+@@ -708,6 +726,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
+         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
+         from gateway.run import _AGENT_PENDING_SENTINEL
++        if is_external_word_request(event):
++            if not self._draining:
++                self._queue_or_replace_pending_event(_quick_key, event)
++            return None
+         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
+         if _handled:
+             return _result
+@@ -1355,22 +1377,28 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         if _paused_notice is not None:
+             return _paused_notice
+ 
+-        from gateway.hosted_room_native import dispatch_native_room
+-        _room_handled, _room_reply = await dispatch_native_room(
+-            self, event, source, is_internal=is_internal)
+-        if _room_handled:
+-            return _room_reply
++        external_word = is_external_word_request(event)
++        if not external_word:
++            from gateway.hosted_room_native import dispatch_native_room
++            _room_handled, _room_reply = await dispatch_native_room(
++                self, event, source, is_internal=is_internal)
++            if _room_handled:
++                return _room_reply
+ 
+-        # Controls retain native pause policy and require no new agent/session.
+-        from gateway.run_plugin_commands import dispatch_control
+-        _control_handled, _control_reply = await dispatch_control(self, event, source)
+-        if _control_handled:
+-            return _control_reply
++            # Controls retain native pause policy and require no new agent/session.
++            from gateway.run_plugin_commands import dispatch_control
++            _control_handled, _control_reply = await dispatch_control(self, event, source)
++            if _control_handled:
++                return _control_reply
+ 
+         _quick_key = self._session_key_for_source(source)
+-        _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
+-        if _reply is not None:
+-            return _reply
++        if external_word:
++            if not hold_adapter_task_current(self, event, _quick_key):
++                return None
++        else:
++            _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
++            if _reply is not None:
++                return _reply
+ 
+         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
+         self._hm_evict_idle_stale_agent(_quick_key)
+@@ -1379,9 +1407,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         if self._is_session_running(_quick_key):
+             return await self._hm_handle_running_session_message(event, source, _quick_key)
+ 
+-        _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
+-        if _handled:
+-            return _result
++        if not external_word:
++            _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
++            if _handled:
++                return _result
+ 
+         # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
+         # conversational "yes" would execute a dangerous command.
+@@ -1398,6 +1427,19 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+                 logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
+                 return t("gateway.busy.draining_maintenance")
+ 
++        # The lobby check awaits an executor. A stop may have displaced this task's guard.
++        if external_word and not hold_adapter_task_current(self, event, _quick_key):
++            return None
++        # An orphan must not borrow the arriving adapter event's reply anchor.
++        fifo_adapter = None
++        overflow = self._overflow_queue(_quick_key)
++        if overflow and (external_word or any(is_external_word_request(pending) for pending in overflow)):
++            adapter = self._delivery_adapter_for(source)
++            if adapter is not None and _quick_key not in adapter._pending_messages:
++                if not external_word and not hold_adapter_task_current(self, event, _quick_key, adapter=adapter):
++                    return None
++                fifo_adapter = adapter
++
+         # Claim this session before any await: many awaits sit between here and _run_agent
+         # registering the real AIAgent; without this sentinel a second message during any of them
+         # passes the "already running" guard and spins up a duplicate agent for the same session.
+@@ -1406,6 +1448,17 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
+             return _limit_message
+ 
++        if fifo_adapter is not None:
++            # The next adapter task claims its own slot. Keep the normal
++            # cross-process admission check before changing the idle FIFO.
++            if _active_session_lease is not None:
++                _active_session_lease.release()
++            head = self._promote_queued_event(_quick_key, fifo_adapter, None)
++            head._external_word_fifo_head = True
++            fifo_adapter._pending_messages[_quick_key] = head
++            self._enqueue_fifo(_quick_key, event, fifo_adapter)
++            return None  # The adapter drains that original head under its own task.
++
+         dispatch_guard_binding = getattr(dispatch_event, "_friday_document_guard", None)
+         fifo_trigger = event
+         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
+@@ -1422,6 +1475,23 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+         _run_generation = self._begin_session_run_generation(_quick_key)
+ 
+         try:
++            if is_external_word_request(event):
++                # A fresh native generation exists. Keep the typed request on this
++                # exact event outside prompts and transport metadata. No tool, agent,
++                # writer, attachment or approval path is entered here.
++                if not self._is_user_authorized_for_source(source, allow_adapter_delegation=False):
++                    return None
++                from hermes_cli.friday_user_scope import ScopeDenied
++                try:
++                    async with self._async_profile_scope_for_source(source):
++                        binding = bind_generation(self, event, source, _quick_key, _run_generation)
++                        if binding is not None:
++                            owner = self._transport_owner(source)
++                            if owner is not None:
++                                await owner[0]._send_external_word_hold(self, event, source, binding)
++                except ScopeDenied:
++                    pass
++                return None
+             fifo_delivery = getattr(dispatch_event, "_friday_fifo_delivery", None)
+             if (event is not fifo_trigger and isinstance(fifo_delivery, _OrdinaryFifoDelivery)
+                     and fifo_delivery.task is asyncio.current_task()
+@@ -1488,8 +1558,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
+             self._release_turn_lease(_quick_key, _run_generation)
+             # Retain the exact original unwind only after its lease release.
+             # Read-only closure still requires the owned resource/drain proof.
+-            from gateway.ordinary_f04_bridge import dispatch_finalized as _f04_finalized
+-            _f04_finalized(self, event, _quick_key, _run_generation)
++            if not is_external_word_request(event):
++                from gateway.ordinary_f04_bridge import dispatch_finalized as _f04_finalized
++                _f04_finalized(self, event, _quick_key, _run_generation)
+ 
+     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
+         """Restore the per-session model override captured by ``/model --once`` or ``/moa``.
+diff --git a/gateway/run_profile_reconcile.py b/gateway/run_profile_reconcile.py
+index 29652f31c96fc09423025375f09be0fad6624f29..17d64a959669e98cf51e367ddedf10dea02dd66b 100644
+--- a/gateway/run_profile_reconcile.py
++++ b/gateway/run_profile_reconcile.py
+@@ -316,6 +316,8 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
+         if not runner._multiplex_on() or not runner._running or runner._served_profile_homes is None:
+             return {"error": "host multiplexer is not ready"}
+         async with runner._reconcile_lock():
++            if not runner._running or getattr(runner, "_stop_task", None) is not None:
++                return {"error": "host multiplexer is not ready"}
+             active = getattr(runner, "_primary_profile_name", None) or "default"
+             if not isinstance(name, str) or not name or name == active:
+                 return {"error": "a non-launch profile name is required"}
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index 524deb47e779c9909522b9f5d855e308c7ec7984..b889389005832f6c4dd9d8239817f83e0d8131e0 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -28,12 +28,32 @@ from gateway.restart import (
+     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
+ )
+ from gateway.run_common import _UNSET
+-from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
++from gateway.shutdown_watchdog import (
++    _d13_runtime_ownership_unconfirmed, _d13_shutdown_verdict_pending, _d13_shutdown_writers,
++    arm_shutdown_watchdog, resolve_shutdown_watchdog_delay,
++)
+ 
+ # Log-record parity with the origin module.
+ logger = logging.getLogger("gateway.run")
+ 
+ 
++def _d13_writers_confirmed(ctx) -> bool:
++    if getattr(ctx, "d13_unconfirmed", False):
++        return False
++    writers = getattr(ctx, "d13_writers", None)
++    if writers is None:
++        return not _d13_runtime_ownership_unconfirmed()
++    writers.update(_d13_shutdown_writers)
++    if writers:
++        _d13_shutdown_verdict_pending.set()
++    try:
++        return all(lease.d13_settlement_pending is False and lease.d13_shutdown_confirmed is True
++                   for lease in writers)
++    except Exception as exc:
++        logger.error("D13 writer status failed (%s)", type(exc).__name__)
++        return False
++
++
+ def _exit_with_failure_verdict(runner) -> bool:
+     """True (after logging the reason) when the runner asked for a failure exit."""
+     if not runner.should_exit_with_failure:
+@@ -183,6 +203,9 @@ class GatewayShutdownMixin:
+         # API-server runs still live when the adapters were released; the adapter map is empty by the
+         # time the SessionDB close gate runs, so the count has to be taken before ``adapters.clear()``.
+         api_live: int = 0
++        d13_writers: set = dataclasses.field(default_factory=set)
++        d13_unconfirmed: bool = False
++        exit_confirmed: Optional[bool] = None
+ 
+         def elapsed(self) -> float:
+             return time.monotonic() - self.started_at
+@@ -2204,11 +2227,20 @@ class GatewayShutdownMixin:
+             and not any(t.cancelled() or t.exception() is not None for t in owners)
+         )
+ 
++    def _stop_startup_cleanup_unconfirmed(self) -> bool:
++        return (
++            getattr(self, "_startup_shutdown_unconfirmed", False)
++            or bool(getattr(self, "_startup_unconfirmed_adapters", None))
++            or bool(getattr(self, "_startup_cleanup_failure", None))
++            or any(not task.done() or task.cancelled() or task.exception() is not None
++                   for task in self._stop_startup_cleanup_owners())
++        )
++
+     async def _stop_persist_exit_state(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
+         """PID/lock release, clean-shutdown marker, restart markers, terminal runtime status."""
+         from gateway.run import _hermes_home, _planned_restart_notification_path, _shutdown_gateway_health_export
+         from utils import atomic_json_write
+-        from gateway.status import remove_pid_file, release_gateway_runtime_lock
++        from gateway.status import flush_runtime_status_async, remove_pid_file, release_gateway_runtime_lock
+         try:
+             startup_settled = await self._stop_settle_startup_cleanup(ctx)
+         except BaseException:
+@@ -2220,38 +2252,57 @@ class GatewayShutdownMixin:
+             self._draining = True
+             self._shutdown_event.set()
+             raise
+-        if not startup_settled:
+-            reason = "Startup cleanup remains unconfirmed; PID/lock ownership retained"
++        loop = asyncio.get_running_loop()
++        flush_timeout = 2.0
++        budget = getattr(self, "_launchd_exit_timeout_s", None)
++        if getattr(self, "_stop_requested_by_signal", False) and isinstance(budget, (int, float)) and budget > 0:
++            flush_timeout = max(0.0, min(flush_timeout, budget - ctx.elapsed()))
++        deadline = loop.time() + flush_timeout
++
++        guarded = bool(ctx.d13_writers or _d13_shutdown_writers)
++
++        async def flush_status(*, terminal: bool) -> None:
++            remaining = max(0.0, deadline - loop.time())
++            try:
++                # The writer's inner timeout starts after executor admission.
++                # Cover that wait with the same existing shutdown deadline.
++                if guarded and remaining <= 0:
++                    return
++                async with asyncio.timeout_at(deadline if guarded else None):
++                    flushed = await flush_runtime_status_async(timeout=remaining)
++                if not flushed and terminal:
++                    logger.warning("Timed out flushing terminal gateway runtime status")
++            except TimeoutError:
++                if terminal:
++                    logger.warning("Timed out flushing terminal gateway runtime status")
++            except Exception:
++                logger.debug("Failed to flush gateway shutdown status", exc_info=True)
++
++        if guarded:
++            # Pending status work can let an earlier lifecycle task report its
++            # disposition. Keep ownership and publish no terminal state yet.
++            await flush_status(terminal=False)
++
++        startup_settled = startup_settled and not GatewayShutdownMixin._stop_startup_cleanup_unconfirmed(self)
++        d13_settled = _d13_writers_confirmed(ctx)
++        if not startup_settled or not d13_settled:
++            if not startup_settled:
++                self._startup_shutdown_unconfirmed = True
++            if not d13_settled:
++                ctx.d13_unconfirmed = True
++                reason = "D13 writer shutdown remains unconfirmed; PID/lock ownership retained"
++            else:
++                reason = "Startup cleanup remains unconfirmed; PID/lock ownership retained"
+             self._exit_with_failure = True
+             self._exit_reason = reason
+-            self._startup_shutdown_unconfirmed = True
+             self._draining = True
+             self._shutdown_event.set()
+             logger.error(reason)
+-            self._update_runtime_status("startup_failed", reason)
+-            try:
+-                from gateway.status import flush_runtime_status_async
+-                flush_timeout = 2.0
+-                budget = getattr(self, "_launchd_exit_timeout_s", None)
+-                if getattr(self, "_stop_requested_by_signal", False) and isinstance(budget, (int, float)) and budget > 0:
+-                    flush_timeout = max(0.0, min(flush_timeout, budget - ctx.elapsed()))
+-                await flush_runtime_status_async(timeout=flush_timeout)
+-            except Exception:
+-                logger.debug("Failed to flush uncertain shutdown status", exc_info=True)
++            self._update_runtime_status("startup_failed" if d13_settled else "degraded", reason)
++            ctx.exit_confirmed = False
++            await flush_status(terminal=True)
+             _shutdown_gateway_health_export(self)
+             return
+-        remove_pid_file()
+-        release_gateway_runtime_lock()
+-        # Clean-shutdown marker skips crash-turn recovery next boot; a timed-out drain left
+-        # half-finished sessions, so no marker — the next startup recovers their turn markers.
+-        if not ctx.timed_out:
+-            with suppress(Exception):
+-                (_hermes_home / ".clean_shutdown").touch()
+-        else:
+-            logger.info(
+-                "Skipping .clean_shutdown marker — drain timed out with "
+-                "interrupted agents; next startup will recover their interrupted turns."
+-            )
+         # Stuck-loop counter: sessions active across 3 consecutive restarts are auto-suspended next boot.
+         if ctx.active_agents:
+             self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
+@@ -2281,20 +2332,21 @@ class GatewayShutdownMixin:
+             self._update_runtime_status("running", self._exit_reason)
+         else:
+             self._update_runtime_status("stopped", self._exit_reason)
+-        try:
+-            from gateway.status import flush_runtime_status_async
+-            # Never outlive the launchd exit budget (``_launchd_exit_timeout_s`` is set by the
+-            # supervised-restart path when it exists; a plain 2 s bound otherwise). The cap only
+-            # applies to signal-driven stops — a programmatic stop is not racing the supervisor.
+-            flush_timeout = 2.0
+-            budget = getattr(self, "_launchd_exit_timeout_s", None)
+-            signal_stop = getattr(self, "_stop_requested_by_signal", False)
+-            if signal_stop and isinstance(budget, (int, float)) and budget > 0:
+-                flush_timeout = max(0.0, min(flush_timeout, budget - ctx.elapsed()))
+-            if not await flush_runtime_status_async(timeout=flush_timeout):
+-                logger.warning("Timed out flushing terminal gateway runtime status")
+-        except Exception:
+-            logger.debug("Failed to flush terminal gateway runtime status", exc_info=True)
++        # Commit the verified ownership decision without yielding the loop.
++        # Clean-shutdown marker skips crash-turn recovery next boot; a timed-out drain left
++        # half-finished sessions, so no marker — the next startup recovers their turn markers.
++        if not ctx.timed_out:
++            with suppress(Exception):
++                (_hermes_home / ".clean_shutdown").touch()
++        else:
++            logger.info(
++                "Skipping .clean_shutdown marker — drain timed out with "
++                "interrupted agents; next startup will recover their interrupted turns."
++            )
++        remove_pid_file()
++        release_gateway_runtime_lock()
++        ctx.exit_confirmed = True
++        await flush_status(terminal=True)
+         _shutdown_gateway_health_export(self)
+         logger.info("Gateway stopped (total teardown %.2fs)", ctx.elapsed())
+ 
+@@ -2329,6 +2381,9 @@ class GatewayShutdownMixin:
+         ctx = GatewayShutdownMixin._StopContext(
+             deferred_count=getattr(self, "_active_deferred_agent_worker_count", lambda: 0)
+         )
++        ctx.d13_writers.update(_d13_shutdown_writers)
++        if ctx.d13_writers:
++            _d13_shutdown_verdict_pending.set()
+         if not os.environ.get("PYTEST_CURRENT_TEST"):
+             arm_shutdown_watchdog(
+                 _effective_watchdog_leash(self), done_event=_watchdog_done,
+@@ -2351,24 +2406,28 @@ class GatewayShutdownMixin:
+             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
+             await GatewayRunner._stop_persist_exit_state(self, ctx)
+         finally:
+-            # A failure before the join can also leave raw/connect/cleanup owners live. Inspect
+-            # every retained owner, including completed failures whose callbacks may not yet run.
+-            startup_tasks = self._stop_startup_cleanup_owners()
+-            startup_uncertain = (
+-                getattr(self, "_startup_shutdown_unconfirmed", False)
+-                or bool(getattr(self, "_startup_unconfirmed_adapters", None))
+-                or bool(getattr(self, "_startup_cleanup_failure", None))
+-                or any(not task.done() or task.cancelled() or task.exception() is not None
+-                       for task in startup_tasks)
+-            )
+-            if startup_uncertain:
+-                self._startup_shutdown_unconfirmed = True
+-                self._exit_with_failure = True
+-                self._exit_reason = self._exit_reason or "Startup cleanup remains unconfirmed; ownership retained"
+-                self._draining = True
+-                self._shutdown_event.set()
+-            else:
+-                # Keep the original deadline/exit policy; only confirmed cleanup disarms it.
++            if ctx.exit_confirmed is None:
++                # An interrupted owner never reached the commit decision.
++                # Preserve the existing fallback for owners of resources
++                # whose teardown failed before terminal persistence.
++                startup_uncertain = GatewayShutdownMixin._stop_startup_cleanup_unconfirmed(self)
++                d13_uncertain = not _d13_writers_confirmed(ctx)
++                if startup_uncertain:
++                    self._startup_shutdown_unconfirmed = True
++                if d13_uncertain or startup_uncertain:
++                    reason = ("D13 writer shutdown remains unconfirmed; ownership retained" if d13_uncertain
++                              else "Startup cleanup remains unconfirmed; ownership retained")
++                    self._exit_with_failure = True
++                    self._exit_reason = self._exit_reason or reason
++                    self._draining = True
++                    self._shutdown_event.set()
++                ctx.exit_confirmed = not d13_uncertain and not startup_uncertain
++            if ctx.exit_confirmed:
++                if ctx.d13_writers:
++                    _d13_shutdown_writers.difference_update(ctx.d13_writers)
++                    _d13_shutdown_verdict_pending.clear()
++                # Keep the original deadline and exit policy. The same
++                # confirmed ownership decision disarms the hard backstop.
+                 _watchdog_done.set()
+ 
+     async def stop(
+@@ -2392,8 +2451,15 @@ class GatewayShutdownMixin:
+             await asyncio.shield(self._stop_task)
+             return
+         self._stop_task = asyncio.create_task(GatewayRunner._stop_impl(self))
++        self._stop_task.add_done_callback(self._wake_for_terminal_stop)
+         await asyncio.shield(self._stop_task)
+ 
++    def _wake_for_terminal_stop(self, owner: asyncio.Task) -> None:
++        # A stop can fail before the usual release-phase wake. The main task
++        # still needs to run its exit tail and resolve that owner's outcome.
++        if self._stop_task is owner:
++            self._shutdown_event.set()
++
+     async def wait_for_shutdown(self) -> None:
+         """Wait for shutdown signal."""
+         await self._shutdown_event.wait()
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+index 4c3b52f68b675a3ac4a7405928c031804ce43f8b..fe965037880303e72de544872fb300b0ae6968ea 100644
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -22,6 +22,7 @@ from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
+ from contextlib import nullcontext, suppress
+ from contextvars import copy_context
+ from gateway.config import Platform
++from gateway.external_word_intent import is_external_word_request
+ from gateway.media_repair import repair_explicit_computer_use_media_paths
+ from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+ from gateway.platforms.event import MessageEvent
+@@ -3401,7 +3402,7 @@ class GatewayTurnMixin:
+         from gateway.run import _build_media_placeholder
+         _peek_event = adapter._pending_messages.get(session_key)
+         pending_text = None
+-        if _peek_event is not None:
++        if _peek_event is not None and not is_external_word_request(_peek_event):
+             pending_text = _peek_event.text or ""
+             if self._pending_event_audio_paths(_peek_event):
+                 pending_text, _ = await self._transcribe_and_echo_pending_voice(
+@@ -3737,6 +3738,16 @@ class GatewayTurnMixin:
+         )
+         pending_event = None
+         pending = None
++        defer_external = False
++        if result and adapter and session_key:
++            slot = getattr(adapter, "_pending_messages", None)
++            if isinstance(slot, dict):
++                head = slot.get(session_key)
++                if head is None:
++                    overflow = self._overflow_queue(session_key)
++                    if overflow and is_external_word_request(overflow[0]):
++                        head = slot[session_key] = self._promote_queued_event(session_key, adapter, None)
++                defer_external = is_external_word_request(head)
+         if (result and adapter and session_key and not self._draining
+                 and getattr(source, '_friday_user_scope', None) is not None
+                 and not (result.get('pending_steer') or '').strip()):
+@@ -3757,7 +3768,7 @@ class GatewayTurnMixin:
+                         and getattr(queued_source, 'platform', None) == Platform.TELEGRAM
+                         and getattr(queued_source, '_friday_user_scope', None) is not None):
+                     return None, None
+-        if result and adapter and session_key:
++        if result and adapter and session_key and not defer_external:
+             pending_event = _dequeue_pending_event(adapter, session_key)
+             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
+             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
+@@ -3958,7 +3969,12 @@ class GatewayTurnMixin:
+             )
+             adapter = self._delivery_adapter_for(source)
+             if adapter and pending_event:
+-                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
++                head = adapter._pending_messages.get(session_key)
++                if is_external_word_request(head):
++                    self._session_state(session_key).conversation.queued_events.insert(0, head)
++                    adapter._pending_messages[session_key] = pending_event
++                else:
++                    merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+             elif adapter and hasattr(adapter, 'queue_message'):
+                 adapter.queue_message(session_key, pending)
+             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
+diff --git a/gateway/shutdown_flush.py b/gateway/shutdown_flush.py
+index 74af44744f5a636e71650debd4fe50e4b142f456..6a5c5d46c00ddf15a3d5d1dbb188a7eb8436d613 100644
+--- a/gateway/shutdown_flush.py
++++ b/gateway/shutdown_flush.py
+@@ -191,6 +191,9 @@ def _json_safe(value: Any) -> bool:
+ 
+ def _serialise_value(value: Any) -> Optional[dict]:
+     """Convert a pending message value to a JSON-serialisable dict."""
++    from gateway.external_word_intent import is_external_word_request
++    if is_external_word_request(value):
++        return None  # SDK actor proof is process-local; never replay as ordinary text.
+     if hasattr(value, "text"):  # MessageEvent-like object
+         result: Dict[str, Any] = {"text": getattr(value, "text", "")}
+         for attr in ("session_id", "platform", "sender_id", "sender_name", "reply_to", "media",
+diff --git a/gateway/shutdown_watchdog.py b/gateway/shutdown_watchdog.py
+index 6a0f09f6b0bae50bf512c20624821a7aaf54c8b7..c721019aef3f473fd7f957789d4255b63ef8dc93 100644
+--- a/gateway/shutdown_watchdog.py
++++ b/gateway/shutdown_watchdog.py
+@@ -30,6 +30,16 @@ from utils import atomic_json_write
+ 
+ logger = logging.getLogger(__name__)
+ 
++# Exact managed acquisitions register before an adapter can be detached. The
++# stop owner holds its verdict across persistence and watchdog disarm.
++_d13_shutdown_writers = set()
++_d13_shutdown_verdict_pending = threading.Event()
++
++
++def _d13_runtime_ownership_unconfirmed() -> bool:
++    return _d13_shutdown_verdict_pending.is_set() or bool(_d13_shutdown_writers)
++
++
+ # Extra leash beyond ``agent.restart_drain_timeout`` so a slow-but-progressing drain survives.
+ # Matches the issue #66892 suggested hardening.
+ DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S = 60.0
+@@ -162,9 +172,10 @@ def _mark_exited_quietly(exit_code: int, reason: str) -> None:
+     ``gateway_state.json`` (so ``hermes gateway status`` and every other reader of that file stop
+     seeing ``running`` for a process the watchdog killed — #113372). The runtime-status write goes
+     LAST: it is the record housekeeping refreshes, so nothing may overwrite it after we stamp it."""
+-    with contextlib.suppress(Exception):
+-        from gateway.lifecycle_ledger import mark_exited
+-        mark_exited(exit_code, reason=reason)
++    if not _d13_runtime_ownership_unconfirmed():
++        with contextlib.suppress(Exception):
++            from gateway.lifecycle_ledger import mark_exited
++            mark_exited(exit_code, reason=reason)
+     with contextlib.suppress(Exception):  # os._exit skips atexit: stamp the exit-metrics marker now
+         from hermes_cli.observability.shared_metrics_process import stamp_exit
+         stamp_exit("watchdog")
+@@ -331,13 +342,11 @@ def arm_shutdown_watchdog(
+                 stream.flush()
+         # Mirror _exit_after_graceful_shutdown: release PID file + runtime lock BEFORE the log drain
+         # (never strand locks), then drain the log queue so logger.critical lands before os._exit.
+-        with contextlib.suppress(Exception):
+-            # Mirror _exit_after_graceful_shutdown: release PID file + runtime lock BEFORE the log drain
+-            # (locks must never be stranded), then drain the async log queue so the logger.critical above
+-            # actually reaches the file before os._exit bypasses atexit. (#66892)
+-            from gateway.status import remove_pid_file, release_gateway_runtime_lock
+-            remove_pid_file()
+-            release_gateway_runtime_lock()
++        if not _d13_runtime_ownership_unconfirmed():
++            with contextlib.suppress(Exception):
++                from gateway.status import remove_pid_file, release_gateway_runtime_lock
++                remove_pid_file()
++                release_gateway_runtime_lock()
+         with contextlib.suppress(Exception):
+             from hermes_logging import drain_log_queue
+             drain_log_queue(timeout=1.0)
+diff --git a/hermes_cli/friday_ordinary_gateway.py b/hermes_cli/friday_ordinary_gateway.py
+index 5172f1464c31b217ac2e8cdb76b1e369c049f6df..78333c9cd986fc049af6b241f5182d687b83da5e 100644
+--- a/hermes_cli/friday_ordinary_gateway.py
++++ b/hermes_cli/friday_ordinary_gateway.py
+@@ -266,15 +266,23 @@ def invocation(home, contract, phase):
+         expected = gateway.get_service_name() + '.service'
+         rows = Path('/proc/self/cgroup').read_text().splitlines()
+         global _UNIT_BIRTH
+-        birth = (os.getpid(), Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19], expected)
++        birth = {"pid": os.getpid(), "birth_ticks": int(Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19]),
++                 "unit": expected, "boot_id": Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+         require(len(rows) == 1 and rows[0].startswith('0::/')
+-                and rows[0].rsplit('/',1)[-1] == expected
+-                and (_UNIT_BIRTH == birth or (_UNIT_BIRTH is None
+-                    and re.fullmatch('[0-9a-f]{32}', os.environ.get('INVOCATION_ID','')) is not None)),
+-                'native_user_unit_required')
++                and rows[0].rsplit('/',1)[-1] == expected, 'native_user_unit_required')
++        birth["cgroup"] = rows[0][3:]
++        invocation_id = os.environ.get("INVOCATION_ID", "") if _UNIT_BIRTH is None else _UNIT_BIRTH["invocation_id"]
++        birth["invocation_id"] = invocation_id
++        require(_UNIT_BIRTH == birth or (_UNIT_BIRTH is None
++                and re.fullmatch('[0-9a-f]{32}', invocation_id) is not None), 'native_user_unit_required')
+         _UNIT_BIRTH = birth  # Native dotenv deliberately removes nonglobal environment names.
+ 
+ 
++def receiver_invocation():
++    """Return the service identity admitted before native dotenv cleanup."""
++    return dict(_UNIT_BIRTH) if _UNIT_BIRTH is not None else None
++
++
+ def check(home, marker=None, *, role=True):
+     from hermes_cli import friday_dashboard_owner as owner
+     from hermes_cli.friday_credential_admission import configuration
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+index 900efd26295616def49df011a99cb9368e6e72f0..6cc8e53676a469397363eedc4514c7021552585e 100644
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -626,6 +626,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         self._update_receipts_loaded: set = set()
+         self._update_receipts_dirty: set = set()
+         self._update_receipt_flush: Optional[asyncio.Task] = None
++        self._receipt_writer_lease = None
++        self._external_word_update_receipts: dict[str, dict[str, float]] = {}
+         self._bot: Optional[Bot] = None
+         self._webhook_mode: bool = False
+         self._mention_patterns = self._compile_mention_patterns()
+@@ -3198,7 +3200,23 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         if claim is not None:
+             claim.failed = True
+ 
++    async def _dispatch_external_word_update(self, update: Update, message: Message) -> None:
++        # Selected updates never enter any PTB plugin group. Only original private
++        # text and document captions can reach the same-event holding path.
++        if update.message is message and message.chat.type == "private":
++            if message.text is not None:
++                await self._handle_text_message(update, None)
++            elif message.document is not None:
++                await self._handle_media_message(update, None)
++
+     async def handle_message(self, event: MessageEvent) -> None:
++        from gateway.external_word_intent import is_external_word_request
++        if is_external_word_request(event):
++            from gateway.ordinary_dm_ingress import refuse_external_word_hold
++            self._accept_update()
++            if not refuse_external_word_hold(self, event):
++                await super().handle_message(event)
++            return
+         arm = getattr(self, "_ordinary_dm_wire_arm", None)
+         if arm is None or arm.ingress is None:
+             self._accept_update()
+@@ -3498,6 +3516,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+             logger.warning(
+                 "[%s] Connected in degraded Telegram mode: gateway is alive, polling will be retried in the background", self.name)
+ 
++    def _d13_writer_acquisition_eligible(self) -> bool:
++        from hermes_cli.friday_credential_admission import managed
++        from hermes_cli.friday_dashboard_owner import SOURCE
++        from hermes_cli.friday_ordinary_gateway import receiver_invocation
++
++        return self._update_receipt_dir == SOURCE.parent and receiver_invocation() is not None and managed()
++
++    def _native_stop_registered(self) -> bool:
++        return getattr(getattr(self, "gateway_runner", None), "_stop_task", None) is not None
++
+     async def connect(self, *, is_reconnect: bool = False) -> bool:
+         """Connect via long polling, or a webhook server if ``TELEGRAM_WEBHOOK_URL`` is set.
+ 
+@@ -3508,6 +3536,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         TELEGRAM_WEBHOOK_SECRET."""
+         from hermes_cli import friday_credential_admission as admission
+ 
++        from .d13_writer_settlement import SettlementRetiring, bind as bind_writer_settlement
++        from .receipt_writer_lease import ReceiptWriterBusy, ReceiptWriterLease
++
++        if getattr(self, "_receipt_writer_lease", None) is not None:
++            return False
++        protected_acquisition = self._d13_writer_acquisition_eligible()
++        if protected_acquisition and self._native_stop_registered():
++            return False
+         # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.
+         self._polling_teardown_started = False
+         self._webhook_mode = False  # re-evaluated on every explicit connection
+@@ -3519,10 +3555,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+             logger.error("[%s] No bot token configured", self.name)
+             self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
+             return False
++        try:
++            lease = ReceiptWriterLease(self, self.config.token)
++        except (OSError, ImportError, ReceiptWriterBusy):
++            self._set_fatal_error("telegram_receipt_writer_busy", "Telegram receipt writer custody unavailable", retryable=True)
++            return False
++        self._receipt_writer_lease = lease
++        if protected_acquisition:
++            lease.register_d13()
+         try:
+             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
++                # The stock helper fills these fields even on refusal.
++                self._platform_lock_identity = None
++                lease.close_transport()
+                 return False
+-            from plugins.platforms.telegram.update_admission import TelegramApplication, build_update_processor
++            lease.bind_legacy()
++            from plugins.platforms.telegram.update_admission import TelegramApplication, build_update_processor, _receipt_path
+             builder = Application.builder().token(self.config.token)
+             builder.application_class(TelegramApplication, {"adapter": self})
+             custom_base_url = self.config.extra.get("base_url")
+@@ -3536,6 +3584,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                 builder = builder.local_mode(True)
+                 logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
+             request, get_updates_request = await self._build_ptb_requests()
++            lease.require_startup()
+             builder = builder.request(request).get_updates_request(get_updates_request)
+             # PTB's default processor awaits each update inline, so one slow turn deafens every chat.
+             # Concurrent across chats, FIFO within a chat; the builder keeps this instance, so the
+@@ -3547,9 +3596,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+             self._wire_plugin_handlers(self._app)
+             self._register_handlers(self._app)
+             await self._initialize_app_with_retries(builder)
+-            if admission.managed():
++            lease.require_startup()
++            # Initialization may have yielded after the native stop owner was
++            # registered. Do not acquire the protected receipt path or start polling.
++            if self._native_stop_registered() and (protected_acquisition or self._d13_writer_acquisition_eligible()):
++                raise SettlementRetiring("d13_gateway_stopping")
++            managed = admission.managed()
++            if managed:
+                 admission.channel_identity("telegram", self._app.bot.id)
++            bot_id = self._app.bot.id
++            lease.bind_application(self._app, _receipt_path(self, bot_id), bot_id)
++            if managed:
++                lease.settlement = bind_writer_settlement(lease)
++                if lease.settlement is not None and not protected_acquisition:
++                    lease.register_d13()
+             await self._app.start()
++            lease.require_startup()
+             # Profile-scoped like TELEGRAM_WEBHOOK_SECRET: under multiplex os.environ holds the DEFAULT
+             # profile's URL, and registering it on a secondary bot pushes that bot's updates to the
+             # default's listener (and stops polling for it).
+@@ -3558,7 +3620,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                 await self._start_webhook_mode(webhook_url, is_reconnect=is_reconnect)
+             else:
+                 await self._start_polling_mode(is_reconnect=is_reconnect)
++            lease.require_startup()
+             self._mark_connected()
++            lease.ready = True
+             # WARNING, not INFO: "Connecting…" above is WARNING and reaches the terminal; an INFO success
+             # line made healthy startups look stalled at "attempt 1/8".
+             logger.warning("[%s] Connected to Telegram (%s mode)", self.name, "webhook" if self._webhook_mode else "polling")
+@@ -3575,12 +3639,25 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+             # task so one slow call can't sink the (gateway-timed) connect while transport is live.
+             self._start_post_connect_housekeeping()
+             return True
++        except SettlementRetiring:
++            lease.startup_done.set()
++            await self.disconnect()
++            self._set_fatal_error("friday_receiving_scope_retiring", "Friday receiving scope retiring", retryable=False)
++            return False
+         except admission.CredentialDenied:
++            lease.startup_done.set()
+             await self.disconnect()
+             self._set_fatal_error("friday_account_refused", "Friday native receiving account unproved", retryable=False)
+             return False
++        except asyncio.CancelledError:
++            lease.closing = True
++            lease.startup_done.set()
++            await asyncio.shield(self.disconnect())
++            raise
+         except Exception as e:
+-            self._release_platform_lock()
++            lease.closing = True
++            lease.startup_done.set()
++            await self.disconnect()
+             safe_error = _redact_telegram_error_text(e)
+             # Classify by exception TYPE (never message text): auth failures can never self-heal, so
+             # marking them retryable put agents into a silent eternal reconnect loop.
+@@ -3596,6 +3673,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                 self._set_fatal_error("telegram_connect_error", f"Telegram startup failed: {safe_error}", retryable=True)
+             logger.error("[%s] Failed to connect to Telegram: %s", self.name, safe_error)
+             return False
++        finally:
++            lease.startup_done.set()
++            lease.finish_if_settled()
+ 
+     async def _set_status_indicator(self, online: bool) -> None:
+         """Set the bot's short description to the online/offline text (closest Bot API surface to
+@@ -3685,8 +3765,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+             task.add_done_callback(_consume_abandoned_task)
+             raise
+         if task in done:
+-            with contextlib.suppress(asyncio.CancelledError):
+-                await task
++            if task.cancelled():
++                return False
++            await task
+             return True
+         task.cancel()
+         task.add_done_callback(_consume_abandoned_task)
+@@ -3709,7 +3790,47 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         setattr(self, attr, None)
+ 
+     async def disconnect(self) -> None:
+-        """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
++        """Retire the exact application and keep custody through its writer."""
++        lease = getattr(self, "_receipt_writer_lease", None)
++        if lease is None:
++            await self._disconnect_receipt_owner(None)
++            return
++        allow_drain = not lease.closing and lease.accepts(self._app)
++        lease.closing = True
++        task = lease.stop_task
++        owns_settlement_waiter = False
++        if task is None or task.done() and lease.settlement_task is None:
++            lease.ordinary_drain = allow_drain
++            if lease.settlement is not None and allow_drain and lease.ready:
++                lease.stop_started_ns = time.monotonic_ns()
++                lease.settlement_waiter_pending = owns_settlement_waiter = True
++            task = asyncio.create_task(self._disconnect_receipt_owner(lease))
++            lease.stop_task = task
++            task.add_done_callback(lease.stop_done)
++        try:
++            await asyncio.shield(task)
++            if lease.settlement_task is not None:
++                settled = await self._await_disconnect_step(
++                    asyncio.shield(lease.settlement_task), _DISCONNECT_STEP_TIMEOUT, "D13 settlement")
++                if not settled and owns_settlement_waiter:
++                    lease.settlement.fail()
++        except asyncio.CancelledError:
++            lease.ordinary_drain = False
++            if owns_settlement_waiter:
++                lease.settlement.cancel()
++            raise
++        except Exception:
++            if owns_settlement_waiter:
++                lease.settlement.fail()
++            raise
++        finally:
++            if owns_settlement_waiter:
++                lease.settlement_waiter_pending = False
++                lease.finish_if_settled()
++
++    async def _disconnect_receipt_owner(self, lease) -> None:
++        if lease is not None:
++            await lease.startup_done.wait()
+         # Mark disconnected first so the drop guard short-circuits any flush that wins the race.
+         self._mark_disconnected()
+         self._polling_teardown_started = True
+@@ -3717,9 +3838,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         self._polling_generation = getattr(self, "_polling_generation", 0) + 1
+         self._polling_progress_event = asyncio.Event()
+         self._send_path_degraded = True
+-        # Release the bot-token lock immediately so a wedged close cannot block the reconnect watcher.
+-        # The rest of teardown is best-effort against a half-dead transport. See #80598.
+-        self._release_platform_lock()
++        if lease is None:
++            self._release_platform_lock()
+         # Cancel and await both polling lifecycle owners right after the fence, before any other teardown
+         # await lets them start a new generation.
+         current_task = asyncio.current_task()
+@@ -3749,31 +3869,52 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         await self._cancel_task_attr("_polling_heartbeat_task", "heartbeat cancel")
+         await self._cancel_task_attr("_bot_identity_refresh_task", "identity-refresh cancel")
+         # Mark the bot "Offline" while its HTTP client is still alive. Opt-in, non-fatal.
+-        with contextlib.suppress(Exception):
+-            await self._await_disconnect_step(self._set_status_indicator(online=False), _DISCONNECT_STEP_TIMEOUT, "status-indicator update")
++        if lease is None or lease.ready:
++            with contextlib.suppress(Exception):
++                await self._await_disconnect_step(self._set_status_indicator(online=False), _DISCONNECT_STEP_TIMEOUT, "status-indicator update")
+         await self._await_disconnect_step(self._cancel_pending_delivery_tasks(), _DISCONNECT_STEP_TIMEOUT, "pending-delivery cancel")
++        transport_closed = True
++        updater_stopped = app_stopped = False
+         if self._app:
+             try:
+-                # Bounded: a CLOSE-WAIT socket can wedge updater.stop() forever; fall through on timeout.
++                # Bounded cleanup still returns. A failed or detached stop
++                # is not a witness that another receiver may take the token.
+                 if self._app.updater and self._app.updater.running:
+-                    try:
+-                        await self._await_disconnect_step(self._app.updater.stop(), _UPDATER_STOP_TIMEOUT, "updater.stop()")
+-                    except Exception as stop_error:
+-                        logger.warning(
+-                            "[%s] updater.stop() failed during disconnect: %s", self.name, _redact_telegram_error_text(stop_error))
+-                # app.stop()/shutdown() can also block on a half-dead httpx pool.
+-                # Detach-on-timeout so disconnect always returns (#80598).
++                    updater_stopped = transport_closed = await self._await_disconnect_step(
++                        self._app.updater.stop(), _UPDATER_STOP_TIMEOUT, "updater.stop()")
++                    if not transport_closed and lease is not None:
++                        lease.lose_transport_witness()
+                 if self._app.running:
+-                    await self._await_disconnect_step(self._app.stop(), _DISCONNECT_STEP_TIMEOUT, "app.stop()")
+-                await self._await_disconnect_step(self._app.shutdown(), _DISCONNECT_STEP_TIMEOUT, "app.shutdown()")
++                    app_stopped = await self._await_disconnect_step(
++                        self._app.stop(), _DISCONNECT_STEP_TIMEOUT, "app.stop()")
++                    transport_closed = transport_closed and app_stopped
++                    if not app_stopped and lease is not None:
++                        lease.lose_transport_witness()
++                if lease is not None:
++                    lease.ordinary_drain = False
++                shutdown = await self._await_disconnect_step(
++                    self._app.shutdown(), _DISCONNECT_STEP_TIMEOUT, "app.shutdown()")
++                transport_closed = (transport_closed and shutdown and not self._app.running
++                                    and not (self._app.updater and self._app.updater.running))
+             except Exception as e:
++                transport_closed = False
++                if lease is not None:
++                    lease.lose_transport_witness()
+                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, _redact_telegram_error_text(e))
+-        self._app = None
++        if not transport_closed and lease is not None:
++            lease.lose_transport_witness()
++        if transport_closed or lease is None:
++            self._app = None
+         self._bot = None
++        if lease is not None and transport_closed:
++            lease.native_stop_proved = updater_stopped and app_stopped
++            lease.close_transport()
+         # Land the last completed receipts before a replacement adapter reads them.
+         flush = getattr(self, "_update_receipt_flush", None)
+         if flush is not None and not flush.done():
+-            await self._await_disconnect_step(asyncio.shield(flush), _DISCONNECT_STEP_TIMEOUT, "update-receipt flush")
++            flushed = await self._await_disconnect_step(asyncio.shield(flush), _DISCONNECT_STEP_TIMEOUT, "update-receipt flush")
++            if not flushed and lease is not None and lease.settlement is not None:
++                lease.settlement.fail()
+         logger.info("[%s] Disconnected from Telegram", self.name)
+ 
+     def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
+@@ -4054,6 +4195,50 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         async with self._chat_send_lock(chat_id):
+             return await self._send_text_locked(chat_id, content, reply_to, metadata)
+ 
++    async def _send_external_word_hold(self, runner, event, source, binding) -> None:
++        from agent.estop import is_engaged
++        from gateway.external_word_intent import HOLD_REPLY, hold_dispatch_clear, hold_generation_current
++        from gateway.ordinary_dm_ingress import refuse_external_word_hold
++        from telegram import ReplyParameters
++
++        async with self._chat_send_lock(binding.chat_id):
++            delay = self._chat_outbound_slot_remaining(binding.chat_id)
++            if delay > 0:
++                await asyncio.sleep(delay)
++            claim = getattr(event, "_external_word_hold_owner", None)
++            task = asyncio.current_task()
++            guard = self._active_sessions.get(binding.session_key)
++            lease = getattr(self, "_receipt_writer_lease", None)
++            if (lease is None or not lease.accepts(self._app)
++                    or claim is None or claim[0] is not self or claim[1] != binding.session_key
++                    or claim[2] is not task or task is None or task.cancelling()
++                    or claim[3] is not guard or guard is None or guard.is_set()
++                    or self._session_tasks.get(binding.session_key) is not task
++                    or getattr(event, "_external_word_hold_attempted", False)
++                    or self.is_connected is not True or self._teardown_started or self._send_path_degraded
++                    or runner._draining or runner._external_drain_active or is_engaged()
++                    or not hold_dispatch_clear()
++                    or self._send_flood_cooldown_remaining(binding.chat_id) is not None
++                    or refuse_external_word_hold(self, event)
++                    or not runner._is_user_authorized_for_source(source, allow_adapter_delegation=False)
++                    or not hold_generation_current(runner, event, source, binding)):
++                return
++            event._external_word_hold_attempted = True
++            self._hold_chat_outbound_slot(binding.chat_id)
++            lease.claims += 1
++            try:
++                await self._bot.send_message(
++                    chat_id=int(binding.chat_id), text=HOLD_REPLY,
++                    reply_parameters=ReplyParameters(
++                        message_id=int(binding.message_id), allow_sending_without_reply=False))
++            except Exception as exc:
++                # The SDK may have accepted before a lost ACK. There is no retry
++                # or ledger replay for this signal. Log only the exception class.
++                logger.info("[Telegram] External Word hold unresolved (%s)", type(exc).__name__)
++            finally:
++                lease.claims -= 1
++                lease.finish_if_settled()
++
+     async def _send_text_locked(
+         self, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]]) -> SendResult:
+         """``send()`` body under the per-chat lock: rich fast-path, else MarkdownV2 chunks."""
+@@ -6937,6 +7122,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         """Event for an addressed text/command: trigger text cleaned (sole addressee only), replied-to
+         media cached, attribution applied."""
+         from plugins.platforms.telegram.telegram_context import group_trigger_text
++        if msg_type == MessageType.TEXT:
++            event = self._build_external_word_event(msg, update, msg_type)
++            if event is not None:
++                return event  # Intake only: no quoted attachment download.
+         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
+         event.text = group_trigger_text(self, msg, event.text)
+         await self._cache_replied_media(msg, event)
+@@ -6954,7 +7143,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         if not self._gate_or_observe(msg, update, MessageType.TEXT):
+             return
+         await self._ensure_forum_commands(update.message)
+-        self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
++        event = await self._build_triggered_event(msg, update, MessageType.TEXT)
++        from gateway.external_word_intent import is_external_word_request
++        if is_external_word_request(event):
++            from gateway.ordinary_dm_ingress import refuse_external_word_hold
++            if refuse_external_word_hold(self, event):
++                self._accept_update()
++                return
++        self._enqueue_text_event(event)
+ 
+     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+         """Handle incoming command messages."""
+@@ -7182,14 +7378,26 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                 await self._cache_observed_media(msg, _event)
+                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
+             return
++        message_type = self._media_message_type(msg)
++        event = self._build_external_word_event(msg, update, message_type)
++        if event is not None:
++            # Keep the original SDK event without downloading or batching the document.
++            from gateway.ordinary_dm_ingress import refuse_external_word_hold
++            if refuse_external_word_hold(self, event):
++                self._accept_update()
++                return
++            if self._should_drop_delayed_delivery():
++                self._hold_inbound_event(event, where="external-word-intake")
++            else:
++                await self.handle_message(event)
++            return
+         arm = getattr(self, "_ordinary_dm_wire_arm", None)
+         capture_native = arm is not None and (arm.claim.require_s08_document
+                                               or arm.ingress is not None and arm.ingress._xlsx_input is not None)
+         if not capture_native:
+-            event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
++            event = self._build_message_event(msg, message_type, update_id=update.update_id)
+         else:
+-            event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id,
+-                                              native_update=update)
++            event = self._build_message_event(msg, message_type, update_id=update.update_id, native_update=update)
+         if msg.caption:
+             from plugins.platforms.telegram.telegram_context import group_trigger_text
+             event.text = group_trigger_text(self, msg, expand_link_entities(msg))
+@@ -7459,6 +7667,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         from .telegram_ingress import message_provenance
+         return message_provenance(self, event)
+ 
++    def _build_external_word_event(self, message: Message, update: Update, msg_type: MessageType) -> MessageEvent | None:
++        from gateway.external_word_intent import mark_original_request, selected_update_message
++        if selected_update_message(update) is not message:
++            return None
++        # Competing ordinary coverage is explicitly refused before it can capture the update.
++        from .telegram_message_event import build_message_event
++        event = build_message_event(self, message, msg_type, update.update_id)
++        mark_original_request(self, update, message, event)
++        return event
++
+     def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None,
+                              *, native_update=None) -> MessageEvent:
+         from .telegram_message_event import build_message_event
+diff --git a/plugins/platforms/telegram/d13_writer_settlement.py b/plugins/platforms/telegram/d13_writer_settlement.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f2958e9cee4ef52b8c92148a4b324b1ed15bcbd6
+--- /dev/null
++++ b/plugins/platforms/telegram/d13_writer_settlement.py
+@@ -0,0 +1,405 @@
++"""Owner-private D13 settlement from the exact running Telegram acquisition."""
++
++import asyncio
++from contextlib import ExitStack, contextmanager
++from contextvars import copy_context
++from enum import Enum
++from functools import partial
++from hashlib import sha256
++import json
++import math
++import os
++from pathlib import Path
++import stat
++from threading import Event
++import time
++from uuid import uuid4
++
++from gateway.d02_receiver_control import (
++    _encode, _hex, _kernel, _private_bytes, _unique, _work_identity, _write_private,
++)
++
++_INTENT = "friday.telegram.d13-stop-intent.v1"
++_RECORD = "friday.telegram.d13-writer-settlement.v1"
++_READY = "friday.telegram.d13-writer-settlement-ready.v1"
++_MAX_FILE = 1024 * 1024
++_HOLD_FIELD = "external_word_hold_update_ids"
++_SOURCE_ROLES = (
++    "hermes_cli/friday_ordinary_gateway.py",
++    "plugins/platforms/telegram/adapter.py",
++    "plugins/platforms/telegram/d13_writer_settlement.py",
++    "plugins/platforms/telegram/receipt_writer_lease.py",
++    "plugins/platforms/telegram/update_admission.py",
++)
++_RETIRING = set()
++
++
++class SettlementRetiring(RuntimeError):
++    """An owner-directed retirement already fences this receiving bot."""
++
++
++class WriterSettlementResult(Enum):
++    NO_INTENT = "no_intent"
++    PROVISIONAL = "provisional"
++    UNPROVED = "unproved"
++    CANCELLED = "cancelled"
++
++
++def _require(condition):
++    if not condition:
++        raise ValueError("d13_writer_settlement_unproved")
++
++
++def _identity(item):
++    return {field: getattr(item, "st_" + field) for field in
++            ("dev", "ino", "mode", "uid", "nlink", "size", "mtime_ns", "ctime_ns")}
++
++
++def _descriptor(path, fd):
++    _require(fd is not None and path.resolve(strict=True) == path)
++    opened = os.fstat(fd)
++    _require(stat.S_ISREG(opened.st_mode) and opened.st_uid == os.getuid()
++             and opened.st_nlink == 1 and stat.S_IMODE(opened.st_mode) == 0o600
++             and _identity(opened) == _identity(path.lstat()))
++    return _identity(opened)
++
++
++def _deployment(home):
++    # The ordinary native startup already proves the complete source inventory.
++    # Recheck the authority and executable roles used by this acquisition.
++    from hermes_cli.friday_dashboard_owner import read_owned
++
++    def digest(path, limit):
++        return sha256(_private_bytes(path, read_owned, limit)).hexdigest()
++
++    raw = _private_bytes(home / "FRIDAY-INSTALL.json", read_owned, _MAX_FILE)
++    marker = json.loads(raw, object_pairs_hook=_unique)
++    receipt_path = home / "hermes-agent.source.json"
++    receipt = _private_bytes(receipt_path, read_owned, 8 * _MAX_FILE)
++    pin = sha256(receipt).hexdigest()
++    phase = marker["ordinary_gateway"]
++    _require(marker["home"] == str(home) and marker["source"] == str(home / "hermes-agent")
++             and marker["source_receipt_sha256"] == phase["source_receipt_sha256"] == pin)
++    rows = json.loads(receipt, object_pairs_hook=_unique)["files"]
++    roles = {}
++    for role in _SOURCE_ROLES:
++        data = read_owned(home / "hermes-agent" / role)
++        roles[role] = sha256(data).hexdigest()
++        _require(roles[role] == rows[role]["sha256"] and len(data) == rows[role]["bytes"])
++
++    raw_profile = _private_bytes(home / "FRIDAY-PROFILE.json", read_owned, _MAX_FILE)
++    profile_pin = sha256(raw_profile).hexdigest()
++    _require(profile_pin == phase["profile_sha256"])
++    profile = json.loads(raw_profile, object_pairs_hook=_unique)["profile"]
++    _require(type(profile) is str and bool(profile))
++    credentials = (home / ".env").lstat()
++    _require(stat.S_ISREG(credentials.st_mode) and credentials.st_uid == os.getuid()
++             and credentials.st_nlink == 1 and not credentials.st_mode & 0o077)
++    return {
++        "authorization_home": str(home), "transport_profile": profile,
++        "source_receipt_sha256": pin, "source_roles": roles, "marker_sha256": sha256(raw).hexdigest(),
++        "profile_sha256": profile_pin, "configuration_sha256": digest(home / "config.yaml", _MAX_FILE),
++        "credential_identity": _identity(credentials),
++    }
++
++
++def _invocation():
++    from hermes_cli.friday_ordinary_gateway import receiver_invocation
++
++    invocation = receiver_invocation()
++    if invocation is None:
++        return None
++    kernel = _kernel(os.getpid())
++    _require(invocation["pid"] == kernel["pid"] and invocation["birth_ticks"] == kernel["start_time"]
++             and invocation["boot_id"] == kernel["boot_id"]
++             and Path("/proc/self/cgroup").read_text().splitlines() == ["0::" + invocation["cgroup"]])
++    return invocation
++
++
++def bind(lease):
++    from agent.secret_scope import current_secret_scope, current_secret_scope_home
++    from gateway.config import PLATFORM_TOKEN_ENV_NAMES, Platform
++    from hermes_cli.friday_credential_admission import CredentialDenied, owned_values
++    from hermes_cli.friday_dashboard_owner import SOURCE
++
++    home = lease.receipt_path.parent
++    if home != SOURCE.parent:
++        return None
++    scope = (home, lease.bot_id)
++    if scope in _RETIRING:
++        raise SettlementRetiring("d13_owner_stop_already_settled")
++    try:
++        invocation = _invocation()
++        if invocation is None:
++            return None
++        deployment = _deployment(home)
++        token_name = PLATFORM_TOKEN_ENV_NAMES[Platform.TELEGRAM]
++        token = lease.adapter.config.token
++        _require(current_secret_scope_home() == str(home)
++                 and (current_secret_scope() or {}).get(token_name) == token
++                 and owned_values(home).get(token_name) == token
++                 and _identity((home / ".env").lstat()) == deployment["credential_identity"])
++        return WriterSettlement(home, scope, invocation, deployment)
++    except (OSError, ValueError, TypeError, KeyError, CredentialDenied):
++        # The forward holding gate remains active. An unbound acquisition
++        # cannot produce an owner handoff.
++        return None
++
++
++def _intent(work, *, missing_ok=False):
++    from hermes_cli.friday_dashboard_owner import read_owned
++
++    path = work / "stop-intent.json"
++    if missing_ok:
++        _require(work.resolve() == work)
++        try:
++            directory = work.lstat()
++        except FileNotFoundError:
++            return None
++        _require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid()
++                 and stat.S_IMODE(directory.st_mode) == 0o700)
++        try:
++            path.lstat()
++        except FileNotFoundError:
++            return None
++    raw = _private_bytes(path, read_owned, 65536)
++    value = json.loads(raw, object_pairs_hook=_unique)
++    _require(type(value) is dict and raw == _encode(value)
++             and set(value) == {"schema", "nonce", "invocation", "deployment", "bot_id",
++                                "issued_monotonic_ns", "deadline_monotonic_ns"}
++             and value["schema"] == _INTENT and _hex(value["nonce"], 32))
++    return value, sha256(raw).hexdigest()
++
++
++def written_receipt_identity(path):
++    """Pin the file created by the actual native receipt executor."""
++    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
++    try:
++        return _descriptor(path, fd)
++    finally:
++        os.close(fd)
++
++
++@contextmanager
++def _read_receipt(path, expected, written):
++    # The producer supports the forward transition with at least one proved
++    # hold. Missing, unknown or empty prior state has no implicit enrollment.
++    from .update_admission import RECEIPT_TTL_SECONDS
++
++    cutoff = time.time() - RECEIPT_TTL_SECONDS
++    _require(bool(expected) and all(type(stamp) is float and math.isfinite(stamp) and stamp > cutoff
++                                   for stamp in expected.values()))
++    parent = path.parent
++    _require(parent.resolve(strict=True) == parent)
++    directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
++    try:
++        parent_id = _work_identity(os.fstat(directory))
++        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
++        try:
++            identity = _descriptor(path, fd)
++            _require(identity == written and 0 < identity["size"] <= _MAX_FILE)
++            with os.fdopen(fd, "rb", closefd=False) as stream:
++                raw = stream.read(identity["size"] + 1)
++            rows = json.loads(raw, object_pairs_hook=_unique)
++            _require(type(rows) is dict and set(rows) == {"update_ids", _HOLD_FIELD}
++                     and type(rows["update_ids"]) is dict and type(rows[_HOLD_FIELD]) is dict
++                     and rows[_HOLD_FIELD] == expected
++                     and all(uid.isascii() and uid.isdecimal() and type(stamp) is float
++                             for uid, stamp in rows[_HOLD_FIELD].items()))
++            os.fsync(fd)
++            os.fsync(directory)
++            _require(len(raw) == identity["size"] and _descriptor(path, fd) == identity
++                     and _work_identity(parent.lstat()) == parent_id)
++            yield {"path": str(path), "identity": identity, "parent": parent_id,
++                   "sha256": sha256(raw).hexdigest(), "protected": expected}
++            _require(_descriptor(path, fd) == identity and _work_identity(parent.lstat()) == parent_id)
++        finally:
++            os.close(fd)
++    finally:
++        os.close(directory)
++
++
++def _leases(lease):
++    from gateway.status import _get_scope_lock_path
++    from .receipt_writer_lease import _fingerprint
++
++    identity = lease.adapter._platform_lock_identity
++    token_path = lease.legacy_path
++    _require(bool(identity) and identity == lease.adapter.config.token
++             and _get_scope_lock_path("telegram-bot-token", identity) == token_path
++             and _fingerprint(token_path) == lease.legacy_fingerprint)
++    receipt_path = lease.receipt_path
++    return {
++        "token": _descriptor(token_path.with_name(token_path.name + ".receipt-lease"), lease.token_fd),
++        "receipt": _descriptor(receipt_path.with_name(receipt_path.name + ".receipt-lease"), lease.path_fd),
++    }
++
++
++def _revoke_marker(name, directory, fd):
++    try:
++        opened = os.fstat(fd)
++        try:
++            entry = os.stat(name, dir_fd=directory, follow_symlinks=False)
++        except FileNotFoundError:
++            return
++        if (entry.st_dev, entry.st_ino) == (opened.st_dev, opened.st_ino):
++            os.unlink(name, dir_fd=directory)
++            os.fsync(directory)
++    except OSError as error:
++        raise RuntimeError("d13_settlement_marker_revocation_unproved") from error
++
++
++class WriterSettlement:
++    def __init__(self, home, scope, invocation, deployment):
++        self.scope = scope
++        self.work = home / "preparation/ordinary-gateway/d13-settlement"
++        self.invocation = invocation
++        self.deployment = deployment
++        self.nonce = uuid4().hex
++        self.acquired_ns = time.monotonic_ns()
++        self.cancelled = Event()
++        self.result = None
++        self.pending_marker = None
++
++    def cancel(self):
++        self.result = WriterSettlementResult.CANCELLED
++        self.cancelled.set()
++
++    def fail(self):
++        if self.result is not WriterSettlementResult.CANCELLED:
++            self.result = WriterSettlementResult.UNPROVED
++        self.cancelled.set()
++
++    def accept_pending_marker(self):
++        _, descriptors, deadline = self.pending_marker
++        if self.cancelled.is_set() or time.monotonic_ns() >= deadline:
++            self.fail()
++            return False
++        self.pending_marker = None
++        descriptors.close()
++        self.result = WriterSettlementResult.PROVISIONAL
++        return True
++
++    def revoke_pending_marker(self, loop):
++        marker, descriptors, _ = self.pending_marker
++
++        def revoke():
++            with descriptors:
++                _revoke_marker(*marker)
++
++        worker = loop.run_in_executor(None, revoke)
++        self.pending_marker = None
++        return worker
++
++    async def _filesystem(self, function, *args):
++        work = asyncio.get_running_loop().run_in_executor(None, copy_context().run, function, *args)
++        # Task cancellation cannot end physical custody. Keep awaiting the
++        # same executor operation even if cancellation is requested again.
++        while not work.done():
++            try:
++                await asyncio.shield(work)
++            except asyncio.CancelledError:
++                self.cancel()
++        if work.cancelled():
++            raise RuntimeError("d13_settlement_filesystem_return_unproved")
++        return work.result()
++
++    async def produce(self, lease, expected):
++        from .receipt_writer_lease import ReceiptWriterBusy
++
++        try:
++            observed = await self._filesystem(partial(_intent, self.work, missing_ok=True))
++            if observed is None:
++                if asyncio.current_task().cancelling():
++                    raise asyncio.CancelledError
++                if not self.cancelled.is_set():
++                    self.result = WriterSettlementResult.NO_INTENT
++                return self.result
++            intent, intent_pin = observed
++            issued = intent["issued_monotonic_ns"]
++            deadline = intent["deadline_monotonic_ns"]
++            _require(type(issued) is type(deadline) is int and issued < deadline
++                     and lease.ready and lease.native_stop_proved and type(lease.stop_started_ns) is int
++                     and self.acquired_ns <= issued <= lease.stop_started_ns <= time.monotonic_ns() < deadline
++                     and intent["invocation"] == self.invocation
++                     and intent["deployment"] == self.deployment and intent["bot_id"] == lease.bot_id
++                     and not self.cancelled.is_set())
++            # This scope may no longer acquire a successor in the retiring
++            # process, including another token for the same bot.
++            _RETIRING.add(self.scope)
++            staged = await self._filesystem(self._capture, lease, expected, intent, intent_pin)
++            _require(not self.cancelled.is_set() and time.monotonic_ns() < deadline)
++            marker, descriptors = await self._filesystem(self._commit, lease, expected, intent, intent_pin, staged)
++        except (OSError, ValueError, TypeError, KeyError, ReceiptWriterBusy):
++            self.fail()
++        else:
++            # The initiating disconnect owns the final disposition. Keep
++            # the exact marker open until it consumes the worker's result.
++            if self.cancelled.is_set() or time.monotonic_ns() >= deadline:
++                self.fail()
++                with descriptors:
++                    await self._filesystem(_revoke_marker, *marker)
++            else:
++                self.pending_marker = marker, descriptors, deadline
++        if asyncio.current_task().cancelling():
++            raise asyncio.CancelledError
++        return self.result
++
++    def _check(self, lease, intent, intent_pin):
++        _require(not self.cancelled.is_set() and time.monotonic_ns() < intent["deadline_monotonic_ns"]
++                 and self.work.resolve(strict=True) == self.work and _intent(self.work) == (intent, intent_pin)
++                 and _invocation() == self.invocation and _deployment(self.scope[0]) == self.deployment)
++        return _leases(lease), _work_identity(self.work.lstat())
++
++    def _capture(self, lease, expected, intent, intent_pin):
++        leases, directory = self._check(lease, intent, intent_pin)
++        with _read_receipt(lease.receipt_path, expected, lease.written_receipt) as receipt:
++            _require(not self.cancelled.is_set() and time.monotonic_ns() < intent["deadline_monotonic_ns"])
++            value = {
++                "schema": _RECORD, "intent_sha256": intent_pin, "operation_nonce": intent["nonce"],
++                "invocation": self.invocation, "deployment": self.deployment, "bot_id": lease.bot_id,
++                "acquisition_nonce": self.nonce, "acquired_monotonic_ns": self.acquired_ns,
++                "stop_started_monotonic_ns": lease.stop_started_ns,
++                "settled_monotonic_ns": time.monotonic_ns(),
++                "leases": leases, "receipt": receipt,
++            }
++            ref = _write_private(self.work, intent["nonce"] + ".data.json", value, directory)
++        return ref, receipt, leases, directory
++
++    def _commit(self, lease, expected, intent, intent_pin, staged):
++        from hermes_cli.friday_dashboard_owner import read_owned
++
++        ref, receipt, leases, identity = staged
++        _require(self._check(lease, intent, intent_pin) == (leases, identity))
++        raw = _private_bytes(Path(ref["path"]), read_owned, _MAX_FILE)
++        _require(len(raw) == ref["bytes"] and sha256(raw).hexdigest() == ref["sha256"])
++        deadline = intent["deadline_monotonic_ns"]
++        name = intent["nonce"] + ".settled.json"
++        with ExitStack() as descriptors:
++            directory = os.open(self.work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
++            descriptors.callback(os.close, directory)
++            _require(_work_identity(os.fstat(directory)) == identity)
++            # O_EXCL consumes the nonce; keep the fd so failure can revoke only
++            # the marker this attempt opened, including a failed fsync.
++            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
++                         0o600, dir_fd=directory)
++            descriptors.callback(os.close, fd)
++            try:
++                with os.fdopen(fd, "wb", closefd=False) as stream:
++                    with _read_receipt(lease.receipt_path, expected, lease.written_receipt) as retained:
++                        now = time.monotonic_ns()
++                        _require(retained == receipt and not self.cancelled.is_set() and now < deadline)
++                        value = {"schema": _READY, "operation_nonce": intent["nonce"], "intent_sha256": intent_pin,
++                                 "record": ref, "completed_monotonic_ns": now}
++                        stream.write(_encode(value))
++                        stream.flush()
++                        os.fsync(stream.fileno())
++                        os.fsync(directory)
++                        _require(not self.cancelled.is_set() and time.monotonic_ns() < deadline
++                                 and _leases(lease) == leases and _intent(self.work) == (intent, intent_pin)
++                                 and _work_identity(self.work.lstat()) == identity)
++                        _descriptor(self.work / name, stream.fileno())
++            except BaseException:
++                _revoke_marker(name, directory, fd)
++                raise
++            return (name, directory, fd), descriptors.pop_all()
+diff --git a/plugins/platforms/telegram/receipt_writer_lease.py b/plugins/platforms/telegram/receipt_writer_lease.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd2727881843fd9bd42ae07837991efa0a9599f1
+--- /dev/null
++++ b/plugins/platforms/telegram/receipt_writer_lease.py
+@@ -0,0 +1,302 @@
++"""Exact acquisition fence for Telegram intake and its physical receipt writer."""
++
++import asyncio
++import os
++import stat
++
++
++class ReceiptWriterBusy(RuntimeError):
++    """The prior token or receipt writer still owns its acquisition."""
++
++
++def _take(path):
++    # A persistent inode is the rendezvous. Never unlink a flock sidecar.
++    import fcntl
++
++    parent = path.parent
++    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
++    info = parent.lstat()
++    if (not parent.is_absolute() or parent.resolve() != parent or not stat.S_ISDIR(info.st_mode)
++            or info.st_uid != os.getuid() or info.st_mode & 0o022):
++        raise ReceiptWriterBusy("telegram_receipt_lease_directory")
++    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
++    try:
++        before = os.fstat(fd)
++        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
++                or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600):
++            raise ReceiptWriterBusy("telegram_receipt_lease_identity")
++        try:
++            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++        except BlockingIOError as error:
++            raise ReceiptWriterBusy("telegram_receipt_writer_already_owned") from error
++        after = path.lstat()
++        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
++            raise ReceiptWriterBusy("telegram_receipt_lease_changed")
++        return fd
++    except BaseException:
++        os.close(fd)
++        raise
++
++
++def _fingerprint(path):
++    info = path.lstat()
++    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
++        raise ReceiptWriterBusy("telegram_legacy_lock_identity")
++    return info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mtime_ns, info.st_size
++
++
++def validate_receipt_path(path):
++    try:
++        info = path.lstat()
++    except FileNotFoundError:
++        return
++    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
++            or info.st_nlink != 1 or info.st_mode & 0o022):
++        raise ReceiptWriterBusy("telegram_unsafe_receipt_path")
++
++
++class ReceiptWriterLease:
++    def __init__(self, adapter, token):
++        from gateway.status import _get_scope_lock_path
++
++        self.adapter = adapter
++        self.loop = asyncio.get_running_loop()
++        self.application = None
++        self.ready = False
++        self.bot_id = None
++        self.closing = False
++        self.ordinary_drain = False
++        self.startup_done = asyncio.Event()
++        self.transport_closed = False
++        self.transport_unproved = False
++        self.write_failed = False
++        self.failed = False
++        self.legacy_fingerprint = None
++        self.claims = 0
++        self.writer = None
++        self.written_receipt = None
++        self.stop_task = None
++        self.stop_started_ns = None
++        self.native_stop_proved = False
++        self.d13_registered = False
++        self.settlement = None
++        self.settlement_task = None
++        self.settlement_waiter_pending = False
++        self.settlement_returned = False
++        self.settlement_revocation = None
++        self.path_fd = None
++        self.receipt_path = None
++        self.legacy_path = _get_scope_lock_path("telegram-bot-token", token)
++        self.token_fd = _take(self.legacy_path.with_name(self.legacy_path.name + ".receipt-lease"))
++
++    def bind_legacy(self):
++        try:
++            self.legacy_fingerprint = _fingerprint(self.legacy_path)
++        except (OSError, ReceiptWriterBusy):
++            self.failed = True
++            raise
++
++    def bind_application(self, app, path, bot_id):
++        if self.closing or self.failed or self.application is not None or self.legacy_fingerprint is None:
++            raise ReceiptWriterBusy("telegram_exact_receipt_acquisition_required")
++        self.path_fd = _take(path.with_name(path.name + ".receipt-lease"))
++        validate_receipt_path(path)
++        self.receipt_path = path
++        self.bot_id = str(bot_id)
++        self.application = app
++        # A recycled adapter must load the new acquisition's durable state.
++        self.adapter._seen_update_ids.clear()
++        self.adapter._update_receipts_loaded.clear()
++        self.adapter._external_word_update_receipts.clear()
++
++    def require_startup(self):
++        if self.closing:
++            raise ReceiptWriterBusy("telegram_receipt_startup_retiring")
++
++    def admits(self, app):
++        return ((not self.closing or self.ordinary_drain) and not self.failed and self.path_fd is not None
++                and self.application is app and self.adapter._app is app
++                and self.adapter._receipt_writer_lease is self)
++
++    def accepts(self, app):
++        return not self.closing and not self.write_failed and self.admits(app)
++
++    def close_transport(self):
++        self.closing = True
++        self.ordinary_drain = False
++        self.transport_closed = not self.transport_unproved
++        self.finish_if_settled()
++
++    def lose_transport_witness(self):
++        # PTB sets .running=False before the underlying await finishes. A
++        # second stop cannot use those flags to prove an abandoned first stop.
++        self.ordinary_drain = False
++        self.transport_unproved = True
++        if self.settlement is not None:
++            self.settlement.fail()
++
++    def register_d13(self) -> None:
++        from gateway.shutdown_watchdog import _d13_shutdown_writers
++
++        self.d13_registered = True
++        _d13_shutdown_writers.add(self)
++
++    @property
++    def d13_settlement_pending(self):
++        """Whether this managed receiver still owns native acquisition or shutdown work."""
++        if not self.d13_registered or self.adapter._receipt_writer_lease is not self:
++            return False
++        return (
++            not self.startup_done.is_set() or self.writer is not None or bool(self.claims)
++            or self.settlement_waiter_pending or (self.stop_task is not None and not self.stop_task.done())
++            or (self.settlement_task is not None and not self.settlement_returned)
++            or self.settlement_revocation is not None
++            or (self.settlement is not None and (self.settlement.pending_marker is not None
++                or (self.stop_started_ns is not None and self.settlement.result is None)))
++        )
++
++    @property
++    def d13_shutdown_confirmed(self):
++        """Witness actual release, and a valid disposition when the writer was bound."""
++        from .d13_writer_settlement import WriterSettlementResult
++
++        released = (
++            not self.failed and not self.write_failed and self.startup_done.is_set()
++            and self.transport_closed and not self.transport_unproved
++            and self.adapter._receipt_writer_lease is not self and self.path_fd is None and self.token_fd is None
++        )
++        return released and (self.settlement is None or (
++            self.settlement_returned
++            and self.settlement.result in (WriterSettlementResult.NO_INTENT, WriterSettlementResult.PROVISIONAL)
++        ))
++
++    def finish_if_settled(self):
++        adapter = self.adapter
++        if (adapter._receipt_writer_lease is not self or not self.startup_done.is_set()
++                or not self.transport_closed or self.failed or self.write_failed
++                or self.claims or self.writer is not None
++                or (self.stop_task is not None and not self.stop_task.done())
++                or adapter._update_receipts_dirty
++                or (adapter._update_receipt_flush is not None and not adapter._update_receipt_flush.done())):
++            return
++        if (self.settlement is not None and self.settlement_task is None
++                and not self.transport_unproved and not self.settlement.cancelled.is_set()):
++            expected = adapter._external_word_update_receipts.get(self.bot_id, {}).copy()
++            self.settlement_task = self.loop.create_task(self.settlement.produce(self, expected))
++            self.settlement_task.add_done_callback(self._settlement_done)
++            return
++        if ((self.settlement_task is not None and not self.settlement_returned)
++                or self.settlement_revocation is not None):
++            return
++        if self.settlement is not None and self.settlement.pending_marker is not None:
++            if self.settlement_waiter_pending:
++                return
++            try:
++                if not self.settlement.accept_pending_marker():
++                    self.settlement_revocation = self.settlement.revoke_pending_marker(self.loop)
++                    self.settlement_revocation.add_done_callback(self._settlement_revoked)
++                    return
++            except (OSError, RuntimeError):
++                self.settlement.fail()
++                self.failed = True
++                return
++        if self.legacy_fingerprint is not None:
++            from gateway.status import _get_scope_lock_path
++
++            try:
++                identity = adapter._platform_lock_identity
++                if (not identity or _get_scope_lock_path("telegram-bot-token", identity) != self.legacy_path
++                        or _fingerprint(self.legacy_path) != self.legacy_fingerprint):
++                    raise ReceiptWriterBusy("telegram_legacy_lock_changed")
++                adapter._release_platform_lock()
++                if self.d13_registered:
++                    try:
++                        self.legacy_path.lstat()
++                    except FileNotFoundError:
++                        pass
++                    else:
++                        raise ReceiptWriterBusy("telegram_legacy_lock_release_unproved")
++            except (OSError, ReceiptWriterBusy):
++                self.failed = True
++                return
++        if self.path_fd is not None:
++            os.close(self.path_fd)
++            self.path_fd = None
++        os.close(self.token_fd)
++        self.token_fd = None
++        adapter._receipt_writer_lease = None
++        if self.d13_registered:
++            from gateway.shutdown_watchdog import _d13_shutdown_writers
++            from .d13_writer_settlement import WriterSettlementResult
++
++            # A pre-bind close or ordinary reconnect does not accumulate
++            # retired acquisitions. Keep attempted intent dispositions.
++            if self.settlement is None or self.settlement.result is WriterSettlementResult.NO_INTENT:
++                _d13_shutdown_writers.discard(self)
++
++    def _settlement_done(self, task):
++        self.settlement_returned = True
++        if task.cancelled():
++            # The producer joins its executor before propagating cancellation.
++            self.settlement.cancel()
++        elif task.exception() is not None:
++            self.settlement.fail()
++            self.failed = True
++            return
++        self.finish_if_settled()
++
++    def _settlement_revoked(self, worker):
++        self.settlement_revocation = None
++        if worker.cancelled() or worker.exception() is not None:
++            self.settlement.fail()
++            self.failed = True
++            return
++        self.finish_if_settled()
++
++    async def write(self, function, path, payload, **kwargs):
++        if self.writer is not None:
++            await asyncio.shield(self.writer)
++        if self.writer is not None or self.path_fd is None or path != self.receipt_path or self.failed:
++            self.write_failed = True
++            raise ReceiptWriterBusy("telegram_exclusive_receipt_writer_unproved")
++        validate_receipt_path(path)
++        def write():
++            function(path, payload, **kwargs)
++            if self.settlement is not None:
++                from .d13_writer_settlement import written_receipt_identity
++
++                try:
++                    return written_receipt_identity(path)
++                except (OSError, ValueError):
++                    return None
++
++        future = self.loop.run_in_executor(None, write)
++        self.writer = future
++        future.add_done_callback(self._writer_done)
++        await asyncio.shield(future)
++
++    def _writer_done(self, future):
++        # This future is never cancelled by waiters. Its completion witnesses
++        # the executor's return, even if the flushing coroutine was cancelled.
++        if future.cancelled() or future.exception() is not None:
++            self.write_failed = True
++        else:
++            self.written_receipt = future.result()
++        if self.writer is future:
++            self.writer = None
++        self.finish_if_settled()
++
++    def flush_done(self, task):
++        if task.cancelled() or task.exception() is not None:
++            self.write_failed = True
++        self.finish_if_settled()
++
++
++    def stop_done(self, task):
++        self.ordinary_drain = False
++        if task.cancelled() or task.exception() is not None:
++            self.lose_transport_witness()
++            self.transport_closed = False
++            if task.cancelled() and self.settlement is not None:
++                self.settlement.cancel()
++        self.finish_if_settled()
+diff --git a/plugins/platforms/telegram/telegram_ingress.py b/plugins/platforms/telegram/telegram_ingress.py
+index 68957c9c164ec68ef7ca87e8ee5e9db4a6de8a51..2ce373b6adc08f72f96497158fdd0b0f64edb411 100644
+--- a/plugins/platforms/telegram/telegram_ingress.py
++++ b/plugins/platforms/telegram/telegram_ingress.py
+@@ -5,9 +5,10 @@ from __future__ import annotations
+ def _original_event(adapter, event):
+     if event.internal:
+         return False
++    from gateway.external_word_intent import is_external_word_request
+     from gateway.session_identity import requires_original_source
+     adapter._canonicalize(event.source)
+-    return requires_original_source(event.source)
++    return is_external_word_request(event) or requires_original_source(event.source)
+ 
+ 
+ def _per_event_key(key, event):
+@@ -24,8 +25,10 @@ def text_batch_key(adapter, event):
+ 
+ 
+ def text_batch_delay_for(adapter, pending):
++    from gateway.external_word_intent import is_external_word_request
+     from gateway.session_identity import requires_original_source
+-    if pending is not None and not pending.internal and requires_original_source(pending.source):
++    if pending is not None and not pending.internal and (
++            is_external_word_request(pending) or requires_original_source(pending.source)):
+         # Equal delays keep sequential native messages in arrival order; no
+         # split-message coalescing is promised for this original-event lane.
+         return adapter._text_batch_delay_seconds
+diff --git a/plugins/platforms/telegram/update_admission.py b/plugins/platforms/telegram/update_admission.py
+index d973bb367419b2ed6ec43ba54fecb1dc988b72a5..54e98150acd2c6a7109027fbd7c936dc5e2c7aeb 100644
+--- a/plugins/platforms/telegram/update_admission.py
++++ b/plugins/platforms/telegram/update_admission.py
+@@ -5,12 +5,14 @@ history is bounded and has no TTL in memory; dispatch and its PTB tasks pin acti
+ claims. Completed IDs are also written to a per-bot receipt file under the adapter's
+ Hermes home, so a replacement adapter or a restarted gateway still drops updates that
+ Telegram redelivers because their getUpdates/webhook acknowledgement never landed.
+-No cross-process coordination or exactly-once effects are promised.
++A receipt writer is fenced per exact token and receipt acquisition. This is not an exactly-once effect guarantee.
+ """
+ 
+ import asyncio
+ import json
+ import logging
++import math
++import os
+ import time
+ from contextvars import ContextVar
+ from dataclasses import dataclass
+@@ -21,7 +23,7 @@ from telegram.ext import Application, ApplicationHandlerStop, ConversationHandle
+ 
+ from gateway.platforms._shared import coerce_port
+ from gateway.platforms.helpers import bounded_put
+-from utils import atomic_json_write
++from utils import atomic_json_write, fsync_directory
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -33,6 +35,7 @@ _SEEN_CAP = 4096
+ # which Telegram may restart update IDs at a random value, so a set lookup stays safe
+ # where a persisted numeric high-watermark would not.
+ RECEIPT_TTL_SECONDS = 24 * 60 * 60
++_HOLD_RECEIPTS_FIELD = "external_word_hold_update_ids"
+ 
+ 
+ def _receipt_path(adapter, bot_id):
+@@ -46,16 +49,26 @@ def _load_receipts(adapter, bot_id) -> None:
+     adapter._update_receipts_loaded.add(bot_id)
+     path = _receipt_path(adapter, bot_id)
+     try:
+-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
++        with open(path, encoding="utf-8-sig", opener=lambda name, flags: os.open(
++                name, flags | os.O_NOFOLLOW | os.O_NONBLOCK)) as receipt:
++            payload = json.load(receipt)
+     except FileNotFoundError:
+         return
+     except (OSError, ValueError):
+         logger.warning("[Telegram] Ignoring unreadable update receipts at %s", path, exc_info=True)
+         return
+-    ids = payload.get("update_ids") if isinstance(payload, dict) else None
+-    if not isinstance(ids, dict):
++    if not isinstance(payload, dict):
+         return
+     cutoff = time.time() - RECEIPT_TTL_SECONDS
++    protected = payload.get(_HOLD_RECEIPTS_FIELD)
++    if isinstance(protected, dict):
++        adapter._external_word_update_receipts[str(bot_id)] = {
++            uid: ts for uid, ts in protected.items()
++            if uid.isascii() and uid.isdecimal() and type(ts) is float and math.isfinite(ts) and ts > cutoff
++        }
++    ids = payload.get("update_ids")
++    if not isinstance(ids, dict):
++        return
+     fresh = sorted((float(ts), uid) for uid, ts in ids.items()
+                    if isinstance(ts, (int, float)) and ts > cutoff and str(uid).lstrip("-").isdigit())
+     seen = adapter._seen_update_ids
+@@ -65,17 +78,25 @@ def _load_receipts(adapter, bot_id) -> None:
+             bounded_put(seen, key, ts, _SEEN_CAP)
+ 
+ 
+-def _record_receipt(adapter, key: str) -> None:
+-    bounded_put(adapter._seen_update_ids, key, time.time(), _SEEN_CAP)
+-    adapter._update_receipts_dirty.add(key.split(":", 1)[0])
++def _record_receipt(adapter, key: str, lease, *, external_word=False) -> float:
++    bot_id, update_id = key.split(":", 1)
++    if adapter._receipt_writer_lease is not lease or lease.bot_id != bot_id or lease.failed:
++        raise RuntimeError("telegram_receipt_acquisition_changed")
++    stamp = time.time()
++    bounded_put(adapter._seen_update_ids, key, stamp, _SEEN_CAP)
++    if external_word:
++        adapter._external_word_update_receipts.setdefault(bot_id, {})[update_id] = stamp
++    adapter._update_receipts_dirty.add(bot_id)
+     task = adapter._update_receipt_flush
+     if task is None or task.done():
+         # One writer per adapter coalesces bursts; the fsync stays off the event loop.
+         adapter._update_receipt_flush = asyncio.get_running_loop().create_task(
+-            _flush_receipts(adapter), name="telegram-update-receipts")
++            _flush_receipts(adapter, lease), name="telegram-update-receipts")
++        adapter._update_receipt_flush.add_done_callback(lease.flush_done)
++    return stamp
+ 
+ 
+-async def _flush_receipts(adapter) -> None:
++async def _flush_receipts(adapter, lease) -> None:
+     from hermes_constants import mkdir_under_hermes_home
+ 
+     while adapter._update_receipts_dirty:
+@@ -84,21 +105,51 @@ async def _flush_receipts(adapter) -> None:
+         # Snapshot on the loop: admission mutates this dict only from loop callbacks.
+         ids = {key[len(prefix):]: ts for key, ts in adapter._seen_update_ids.items()
+                if key.startswith(prefix) and isinstance(ts, float) and ts > cutoff}
++        payload = {"update_ids": ids}
++        protected = adapter._external_word_update_receipts.get(bot_id)
++        if protected:
++            protected = {uid: ts for uid, ts in protected.items() if ts > cutoff}
++            adapter._external_word_update_receipts[bot_id] = protected
++            if protected:
++                payload[_HOLD_RECEIPTS_FIELD] = protected.copy()
+         path = _receipt_path(adapter, bot_id)
+         try:
+             mkdir_under_hermes_home(path.parent)
+-            await asyncio.to_thread(atomic_json_write, path, {"update_ids": ids}, indent=None)
++            await lease.write(atomic_json_write, path, payload, indent=None)
+         except Exception:
++            lease.write_failed = True
+             logger.warning("[Telegram] Failed to persist update receipts to %s", path, exc_info=True)
++            return
++
++
++def _verify_closed_receipt(adapter, key, expected):
++    bot_id, update_id = key.split(":", 1)
++    path = _receipt_path(adapter, bot_id)
++    try:
++        with open(path, encoding="utf-8",
++                  opener=lambda name, flags: os.open(name, flags | getattr(os, "O_NOFOLLOW", 0))) as receipt:
++            stamp = json.load(receipt)[_HOLD_RECEIPTS_FIELD][update_id]
++            if type(stamp) is not float or stamp != expected or stamp <= time.time() - RECEIPT_TTL_SECONDS:
++                return False
++            # The native writer already fsynced the file. Close the rename
++            # before any external response is possible, and reject a race.
++            fsync_directory(path.parent, strict=True)
++            retained = path.stat(follow_symlinks=False)
++            opened = os.fstat(receipt.fileno())
++            return (opened.st_dev, opened.st_ino) == (retained.st_dev, retained.st_ino)
++    except (OSError, ValueError, TypeError, KeyError):
++        return False
+ 
+ 
+ @dataclass
+ class _Claim:
+     key: str
+     dispatch_task: asyncio.Task | None
++    lease: object
+     accepted: bool = False
+     completed: bool = False
+     failed: bool = False
++    external_word_closed: float | None = None
+     owners: int = 1
+ 
+ 
+@@ -263,9 +314,19 @@ class TelegramApplication(Application):
+         claim.owners -= 1
+         if claim.owners:
+             return
+-        del self.adapter._inflight_update_ids[claim.key]
+-        if claim.accepted or (claim.completed and not claim.failed):
+-            _record_receipt(self.adapter, claim.key)
++        lease = claim.lease
++        try:
++            pending = self.adapter._inflight_update_ids
++            if self.adapter._receipt_writer_lease is not lease or pending.get(claim.key) is not claim:
++                lease.failed = True
++                return
++            del pending[claim.key]
++            if (not lease.failed and claim.external_word_closed is None
++                    and (claim.accepted or (claim.completed and not claim.failed))):
++                _record_receipt(self.adapter, claim.key, lease)
++        finally:
++            lease.claims -= 1
++            lease.finish_if_settled()
+ 
+     async def process_error(self, update, error, job=None, coroutine=None):
+         claim = self._current_claim.get()
+@@ -276,24 +337,48 @@ class TelegramApplication(Application):
+         return stopped or (claim is not None and not claim.accepted)
+ 
+     async def process_update(self, update):
++        lease = getattr(self.adapter, "_receipt_writer_lease", None)
++        if lease is None or not lease.admits(self):
++            return
+         if not isinstance(update, Update):
+             return await super().process_update(update)
+         bot_id = self.bot.id
++        if str(bot_id) != lease.bot_id or _receipt_path(self.adapter, bot_id) != lease.receipt_path:
++            lease.failed = True
++            return
+         key = f"{bot_id}:{update.update_id}"
+         _load_receipts(self.adapter, bot_id)
+         # Dispatch happened even when preparation fails before the group-99 observer.
+         self.adapter._updates_dispatched_total += 1
+         seen = self.adapter._seen_update_ids
+         pending = self.adapter._inflight_update_ids
+-        if key in seen or key in pending:
++        protected = self.adapter._external_word_update_receipts.get(str(bot_id), {})
++        if (key in seen or key in pending
++                or protected.get(str(update.update_id), 0) > time.time() - RECEIPT_TTL_SECONDS):
++            return
++        from gateway.external_word_intent import selected_update_message
++        selected = selected_update_message(update)
++        if selected is not None and not lease.accepts(self):
+             return
+-        claim = _Claim(key, asyncio.current_task())
++        claim = _Claim(key, asyncio.current_task(), lease)
++        lease.claims += 1
+         # Atomic on PTB's event loop: no await between lookup and claim. Dispatch and its
+         # PTB tasks share ownership; completed-history pressure cannot evict active work.
+         pending[key] = claim
+         token = self._current_claim.set(claim)
+         try:
+-            await super().process_update(update)
++            if selected is not None:
++                self._check_initialized()
++                # Consume this selected update before handing it to any adapter
++                # task. A lost hold ACK may never trigger replay after restart.
++                stamp = _record_receipt(self.adapter, key, lease, external_word=True)
++                await asyncio.shield(self.adapter._update_receipt_flush)
++                if (lease.accepts(self) and await asyncio.to_thread(_verify_closed_receipt, self.adapter, key, stamp)
++                        and lease.accepts(self)):
++                    claim.external_word_closed = stamp
++                    await self.adapter._dispatch_external_word_update(update, selected)
++            else:
++                await super().process_update(update)
+         except BaseException:
+             claim.failed = True
+             raise

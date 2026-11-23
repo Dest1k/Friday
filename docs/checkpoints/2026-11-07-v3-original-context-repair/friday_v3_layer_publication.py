@@ -40,6 +40,7 @@ SCHEMA = "friday.ordinary-telegram-source-update.v45"
 # repeated set instead of widening the operation to every known layer.
 SCHEMA_EXPLICIT = "friday.ordinary-telegram-source-update.v46"
 SCHEMA_S14_FINALIZE = "friday.ordinary-telegram-source-update.v47"
+SCHEMA_D13 = "friday.ordinary-telegram-source-update.v48"
 # The already reviewed historical root, never a future request or input digest.
 CURRENT_SOURCE_V6_ROOT_INPUT = "dfc6fd4a552d9088887746c7329febcf1f4b152f01c81841cd2bb36241a891df"
 LAYER_NAMES = (
@@ -168,6 +169,7 @@ LAYER_NAMES = (
     'telegram-s13-selected-photo-custody-after-source301',
     'telegram-managed-document-turn-guard-after-source302',
     'telegram-s14-protected-pair-finalize-after-source303',
+    'telegram-d13-retained-writer-stop-after-source304',
 )
 # Draft binding barrier: no request generation or publication may read the installed
 # home for this selected edge until the exact frozen manifest and patch are supplied.
@@ -7797,13 +7799,156 @@ CURRENT_SOURCE_S14_FINALIZE_REQUEST_FIELDS = frozenset(['candidate_input',
  'transaction_history'])
 
 
+CURRENT_SOURCE_D13_LAYER = 'telegram-d13-retained-writer-stop-after-source304'
+CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.d13-retained-writer-stop-after-source304.v1'
+CURRENT_SOURCE_D13_MANIFEST = '32d85c6fa2619d6a1ad6578c4e9aa87fc8ccd69ea7677a9271e034acce64d2ff'
+CURRENT_SOURCE_D13_PATCH = '34ab41676e5de58954adf70c9ca451585b06064a473f6ff89450fcd01fc8c420'
+# Bind the reviewed private ordinary helper and authentic predecessor at preparation.
+CURRENT_SOURCE_D13_HELPER = 'UNBOUND'
+CURRENT_SOURCE_D13_PREDECESSOR = {key: 'UNBOUND' for key in CURRENT_SOURCE_S14_FINALIZE_PREDECESSOR}
+CURRENT_SOURCE_D13_NATIVE = ({'before_sha256': None,
+  'bytes': 11285,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'gateway/external_word_intent.py',
+  'sha256': '12e984b3801ec2fd79c30469a14a5cccc2851e013c4b28fde5e9de8156b2c154'},
+ {'before_sha256': '9c7c21a3004efd397f3161203a24071c1d93dbe01373a66f1ac8dc558454788a',
+  'bytes': 31147,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/ordinary_dm_ingress.py',
+  'sha256': '7ab2542f0142fde30f4097fb309f5d1a03c3d842fbf240323c72775473be30b5'},
+ {'before_sha256': 'f891abf8e9a4ff62f2cdab21388a41fe5580847549ae759ea57c2eb7328716bb',
+  'bytes': 307276,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/platforms/base.py',
+  'sha256': 'ffd75ea9db99c635d8ae95f34c8289fe4c7c20440c27e499387bb5be5b011430'},
+ {'before_sha256': 'b81c953f7290b4d1fe48cbf39b52f32d1d68e7c81a9199a191a4629032b9c89d',
+  'bytes': 337863,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run.py',
+  'sha256': 'd00a9ee8a8dd2ee45594be66d75d18738764d96006bbf40e845ddddb7b653400'},
+ {'before_sha256': 'fa3037727dd11800079983357e59b1576e1f2ee5d721685f7cac93bcbd8ac8c1',
+  'bytes': 82394,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_busy.py',
+  'sha256': '52969c5eee501a84a39238a22e5aee75fbcb714fb693d3d75b61c372d85daac6'},
+ {'before_sha256': '967212bf705ab47721889dffae21e7a66abe5c64363875c7151de97ae003194e',
+  'bytes': 128568,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_inbound.py',
+  'sha256': '5c0ba9ce5d5670536f9ef607aaf404891dad31ec55aa9f2f1940fd763af81b2a'},
+ {'before_sha256': 'ff77acbbbc7d092515f2aaa12a4f1bf6c0c81e08d488fa6fbbf1c5782c55859e',
+  'bytes': 30705,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_profile_reconcile.py',
+  'sha256': '6581d5ba21c18ad2b3c323111c2a5c4d2b97f1161326a7bb0dc0efae2efbaff1'},
+ {'before_sha256': 'be818a18f20e3933a07bfcb463be97e06b801ae578fb6075becb0863ff58d011',
+  'bytes': 136689,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_shutdown.py',
+  'sha256': '60e50719ade0cb0b66e1b31ede7d3a5f190b47d804f4c6fe4ef5c6de8a383daf'},
+ {'before_sha256': '04bec1f7b372477f70f157e606c0427e30b92aa1a19d0550e117b70deeb034a3',
+  'bytes': 273487,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_turn.py',
+  'sha256': '26411d6458bef142acf1669f447e117d45e0c0520d3af5b1a65384eed1466c01'},
+ {'before_sha256': '64a3fff73901facfc3c5c4fbf76899053694925cf3270d6a3bd743922ea7d2c7',
+  'bytes': 16311,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/shutdown_flush.py',
+  'sha256': 'a4da8578b8dce1538f252101d93158b0d2c812931fca5e5f3230f21081eac0ba'},
+ {'before_sha256': '7a5c9dcedb5e220740c5152d41d007a11e84d2eb0bfd01c5013c0f88bf728b9d',
+  'bytes': 23980,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/shutdown_watchdog.py',
+  'sha256': 'f6b135c030987282e323005c362613c0a32c8c09575de8e52bdd04cbcbb5116d'},
+ {'before_sha256': 'b57894b61cc2e3b8514b6823b6cf5c0e14a39cc23ff4685fa06844dceff25b6f',
+  'bytes': 23444,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/friday_ordinary_gateway.py',
+  'sha256': '1d9208b3c65a9db3553296e30716b0cbb26c5c2eb7249c45c4a8879a1d49d68b'},
+ {'before_sha256': '19055fb6ffcf671d9fb97b6eac456ec81bbf28994e069f4f420e96c140e56a37',
+  'bytes': 465646,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'plugins/platforms/telegram/adapter.py',
+  'sha256': '566c200b905b3b65cd2d91783f2c3a6ccc5d013d2d155c272d883b37249adaf0'},
+ {'before_sha256': None,
+  'bytes': 18535,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'plugins/platforms/telegram/d13_writer_settlement.py',
+  'sha256': '0a25ab2e8edcb55dc63ccddcc56d92bfe58f4ca0afaf0754a623d89c358648f1'},
+ {'before_sha256': None,
+  'bytes': 12902,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'plugins/platforms/telegram/receipt_writer_lease.py',
+  'sha256': 'fc6d81af3805aab91a09d3ea6b8413d219800bda699351c8a2aba241ceb9ff4a'},
+ {'before_sha256': '9f78dcbdd4a2010e2a7550fea3e99d6928d1c1ad91363feb7e6a2e4dff489655',
+  'bytes': 7585,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'plugins/platforms/telegram/telegram_ingress.py',
+  'sha256': '38fad7b1666ae816cccdec74e734d85c790c81ddeb8f268b24053b21f0d3168a'},
+ {'before_sha256': '951aaffd712fa75f87dd9043fed0cacdc63f7fb6f9f07c2bf828ff853e8d2fcc',
+  'bytes': 17555,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'plugins/platforms/telegram/update_admission.py',
+  'sha256': '38d5f6a5a308bc243d9107b8350995b19cf3f98dcc5a6b415586e9ffeddcdd5a'})
+CURRENT_SOURCE_D13_BEFORE = {
+    'FRIDAY-INSTALL.json': (29647, 'UNBOUND'),
+    'hermes-agent.source.json': (3496223, 'UNBOUND'),
+    'hermes-agent/gateway/external_word_intent.py': None,
+    'hermes-agent/gateway/ordinary_dm_ingress.py': (30582, '9c7c21a3004efd397f3161203a24071c1d93dbe01373a66f1ac8dc558454788a'),
+    'hermes-agent/gateway/platforms/base.py': (302944, 'f891abf8e9a4ff62f2cdab21388a41fe5580847549ae759ea57c2eb7328716bb'),
+    'hermes-agent/gateway/run.py': (335579, 'b81c953f7290b4d1fe48cbf39b52f32d1d68e7c81a9199a191a4629032b9c89d'),
+    'hermes-agent/gateway/run_busy.py': (81975, 'fa3037727dd11800079983357e59b1576e1f2ee5d721685f7cac93bcbd8ac8c1', 0o644),
+    'hermes-agent/gateway/run_inbound.py': (124594, '967212bf705ab47721889dffae21e7a66abe5c64363875c7151de97ae003194e'),
+    'hermes-agent/gateway/run_profile_reconcile.py': (30552, 'ff77acbbbc7d092515f2aaa12a4f1bf6c0c81e08d488fa6fbbf1c5782c55859e', 0o644),
+    'hermes-agent/gateway/run_shutdown.py': (133855, 'be818a18f20e3933a07bfcb463be97e06b801ae578fb6075becb0863ff58d011', 0o644),
+    'hermes-agent/gateway/run_turn.py': (272470, '04bec1f7b372477f70f157e606c0427e30b92aa1a19d0550e117b70deeb034a3'),
+    'hermes-agent/gateway/shutdown_flush.py': (16113, '64a3fff73901facfc3c5c4fbf76899053694925cf3270d6a3bd743922ea7d2c7', 0o644),
+    'hermes-agent/gateway/shutdown_watchdog.py': (23780, '7a5c9dcedb5e220740c5152d41d007a11e84d2eb0bfd01c5013c0f88bf728b9d', 0o644),
+    'hermes-agent/hermes_cli/friday_ordinary_gateway.py': (22963, 'b57894b61cc2e3b8514b6823b6cf5c0e14a39cc23ff4685fa06844dceff25b6f'),
+    'hermes-agent/install-stamp.json': (89757, 'UNBOUND'),
+    'hermes-agent/plugins/platforms/telegram/adapter.py': (454432, '19055fb6ffcf671d9fb97b6eac456ec81bbf28994e069f4f420e96c140e56a37'),
+    'hermes-agent/plugins/platforms/telegram/d13_writer_settlement.py': None,
+    'hermes-agent/plugins/platforms/telegram/receipt_writer_lease.py': None,
+    'hermes-agent/plugins/platforms/telegram/telegram_ingress.py': (7358, '9f78dcbdd4a2010e2a7550fea3e99d6928d1c1ad91363feb7e6a2e4dff489655'),
+    'hermes-agent/plugins/platforms/telegram/update_admission.py': (13174, '951aaffd712fa75f87dd9043fed0cacdc63f7fb6f9f07c2bf828ff853e8d2fcc', 0o644),
+    'patches/hermes/telegram-d13-retained-writer-stop-after-source304-manifest.json': None,
+    'patches/hermes/telegram-d13-retained-writer-stop-after-source304.patch': None,
+    'scripts/friday_ordinary_install.py': (1724294, 'UNBOUND'),
+}
+
+STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS = {
+    CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA: SCHEMA_S14_FINALIZE,
+    CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA: SCHEMA_D13,
+}
+
+
 WORD_AND_RECOVERY_SUCCESSOR_SCHEMAS = (*CORE296_SUCCESSOR_SCHEMAS, CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA,
     CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA, CURRENT_SOURCE_S08_SUCCESSOR_SCHEMA,
     CURRENT_SOURCE_S13_SUCCESSOR_SCHEMA, CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA,
-    CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA)
+    *STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS)
 
 
 def core296_successor_schema(layer_names):
+    if CURRENT_SOURCE_D13_LAYER in layer_names:
+        return CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA
     if CURRENT_SOURCE_S14_FINALIZE_LAYER in layer_names:
         return CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA
     if CURRENT_SOURCE_S14_LAYER in layer_names:
@@ -7824,6 +7969,8 @@ def core296_successor_schema(layer_names):
 
 
 def core296_successor_layer(schema):
+    if schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_D13_LAYER
     if schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA:
         return CURRENT_SOURCE_S14_FINALIZE_LAYER
     if schema == CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA:
@@ -7840,6 +7987,8 @@ def core296_successor_layer(schema):
 
 
 def _core296_predecessor_pins(schema):
+    if schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_D13_PREDECESSOR
     if schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA:
         return CURRENT_SOURCE_S14_FINALIZE_PREDECESSOR
     if schema == CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA:
@@ -7866,6 +8015,8 @@ def _core296_predecessor_pins(schema):
 
 
 def _core296_source_pins(schema):
+    if schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_D13_MANIFEST, CURRENT_SOURCE_D13_PATCH, CURRENT_SOURCE_D13_NATIVE
     if schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA:
         return (CURRENT_SOURCE_S14_FINALIZE_MANIFEST, CURRENT_SOURCE_S14_FINALIZE_PATCH,
                 CURRENT_SOURCE_S14_FINALIZE_NATIVE)
@@ -7903,13 +8054,14 @@ def ninety_ninth_metadata_refs(home, schema=CURRENT_SOURCE_NINETY_NINTH_SUCCESSO
             for key, (relative, sha256) in metadata.items()}
 
 
-def require_s14_finalize_helper(project_files):
-    pin = CURRENT_SOURCE_S14_FINALIZE_HELPER
+def require_strict_source_helper(schema, project_files):
+    edge, pin = (("d13", CURRENT_SOURCE_D13_HELPER) if schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA
+                 else ("s14_finalize", CURRENT_SOURCE_S14_FINALIZE_HELPER))
     require(type(pin) is str and __import__("re").fullmatch("[0-9a-f]{64}", pin)
-            and pin != CURRENT_SOURCE_S14_FINALIZE_PREDECESSOR["helper"],
-            "transaction_current_source_s14_finalize_helper_unbound")
+            and pin != _core296_predecessor_pins(schema)["helper"],
+            f"transaction_current_source_{edge}_helper_unbound")
     require(type(project_files) is dict and project_files.get(CURRENT_SOURCE_NINETY_NINTH_HELPER) == pin,
-            "transaction_current_source_s14_finalize_helper_pin_changed")
+            f"transaction_current_source_{edge}_helper_pin_changed")
 
 
 def require_ninety_ninth_source_binding(layer_names, project_files=None, *, request=None):
@@ -7917,9 +8069,11 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
     schema = core296_successor_schema(layer_names) if isinstance(layer_names, (list, tuple)) else None
     context = request.get("current_source_successor") if request is not None else None
     context_schema = context.get("schema") if type(context) is dict else None
-    strict_s14 = schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA
-    if request is not None and request.get("schema") == SCHEMA_S14_FINALIZE:
-        require(strict_s14, "transaction_current_source_s14_finalize_layer_required")
+    request_schema = STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS.get(schema, SCHEMA_EXPLICIT)
+    if request is not None and request.get("schema") in (SCHEMA_S14_FINALIZE, SCHEMA_D13):
+        edge = "d13" if request.get("schema") == SCHEMA_D13 else "s14_finalize"
+        require(request.get("schema") == request_schema,
+                f"transaction_current_source_{edge}_layer_required")
     if schema is None and context_schema not in WORD_AND_RECOVERY_SUCCESSOR_SCHEMAS:
         return
     require(schema is not None, "transaction_current_source_exact_ninety_ninth_layer_required")
@@ -7934,10 +8088,10 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
     manifest = f"patches/hermes/{layer}-manifest.json"
     patch = f"patches/hermes/{layer}.patch"
     if request is not None:
-        if strict_s14:
+        if schema in STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS:
+            edge = "d13" if schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA else "s14_finalize"
             require(set(request) == CURRENT_SOURCE_S14_FINALIZE_REQUEST_FIELDS,
-                    "transaction_current_source_s14_finalize_request_fields_changed")
-        request_schema = SCHEMA_S14_FINALIZE if strict_s14 else SCHEMA_EXPLICIT
+                    f"transaction_current_source_{edge}_request_fields_changed")
         require(request.get("schema") == request_schema and context_schema == schema
                 and set(context) == {"schema", "root_project_update", "previous_native_update"},
                 "transaction_current_source_ninety_ninth_context_required")
@@ -7953,13 +8107,14 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
                 and request.get("current_input") != request.get("previous_input"),
                 "transaction_current_source_ninety_ninth_input_pin_changed")
         project_files = request.get("project_inventory")
-        if strict_s14:
-            predecessor = CURRENT_SOURCE_S14_FINALIZE_PREDECESSOR
+        if schema in STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS:
+            predecessor = _core296_predecessor_pins(schema)
             previous_input, root = request.get("previous_input"), context["root_project_update"]
             require(type(previous_input) is dict and previous_input.get("sha256") == predecessor["input"]
                     and type(root) is dict and root.get("sha256") == predecessor["root"],
-                    "transaction_current_source_s14_finalize_previous_input_or_root_changed")
-            before_layers, native_count, project_after = 303, 17919, 690
+                    f"transaction_current_source_{edge}_previous_input_or_root_changed")
+            before_layers, native_count, project_after = (
+                (304, 17921, 692) if schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA else (303, 17919, 690))
         elif schema == CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA:
             previous_input, root = request.get("previous_input"), context["root_project_update"]
             require(type(previous_input) is dict
@@ -7993,8 +8148,8 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
                 and request.get("project_file_updates") == [CURRENT_SOURCE_NINETY_NINTH_HELPER]
                 and all(request.get(key) == [] for key in ("plugin_set", "plugin_additions", "staged_files")),
                 "transaction_current_source_ninety_ninth_project_scope_changed")
-        if strict_s14:
-            require_s14_finalize_helper(project_files)
+        if schema in STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS:
+            require_strict_source_helper(schema, project_files)
     if project_files is not None:
         require(type(project_files) is dict
                 and project_files.get(manifest) == manifest_pin
@@ -8005,7 +8160,13 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
 def require_ninety_ninth_predecessor(request, previous, *, raw=None):
     schema = request["current_source_successor"]["schema"]
     pins = _core296_predecessor_pins(schema)
-    if schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA:
+    predecessor_request_schema = SCHEMA_EXPLICIT
+    if schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA:
+        predecessor_layer = CURRENT_SOURCE_S14_FINALIZE_LAYER
+        predecessor_schema = CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA
+        predecessor_request_schema = SCHEMA_S14_FINALIZE
+        predecessor_layers, predecessor_files, predecessor_projects = 303, 17919, 690
+    elif schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA:
         predecessor_layer = CURRENT_SOURCE_S14_LAYER
         predecessor_schema = CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA
         predecessor_layers, predecessor_files, predecessor_projects = 302, 17919, 688
@@ -8033,7 +8194,8 @@ def require_ninety_ninth_predecessor(request, previous, *, raw=None):
         predecessor_layer = CURRENT_SOURCE_NINETY_EIGHTH_LAYER
         predecessor_schema = CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA
         predecessor_layers, predecessor_files, predecessor_projects = 295, 17911, 673
-    edge = {CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA: "s14_finalize",
+    edge = {CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA: "d13",
+            CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA: "s14_finalize",
             CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA: "s14",
             CURRENT_SOURCE_S13_SUCCESSOR_SCHEMA: "s13",
             CURRENT_SOURCE_S08_SUCCESSOR_SCHEMA: "s08"}.get(schema, "ninety_ninth")
@@ -8043,25 +8205,28 @@ def require_ninety_ninth_predecessor(request, previous, *, raw=None):
         receipt_sha256=pins["receipt"], intent_sha256=pins["intent"],
         predecessor_layer=predecessor_layer, predecessor_schema=predecessor_schema,
         predecessor_layers=predecessor_layers, predecessor_native_count=predecessor_files,
-        predecessor_project_count=predecessor_projects)
-    if schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA:
-        require_s14_finalize_retained_metadata(Path(ninety_ninth_predecessor_ref(request["home"], schema)["path"]).parent)
+        predecessor_project_count=predecessor_projects, predecessor_request_schema=predecessor_request_schema)
+    if schema in STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS:
+        require_strict_source_retained_metadata(
+            Path(ninety_ninth_predecessor_ref(request["home"], schema)["path"]).parent, schema)
     return result
 
 
-def require_s14_finalize_retained_metadata(journal):
-    pins = CURRENT_SOURCE_S14_FINALIZE_PREDECESSOR
+def require_strict_source_retained_metadata(journal, schema):
+    pins = _core296_predecessor_pins(schema)
+    edge = "d13" if schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA else "s14_finalize"
     for name, key in (("FRIDAY-INSTALL.json", "marker"), ("hermes-agent.source.json", "receipt"),
                       ("install-stamp.json", "stamp")):
         path = journal / name
         require(path.resolve() == path and digest(owned_file(path)) == pins[key],
-                "transaction_current_source_s14_finalize_retained_metadata_changed:" + name)
+                f"transaction_current_source_{edge}_retained_metadata_changed:" + name)
 
 
 def _require_source_predecessor(request, previous, *, raw, edge, predecessor_ref,
                                 helper_sha256, committed_sha256, receipt_sha256, intent_sha256,
                                 predecessor_layer, predecessor_schema, predecessor_layers,
-                                predecessor_project_count, predecessor_native_count=17911):
+                                predecessor_project_count, predecessor_native_count=17911,
+                                predecessor_request_schema=SCHEMA_EXPLICIT):
     context = request["current_source_successor"]
     ref = context["previous_native_update"]
     require(ref == predecessor_ref,
@@ -8076,7 +8241,7 @@ def _require_source_predecessor(request, previous, *, raw, edge, predecessor_ref
     require(digest(raw) == ref["sha256"],
             f"transaction_current_source_{edge}_previous_request_changed")
     predecessor = json.loads(raw)
-    require(type(predecessor) is dict and predecessor.get("schema") == SCHEMA_EXPLICIT
+    require(type(predecessor) is dict and predecessor.get("schema") == predecessor_request_schema
             and predecessor.get("layer_names") == [predecessor_layer]
             and predecessor.get("installed_layers") == predecessor_layers
             and predecessor.get("installed_files") == predecessor_native_count,
@@ -10036,11 +10201,12 @@ def check_project_inventory(request, previous_input, current_input):
     if core296_schema is not None:
         pins = _core296_predecessor_pins(core296_schema)
         helper = CURRENT_SOURCE_NINETY_NINTH_HELPER
-        if core296_schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA:
+        if core296_schema in STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS:
             require_ninety_ninth_source_binding(layer_names, request=request)
+            edge = "d13" if core296_schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA else "s14_finalize"
             require(sum(name.startswith("plugins/friday_rework/") for name in previous_files) == 53,
-                    "transaction_current_source_s14_finalize_overlay_scope_changed")
-            old_count, new_count = 688, 690
+                    f"transaction_current_source_{edge}_overlay_scope_changed")
+            old_count, new_count = (690, 692) if core296_schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA else (688, 690)
         elif core296_schema == CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA:
             require_ninety_ninth_source_binding(layer_names, request=request)
             require(sum(name.startswith("plugins/friday_rework/") for name in previous_files) == 53,
@@ -10843,7 +11009,11 @@ def read_layers(candidate_root, receipt, home, project_files, layer_names):
                     "transaction_current_source_ninety_ninth_native_scope_changed")
             v98 = f"patches/hermes/{CURRENT_SOURCE_NINETY_EIGHTH_LAYER}"
             prerequisites = {v98 + ".patch": CURRENT_SOURCE_NINETY_EIGHTH_PATCH_SHA256}
-            if core296_schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA:
+            if core296_schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA:
+                predecessor = f"patches/hermes/{CURRENT_SOURCE_S14_FINALIZE_LAYER}"
+                manifest_sha256, patch_sha256 = CURRENT_SOURCE_S14_FINALIZE_MANIFEST, CURRENT_SOURCE_S14_FINALIZE_PATCH
+                prerequisites = {predecessor + ".patch": patch_sha256}
+            elif core296_schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA:
                 predecessor = f"patches/hermes/{CURRENT_SOURCE_S14_LAYER}"
                 manifest_sha256, patch_sha256 = CURRENT_SOURCE_S14_MANIFEST, CURRENT_SOURCE_S14_PATCH
                 prerequisites = {predecessor + ".patch": patch_sha256}
@@ -11083,7 +11253,7 @@ def _exact_source_before_pins(home, calculated, images, edge):
     """Bind every target to its exact committed preimage or true absence."""
     expected = {
         str(home / name): None if pin is None else {
-            "bytes": pin[0], "sha256": pin[1], "mode": 0o600,
+            "bytes": pin[0], "sha256": pin[1], "mode": pin[2] if len(pin) == 3 else 0o600,
         }
         for name, pin in images.items()
     }
@@ -11661,6 +11831,7 @@ def run(request, request_path, request_sha256):
     s13 = core296_schema == CURRENT_SOURCE_S13_SUCCESSOR_SCHEMA
     s14 = core296_schema == CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA
     strict_s14 = core296_schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA
+    d13 = core296_schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA
     d02 = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_D02_SUCCESSOR_SCHEMA
     ninety_fifth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_NINETY_FIFTH_SUCCESSOR_SCHEMA
     ninety_fourth = current_context and request["current_source_successor"]["schema"] == CURRENT_SOURCE_NINETY_FOURTH_SUCCESSOR_SCHEMA
@@ -11713,7 +11884,7 @@ def run(request, request_path, request_sha256):
     INJECT_TARGET = request.get("inject_target")
     INJECT_SNAPSHOT_DIR = request.get("inject_snapshot_dir")
     INJECT_SNAPSHOT_FILES = tuple(request.get("inject_snapshot_files") or ())
-    require(request.get("schema") in (SCHEMA, SCHEMA_EXPLICIT, SCHEMA_S14_FINALIZE),
+    require(request.get("schema") in (SCHEMA, SCHEMA_EXPLICIT, *STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS.values()),
             "transaction_only_v45_supported")
     home = Path(request["home"]).resolve()
     if INJECT_SNAPSHOT_DIR is not None:
@@ -12095,7 +12266,9 @@ def run(request, request_path, request_sha256):
                             "transaction_current_source_d02_plugin_cas_changed")
             require(before_pins[helper_target]["sha256"] == CURRENT_SOURCE_D02_PREVIOUS_HELPER_SHA256,
                     "transaction_current_source_d02_helper_cas_changed")
-        if strict_s14:
+        if d13:
+            before_pins = _exact_source_before_pins(home, before_pins, CURRENT_SOURCE_D13_BEFORE, "d13")
+        elif strict_s14:
             before_pins = _exact_source_before_pins(home, before_pins,
                                                     CURRENT_SOURCE_S14_FINALIZE_BEFORE, "s14_finalize")
         elif s14:
@@ -13009,7 +13182,9 @@ def run(request, request_path, request_sha256):
         require(len(projected["layers"]) == 298 and len(projected["files"]) == 17916,
                 "transaction_current_source_d02_projected_inventory_count_changed")
     if ninety_ninth:
-        if strict_s14:
+        if d13:
+            layer_count, native_count = 305, 17924
+        elif strict_s14:
             layer_count, native_count = 304, 17921
         elif s14:
             layer_count, native_count = 303, 17919
@@ -13152,7 +13327,7 @@ def run(request, request_path, request_sha256):
             "current_source_successor": request["current_source_successor"]} if current_context else {}),
     })
 
-    authenticated_writes = strict_s14 or s14 or s13 or s08 or d02 or core296_schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA
+    authenticated_writes = d13 or strict_s14 or s14 or s13 or s08 or d02 or core296_schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA
     try:
         # 10a. the source files of the layers
         for path in touched:
@@ -13334,8 +13509,8 @@ def run(request, request_path, request_sha256):
                     "transaction_current_source_ninety_ninth_previous_committed_changed")
             require(owned_file(native_intent_path) == native_intent_raw,
                     "transaction_current_source_ninety_ninth_previous_intent_changed")
-            if strict_s14:
-                require_s14_finalize_retained_metadata(prior_path.parent)
+            if core296_schema in STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS:
+                require_strict_source_retained_metadata(prior_path.parent, core296_schema)
         if ninety_fifth:
             require(owned_file(native_committed_path) == native_committed_raw,
                     "transaction_current_source_ninety_fifth_previous_committed_changed")
