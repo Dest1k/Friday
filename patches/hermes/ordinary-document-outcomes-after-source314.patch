@@ -1,0 +1,317 @@
+diff --git a/gateway/ordinary_f04_bridge.py b/gateway/ordinary_f04_bridge.py
+index b6d4cc31350af5057f4696fdb16618cac954eebf..63dfab5368ad856dbd5e82fd9763c908768353df 100644
+--- a/gateway/ordinary_f04_bridge.py
++++ b/gateway/ordinary_f04_bridge.py
+@@ -92,13 +92,14 @@ def _base(request):
+         raise ValueError('f04_request_fields')
+     base = {key: deepcopy(request[key]) for key in fields}
+     selector = base['selector']
++    selector_fields = {'principal', 'input', 'caption_sha256', 'window', 'tester'}
+     if (base['schema'] != _REQUEST or not isinstance(base['scope_id'], str)
+             or re.fullmatch(r'root-f04-[A-Za-z0-9_-]{1,80}', base['scope_id']) is None
+             or not _hex(base['source_receipt_sha256'])
+             or not _number(base['metadata_created_monotonic']) or not _number(base['metadata_expires_monotonic'])
+             or not base['metadata_created_monotonic'] < base['metadata_expires_monotonic'] <= base['metadata_created_monotonic'] + 720
+             or not isinstance(selector, dict)
+-            or set(selector) != {'principal', 'input', 'caption_sha256', 'window', 'tester'}):
++            or set(selector) - {'scenario_sha256'} != selector_fields):
+         raise ValueError('f04_selector_shape')
+     principal = selector['principal']
+     if (not isinstance(principal, dict) or set(principal) != {
+@@ -125,6 +126,9 @@ def _base(request):
+     committed['selector'].pop('tester')
+     if tester['send_commitment_sha256'] != canonical_sha256(committed):
+         raise ValueError('f04_send_commitment')
++    from gateway.ordinary_f04_xlsx import validate_selector
++
++    validate_selector(selector)
+     return base
+ 
+ 
+@@ -338,6 +342,9 @@ def capture_verified_ingress(event, proof, staged):
+             attachment = raw.document
+         if origin['file_id'] != attachment.file_id or origin['file_unique_id'] != attachment.file_unique_id:
+             raise ValueError('f04_verified_own_attachment_required')
++        from gateway.ordinary_f04_xlsx import verified_ingress_facts
++
++        xlsx_facts = verified_ingress_facts(target, item, destination, message)
+         target['receipt'] = {'schema': _PHOTO_RECEIPT if is_photo else 'frw.gateway.f04-original-own-ingress.v1',
+             'namespace': 'native.telegram', 'principal': principal,
+             'message_id': message['message_id'], 'platform_update_id': message['platform_update_id'],
+@@ -345,7 +352,7 @@ def capture_verified_ingress(event, proof, staged):
+             'input': deepcopy(content), 'caption_sha256': selector['caption_sha256'],
+             'origin_sha256': canonical_sha256(origin), 'source_receipt_sha256': row['base']['source_receipt_sha256'],
+             'observed_monotonic': target['ingress_monotonic'], 'verified_by': 'run_inbound_media._verified_bytes',
+-            **photo_facts}
++            **photo_facts, **xlsx_facts}
+     except Exception:
+         row['error'] = 'f04_verified_original_ingress_rejected'
+ 
+diff --git a/gateway/ordinary_f04_xlsx.py b/gateway/ordinary_f04_xlsx.py
+index 4c5b2e58ee7319cfc2f0e2674b5d1d7bbf335a04..2337d2d76026b707ad0a6285bfe857e9cafe4a7a 100644
+--- a/gateway/ordinary_f04_xlsx.py
++++ b/gateway/ordinary_f04_xlsx.py
+@@ -1,9 +1,11 @@
+ """Process-local proof for the selected F04 XLSX to ODS conversion."""
+ from contextlib import closing
+ from contextvars import ContextVar
++from dataclasses import dataclass
+ from hashlib import sha256
+ import json
+ from pathlib import Path, PurePosixPath
++import re
+ import sqlite3
+ from threading import Lock
+ import time
+@@ -17,9 +19,62 @@ _SELECTED = ContextVar("ordinary_f04_xlsx_selected_worker", default=None)
+ _WRITE = ContextVar("ordinary_f04_xlsx_registered_write", default=None)
+ 
+ 
++@dataclass(frozen=True)
++class _Selection:
++    scenario_sha256: str
++    input_sha256: str
++    size_bytes: int
++    caption_sha256: str
++    input_name: str
++    output_name: str
++
++    def matches(self, selector):
++        return (selector["input"] == {"sha256": self.input_sha256, "size_bytes": self.size_bytes}
++                and selector["caption_sha256"] == self.caption_sha256)
++
++
++_NORTH = _Selection(SCENARIO, INPUT["sha256"], INPUT["size_bytes"], CAPTION,
++                    "north-ledger.xlsx", "north-ledger.ods")
++_ORDERS = _Selection(
++    "874ec22b2a047b34aaa1c4eebf5a903350e73e6f7f8e52505b790c2f7cb063c3",
++    "d6dd1e4a860d35b538f353177621767a5c50b03c0b166c5745277e916e634519",
++    2243, "117b53dd11ff48e719b5ba92cf8fd56f3cad7139f255111509a8e54cf87715ca",
++    "mayak-revision-register-f04-v01.xlsx", "mayak-revision-register-f04-v01.ods",
++)
++
++
++def _selection(selector):
++    if "scenario_sha256" not in selector:
++        return _NORTH if _NORTH.matches(selector) else None
++    if selector["scenario_sha256"] == _ORDERS.scenario_sha256 and _ORDERS.matches(selector):
++        return _ORDERS
++    return None
++
++
++def validate_selector(selector):
++    """The Orders workbook needs one explicit registration under the send commitment."""
++    if ("scenario_sha256" in selector or _ORDERS.matches(selector)) and _selection(selector) is not _ORDERS:
++        raise ValueError("f04_exact_xlsx_scenario_required")
++
++
+ def selected(row):
+-    selector = row["base"]["selector"]
+-    return selector["input"] == INPUT and selector["caption_sha256"] == CAPTION
++    return _selection(row["base"]["selector"]) is not None
++
++
++def _matches_document(event, case):
++    raw = getattr(event, "raw_message", None)
++    document = getattr(raw, "document", None)
++    if (getattr(document, "file_name", None) != case.input_name
++            or getattr(document, "mime_type", None) != MIME):
++        return False
++    if case is _NORTH:
++        return True
++    return (getattr(document, "file_size", None) == case.size_bytes
++            and getattr(getattr(raw, "chat", None), "type", None) == "private"
++            and getattr(raw, "edit_date", None) is None
++            and getattr(raw, "reply_to_message", None) is None
++            and getattr(raw, "forward_origin", None) is None
++            and getattr(raw, "media_group_id", None) is None)
+ 
+ 
+ def selected_publication(event):
+@@ -27,10 +82,27 @@ def selected_publication(event):
+     if not isinstance(target, dict) or target["event"] is not event:
+         return False
+     row = target["row"]
+-    document = getattr(event.raw_message, "document", None)
+-    return (not row["disarmed"] and row["error"] is None and selected(row)
+-            and getattr(document, "file_name", None) == "north-ledger.xlsx"
+-            and getattr(document, "mime_type", None) == MIME)
++    case = _selection(row["base"]["selector"])
++    return (not row["disarmed"] and row["error"] is None and case is not None
++            and _matches_document(event, case))
++
++
++def verified_ingress_facts(target, item, destination, message):
++    """Bind the Orders selector to the destination prepared from verified ingress."""
++    case = _selection(target["row"]["base"]["selector"])
++    if case is not _ORDERS:
++        return {}
++    if (not _matches_document(target["event"], case) or item.get("mime_type") != MIME
++            or item["origin"].get("declared_bytes") != case.size_bytes
++            or message["reply_to_message_id"] != "" or message["thread_id"] != ""
++            or message["chat_id"] != message["user_id"]):
++        raise ValueError("f04_exact_xlsx_document_required")
++    workspace = target["source"]._friday_user_scope.home / "workspace"
++    relative = destination.relative_to(workspace)
++    if (relative.parent != Path("received")
++            or re.fullmatch(r"telegram_[0-9a-f]{64}_" + re.escape(case.input_name), relative.name) is None):
++        raise ValueError("f04_exact_xlsx_workspace_path_required")
++    return {"scenario_sha256": case.scenario_sha256, "workspace_path": relative.as_posix()}
+ 
+ 
+ def _digest(value):
+@@ -53,8 +125,9 @@ def _held(target, ctx):
+ 
+ 
+ class _Witness:
+-    def __init__(self, target, ctx, cap, source):
++    def __init__(self, target, ctx, cap, source, case):
+         self.target, self.ctx, self.cap, self.source = target, ctx, cap, source
++        self.case = case
+         self.path = source.path.relative_to(cap.home / "workspace").as_posix()
+         self.lock = Lock()
+         self.attempted = self.invalid = self.closed = False
+@@ -114,7 +187,7 @@ class _Witness:
+                     and worker.executor_task.result() is response and type(response) is dict
+                     and response.get("completed") is True and not response.get("failed")
+                     and not response.get("interrupted") and self._only_selected_effect()):
+-                target["xlsx_result"] = (self.cap, self.source, self.proof, self.persisted_db)
++                target["xlsx_result"] = (self.cap, self.source, self.proof, self.persisted_db, self.case)
+             self.proof = self.effect_owner = None
+ 
+     def _only_selected_effect(self):
+@@ -133,13 +206,19 @@ def select_worker(runner, event, ctx):
+         if not selected_publication(event):
+             return None
+         target = event._ordinary_f04_host_target
+-        if (target["runner"] is not runner or target["receipt"] is None
+-                or not _held(target, ctx) or target["receipt"]["input"] != INPUT):
++        case = _selection(target["row"]["base"]["selector"])
++        receipt = target["receipt"]
++        if (target["runner"] is not runner or receipt is None
++                or not _held(target, ctx) or not case.matches(receipt)):
+             return None
++        cap = current(required=True)
+         source = read_published_xlsx_input(event)
+-        if source is None or (source.sha256, source.size_bytes) != (INPUT["sha256"], INPUT["size_bytes"]):
++        if source is None or (source.sha256, source.size_bytes) != (case.input_sha256, case.size_bytes):
++            return None
++        if case is _ORDERS and (receipt.get("scenario_sha256") != case.scenario_sha256
++                or receipt.get("workspace_path") != source.path.relative_to(cap.home / "workspace").as_posix()):
+             return None
+-        return _Witness(target, ctx, current(required=True), source)
++        return _Witness(target, ctx, cap, source, case)
+     except Exception:
+         return None
+ 
+@@ -215,7 +294,7 @@ def observe_result(result):
+                 and value.get("export_mode") == "xlsx_ods" and value.get("office_filter") == "ods:calc8"
+                 and value.get("source_unchanged") is True and value.get("source") == witness.path
+                 and value.get("source_sha256") == witness.source.sha256 and type(path) is str
+-                and path == write["path"] and PurePosixPath(path).name == "north-ledger.ods"
++                and path == write["path"] and PurePosixPath(path).name == witness.case.output_name
+                 and type(size) is int and 0 < size <= 50_000_000
+                 and type(digest) is str and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)):
+             write["result"] = {"tool": "write_file", "operation": "spreadsheet_convert",
+@@ -450,7 +529,7 @@ def terminal_witness(target, current, result):
+     if saved is None or result["state"] != "SETTLED" or result["cancel"] is not None:
+         return None
+     try:
+-        cap, source, proof, persisted_db = saved
++        cap, source, proof, persisted_db, case = saved
+         from gateway.ordinary_f04_bridge import canonical_sha256
+         from gateway.run_inbound_media import verify_published_xlsx_input
+         from hermes_cli.friday_user_scope import _CURRENT, authority
+@@ -460,9 +539,15 @@ def terminal_witness(target, current, result):
+         clock = current["ordinary_clock"]
+         receipt = current["ingress_receipt"]
+         observed = time.monotonic()
+-        if (ack["generation"] != target["generation"] or ack["session_id"] != target["session_id"]
++        source_path = source.path.relative_to(cap.home / "workspace").as_posix()
++        if (case is not _selection(target["row"]["base"]["selector"])
++                or (case is _ORDERS and (receipt != target["receipt"]
++                    or receipt.get("scenario_sha256") != case.scenario_sha256
++                    or receipt.get("workspace_path") != source_path))
++                or ack["generation"] != target["generation"] or ack["session_id"] != target["session_id"]
+                 or ack["session_key"] != target["session_key"]
+                 or ack["ingress_receipt_sha256"] != canonical_sha256(receipt)
++                or document["file_name"] != case.output_name
+                 or (document["sha256"], document["bytes"], document["file_name"], document["reply_to"])
+                 != (proof["artifact_sha256"], proof["artifact_bytes"],
+                     PurePosixPath(proof["artifact_path"]).name, receipt["message_id"])
+@@ -489,9 +574,9 @@ def terminal_witness(target, current, result):
+         observed = time.monotonic()
+         if observed >= clock["deadline_monotonic"] or not still_current():
+             return None
+-        return {"schema": "frw.gateway.f04-owned-xlsx-ods-witness.v1", "scenario_sha256": SCENARIO,
++        return {"schema": "frw.gateway.f04-owned-xlsx-ods-witness.v1", "scenario_sha256": case.scenario_sha256,
+                 "binding_sha256": current["binding_sha256"], "ack_sha256": canonical_sha256(ack),
+-                "generation": target["generation"], "source_path": source.path.relative_to(cap.home / "workspace").as_posix(),
++                "generation": target["generation"], "source_path": source_path,
+                 "source_sha256": source.sha256, "source_bytes": source.size_bytes,
+                 "source_descriptor_before": list(source.source_identity),
+                 "source_descriptor_after_delivery": list(source.source_identity),
+diff --git a/tools/scoped_presentation_variants.py b/tools/scoped_presentation_variants.py
+index 07abd26ae17a071a5c66b513e20cd016ec17c945..8df3fb718445ae0a0e6acb8e16cd82e10ac96369 100644
+--- a/tools/scoped_presentation_variants.py
++++ b/tools/scoped_presentation_variants.py
+@@ -62,7 +62,7 @@ def _merge_namespaces(*values):
+     return result
+ 
+ 
+-def _serialize(root, namespaces):
++def _serialize(root, namespaces, *, default_element_namespace=None):
+     """Serialize with stable prefixes, including lexical QName-only bindings.
+ 
+     ElementTree's process-global prefix registry assigns ns0/ns1 differently
+@@ -75,15 +75,21 @@ def _serialize(root, namespaces):
+         _refuse('default_namespace_scope_unsupported')
+     if 'xml' in bindings and bindings['xml'] != XML:
+         _refuse('namespace_collision_unsupported')
++    if default_element_namespace is not None:
++        namespace_prefix = '{' + default_element_namespace + '}'
++        if all(node.tag.startswith(namespace_prefix) for node in root.iter()):
++            bindings[''] = default_element_namespace
+     bindings['xml'] = XML
+     preferred = {}
+     for prefix, uri in sorted(bindings.items()):
+         if prefix:
+             preferred.setdefault(uri, prefix)
+-    def qualified(name):
++    def qualified(name, *, element=False):
+         if not name.startswith('{'):
+             return name
+         uri, local = name[1:].split('}', 1)
++        if element and uri == default_element_namespace and bindings.get('') == uri:
++            return local
+         if uri not in preferred:
+             number = 0
+             while 'odf%d' % number in bindings:
+@@ -94,7 +100,7 @@ def _serialize(root, namespaces):
+         return preferred[uri] + ':' + local
+     # Finish collecting before emitting the root namespace declarations.
+     for node in root.iter():
+-        qualified(node.tag)
++        qualified(node.tag, element=True)
+         for key in node.attrib:
+             qualified(key)
+     pieces = []
+@@ -111,7 +117,7 @@ def _serialize(root, namespaces):
+     def text(value):
+         return escape(value, {'\r': '&#13;'})
+     def emit(node, outer=False):
+-        name = qualified(node.tag)
++        name = qualified(node.tag, element=True)
+         append('<' + name)
+         if outer:
+             for prefix, uri in sorted(bindings.items()):
+@@ -407,7 +413,8 @@ def reprofile(data, source_format, target_format):
+         if len(found) != 1 or found[0].get('ContentType') != PPT_MAIN_TYPES[source_format]:
+             _refuse('presentation_profile_mismatch')
+         found[0].set('ContentType', PPT_MAIN_TYPES[target_format])
+-        changes = {name: _serialize(root, _namespaces(parts[name]))}
++        # Impress expects unprefixed OPC element names in this package member.
++        changes = {name: _serialize(root, _namespaces(parts[name]), default_element_namespace=CT)}
+     else:
+         name = 'META-INF/manifest.xml'; root = _xml(parts[name])
+         found = [node for node in root if node.get(q(MANIFEST, 'full-path')) == '/']
