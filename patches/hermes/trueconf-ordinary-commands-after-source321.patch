@@ -1,0 +1,451 @@
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -4077,13 +4077,13 @@
+         self._active_sessions[session_key] = guard
+         event._friday_document_guard = (session_key, guard)
+         task = asyncio.create_task(self._process_message_background(event, session_key))
+-        if not self._track_session_task(session_key, task):
++        if not self._track_session_task(session_key, task, event):
+             self._session_tasks.pop(session_key, None)
+             self._release_session_guard(session_key, guard=guard)
+             return False
+         return True
+ 
+-    def _track_session_task(self, session_key: str, task: Any) -> bool:
++    def _track_session_task(self, session_key: str, task: Any, event: MessageEvent) -> bool:
+         """Record ``task`` as the session owner and track it for shutdown; False when
+         ``create_task`` was stubbed with an unhashable sentinel (tests) — the owner entry is left
+         for the caller."""
+@@ -4092,6 +4092,9 @@
+             self._background_tasks.add(task)
+         except TypeError:
+             return False
++        if (self.platform.value == "trueconf" and isinstance(task, asyncio.Task)
++                and not event.internal and not event.get_command()):
++            task._friday_trueconf_pre_runner_event = event
+         if hasattr(task, "add_done_callback"):
+             task.add_done_callback(self._background_tasks.discard)
+             task.add_done_callback(self._expected_cancelled_tasks.discard)
+@@ -4153,16 +4156,60 @@
+         if pending_reset(self.gateway_runner, session_key) is not None:
+             await self._dispatch_inline_reply(event)
+             return
+-        self._discard_text_debounce(session_key)
+-        current_guard = self._active_sessions.get(session_key)
+-        old_task = self._session_tasks.get(session_key)
++        current_guard = old_task = None
+         command_guard = asyncio.Event()
+         owner_task = asyncio.current_task()
+         command_guard._friday_session_command_task = owner_task
+         binding = (self, session_key, command_guard, owner_task)
+-        event._friday_session_command = binding
+-        session_guard_change(self, session_key, current_guard, command_guard)
+-        self._active_sessions[session_key] = command_guard
++        defer_guard = self.platform.value == "trueconf"
++        expected_guard = self._active_sessions.get(session_key)
++        expected_task = self._session_tasks.get(session_key)
++        runner = self.gateway_runner
++        stop_generation = (
++            runner._current_session_run_generation(session_key)
++            if defer_guard and cmd == "stop" and runner is not None else None
++        )
++
++        def claim_guard(admitted_event, key, *, pre_runner_stop=False, check_idle_stop=False):
++            nonlocal current_guard, old_task
++            if (admitted_event.source is not event.source or key != session_key
++                    or asyncio.current_task() is not owner_task):
++                return False
++            if defer_guard:
++                if (getattr(event, "_friday_session_command_prepare", None) is not claim_guard
++                        or runner is None or self.gateway_runner is not runner
++                        or runner._intake_adapter_for(admitted_event.source) is not self):
++                    return False
++                guard = self._active_sessions.get(key)
++                task = self._session_tasks.get(key)
++                same_owner = guard is expected_guard and task is expected_task
++                if check_idle_stop:
++                    # Delivery may release its owner, but the stop cannot take aim at a successor.
++                    return (stop_generation is not None and (same_owner or guard is task is None)
++                            and runner._is_session_run_current(key, stop_generation)
++                            and not runner._is_session_running(key))
++                if not same_owner:
++                    return False
++                if pre_runner_stop:
++                    original = getattr(expected_task, "_friday_trueconf_pre_runner_event", None)
++                    if (cmd != "stop" or original is None or expected_task.done()
++                            or expected_task.cancelling()):
++                        return None
++                del event._friday_session_command_prepare
++            self._discard_text_debounce(session_key)
++            current_guard = self._active_sessions.get(session_key)
++            old_task = self._session_tasks.get(session_key)
++            event._friday_session_command = binding
++            session_guard_change(self, session_key, current_guard, command_guard)
++            self._active_sessions[session_key] = command_guard
++            return binding
++
++        if defer_guard:
++            # The runner claims this guard only after admitting the interrupt.
++            # An inline refusal may await the network while the old turn completes.
++            event._friday_session_command_prepare = claim_guard
++        else:
++            claim_guard(event, session_key)
+         try:
+             # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
+             # confirmation.
+@@ -4187,6 +4234,8 @@
+                     self._release_session_guard(session_key, guard=command_guard)
+             raise
+         finally:
++            if getattr(event, "_friday_session_command_prepare", None) is claim_guard:
++                del event._friday_session_command_prepare
+             if getattr(event, "_friday_session_command", None) is binding:
+                 del event._friday_session_command
+         if self._active_sessions.get(session_key) is not command_guard:
+@@ -4901,6 +4950,8 @@
+                 try:
+                     response = await self._message_handler(event)
+                 finally:
++                    if getattr(task, "_friday_trueconf_pre_runner_event", None) is dispatch_event:
++                        task._friday_trueconf_pre_runner_event = None
+                     if fifo_delivery is not None:
+                         dispatch_event._friday_fifo_delivery = None
+                         if fifo_delivery.run is not None:
+@@ -5221,8 +5272,8 @@
+         # back-off must survive the slot-empty exit (#48300).
+         guard = self._active_sessions.get(session_key)
+         kwargs = {"owned_handoff": True} if owned_handoff else {}
+-        self._track_session_task(session_key, asyncio.create_task(
+-            self._drain_after(pending_event, session_key, delay, guard, **kwargs)))
++        task = asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard, **kwargs))
++        self._track_session_task(session_key, task, pending_event)
+ 
+     async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
+                            guard: Optional[asyncio.Event], *, owned_handoff: bool = False) -> None:
+diff --git a/gateway/run_agent_cache.py b/gateway/run_agent_cache.py
+--- a/gateway/run_agent_cache.py
++++ b/gateway/run_agent_cache.py
+@@ -547,7 +547,7 @@
+             ).start()
+         return _generation_at_interrupt
+ 
+-    async def _settle_session_web_custody(self, session_key: str) -> dict:
++    async def _settle_session_web_custody(self, session_key: str, *, pin_targets: bool = False) -> dict:
+         from gateway.run import _AGENT_PENDING_SENTINEL
+         from tools.process_registry import process_registry
+         from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
+@@ -556,7 +556,18 @@
+         agent = state.turn.agent if state else None
+         if agent is None or agent is _AGENT_PENDING_SENTINEL:
+             agent = self._cached_agent_for(session_key)
+-        if (getattr(agent, '_web_turn', None) is None and process_registry.web_custody_receipt()['status'] == 'QUIESCENT'
++        web_turn = getattr(agent, '_web_turn', None)
++        web_targets = {}
++        terminal_targets = {}
++        if pin_targets:
++            # Capture handles before this worker can yield to a new turn on the same key.
++            web = process_registry.web_custody_receipt()
++            terminal = process_registry.terminal_custody_receipt()
++            if web_turn is None and web['status'] == terminal['status'] == 'QUIESCENT':
++                return {'status': 'QUIESCENT', 'sessions': [], 'newly_settled': 0}
++            web_targets = {'session_ids': frozenset(web['sessions'])}
++            terminal_targets = {'session_ids': frozenset(terminal['sessions'])}
++        elif (web_turn is None and process_registry.web_custody_receipt()['status'] == 'QUIESCENT'
+                 and process_registry.terminal_custody_receipt()['status'] == 'QUIESCENT'):
+             return {'status': 'QUIESCENT', 'sessions': [], 'newly_settled': 0}
+         store = self.session_store
+@@ -574,18 +585,18 @@
+         def settle():
+             token = set_hermes_home_override(home)
+             try:
+-                turn = getattr(agent, '_web_turn', None)
++                turn = web_turn if pin_targets else getattr(agent, '_web_turn', None)
+                 turn_receipt = turn.stop() if turn is not None else {'status': 'QUIESCENT', 'sessions': []}
+                 registry_receipt = process_registry.stop_web_for_session(
+-                    session_key, parent_session_id=sid, profile_home=str(home))
++                    session_key, parent_session_id=sid, profile_home=str(home), **web_targets)
+                 terminal_receipt = process_registry.stop_terminal_for_session(
+-                    session_key, parent_session_id=sid, profile_home=str(home))
++                    session_key, parent_session_id=sid, profile_home=str(home), **terminal_targets)
+                 receipts = [*turn_receipt.get('sessions', []), *registry_receipt['sessions'], *terminal_receipt['sessions']]
+                 settled = {r['session_id'] for r in receipts if r.get('newly_settled')}
+                 receipt = {'status': 'STOP_UNCONFIRMED' if any(r.get('status') == 'STOP_UNCONFIRMED'
+                         for r in (turn_receipt, registry_receipt, terminal_receipt)) else 'QUIESCENT',
+                         'sessions': receipts, 'newly_settled': len(settled)}
+-                if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
++                if not pin_targets and agent is not None and agent is not _AGENT_PENDING_SENTINEL:
+                     agent._web_stop_receipt = receipt
+                 return receipt
+             finally:
+diff --git a/gateway/run_busy.py b/gateway/run_busy.py
+--- a/gateway/run_busy.py
++++ b/gateway/run_busy.py
+@@ -1001,6 +1001,9 @@
+         if handler_key:
+             special = self._BUSY_SPECIAL_HANDLERS.get(handler_key)
+             if special is not None:
++                prepare = getattr(event, "_friday_session_command_prepare", None)
++                if policy == "interrupt_then_dispatch" and prepare is not None and not prepare(event, quick_key):
++                    return t("gateway.stop.no_active") if name == "stop" else None
+                 return await getattr(self, special)(event, quick_key, source)
+             reject_key = self._BUSY_REJECT_TEXT.get(handler_key)
+             if reject_key is not None:
+diff --git a/gateway/run_inbound.py b/gateway/run_inbound.py
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -640,11 +640,12 @@
+         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+ 
+         if _cmd_def_inner:
+-            # /status and /context are intentionally pre-gate so users always see session state.
+-            if _cmd_def_inner.name == "status":
+-                return True, await self._handle_status_command(event)
+-            if _cmd_def_inner.name == "context":
+-                return True, await self._handle_context_command(event)
++            # TrueConf applies the receiving account's command rights even during a run.
++            if getattr(source.platform, "value", None) != "trueconf":
++                if _cmd_def_inner.name == "status":
++                    return True, await self._handle_status_command(event)
++                if _cmd_def_inner.name == "context":
++                    return True, await self._handle_context_command(event)
+             # Slash access control mirrors the cold-path gate so non-admins can't bypass gating
+             # just because an agent is busy. /help and /whoami are the always-allowed floor.
+             _denied = self._check_slash_access(source, _cmd_def_inner.name)
+@@ -1386,6 +1387,10 @@
+         if _admitted is None:
+             return None
+         event, source, is_internal = _admitted
++        if event is not dispatch_event:
++            prepare = getattr(dispatch_event, "_friday_session_command_prepare", None)
++            if prepare is not None:
++                event._friday_session_command_prepare = prepare
+         if not is_internal:
+             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
+             record_gateway_slash_command(event)
+@@ -1452,6 +1457,25 @@
+             return await self._hm_handle_running_session_message(event, source, _quick_key)
+ 
+         if not (external_word or protected_odt):
++            prepare = getattr(event, "_friday_session_command_prepare", None)
++            if prepare is not None and event.get_command() == "stop":
++                denied = self._check_slash_access(source, "stop")
++                if denied is not None:
++                    return denied
++                binding = prepare(event, _quick_key, pre_runner_stop=True)
++                if binding is False:
++                    return t("gateway.stop.no_active")
++                if binding is not None:
++                    adapter, _, guard, _ = binding
++                    # Cancel the pre-run owner before an ACK can let it start.
++                    # The command guard keeps follow-ups parked during cleanup.
++                    await adapter.cancel_session_processing(
++                        _quick_key, release_guard=False, discard_pending=False)
++                    if (adapter._active_sessions.get(_quick_key) is guard
++                            and self._intake_adapter_for(source) is adapter
++                            and not self._is_session_running(_quick_key)):
++                        return await self._busy_stop_command(event, _quick_key, source)
++                    return None
+             _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
+             if _handled:
+                 return _result
+@@ -1497,6 +1521,14 @@
+             if is_internal:
+                 return None
+             return EphemeralReply(pending_stop_copy(source, reset=event.get_command() in {"new", "reset"}))
++
++        task = asyncio.current_task()
++        if getattr(task, "_friday_trueconf_pre_runner_event", None) is dispatch_event:
++            # A stop can displace the adapter owner while this inbound path awaits preflight.
++            task._friday_trueconf_pre_runner_event = None
++            adapter = self._intake_adapter_for(source)
++            if adapter is None or not hold_adapter_task_current(self, dispatch_event, _quick_key, adapter=adapter):
++                return None
+ 
+         # Claim this session before any await: many awaits sit between here and _run_agent
+         # registering the real AIAgent; without this sentinel a second message during any of them
+diff --git a/gateway/slash_access.py b/gateway/slash_access.py
+--- a/gateway/slash_access.py
++++ b/gateway/slash_access.py
+@@ -116,6 +116,7 @@
+             platform_config = None
+     # ``extra`` from a PlatformConfig-like object, or a bare dict as some test harnesses pass.
+     if getattr(getattr(source, "platform", None), "value", None) == "trueconf":
++        from hermes_cli.friday_user_scope import admitted_slash_commands, ScopeDenied
+         from gateway.trueconf_access import access_for_source
+         access = access_for_source(platform_config, source)
+         if access is None or source.chat_type not in {"dm", "group"}:
+@@ -125,9 +126,19 @@
+                 or not access.admits(source.user_id, source.chat_id, is_group, source.is_bot)):
+             return _FAIL_CLOSED_POLICY
+         scope = "group" if is_group else "dm"
+-        policy = policy_from_extra(platform_config.extra, scope)
++        extra = platform_config.extra
++        policy = policy_from_extra(extra, scope)
++        commands = policy.user_allowed_commands
++        _, commands_key = _SCOPE_KEYS[scope]
++        if commands_key not in extra and (is_group or _SCOPE_KEYS["group"][1] not in extra):
++            # The managed product renderer supplies chat/account grants, and
++            # the admitted principal supplies its shared ordinary commands.
++            try:
++                commands = admitted_slash_commands(source)
++            except ScopeDenied:
++                return _FAIL_CLOSED_POLICY
+         admin_ids = (access.group_admin_ids if is_group else access.dm_admin_ids) - {access.tester_user_id}
+-        return SlashAccessPolicy(True, admin_ids, policy.user_allowed_commands)
++        return SlashAccessPolicy(True, admin_ids, commands)
+     extra = getattr(platform_config, "extra", None)
+     if not isinstance(extra, dict):
+         extra = platform_config if isinstance(platform_config, dict) else {}
+diff --git a/gateway/slash_commands.py b/gateway/slash_commands.py
+--- a/gateway/slash_commands.py
++++ b/gateway/slash_commands.py
+@@ -430,10 +430,21 @@
+         from hermes_cli.friday_user_scope import pending_stop_copy
+ 
+         source = event.source
+-        if pending_reset(self, self._session_key_for_source(source)) is not None:
++        prepare = getattr(event, "_friday_session_command_prepare", None)
++        target_key = self._session_key_for_source(source)
++        runs = None
++        run_generations = {}
++        if prepare is not None:
++            if not prepare(event, target_key, check_idle_stop=True):
++                return t("gateway.stop.no_active")
++            runs = self._same_chat_runs(source, target_key)
++            run_generations = {key: self._current_session_run_generation(key) for key, _, _ in runs}
++        if pending_reset(self, target_key) is not None:
+             return EphemeralReply(pending_stop_copy(source))
+         session_entry = await self.async_session_store.get_or_create_session(source)
+         session_key = session_entry.session_key
++        if prepare is not None and not prepare(event, session_key, check_idle_stop=True):
++            return t("gateway.stop.no_active")
+         if pending_reset(self, session_key) is not None:
+             return EphemeralReply(pending_stop_copy(source))
+ 
+@@ -460,7 +471,8 @@
+         # it is the set to act on — acting on the sibling subset alone would reply "Stopped" while a
+         # same-thread run under a differently shaped key kept going. See `_chat_scoped_run_keys` for
+         # the shapes and isolation bounds; both tiers are authorization-gated.
+-        runs = self._same_chat_runs(source, session_key)
++        if runs is None:
++            runs = self._same_chat_runs(source, session_key)
+         sibling_keys = self._sibling_thread_run_keys(source, runs)
+         fallback_keys = self._chat_scoped_run_keys(source, runs)
+         # Reason is per-stop, not per-key: a stop that only ever had thread siblings keeps its own
+@@ -477,20 +489,34 @@
+         background_stopped = interrupt_for_session(
+             session_key=session_key, reason="stop_command",
+             parent_session_id=str(getattr(session_entry, "session_id", "") or ""))
+-        receipt = await self._settle_session_web_custody(session_key)
++        if prepare is not None:
++            receipt = await self._settle_session_web_custody(session_key, pin_targets=True)
++        else:
++            receipt = await self._settle_session_web_custody(session_key)
+         if fallback_keys and self._is_user_authorized_for_source(source):
+-            receipts = [receipt] + [await _stop(fallback_key, reason) for fallback_key in fallback_keys]
++            receipts = [receipt]
++            stopped = []
++            for fallback_key in fallback_keys:
++                if prepare is not None and (not prepare(event, session_key, check_idle_stop=True)
++                        or not self._is_session_running(fallback_key)
++                        or not self._is_session_run_current(fallback_key, run_generations[fallback_key])):
++                    continue
++                receipts.append(await _stop(fallback_key, reason))
++                stopped.append(fallback_key)
+             if any(r and r.get('status') == 'STOP_UNCONFIRMED' for r in receipts):
+                 return EphemeralReply(pending_stop_copy(source))
+-            logger.info("STOP (%s) by %s — interrupted %d run(s): %s",
+-                        reason, session_key, len(fallback_keys), ", ".join(fallback_keys))
+-            return EphemeralReply(t("gateway.stop.stopped"))
++            if stopped:
++                logger.info("STOP (%s) by %s — interrupted %d run(s): %s",
++                            reason, session_key, len(stopped), ", ".join(stopped))
++                return EphemeralReply(t("gateway.stop.stopped"))
+ 
+         if receipt['status'] == 'STOP_UNCONFIRMED':
+             return EphemeralReply(pending_stop_copy(source))
+         # Native background interruption remains useful with no running turn.
+         if background_stopped or receipt.get('newly_settled'):
+             return EphemeralReply(t("gateway.stop.stopped"))
++        if prepare is not None and not prepare(event, session_key, check_idle_stop=True):
++            return t("gateway.stop.no_active")
+         # A platform status indicator can still be stuck —
+         # e.g. Slack's persistent assistant.threads.setStatus survives a gateway restart or a turn
+         # that died without a final send.
+diff --git a/hermes_cli/friday_user_scope.py b/hermes_cli/friday_user_scope.py
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -384,6 +384,24 @@
+     return None
+ 
+ 
++_ORDINARY_SLASH_COMMANDS = frozenset({
++    'help', 'status', 'stop', 'cancel', 'new', 'reset', 'queue', 'memory', 'compress', 'room',
++})
++
++
++def admitted_slash_commands(source):
++    """Return the command set of a currently admitted managed principal."""
++    from gateway.session_identity import identity_of
++
++    capability = getattr(source, '_friday_user_scope', None)
++    identity = identity_of(source)
++    if not isinstance(capability, UserScope) or identity is None:
++        return frozenset()
++    with authority(identity.runtime_home), scoped_source(source):
++        capability.check()
++        return _ORDINARY_SLASH_COMMANDS
++
++
+ def slash_allowed(source, command):
+     """Native slash/quick/plugin dispatch keeps the same authenticated boundary."""
+     if not command:
+@@ -395,13 +413,7 @@
+         authorization_home = identity.authorization_home if identity is not None else get_hermes_home()
+         if policy(authorization_home) is None:
+             return not _ENGAGED
+-        cap = getattr(source, '_friday_user_scope', None)
+-        if not isinstance(cap, UserScope) or identity is None:
+-            return False
+-        with authority(identity.runtime_home):
+-            with scoped_source(source):
+-                cap.check()
+-        return command in {'help', 'status', 'stop', 'cancel', 'new', 'reset', 'queue', 'memory', 'compress', 'room'}
++        return command in admitted_slash_commands(source)
+     except Exception:  # health: allow BLE001 -- Slash admission fails closed without exposing policy or plugin secrets.
+         return False
+ 
+diff --git a/tools/process_registry_terminal.py b/tools/process_registry_terminal.py
+--- a/tools/process_registry_terminal.py
++++ b/tools/process_registry_terminal.py
+@@ -454,10 +454,11 @@
+         finally:
+             session._terminal_settle_lock.release()
+ 
+-    def stop_terminal_for_session(self, session_key, *, parent_session_id='', profile_home):
++    def stop_terminal_for_session(self, session_key, *, parent_session_id='', profile_home, session_ids=None):
+         with self._lock:
+             targets = [s for s in self._running.values() if s.terminal_custody and (not s.terminal_settled or s._scope_stop_pending)
+                        and s.user_authority.get('home') == str(profile_home)
++                       and (session_ids is None or s.id in session_ids)
+                        and (s.session_key == session_key or parent_session_id and s.parent_session_id == parent_session_id)]
+         for s in targets:
+             self._latch_terminal_stop(s)
+diff --git a/tools/process_registry_web.py b/tools/process_registry_web.py
+--- a/tools/process_registry_web.py
++++ b/tools/process_registry_web.py
+@@ -104,11 +104,12 @@
+                             or (parent_session_id and s.parent_session_id == parent_session_id))
+                        for s in self._running.values())
+ 
+-    def stop_web_for_session(self, session_key, *, parent_session_id='', profile_home):
++    def stop_web_for_session(self, session_key, *, parent_session_id='', profile_home, session_ids=None):
+         """Stop retained native handles in this profile and conversation only."""
+         with self._lock:
+             targets = [s for s in self._running.values()
+                        if s.web_custody and (not s.web_settled or s._scope_stop_pending) and s.cwd == str(profile_home)
++                       and (session_ids is None or s.id in session_ids)
+                        and (s.session_key == session_key
+                             or (parent_session_id and s.parent_session_id == parent_session_id))]
+         # Latch the entire fan-out before the first potentially slow settlement.
