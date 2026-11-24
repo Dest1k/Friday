@@ -1,0 +1,1248 @@
+diff --git a/gateway/d16_followon_custody.py b/gateway/d16_followon_custody.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..429aa062ac8ffefe9d988f811eb2f9ab8feeaca1
+--- /dev/null
++++ b/gateway/d16_followon_custody.py
+@@ -0,0 +1,294 @@
++"""Project the exact native restore or PDF turn onto its authenticated predecessor."""
++
++from contextlib import closing
++from dataclasses import dataclass
++from hashlib import sha256
++import json
++from pathlib import Path, PurePosixPath
++import re
++import sqlite3
++import stat
++import time
++
++from .d16_seed_custody import OUTPUT_NAME as SEED_OUTPUT_NAME
++from .d16_seed_custody import SOURCE_BYTES, SOURCE_NAME, SOURCE_SHA256, _tool_path, _uid
++from .ordinary_d05_turn import _object, _relative_docx
++from .s08_document_custody import require
++from .s08_session_fence import _sqlite_identity
++
++
++OUTPUT_NAMES = {"restore": SOURCE_NAME, "pdf": "D16-Veresk-84-original.pdf"}
++TEXT_PAYLOAD_DOMAIN = b"friday.telegram.payload.v1\x00text\x00"
++_DELIVERY_FIELD = "friday_file_delivery_observation"
++_MESSAGE_FIELDS = (
++    "id,role,message_uid,platform_message_id,display_metadata,content,timestamp,tool_calls,"
++    "tool_call_uids,tool_call_uid,tool_call_id,tool_name,effect_disposition,display_kind,active,compacted"
++)
++_MAX_TURN_ROWS = 134
++_SHA256 = re.compile(r"[0-9a-f]{64}")
++_ORIGINAL_ARCHIVE = re.compile(r"received/telegram_[0-9a-f]{64}_" + re.escape(SOURCE_NAME))
++
++
++@dataclass(frozen=True, slots=True)
++class FollowonSource:
++    """Source and prior turn selected by the protected receiver before arming."""
++
++    phase: str
++    session_id: str
++    turn_generation: int
++    delivery_row_id: int
++    relative: str
++    identity: tuple[int, ...]
++    directories: tuple[tuple[int, int], ...]
++    previous_output_relative_path: str
++    previous_output_sha256: str
++
++
++def _file_identity(value, size):
++    return (type(value) is tuple and len(value) == 9
++            and all(type(item) is int and item >= 0 for item in value)
++            and value[1] > 0 and value[2] == size and stat.S_ISREG(value[5])
++            and value[5] & 0o077 == 0 and value[6] == 1)
++
++
++def _directories(value, count):
++    return (type(value) is tuple and len(value) == count
++            and all(type(item) is tuple and len(item) == 2
++                    and all(type(part) is int and part >= 0 for part in item)
++                    and item[1] > 0 for item in value))
++
++
++def _delivered_previous(db, sid, predecessor, user_id):
++    previous = db.execute(
++        "SELECT role,display_kind,content,display_metadata,active,compacted FROM messages "
++        "WHERE session_id=? AND id=?", (sid, predecessor.delivery_row_id),
++    ).fetchone()
++    require(previous is not None and previous["role"] == "assistant"
++            and previous["display_kind"] == "hidden" and previous["content"] == ""
++            and previous["active"] == 1 and previous["compacted"] == 0,
++            "d16_followon_predecessor_row_changed")
++    metadata = _object(previous["display_metadata"])
++    require(set(metadata) == {_DELIVERY_FIELD}, "d16_followon_predecessor_row_changed")
++    observed = metadata[_DELIVERY_FIELD]
++    require(type(observed) is dict and set(observed) == {"path", "sha256", "state"}
++            and (observed["path"], observed["sha256"], observed["state"])
++            == (predecessor.previous_output_relative_path, predecessor.previous_output_sha256, "DELIVERED"),
++            "d16_followon_predecessor_delivery_changed")
++    if predecessor.phase == "restore":
++        require(PurePosixPath(_relative_docx(observed["path"])).name == SEED_OUTPUT_NAME
++                and _SHA256.fullmatch(observed["sha256"]) and observed["sha256"] != SOURCE_SHA256,
++                "d16_followon_predecessor_seed_delivery_changed")
++    else:
++        require((observed["path"], observed["sha256"]) == (predecessor.relative, SOURCE_SHA256),
++                "d16_followon_predecessor_restore_delivery_changed")
++    require(db.execute(
++        "SELECT 1 FROM messages WHERE session_id=? AND id>? AND id<? AND role='user' LIMIT 1",
++        (sid, predecessor.delivery_row_id, user_id),
++    ).fetchone() is None, "d16_followon_intervening_user")
++
++
++def _output_path(value, workspace, expected):
++    require(type(value) is str and value in (expected, (workspace / expected).as_posix()),
++            "d16_followon_write_path_changed")
++    return expected
++
++
++def _tool_rows(rows, predecessor, workspace, output, receipt):
++    """Verify each canonical tool occurrence and join the native write result to delivery."""
++    cursor, total_lines = (1, 0), None
++    read_rows, write_row, occurrences = [], None, set()
++    for call_row, row in zip(rows[::2], rows[1::2], strict=True):
++        (call,) = json.loads(call_row["tool_calls"])
++        call_id, name = call["id"], call["function"]["name"]
++        occurrence = _object(call_row["tool_call_uids"])[call_id]
++        require(call_row["role"] == "assistant" and row["role"] == "tool"
++                and (name, call_id) == (row["tool_name"], row["tool_call_id"])
++                and _uid(occurrence) and occurrence == row["tool_call_uid"]
++                and occurrence not in occurrences and row["effect_disposition"] is None,
++                "d16_followon_exact_canonical_tool_pair")
++        occurrences.add(occurrence)
++        args = _object(call["function"]["arguments"])
++        result = _object(row["content"])
++        require(result["success"] is True and result["scope"] == "own_user_workspace",
++                "d16_followon_native_tool_failed")
++        if name == "read_file":
++            require(write_row is None and cursor is not None
++                    and {"path"} <= args.keys() <= {"path", "offset", "char_offset", "limit"}
++                    and _tool_path(args["path"], workspace) == result["path"] == predecessor.relative
++                    and (args.get("offset", 1), args.get("char_offset", 0)) == cursor
++                    and result["source_sha256"] == SOURCE_SHA256 and result["format"] == "docx"
++                    and result["extracted_document"] is True, "d16_followon_original_read_changed")
++            following = result["next_offset"], result["next_char_offset"]
++            total = result["total_lines"]
++            require(type(total) is int and 0 < total <= 100000 and total_lines in (None, total)
++                    and all(type(value) is int for value in following)
++                    and cursor < following <= (total + 1, 0) and 0 <= following[1] <= 1000000
++                    and result["partial"] is (following != (total + 1, 0)), "d16_followon_read_cursor")
++            cursor, total_lines = (following if result["partial"] else None), total
++            read_rows.append(row["id"])
++            continue
++
++        require(write_row is None and (cursor is None or not read_rows) and name == "write_file"
++                and set(args) == {"path", "format", "content"}
++                and _output_path(args["path"], workspace, output) == result["path"]
++                and result["source"] == predecessor.relative and result["source_sha256"] == SOURCE_SHA256
++                and result["sha256"] == receipt["sha256"] and type(result["bytes_written"]) is int
++                and result["bytes_written"] == receipt["bytes"]
++                and all(result[key] is True for key in ("verified", "create_only", "source_unchanged")),
++                "d16_followon_native_write_changed")
++        spec = _object(args["content"])
++        spec["source"] = _tool_path(spec.get("source"), workspace)
++        if predecessor.phase == "restore":
++            require(args["format"] == "docx_copy" and result["format"] == "docx"
++                    and result["copy_mode"] == "byte_exact" and result["byte_identical"] is True
++                    and receipt["sha256"] == SOURCE_SHA256 and receipt["bytes"] == SOURCE_BYTES
++                    and spec == {"source": predecessor.relative, "source_sha256": SOURCE_SHA256},
++                    "d16_followon_original_copy_changed")
++        else:
++            require(args["format"] == "docx_pdf" and result["format"] == "pdf"
++                    and result["export_mode"] == "docx_pdf"
++                    and receipt["sha256"] != SOURCE_SHA256 and spec == {"source": predecessor.relative},
++                    "d16_followon_original_pdf_changed")
++        write_row = row["id"]
++    require(write_row is not None, "d16_followon_native_write_missing")
++    return read_rows, write_row
++
++
++def _validate_user(user, sdk):
++    user_metadata = _object(user["display_metadata"]) if user["display_metadata"] else {}
++    text = user["content"]
++    require(user["role"] == "user" and user["platform_message_id"] == sdk["native_message_id"]
++            and user["timestamp"] == sdk["date"] and user["display_kind"] in (None, "")
++            and type(text) is str and 0 < len(text) <= 16384
++            and sha256(TEXT_PAYLOAD_DOMAIN + text.encode("utf-8")).hexdigest() == sdk["text_sha256"]
++            and not {"friday_direct_upload", "friday_attachment_presentations"} & user_metadata.keys(),
++            "d16_followon_native_text_row_changed")
++
++
++def verify_followon_output_before_delivery(ingress, run, sdk, predecessor, output, receipt, *, current, deadline):
++    """Confirm the native write for these bytes before reserving a delivery."""
++    runner = ingress.adapter.gateway_runner
++    home = Path(ingress.scope["runtime_home"])
++    key, generation = run
++    require(key == ingress.scope["session_key"] and type(generation) is int
++            and generation == predecessor.turn_generation + 1,
++            "d16_followon_preflight_session_changed")
++    path = home / "state.db"
++    deadline = min(deadline, time.monotonic() + 0.12)
++    require(current(), "d16_followon_preflight_not_current")
++    identity = _sqlite_identity(path)
++    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=0)) as db:
++        db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 100)
++        db.execute("PRAGMA query_only=ON")
++        db.execute("BEGIN")
++        require(db.execute("PRAGMA journal_mode").fetchone() == ("wal",),
++                "d16_followon_preflight_wal_required")
++        db.row_factory = sqlite3.Row
++        rows = db.execute(
++            f"SELECT {_MESSAGE_FIELDS} FROM messages WHERE session_id=? AND id>? ORDER BY id LIMIT ?",
++            (predecessor.session_id, predecessor.delivery_row_id, _MAX_TURN_ROWS),
++        ).fetchall()
++        users = [index for index, row in enumerate(rows) if row["role"] == "user"]
++        require(len(rows) < _MAX_TURN_ROWS and len(users) == 1,
++                "d16_followon_preflight_current_user_required")
++        user, *tail = rows[users[0]:]
++        require(all(row["active"] == 1 and row["compacted"] == 0 and _uid(row["message_uid"])
++                    for row in (user, *tail))
++                and len({row["message_uid"] for row in (user, *tail)}) == len(tail) + 1,
++                "d16_followon_preflight_turn_rows_changed")
++        _validate_user(user, sdk)
++        _delivered_previous(db, predecessor.session_id, predecessor, user["id"])
++        tool_rows = []
++        for row in tail:
++            if row["role"] == "tool" or row["tool_calls"] not in (None, "", "[]"):
++                tool_rows.append(row)
++            else:
++                metadata = _object(row["display_metadata"]) if row["display_metadata"] else {}
++                require(row["role"] == "assistant" and _DELIVERY_FIELD not in metadata,
++                        "d16_followon_preflight_existing_delivery")
++        _tool_rows(tool_rows, predecessor, PurePosixPath(home) / "workspace", output, receipt)
++    require(time.monotonic() < deadline and _sqlite_identity(path) == identity and current()
++            and runner._is_session_run_current(key, generation), "d16_followon_preflight_turn_changed")
++
++
++def project_followon_rows(attempt, sdk, predecessor, phase, db, fence, *, deadline):
++    """Join the exact USER row with the stock delivery journal and WAL row."""
++    receipt, journal, stamp, delivered_id, delivered_uid = attempt.candidate
++    sid, user_id = fence["session_id"], fence["user_row_id"]
++    key, generation = attempt.run
++    ingress = attempt.ingress
++    runner = ingress.adapter.gateway_runner
++    workspace = PurePosixPath(ingress.scope["runtime_home"]) / "workspace"
++    output = attempt.relative
++    require(type(predecessor) is FollowonSource and phase in OUTPUT_NAMES and predecessor.phase == phase
++            and key == ingress.scope["session_key"] and sid == attempt.session_id == predecessor.session_id
++            and type(predecessor.turn_generation) is int and predecessor.turn_generation > 0
++            and type(generation) is int and generation == predecessor.turn_generation + 1
++            and type(predecessor.delivery_row_id) is int and 0 < predecessor.delivery_row_id < user_id
++            and user_id < delivered_id <= fence["terminal_row_id"]
++            and time.monotonic() < deadline and runner._is_session_run_current(key, generation),
++            "d16_followon_current_session_chain_required")
++    require(_file_identity(predecessor.identity, SOURCE_BYTES)
++            and _directories(predecessor.directories, 2 if phase == "restore" else 1)
++            and (_ORIGINAL_ARCHIVE.fullmatch(predecessor.relative) if phase == "restore"
++                 else predecessor.relative == SOURCE_NAME),
++            "d16_followon_original_source_custody_required")
++    require(output == OUTPUT_NAMES[phase] and receipt == attempt.output | {"message_id": receipt["message_id"]}
++            and receipt["state"] == "DELIVERED" and receipt["kind"] == "document"
++            and receipt["file_name"] == output and receipt["reply_to"] == sdk["native_message_id"]
++            and receipt["bot_id"] == sdk["bot_id"] and receipt["chat_id"] == sdk["actor_id"]
++            and receipt["thread_id"] is None and receipt["message_id"] != sdk["native_message_id"]
++            and type(receipt["bytes"]) is int and 0 < receipt["bytes"] <= 1_000_000
++            and _SHA256.fullmatch(receipt["sha256"]) and _SHA256.fullmatch(journal)
++            and _file_identity(attempt.output_identity, receipt["bytes"])
++            and _directories(attempt.output_directories, 1)
++            and attempt.output_directories[0] == predecessor.directories[0]
++            and attempt.output_identity[:2] != predecessor.identity[:2],
++            "d16_followon_native_delivery_identity_changed")
++    _delivered_previous(db, sid, predecessor, user_id)
++
++    rows = db.execute(
++        f"SELECT {_MESSAGE_FIELDS} FROM messages WHERE session_id=? AND id BETWEEN ? AND ? ORDER BY id LIMIT ?",
++        (sid, user_id, fence["terminal_row_id"], _MAX_TURN_ROWS),
++    ).fetchall()
++    require(5 <= len(rows) < _MAX_TURN_ROWS and rows[0]["id"] == user_id and rows[-1]["id"] == fence["terminal_row_id"]
++            and all(row["active"] == 1 and row["compacted"] == 0 and _uid(row["message_uid"])
++                    for row in rows) and len({row["message_uid"] for row in rows}) == len(rows),
++            "d16_followon_native_transcript_bounds")
++    user, *tail = rows
++    _validate_user(user, sdk)
++
++    tool_rows, unknown_id, terminal_seen = [], None, False
++    for row in tail:
++        if row["role"] == "tool" or row["tool_calls"] not in (None, "", "[]"):
++            require(unknown_id is None and row["id"] < delivered_id, "d16_followon_late_tool_row")
++            tool_rows.append(row)
++            continue
++        require(row["role"] == "assistant", "d16_followon_unrelated_turn_row")
++        metadata = _object(row["display_metadata"]) if row["display_metadata"] else {}
++        if row["id"] != delivered_id and _DELIVERY_FIELD not in metadata:
++            continue
++        state = "DELIVERED" if row["id"] == delivered_id else "UNKNOWN"
++        require(row["display_kind"] == "hidden" and row["content"] == ""
++                and metadata == {_DELIVERY_FIELD: {"path": output, "sha256": receipt["sha256"], "state": state}},
++                "d16_followon_native_attachment_row_changed")
++        if state == "DELIVERED":
++            require(unknown_id is not None and row["message_uid"] == delivered_uid and row["timestamp"] == stamp,
++                    "d16_followon_native_attachment_journal_mismatch")
++            terminal_seen = True
++        else:
++            require(unknown_id is None and row["id"] < delivered_id, "d16_followon_other_attachment_attempt")
++            unknown_id = row["id"]
++    require(terminal_seen, "d16_followon_native_attachment_row_missing")
++    reads, write = _tool_rows(tool_rows, predecessor, workspace, output, receipt)
++    require(time.monotonic() < deadline and runner._is_session_run_current(key, generation),
++            "d16_followon_native_turn_changed")
++    return {
++        "session_id": sid, "turn_generation": generation, "user_row_id": user_id,
++        "read_row_ids": reads, "write_row_id": write,
++        "source": {"path": predecessor.relative, "sha256": SOURCE_SHA256, "size_bytes": SOURCE_BYTES},
++        "native_document": receipt, "output_relative_path": output,
++        "output_identity": list(attempt.output_identity),
++        "output_directories": [list(item) for item in attempt.output_directories],
++        "delivery_row_id": delivered_id, "native_journal_sha256": journal,
++    }
+diff --git a/gateway/d16_followon_native.py b/gateway/d16_followon_native.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0b92a70bdb76c529ea4ab0f4625efb990b8abe8e
+--- /dev/null
++++ b/gateway/d16_followon_native.py
+@@ -0,0 +1,334 @@
++"""Selected plain-text SDK and own-workspace witnesses for D16 follow-on settlement."""
++
++from dataclasses import dataclass
++from hashlib import sha256
++import json
++import os
++from pathlib import Path, PurePosixPath
++import re
++from datetime import datetime
++import time
++
++from .d16_seed_custody import SOURCE_BYTES, SOURCE_NAME, SOURCE_SHA256
++from .run_inbound_media import _absolute_directory, _directory_identity, _file_identity, _owned, _verified_bytes
++from .s08_document_custody import require
++
++
++PHASES = {
++    "d10ba83aabaa03e621eba1d8fcc91d1f8274ff7934e1ad6ed8cb3efd4591dffa": "restore",
++    "4e0adec6e3b2763bd972c2c4e5c7eac0091ccd08b8825760a94f6922d87e0fa1": "pdf",
++}
++OUTPUT = {"restore": SOURCE_NAME, "pdf": "D16-Veresk-84-original.pdf"}
++PROOF_SCHEMA = "frw.Root.D16FollowOn.retained-predecessor.v1"
++TERMINAL_SCHEMA = "frw.gateway.d16-followon-native-settlement.v1"
++ROUTE_FIELDS = ("session_key", "source_profile", "transport_profile", "runtime_profile")
++_DISALLOWED = ("message_thread_id", "reply_to_message", "external_reply", "edit_date", "media_group_id",
++               "forward_origin", "sender_chat", "via_bot", "business_connection_id", "caption", "photo",
++               "document", "audio", "animation", "video", "voice", "video_note", "sticker", "location",
++               "contact", "poll", "dice", "venue", "game", "story", "paid_media", "invoice")
++_ORIGINAL = re.compile(r"received/telegram_[0-9a-f]{64}_" + re.escape(SOURCE_NAME))
++
++
++def text_sha256(text):
++    return sha256(b"friday.telegram.payload.v1\x00text\x00" + text.encode("utf-8")).hexdigest()
++
++
++def _positive(value):
++    return type(value) is int and 0 < value < 2**63
++
++
++def _plain(fields):
++    return (fields.get("is_topic_message") in (None, False)
++            and all(fields.get(name) is None for name in _DISALLOWED))
++
++
++def text_ack(run, ack, scenario):
++    if run["sent_api_ack_reference"]["representation"] == "botapi-wire-envelope-json":
++        ack = ack["result"]
++    step, = scenario["steps"]
++    require(set(step) == {"request", "observe"} and _plain(ack)
++            and ack["text"] == step["request"] and _positive(ack["date"]),
++            "d16_followon_exact_original_text_ack")
++    return {"date": ack["date"], "text_sha256": text_sha256(ack["text"])}
++
++
++@dataclass(frozen=True, slots=True)
++class SelectedText:
++    sdk: dict
++    observed_monotonic: float
++    raw: object
++    update: object
++
++    @classmethod
++    def capture(cls, ingress, update, event):
++        from telegram import Chat, Message, Update, User
++
++        bot = ingress.bot
++        actor = ingress.claim.user_id
++        selection = ingress.claim.selected_d16_followon
++        require(type(update) is Update and type(update.message) is Message
++                and update.get_bot() is bot and update.message is event.raw_message,
++                "d16_followon_original_sdk_update")
++        message = update.message
++        user, chat = message.from_user, message.chat
++        fields = {name: getattr(message, name, None) for name in _DISALLOWED}
++        fields.update(photo=message.photo or None, is_topic_message=message.is_topic_message)
++        require(type(user) is User and type(chat) is Chat
++                and all(value.get_bot() is bot for value in (message, user, chat))
++                and _positive(actor) and _positive(bot.id) and actor != bot.id
++                and bot is ingress.adapter._bot and bot.id == ingress.scope["bot_id"]
++                and user.id == chat.id == actor and user.is_bot is True and chat.type == "private"
++                and _positive(update.update_id) and _positive(message.message_id)
++                and type(event.platform_update_id) is int and type(event._ingress_update_id) is int
++                and event.platform_update_id == event._ingress_update_id == update.update_id
++                and event.message_type.value == "text" and event.message_id == str(message.message_id)
++                and event.reply_to_message_id is None and not event.internal and not event._ingress_merged
++                and _plain(fields) and type(message.text) is str and text_sha256(message.text) == selection.text_sha256
++                and type(message.date) is datetime and message.date.utcoffset() is not None
++                and message.date.microsecond == 0, "d16_followon_exact_sdk_text")
++        date = int(message.date.timestamp())
++        require(_positive(date), "d16_followon_sdk_date")
++        sdk = {"update_id": str(update.update_id), "native_message_id": str(message.message_id),
++               "bot_id": str(bot.id), "actor_id": str(actor), "date": date,
++               "text_sha256": selection.text_sha256}
++        return cls(sdk, time.monotonic(), message, update)
++
++    def is_original(self, ingress, event):
++        return (self.raw is event.raw_message and self.update is not None
++                and self.capture(ingress, self.update, event).sdk == self.sdk)
++
++
++def match_text(sdk, message, payload):
++    return (message["media"] == [] and tuple(message[key] for key in (
++                "platform_update_id", "message_id", "bot_id", "user_id", "chat_id", "thread_id",
++                "reply_to_message_id")) == (sdk["update_id"], sdk["native_message_id"], sdk["bot_id"],
++                                          sdk["actor_id"], sdk["actor_id"], "", "")
++            and payload == {"kind": "text", "date": sdk["date"], "sha256": sdk["text_sha256"]})
++
++
++def _identity(value, n):
++    return type(value) in (tuple, list) and len(value) == n and all(
++        type(part) is int and part >= 0 for part in value)
++
++
++def workspace_pin(home, relative, sha256_hex, size, *, still_current):
++    """Read only the selected archive or exact root output and pin its physical identity."""
++    path = PurePosixPath(relative)
++    require(str(path) == relative and (relative in OUTPUT.values() or _ORIGINAL.fullmatch(relative))
++            and _positive(size) and size <= 1000000
++            and type(sha256_hex) is str and re.fullmatch(r"[0-9a-f]{64}", sha256_hex)
++            and still_current(), "d16_followon_exact_workspace_target")
++    root = Path(home) / "workspace"
++    descriptor = _absolute_directory(root)
++    child = None
++    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
++    try:
++        directories = (_directory_identity(os.fstat(descriptor)),)
++        if len(path.parts) == 2:
++            child = os.open(path.parts[0], flags, dir_fd=descriptor)
++            _owned(os.fstat(child), directory=True)
++            directories += (_directory_identity(os.fstat(child)),)
++        file = _verified_bytes(descriptor, path.parts, {"size_bytes": size, "sha256": sha256_hex},
++                               capture_path=root / path)
++        named = _absolute_directory(root)
++        try:
++            require(_directory_identity(os.fstat(named)) == directories[0]
++                    and (child is None or _directory_identity(os.stat(
++                        path.parts[0], dir_fd=named, follow_symlinks=False)) == directories[1])
++                    and _file_identity(os.stat(path.name, dir_fd=child if child is not None else named,
++                                               follow_symlinks=False)) == file.source_identity
++                    and still_current(), "d16_followon_workspace_or_deadline_changed")
++        finally:
++            os.close(named)
++        return file.source_identity, directories
++    finally:
++        if child is not None:
++            os.close(child)
++        os.close(descriptor)
++
++
++def verify_workspace(home, pin, *, still_current):
++    identity, directories = workspace_pin(home, pin["path"], pin["sha256"], pin["size_bytes"],
++                                          still_current=still_current)
++    require(list(identity) == pin["source_identity"] and [list(item) for item in directories] == pin["source_directories"],
++            "d16_followon_workspace_identity_changed")
++    return identity, directories
++
++
++def pin_from_turn(turn):
++    delivery = turn["native_document"]
++    return {"path": turn["output_relative_path"], "sha256": delivery["sha256"], "size_bytes": delivery["bytes"],
++            "source_identity": turn["output_identity"], "source_directories": turn["output_directories"]}
++
++
++@dataclass(frozen=True, slots=True)
++class FollowonSelection:
++    run_id: str
++    scenario_sha256: str
++    text_sha256: str
++    proof_json: bytes
++    ref_json: bytes
++    previous_generation: int
++    previous_delivery_row: int
++    previous_output_path: str
++    previous_output_sha256: str
++
++    @property
++    def phase(self):
++        return PHASES[self.scenario_sha256]
++
++    def proof(self):
++        return json.loads(self.proof_json)
++
++    def reference(self):
++        return json.loads(self.ref_json)
++
++    def check_route(self, scope, *, actor):
++        conversation = self.proof()["conversation"]
++        require(conversation["route"] == {key: scope[key] for key in ROUTE_FIELDS}
++                and conversation["actor_id"] == str(actor) and conversation["bot_id"] == str(scope["bot_id"])
++                and conversation["thread_id"] is None, "d16_followon_previous_conversation_changed")
++
++    def verify_files(self, home, *, still_current):
++        proof = self.proof()
++        original = proof["original"]
++        verify_workspace(home, original, still_current=still_current)
++        restore = proof["restore"]
++        if restore is None:
++            return original
++        selected = pin_from_turn(restore)
++        verify_workspace(home, selected, still_current=still_current)
++        return selected
++
++
++def selected_delivery(adapter, source):
++    from .ordinary_dm_ingress import _ingress
++
++    ingress = _ingress(adapter)
++    mark = getattr(source, "_friday_d16_followon_ingress", None)
++    if mark is None:
++        if ingress is not None and source is ingress._receipt_source:
++            require(getattr(ingress.claim, "selected_d16_followon", None) is None,
++                    "d16_followon_delivery_ingress_stamp_missing")
++        return None
++    require(ingress is not None and type(mark) is tuple and len(mark) == 2 and mark[0] is ingress._seal,
++            "d16_followon_delivery_ingress_stamp_changed")
++    update = mark[1]
++    selection = getattr(ingress.claim, "selected_d16_followon", None)
++    record = ingress._built.get(update)
++    require(selection is not None and record is not None and record.d16_followon_native is not None
++            and source is ingress._receipt_source and update in ingress._commits,
++            "d16_followon_uncommitted_delivery_update")
++    return ingress, record, selection
++
++
++def _current_writer(selected, source, writer):
++    ingress, record, selection = selected
++    event = record.event_ref()
++    wire = ingress._wire()
++    update = int(record.d16_followon_native.sdk["update_id"])
++    return (writer is not None and not writer.cancelling()
++            and record.writer_task is not None and record.writer_task() is writer and not record.settled
++            and ingress.adapter._session_tasks.get(ingress.scope["session_key"]) is writer
++            and event is not None and event.source is source and event.platform_update_id == update
++            and source is ingress._receipt_source and ingress._built.get(update) is record
++            and update in ingress._commits and ingress.claim.selected_d16_followon is selection
++            and wire is not None and wire["state"] == "OPEN" and tuple(wire["target_update_ids"]) == (update,))
++
++
++async def wait_followon_cutoff(selected, source):
++    """Wait on the original sender proof while the exact writer remains admitted."""
++    import asyncio
++
++    ingress, record, _ = selected
++    writer = asyncio.current_task()
++    require(_current_writer(selected, source, writer), "d16_followon_original_writer_required")
++    if ingress._d16_followon_cutoff is None:
++        deadline = min(ingress.claim.expires_monotonic, record.d16_followon_native.observed_monotonic + 180)
++        async with asyncio.timeout_at(deadline):
++            await ingress._d16_followon_ready.wait()
++    require(ingress._d16_followon_cutoff is not None and _current_writer(selected, source, writer),
++            "d16_followon_original_cutoff_unavailable")
++
++
++def observe_followon_delivery(selected, source, cap, route, relative, name, data, output_identity):
++    """Bind the already authorized document attempt to the native journal callback."""
++    import asyncio
++
++    from .d16_followon_custody import FollowonSource, verify_followon_output_before_delivery
++    from .d16_seed_custody import DocumentAttempt
++    from .run_attachment_presentation import _scope
++
++    ingress, record, selection = selected
++    writer = asyncio.current_task()
++    if record.d16_followon_attempted:
++        record.d16_followon_delivery = None
++        raise ValueError("d16_followon_second_document_attempt")
++    record.d16_followon_attempted = True
++    bound = ingress._d16_followon_cutoff
++    event = record.event_ref()
++    candidate = record.d16_followon_native
++    run, turn = source._friday_document_run, source._friday_document_turn
++    sdk = candidate.sdk
++    session = source._friday_document_session_id
++    proof = selection.proof()
++    require(_current_writer(selected, source, writer) and candidate.is_original(ingress, event)
++            and bound is not None and bound.run_id == selection.run_id
++            and bound.ack_started <= candidate.observed_monotonic < bound.cutoff
++            and all(sdk[key] == value for key, value in bound.sender.items())
++            and run[0] == turn[0] == ingress.scope["session_key"]
++            and turn[1] and turn[1] == event._gateway_active_turn_token
++            and session == proof["conversation"]["session_id"]
++            and getattr(source, "_friday_user_scope", None) is cap
++            and (str(cap.home), str(cap.authorization_home), cap.profile) == (
++                ingress.scope["runtime_home"], ingress.scope["authorization_home"], ingress.scope["runtime_profile"])
++            and relative == name == OUTPUT[selection.phase] and 0 < len(data) <= 1000000
++            and route["bot_id"] == sdk["bot_id"] and route["runtime_profile"] == cap.profile
++            and route["transport_profile"] == ingress.scope["transport_profile"]
++            and tuple(route["source"][key] for key in
++                      ("platform", "chat_type", "user_id", "chat_id", "thread_id", "message_id")) ==
++                ("telegram", "dm", sdk["actor_id"], sdk["actor_id"], None, sdk["native_message_id"]),
++            "d16_followon_native_document_attempt_unproved")
++    digest = sha256(data).hexdigest()
++    require(selection.phase != "restore" or (digest, len(data)) == (SOURCE_SHA256, SOURCE_BYTES),
++            "d16_followon_restore_output_is_not_original")
++    require(selection.phase != "pdf" or data.startswith(b"%PDF-"), "d16_followon_pdf_output_required")
++
++    def current():
++        cap.check()
++        return (time.monotonic() < min(bound.cutoff, ingress.claim.expires_monotonic)
++                and ingress._d16_followon_cutoff is bound and record.event_ref() is event
++                and _current_writer(selected, source, writer)
++                and getattr(source, "_friday_document_run", None) is run
++                and getattr(source, "_friday_document_turn", None) is turn
++                and getattr(source, "_friday_document_session_id", None) == session
++                and event._gateway_active_turn_token == turn[1]
++                and getattr(source, "_friday_user_scope", None) is cap)
++
++    pinned_source = selection.verify_files(cap.home, still_current=current)
++    identity, directories = workspace_pin(cap.home, relative, digest, len(data), still_current=current)
++    require(identity == output_identity, "d16_followon_output_snapshot_changed")
++    output = {"state": "DELIVERED", "kind": "document", "sha256": digest, "bytes": len(data),
++              "file_name": name, "bot_id": sdk["bot_id"], "chat_id": sdk["actor_id"],
++              "thread_id": None, "reply_to": sdk["native_message_id"]}
++    stop = min(bound.cutoff, ingress.claim.expires_monotonic)
++    predecessor = FollowonSource(selection.phase, session, selection.previous_generation,
++                                 selection.previous_delivery_row, pinned_source["path"],
++                                 tuple(pinned_source["source_identity"]),
++                                 tuple(map(tuple, pinned_source["source_directories"])),
++                                 selection.previous_output_path, selection.previous_output_sha256)
++    verify_followon_output_before_delivery(ingress, run, sdk, predecessor, relative, output,
++                                           current=current, deadline=stop)
++
++
++
++    def transport_check():
++        remaining = stop - time.monotonic()
++        require(current() and remaining > 0, "d16_followon_original_delivery_deadline")
++        return remaining
++
++    attempt = DocumentAttempt(ingress, record, source, run, turn, session, relative, output, _scope(cap),
++                              record_slot="d16_followon_delivery", output_identity=identity,
++                              output_directories=directories, transport_check=transport_check)
++    record.d16_followon_delivery = attempt
++    return attempt
+diff --git a/gateway/d16_followon_receiver_control.py b/gateway/d16_followon_receiver_control.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a73452d1dca65105b5780488909496e88a416a1a
+--- /dev/null
++++ b/gateway/d16_followon_receiver_control.py
+@@ -0,0 +1,242 @@
++"""Protected settlement of the exact D16 restore and PDF text phases."""
++
++from functools import partial
++from hashlib import sha256
++import time
++
++from .d02_receiver_control import ReceiverControl, _RUN_JSON_LIMIT, _encode, _now, _ordinary_receiver_verb, require
++from .d16_seed_custody import SCENARIO_SHA256 as SEED_SHA, SOURCE_BYTES, SOURCE_NAME, SOURCE_SHA256
++from .d16_seed_custody import TERMINAL_SCHEMA as SEED_TERMINAL
++from .d16_seed_receiver_control import BoundCutoff
++from .d16_followon_native import (PHASES, PROOF_SCHEMA, TERMINAL_SCHEMA, FollowonSelection, _ORIGINAL,
++    _identity, _positive, match_text, pin_from_turn, text_ack, text_sha256, verify_workspace)
++from .s08_session_fence import project_session_fence
++
++
++def _previous(control, prior, authority, route, schema, phase_sha):
++    require(prior["run_id"] in authority["history"]
++            and authority["history"][prior["run_id"]]["sha256"] == prior["run_sha256"]
++            and authority["history"][prior["run_id"]]["status"] == "EVIDENCE_READY",
++            "d16_followon_previous_run_not_in_retained_history")
++    terminal, terminal_path = control.doc(prior["terminal"], name="receiver-terminal-native.json")
++    intent, intent_path = control.doc(terminal["intent"], name="receiver-terminal-intent.json")
++    request, request_path = control.doc(prior["finalize_request"], name="receiver-control-finalize.json")
++    reply, reply_path = control.doc(prior["finalize_reply"], name="receiver-finalize-reply.json")
++    request_schema = ("frw.gateway.d16-seed-owned-receiver-control.v1" if schema == SEED_TERMINAL
++                      else "frw.gateway.d16-followon-owned-receiver-control.v1")
++    require(terminal["schema"] == schema and terminal["run_id"] == prior["run_id"]
++            and terminal["scenario_sha256"] == phase_sha and terminal["route"] == route
++            and terminal["no_retry"] is True
++            and terminal_path.parent == intent_path.parent == request_path.parent == reply_path.parent
++            and intent["run_id"] == prior["run_id"] and intent["scenario_sha256"] == phase_sha
++            and intent["run"]["sha256"] == prior["run_sha256"] and intent["no_retry"] is True
++            and request["schema"] == request_schema and request["operator"] == "Root"
++            and request["action"] == "finalize" and request["proof"] == terminal["intent"]
++            and _now(request["created_monotonic"]) and _now(request["expires_monotonic"])
++            and request["created_monotonic"] < request["expires_monotonic"]
++            and reply == {"accepted": True, "query_id": request["query_id"], "action": "finalize",
++                          "state": "RECEIVER_CLOSED_RETAINED", "receipt": prior["terminal"]},
++            "d16_followon_previous_terminal_or_retirement_changed")
++    return terminal
++
++
++def _selection(control, intent, driver, scenario):
++    authority, _ = control.doc(driver["authority"], limit=_RUN_JSON_LIMIT)
++    reference = driver["d16_followon_predecessor"]
++    require(reference == authority["d16_followon_predecessor"], "d16_followon_protected_predecessor_required")
++    proof, _ = control.doc(reference, name="d16-followon-predecessor.json")
++    phase_sha = intent["scenario_sha256"]
++    phase = PHASES[phase_sha]
++    require(set(proof) == {"schema", "phase", "scenario_sha256", "conversation", "original", "seed", "restore", "no_retry"}
++            and proof["schema"] == PROOF_SCHEMA and proof["phase"] == phase and proof["scenario_sha256"] == phase_sha
++            and proof["no_retry"] is True, "d16_followon_wrong_predecessor_phase")
++    conversation, original, seed, restore = (proof[key] for key in ("conversation", "original", "seed", "restore"))
++    route = conversation["route"]
++    require(set(conversation) == {"route", "session_id", "actor_id", "bot_id", "thread_id"}
++            and conversation["bot_id"] == str(scenario["peer_id"]) and conversation["actor_id"] == str(scenario["tester_id"])
++            and conversation["thread_id"] is None
++            and set(original) == {"path", "sha256", "size_bytes", "source_identity", "source_directories"}
++            and original["sha256"] == SOURCE_SHA256 and original["size_bytes"] == SOURCE_BYTES
++            and _ORIGINAL.fullmatch(original["path"]) and _identity(original["source_identity"], 9)
++            and len(original["source_directories"]) == 2
++            and all(_identity(tuple(item), 2) for item in original["source_directories"]),
++            "d16_followon_original_archive_or_conversation_invalid")
++    previous_fields = {"run_id", "run_sha256", "terminal", "finalize_request", "finalize_reply"}
++    require(set(seed) == previous_fields and seed["run_id"] != intent["run_id"],
++            "d16_followon_exact_original_seed")
++    base = _previous(control, seed, authority, route, SEED_TERMINAL, SEED_SHA)
++    turn = base["d16_turn"]
++    require(turn["session_id"] == conversation["session_id"]
++            and base["d16_sdk"]["actor_id"] == conversation["actor_id"] and base["d16_sdk"]["bot_id"] == conversation["bot_id"]
++            and turn["source"]["file_name"] == SOURCE_NAME
++            and {key: turn["source"][key] for key in ("path", "sha256", "size_bytes")}
++                == {key: original[key] for key in ("path", "sha256", "size_bytes")}
++            and base["d16_source_identity"] == original["source_identity"]
++            and base["d16_source_directories"] == original["source_directories"],
++            "d16_followon_exact_original_archive_terminal_required")
++    if phase == "restore":
++        require(restore is None, "d16_followon_restore_requires_immediate_seed")
++    else:
++        require(type(restore) is dict and set(restore) == previous_fields | {"native_document",
++                    "output_relative_path", "output_identity", "output_directories", "turn_generation", "delivery_row_id"}
++                and restore["run_id"] not in (intent["run_id"], seed["run_id"]), "d16_followon_pdf_requires_restore")
++        restore_sha = next(s for s, name in PHASES.items() if name == "restore")
++        prior = _previous(control, restore, authority, route, TERMINAL_SCHEMA, restore_sha)["d16_followon"]
++        require(prior["phase"] == "restore" and prior["original"] == original
++                and prior["turn"]["session_id"] == conversation["session_id"]
++                and prior["sdk"]["actor_id"] == conversation["actor_id"] and prior["sdk"]["bot_id"] == conversation["bot_id"]
++                and all(prior["turn"][key] == value for key, value in restore.items()
++                        if key not in previous_fields), "d16_followon_foreign_restore_result")
++        seed_proof, _ = control.doc(prior["predecessor"], name="d16-followon-predecessor.json")
++        require(seed_proof == dict(proof, phase="restore", scenario_sha256=restore_sha, restore=None),
++                "d16_followon_restore_must_descend_from_exact_seed")
++        restored = pin_from_turn(restore)
++        require(restored["path"] == SOURCE_NAME and restored["sha256"] == SOURCE_SHA256
++                and restored["size_bytes"] == SOURCE_BYTES and _identity(restored["source_identity"], 9)
++                and restored["source_identity"] != original["source_identity"]
++                and restored["source_directories"] == original["source_directories"][:1]
++                and restore["native_document"]["state"] == "DELIVERED"
++                and restore["turn_generation"] == turn["turn_generation"] + 1
++                and restore["delivery_row_id"] > turn["delivery_row_id"],
++                "d16_followon_exact_restored_original_required")
++        turn = prior["turn"]
++    require(_positive(turn["turn_generation"]) and _positive(turn["delivery_row_id"]),
++            "d16_followon_native_predecessor_order_unproved")
++    return FollowonSelection(intent["run_id"], phase_sha, text_sha256(scenario["steps"][0]["request"]),
++                             _encode(proof), _encode(reference), turn["turn_generation"], turn["delivery_row_id"],
++                             turn["output_relative_path"], turn["native_document"]["sha256"])
++
++
++def _original_cutoff(cutoff, verified, scenario):
++    run = verified["run"]
++    sent = text_ack(run, verified["ack"], scenario)
++    before, after = verified["ack_monotonic"]
++    require(cutoff == after + 180, "d16_followon_original_cutoff_changed")
++    proof = {"ack": run["sent_api_ack_reference"], "window": run["sent_window_reference"],
++             "clock": verified["original_clock"], "wall_cutoff": run["capture_until"],
++             "task": run["sent_task_reference"]}
++    return BoundCutoff(run["id"], cutoff, run["sent_message_id"], sent, before, sha256(_encode(proof)).hexdigest())
++
++
++class D16FollowonReceiverControl(ReceiverControl):
++    request_schema = "frw.gateway.d16-followon-owned-receiver-control.v1"
++    options_schema = "frw.Root.D16FollowOn.receiver-options.v1"
++    driver_schema = "frw.Root.D16FollowOn.owned-ordinary-driver.v1"
++    exact_phases = frozenset(PHASES)
++    terminal_schema = TERMINAL_SCHEMA
++    strict_terminal_extra = True
++
++    def _owner(self, request):
++        owner = super()._owner(request)
++        intent, driver, _, scenario, _ = owner
++        _selection(self, intent, driver, scenario)
++        authority, _ = self.doc(driver["authority"], limit=_RUN_JSON_LIMIT)
++        gateway = authority["gateway"]
++        require(authority["boot_id"] == request["boot_id"]
++                and {key: gateway[key] for key in ("pid", "start_time")} == request["gateway"],
++                "d16_followon_current_admission_owner_required")
++        if request["action"] == "arm":
++            start, end = authority["created_at"], authority["expires_at"]
++            require(_now(start) and _now(end) and start <= time.time() < end,
++                    "d16_followon_original_admission_expired")
++        return owner
++
++    def _current_owner(self, request, owner, adapter, ingress_scope, witness, deadline):
++        bound = super()._current_owner(request, owner, adapter, ingress_scope, witness, deadline)
++        intent, driver, options, scenario, _ = owner
++        selection = _selection(self, intent, driver, scenario)
++        selection.check_route(ingress_scope, actor=options["principal"]["user_id"])
++        runner = adapter.gateway_runner
++        key = ingress_scope["session_key"]
++        entry = runner.session_store._entries.get(key)
++        require(entry is not None and entry.session_id == selection.proof()["conversation"]["session_id"],
++                "d16_followon_original_live_conversation_required")
++        if request["action"] in ("arm", "confirm"):
++            def current():
++                return (time.monotonic() < bound and runner.session_store._entries.get(key) is entry
++                        and entry.active_turn_token is None
++                        and runner._is_session_run_current(key, selection.previous_generation))
++
++            require(current(), "d16_followon_previous_turn_not_immediate")
++            selection.verify_files(ingress_scope["runtime_home"], still_current=current)
++        require(time.monotonic() < bound, "d16_followon_owner_expired")
++        return bound
++
++    def _wire_options(self, intent):
++        driver, _ = self.doc(intent["binding"])
++        phase, _ = self.doc(driver["phase"])
++        return {"selected_d16_followon": _selection(self, intent, driver, phase["scenario"])}
++
++    @staticmethod
++    def _check_ack_window(run, ack, window, scenario):
++        ReceiverControl._check_ack_window(run, ack, window, scenario)
++        text_ack(run, ack, scenario)
++
++    def _bind_terminal_cutoff(self, arm, window, cutoff, verified):
++        ingress = arm.ingress
++        selection = arm.claim.selected_d16_followon
++        binding = _original_cutoff(cutoff, verified, verified["run"]["scenario"])
++        wire = ingress._wire()
++        require(selection.run_id == binding.run_id and binding.sender["text_sha256"] == selection.text_sha256
++                and arm.window is window is ingress.window and ingress._d16_followon_cutoff is None
++                and wire is not None and wire["state"] == "OPEN" and time.monotonic() < cutoff,
++                "d16_followon_exact_open_cutoff_required")
++        window.bind_cutoff(cutoff)
++        ingress._d16_followon_cutoff = binding
++        ingress._d16_followon_ready.set()
++
++    def _terminal_extra(self, arm, route, scenario, joined, verified, deadline):
++        from .d16_followon_custody import FollowonSource, project_followon_rows
++
++        ingress = arm.ingress
++        selected = arm.claim.selected_d16_followon
++        wire = ingress._wire()
++        bound = ingress._d16_followon_cutoff
++        run = verified["run"]
++        require(wire is not None and wire["state"] == "LOCAL_WIRE_CLOSED"
++                and ingress._settlement_state() == "SETTLED"
++                and len(wire["target_update_ids"]) == len(joined["observations"]) == 1
++                and bound is not None and bound.run_id == selected.run_id
++                and bound == _original_cutoff(arm.window._cutoff, verified, scenario)
++                and wire["empty_boundary"][0] >= bound.cutoff,
++                "d16_followon_exact_closed_singleton_required")
++        selected.check_route(ingress.scope, actor=arm.claim.user_id)
++        update, = wire["target_update_ids"]
++        record = ingress._built[update]
++        native, delivery = record.d16_followon_native, record.d16_followon_delivery
++        require(native is not None and native.raw is None and delivery is not None and delivery.candidate is not None
++                and bound.ack_started <= native.observed_monotonic < bound.cutoff
++                and all(native.sdk[key] == value for key, value in bound.sender.items()),
++                "d16_followon_original_ack_sdk_or_delivery_missing")
++        (receipt, payload), = joined["observations"]
++        sdk = native.sdk
++        require(sdk["update_id"] == str(update) and receipt["platform"] == "telegram" and receipt["chat_type"] == "dm"
++                and all(receipt[key] == value for key, value in route.items())
++                and match_text(sdk, receipt["message"], payload)
++                and sdk["date"] <= delivery.candidate[2] <= run["capture_until"],
++                "d16_followon_durable_text_pair_changed")
++
++        def current():
++            return (time.monotonic() < deadline and ingress._wire() == wire
++                    and ingress._settlement_state() == "SETTLED" and ingress._d16_followon_cutoff is bound
++                    and record.d16_followon_delivery is delivery and arm.claim.selected_d16_followon is selected)
++
++        proof = selected.proof()
++        home = ingress.scope["runtime_home"]
++        source = selected.verify_files(home, still_current=current)
++        predecessor = FollowonSource(selected.phase, proof["conversation"]["session_id"],
++            selected.previous_generation, selected.previous_delivery_row, source["path"],
++            tuple(source["source_identity"]), tuple(map(tuple, source["source_directories"])),
++            selected.previous_output_path, selected.previous_output_sha256)
++        _, turn = project_session_fence(ingress.adapter.gateway_runner, ingress.scope, receipt,
++            started=sdk["date"], cutoff=run["capture_until"], deadline=deadline,
++            project=partial(project_followon_rows, delivery, sdk, predecessor, selected.phase))
++        verify_workspace(home, pin_from_turn(turn), still_current=current)
++        require(current(), "d16_followon_exact_terminal_state_changed")
++        return {"d16_followon": {"phase": selected.phase, "sender_ack": run["sent_api_ack_reference"],
++                "sender_message_id": str(bound.sender_message_id), "sdk": sdk,
++                "predecessor": selected.reference(), "original": proof["original"], "turn": turn}}
++
++
++def ordinary_d16_followon_receiver_verb(runner, loop):
++    return _ordinary_receiver_verb(runner, loop, control_type=D16FollowonReceiverControl)
+diff --git a/gateway/d16_seed_custody.py b/gateway/d16_seed_custody.py
+index 0f810cbce4c669f8c27656b1d44785bf1ad50748..4d98acd4ea899e7124787c5cb24c612a69cc8a5f 100644
+--- a/gateway/d16_seed_custody.py
++++ b/gateway/d16_seed_custody.py
+@@ -88,6 +88,10 @@ class DocumentAttempt:
+     output: dict
+     scope: dict
+     candidate: tuple | None = None
++    record_slot: str = "d16_seed_delivery"
++    output_identity: tuple | None = None
++    output_directories: tuple | None = None
++    transport_check: object = None
+ 
+     def capture(self, receipt, native_candidate, stamp, row_identity, check):
+         """Called only after the stock delivery journal and hidden row commit."""
+@@ -96,7 +100,7 @@ class DocumentAttempt:
+         try:
+             session, row, uid = row_identity
+             selection = sha256(encoded([self.scope["principal"], self.relative])).hexdigest()
+-            require(self.record.d16_seed_delivery is self and self.candidate is None
++            require(getattr(self.record, self.record_slot) is self and self.candidate is None
+                     and self.record.writer_task() is asyncio.current_task() and not self.record.settled
+                     and self.source._friday_document_run is self.run
+                     and self.source._friday_document_turn is self.turn
+@@ -112,7 +116,7 @@ class DocumentAttempt:
+             check()
+             self.candidate = dict(receipt), sha256(native_candidate).hexdigest(), stamp, row, uid
+         except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+-            self.record.d16_seed_delivery = None
++            setattr(self.record, self.record_slot, None)
+ 
+ 
+ def observe_document_attempt(adapter, source, cap, route, relative, name, data):
+diff --git a/gateway/ordinary_dm_dispatch_closure.py b/gateway/ordinary_dm_dispatch_closure.py
+index 773aa8512903d1b41c50195d518046f3340e4138..fa604cf6f94dc9ec5e851f72f38217ffd027477e 100644
+--- a/gateway/ordinary_dm_dispatch_closure.py
++++ b/gateway/ordinary_dm_dispatch_closure.py
+@@ -95,20 +95,28 @@ def _storage_signature(state):
+ 
+ def _retained_d16_scope(arm, wire, home, profile, routed, principal):
+     selected = getattr(arm.claim, "selected_d16_seed", None)
+-    if selected is None:
++    followon = getattr(arm.claim, "selected_d16_followon", None)
++    if selected is None and followon is None:
+         return None
+     from gateway.d16_seed_custody import SCENARIO_SHA256
+ 
+     evidence = arm.ingress
+-    original = evidence._d16_seed_cutoff
++    original = evidence._d16_seed_cutoff if followon is None else evidence._d16_followon_cutoff
+     updates = wire["target_update_ids"]
+-    if (original is None or selected != (SCENARIO_SHA256, original.run_id)
+-            or original.cutoff != arm.window._cutoff or len(updates) != 1):
++    if original is None or original.cutoff != arm.window._cutoff or len(updates) != 1:
++        raise ValueError("d16_exact_receipt_scope_unproved")
++    if followon is None:
++        exact_phase = selected == (SCENARIO_SHA256, original.run_id)
++    else:
++        exact_phase = (selected is None and followon.run_id == original.run_id
++                       and followon.text_sha256 == original.sender["text_sha256"])
++    if not exact_phase:
+         raise ValueError("d16_exact_receipt_scope_unproved")
+ 
+     update, = updates
+     record = evidence._built[update]
+-    publication = record.d16_seed_publication
++    publication = record.d16_seed_publication if followon is None else None
++    native = record.d16_followon_native if followon is not None else None
+     source = evidence._receipt_source
+     capability = getattr(source, "_friday_user_scope", None)
+     expected_principal = tuple(principal[key] for key in
+@@ -116,12 +124,16 @@ def _retained_d16_scope(arm, wire, home, profile, routed, principal):
+     generation = principal["generation"]
+ 
+     def check():
+-        if (not isinstance(capability, scope.UserScope) or capability.revoked
+-                or publication is None or publication.owner is not capability
++        if followon is None:
++            exact_record = (publication is not None and publication.owner is capability
++                            and evidence._d16_seed_cutoff is original and record.d16_seed_publication is publication)
++        else:
++            exact_record = (native is not None and native.raw is None and record.d16_followon_native is native
++                            and evidence._d16_followon_cutoff is original and arm.claim.selected_d16_followon is followon)
++        if (not isinstance(capability, scope.UserScope) or capability.revoked or not exact_record
+                 or evidence._receipt_source is not source
+                 or getattr(source, "_friday_user_scope", None) is not capability
+-                or evidence._d16_seed_cutoff is not original or evidence._built.get(update) is not record
+-                or record.d16_seed_publication is not publication
++                or evidence._built.get(update) is not record
+                 or capability.principal != expected_principal
+                 or type(generation) is not int or type(capability.admission_generation) is not int
+                 or capability.admission_generation != generation
+diff --git a/gateway/ordinary_dm_ingress.py b/gateway/ordinary_dm_ingress.py
+index e12b2daaa627de97b3331c8be0d463c38f496a8e..0a18f544c68254b00832de16deb9072fcc5f60b1 100644
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -56,6 +56,9 @@ class _Dispatch:
+     d16_seed_publication: object = None
+     d16_seed_delivery: object = None
+     d16_seed_attempted: bool = False
++    d16_followon_native: object = None
++    d16_followon_delivery: object = None
++    d16_followon_attempted: bool = False
+ 
+ 
+ @dataclass
+@@ -148,6 +151,10 @@ class OrdinaryDMIngressOutcomes:
+         self._d05_worker_binding = None
+         self._d01_rtf_cutoff = None
+         self._d16_seed_cutoff = None
++        self._d16_followon_cutoff = None
++        self._d16_followon_ready = (
++            asyncio.Event() if getattr(claim, "selected_d16_followon", None) is not None else None
++        )
+ 
+     def _enable_selected_xlsx(self, claim_sha256, scenario_sha256):
+         """Bind the protected original wire arm to the exact Alder plan."""
+@@ -271,6 +278,8 @@ class OrdinaryDMIngressOutcomes:
+             self._changed.set()
+             if self._d05_wait is not None:
+                 self._d05_wait[1].set()
++            if self._d16_followon_ready is not None:
++                self._d16_followon_ready.set()
+ 
+     def _wire(self):
+         claim, adapter = self.claim, self.adapter
+@@ -307,6 +316,13 @@ class OrdinaryDMIngressOutcomes:
+             return
+         wire = self._wire()
+         update = event.platform_update_id
++        selection = getattr(self.claim, "selected_d16_followon", None)
++        if selection is not None and self._selected_source(event.source) and type(update) is int:
++            from gateway.d16_followon_native import text_sha256
++
++            if ((wire is not None and update in wire["target_update_ids"])
++                    or (type(event.text) is str and text_sha256(event.text) == selection.text_sha256)):
++                event.source._friday_d16_followon_ingress = (self._seal, update)
+         if wire is None or type(update) is not int or update not in wire["target_update_ids"]:
+             return
+         if (event.internal or event.raw_message is None or event._ingress_update_id != update
+@@ -331,10 +347,16 @@ class OrdinaryDMIngressOutcomes:
+             from gateway.d16_seed_custody import SelectedSeed
+ 
+             d16_native = SelectedSeed.capture(self, native_update, event)
++        d16_followon = None
++        if getattr(self.claim, "selected_d16_followon", None) is not None:
++            from gateway.d16_followon_native import SelectedText
++
++            d16_followon = SelectedText.capture(self, native_update, event)
+         self._built[update] = _Dispatch(ref(event), s08_document=document,
+                                        s08_raw=event.raw_message if document is not None else None,
+                                        xlsx_native=xlsx_native, d05_native=d05_native,
+-                                       d01_rtf_native=d01_rtf_native, d16_seed_native=d16_native)
++                                       d01_rtf_native=d01_rtf_native, d16_seed_native=d16_native,
++                                       d16_followon_native=d16_followon)
+         event._ordinary_dm_ingress_stamp = (self._seal, update)
+         self._revision += 1
+ 
+@@ -466,6 +488,11 @@ class OrdinaryDMIngressOutcomes:
+                 self.lost("ingress_d16_seed_original_publication_changed")
+                 return
+             record.d16_seed_native = replace(record.d16_seed_native, raw=None, update=None)
++        if record.d16_followon_native is not None:
++            if not record.d16_followon_native.is_original(self, event):
++                self.lost("ingress_d16_followon_original_text_changed")
++                return
++            record.d16_followon_native = replace(record.d16_followon_native, raw=None, update=None)
+         record.settled = True
+         self._revision += 1
+         self._changed.set()
+@@ -534,6 +561,16 @@ class OrdinaryDMIngressOutcomes:
+                 self.lost("ingress_d16_seed_original_sdk_or_publication_changed")
+                 return None
+             record.d16_seed_publication = publication
++        if getattr(self.claim, "selected_d16_followon", None) is not None:
++            from gateway.d16_followon_native import match_text
++
++            record = self._built[update]
++            event = record.event_ref()
++            native = record.d16_followon_native
++            if (native is None or event is None or not native.is_original(self, event)
++                    or not match_text(native.sdk, message, payload)):
++                self.lost("ingress_d16_followon_original_sdk_text_changed")
++                return None
+         return _RoutedWrite(self, update, proof, deepcopy(proof), payload, source, asyncio.current_task())
+ 
+     def readback(self):
+diff --git a/gateway/run.py b/gateway/run.py
+index 6f2c5bfa0ce7fc962bc8038888a2347ec78516d9..1e2c724e61acf91fcb8b028ff39e6980b941df20 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -5724,6 +5724,7 @@ async def _start_gateway_start_control_socket(runner):
+         from gateway.s08_receiver_control import ordinary_s08_receiver_verb
+         from gateway.d01_rtf_receiver_control import ordinary_d01_rtf_receiver_verb
+         from gateway.d16_seed_receiver_control import ordinary_d16_seed_receiver_verb
++        from gateway.d16_followon_receiver_control import ordinary_d16_followon_receiver_verb
+         _control_server = GatewayControlServer(
+             verb_handlers={"ordinary-turn-readonly": ordinary_turn_readonly_verb(runner, _main_loop),
+                            "ordinary-turn-cancel": ordinary_turn_cancel_verb(runner, _main_loop),
+@@ -5731,6 +5732,7 @@ async def _start_gateway_start_control_socket(runner):
+                            "ordinary-s08-receiver": ordinary_s08_receiver_verb(runner, _main_loop),
+                            "ordinary-d01-rtf-receiver": ordinary_d01_rtf_receiver_verb(runner, _main_loop),
+                            "ordinary-d16-seed-receiver": ordinary_d16_seed_receiver_verb(runner, _main_loop),
++                           "ordinary-d16-followon-receiver": ordinary_d16_followon_receiver_verb(runner, _main_loop),
+                            "ordinary-f04-arm": ordinary_f04_metadata_verb(runner, _main_loop, "arm"),
+                            "ordinary-f04-disarm": ordinary_f04_metadata_verb(runner, _main_loop, "disarm"),
+                            "plugin-control": plugin_control_verb(runner, _main_loop),
+diff --git a/gateway/run_plugin_delivery.py b/gateway/run_plugin_delivery.py
+index 4404e50e986ced21b3f20e1a4318fe3c873c50e7..34486a3ad41ba780d3ab87027dde21a6b74374c0 100644
+--- a/gateway/run_plugin_delivery.py
++++ b/gateway/run_plugin_delivery.py
+@@ -296,10 +296,14 @@ async def deliver_ordinary_document(adapter, source, path, *, caption=None, file
+     try:
+         cap, runner, context, route, check_origin = _ordinary_authority(adapter, source)
+ 
++        selected_delivery_check = None
++
+         def check():
+             if authority_check is not None:
+                 authority_check()
+             check_origin()
++            if selected_delivery_check is not None:
++                selected_delivery_check()
+ 
+         if authority_check is not None:
+             authority_check()
+@@ -310,7 +314,12 @@ async def deliver_ordinary_document(adapter, source, path, *, caption=None, file
+             if blocked or guarded != caption or not _ordinary_caption_fits(caption):
+                 return SendResult(success=False, error='gateway_document_caption_rejected')
+         stage = 'workspace_snapshot'
+-        data, relative = workspace_document(path)
++        from gateway.d16_followon_native import selected_delivery
++        selected = selected_delivery(adapter, source)
++        if selected is None:
++            data, relative = workspace_document(path)
++        else:
++            data, relative, output_identity = workspace_document(path, with_identity=True)
+         if expected_sha256 is not None and hashlib.sha256(data).hexdigest() != expected_sha256:
+             raise ValueError('document_snapshot_mismatch')
+         stage = 'document_name'
+@@ -327,7 +336,14 @@ async def deliver_ordinary_document(adapter, source, path, *, caption=None, file
+             from gateway.ordinary_d05_writer import snapshot
+             snapshot(_d05_writer, source, cap, route, relative, name, data)
+         from gateway.d16_seed_custody import observe_document_attempt
+-        d16_delivery = observe_document_attempt(adapter, source, cap, route, relative, name, data)
++        if selected is None:
++            d16_delivery = observe_document_attempt(adapter, source, cap, route, relative, name, data)
++        else:
++            from gateway.d16_followon_native import observe_followon_delivery, wait_followon_cutoff
++            await wait_followon_cutoff(selected, source)
++            check()
++            d16_delivery = observe_followon_delivery(selected, source, cap, route, relative, name, data, output_identity)
++            selected_delivery_check = d16_delivery.transport_check
+         stage = 'recovery_owner'
+         await _mark_ordinary_file_recovery(runner, source, cap, route,
+             [{'relative_path': relative, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}])
+@@ -353,9 +369,10 @@ async def deliver_ordinary_document(adapter, source, path, *, caption=None, file
+     try:
+         cap.check()
+         await _ordinary_transcript(runner, session_id, relative, 'UNKNOWN', hashlib.sha256(data).hexdigest())
++        timeout = 30 if selected_delivery_check is None else min(30, selected_delivery_check())
+         receipt = await deliver_document(runner, context, route=route, data=data,
+-                                         file_name=name, caption=caption, timeout=30, authority_check=check)
+-        if authority_check is None:
++                                         file_name=name, caption=caption, timeout=timeout, authority_check=check)
++        if authority_check is None and selected_delivery_check is None:
+             cap.check()
+         else:
+             check()
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+index 05e2a2bf551b7901c8fbf90cb5a6b5fb6236445d..12bd98553655636cea992ce0d3944ff1463fe009 100644
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -525,6 +525,7 @@ class _OrdinaryDMWireClaim:
+     selected_d05: tuple[str, str] | None = None
+     selected_d01_rtf: tuple[str, str] | None = None
+     selected_d16_seed: tuple[str, str] | None = None
++    selected_d16_followon: object = None
+ 
+ 
+ @dataclasses.dataclass(frozen=True, slots=True)
+@@ -1804,7 +1805,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+     def _reserve_ordinary_dm_wire_window(self, *, claim_sha256, user_id, generation,
+                                         expires_monotonic, max_updates, owner_is_current, ingress_scope=None,
+                                         require_s08_document=False, selected_s14=None, selected_d05=None,
+-                                        selected_d01_rtf=None, selected_d16_seed=None):
++                                        selected_d01_rtf=None, selected_d16_seed=None, selected_d16_followon=None):
+         """Queue an already authorized claim on the gateway loop. None means pending only."""
+         now = time.monotonic()
+         updater = self._ordinary_dm_wire_updater(generation)
+@@ -1848,6 +1849,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                     or selected_d16_seed[0] != SCENARIO_SHA256
+                     or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", selected_d16_seed[1]) is None):
+                 raise ValueError("Invalid selected D16 seed wire claim")
++        if selected_d16_followon is not None:
++            from gateway.d16_followon_native import FollowonSelection, PHASES
++
++            if (ingress_scope is None or require_s08_document or selected_s14 is not None
++                    or selected_d05 is not None or selected_d01_rtf is not None or selected_d16_seed is not None
++                    or type(selected_d16_followon) is not FollowonSelection
++                    or selected_d16_followon.scenario_sha256 not in PHASES
++                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", selected_d16_followon.run_id) is None):
++                raise ValueError("Invalid selected D16 follow-on wire claim")
++            selected_d16_followon.check_route(ingress_scope, actor=user_id)
+         pending = getattr(self, "_ordinary_dm_wire_pending", None)
+         if (pending is not None and (pending.updater is not updater or pending.generation != generation
+                                     or now >= pending.expires_monotonic)):
+@@ -1865,7 +1876,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         self._ordinary_dm_wire_pending = _OrdinaryDMWireClaim(
+             claim_sha256, user_id, generation, expires_monotonic, max_updates,
+             owner_is_current, updater, asyncio.get_running_loop(), ingress_scope, require_s08_document, selected_s14,
+-            selected_d05, selected_d01_rtf, selected_d16_seed,
++            selected_d05, selected_d01_rtf, selected_d16_seed, selected_d16_followon,
+         )
+ 
+     def _ordinary_dm_wire_native_parameters(self, request, generation, kwargs):
+@@ -1922,12 +1933,18 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                 return None
+             offset = parameters["offset"]
+             changed = asyncio.Event() if claim.ingress_scope is not None else None
++            ingress = None
++
++            def notify_terminal():
++                changed.set()
++                if ingress is not None and ingress._d16_followon_ready is not None:
++                    ingress._d16_followon_ready.set()
++
+             window = DirectMessageWireWindow(
+                 generation=generation, user_id=claim.user_id, first_offset=offset,
+                 armed_at=armed_at, expires=claim.expires_monotonic, max_updates=claim.max_updates,
+-                on_terminal=changed.set if changed is not None else None,
++                on_terminal=notify_terminal if changed is not None else None,
+             )
+-            ingress = None
+             if claim.ingress_scope is not None:
+                 from gateway.ordinary_dm_ingress import OrdinaryDMIngressOutcomes
+                 ingress = OrdinaryDMIngressOutcomes(self, claim, window, armed_at, changed)
+@@ -2021,7 +2038,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                     or getattr(self, "_ordinary_dm_wire_window", None) is not window):
+                 return False
+             strict = (claim.selected_d05 is not None or claim.selected_d01_rtf is not None
+-                      or claim.selected_d16_seed is not None)
++                      or claim.selected_d16_seed is not None or claim.selected_d16_followon is not None)
+             if strict and (selected_arm is None
+                     or type(accept_before) not in (int, float)
+                     or not 0 < accept_before <= claim.expires_monotonic):
+@@ -7227,7 +7244,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+             event = self._build_external_word_event(msg, update, msg_type)
+             if event is not None:
+                 return event  # Intake only: no quoted attachment download.
+-        event = self._build_message_event(msg, msg_type, update_id=update.update_id)
++        arm = getattr(self, "_ordinary_dm_wire_arm", None)
++        if (msg_type == MessageType.TEXT and arm is not None
++                and getattr(arm.claim, "selected_d16_followon", None) is not None):
++            event = self._build_message_event(msg, msg_type, update_id=update.update_id, native_update=update)
++        else:
++            event = self._build_message_event(msg, msg_type, update_id=update.update_id)
+         event.text = group_trigger_text(self, msg, event.text)
+         await self._cache_replied_media(msg, event)
+         return self._apply_telegram_group_observe_attribution(event)
