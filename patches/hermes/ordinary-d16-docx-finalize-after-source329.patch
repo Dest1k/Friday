@@ -1,0 +1,868 @@
+diff --git a/gateway/d16_seed_custody.py b/gateway/d16_seed_custody.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f810cbce4c669f8c27656b1d44785bf1ad50748
+--- /dev/null
++++ b/gateway/d16_seed_custody.py
+@@ -0,0 +1,291 @@
++"""Observe one exact D16 upload and its existing native document writer."""
++
++import asyncio
++from dataclasses import dataclass
++from hashlib import sha256
++from pathlib import PurePosixPath
++import re
++import time
++
++from .ordinary_d05_turn import _object, _relative_docx
++from .s08_document_custody import capture_document, require
++
++SCENARIO_SHA256 = "9357988c9b0e47e0609c6ef642eb2528da80ba43f734127cc2195dc83df5e034"
++SOURCE_SHA256 = "b773d35520fdf8ed4e65980e941349ca7c9fa9a1ba040fedf83bb498197142cc"
++SOURCE_BYTES = 3134
++SOURCE_NAME = "D16-Veresk-84-original.docx"
++SOURCE_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
++OUTPUT_NAME = "D16-Veresk-84-edit.docx"
++CAPTION_SHA256 = "9b086ad9397db855fe57815e02ce87b52ed782f4096ec48b534b6786d47a1371"
++TERMINAL_SCHEMA = "frw.gateway.d16-seed-native-settlement.v1"
++
++
++@dataclass(frozen=True, slots=True)
++class SelectedSeed:
++    sdk: dict
++    observed_monotonic: float
++    raw: object
++    update: object
++
++    @classmethod
++    def capture(cls, ingress, update, event):
++        sdk = capture_document(ingress.adapter, update, event, actor=ingress.claim.user_id,
++                               bot_id=ingress.scope["bot_id"], source_bytes=SOURCE_BYTES)
++        require((sdk["file_name"], sdk["mime_type"], sdk["caption_sha256"])
++                == (SOURCE_NAME, SOURCE_MIME, CAPTION_SHA256), "d16_exact_sdk_document")
++        return cls(sdk, time.monotonic(), event.raw_message, update)
++
++    def is_original(self, ingress, event):
++        return (self.raw is event.raw_message and self.update is not None
++                and self.capture(ingress, self.update, event).sdk == self.sdk)
++
++    def caption(self):
++        return {"kind": "caption", "date": self.sdk["date"], "sha256": self.sdk["caption_sha256"]}
++
++
++def match_document(sdk, message):
++    media = message["media"]
++    if (len(media) != 1 or tuple(message[field] for field in (
++            "platform_update_id", "message_id", "bot_id", "user_id", "chat_id", "thread_id",
++            "reply_to_message_id")) != (sdk["update_id"], sdk["native_message_id"], sdk["bot_id"],
++                                       sdk["actor_id"], sdk["actor_id"], "", "")):
++        return False
++    item = media[0]
++    origin = item["origin"]
++    return (item["mime_type"] == sdk["mime_type"]
++            and item["content"] == {"sha256": SOURCE_SHA256, "size_bytes": SOURCE_BYTES}
++            and all(origin[key] == message[key] for key in ("bot_id", "chat_id", "thread_id", "message_id"))
++            and all(origin[key] == sdk[key] for key in ("file_id", "file_unique_id", "declared_bytes")))
++
++
++def selected_publication(event, message):
++    from .ordinary_dm_ingress import _ingress
++    from .session_identity import identity_of
++
++    if getattr(event, "_ordinary_dm_ingress_stamp", None) is None:
++        return False
++    try:
++        identity = identity_of(event.source)
++        ingress = _ingress(identity.adapter()) if identity is not None else None
++        if ingress is None or getattr(ingress.claim, "selected_d16_seed", None) is None:
++            return False
++        update = ingress.select(event, event.source, identity, ingress.scope["session_key"])
++        candidate = ingress._built[update].d16_seed_native if update is not None else None
++        return candidate is not None and candidate.is_original(ingress, event) and match_document(candidate.sdk, message)
++    except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
++        return False
++
++
++@dataclass(slots=True)
++class DocumentAttempt:
++    ingress: object
++    record: object
++    source: object
++    run: tuple
++    turn: tuple
++    session_id: str
++    relative: str
++    output: dict
++    scope: dict
++    candidate: tuple | None = None
++
++    def capture(self, receipt, native_candidate, stamp, row_identity, check):
++        """Called only after the stock delivery journal and hidden row commit."""
++        from hermes_cli.friday_native_state import encoded
++
++        try:
++            session, row, uid = row_identity
++            selection = sha256(encoded([self.scope["principal"], self.relative])).hexdigest()
++            require(self.record.d16_seed_delivery is self and self.candidate is None
++                    and self.record.writer_task() is asyncio.current_task() and not self.record.settled
++                    and self.source._friday_document_run is self.run
++                    and self.source._friday_document_turn is self.turn
++                    and self.source._friday_document_session_id == self.session_id == session
++                    and time.monotonic() < self.ingress.claim.expires_monotonic
++                    and type(row) is int and row > 0 and _uid(uid)
++                    and type(receipt) is dict and set(receipt) == self.output.keys() | {"message_id"}
++                    and all(receipt[name] == value for name, value in self.output.items())
++                    and re.fullmatch(r"[1-9][0-9]{0,30}", receipt["message_id"])
++                    and receipt["message_id"] != receipt["reply_to"]
++                    and native_candidate == encoded({"selection": selection, "receipt": receipt}),
++                    "d16_original_writer_changed")
++            check()
++            self.candidate = dict(receipt), sha256(native_candidate).hexdigest(), stamp, row, uid
++        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
++            self.record.d16_seed_delivery = None
++
++
++def observe_document_attempt(adapter, source, cap, route, relative, name, data):
++    """Observe one native reply attempt without granting or changing delivery authority."""
++    from .ordinary_dm_ingress import _ingress
++    from .run_attachment_presentation import _scope
++
++    ingress = _ingress(adapter)
++    if ingress is None or getattr(ingress.claim, "selected_d16_seed", None) is None:
++        return None
++    try:
++        if source is not ingress._receipt_source:
++            return None
++        wire = ingress._wire()
++        update, = wire["target_update_ids"]
++        record = ingress._built[update]
++        if record.d16_seed_attempted:
++            record.d16_seed_delivery = None
++            return None
++        record.d16_seed_attempted = True
++        run, turn = source._friday_document_run, source._friday_document_turn
++        event = record.event_ref()
++        sdk = record.d16_seed_native.sdk
++        require(record.writer_task is not None and record.writer_task() is asyncio.current_task()
++                and not record.settled and update in ingress._commits
++                and event is not None and event.source is source
++                and record.d16_seed_native.is_original(ingress, event)
++                and record.d16_seed_publication is not None
++                and run[0] == turn[0] == ingress.scope["session_key"]
++                and turn[1] and turn[1] == event._gateway_active_turn_token
++                and str(cap.home) == ingress.scope["runtime_home"]
++                and str(cap.authorization_home) == ingress.scope["authorization_home"]
++                and cap.profile == ingress.scope["runtime_profile"]
++                and PurePosixPath(_relative_docx(relative)).name == OUTPUT_NAME == name
++                and 0 < len(data) <= 1048576
++                and route["bot_id"] == sdk["bot_id"] and route["runtime_profile"] == cap.profile
++                and route["transport_profile"] == ingress.scope["transport_profile"]
++                and tuple(route["source"][key] for key in
++                          ("platform", "chat_type", "user_id", "chat_id", "thread_id", "message_id"))
++                == ("telegram", "dm", sdk["actor_id"], sdk["actor_id"], None, sdk["native_message_id"]),
++                "d16_original_document_writer_required")
++        output = {"state": "DELIVERED", "kind": "document", "sha256": sha256(data).hexdigest(),
++                  "bytes": len(data), "file_name": name, "bot_id": sdk["bot_id"],
++                  "chat_id": sdk["actor_id"], "thread_id": None, "reply_to": sdk["native_message_id"]}
++        attempt = DocumentAttempt(ingress, record, source, run, turn, source._friday_document_session_id,
++                                  relative, output, _scope(cap))
++        record.d16_seed_delivery = attempt
++        return attempt
++    except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
++        return None
++
++
++def _uid(value):
++    return type(value) is str and re.fullmatch(r"[0-9a-f]{32}", value) is not None
++
++
++def _tool_path(value, workspace):
++    require(type(value) is str and 0 < len(value) <= 4096, "d16_tool_path_required")
++    path = PurePosixPath(value)
++    if path.is_absolute():
++        require(path.is_relative_to(workspace), "d16_tool_path_outside_workspace")
++        path = path.relative_to(workspace)
++    return _relative_docx(path.as_posix())
++
++
++def _tool_rows(rows, relative, output_path, receipt, workspace):
++    """Project only paired ordinary canonical rows and the exact seed edit."""
++    import json
++
++    text_edit = {"source": relative, "old_text": "VERESK84-APRIL-12", "new_text": "VERESK84-APRIL-19"}
++    located_edit = dict(text_edit, source_sha256=SOURCE_SHA256, paragraph=3)
++    cursor, total_lines, read_rows, edit = (1, 0), None, [], None
++    for call_row, tool in zip(rows[::2], rows[1::2], strict=True):
++        call, = json.loads(call_row["tool_calls"])
++        call_id, name = call["id"], call["function"]["name"]
++        occurrence = _object(call_row["tool_call_uids"])[call_id]
++        require(call_row["role"] == "assistant" and tool["role"] == "tool"
++                and name == tool["tool_name"] and call_id == tool["tool_call_id"]
++                and _uid(occurrence) and occurrence == tool["tool_call_uid"]
++                and tool["effect_disposition"] is None, "d16_exact_canonical_tool_pair")
++        args, result = _object(call["function"]["arguments"]), _object(tool["content"])
++        require(result["success"] is True and result["scope"] == "own_user_workspace",
++                "d16_ordinary_tool_result_required")
++        if name == "read_file":
++            require(edit is None and cursor is not None and {"path"} <= args.keys() <=
++                    {"path", "offset", "char_offset", "limit"}
++                    and _tool_path(args["path"], workspace) == result["path"] == relative
++                    and (args.get("offset", 1), args.get("char_offset", 0)) == cursor
++                    and result["source_sha256"] == SOURCE_SHA256 and result["format"] == "docx"
++                    and result["extracted_document"] is True, "d16_exact_source_read_required")
++            following = (result["next_offset"], result["next_char_offset"])
++            total = result["total_lines"]
++            require(type(total) is int and 0 < total <= 100000 and total_lines in (None, total)
++                    and all(type(value) is int for value in following)
++                    and cursor < following <= (total + 1, 0) and 0 <= following[1] <= 1000000
++                    and result["partial"] is (following != (total + 1, 0)), "d16_source_read_cursor")
++            cursor, total_lines = (following if result["partial"] else None), total
++            read_rows.append(tool["id"])
++        else:
++            require(edit is None and cursor is None and read_rows and name == "write_file"
++                    and set(args) == {"path", "format", "content"}
++                    and _tool_path(args["path"], workspace) == result["path"] == output_path
++                    and type(result["replacements"]) is int and result["replacements"] == 1
++                    and result["source"] == relative and result["source_sha256"] == SOURCE_SHA256
++                    and result["sha256"] == receipt["sha256"] != SOURCE_SHA256
++                    and type(result["bytes_written"]) is int and result["bytes_written"] == receipt["bytes"]
++                    and all(result[key] is True for key in
++                            ("verified", "create_only", "source_unchanged", "unchanged_parts_preserved")),
++                    "d16_exact_seed_edit_required")
++            spec = _object(args["content"])
++            spec["source"] = _tool_path(spec.get("source"), workspace)
++            if args["format"] == "word_located_edit":
++                require(result["format"] == "word_located_edit" and spec == located_edit
++                        and type(result["paragraph"]) is int and result["paragraph"] == 3,
++                        "d16_exact_located_edit_required")
++            else:
++                require(args["format"] == "docx_edit" and result["format"] == "docx"
++                        and result["edit_mode"] == "exact_text" and spec == text_edit,
++                        "d16_exact_text_edit_required")
++            edit = tool["id"]
++    require(edit is not None, "d16_native_edit_missing")
++    return read_rows, edit
++
++
++def project_rows(delivery, sdk, publication, db, fence, *, deadline):
++    """Join the receiving USER row, ordinary tools and the native DELIVERED row."""
++    ingress = delivery.ingress
++    receipt, journal, stamp, delivered_id, delivered_uid = delivery.candidate
++    sid = fence["session_id"]
++    runner = ingress.adapter.gateway_runner
++    cap = publication.owner
++    relative = publication.evidence.path.relative_to(cap.home / "workspace").as_posix()
++    require(re.fullmatch(r"received/telegram_[0-9a-f]{64}_[A-Za-z0-9_.-]{1,80}\.docx", relative)
++            and time.monotonic() < deadline and sid == delivery.session_id
++            and runner._is_session_run_current(*delivery.run)
++            and fence["user_row_id"] < delivered_id <= fence["terminal_row_id"],
++            "d16_current_terminal_rows_required")
++    rows = db.execute(
++        "SELECT id,role,message_uid,platform_message_id,display_metadata,content,timestamp,tool_calls,"
++        "tool_call_uids,tool_call_uid,tool_call_id,tool_name,effect_disposition,display_kind,active,compacted "
++        "FROM messages WHERE session_id=? AND id BETWEEN ? AND ? ORDER BY id LIMIT 134",
++        (sid, fence["user_row_id"], fence["terminal_row_id"]),
++    ).fetchall()
++    require(4 <= len(rows) < 134 and rows[-1]["id"] == fence["terminal_row_id"]
++            and all(row["active"] == 1 and row["compacted"] == 0 and _uid(row["message_uid"])
++                    for row in rows) and len({row["message_uid"] for row in rows}) == len(rows),
++            "d16_exact_native_transcript_bounds")
++    user, *tail = rows
++    expected_upload = {"schema": "friday.ordinary-direct-upload.v1", "scope": delivery.scope,
++                       "source_message_id": sdk["native_message_id"],
++                       "file": {"path": relative, "file_name": SOURCE_NAME, "sha256": SOURCE_SHA256,
++                                "size_bytes": SOURCE_BYTES}}
++    require(user["role"] == "user" and user["platform_message_id"] == sdk["native_message_id"]
++            and _object(user["display_metadata"])["friday_direct_upload"] == expected_upload,
++            "d16_native_user_archive_mismatch")
++    visible = []
++    terminal_seen = False
++    for row in tail:
++        if row["id"] == delivered_id:
++            require(row["role"] == "assistant" and row["display_kind"] == "hidden" and row["content"] == ""
++                    and row["message_uid"] == delivered_uid and row["timestamp"] == stamp
++                    and _object(row["display_metadata"]) == {"friday_file_delivery_observation": {
++                        "path": delivery.relative, "sha256": receipt["sha256"], "state": "DELIVERED"}},
++                    "d16_native_delivery_row_mismatch")
++            terminal_seen = True
++        if row["role"] == "tool" or row["tool_calls"] not in (None, "", "[]"):
++            require(not terminal_seen, "d16_unrelated_late_tool_row")
++            visible.append(row)
++        else:
++            require(row["role"] == "assistant", "d16_unrelated_native_turn_row")
++    require(terminal_seen, "d16_native_delivery_row_missing")
++    reads, edit = _tool_rows(visible, relative, delivery.relative, receipt, cap.home / "workspace")
++    return {"session_id": sid, "turn_generation": delivery.run[1], "user_row_id": user["id"],
++            "read_row_ids": reads, "edit_row_id": edit, "source": expected_upload["file"],
++            "native_document": receipt, "output_relative_path": delivery.relative, "delivery_row_id": delivered_id,
++            "native_journal_sha256": journal}
+diff --git a/gateway/d16_seed_receiver_control.py b/gateway/d16_seed_receiver_control.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ba97e45cf4b9e5c0acd1f7bdd5e920f7e30c3b1c
+--- /dev/null
++++ b/gateway/d16_seed_receiver_control.py
+@@ -0,0 +1,129 @@
++"""Protected settlement of only the exact D16 seed edit."""
++
++from dataclasses import dataclass
++from functools import partial
++from hashlib import sha256
++import time
++
++from .d02_receiver_control import ReceiverControl, _encode, _ordinary_receiver_verb, require
++from .d16_seed_custody import CAPTION_SHA256, SCENARIO_SHA256, TERMINAL_SCHEMA, match_document, project_rows
++from .run_inbound_media import verify_published_d16_seed_input
++from .s08_session_fence import project_session_fence
++
++
++@dataclass(frozen=True, slots=True)
++class BoundCutoff:
++    run_id: str
++    cutoff: float
++    sender_message_id: int
++    sender: dict
++    ack_started: float
++    proof_sha256: str
++
++
++def _sender(run, ack, scenario):
++    sender = ReceiverControl._ordinary_document_ack(run, ack, scenario, "d16_exact_original_document_ack")
++    require(sender["caption_sha256"] == CAPTION_SHA256 and type(sender["date"]) is int
++            and 0 < sender["date"] < 2**63, "d16_exact_original_document_ack")
++    return sender
++
++
++def _original_cutoff(cutoff, verified, scenario):
++    run = verified["run"]
++    sender = _sender(run, verified["ack"], scenario)
++    before, after = verified["ack_monotonic"]
++    require(cutoff == after + 180, "d16_original_cutoff_clock_changed")
++    proof = {
++        "ack": run["sent_api_ack_reference"], "window": run["sent_window_reference"],
++        "clock": verified["original_clock"], "wall_cutoff": run["capture_until"],
++        "task": run["sent_task_reference"],
++    }
++    return BoundCutoff(run["id"], cutoff, run["sent_message_id"], sender, before,
++                       sha256(_encode(proof)).hexdigest())
++
++
++class D16SeedReceiverControl(ReceiverControl):
++    request_schema = "frw.gateway.d16-seed-owned-receiver-control.v1"
++    options_schema = "frw.Root.D16Seed.receiver-options.v1"
++    driver_schema = "frw.Root.D16Seed.owned-ordinary-driver.v1"
++    exact_phases = frozenset((SCENARIO_SHA256,))
++    terminal_schema = TERMINAL_SCHEMA
++    strict_terminal_extra = True
++
++    def _wire_options(self, intent):
++        return {"selected_d16_seed": (SCENARIO_SHA256, intent["run_id"])}
++
++    @staticmethod
++    def _check_ack_window(run, ack, window, scenario):
++        ReceiverControl._check_ack_window(run, ack, window, scenario)
++        _sender(run, ack, scenario)
++
++    def _bind_terminal_cutoff(self, arm, window, cutoff, verified):
++        ingress = arm.ingress
++        run = verified["run"]
++        binding = _original_cutoff(cutoff, verified, run["scenario"])
++        wire = ingress._wire()
++        require(arm.claim.selected_d16_seed == (SCENARIO_SHA256, binding.run_id)
++                and arm.window is window is ingress.window and ingress._d16_seed_cutoff is None
++                and wire is not None and wire["state"] == "OPEN" and time.monotonic() < cutoff,
++                "d16_exact_open_cutoff_required")
++        window.bind_cutoff(cutoff)
++        ingress._d16_seed_cutoff = binding
++
++    def _terminal_extra(self, arm, route, scenario, joined, verified, deadline):
++        ingress = arm.ingress
++        wire = ingress._wire()
++        require(wire is not None and wire["state"] == "LOCAL_WIRE_CLOSED"
++                and ingress._settlement_state() == "SETTLED"
++                and len(wire["target_update_ids"]) == len(joined["observations"]) == 1,
++                "d16_exact_closed_singleton_required")
++        bound = ingress._d16_seed_cutoff
++        run = verified["run"]
++        require(bound is not None and arm.claim.selected_d16_seed == (SCENARIO_SHA256, bound.run_id)
++                and bound == _original_cutoff(arm.window._cutoff, verified, scenario)
++                and wire["empty_boundary"][0] >= bound.cutoff,
++                "d16_original_cutoff_or_ack_changed")
++        update, = wire["target_update_ids"]
++        record = ingress._built[update]
++        candidate, publication, delivery = (record.d16_seed_native, record.d16_seed_publication,
++                                             record.d16_seed_delivery)
++        require(candidate is not None and publication is not None and candidate.raw is None
++                and delivery is not None and delivery.candidate is not None
++                and bound.ack_started <= candidate.observed_monotonic < bound.cutoff
++                and all(candidate.sdk[key] == value for key, value in bound.sender.items()),
++                "d16_original_ack_sdk_document_or_delivery_missing")
++        (receipt, raw_caption), = joined["observations"]
++        message, sdk = receipt["message"], candidate.sdk
++        require(sdk["update_id"] == str(update) and raw_caption == candidate.caption()
++                and receipt["platform"] == "telegram" and receipt["chat_type"] == "dm"
++                and all(receipt[key] == value for key, value in route.items())
++                and match_document(sdk, message)
++                and message["media"][0]["local_reference"] == str(publication.evidence.path)
++                and sdk["date"] <= delivery.candidate[2] <= run["capture_until"],
++                "d16_exact_durable_route_pair_required")
++
++        def current():
++            return (time.monotonic() < deadline and ingress._wire() == wire
++                    and ingress._settlement_state() == "SETTLED" and ingress._d16_seed_cutoff is bound
++                    and record.d16_seed_delivery is delivery)
++
++        require(current() and verify_published_d16_seed_input(publication, still_current=current),
++                "d16_original_publication_identity_changed")
++        _, turn = project_session_fence(ingress.adapter.gateway_runner, ingress.scope, receipt,
++            started=sdk["date"], cutoff=run["capture_until"], deadline=deadline,
++            project=partial(project_rows, delivery, sdk, publication))
++        require(current(), "d16_exact_terminal_state_changed")
++        return {
++            "d16_sender_ack": run["sent_api_ack_reference"],
++            "d16_sender_message_id": str(bound.sender_message_id),
++            "d16_receiver_update_id": sdk["update_id"],
++            "d16_receiver_message_id": sdk["native_message_id"],
++            "d16_sdk": sdk,
++            "d16_source_identity": list(publication.evidence.source_identity),
++            "d16_source_directories": [list(identity) for identity in publication.directories],
++            "d16_turn": turn,
++        }
++
++
++def ordinary_d16_seed_receiver_verb(runner, loop):
++    return _ordinary_receiver_verb(runner, loop, control_type=D16SeedReceiverControl)
+diff --git a/gateway/ordinary_dm_dispatch_closure.py b/gateway/ordinary_dm_dispatch_closure.py
+index 0d6bbd9f8050745e0fca7001860ec822a51f0c76..773aa8512903d1b41c50195d518046f3340e4138 100644
+--- a/gateway/ordinary_dm_dispatch_closure.py
++++ b/gateway/ordinary_dm_dispatch_closure.py
+@@ -1,6 +1,7 @@
+ """Internal settlement and single-buffer protected receipt join for the owned D02 arm."""
+ 
+ import asyncio
++from contextlib import nullcontext
+ from hashlib import sha256
+ from importlib import import_module
+ import json
+@@ -92,6 +93,45 @@ def _storage_signature(state):
+                      directory, directory / ".state.json.lock", directory / "state.json")))
+ 
+ 
++def _retained_d16_scope(arm, wire, home, profile, routed, principal):
++    selected = getattr(arm.claim, "selected_d16_seed", None)
++    if selected is None:
++        return None
++    from gateway.d16_seed_custody import SCENARIO_SHA256
++
++    evidence = arm.ingress
++    original = evidence._d16_seed_cutoff
++    updates = wire["target_update_ids"]
++    if (original is None or selected != (SCENARIO_SHA256, original.run_id)
++            or original.cutoff != arm.window._cutoff or len(updates) != 1):
++        raise ValueError("d16_exact_receipt_scope_unproved")
++
++    update, = updates
++    record = evidence._built[update]
++    publication = record.d16_seed_publication
++    source = evidence._receipt_source
++    capability = getattr(source, "_friday_user_scope", None)
++    expected_principal = tuple(principal[key] for key in
++                               ("platform", "transport_profile", "account_id", "user_id"))
++    generation = principal["generation"]
++
++    def check():
++        if (not isinstance(capability, scope.UserScope) or capability.revoked
++                or publication is None or publication.owner is not capability
++                or evidence._receipt_source is not source
++                or getattr(source, "_friday_user_scope", None) is not capability
++                or evidence._d16_seed_cutoff is not original or evidence._built.get(update) is not record
++                or record.d16_seed_publication is not publication
++                or capability.principal != expected_principal
++                or type(generation) is not int or type(capability.admission_generation) is not int
++                or capability.admission_generation != generation
++                or (capability.authorization_home, capability.profile, capability.home) != (home, profile, routed)):
++            raise ValueError("d16_exact_receipt_scope_unproved")
++
++    check()
++    return source, capability, check
++
++
+ async def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, disposition_revision, cutoff,
+                                    options, scenario, transport_deadline, run_private):
+     """Return private matcher inputs at a protected boundary already authenticated by Root.
+@@ -116,6 +156,7 @@ async def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, dispos
+         if admissions is not evidence._admissions or admissions is None:
+             return _unknown("d02_exact_routed_writer_required"), None
+         home, profile, routed, principal = _exact_route(adapter, evidence, options, scenario)
++        retained_scope = _retained_d16_scope(arm, before["wire"], home, profile, routed, principal)
+         package, separator, name = type(admissions).__module__.rpartition(".")
+         if not separator or name != "admission":
+             return _unknown("d02_exact_routed_writer_package_required"), None
+@@ -129,6 +170,11 @@ async def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, dispos
+ 
+         def read_pairs():
+             witness = None
++            native_scope = nullcontext()
++            if retained_scope is not None:
++                source, capability, check_scope = retained_scope
++                check_scope()
++                native_scope = scope.scoped_source(source)
+ 
+             def read_verified(selected_state, bound):
+                 nonlocal witness
+@@ -141,7 +187,11 @@ async def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, dispos
+                 )
+                 return data, observed["routed"]
+ 
+-            with scope.authority(routed):
++            with scope.authority(routed), native_scope as admitted:
++                if retained_scope is not None:
++                    check_scope()
++                    if admitted is not capability:
++                        raise ValueError("d16_exact_receipt_scope_unproved")
+                 if Path(get_hermes_home()) != routed:
+                     raise ValueError("d02_receipt_join_home_not_bound")
+                 storage = _storage_signature(state)
+@@ -153,11 +203,22 @@ async def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, dispos
+                 )
+                 if _storage_signature(state) != storage:
+                     raise ValueError("d02_routed_store_changed_during_join")
++                if retained_scope is not None:
++                    check_scope()
+             return joined, witness
+ 
+         joined, witness = await run_private(deadline, read_pairs)
+         if joined["state"] != "WIRE_RECEIPT_PAIRS_RESOLVED" or witness is None:
+             return _unknown("d02_protected_pairs_unresolved"), None
++        if retained_scope is not None:
++            observed_rights = witness
++            check_scope = retained_scope[2]
++
++            def witness(bound):
++                check_scope()
++                observed_rights(bound)
++                check_scope()
++
+         bound = min(deadline, time.monotonic() + _LOCAL_RECHECK_SECONDS)
+         witness(bound)
+         after, final_raw = _snapshot(adapter, arm, claim_sha256, wire_sha256, disposition_revision, cutoff)
+diff --git a/gateway/ordinary_dm_ingress.py b/gateway/ordinary_dm_ingress.py
+index 7ea311938b63559c08d09d4f05816ae37edeacf9..e12b2daaa627de97b3331c8be0d463c38f496a8e 100644
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -52,6 +52,10 @@ class _Dispatch:
+     d05_worker_checked: bool = False
+     d01_rtf_native: object = None
+     d01_rtf_publication: object = None
++    d16_seed_native: object = None
++    d16_seed_publication: object = None
++    d16_seed_delivery: object = None
++    d16_seed_attempted: bool = False
+ 
+ 
+ @dataclass
+@@ -143,6 +147,7 @@ class OrdinaryDMIngressOutcomes:
+         self._d05_wait = None
+         self._d05_worker_binding = None
+         self._d01_rtf_cutoff = None
++        self._d16_seed_cutoff = None
+ 
+     def _enable_selected_xlsx(self, claim_sha256, scenario_sha256):
+         """Bind the protected original wire arm to the exact Alder plan."""
+@@ -321,10 +326,15 @@ class OrdinaryDMIngressOutcomes:
+             from gateway.d01_rtf_custody import SelectedRTFCandidate
+ 
+             d01_rtf_native = SelectedRTFCandidate.capture(self, native_update, event)
++        d16_native = None
++        if getattr(self.claim, "selected_d16_seed", None) is not None:
++            from gateway.d16_seed_custody import SelectedSeed
++
++            d16_native = SelectedSeed.capture(self, native_update, event)
+         self._built[update] = _Dispatch(ref(event), s08_document=document,
+                                        s08_raw=event.raw_message if document is not None else None,
+                                        xlsx_native=xlsx_native, d05_native=d05_native,
+-                                       d01_rtf_native=d01_rtf_native)
++                                       d01_rtf_native=d01_rtf_native, d16_seed_native=d16_native)
+         event._ordinary_dm_ingress_stamp = (self._seal, update)
+         self._revision += 1
+ 
+@@ -448,6 +458,14 @@ class OrdinaryDMIngressOutcomes:
+                 self.lost("ingress_d01_rtf_original_publication_changed")
+                 return
+             record.d01_rtf_native = replace(record.d01_rtf_native, raw=None, update=None)
++        if record.d16_seed_native is not None:
++            from gateway.run_inbound_media import d16_seed_publication_current
++
++            if (not record.d16_seed_native.is_original(self, event)
++                    or not d16_seed_publication_current(event, record.d16_seed_publication)):
++                self.lost("ingress_d16_seed_original_publication_changed")
++                return
++            record.d16_seed_native = replace(record.d16_seed_native, raw=None, update=None)
+         record.settled = True
+         self._revision += 1
+         self._changed.set()
+@@ -501,6 +519,21 @@ class OrdinaryDMIngressOutcomes:
+                 self.lost("ingress_d01_rtf_original_sdk_or_publication_changed")
+                 return None
+             record.d01_rtf_publication = publication
++        if getattr(self.claim, "selected_d16_seed", None) is not None:
++            from gateway.d16_seed_custody import match_document
++            from gateway.run_inbound_media import read_published_d16_seed_input
++
++            record = self._built[update]
++            event = record.event_ref()
++            native = record.d16_seed_native
++            publication = read_published_d16_seed_input(event) if event is not None else None
++            if (native is None or event is None or not native.is_original(self, event)
++                    or not match_document(native.sdk, message) or payload != native.caption()
++                    or publication is None or record.d16_seed_publication is not None
++                    or message["media"][0]["local_reference"] != str(publication.evidence.path)):
++                self.lost("ingress_d16_seed_original_sdk_or_publication_changed")
++                return None
++            record.d16_seed_publication = publication
+         return _RoutedWrite(self, update, proof, deepcopy(proof), payload, source, asyncio.current_task())
+ 
+     def readback(self):
+diff --git a/gateway/run.py b/gateway/run.py
+index 9ea8520381092c8cbe4eb3921440560c4b7eb8a2..6f2c5bfa0ce7fc962bc8038888a2347ec78516d9 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -5723,12 +5723,14 @@ async def _start_gateway_start_control_socket(runner):
+         from gateway.d02_receiver_control import ordinary_d02_receiver_verb
+         from gateway.s08_receiver_control import ordinary_s08_receiver_verb
+         from gateway.d01_rtf_receiver_control import ordinary_d01_rtf_receiver_verb
++        from gateway.d16_seed_receiver_control import ordinary_d16_seed_receiver_verb
+         _control_server = GatewayControlServer(
+             verb_handlers={"ordinary-turn-readonly": ordinary_turn_readonly_verb(runner, _main_loop),
+                            "ordinary-turn-cancel": ordinary_turn_cancel_verb(runner, _main_loop),
+                            "ordinary-d02-receiver": ordinary_d02_receiver_verb(runner, _main_loop),
+                            "ordinary-s08-receiver": ordinary_s08_receiver_verb(runner, _main_loop),
+                            "ordinary-d01-rtf-receiver": ordinary_d01_rtf_receiver_verb(runner, _main_loop),
++                           "ordinary-d16-seed-receiver": ordinary_d16_seed_receiver_verb(runner, _main_loop),
+                            "ordinary-f04-arm": ordinary_f04_metadata_verb(runner, _main_loop, "arm"),
+                            "ordinary-f04-disarm": ordinary_f04_metadata_verb(runner, _main_loop, "disarm"),
+                            "plugin-control": plugin_control_verb(runner, _main_loop),
+diff --git a/gateway/run_inbound_media.py b/gateway/run_inbound_media.py
+index cfa4c4d8fb0616ad6ec89513e346a818718b149a..b1f7a9d5dae2da8b7ee6df5b81c638d55464b288 100644
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -24,6 +24,7 @@ logger = logging.getLogger("gateway.run")
+ # a capability to expose an arbitrary host file or an unbounded download.
+ READABLE_ATTACHMENT_BYTES = 1_000_000
+ _ODT_MIME = "application/vnd.oasis.opendocument.text"
++_D16_SEED_PUBLICATION = "_friday_published_d16_seed_input"
+ _ODT_PUBLICATION = "_friday_published_odt_input"
+ _F04_PDF_PUBLICATION = "_friday_published_f04_pdf_input"
+ _F04_PDF_PENDING = "_friday_pending_f04_pdf_input"
+@@ -378,6 +379,9 @@ def _rehome_user_attachments(event, cap):
+                    and media[0]['origin'].get('message_id') == message.get('message_id')
+                    and getattr(document, 'file_id', None) == media[0]['origin']['file_id']
+                    and getattr(document, 'file_unique_id', None) == media[0]['origin']['file_unique_id'])
++    from gateway.d16_seed_custody import selected_publication as selected_d16_seed
++    capture_d16 = (len(staged) == 1 and staged[0][1].suffix == '.docx'
++                   and selected_d16_seed(event, message))
+     capture_docx = (len(staged) == 1 and staged[0][1].suffix == '.docx'
+                     and selected_d05_publication(event, message))
+     from gateway.d01_rtf_custody import selected_publication as selected_d01_rtf
+@@ -397,7 +401,7 @@ def _rehome_user_attachments(event, cap):
+                  and staged[0][1].suffix == '.pdf' and original_scan_publication(event, message))
+     observe_pdf = capture_pdf or early_pdf
+     # Supplemental observation cannot prevent the ordinary attachment from being admitted.
+-    optional_capture = capture_docx or capture_rtf or capture_odt or observe_pdf or (capture_xlsx and not capture_s14)
++    optional_capture = capture_docx or capture_d16 or capture_rtf or capture_odt or observe_pdf or (capture_xlsx and not capture_s14)
+     published_input = None
+     directories = None
+     cap.check()
+@@ -414,7 +418,7 @@ def _rehome_user_attachments(event, cap):
+                 cap.check()
+                 published_input = _publish_received(
+                     received_fd, destination.name, data, content,
+-                    capture_path=destination if capture_xlsx or capture_docx or capture_rtf or capture_odt or observe_pdf else None,
++                    capture_path=destination if capture_xlsx or optional_capture else None,
+                     optional_capture=optional_capture,
+                 )
+             cap.check()
+@@ -435,7 +439,7 @@ def _rehome_user_attachments(event, cap):
+                         if (not os.path.samestat(workspace_info, os.fstat(current_workspace))
+                                 or not os.path.samestat(workspace_info, named_workspace)):
+                             raise ScopeDenied()
+-                        if capture_docx or capture_rtf or capture_odt or observe_pdf:
++                        if capture_docx or capture_d16 or capture_rtf or capture_odt or observe_pdf:
+                             directories = (_directory_identity(workspace_info), _directory_identity(pinned))
+                     finally:
+                         os.close(current_workspace)
+@@ -518,6 +522,12 @@ def _rehome_user_attachments(event, cap):
+         else:
+             _remember_published_input(event, cap, staged[0][1], published_input,
+                                       '_friday_published_d01_rtf_input', directories)
++    elif capture_d16:
++        if published_input is None:
++            setattr(event, _D16_SEED_PUBLICATION, None)
++        else:
++            _remember_published_input(event, cap, staged[0][1], published_input,
++                                      _D16_SEED_PUBLICATION, directories)
+     elif capture_docx:
+         if published_input is None:
+             event._friday_published_docx_input = None
+@@ -574,9 +584,24 @@ def read_published_f04_pdf_input(event: MessageEvent):
+     return evidence, directories
+ 
+ 
++def read_published_d16_seed_input(event: MessageEvent):
++    return _read_owned_publication(event, _D16_SEED_PUBLICATION)
++
++
++def d16_seed_publication_current(event, publication):
++    return _owned_publication_current(event, publication, _D16_SEED_PUBLICATION)
++
++
++def verify_published_d16_seed_input(publication, *, still_current):
++    return _verify_owned_publication(publication, still_current=still_current)
++
++
+ def read_published_d01_rtf_input(event: MessageEvent) -> PublishedD01RTFInput | None:
+     """Read a descriptor witness only while the original routed scope is active."""
+-    attribute = "_friday_published_d01_rtf_input"
++    return _read_owned_publication(event, "_friday_published_d01_rtf_input")
++
++
++def _read_owned_publication(event, attribute):
+     evidence = _read_published_input(event, attribute, pin_directories=True)
+     if evidence is None:
+         return None
+@@ -628,9 +653,13 @@ def odt_publication_current(event: MessageEvent, publication: PublishedODTInput)
+ 
+ def d01_rtf_publication_current(event, publication):
+     """Bind the background completion to the descriptor observed before the turn."""
++    return _owned_publication_current(event, publication, "_friday_published_d01_rtf_input")
++
++
++def _owned_publication_current(event, publication, attribute):
+     from hermes_cli.friday_user_scope import _same_scope
+ 
+-    record = getattr(event, "_friday_published_d01_rtf_input", None)
++    record = getattr(event, attribute, None)
+     if publication is None or record is None:
+         return False
+     original, owner, path, evidence, directories = record
+diff --git a/gateway/run_plugin_delivery.py b/gateway/run_plugin_delivery.py
+index 0731aba19eac6bb50e1df03d7bf274982c5b018a..4404e50e986ced21b3f20e1a4318fe3c873c50e7 100644
+--- a/gateway/run_plugin_delivery.py
++++ b/gateway/run_plugin_delivery.py
+@@ -326,6 +326,8 @@ async def deliver_ordinary_document(adapter, source, path, *, caption=None, file
+         if _d05_writer is not None:
+             from gateway.ordinary_d05_writer import snapshot
+             snapshot(_d05_writer, source, cap, route, relative, name, data)
++        from gateway.d16_seed_custody import observe_document_attempt
++        d16_delivery = observe_document_attempt(adapter, source, cap, route, relative, name, data)
+         stage = 'recovery_owner'
+         await _mark_ordinary_file_recovery(runner, source, cap, route,
+             [{'relative_path': relative, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}])
+@@ -367,12 +369,14 @@ async def deliver_ordinary_document(adapter, source, path, *, caption=None, file
+         _ordinary_commit(state, candidate, reserved, journals=(('candidate', native_candidate),))
+         stamp, row_identity = await _ordinary_transcript(
+             runner, session_id, relative, 'DELIVERED', receipt['sha256'],
+-            return_identity=_d05_writer is not None,
++            return_identity=_d05_writer is not None or d16_delivery is not None,
+         )
+         if _d05_writer is not None:
+             from gateway.ordinary_d05_writer import record_candidate as record_d05_candidate
+             record_d05_candidate(_d05_writer, source, receipt, native_candidate, stamp,
+                                  row_identity, check)
++        if d16_delivery is not None:
++            d16_delivery.capture(receipt, native_candidate, stamp, row_identity, check)
+         result = SendResult(success=True, message_id=receipt['message_id'], raw_response=receipt)
+         if _s14_pair is not None:
+             from gateway.s14_pair_custody import record_candidate
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+index 2fbee1a0d7e2ed4bc95218526c0288abc93629f9..05e2a2bf551b7901c8fbf90cb5a6b5fb6236445d 100644
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -524,6 +524,7 @@ class _OrdinaryDMWireClaim:
+     selected_s14: tuple[str, str] | None = None
+     selected_d05: tuple[str, str] | None = None
+     selected_d01_rtf: tuple[str, str] | None = None
++    selected_d16_seed: tuple[str, str] | None = None
+ 
+ 
+ @dataclasses.dataclass(frozen=True, slots=True)
+@@ -1803,7 +1804,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+     def _reserve_ordinary_dm_wire_window(self, *, claim_sha256, user_id, generation,
+                                         expires_monotonic, max_updates, owner_is_current, ingress_scope=None,
+                                         require_s08_document=False, selected_s14=None, selected_d05=None,
+-                                        selected_d01_rtf=None):
++                                        selected_d01_rtf=None, selected_d16_seed=None):
+         """Queue an already authorized claim on the gateway loop. None means pending only."""
+         now = time.monotonic()
+         updater = self._ordinary_dm_wire_updater(generation)
+@@ -1837,6 +1838,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                     or selected_d01_rtf[0] != SCENARIO_SHA256
+                     or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", selected_d01_rtf[1]) is None):
+                 raise ValueError("Invalid selected D01 RTF wire claim")
++        if selected_d16_seed is not None:
++            from gateway.d16_seed_custody import SCENARIO_SHA256
++
++            if (ingress_scope is None or require_s08_document or selected_s14 is not None
++                    or selected_d05 is not None or selected_d01_rtf is not None
++                    or type(selected_d16_seed) is not tuple or len(selected_d16_seed) != 2
++                    or any(type(value) is not str for value in selected_d16_seed)
++                    or selected_d16_seed[0] != SCENARIO_SHA256
++                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", selected_d16_seed[1]) is None):
++                raise ValueError("Invalid selected D16 seed wire claim")
+         pending = getattr(self, "_ordinary_dm_wire_pending", None)
+         if (pending is not None and (pending.updater is not updater or pending.generation != generation
+                                     or now >= pending.expires_monotonic)):
+@@ -1854,7 +1865,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         self._ordinary_dm_wire_pending = _OrdinaryDMWireClaim(
+             claim_sha256, user_id, generation, expires_monotonic, max_updates,
+             owner_is_current, updater, asyncio.get_running_loop(), ingress_scope, require_s08_document, selected_s14,
+-            selected_d05, selected_d01_rtf,
++            selected_d05, selected_d01_rtf, selected_d16_seed,
+         )
+ 
+     def _ordinary_dm_wire_native_parameters(self, request, generation, kwargs):
+@@ -2009,7 +2020,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+             if (asyncio.get_running_loop() is not claim.loop
+                     or getattr(self, "_ordinary_dm_wire_window", None) is not window):
+                 return False
+-            strict = claim.selected_d05 is not None or claim.selected_d01_rtf is not None
++            strict = (claim.selected_d05 is not None or claim.selected_d01_rtf is not None
++                      or claim.selected_d16_seed is not None)
+             if strict and (selected_arm is None
+                     or type(accept_before) not in (int, float)
+                     or not 0 < accept_before <= claim.expires_monotonic):
+@@ -7483,6 +7495,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         arm = getattr(self, "_ordinary_dm_wire_arm", None)
+         capture_native = arm is not None and (arm.claim.require_s08_document or arm.claim.selected_d05 is not None
+                                               or arm.claim.selected_d01_rtf is not None
++                                              or arm.claim.selected_d16_seed is not None
+                                               or arm.ingress is not None and arm.ingress._xlsx_input is not None)
+         if not capture_native:
+             event = self._build_message_event(msg, message_type, update_id=update.update_id)
+diff --git a/tests/plugins/test_telegram_update_admission.py b/tests/plugins/test_telegram_update_admission.py
+index 612a92547fd13c8e2eecff79f88321138a830384..64d0c47dcf12fc8d6d6805f3c0cc1beacf943223 100644
+--- a/tests/plugins/test_telegram_update_admission.py
++++ b/tests/plugins/test_telegram_update_admission.py
+@@ -396,12 +396,16 @@ async def _check_error_registration(monkeypatch, adapter, app):
+ 
+ async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered):
+     scheduled, effects = [], []
++    callbacks_finished = asyncio.Event()
+     create = app._Application__create_task
+ 
+     def cancel_on_schedule(coroutine, *args, **kwargs):
+         task = create(coroutine, *args, **kwargs)
+         if kwargs.get("is_error_handler"):
+             scheduled.append((task, coroutine))
++            # PTB stop joins the task. Its separately scheduled done callbacks
++            # may still be queued; observe them after admission releases its claim.
++            task.add_done_callback(lambda _: callbacks_finished.set())
+             task.cancel()
+         return task
+ 
+@@ -416,6 +420,7 @@ async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered)
+         assert "111:10" in adapter._inflight_update_ids
+         await app.process_update(update(app.bot))
+         await app.stop()
++        await asyncio.wait_for(callbacks_finished.wait(), 2)
+     assert len(scheduled) == 1 and not effects
+     assert not adapter._inflight_update_ids and not adapter._seen_update_ids
+     # The cancelled PTB task never awaited the callback coroutine: it must be closed too.
