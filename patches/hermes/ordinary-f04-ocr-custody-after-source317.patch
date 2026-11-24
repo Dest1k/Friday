@@ -1,0 +1,609 @@
+--- a/gateway/ordinary_f04_bridge.py
++++ b/gateway/ordinary_f04_bridge.py
+@@ -239,9 +239,9 @@
+                   'receipt': None, 'dispatch_finalized': False, 'worker_done': None,
+                   'executor_task': None, 'worker_ctx': None, 'worker_settled': False,
+                   'delivery_guard': delivery_guard, 'lease_before': _lease_dict(token)}
+-        from gateway.ordinary_f04_xlsx import selected
+-
+-        if selected(row):
++        from gateway.ordinary_f04_xlsx import selected as selected_conversion
++
++        if selected_conversion(row):
+             task = asyncio.current_task()
+             target['dispatch_task'] = None if task is None else ref(task)
+             target['dispatch_guard'] = getattr(event, '_friday_document_guard', None)
+@@ -753,11 +753,12 @@
+               'dispatch_finalized': target['dispatch_finalized'], 'worker_settled': _worker_settled(target), 'artifact_proofs': deepcopy(row['artifacts']),
+               'artifact_state': 'ACK_RETAINED' if len(row['artifacts']) == 1 else ('MISSING' if not row['artifacts'] else 'AMBIGUOUS'),
+               'fresh_observation_sha256': canonical_sha256(observation)}
+-    from gateway.ordinary_f04_xlsx import selected, terminal_witness
+-
+-    if selected(row):
+-        result['xlsx_ods_witness'] = (terminal_witness(target, current, result)
+-                                      if target.get('native_unwind_monotonic') is not None else None)
++    from gateway.ordinary_f04_xlsx import terminal_witness, terminal_witness_field
++
++    field = terminal_witness_field(row)
++    if field is not None:
++        result[field] = (terminal_witness(target, current, result)
++                         if target.get('native_unwind_monotonic') is not None else None)
+     result['terminal_sha256'] = canonical_sha256(result)
+     return result
+ 
+@@ -776,6 +777,7 @@
+         target['worker_settled'] = _worker_settled(target)
+         target['worker_done'] = target['executor_task'] = target['delivery_guard'] = None
+         target.pop('xlsx_result', None)
++        target.pop('f04_pdf_ocr_result', None)
+         if _CURRENT.get() is target:
+             _CURRENT.set(None)
+     return {'schema': 'frw.gateway.f04-owned-disarm.v1', 'state': 'DISARMED',
+--- a/gateway/ordinary_f04_xlsx.py
++++ b/gateway/ordinary_f04_xlsx.py
+@@ -1,4 +1,4 @@
+-"""Process-local proof for the selected F04 XLSX to ODS conversion."""
++"""Process-local proof for exact selected F04 native conversions."""
+ from contextlib import closing
+ from contextvars import ContextVar
+ from dataclasses import dataclass
+@@ -41,31 +41,50 @@
+     2243, "117b53dd11ff48e719b5ba92cf8fd56f3cad7139f255111509a8e54cf87715ca",
+     "mayak-revision-register-f04-v01.xlsx", "mayak-revision-register-f04-v01.ods",
+ )
++_SCAN = _Selection(
++    "38efb7e4c06dbb06425c8b663234b695f99f48206957ad9edc3350003ca3bccd",
++    "91b100c5e7b1b24e80474bc2f22996ebfc680ffa6ee74296457dc0b5638f8501",
++    76666, "0276dbf7b38aa94c36ab47704d7c1b5e88be26e48fa21122463951ef32d3d35c",
++    "clean-printed-scan.pdf", "archive-summary-reconstructed.docx",
++)
+ 
+ 
+ def _selection(selector):
+     if "scenario_sha256" not in selector:
+         return _NORTH if _NORTH.matches(selector) else None
+-    if selector["scenario_sha256"] == _ORDERS.scenario_sha256 and _ORDERS.matches(selector):
+-        return _ORDERS
++    for case in (_ORDERS, _SCAN):
++        if selector["scenario_sha256"] == case.scenario_sha256 and case.matches(selector):
++            return case
+     return None
+ 
+ 
+ def validate_selector(selector):
+-    """The Orders workbook needs one explicit registration under the send commitment."""
+-    if ("scenario_sha256" in selector or _ORDERS.matches(selector)) and _selection(selector) is not _ORDERS:
++    """Require the exact scenario under the protected send commitment."""
++    if selector.get("scenario_sha256") == _SCAN.scenario_sha256 or _SCAN.matches(selector):
++        if _selection(selector) is not _SCAN:
++            raise ValueError("f04_exact_pdf_ocr_scenario_required")
++    elif ("scenario_sha256" in selector or _ORDERS.matches(selector)) and _selection(selector) is not _ORDERS:
+         raise ValueError("f04_exact_xlsx_scenario_required")
+ 
+ 
+ def selected(row):
+     return _selection(row["base"]["selector"]) is not None
++
++
++def terminal_witness_field(row):
++    case = _selection(row["base"]["selector"])
++    if case is _SCAN:
++        return "pdf_ocr_docx_witness"
++    if case is not None:
++        return "xlsx_ods_witness"
++    return None
+ 
+ 
+ def _matches_document(event, case):
+     raw = getattr(event, "raw_message", None)
+     document = getattr(raw, "document", None)
+     if (getattr(document, "file_name", None) != case.input_name
+-            or getattr(document, "mime_type", None) != MIME):
++            or getattr(document, "mime_type", None) != ("application/pdf" if case is _SCAN else MIME)):
+         return False
+     if case is _NORTH:
+         return True
+@@ -77,31 +96,56 @@
+             and getattr(raw, "media_group_id", None) is None)
+ 
+ 
+-def selected_publication(event):
++def selected_publication(event, *, suffix=".xlsx"):
+     target = getattr(event, "_ordinary_f04_host_target", None)
+     if not isinstance(target, dict) or target["event"] is not event:
+         return False
+     row = target["row"]
+     case = _selection(row["base"]["selector"])
+     return (not row["disarmed"] and row["error"] is None and case is not None
++            and case.input_name.endswith(suffix)
+             and _matches_document(event, case))
+ 
+ 
++def original_scan_publication(event, message):
++    """Recognize the original native scan before its protected turn is bound."""
++    raw = event.raw_message
++    document = getattr(raw, "document", None)
++    stamp = getattr(event, "_ordinary_f04_original_stamp", None)
++    item = message["media"][0]
++    origin = item["origin"]
++    caption = getattr(raw, "caption", None)
++    return (isinstance(stamp, tuple) and len(stamp) == 3 and stamp[0] is raw
++            and stamp[1] == event.platform_update_id
++            and _matches_document(event, _SCAN)
++            and getattr(raw, "business_connection_id", None) is None
++            and isinstance(caption, str) and _digest(caption) == _SCAN.caption_sha256
++            and item.get("mime_type") == "application/pdf"
++            and item.get("content") == {"sha256": _SCAN.input_sha256, "size_bytes": _SCAN.size_bytes}
++            and message["chat_id"] == message["user_id"] and not message["thread_id"]
++            and not message["reply_to_message_id"] and origin["message_id"] == message["message_id"]
++            and origin["file_id"] == document.file_id and origin["file_unique_id"] == document.file_unique_id
++            and origin.get("declared_bytes") == _SCAN.size_bytes)
++
++
+ def verified_ingress_facts(target, item, destination, message):
+-    """Bind the Orders selector to the destination prepared from verified ingress."""
++    """Bind the registered scenario to its verified ingress destination."""
+     case = _selection(target["row"]["base"]["selector"])
+-    if case is not _ORDERS:
++    if case not in (_ORDERS, _SCAN):
+         return {}
+-    if (not _matches_document(target["event"], case) or item.get("mime_type") != MIME
++    mime = "application/pdf" if case is _SCAN else MIME
++    document_error = "f04_exact_pdf_document_required" if case is _SCAN else "f04_exact_xlsx_document_required"
++    path_error = "f04_exact_pdf_workspace_path_required" if case is _SCAN else "f04_exact_xlsx_workspace_path_required"
++    if (not _matches_document(target["event"], case) or item.get("mime_type") != mime
+             or item["origin"].get("declared_bytes") != case.size_bytes
+             or message["reply_to_message_id"] != "" or message["thread_id"] != ""
+             or message["chat_id"] != message["user_id"]):
+-        raise ValueError("f04_exact_xlsx_document_required")
++        raise ValueError(document_error)
+     workspace = target["source"]._friday_user_scope.home / "workspace"
+     relative = destination.relative_to(workspace)
+     if (relative.parent != Path("received")
+             or re.fullmatch(r"telegram_[0-9a-f]{64}_" + re.escape(case.input_name), relative.name) is None):
+-        raise ValueError("f04_exact_xlsx_workspace_path_required")
++        raise ValueError(path_error)
+     return {"scenario_sha256": case.scenario_sha256, "workspace_path": relative.as_posix()}
+ 
+ 
+@@ -125,9 +169,10 @@
+ 
+ 
+ class _Witness:
+-    def __init__(self, target, ctx, cap, source, case):
++    def __init__(self, target, ctx, cap, source, case, directories=None):
+         self.target, self.ctx, self.cap, self.source = target, ctx, cap, source
+         self.case = case
++        self.directories = directories
+         self.path = source.path.relative_to(cap.home / "workspace").as_posix()
+         self.lock = Lock()
+         self.attempted = self.invalid = self.closed = False
+@@ -187,7 +232,11 @@
+                     and worker.executor_task.result() is response and type(response) is dict
+                     and response.get("completed") is True and not response.get("failed")
+                     and not response.get("interrupted") and self._only_selected_effect()):
+-                target["xlsx_result"] = (self.cap, self.source, self.proof, self.persisted_db, self.case)
++                saved = (self.cap, self.source, self.proof, self.persisted_db, self.case)
++                if self.case is _SCAN:
++                    target["f04_pdf_ocr_result"] = (*saved, self.directories)
++                else:
++                    target["xlsx_result"] = saved
+             self.proof = self.effect_owner = None
+ 
+     def _only_selected_effect(self):
+@@ -199,11 +248,11 @@
+ 
+ 
+ def select_worker(runner, event, ctx):
+-    from gateway.run_inbound_media import read_published_xlsx_input
++    from gateway.run_inbound_media import read_published_f04_pdf_input, read_published_xlsx_input
+     from hermes_cli.friday_user_scope import current
+ 
+     try:
+-        if not selected_publication(event):
++        if not selected_publication(event) and not selected_publication(event, suffix=".pdf"):
+             return None
+         target = event._ordinary_f04_host_target
+         case = _selection(target["row"]["base"]["selector"])
+@@ -212,13 +261,20 @@
+                 or not _held(target, ctx) or not case.matches(receipt)):
+             return None
+         cap = current(required=True)
+-        source = read_published_xlsx_input(event)
++        directories = None
++        if case is _SCAN:
++            publication = read_published_f04_pdf_input(event)
++            if publication is None:
++                return None
++            source, directories = publication
++        else:
++            source = read_published_xlsx_input(event)
+         if source is None or (source.sha256, source.size_bytes) != (case.input_sha256, case.size_bytes):
+             return None
+-        if case is _ORDERS and (receipt.get("scenario_sha256") != case.scenario_sha256
++        if case in (_ORDERS, _SCAN) and (receipt.get("scenario_sha256") != case.scenario_sha256
+                 or receipt.get("workspace_path") != source.path.relative_to(cap.home / "workspace").as_posix()):
+             return None
+-        return _Witness(target, ctx, cap, source, case)
++        return _Witness(target, ctx, cap, source, case, directories)
+     except Exception:
+         return None
+ 
+@@ -226,7 +282,10 @@
+ def registered_write(args, task_id, callback):
+     """Run the stock registered handler once, observing only the selected format."""
+     witness = _SELECTED.get()
+-    if witness is None or args.get("format") != "spreadsheet_convert":
++    if witness is None:
++        return callback()
++    operation = "pdf_ocr_docx" if witness.case is _SCAN else "spreadsheet_convert"
++    if args.get("format") != operation:
+         return callback()
+     from agent.web_call_context import _current
+ 
+@@ -245,6 +304,8 @@
+                     requested = requested.relative_to(witness.cap.home / "workspace")
+                 holder = getattr(call.agent, "_active_session_turn_lease_holder", None)
+                 write = {"path": requested.as_posix(), "holder": holder, "source": False, "result": None}
++                if witness.case is _SCAN:
++                    write["declaration_sha256"] = _pdf_ocr_arguments_sha256(args)
+     except Exception:
+         write = None
+     if write is None:
+@@ -282,7 +343,7 @@
+ def observe_result(result):
+     """Called only after native XLSX→ODS _publish passes its two source CAS checks."""
+     witness, write = _SELECTED.get(), _WRITE.get()
+-    if witness is None or write is None or not write["source"]:
++    if witness is None or witness.case is _SCAN or write is None or not write["source"]:
+         return
+     try:
+         value = json.loads(result) if type(result) is str and len(result) <= 16384 else {}
+@@ -305,6 +366,45 @@
+         pass
+ 
+ 
++def observe_pdf_ocr_result(result):
++    """Observe the selected native OCR branch after its create-only source CAS."""
++    witness, write = _SELECTED.get(), _WRITE.get()
++    if (witness is None or witness.case is not _SCAN or write is None or not write["source"]
++            or write["declaration_sha256"] is None):
++        return
++    try:
++        value = json.loads(result) if type(result) is str and len(result) <= 16384 else {}
++        path, digest, size = value.get("path"), value.get("sha256"), value.get("bytes_written")
++        pages, losses = value.get("page_results"), value.get("reconstruction_losses")
++        if (value.get("success") is True and value.get("verified") is True and value.get("create_only") is True
++                and value.get("scope") == "own_user_workspace" and value.get("format") == "docx"
++                and value.get("conversion_mode") == "pdf_ocr_docx" and value.get("source_format") == "pdf"
++                and value.get("native_editable") is True and value.get("visual_fidelity_verified") is False
++                and value.get("source_unchanged") is True and value.get("source") == witness.path
++                and value.get("source_sha256") == witness.source.sha256
++                and value.get("reconstruction_scope") == "page_ordered_native_text_and_annotated_ocr"
++                and value.get("ocr_used") is True and value.get("ocr_exact") is False
++                and value.get("numeric_values_verified") is False and value.get("content_completeness") == "unverified"
++                and type(value.get("source_page_count")) is int and value["source_page_count"] == 1
++                and type(pages) is list and len(pages) == 1 and type(pages[0]) is dict
++                and type(pages[0].get("page")) is int and pages[0]["page"] == 1
++                and pages[0].get("method") == "local_ocr" and pages[0].get("native_text_present") is False
++                and type(losses) is list and len(losses) == 4 and all(type(loss) is str and loss for loss in losses)
++                and type(path) is str and path == write["path"]
++                and PurePosixPath(path).name == witness.case.output_name
++                and type(size) is int and 0 < size <= 1_048_576
++                and type(digest) is str and re.fullmatch(r"[0-9a-f]{64}", digest)):
++            write["result"] = {"tool": "write_file", "operation": "pdf_ocr_docx", "artifact_path": path,
++                "artifact_sha256": digest, "artifact_bytes": size, "source_unchanged_at_publication": True,
++                "managed_result_sha256": _digest(result), "published_monotonic": time.monotonic(),
++                "declaration_sha256": write["declaration_sha256"],
++                "ocr_used": True, "ocr_exact": False, "numeric_values_verified": False,
++                "content_completeness": "unverified", "native_editable": True, "visual_fidelity_verified": False,
++                "source_page_count": 1, "reconstruction_losses": losses}
++    except Exception:
++        pass
++
++
+ def prepare_flush(agent, ref, result, message, messages):
+     """Pin the selected result before the stock collector classifies its effect."""
+     from agent.web_call_context import _current
+@@ -338,6 +438,29 @@
+             and tool_call_identity(tool_calls[0]) == (call_id, "write_file"))
+ 
+ 
++def _pdf_ocr_arguments_sha256(args):
++    if (type(args) is not dict or args.get("format") != "pdf_ocr_docx" or args.get("cross_profile")
++            or type(args.get("path")) is not str or type(args.get("content")) is not str):
++        return None
++    from gateway.ordinary_f04_bridge import canonical_sha256
++
++    return canonical_sha256([args["format"], args["path"], args["content"]])
++
++
++def _matches_write_declaration(tool_calls, call_id, proof):
++    if not _sole_write_call(tool_calls, call_id):
++        return False
++    if proof["operation"] != "pdf_ocr_docx":
++        return True
++    try:
++        raw = tool_calls[0]["function"]["arguments"]
++        if isinstance(raw, str) and len(raw) <= 16384:
++            raw = json.loads(raw)
++        return _pdf_ocr_arguments_sha256(raw) == proof["declaration_sha256"]
++    except (KeyError, TypeError, ValueError, RecursionError):
++        return False
++
++
+ def _other_effects_unknown(rows, selected_result, agent):
+     from agent.tool_result_classification import tool_effects_unknown
+ 
+@@ -359,7 +482,7 @@
+         return None
+     if any(key in message for key in ("_row_id", _DB_PERSISTED_MARKER, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID)):
+         return None
+-    call, _, _ = witness.pending
++    call, _, proof = witness.pending
+     db = agent._session_db
+     if Path(db.db_path) != witness.cap.home / "state.db":
+         return None
+@@ -369,7 +492,8 @@
+             break
+     else:
+         return None
+-    if assistant.get("role") != "assistant" or not _sole_write_call(assistant.get("tool_calls"), call.call_id):
++    if (assistant.get("role") != "assistant"
++            or not _matches_write_declaration(assistant.get("tool_calls"), call.call_id, proof)):
+         return None
+     prior = None
+     if assistant.get(_DB_PERSISTED_MARKER) is True:
+@@ -423,7 +547,7 @@
+     if (type(assistant_id) is not int or type(tool_id) is not int or not 0 < assistant_id < tool_id
+             or not all(type(value) is str and value for value in (assistant_uid, tool_uid, occurrence))
+             or not assistant_row.get(DB_ROW_SNAPSHOT) or not result_row.get(DB_ROW_SNAPSHOT)
+-            or not _sole_write_call(assistant_row.get("tool_calls"), call.call_id)
++            or not _matches_write_declaration(assistant_row.get("tool_calls"), call.call_id, proof)
+             or (assistant_row.get(TOOL_CALL_UIDS) or {}).get(call.call_id) != occurrence
+             or result_row.get("role") != "tool" or result_row.get("tool_name") != "write_file"
+             or result_row.get("tool_call_id") != call.call_id or result_row.get("effect_disposition") == "none"
+@@ -519,19 +643,24 @@
+     return (owner_uid == assistant_uid
+             and (tool_uid, call_id, occurrence, tool) == (proof["tool_message_uid"],
+                 proof["provider_call_id"], proof["occurrence_uid"], "write_file")
+-            and json.loads(call_uids).get(call_id) == occurrence and _sole_write_call(json.loads(calls), call_id)
++            and json.loads(call_uids).get(call_id) == occurrence
++            and _matches_write_declaration(json.loads(calls), call_id, proof)
+             and type(content) is str and _digest(content) == proof["managed_result_sha256"])
+ 
+ 
+ def terminal_witness(target, current, result):
+     """Join after the native ACK and re-open only the pinned original descriptor."""
+-    saved = target.get("xlsx_result")
+-    if saved is None or result["state"] != "SETTLED" or result["cancel"] is not None:
+-        return None
+-    try:
+-        cap, source, proof, persisted_db, case = saved
++    if result["state"] != "SETTLED" or result["cancel"] is not None:
++        return None
++    try:
++        selected_case = _selection(target["row"]["base"]["selector"])
++        result_key = "f04_pdf_ocr_result" if selected_case is _SCAN else "xlsx_result"
++        saved = target.get(result_key)
++        if saved is None:
++            return None
++        cap, source, proof, persisted_db, case, *custody = saved
+         from gateway.ordinary_f04_bridge import canonical_sha256
+-        from gateway.run_inbound_media import verify_published_xlsx_input
++        from gateway.run_inbound_media import verify_published_f04_pdf_input, verify_published_xlsx_input
+         from hermes_cli.friday_user_scope import _CURRENT, authority
+ 
+         ack, = result["artifact_proofs"]
+@@ -540,8 +669,8 @@
+         receipt = current["ingress_receipt"]
+         observed = time.monotonic()
+         source_path = source.path.relative_to(cap.home / "workspace").as_posix()
+-        if (case is not _selection(target["row"]["base"]["selector"])
+-                or (case is _ORDERS and (receipt != target["receipt"]
++        if (case is not selected_case
++                or (case in (_ORDERS, _SCAN) and (receipt != target["receipt"]
+                     or receipt.get("scenario_sha256") != case.scenario_sha256
+                     or receipt.get("workspace_path") != source_path))
+                 or ack["generation"] != target["generation"] or ack["session_id"] != target["session_id"]
+@@ -559,13 +688,17 @@
+ 
+         def still_current():
+             state = target["runner"]._peek_session_state(target["session_key"])
+-            return (not target["row"]["disarmed"] and target.get("xlsx_result") is saved
++            return (not target["row"]["disarmed"] and target.get(result_key) is saved
+                     and target["row"]["cancel"] is None and state is not None
+                     and state.persistent.run_generation == target["generation"]
+                     and time.monotonic() < clock["deadline_monotonic"])
+ 
+         with authority(cap.home):
+-            if not still_current() or not verify_published_xlsx_input(cap, source, still_current=still_current):
++            if not still_current():
++                return None
++            source_valid = (verify_published_f04_pdf_input(cap, source, custody[0], still_current=still_current)
++                            if case is _SCAN else verify_published_xlsx_input(cap, source, still_current=still_current))
++            if not source_valid:
+                 return None
+             if not _verify_persisted_rows(cap, persisted_db, current["target"]["latest_user_row"],
+                                           target["session_id"], proof, clock["deadline_monotonic"]):
+@@ -574,7 +707,9 @@
+         observed = time.monotonic()
+         if observed >= clock["deadline_monotonic"] or not still_current():
+             return None
+-        return {"schema": "frw.gateway.f04-owned-xlsx-ods-witness.v1", "scenario_sha256": case.scenario_sha256,
++        schema = ("frw.gateway.f04-owned-pdf-ocr-docx-witness.v1" if case is _SCAN
++                  else "frw.gateway.f04-owned-xlsx-ods-witness.v1")
++        return {"schema": schema, "scenario_sha256": case.scenario_sha256,
+                 "binding_sha256": current["binding_sha256"], "ack_sha256": canonical_sha256(ack),
+                 "generation": target["generation"], "source_path": source_path,
+                 "source_sha256": source.sha256, "source_bytes": source.size_bytes,
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -25,6 +25,8 @@
+ _READABLE_ATTACHMENT_BYTES = 1_000_000
+ _ODT_MIME = "application/vnd.oasis.opendocument.text"
+ _ODT_PUBLICATION = "_friday_published_odt_input"
++_F04_PDF_PUBLICATION = "_friday_published_f04_pdf_input"
++_F04_PDF_PENDING = "_friday_pending_f04_pdf_input"
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -219,6 +221,10 @@
+     from hermes_cli.friday_user_scope import ScopeDenied, _same_scope, _workspace_directory
+     from hermes_constants import get_routing_process_hermes_home
+     source = event.source
++    f04_target = getattr(event, '_ordinary_f04_host_target', None)
++    pending_pdf = getattr(event, _F04_PDF_PENDING, None)
++    if pending_pdf is not None:
++        delattr(event, _F04_PDF_PENDING)
+     identity = identity_of(source)
+     if (not _same_scope(getattr(source, '_friday_user_scope', None), cap)
+             or identity is None or identity.transport_inferred or not identity.multiplexed
+@@ -298,7 +304,7 @@
+         staged.append((raw, destination, data, content, receipt))
+     document = getattr(getattr(event, 'raw_message', None), 'document', None)
+     from gateway.ordinary_dm_ingress import selected_d05_publication, selected_xlsx_publication
+-    from gateway.ordinary_f04_xlsx import selected_publication as selected_f04_xlsx
++    from gateway.ordinary_f04_xlsx import original_scan_publication, selected_publication as selected_f04_xlsx
+     capture_s14 = selected_xlsx_publication(event)
+     capture_xlsx = ((capture_s14 or selected_f04_xlsx(event)) and len(staged) == 1 and staged[0][1].suffix == '.xlsx'
+                    and getattr(document, 'mime_type', None) == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+@@ -313,8 +319,18 @@
+     odt_upload = (_direct_odt_upload(event, message)
+                   if len(staged) == 1 and staged[0][1].suffix == ".odt" else None)
+     capture_odt = odt_upload is not None
++    capture_pdf = (len(staged) == 1 and staged[0][1].suffix == '.pdf'
++                   and selected_f04_xlsx(event, suffix='.pdf')
++                   and media[0]['origin'].get('message_id') == message.get('message_id')
++                   and getattr(document, 'file_id', None) == media[0]['origin']['file_id']
++                   and getattr(document, 'file_unique_id', None) == media[0]['origin']['file_unique_id'])
++    # The admission hook can publish before bind_turn. Keep that first attempt
++    # on this event alone until the normal, bound preparation validates it.
++    early_pdf = (f04_target is None and not hasattr(event, '_friday_owned_attachment_paths') and len(staged) == 1
++                 and staged[0][1].suffix == '.pdf' and original_scan_publication(event, message))
++    observe_pdf = capture_pdf or early_pdf
+     # Supplemental observation cannot prevent the ordinary attachment from being admitted.
+-    optional_capture = capture_docx or capture_rtf or capture_odt or (capture_xlsx and not capture_s14)
++    optional_capture = capture_docx or capture_rtf or capture_odt or observe_pdf or (capture_xlsx and not capture_s14)
+     published_input = None
+     directories = None
+     cap.check()
+@@ -331,7 +347,7 @@
+                 cap.check()
+                 published_input = _publish_received(
+                     received_fd, destination.name, data, content,
+-                    capture_path=destination if capture_xlsx or capture_docx or capture_rtf or capture_odt else None,
++                    capture_path=destination if capture_xlsx or capture_docx or capture_rtf or capture_odt or observe_pdf else None,
+                     optional_capture=optional_capture,
+                 )
+             cap.check()
+@@ -352,7 +368,7 @@
+                         if (not os.path.samestat(workspace_info, os.fstat(current_workspace))
+                                 or not os.path.samestat(workspace_info, named_workspace)):
+                             raise ScopeDenied()
+-                        if capture_docx or capture_rtf or capture_odt:
++                        if capture_docx or capture_rtf or capture_odt or observe_pdf:
+                             directories = (_directory_identity(workspace_info), _directory_identity(pinned))
+                     finally:
+                         os.close(current_workspace)
+@@ -407,7 +423,29 @@
+     # Presentation-only provenance from the verified copy above. Media paths
+     # and byte receipts keep their absolute identity; this grants no file access.
+     event._friday_owned_attachment_paths = (cap, frozenset(rewritten))
+-    if capture_rtf:
++    if early_pdf:
++        raw, destination, _, _, _ = staged[0]
++        original = None
++        if published_input is not None and published_input[1] and Path(raw) != destination:
++            original = (event, cap, destination, published_input[0], directories)
++        setattr(event, _F04_PDF_PENDING, (source, event._ordinary_f04_original_stamp, original))
++    elif capture_pdf:
++        raw, destination, _, _, _ = staged[0]
++        if (published_input is None or f04_target['receipt'] is None
++                or f04_target['row']['error'] is not None or f04_target['row']['disarmed']):
++            setattr(event, _F04_PDF_PUBLICATION, None)
++        elif pending_pdf is not None:
++            original_source, original_stamp, original = pending_pdf
++            evidence, created = published_input
++            if (original is None or original[0] is not event or original[1] is not cap
++                    or source is not original_source
++                    or getattr(event, '_ordinary_f04_original_stamp', None) is not original_stamp
++                    or created or Path(raw) != destination or original[2:] != (destination, evidence, directories)):
++                original = None
++            setattr(event, _F04_PDF_PUBLICATION, original)
++        else:
++            _remember_published_input(event, cap, destination, published_input, _F04_PDF_PUBLICATION, directories)
++    elif capture_rtf:
+         if published_input is None:
+             event._friday_published_d01_rtf_input = None
+         else:
+@@ -459,6 +497,16 @@
+     return _read_published_input(event, "_friday_published_docx_input", pin_directories=True)
+ 
+ 
++def read_published_f04_pdf_input(event: MessageEvent):
++    """Reopen the original selected PDF with its owner and directory pins."""
++    attribute = _F04_PDF_PUBLICATION
++    evidence = _read_published_input(event, attribute, pin_directories=True)
++    if evidence is None:
++        return None
++    _, _, _, _, directories = getattr(event, attribute)
++    return evidence, directories
++
++
+ def read_published_d01_rtf_input(event: MessageEvent) -> PublishedD01RTFInput | None:
+     """Read a descriptor witness only while the original routed scope is active."""
+     attribute = "_friday_published_d01_rtf_input"
+@@ -578,6 +626,12 @@
+ 
+ def verify_published_xlsx_input(cap, evidence, *, still_current=None):
+     return _verify_published_input(cap, evidence, still_current=still_current)
++
++
++def verify_published_f04_pdf_input(cap, evidence, directories, *, still_current):
++    if directories is None:
++        return False
++    return _verify_published_input(cap, evidence, still_current=still_current, expected_directories=directories)
+ 
+ 
+ def _verify_published_input(cap, evidence, *, still_current=None, expected_directories=None):
+--- a/hermes_cli/friday_workspace_word_conversion.py
++++ b/hermes_cli/friday_workspace_word_conversion.py
+@@ -376,15 +376,22 @@
+         actual = hashlib.sha256(data).hexdigest()
+         if actual != request['source_sha256']:
+             raise WordConversionError('source_hash_mismatch', 'source_binding')
++        if operation == PDF_OCR_DOCX:
++            from gateway.ordinary_f04_xlsx import observe_pdf_ocr_result, observe_source
++
++            observe_source(cap, source, relative, data, identity)
+         if reconstruct:
+             output, details = _reconstruct_pdf_text(data, use_ocr=operation == PDF_OCR_DOCX)
+         else:
+             output, details = render(cap, data, operation)
+             details = {'office_filter': spec['filter'], 'semantics_verified': True, **details}
+-        return _publish(cap, fd, leaf, path, output, spec['output'][1:], (source, data, identity),
+-                        {'source': relative, 'source_sha256': actual, 'source_unchanged': True,
+-                         'conversion_mode': operation, 'native_editable': True,
+-                         'visual_fidelity_verified': False, **details})
++        result = _publish(cap, fd, leaf, path, output, spec['output'][1:], (source, data, identity),
++                          {'source': relative, 'source_sha256': actual, 'source_unchanged': True,
++                           'conversion_mode': operation, 'native_editable': True,
++                           'visual_fidelity_verified': False, **details})
++        if operation == PDF_OCR_DOCX:
++            observe_pdf_ocr_result(result)
++        return result
+     except ScopeDenied:
+         raise
+     except WordConversionError as error:
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1739,7 +1739,7 @@
+             session_id=kw.get("session_id"), format=args.get("format", "text"),
+         ))
+ 
+-    if args.get("format") == "spreadsheet_convert":
++    if args.get("format") in ("spreadsheet_convert", "pdf_ocr_docx"):
+         from gateway.ordinary_f04_xlsx import registered_write
+ 
+         result = registered_write(args, tid, write)
