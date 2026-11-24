@@ -1,0 +1,545 @@
+--- a/hermes_cli/backup.py
++++ b/hermes_cli/backup.py
+@@ -27,15 +27,15 @@
+ from agent.provider_media import GENERATED_SUBDIR
+ from hermes_cli.archive_safe import normalize_archive_parts
+ from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
++from hermes_cli.friday_user_scope import MARKER as _FRIDAY_USER_SCOPE_MARKER
+ from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
+ from hermes_cli.sizefmt import format_bytes as _format_size
+ 
+ from hermes_cli.backup_restore import (
+-    _count_session_rows,
+-    _default_new_file_mode,
+     _detect_prefix,
+-    _extract_member_atomically,
+-    _import_db_member,
++    _extract_member_atomically as _extract_member_atomically,
++    _import_db_member as _import_db_member,
++    _import_zip_members,
+     _restore_auth_json,
+     _safe_restore_db,
+     _validate_backup_zip,
+@@ -52,6 +52,8 @@
+ 
+ # --- Exclusion rules ---
+ 
++_FRIDAY_REQUIRED_PROFILE_DIRS = frozenset({"memories", "workspace"})
++
+ # Where ``hermes backup --quick`` / ``/snapshot`` / the pre-update safety net write state
+ # snapshots (see ``create_quick_snapshot``); defined here because the exclusion set needs it.
+ _QUICK_SNAPSHOTS_DIR = "state-snapshots"
+@@ -322,12 +324,17 @@
+     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
+ 
+ 
+-def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
++def _iter_backup_files(
++    hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None,
++    *, friday_profile_dirs: Optional[List[Path]] = None,
++):
+     """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
+ 
+     The one owner of the walk policy (directory pruning so os.walk never descends a multi-GB
+     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
+     shared by ``hermes backup`` and the pre-update path so they can never drift.
++    The ordinary backup also collects existing roots required by Friday admission,
++    so they can be restored even when they contain no archived files.
+     """
+     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
+         rel_dir = Path(dirpath).relative_to(hermes_root)
+@@ -352,6 +359,10 @@
+             with suppress(OSError, ValueError):
+                 if fpath.resolve() == out_path.resolve():
+                     continue
++            if (friday_profile_dirs is not None and fname == _FRIDAY_USER_SCOPE_MARKER
++                    and len(rel.parts) == 3 and rel.parts[0] == "profiles"):
++                friday_profile_dirs.extend(
++                    rel_dir / name for name in dirnames if name in _FRIDAY_REQUIRED_PROFILE_DIRS)
+             yield fpath, rel
+ 
+ 
+@@ -615,7 +626,9 @@
+     logger.info("backup phase=scan status=started")
+     print(f"Scanning {display_hermes_home()} ...")
+     skipped_dirs: set = set()
+-    files_to_add: list[tuple[Path, Path]] = list(_iter_backup_files(hermes_root, out_path, skipped_dirs))
++    friday_profile_dirs: list[Path] = []
++    files_to_add: list[tuple[Path, Path]] = list(
++        _iter_backup_files(hermes_root, out_path, skipped_dirs, friday_profile_dirs=friday_profile_dirs))
+     external_to_add, skipped_external = _collect_external_entries()
+     if not files_to_add and not external_to_add:
+         logger.info("backup phase=scan status=empty duration_ms=%.1f", (time.monotonic() - scan_started) * 1000)
+@@ -636,6 +649,8 @@
+ 
+     with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
+             archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
++        for directory in friday_profile_dirs:
++            zf.mkdir(directory.as_posix(), mode=0o700)
+         total_bytes = _write_zip_entries(
+             zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
+             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
+@@ -721,13 +736,40 @@
+ 
+     ``_external/`` members are home-relative and never skipped; every other member is
+     HERMES_HOME-relative after stripping the archive ``prefix``. Shared by the integrity
+-    pre-flight and ``_import_members`` so the two cannot disagree on what gets restored."""
++    pre-flight and ``_import_zip_members`` so the two cannot disagree on what gets restored."""
+     if member.startswith(_EXTERNAL_PREFIX):
+         return member[len(_EXTERNAL_PREFIX):], False
+     rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
+     return rel, _import_skipped(rel)
+ 
+ 
++def _friday_import_profiles(members: list[str], prefix: str) -> set[str]:
++    profiles = set()
++    for member in members:
++        if not member.endswith(_FRIDAY_USER_SCOPE_MARKER) or member.startswith(_EXTERNAL_PREFIX):
++            continue
++        rel, _ = _import_member_rel(member, prefix)
++        try:
++            parts = normalize_archive_parts(rel)
++        except ValueError:
++            continue
++        if len(parts) == 3 and parts[0] == "profiles" and parts[-1] == _FRIDAY_USER_SCOPE_MARKER:
++            profiles.add(parts[1])
++    return profiles
++
++
++def _friday_directory_members(zf: zipfile.ZipFile, prefix: str, profiles: set[str]) -> list[str]:
++    names = {f"{prefix}profiles/{profile}/{directory}/"
++             for profile in profiles for directory in _FRIDAY_REQUIRED_PROFILE_DIRS}
++    directories = sorted(names.intersection(zf.namelist()))
++    for name in directories:
++        info = zf.getinfo(name)
++        unix_type = stat.S_IFMT(info.external_attr >> 16) if info.create_system == 3 else 0
++        if info.file_size or unix_type not in {0, stat.S_IFDIR}:
++            raise ValueError(f"{name}: invalid Friday profile directory entry")
++    return directories
++
++
+ def run_import(args) -> Optional[int]:
+     """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
+     zip_path = Path(args.zipfile).expanduser().resolve()
+@@ -757,6 +799,13 @@
+         prefix = _detect_prefix(zf)
+         members = [n for n in zf.namelist() if not n.endswith("/")]
+         file_count = len(members)
++        private_profiles = _friday_import_profiles(members, prefix)
++        try:
++            friday_dirs = _friday_directory_members(zf, prefix, private_profiles)
++        except ValueError as exc:
++            print(f"Error: {exc}; nothing was restored")
++            return 1
++        members.extend(friday_dirs)
+ 
+         print(f"Backup contains {file_count} files")
+         print(f"Target: {display_hermes_home()}")
+@@ -793,131 +842,21 @@
+ 
+         # Extract
+         print(f"\nImporting {file_count} files ...")
+-        hermes_root.mkdir(parents=True, exist_ok=True)
++        hermes_root.mkdir(mode=0o700 if private_profiles else 0o777, parents=True, exist_ok=True)
+ 
+-        errors = []
+-        restored = 0
+-        restored_external = 0
+-        skipped_runtime: list[str] = []
+-        # (rel, live_counts, imported_counts) for every session database the
+-        # import replaced with one holding fewer rows. A restore is allowed to
+-        # do that — it just must not do it silently (issue #100960).
+-        db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
+-        home_dir = Path.home().resolve()
+-        # Resolved once: every member is published via a temp file, and mkstemp
+-        # would otherwise create newly restored files as 0600.
+-        new_file_mode = _default_new_file_mode()
+         t0 = time.monotonic()
+-
+-        for member in members:
+-            # External memory-provider state captured under the reserved
+-            # ``_external/`` arc prefix restores to its original home-relative
+-            # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
+-            if member.startswith(_EXTERNAL_PREFIX):
+-                ext_rel = member[len(_EXTERNAL_PREFIX):]
+-                if not ext_rel:
+-                    continue
+-                target = home_dir / ext_rel
+-                # Security: the resolved target must stay under the home dir.
+-                try:
+-                    target.resolve().relative_to(home_dir)
+-                except ValueError:
+-                    errors.append(f"  {member}: path traversal blocked")
+-                    continue
+-                try:
+-                    target.parent.mkdir(parents=True, exist_ok=True)
+-                    _extract_member_atomically(zf, member, target, new_file_mode)
+-                    # External provider configs commonly hold credentials.
+-                    if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
+-                        try:
+-                            os.chmod(target, 0o600)
+-                        except OSError:
+-                            pass
+-                    restored += 1
+-                    restored_external += 1
+-                except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+-                    errors.append(f"  {member}: {exc}")
+-                if restored % 500 == 0:
+-                    print(f"  {restored}/{file_count} files ...")
+-                continue
+-
+-            # Strip prefix if detected
+-            if prefix and member.startswith(prefix):
+-                rel = member[len(prefix):]
+-            else:
+-                rel = member
+-
+-            if not rel:
+-                continue
+-
+-            try:
+-                parts = tuple(normalize_archive_parts(rel))
+-            except ValueError:
+-                errors.append(f"  {rel}: path traversal blocked")
+-                continue
+-
+-            # Never overwrite volatile gateway/process runtime state. These are
+-            # namespaced to the machine/container the backup was taken on;
+-            # clobbering them (especially gateway_state.json) breaks the gateway
+-            # reconciler on the target and disconnects hosted instances from the
+-            # Nous portal. Matched by basename so both the root profile and
+-            # named profiles (profiles/<name>/gateway_state.json) are covered.
+-            if parts[-1] in _IMPORT_SKIP_NAMES:
+-                skipped_runtime.append(rel)
+-                continue
+-
+-            # Older archives may contain PM selections pointing at another machine.
+-            # Match their home-root paths; a plugin's own facts.json is user data.
+-            if profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS:
+-                skipped_runtime.append(rel)
+-                continue
+-
+-            # A ``.db`` member is page-restored into the live file below; a
+-            # WAL/SHM/journal member from the archive describes a different
+-            # database image, and installing it beside the restored file (over
+-            # a live sidecar, via os.replace) would replay a foreign WAL on
+-            # the next open. Current backups never ship these
+-            # (_EXCLUDED_SUFFIXES); older or hand-built archives might.
+-            if rel.endswith(_SQLITE_SIDECAR_SUFFIXES):
+-                skipped_runtime.append(rel)
+-                continue
+-
+-            target = hermes_root.joinpath(*parts)
+-
+-            # Security: reject absolute paths and traversals
+-            try:
+-                target.resolve().relative_to(hermes_root.resolve())
+-            except ValueError:
+-                errors.append(f"  {rel}: path traversal blocked")
+-                continue
+-
+-            try:
+-                target.parent.mkdir(parents=True, exist_ok=True)
+-                if target.suffix == ".db":
+-                    # Count before the write: afterwards the rows this import
+-                    # drops are gone and there is nothing left to compare.
+-                    before = _count_session_rows(target)
+-                    _import_db_member(zf, member, target, new_file_mode)
+-                    after = _count_session_rows(target)
+-                    if before and after and after[1] < before[1]:
+-                        db_shrunk.append((rel, before, after))
+-                else:
+-                    _extract_member_atomically(zf, member, target, new_file_mode)
+-                if target.name in _SECRET_FILE_NAMES:
+-                    os.chmod(target, 0o600)
+-                restored += 1
+-            except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+-                errors.append(f"  {rel}: {exc}")
+-
+-            if restored % 500 == 0:
+-                print(f"  {restored}/{file_count} files ...")
+-
++        (restored, restored_dirs, restored_external,
++         skipped_runtime, db_shrunk, errors) = _import_zip_members(
++            zf, members, prefix, hermes_root, private_profiles, file_count,
++        )
+         elapsed = time.monotonic() - t0
+ 
+         # Summary
+         print()
+         print(f"Import {'incomplete' if errors else 'complete'}: {restored} files restored in {elapsed:.1f}s")
+         print(f"  Target: {display_hermes_home()}")
++        if restored_dirs:
++            print(f"  Restored {restored_dirs} Friday profile directories.")
+ 
+         if restored_external:
+             print(
+--- a/hermes_cli/backup_restore.py
++++ b/hermes_cli/backup_restore.py
+@@ -567,3 +567,140 @@
+             os.unlink(tmp_name)
+         except OSError:
+             pass
++
++
++def _make_import_directories(root: Path, parts: tuple[str, ...], private_from: int) -> None:
++    """Create new private parents one at a time: mkdir(parents=True) ignores their mode."""
++    if not private_from:
++        root.joinpath(*parts).mkdir(parents=True, exist_ok=True)
++        return
++    path = root.joinpath(*parts[:private_from - 1])
++    path.mkdir(parents=True, exist_ok=True)
++    for name in parts[private_from - 1:]:
++        path /= name
++        path.mkdir(mode=0o700, exist_ok=True)
++
++
++def _restore_external_zip_file(
++    zf: zipfile.ZipFile, member: str, rel: str, home_dir: Path, new_file_mode: Optional[int],
++) -> None:
++    from hermes_cli import backup
++
++    # External memory-provider state, such as ~/.honcho, is home-relative.
++    target = home_dir / rel
++    try:
++        target.resolve().relative_to(home_dir)
++    except ValueError as exc:
++        raise OSError("path traversal blocked") from exc
++    target.parent.mkdir(parents=True, exist_ok=True)
++    backup._extract_member_atomically(zf, member, target, new_file_mode)
++    if target.suffix in {".json", ".env", ".conf"} or target.name in backup._SECRET_FILE_NAMES:
++        try:
++            os.chmod(target, 0o600)
++        except OSError:
++            pass
++
++
++def _prepare_zip_home_entry(
++    root: Path, resolved_root: Path, parts: tuple[str, ...], private_profiles: set[str],
++    friday_state: tuple[str, str], has_friday_state: bool, directory: bool,
++) -> tuple[Path, bool]:
++    target = root.joinpath(*parts)
++    # Legacy ZIPs list files only, so derive private parent modes from the
++    # same portable paths for old and new archives.
++    private_from = 0
++    if len(parts) >= 2 and parts[0] == "profiles" and parts[1] in private_profiles:
++        private_from = 2
++    elif parts[:2] == friday_state:
++        private_from = 1
++
++    try:
++        resolved_parts = target.resolve().relative_to(resolved_root).parts
++    except ValueError as exc:
++        raise OSError("path traversal blocked") from exc
++    if private_from and resolved_parts != parts:
++        raise OSError("private restore requires a direct path")
++
++    if has_friday_state and parts[0] == "plugin-data" and not private_from:
++        # An ordinary sibling can be the first member under the shared parent.
++        (root / "plugin-data").mkdir(mode=0o700, exist_ok=True)
++    _make_import_directories(root, parts if directory else parts[:-1], private_from)
++    private = bool(private_from or private_profiles and parts == ("config.yaml",))
++    return target, private
++
++
++def _restore_zip_home_file(
++    zf: zipfile.ZipFile, member: str, rel: str, target: Path, member_mode: Optional[int],
++    db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]],
++) -> None:
++    from hermes_cli import backup
++
++    if target.suffix == ".db":
++        # Capture counts around the write so any older imported rows are reported.
++        before = _count_session_rows(target)
++        backup._import_db_member(zf, member, target, member_mode)
++        after = _count_session_rows(target)
++        if before and after and after[1] < before[1]:
++            db_shrunk.append((rel, before, after))
++    else:
++        backup._extract_member_atomically(zf, member, target, member_mode)
++    if target.name in backup._SECRET_FILE_NAMES:
++        os.chmod(target, 0o600)
++
++
++def _import_zip_members(
++    zf: zipfile.ZipFile, members: list[str], prefix: str, root: Path,
++    private_profiles: set[str], file_count: int,
++):
++    """Restore ZIP entries and collect the CLI's counts, warnings, and errors."""
++    from hermes_cli import backup
++    from hermes_cli.archive_safe import normalize_archive_parts
++    from hermes_cli.plugins_state import _plugin_data_namespace
++
++    errors = []
++    restored = restored_dirs = restored_external = 0
++    skipped_runtime = []
++    db_shrunk = []
++    home_dir = Path.home().resolve()
++    resolved_root = root.resolve()
++    # Compute once because import normally uses the caller's umask for new
++    # files. In designated private paths it can only narrow owner-only mode.
++    new_file_mode = _default_new_file_mode()
++    private_file_mode = None if new_file_mode is None else new_file_mode & 0o600
++    friday_state = ("plugin-data", _plugin_data_namespace("friday_rework", ""))
++    state_member = "/".join((*friday_state, "state.json"))
++    has_friday_state = state_member in members or prefix + state_member in members
++
++    for member in members:
++        rel, skipped = backup._import_member_rel(member, prefix)
++        if not rel:
++            continue
++        if skipped:
++            skipped_runtime.append(rel)
++            continue
++        external = member.startswith(backup._EXTERNAL_PREFIX)
++        try:
++            if external:
++                _restore_external_zip_file(zf, member, rel, home_dir, new_file_mode)
++                restored_external += 1
++            else:
++                try:
++                    parts = tuple(normalize_archive_parts(rel))
++                except ValueError as exc:
++                    raise OSError("path traversal blocked") from exc
++                directory = member.endswith("/")
++                target, private = _prepare_zip_home_entry(
++                    root, resolved_root, parts, private_profiles, friday_state, has_friday_state, directory,
++                )
++                if directory:
++                    restored_dirs += 1
++                    continue
++                mode = private_file_mode if private else new_file_mode
++                _restore_zip_home_file(zf, member, rel, target, mode, db_shrunk)
++            restored += 1
++        except (OSError, *backup._ZIP_MEMBER_READ_ERRORS) as exc:
++            errors.append(f"  {member if external else rel}: {exc}")
++        if restored % 500 == 0:
++            print(f"  {restored}/{file_count} files ...")
++
++    return restored, restored_dirs, restored_external, skipped_runtime, db_shrunk, errors
+--- a/tests/hermes_cli/test_restore_source_integrity.py
++++ b/tests/hermes_cli/test_restore_source_integrity.py
+@@ -1,7 +1,9 @@
+ """Restore must read the literal source path and validate it before mutating a live database."""
+ 
+ import json
++import os
+ import sqlite3
++import stat
+ import zipfile
+ from argparse import Namespace
+ from contextlib import closing
+@@ -124,3 +126,64 @@
+     with closing(sqlite3.connect(live)) as db:
+         assert db.execute("SELECT value FROM evidence").fetchall() == [("live",)]
+     _assert_no_decoy(tmp_path, home.name)
++
++
++@pytest.mark.platforms("posix")
++@pytest.mark.parametrize("home", ["restore"], indirect=True)
++@pytest.mark.parametrize("umask", [0o022, 0o077])
++@pytest.mark.parametrize("empty_workspace", [False, True])
++def test_import_creates_private_friday_workspace_and_state(home, umask, empty_workspace):
++    from hermes_cli.friday_user_scope import MARKER
++    from hermes_cli.plugins_state import _plugin_data_namespace
++
++    profile = "profiles/registered"
++    workspace = f"{profile}/workspace"
++    plugin = f"plugin-data/{_plugin_data_namespace('friday_rework', '')}"
++    prefix = ".hermes/" if empty_workspace else ""
++    archive = home.parent / "backup.zip"
++    with zipfile.ZipFile(archive, "w") as zf:
++        zf.writestr(f"{prefix}config.yaml", "{}")
++        zf.writestr(f"{prefix}{profile}/config.yaml", "{}")
++        if empty_workspace:
++            zf.mkdir(f"{prefix}{workspace}/", mode=0o700)
++            zf.mkdir(f"{prefix}{profile}/memories/", mode=0o700)
++        else:
++            # Older stock backups store only the files and imply their parents.
++            zf.writestr(f"{prefix}{profile}/memories/MEMORY.md", "retained memory")
++            zf.writestr(f"{prefix}{workspace}/prior.txt", "prior artifact")
++        zf.writestr(f"{prefix}{profile}/{MARKER}", "{}")
++        zf.writestr(f"{prefix}plugin-data/ordinary/data.txt", "unrelated state")
++        zf.writestr(f"{prefix}{plugin}/state.json", "{}")
++        zf.writestr(f"{prefix}{plugin}/.state.json.lock", "")
++        zf.writestr(f"{prefix}profiles/ordinary/config.yaml", "{}")
++        zf.mkdir(f"{prefix}ordinary-empty/", mode=0o700)
++
++    previous_umask = os.umask(umask)
++    try:
++        assert backup.run_import(Namespace(zipfile=str(archive), force=True)) is None
++    finally:
++        os.umask(previous_umask)
++
++    def assert_owned(path, mode):
++        info = (home / path).stat()
++        assert info.st_uid == os.getuid()
++        assert stat.S_IMODE(info.st_mode) == mode
++
++    for path in (profile, workspace, f"{profile}/memories", "plugin-data", plugin):
++        assert_owned(path, 0o700)
++    for path in ("config.yaml", f"{profile}/{MARKER}", f"{profile}/config.yaml",
++                 f"{plugin}/state.json", f"{plugin}/.state.json.lock"):
++        assert_owned(path, 0o600)
++    if empty_workspace:
++        assert list((home / workspace).iterdir()) == []
++        assert list((home / profile / "memories").iterdir()) == []
++    else:
++        assert_owned(f"{workspace}/prior.txt", 0o600)
++        assert_owned(f"{profile}/memories/MEMORY.md", 0o600)
++        assert (home / workspace / "prior.txt").read_text() == "prior artifact"
++        assert (home / profile / "memories" / "MEMORY.md").read_text() == "retained memory"
++    assert_owned("plugin-data/ordinary", 0o777 & ~umask)
++    assert_owned("plugin-data/ordinary/data.txt", 0o666 & ~umask)
++    assert_owned("profiles/ordinary", 0o777 & ~umask)
++    assert_owned("profiles/ordinary/config.yaml", 0o666 & ~umask)
++    assert not (home / "ordinary-empty").exists()
+--- /dev/null
++++ b/tests/hermes_cli/test_backup_friday_directories.py
+@@ -0,0 +1,46 @@
++"""Full-backup coverage for Friday profile directories."""
++
++import zipfile
++from argparse import Namespace
++from pathlib import Path
++
++
++def test_preserves_required_friday_profile_directories(tmp_path, monkeypatch, capsys):
++    from hermes_cli.backup import run_backup
++    from hermes_cli.friday_user_scope import MARKER
++
++    hermes_home = tmp_path / ".hermes"
++    profiles = hermes_home / "profiles"
++    for profile in ("owner", "peer"):
++        (profiles / profile / "workspace").mkdir(parents=True)
++        (profiles / profile / "memories").mkdir()
++        (profiles / profile / MARKER).write_text("{}", encoding="utf-8")
++    (profiles / "unmarked" / "workspace").mkdir(parents=True)
++    cache = profiles / "peer" / "workspace" / "__pycache__"
++    cache.mkdir()
++    (cache / "ignored.pyc").write_bytes(b"omitted cache")
++    content = b"existing workspace artifact\n"
++    (profiles / "owner" / "workspace" / "artifact.txt").write_bytes(content)
++    memory = b"existing memory\n"
++    (profiles / "owner" / "memories" / "MEMORY.md").write_bytes(memory)
++    (hermes_home / "config.yaml").write_text("model: test\n", encoding="utf-8")
++    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++
++    out_zip = tmp_path / "backup.zip"
++    assert run_backup(Namespace(output=str(out_zip)))
++    assert "Backing up 5 files ..." in capsys.readouterr().out
++
++    with zipfile.ZipFile(out_zip) as archive:
++        artifact = "profiles/owner/workspace/artifact.txt"
++        memory_file = "profiles/owner/memories/MEMORY.md"
++        assert archive.read(artifact) == content
++        assert archive.read(memory_file) == memory
++        assert {item.filename for item in archive.infolist() if item.is_dir()} == {
++            "profiles/owner/workspace/", "profiles/owner/memories/",
++            "profiles/peer/workspace/", "profiles/peer/memories/",
++        }
++        assert {item.filename for item in archive.infolist() if not item.is_dir()} == {
++            "config.yaml", f"profiles/peer/{MARKER}", f"profiles/owner/{MARKER}",
++            artifact, memory_file,
++        }
