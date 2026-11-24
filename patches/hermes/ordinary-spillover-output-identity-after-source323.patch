@@ -1,0 +1,276 @@
+diff --git a/tests/tools/test_tool_result_storage.py b/tests/tools/test_tool_result_storage.py
+--- a/tests/tools/test_tool_result_storage.py
++++ b/tests/tools/test_tool_result_storage.py
+@@ -4,6 +4,7 @@
+ import os
+ import subprocess
+ import sys
++from pathlib import Path
+ 
+ import pytest
+ from unittest.mock import MagicMock, patch
+@@ -23,6 +24,7 @@
+     _write_to_sandbox,
+     cleanup_spillover_cache,
+     enforce_turn_budget,
++    extract_persisted_path,
+     generate_preview,
+     get_spillover_dir,
+     maybe_persist_tool_result,
+@@ -74,6 +76,34 @@
+         assert "hello world" not in cmd
+         assert env.execute.call_args_list[0][1]["stdin_data"] == "hello world"
+ 
++    def test_noclobber_does_not_leak_into_remote_session_snapshot(self, tmp_path):
++        from shlex import quote
++        from tools.environments.base_session_env import _wrap_command_script
++
++        snapshot = tmp_path / "env.sh"
++        snapshot.write_text('export R05_TEST_SESSION=retained\n')
++        refreshes = []
++
++        def run_session(command, timeout=None, stdin_data=None):
++            before = snapshot.read_bytes()
++            script = _wrap_command_script(
++                command, quoted_cwd=quote(str(tmp_path)), quoted_snap=quote(str(snapshot)),
++                snap_tmp_template=quote(str(snapshot) + ".XXXXXX"), passthrough_names=(),
++                snapshot_ready=True, cwd_marker="fixture", emit_cwd_marker=False,
++            )
++            result = subprocess.run(["bash", "-c", script], input=stdin_data, capture_output=True,
++                                    text=True, timeout=timeout, check=False)
++            refreshes.append(snapshot.read_bytes() != before)
++            return {"output": result.stdout, "returncode": result.returncode}
++
++        env = MagicMock()
++        env.execute.side_effect = run_session
++        target = tmp_path / "remote" / "first.txt"
++        assert _write_to_sandbox("original", str(target), env)
++        assert refreshes[0] and b"R05_TEST_SESSION=" in snapshot.read_bytes()
++        assert not _write_to_sandbox("later", str(target), env)
++        assert target.read_text(encoding="utf-8") == "original"
++
+     def test_large_content_via_stdin(self):
+         """Regression: 200 KB content exceeds Linux MAX_ARG_STRLEN (128 KB).
+         It must travel via stdin, never inside the command string."""
+@@ -237,7 +267,7 @@
+             threshold=30_000,
+         )
+         assert PERSISTED_OUTPUT_TAG in result
+-        assert "tc_456.txt" in result
++        assert Path(extract_persisted_path(result)).name.startswith("tc_456_")
+         assert len(result) < len(content)
+ 
+     def test_persists_full_content_as_is(self):
+@@ -377,6 +407,37 @@
+         monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
+         yield
+ 
++    def test_reused_provider_id_does_not_replace_earlier_payload(self):
++        first = "héllo\n" * 9_000
++        next_result = "next\n" * 9_000
++        first_preview = maybe_persist_tool_result(first, "terminal", "reused", threshold=20_000)
++        next_preview = maybe_persist_tool_result(next_result, "terminal", "reused", threshold=20_000)
++        first_path = Path(extract_persisted_path(first_preview))
++        next_path = Path(extract_persisted_path(next_preview))
++        assert first_path != next_path
++        assert first_path.read_bytes() == first.encode("utf-8")
++        assert next_path.read_bytes() == next_result.encode("utf-8")
++        assert "54,000 characters)" in first_preview
++
++    def test_existing_spill_is_not_replaced_on_host_or_sandbox(self, tmp_path):
++        from tools.tool_result_storage import _write_to_spillover
++
++        path = Path(_write_to_spillover("original", "taken.txt"))
++        assert _write_to_spillover("later", path.name) is None
++        assert path.read_text(encoding="utf-8") == "original"
++
++        def shell(cmd, timeout=None, stdin_data=None):
++            done = subprocess.run(["sh", "-c", cmd], input=stdin_data, text=True,
++                                  capture_output=True, timeout=timeout, check=False)
++            return {"output": done.stdout, "returncode": done.returncode}
++
++        env = MagicMock()
++        env.execute.side_effect = shell
++        remote = tmp_path / "sandbox" / "taken.txt"
++        assert _write_to_sandbox("original", str(remote), env)
++        assert not _write_to_sandbox("later", str(remote), env)
++        assert remote.read_text(encoding="utf-8") == "original"
++
+     def test_env_none_persists_to_spillover(self):
+         """No active sandbox env (MCP-only / cron session) must persist
+         host-side instead of inline-truncating — the guglielmo bundle bug."""
+@@ -390,7 +451,8 @@
+         )
+         assert PERSISTED_OUTPUT_TAG in result
+         assert "could not be saved" not in result
+-        spill_file = get_spillover_dir() / "tc_mcp_1.txt"
++        spill_file = Path(extract_persisted_path(result))
++        assert spill_file.parent == get_spillover_dir()
+         assert spill_file.exists()
+         assert spill_file.read_text(encoding="utf-8") == content
+         assert str(spill_file) in result
+@@ -409,7 +471,8 @@
+             threshold=30_000,
+         )
+         assert PERSISTED_OUTPUT_TAG in result
+-        assert (get_spillover_dir() / "tc_local_1.txt").exists()
++        spill_file = Path(extract_persisted_path(result))
++        assert spill_file.parent == get_spillover_dir() and spill_file.is_file()
+         env.execute.assert_not_called()
+ 
+     def test_remote_env_probe_success_references_mounted_path(self):
+@@ -428,7 +491,7 @@
+         )
+         assert PERSISTED_OUTPUT_TAG in result
+         # Canonical host copy always exists now.
+-        assert (get_spillover_dir() / "tc_remote_1.txt").exists()
++        assert (get_spillover_dir() / Path(extract_persisted_path(result)).name).is_file()
+         # Only the readability probe ran — no cat-into-sandbox call.
+         assert env.execute.call_count == 1
+         assert "test -r" in env.execute.call_args[0][0]
+@@ -452,10 +515,11 @@
+             threshold=30_000,
+         )
+         assert PERSISTED_OUTPUT_TAG in result
+-        assert "/tmp/hermes-results/tc_remote_2.txt" in result
++        remote = Path(extract_persisted_path(result))
++        assert remote.parent == Path("/tmp/hermes-results") and remote.name.startswith("tc_remote_2_")
+         assert env.execute.call_count == 3
+         # Host canonical copy exists regardless.
+-        assert (get_spillover_dir() / "tc_remote_2.txt").exists()
++        assert (get_spillover_dir() / remote.name).is_file()
+ 
+     def test_spillover_write_failure_falls_back_to_inline(self, monkeypatch):
+         import tools.tool_result_storage as trs
+@@ -505,7 +569,7 @@
+         stale = _time.time() - (48 * 3600)
+         os.utime(old, (stale, stale))
+ 
+-        maybe_persist_tool_result(
++        result = maybe_persist_tool_result(
+             content="v" * 60_000,
+             tool_name="tool_call",
+             tool_use_id="tc_prune_1",
+@@ -514,7 +578,7 @@
+         )
+ 
+         assert not old.exists()
+-        assert (spill_dir / "tc_prune_1.txt").exists()
++        assert Path(extract_persisted_path(result)).is_file()
+ 
+ # ── recovery hint in the persisted preview ────────────────────────────
+ 
+@@ -569,7 +633,7 @@
+             env=None, threshold=30_000)
+ 
+         assert PERSISTED_OUTPUT_TAG in result
+-        spill_file = get_spillover_dir() / "tc_mcp_text.txt"
++        spill_file = Path(extract_persisted_path(result))
+         assert spill_file.read_text(encoding="utf-8") == markdown
+         # read_file offset/limit is only usable if the preview is the text too.
+         preview = result.split("Preview (first", 1)[1]
+@@ -579,28 +643,28 @@
+     def test_metadata_survives_after_the_text(self):
+         markdown = "body line\n" * 5_000
+         envelope = json.dumps({"result": markdown, "structuredContent": {"count": 5_000}})
+-        maybe_persist_tool_result(
++        result = maybe_persist_tool_result(
+             content=envelope, tool_name="mcp__archive__structured", tool_use_id="tc_mcp_meta",
+             env=None, threshold=30_000)
+ 
+-        spill = (get_spillover_dir() / "tc_mcp_meta.txt").read_text(encoding="utf-8")
++        spill = Path(extract_persisted_path(result)).read_text(encoding="utf-8")
+         text, _, tail = spill.partition("\n\n<mcp-result-metadata>\n")
+         assert text == markdown
+         assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"count": 5_000}}
+ 
+     def test_non_envelope_json_still_verbatim(self):
+         content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0})
+-        maybe_persist_tool_result(
++        result = maybe_persist_tool_result(
+             content=content, tool_name="terminal", tool_use_id="tc_json_verbatim",
+             env=None, threshold=30_000)
+-        assert (get_spillover_dir() / "tc_json_verbatim.txt").read_text(encoding="utf-8") == content
++        assert Path(extract_persisted_path(result)).read_text(encoding="utf-8") == content
+ 
+     def test_structured_content_only_result_still_verbatim(self):
+         content = json.dumps({"result": {"blob": "z" * 40_000}})
+-        maybe_persist_tool_result(
++        result = maybe_persist_tool_result(
+             content=content, tool_name="mcp__archive__opaque", tool_use_id="tc_mcp_opaque",
+             env=None, threshold=30_000)
+-        assert (get_spillover_dir() / "tc_mcp_opaque.txt").read_text(encoding="utf-8") == content
++        assert Path(extract_persisted_path(result)).read_text(encoding="utf-8") == content
+ 
+     def test_sandbox_write_carries_pageable_text(self):
+         env = MagicMock()  # not a LocalEnvironment -> remote path
+@@ -628,4 +692,4 @@
+         enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=10_000))
+ 
+         assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+-        assert (get_spillover_dir() / "tc_budget_mcp.txt").read_text(encoding="utf-8") == markdown
++        assert Path(extract_persisted_path(msgs[0]["content"])).read_text(encoding="utf-8") == markdown
+diff --git a/tools/tool_result_storage.py b/tools/tool_result_storage.py
+--- a/tools/tool_result_storage.py
++++ b/tools/tool_result_storage.py
+@@ -1,7 +1,7 @@
+ """Tool result persistence -- preserves large outputs instead of truncating. Layers against
+ context overflow: (1) per-tool caps inside each tool; (2) ``maybe_persist_tool_result`` —
+ output over the tool's threshold is persisted and replaced by a preview + path; canonical home
+-is ALWAYS host-side ``$HERMES_HOME/cache/spillover/{id}.txt`` (works for sessions that never
++is ALWAYS a fresh file under ``$HERMES_HOME/cache/spillover`` (works for sessions that never
+ ran a terminal), remote backends get the translated in-sandbox path (probed for readability)
+ else a copy in the sandbox temp dir; (3) ``enforce_turn_budget``."""
+ 
+@@ -14,6 +14,7 @@
+ import tempfile
+ import threading
+ import time
++from uuid import uuid4
+ 
+ from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
+ 
+@@ -102,7 +103,8 @@
+         spill_dir = get_spillover_dir()
+         spill_dir.mkdir(parents=True, exist_ok=True)
+         path = spill_dir / filename
+-        path.write_bytes(data)
++        with path.open("xb") as output:
++            output.write(data)
+         persisted_size = os.stat(path).st_size
+     except OSError as exc:
+         logger.warning("Spillover write failed for %s: %s", filename, exc)
+@@ -234,7 +236,7 @@
+     # shared temp root on remote backends. The umask also covers the cat redirect.
+     from tools.code_execution_rpc import _private_dirs_cmd
+     cmd = (f"{_private_dirs_cmd(storage_dir)} "
+-           f"&& cat > {shlex.quote(remote_path)}")
++           f"&& (set -C && cat > {shlex.quote(remote_path)})")
+     if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
+         return False
+ 
+@@ -264,11 +266,9 @@
+ def _build_persisted_message(preview: str, has_more: bool, original_size: int,
+                              file_path: str) -> str:
+     """Build the <persisted-output> replacement block."""
+-    size_kb = original_size / 1024
+-    size_str = f"{size_kb / 1024:.1f} MB" if size_kb >= 1024 else f"{size_kb:.1f} KB"
+     return (
+         f"{PERSISTED_OUTPUT_TAG}\n"
+-        f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
++        f"This tool result was too large ({original_size:,} characters).\n"
+         f"Full output saved to: {file_path}\n"
+         "Use the read_file tool with offset and limit to access specific sections of this output.\n"
+         "Recovery: page through the saved file with read_file (offset/limit) or "
+@@ -303,7 +303,10 @@
+     # The size decision above stays on the raw inline result (that is what cost context); the file
+     # and the preview carry the pageable text inside an MCP envelope (#90426).
+     persisted_content = _pageable_text(content)
+-    filename = _safe_result_filename(tool_use_id)
++    # Provider IDs can repeat across sessions and retries. A spill reference
++    # identifies one saved result even when the next call has the same ID.
++    stem, extension = os.path.splitext(_safe_result_filename(tool_use_id))
++    filename = f"{stem}_{uuid4().hex}{extension}"
+     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
+ 
+     def _persisted(path: str, host_suffix: str = "") -> str:
