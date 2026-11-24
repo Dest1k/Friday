@@ -35,6 +35,13 @@ def valid_id(value):
             and all(char.isprintable() and not char.isspace() for char in value))
 
 
+def _document_output(step):
+    upload = step['input']
+    expected = step['observe']['documents'][0]
+    return {'filename': expected.get('filename_equals', upload['filename']),
+            'mime_type': upload['mime_type']}
+
+
 def validate_plan(plan, route, authenticated_route, observation_seconds):
     if (not isinstance(plan, dict) or not isinstance(route, DirectRoute) or route != authenticated_route
             or route.tester_user_id == route.product_user_id
@@ -50,8 +57,14 @@ def validate_plan(plan, route, authenticated_route, observation_seconds):
             or set(steps[1]['observe']) != {'text_equals'}):
         raise stock.Refused('Expected one file action followed by one exact-text action')
     document = steps[0]['observe']['documents'][0]
-    if set(document) != {'sha256', 'max_bytes', 'caption_equals'}:
+    required = {'sha256', 'max_bytes', 'caption_equals'}
+    if set(document) not in (required, required | {'filename_equals'}):
         raise stock.Refused('Exact output hash, byte bound and caption required')
+    if 'filename_equals' in document:
+        if not isinstance(document['filename_equals'], str):
+            raise stock.Refused('Exact output filename required')
+        # Validate the declared basename and catalogue MIME before any send.
+        stock.ordinary_document_response_failures(_document_output(steps[0]), [])
     if (not isinstance(observation_seconds, tuple) or len(observation_seconds) != 2
             or any(type(seconds) not in (int, float) or not 0 < seconds <= 600
                    for seconds in observation_seconds)
@@ -276,9 +289,8 @@ class _Run:
         if stock.digest(data) != row['sha256'] or len(data) != row['bytes']:
             raise stock.Refused('Saved file bytes contradict the durable observation')
         stock.verify_exact_document_bytes(data, row['sha256'], advertised['bytes'], resolved['bytes'], required)
-        output = {'filename': step['input']['filename'], 'mime_type': step['input']['mime_type']}
-        if stock.ordinary_document_response_failures(output, [row]):
-            raise stock.Refused('Saved document metadata contradicts the original input')
+        if stock.ordinary_document_response_failures(_document_output(step), [row]):
+            raise stock.Refused('Saved document metadata contradicts the plan')
         _sync(target)
         _sync(target.parent, directory=True)
 
@@ -331,8 +343,7 @@ class _Run:
         phase['held'] = dict(document, key=asdict(key), reason='DOCUMENT_NOT_ACCEPTED')
         _remaining(cutoff)
         stock.verify_exact_document_bytes(data, sha, attachment.size, info['size'], required)
-        output = {'filename': step['input']['filename'], 'mime_type': step['input']['mime_type']}
-        if stock.ordinary_document_response_failures(output, [document]):
+        if stock.ordinary_document_response_failures(_document_output(step), [document]):
             raise stock.Refused('Ordinary document metadata expectation failed')
         return document
 
