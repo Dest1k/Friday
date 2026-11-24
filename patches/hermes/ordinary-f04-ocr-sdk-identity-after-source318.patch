@@ -1,0 +1,39 @@
+diff --git a/gateway/ordinary_f04_bridge.py b/gateway/ordinary_f04_bridge.py
+--- a/gateway/ordinary_f04_bridge.py
++++ b/gateway/ordinary_f04_bridge.py
+@@ -566,7 +566,7 @@
+                      'binding_sha256': request['binding_sha256'], 'target': deepcopy(request['target'])}
+ 
+ 
+-def retain_document_ack(adapter, chat_id, data, *, file_name, reply_to, metadata, proof):
++def retain_document_ack(adapter, chat_id, data, *, file_name, reply_to, metadata, proof, sdk_document=None):
+     """Retain the actual ACK during the exact turn or its final-MEDIA delivery.
+ 
+     Native adapter final delivery follows the dispatch finalizer. Its existing
+@@ -642,6 +642,14 @@
+                 'proof': normalized, 'ingress_receipt_sha256': canonical_sha256(receipt),
+                 'generation': target['generation'], 'session_id': target['session_id'],
+                 'session_key': target['session_key'], 'observed_monotonic': time.monotonic()}
++        if sdk_document is not None:
++            from gateway.ordinary_f04_xlsx import terminal_witness_field
++
++            if terminal_witness_field(row) == 'pdf_ocr_docx_witness':
++                # Keep the SDK's cross-bot file identity only in this protected ACK.
++                file_unique_id = getattr(sdk_document, 'file_unique_id', None)
++                if type(file_unique_id) is str and _string(file_unique_id, 1024):
++                    item['document_file_unique_id'] = file_unique_id
+         row['artifacts'].append(item)
+     except Exception:
+         row['error'] = 'f04_actual_document_ack_rejected'
+diff --git a/plugins/platforms/telegram/telegram_document_bytes.py b/plugins/platforms/telegram/telegram_document_bytes.py
+--- a/plugins/platforms/telegram/telegram_document_bytes.py
++++ b/plugins/platforms/telegram/telegram_document_bytes.py
+@@ -99,7 +99,7 @@
+         # Preserve this actual ACK under its exact host-owned turn, if opted in.
+         from gateway.ordinary_f04_bridge import retain_document_ack
+         retain_document_ack(adapter, chat_id, data, file_name=file_name,
+-                            reply_to=reply_to, metadata=metadata, proof=proof)
++                            reply_to=reply_to, metadata=metadata, proof=proof, sdk_document=document)
+         return SendResult(success=True, message_id=str(message_id), raw_response=proof)
+     except Exception:  # health: allow BLE001 -- SDK errors can contain bot credentials; ambiguous sends are never retried here.
+         return SendResult(success=False, error="document_ack_unavailable")
