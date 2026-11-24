@@ -1,0 +1,45 @@
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -1126,8 +1126,8 @@
+ ) -> Dict[str, Any]:
+     """Build a replay entry for a non-tool-calling message, preserving ``_ASSISTANT_REPLAY_FIELDS``.
+ 
+-    ``preserve_timestamp``: only user rows need it (stale-dangerous-confirmation stripper). Falsy fields are
+-    dropped EXCEPT ``reasoning_content``: DeepSeek/Kimi treat "" as a sentinel; dropping it can 400.
++    Timestamps remain local replay metadata. User rows need them to retire stale confirmations.
++    Retained assistant replies need them to keep their display identity through compaction.
+ 
+     Empty values: most fields are dropped when falsy (matching the original PR #2974 behaviour) since an
+     empty list/string for those carries no information. The exception is ``reasoning_content``:
+@@ -1312,8 +1312,8 @@
+                         msg = {**msg, "api_content": replay_row.get("api_content")}
+                 if not content:
+                     continue
+-            # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
+-            entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
++            # Preserve the original time of plain replies carried through compaction.
++            entry = _build_replay_entry(role, content, msg, preserve_timestamp=role in {"user", "assistant"})
+             if inject_timestamps and role == "user" and isinstance(content, str):
+                 rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
+                 # Preserve only a sidecar matching the complete rendered message,
+diff --git a/tools/scoped_communication.py b/tools/scoped_communication.py
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -705,13 +705,15 @@
+         _fail('create_schema')
+     for value in [sender, *recipients]:
+         _text(value, 'invalid_address', 4096)
+-    message = EmailMessage(policy=policy.SMTP)
++    # QP's 76-character wire limit includes the soft-break marker.
++    message = EmailMessage(policy=policy.SMTP.clone(max_line_length=76))
+     message['From'] = sender
+     message['To'] = ', '.join(recipients)
+     message['Subject'] = _field(spec, 'subject')
+     message.set_content(_field(spec, 'text'), subtype='plain', charset='utf-8', cte='quoted-printable')
+     _checkpoint(checkpoint)
+-    output = message.as_bytes()
++    # Keep the existing SMTP header folding and CRLF when serializing.
++    output = message.as_bytes(policy=policy.SMTP)
+     if len(output) > MAX_BYTES:
+         _fail('output_limit')
+     _read_eml(output, checkpoint)
