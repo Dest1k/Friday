@@ -1,0 +1,55 @@
+--- a/gateway/control_socket.py
++++ b/gateway/control_socket.py
+@@ -349,9 +349,16 @@
+             handle.close()
+ 
+ 
+-def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
+-    """Convenience wrapper: ``identify`` the gateway serving ``home``."""
+-    return query_gateway_control(home, "identify", timeout=timeout)
++def identify_gateway(
++    home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT,
++    diagnostic: Optional[dict[str, str]] = None,
++) -> Optional[dict[str, Any]]:
++    """Identify the gateway and optionally report whether a usable reply arrived."""
++    result = query_gateway_control(home, "identify", timeout=timeout)
++    if diagnostic is not None:
++        diagnostic.update(transport="windows" if _IS_WINDOWS else "unix",
++                          outcome="no_response" if result is None else "ok")
++    return result
+ 
+ 
+ def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
+--- a/tests/gateway/test_control_socket.py
++++ b/tests/gateway/test_control_socket.py
+@@ -252,24 +252,29 @@
+ 
+ def test_no_socket_returns_none_fast(home: Path):
+     assert identify_gateway(home) is None
++    diagnostic = {}
++    assert identify_gateway(home, diagnostic=diagnostic) is None
++    assert diagnostic == {"transport": "unix", "outcome": "no_response"}
+     assert query_gateway_control(home, "status") is None
+ 
+ 
+ def test_default_identify_payload_shape(home: Path, monkeypatch):
+     """The real identify handler carries the fleet-consumer contract fields."""
+     monkeypatch.setenv("HERMES_HOME", str(home))
++    diagnostic = {}
+ 
+     async def scenario():
+         server = GatewayControlServer(home)  # default handlers
+         assert await server.start()
+         try:
+             loop = asyncio.get_running_loop()
+-            return await loop.run_in_executor(None, lambda: identify_gateway(home))
++            return await loop.run_in_executor(None, lambda: identify_gateway(home, diagnostic=diagnostic))
+         finally:
+             await server.stop()
+ 
+     ident = _run(scenario())
+     assert ident is not None
++    assert diagnostic == {"transport": "unix", "outcome": "ok"}
+     assert ident["protocol"] == CONTROL_PROTOCOL_VERSION
+     assert ident["pid"] == __import__("os").getpid()
+     # contract keys exist even when values are None/absent-degradable
