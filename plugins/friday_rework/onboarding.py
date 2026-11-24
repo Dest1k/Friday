@@ -342,6 +342,8 @@ class Onboarding:
         if binding['platform'] == 'cli':
             _cli_admission(root, binding)
             return True  # Explicit operator map; product enable remains separate.
+        if binding['platform'] == 'trueconf':
+            return ProductAccess.trueconf_role_allowed(binding['account_id'], binding['user_id'], 'user')
         from gateway.pairing import PairingStore
         return PairingStore().is_approved(binding['platform'], binding['user_id'])
 
@@ -450,6 +452,9 @@ class Onboarding:
             matches = [a for a in accounts if tuple(a[k] for k in IDENTITY[:3]) ==
                        (platform, transport_profile, account_id)]
             if len(matches) != 1: raise ValueError('foreign_product_account')
+            if platform == 'trueconf' and not ProductAccess.trueconf_role_allowed(
+                    account_id, user_id, 'user', require_enabled=False):
+                raise PermissionError('trueconf_principal_not_approved')
             cli_policy, cli_row = None, None
             if platform == 'cli':
                 cli_policy, cli_row = _prepare_cli_admission(root, settings, transport_profile, account_id, user_id, uid)

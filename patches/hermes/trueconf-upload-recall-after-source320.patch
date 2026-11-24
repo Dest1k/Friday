@@ -1,0 +1,227 @@
+--- a/gateway/run_attachment_presentation.py
++++ b/gateway/run_attachment_presentation.py
+@@ -1,6 +1,7 @@
+ """Verified original filenames as presentation-only metadata for ordinary delivery."""
+ from __future__ import annotations
+ 
++import asyncio
+ import hashlib
+ import json
+ import re
+@@ -69,16 +70,52 @@
+             or not _same_scope(getattr(event.source, "_friday_user_scope", None), cap)
+             or not isinstance(paths, frozenset) or not 0 < len(paths) <= 64):
+         return None
++    if cap.principal[0] == "trueconf":
++        files = _trueconf_current_files(event, source, cap, paths)
++    else:
++        files = _telegram_current_files(event, paths)
++    if not files:
++        return None
++    return {"schema": _SCHEMA, "scope": _scope(cap), "files": files}
++
++
++def _trueconf_current_files(event, source, cap, paths):
++    from gateway.run_inbound_media import owned_attachment_model_path
++    from gateway.trueconf_custody import admitted_route
++    from hermes_cli.friday_user_scope import ScopeDenied
++
++    published = getattr(event, "_trueconf_published_files", None)
++    if published is None or event.internal or event._ingress_merged:
++        return []
++    try:
++        route, _ = admitted_route(source, cap)
++        event_route, _ = admitted_route(event.source, cap)
++    except ScopeDenied:
++        return []
++    published_route, receipts = published
++    if (route != event_route or route != published_route or event.message_id != route.message
++            or paths != frozenset(path for path, _ in receipts)):
++        return []
++    files = []
++    for path, receipt in receipts:
++        record = _file_record(owned_attachment_model_path(event, path),
++                              {"size_bytes": receipt.size, "sha256": receipt.sha256}, receipt.name)
++        if record is not None:
++            files.append(record)
++    return files
++
++
++def _telegram_current_files(event, paths):
+     from gateway.run_inbound_media import owned_attachment_model_path
+     receipts = getattr(event, "_telegram_media_receipts", None)
+     if not isinstance(receipts, dict):
+-        return None
++        return []
+     files = []
+     for path in sorted(paths):
+         relative = owned_attachment_model_path(event, path)
+         receipt = receipts.get(path)
+         if relative is None or not isinstance(receipt, dict):
+-            return None
++            return []
+         presentation = receipt.get("presentation")
+         original = presentation.get("original_filename") if isinstance(presentation, dict) else None
+         if original is None:
+@@ -86,9 +123,7 @@
+         record = _file_record(relative, receipt.get("content"), original)
+         if record is not None:
+             files.append(record)
+-    if not files:
+-        return None
+-    return {"schema": _SCHEMA, "scope": _scope(cap), "files": files}
++    return files
+ 
+ 
+ def _metadata_files(value, cap):
+@@ -165,15 +200,8 @@
+     return display
+ 
+ 
+-def prepare_attachment_presentations(event, source, history, *, retained=()):
+-    """Index existing transcript proof once per turn; never read history during delivery."""
+-    from hermes_cli.friday_user_scope import ordinary_file_scope
+-    cap = ordinary_file_scope()
+-    setattr(source, _SOURCE_ATTR, (cap, {}))
+-    if cap is None:
+-        return None
+-    current = _current_metadata(event, source, cap)
+-    records = []
++def _attachment_name_index(cap, current, history, retained):
++    records = list(current["files"]) if current is not None else []
+     for value in retained:
+         records.extend(_metadata_files(value, cap))
+     if isinstance(history, list):
+@@ -183,15 +211,29 @@
+             display = row.get("display_metadata")
+             if isinstance(display, dict):
+                 records.extend(_metadata_files(display.get(ATTACHMENT_PRESENTATIONS_KEY), cap))
+-    if current is not None:
+-        records.extend(current["files"])
+     candidates = {}
+     for record in records:
+         key = (record["path"], record["sha256"], record["size_bytes"])
+         candidates.setdefault(key, set()).add(record["file_name"])
+-    names = {key: next(iter(values)) for key, values in candidates.items() if len(values) == 1}
+-    setattr(source, _SOURCE_ATTR, (cap, names))
+-    return current
++    return {key: next(iter(values)) for key, values in candidates.items() if len(values) == 1}
++
++
++def _trueconf_matching_files(cap, names):
++    from itertools import islice
++    from hermes_cli.friday_user_scope import ScopeDenied, workspace_document
++
++    verified = {}
++    # Recheck the bytes before presenting a retained proof as current. Limit
++    # filesystem work to the same number of files the sidecar can publish.
++    for key, name in islice(names.items(), 32):
++        path, sha256, size = key
++        try:
++            data, relative = workspace_document(str(cap.home / "workspace" / path), max_bytes=size)
++        except ScopeDenied:
++            continue
++        if relative == path and len(data) == size and hashlib.sha256(data).hexdigest() == sha256:
++            verified[key] = name
++    return verified
+ 
+ 
+ async def prepare_attachment_presentations_for_turn(
+@@ -202,7 +244,7 @@
+     grants file access, repairs a transcript, changes a send, or suppresses task
+     cancellation. Current verified metadata still persists by the existing path.
+     """
+-    from hermes_cli.friday_user_scope import ordinary_file_scope, _same_scope
++    from hermes_cli.friday_user_scope import ScopeDenied, ordinary_file_scope, _same_scope
+     cap = ordinary_file_scope()
+     setattr(source, _SOURCE_ATTR, (cap, {}))
+     if cap is None:
+@@ -211,20 +253,34 @@
+             or not _same_scope(getattr(getattr(event, "source", None), "_friday_user_scope", None), cap)):
+         return None
+     current = _current_metadata(event, source, cap)
++    trueconf = cap.principal[0] == "trueconf"
++    route_options = {}
++    if trueconf:
++        from gateway.trueconf_custody import admitted_route
++        try:
++            route, _ = admitted_route(source, cap)
++        except ScopeDenied:
++            return None
++        route_options["expected_route"] = ("trueconf", route.user, route.chat, route.chat_type, source.thread_id)
+     try:
+-        retained = await store.load_attachment_presentations(session_id, session_key, _scope(cap))
++        retained = await store.load_attachment_presentations(session_id, session_key, _scope(cap), **route_options)
+     except Exception:
+         # Metadata availability affects presentation only. CancelledError is a
+         # BaseException and propagates; no send or delivery reservation exists.
+         retained = None
++    if retained is not None or trueconf:
++        names = _attachment_name_index(cap, current, () if trueconf else history, retained or ())
++        if trueconf and names:
++            names = await asyncio.to_thread(_trueconf_matching_files, cap, names)
++    else:
++        names = {}
+     cap.check()
+     if (ordinary_file_scope() is not cap
+             or not _same_scope(getattr(source, "_friday_user_scope", None), cap)
+             or not _same_scope(getattr(getattr(event, "source", None), "_friday_user_scope", None), cap)):
+         return None
+-    if retained is None:
+-        return current
+-    return prepare_attachment_presentations(event, source, history, retained=retained)
++    setattr(source, _SOURCE_ATTR, (cap, names))
++    return current
+ 
+ 
+ def original_document_name(source, cap, relative, data):
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -250,7 +250,7 @@
+             data = _verified_bytes(fd, relative, content)
+         finally:
+             os.close(fd)
+-        staged.append((dest, data, content))
++        staged.append((dest, data, content, receipt))
+     root = _workspace_directory(cap)
+     try:
+         try:
+@@ -260,15 +260,16 @@
+         child = os.open('received', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+         try:
+             _owned(os.fstat(child), directory=True)
+-            for dest, data, content in staged:
++            for dest, data, content, _ in staged:
+                 cap.check()
+                 _publish_received(child, dest.name, data, content)
+         finally:
+             os.close(child)
+     finally:
+         os.close(root)
+-    event.media_urls = [str(dest) for dest, _, _ in staged]
++    event.media_urls = [str(dest) for dest, _, _, _ in staged]
+     event._friday_owned_attachment_paths = (cap, frozenset(event.media_urls))
++    event._trueconf_published_files = (route, tuple((str(dest), receipt) for dest, _, _, receipt in staged))
+ 
+ 
+ def _rehome_user_attachments(event, cap):
+--- a/gateway/session_transcript.py
++++ b/gateway/session_transcript.py
+@@ -604,7 +604,7 @@
+             raise TranscriptReadError(session_id) from e
+ 
+     def load_attachment_presentations(
+-        self, session_id: str, session_key: str, scope: dict,
++        self, session_id: str, session_key: str, scope: dict, *, expected_route=None,
+     ) -> Optional[List[Dict[str, Any]]]:
+         """Read bounded presentation proof from this exact route's compression ancestors.
+ 
+@@ -651,7 +651,7 @@
+             from hermes_cli.friday_product_access import principal_id
+             from gateway.run_attachment_presentation import _file_record
+             snapshot = route_snapshot()
+-            if snapshot is None:
++            if snapshot is None or (expected_route is not None and snapshot[1:] != expected_route):
+                 return None
+             db = self._db_for_key(session_key)
+             if db is None:

@@ -347,9 +347,12 @@ def prepare_workers(request, request_path, budget):
     return prepare(request, request_path, budget)
 
 
-def write(path, data, mode=0o600):
-    fd = os.open(path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, mode)
+def write(path, data, mode=0o600, *, parent_fd=None):
+    target = path if parent_fd is None else path.name
+    fd = os.open(target, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, mode, dir_fd=parent_fd)
     with os.fdopen(fd, 'wb') as stream:
+        if parent_fd is not None:
+            os.fchmod(stream.fileno(), mode)
         stream.write(data); stream.flush(); os.fsync(stream.fileno())
 
 
@@ -24018,6 +24021,686 @@ def inference_rebind_inputs(request, budget):
     return home,source,profile_home,access_path,before_input,after_input,marker
 
 
+_TRUECONF_ACTIVATION_BEFORE = frozenset({
+    'config.yaml', 'FRIDAY-PROFILE.json', 'FRIDAY-INSTALL.json', '.env', 'auth.json',
+    'SOUL.md', 'hermes-agent.source.json', 'hermes-agent/install-stamp.json',
+})
+_TRUECONF_ACTIVATION_NATIVE = frozenset({
+    'gateway/run.py', 'hermes_cli/friday_credential_admission.py',
+    'hermes_cli/friday_dashboard_owner.py', 'hermes_cli/friday_gateway_owner.py',
+    'hermes_cli/friday_ordinary_gateway.py', 'plugins/platforms/trueconf/transport.py',
+})
+
+
+def _trueconf_activation_snapshot(home, before):
+    """Read the operator-pinned files without creating locks or recovery files."""
+    f = api()
+    f.require(type(before) is dict and set(before) == _TRUECONF_ACTIVATION_BEFORE,
+              'ordinary_trueconf_exact_before_inventory_required')
+    snapshots = {}
+    for name, expected in before.items():
+        state = update_file_state(home / name)
+        f.require(
+            (state is None and name == 'auth.json' and expected is None)
+            or (state is not None and not state['mode'] & 0o077
+                and f.digest(state['data']) == expected),
+            'ordinary_trueconf_beforeimage_changed',
+        )
+        snapshots[name] = state
+    return snapshots
+
+
+def _trueconf_activation_dotenv(data):
+    from io import StringIO
+    from dotenv.parser import parse_stream
+
+    f = api()
+    f.require(type(data) is bytes and b'${' not in data and b'\0' not in data,
+              'ordinary_trueconf_literal_dotenv_required')
+    try:
+        stream = StringIO(data.decode('utf-8-sig'))
+    except UnicodeError:
+        raise f.Refused('ordinary_trueconf_literal_dotenv_required') from None
+    values = {}
+    for item in parse_stream(stream):
+        f.require(not item.error and (item.key is None or
+                  (item.key not in values and isinstance(item.value, str))),
+                  'ordinary_trueconf_unambiguous_dotenv_required')
+        if item.key is not None:
+            values[item.key] = item.value
+    return values
+
+
+def _trueconf_activation_config(raw, config):
+    """Apply the renderer's new branches on a comment-preserving YAML document."""
+    from io import StringIO
+    from hermes_yaml import roundtrip_yaml
+    from utils import _rt_value
+
+    yaml = roundtrip_yaml()
+    document = yaml.load(raw.decode('utf-8-sig'))
+
+    def settings(scope):
+        return scope['plugins']['entries']['friday_rework']['settings']
+
+    document['platforms']['trueconf'] = _rt_value(config['platforms']['trueconf'])
+    target, rendered = settings(document), settings(config)
+    target['product_access']['accounts'].append(_rt_value(rendered['product_access']['accounts'][-1]))
+    template_documents = target['onboarding']['templates']
+    templates = rendered['onboarding']['templates']
+    scopes = [(document, config)]
+    scopes.extend((item['config'], templates[name]['config']) for name, item in template_documents.items())
+    for existing, projected in scopes:
+        existing['platform_toolsets']['trueconf'] = _rt_value(projected['platform_toolsets']['trueconf'])
+        existing['display']['platforms']['trueconf'] = _rt_value(projected['display']['platforms']['trueconf'])
+    stream = StringIO()
+    yaml.dump(document, stream)
+    return stream.getvalue().encode('utf-8')
+
+
+def prepare_trueconf_activation(home, *, installation_input, before, reviewed_native,
+                                renderer_sha256, selection, candidate_dotenv, ca_reference=None):
+    """Return the three exact v2 metadata images and the candidate dotenv SHA.
+
+    Call in a fresh interpreter with -B and an empty private pycache prefix.
+    The caller owns custody of the pins, candidate dotenv, CA and future CAS.
+    Native source must already include the reviewed two-stage composition.
+    """
+    import copy
+    import ssl
+    import sys
+    import time
+
+    f = api()
+    f.require(sys.dont_write_bytecode and sys.pycache_prefix is not None,
+              'ordinary_trueconf_native_no_bytecode_required')
+    cache = f.directory(f.canonical(sys.pycache_prefix))
+    home = f.directory(f.canonical(str(home)))
+    f.require(not cache.is_relative_to(home) and not any(cache.iterdir()),
+              'ordinary_trueconf_empty_private_bytecode_prefix_required')
+    source = f.directory(home / 'hermes-agent')
+    saved = _trueconf_activation_snapshot(home, before)
+    input_path = f.pin(installation_input)
+    input_bytes = f.owned_file(input_path, private=True)
+    f.require(f.digest(input_bytes) == installation_input['sha256'] and
+              json.loads(input_bytes, object_pairs_hook=f.unique).get('home') == str(home),
+              'ordinary_trueconf_installation_input_changed')
+
+    marker_name = f.MARKER
+    profile_name = 'FRIDAY-PROFILE.json'
+    history_origin = 'preparation/ordinary-gateway/before/FRIDAY-INSTALL.json'
+    receipt_name = 'hermes-agent.source.json'
+    marker = json.loads(saved[marker_name]['data'], object_pairs_hook=f.unique)
+    f.require(marker.get('schema') == f.SCHEMA and marker.get('home') == str(home)
+              and marker.get('source') == str(source)
+              and marker.get('completion_stage') == 'TELEGRAM_ORDINARY'
+              and marker.get('input_sha256') == installation_input['sha256']
+              and marker.get('source_receipt_sha256') == before[receipt_name],
+              'ordinary_trueconf_prior_telegram_installation_required')
+    f.require(not os.path.lexists(home / 'gateway.json'), 'ordinary_trueconf_legacy_gateway_refused')
+    receipt = json.loads(saved[receipt_name]['data'], object_pairs_hook=f.unique)
+    f.require(type(reviewed_native) is dict and set(reviewed_native) == _TRUECONF_ACTIVATION_NATIVE
+              and all(type(pin) is str and len(pin) == 64 and
+                      receipt.get('files', {}).get(name, {}).get('sha256') == pin
+                      for name, pin in reviewed_native.items()),
+              'ordinary_trueconf_reviewed_native_composition_required')
+    # Authenticate the receipt inventory before importing any installed module.
+    f.source_checked(source, receipt, {'commit': receipt['commit'], 'tree': receipt['base_tree']})
+    renderer_path = f.ROOT / 'tools/configure_product.py'
+    onboarding_name = 'plugins/friday_rework/onboarding.py'
+    onboarding_path = f.ROOT / onboarding_name
+    onboarding_pin = marker['plugin_files'].get(onboarding_name)
+    f.require(onboarding_pin is not None and f.digest(f.owned_file(onboarding_path)) == onboarding_pin,
+              'ordinary_trueconf_reviewed_onboarding_changed')
+    f.require(f.digest(f.owned_file(renderer_path)) == renderer_sha256,
+              'ordinary_trueconf_reviewed_renderer_changed')
+    f.native_packages(source)
+    from gateway.trueconf_access import (CHANNEL_ENVS, PASSWORD_ENVS, TOKEN_ENV, TrueConfAccess,
+                                        profile_config, valid_id)
+    from hermes_cli import friday_dashboard_owner as owner
+    from hermes_cli import friday_ordinary_gateway as ordinary
+    from hermes_cli.auth import has_usable_secret
+    from hermes_cli.config_effective import _effective
+    from hermes_cli.friday_user_scope import authority
+    from hermes_yaml import YAMLError, safe_load
+    from plugins.friday_rework import onboarding
+    from tools import configure_product
+
+    f.require(Path(configure_product.__file__).resolve() == renderer_path
+              and Path(onboarding.__file__).resolve() == onboarding_path,
+              'ordinary_trueconf_reviewed_renderer_changed')
+
+    f.require(owner.SOURCE == source and
+              Path(ordinary.__file__).resolve() == source / 'hermes_cli/friday_ordinary_gateway.py'
+              and owner.source_identity(home)['receipt'] == before[receipt_name],
+              'ordinary_trueconf_authentication_owner_changed')
+    phase = ordinary.phase_binding(marker)
+    f.require(phase['source_receipt_sha256'] == before[receipt_name]
+              and phase['operator_entry'].get('input') == installation_input
+              and set(phase['credential_files']) == {'.env', 'auth.json'}
+              and phase['credential_files']['auth.json'] == before['auth.json'],
+              'ordinary_trueconf_prior_binding_changed')
+    f.require(set(marker['profile_files']) == {'config.yaml', 'SOUL.md', profile_name}
+              and marker['profile_files'][profile_name] == phase['profile_sha256'] == before[profile_name]
+              and marker['profile_files']['SOUL.md'] == before['SOUL.md'],
+              'ordinary_trueconf_prior_profile_changed')
+
+    history = phase['history']
+    f.require(type(history) is dict and history_origin in history,
+              'ordinary_trueconf_prior_history_required')
+    for name, pin in history.items():
+        path = Path(name)
+        f.require(not path.is_absolute() and '..' not in path.parts
+                  and (name.startswith('preparation/ordinary-gateway/before/') or
+                       (len(path.parts) == 1 and name.startswith('FRIDAY-INSTALL.') and name != marker_name)),
+                  'ordinary_trueconf_prior_history_path_refused')
+        data = f.owned_file(home / path, private=True)
+        f.require(f.digest(data) == pin, 'ordinary_trueconf_prior_history_changed')
+        if name == history_origin:
+            origin = json.loads(data, object_pairs_hook=f.unique)
+    f.require(origin.get('completion_stage') == 'CLI_HOST_ONLY'
+              and all(origin.get(key) == marker.get(key) for key in ('original_attempt', 'cli_segment'))
+              and f.cli_historical_scope_closed(marker['original_attempt'], 'friday.native-install.v1')
+              and (marker.get('cli_segment') is None or f.cli_historical_scope_closed(
+                  marker['cli_segment']['clock'], 'friday.cli-segment-clock.v1')),
+              'ordinary_trueconf_prior_clocks_changed')
+
+    raw = saved['config.yaml']['data']
+    f.require(b'${' not in raw, 'ordinary_trueconf_literal_configuration_required')
+    try:
+        authored = safe_load(raw)
+    except (UnicodeError, YAMLError):
+        raise f.Refused('ordinary_trueconf_configuration_unreadable') from None
+    f.require(type(authored) is dict, 'ordinary_trueconf_configuration_mapping_required')
+    profile = json.loads(saved[profile_name]['data'], object_pairs_hook=f.unique)
+    with authority(home):
+        effective = _effective(copy.deepcopy(authored))
+        f.require(ordinary.configuration_matches(effective, phase['configuration_sha256']),
+                  'ordinary_trueconf_prior_configuration_changed')
+        ordinary.configuration_contract(effective, phase['baseline'], phase=phase)
+        ordinary.allowlist_current(home, phase['baseline']['telegram_allowed_users'])
+        config, contract = configure_product.extend_managed_trueconf(authored, profile, selection)
+        try:
+            config_bytes = _trueconf_activation_config(raw, config)
+            roundtripped = safe_load(config_bytes)
+        except (UnicodeError, YAMLError):
+            raise f.Refused('ordinary_trueconf_configuration_unreadable') from None
+        f.require(b'${' not in config_bytes and roundtripped == config,
+                  'ordinary_trueconf_projected_configuration_changed')
+        projected = _effective(roundtripped)
+
+    old_values = _trueconf_activation_dotenv(saved['.env']['data'])
+    new_values = _trueconf_activation_dotenv(candidate_dotenv)
+
+    def credential_hash(values):
+        return f.digest(json.dumps({key: value for key, value in values.items()
+                                    if key != 'TELEGRAM_ALLOWED_USERS'},
+                                   sort_keys=True, separators=(',', ':')).encode())
+
+    f.require(credential_hash(old_values) == phase['credential_files']['.env'],
+              'ordinary_trueconf_prior_credentials_changed')
+    names = set(contract['required_scoped_names']['channels']['trueconf'])
+
+    def unrelated(values):
+        return {key: value for key, value in values.items() if key not in CHANNEL_ENVS}
+
+    f.require(unrelated(new_values) == unrelated(old_values),
+              'ordinary_trueconf_unrelated_credentials_changed')
+    f.require(all(new_values.get(key) == old_values[key] for key in CHANNEL_ENVS.intersection(old_values))
+              and CHANNEL_ENVS.intersection(new_values) == names
+              and all(valid_id(new_values[name]) if name == PASSWORD_ENVS[0] else
+                      has_usable_secret(new_values[name], min_length=1) for name in names),
+              'ordinary_trueconf_selected_credentials_required')
+
+    trueconf = profile_config(projected)
+    access = TrueConfAccess.from_config(trueconf)
+    if TOKEN_ENV in names:
+        f.require(trueconf.extra['token_expires_at'] > time.time(), 'ordinary_trueconf_selected_token_expired')
+    tls = {'mode': 'system'}
+    if 'tls_ca_file' in trueconf.extra:
+        f.require(type(ca_reference) is dict and set(ca_reference) == {'path', 'sha256'}
+                  and ca_reference['path'] == trueconf.extra['tls_ca_file'],
+                  'ordinary_trueconf_exact_ca_reference_required')
+        ca_path = f.canonical(ca_reference['path'])
+        f.require(ca_path.is_relative_to(home) and ca_path != home
+                  and ca_path != input_path and not ca_path.is_relative_to(source)
+                  and ca_path.relative_to(home).as_posix() not in set(before) | history.keys(),
+                  'ordinary_trueconf_ca_path_refused')
+        tls = {'mode': 'private-ca', **ca_reference}
+    else:
+        f.require(ca_reference is None, 'ordinary_trueconf_unexpected_ca_reference')
+
+    profile_bytes = encoded(contract)
+    profile_sha = f.digest(profile_bytes)
+    credential_sha = credential_hash(new_values)
+    updated_phase = dict(
+        phase, schema=ordinary.TRUECONF_SCHEMA, scope=ordinary.TRUECONF_SCOPE,
+        configuration_sha256=ordinary.normalized_configuration(projected),
+        credential_files={'.env': credential_sha, 'auth.json': before['auth.json']},
+        profile_sha256=profile_sha,
+        trueconf={'scope_id': access.scope_id, 'server_url': access.server_url, 'tls': tls},
+    )
+    updated = dict(marker, completion_stage=ordinary.TRUECONF_STAGE, ordinary_gateway=updated_phase,
+                   profile_files={**marker['profile_files'], 'config.yaml': f.digest(config_bytes),
+                                  profile_name: profile_sha})
+    ordinary.phase_binding(updated)
+    access, ca = ordinary.trueconf_receiver(home, trueconf, updated_phase)
+    ordinary.dynamic_configuration(projected, phase['baseline'], trueconf=access)
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if ca is None:
+            paths = ssl.get_default_verify_paths()
+            cafile = paths.openssl_cafile
+            capath = paths.openssl_capath
+            cafile = cafile if cafile and Path(cafile).is_file() else None
+            capath = capath if capath and Path(capath).is_dir() else None
+            f.require(cafile is not None or capath is not None, 'ordinary_trueconf_system_ca_unavailable')
+            context.load_verify_locations(cafile=cafile, capath=capath)
+        else:
+            context.load_verify_locations(cadata=ca.decode('ascii'))
+    except (OSError, UnicodeError):
+        raise f.Refused('ordinary_trueconf_ca_invalid') from None
+
+    f.require(_trueconf_activation_snapshot(home, before) == saved
+              and f.pin(installation_input) == input_path
+              and f.digest(f.owned_file(renderer_path)) == renderer_sha256
+              and f.digest(f.owned_file(onboarding_path)) == onboarding_pin
+              and not os.path.lexists(home / 'gateway.json'),
+              'ordinary_trueconf_candidate_snapshot_changed')
+    return {'files': {'config.yaml': config_bytes, profile_name: profile_bytes, marker_name: encoded(updated)},
+            'candidate_dotenv_sha256': f.digest(candidate_dotenv)}
+
+
+_TRUECONF_CUTOVER_SCHEMA = 'friday.ordinary-trueconf-cutover.v1'
+_TRUECONF_CUTOVER_FILES = ('.env', 'config.yaml', 'FRIDAY-PROFILE.json', 'FRIDAY-INSTALL.json')
+
+
+def _trueconf_state_pin(state):
+    if state is None:
+        return None
+    return {'sha256': api().digest(state['data']), 'identity': list(state['identity'])}
+
+
+def _trueconf_cutover_native(home, marker, stage):
+    from hermes_cli import friday_dashboard_owner as owner
+    from hermes_cli import friday_ordinary_gateway as ordinary
+    from hermes_cli.config_effective import read_user_config_effective_readonly
+    from hermes_cli.friday_user_scope import authority
+
+    f = api()
+    phase = ordinary.phase_binding(marker)
+    f.require(marker.get('completion_stage') == stage
+        and phase['source_receipt_sha256'] == owner.source_identity(home)['receipt']
+        and phase['profile_sha256'] == f.digest(f.owned_file(home/'FRIDAY-PROFILE.json', private=True)),
+        'ordinary_trueconf_native_stage_binding_changed')
+    value = home/'auth.json'
+    auth = f.digest(f.owned_file(value, private=True)) if os.path.lexists(value) else None
+    f.require(phase['credential_files'] == {'.env': ordinary.credential_identity(home)[0], 'auth.json': auth},
+        'ordinary_trueconf_native_credential_binding_changed')
+    for name, pin in phase['history'].items():
+        f.require(f.digest(f.owned_file(home/name, private=True)) == pin,
+                  'ordinary_trueconf_native_history_changed')
+    ordinary.allowlist_current(home, phase['baseline']['telegram_allowed_users'])
+    with authority(home):
+        config = read_user_config_effective_readonly(home/'config.yaml')
+        f.require(ordinary.configuration_matches(config, phase['configuration_sha256']),
+                  'ordinary_trueconf_native_configuration_changed')
+        ordinary.configuration_contract(config, phase['baseline'], phase=phase)
+
+
+def _trueconf_cutover_inputs(request, request_ref, *, recovering):
+    import sys
+    from scripts.dsh_prepare import StopUnconfirmed
+
+    f = api()
+    fields = {'schema', 'seconds', 'home', 'installation_input', 'before', 'reviewed_native',
+              'renderer_sha256', 'selection', 'candidate_dotenv', 'ca_reference', 'native_unit', 'role_lock_dir'}
+    f.require(type(request) is dict and set(request) == fields and request['schema'] == _TRUECONF_CUTOVER_SCHEMA
+              and type(request['seconds']) is int and 45 <= request['seconds'] <= 600,
+              'ordinary_trueconf_explicit_cutover_request_required')
+    home = f.directory(f.canonical(request['home']))
+    source = f.directory(home/'hermes-agent')
+    f.require(sys.dont_write_bytecode and sys.pycache_prefix is not None,
+              'ordinary_trueconf_native_no_bytecode_required')
+    cache = f.directory(f.canonical(sys.pycache_prefix))
+    f.require(not cache.is_relative_to(home) and not any(cache.iterdir()),
+              'ordinary_trueconf_empty_private_bytecode_prefix_required')
+    f.require(os.environ.get('HERMES_HOME') == str(home)
+              and type(request['before']) is dict and set(request['before']) == _TRUECONF_ACTIVATION_BEFORE,
+              'ordinary_trueconf_cutover_home_required')
+    request_path = f.pin(request_ref)
+    f.owned_file(request_path, private=True)
+    f.require(f.read_json(request_path) == request,
+              'ordinary_trueconf_cutover_request_changed')
+    marker_pin = request['before'][f.MARKER]
+    f.require(type(marker_pin) is str and len(marker_pin) == 64
+              and all(char in '0123456789abcdef' for char in marker_pin),
+              'ordinary_trueconf_cutover_marker_pin_required')
+    transaction = f.directory(home/'preparation') / ('ordinary-trueconf-' + marker_pin)
+    if recovering:
+        f.directory(transaction)
+        if not os.path.lexists(transaction/'plan.json'):
+            raise StopUnconfirmed('TrueConf cutover staging requires reconciliation')
+    else:
+        f.require(not os.path.lexists(transaction), 'ordinary_trueconf_cutover_consumed_no_retry')
+    return home, source, transaction, request_path
+
+
+def trueconf_cutover(request, request_ref, budget, *, recovering=False):
+    """Activate a reviewed native v2 profile, or settle the exact interrupted publication."""
+    from scripts.dsh_prepare import StopUnconfirmed
+
+    paths = _trueconf_cutover_inputs(request, request_ref, recovering=recovering)
+    try:
+        return _run_trueconf_cutover(paths, request, request_ref, budget, recovering=recovering)
+    except StopUnconfirmed:
+        raise
+    except Exception as cause:
+        if recovering:
+            raise StopUnconfirmed('TrueConf cutover requires reconciliation') from cause
+        raise
+
+
+def _run_trueconf_cutover(paths, request, request_ref, budget, *, recovering):
+    from scripts.dsh_prepare import StopUnconfirmed
+
+    f = api()
+    home, source, transaction, request_path = paths
+    input_path = f.pin(request['installation_input'])
+    unit_path = f.pin(request['native_unit'])
+    references = {request_path: request_ref, input_path: request['installation_input'], unit_path: request['native_unit']}
+    destinations = {home/name for name in _TRUECONF_ACTIVATION_BEFORE}
+    f.require(len(references) == 3 and all(path not in destinations and not path.is_relative_to(transaction)
+                  for path in references),
+              'ordinary_trueconf_cutover_reference_alias_refused')
+    if not recovering:
+        credentials = f.pin(request['candidate_dotenv'])
+        f.require(credentials not in destinations and credentials not in references
+                  and not credentials.is_relative_to(transaction),
+                  'ordinary_trueconf_cutover_credential_source_alias_refused')
+        references[credentials] = request['candidate_dotenv']
+    external = {path: update_file_state(path) for path in references}
+    f.require(all(state is not None and f.digest(state['data']) == references[path]['sha256']
+                  for path, state in external.items()), 'ordinary_trueconf_cutover_reference_changed')
+    if not recovering:
+        prepared_before = _trueconf_activation_snapshot(home, request['before'])
+        prior = json.loads(prepared_before[f.MARKER]['data'], object_pairs_hook=f.unique)
+        product_pins = {
+            f.ROOT/'tools/configure_product.py': request['renderer_sha256'],
+            f.ROOT/'plugins/friday_rework/onboarding.py': prior['plugin_files']['plugins/friday_rework/onboarding.py'],
+        }
+        for path, pin in product_pins.items():
+            state = update_file_state(path)
+            f.require(state is not None and f.digest(state['data']) == pin,
+                      'ordinary_trueconf_cutover_product_source_changed')
+            external[path] = state
+        candidate = f.owned_file(credentials, private=True)
+        f.require(f.digest(candidate) == references[credentials]['sha256'],
+                  'ordinary_trueconf_cutover_credential_source_changed')
+        rendered = budget.call(prepare_trueconf_activation, home, installation_input=request['installation_input'],
+            before=request['before'], reviewed_native=request['reviewed_native'],
+            renderer_sha256=request['renderer_sha256'], selection=request['selection'],
+            candidate_dotenv=candidate, ca_reference=request['ca_reference'])
+        f.require(rendered['candidate_dotenv_sha256'] == references[credentials]['sha256'],
+                  'ordinary_trueconf_cutover_candidate_changed')
+    else:
+        receipt = f.read_json(home/'hermes-agent.source.json')
+        f.require(f.digest(f.owned_file(home/'hermes-agent.source.json', private=True))
+                  == request['before']['hermes-agent.source.json'],
+                  'ordinary_trueconf_cutover_source_changed')
+        budget.call(f.source_checked, source, receipt, {'commit': receipt['commit'], 'tree': receipt['base_tree']})
+        f.native_packages(source)
+    from hermes_cli import friday_ordinary_gateway as ordinary
+    from gateway import host_rendezvous as hr
+    role_directory = f.directory(f.canonical(request['role_lock_dir']))
+    f.require(hr.host_state_dir() == role_directory, 'ordinary_trueconf_cutover_native_lock_dir_changed')
+
+    home_fd = os.open(home, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    with inference_retaining_cleanup(home_fd) as stack:
+        fcntl.flock(home_fd, fcntl.LOCK_EX|fcntl.LOCK_NB)
+        home_identity = SourceUpdateDirectories.identity(os.fstat(home_fd))
+        _trueconf_cutover_inputs(request, request_ref, recovering=recovering)
+        role_names = (hr.ROLE_GATEWAY, hr.ROLE_SERVE, hr.ROLE_DESKTOP_SERVE)
+        f.require(not any(hr.owns_host_lock(role) for role in role_names),
+                  'ordinary_trueconf_cutover_native_role_already_owned')
+        try:
+            native = stack.enter_context(stopped_consumers(home, request['native_unit'], budget))
+        except BaseException as primary:
+            leftover = [role for role in role_names if hr.owns_host_lock(role)]
+            if leftover:
+                for role in reversed(leftover):
+                    try:
+                        hr.release_host_lock(role)
+                    except BaseException as cleanup:
+                        f.remember_secondary(primary, cleanup)
+                raise StopUnconfirmed('TrueConf stopped-role custody requires reconciliation') from primary
+            raise
+        role_identity = SourceUpdateDirectories.identity(role_directory.lstat())
+        roles = {role: update_file_state(hr.lock_path(role)) for role in role_names}
+        f.require(all(state is not None and hr.owns_host_lock(role) for role,state in roles.items()),
+                  'ordinary_trueconf_cutover_native_role_custody_required')
+        build = stack.enter_context(retained_build_lock(source))
+        pm = stack.enter_context(retained_pm_lock(home, source))
+        admission = stack.enter_context(project_current_admission_locks(home, budget))
+        file_locks = [stack.enter_context(retained_build_lock(source, lock_path=home/name, required=True))
+                      for name in ('config.yaml.lock', 'auth.lock', '.env.lock')]
+        protected = list(_TRUECONF_ACTIVATION_BEFORE) + ['preparation/placeholder']
+        directories = stack.enter_context(SourceUpdateDirectories(home, protected, set()))
+
+        def custody(reserve=0):
+            budget.check(reserve=reserve)
+            directories.prove()
+            f.require(SourceUpdateDirectories.identity(home.lstat()) == home_identity
+                      and all(same_update_file(path, snapshot) for path,snapshot in external.items()),
+                      'ordinary_trueconf_cutover_custody_changed')
+            native()
+            build()
+            pm()
+            admission()
+            for lock in file_locks:
+                lock()
+            f.require(hr.host_state_dir() == role_directory
+                      and SourceUpdateDirectories.identity(role_directory.lstat()) == role_identity
+                      and all(hr.owns_host_lock(role) and same_update_file(hr.lock_path(role), state)
+                              for role,state in roles.items()),
+                      'ordinary_trueconf_cutover_native_role_custody_changed')
+
+        if not recovering:
+            custody(12)
+            before = _trueconf_activation_snapshot(home, request['before'])
+            f.require(before == prepared_before, 'ordinary_trueconf_cutover_beforeimage_changed')
+            marker = json.loads(before[f.MARKER]['data'], object_pairs_hook=f.unique)
+            _trueconf_cutover_native(home, marker, 'TELEGRAM_ORDINARY')
+            phase = ordinary.phase_binding(marker)
+            held = {n: _trueconf_state_pin(state) for n, state in before.items() if n not in _TRUECONF_CUTOVER_FILES}
+            held.update({name: _trueconf_state_pin(update_file_state(home/name)) for name in phase['history']})
+            f.require(all(held[n]['sha256'] == pin for n, pin in phase['history'].items()),
+                      'ordinary_trueconf_cutover_history_changed')
+            preparation_fd = directories.parent_fd('preparation/placeholder')
+            os.mkdir(transaction.name, mode=0o700, dir_fd=preparation_fd)
+            draft_fd = os.open(transaction.name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW, dir_fd=preparation_fd)
+            stack.callback(os.close, draft_fd)
+            os.fsync(preparation_fd)
+            draft_dirs = {'': draft_fd}
+            staged_states = {}
+            for kind, payloads in (('before', {n: before[n]['data'] for n in _TRUECONF_CUTOVER_FILES}),
+                                   ('after', {'.env': candidate, **rendered['files']})):
+                target = transaction/kind
+                os.mkdir(kind, mode=0o700, dir_fd=draft_fd)
+                stage_fd = os.open(kind, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW, dir_fd=draft_fd)
+                stack.callback(os.close, stage_fd)
+                draft_dirs[kind] = stage_fd
+                for name in _TRUECONF_CUTOVER_FILES:
+                    write(target/name, payloads[name], before[name]['mode'], parent_fd=stage_fd)
+                os.fsync(stage_fd)
+                staged_states[kind] = {
+                    name: _trueconf_state_pin(update_file_state(target/name, stage_fd))
+                    for name in _TRUECONF_CUTOVER_FILES}
+            plan = {
+                'schema': _TRUECONF_CUTOVER_SCHEMA, 'request_sha256': request_ref['sha256'],
+                'deadline_mono': budget.deadline, 'held': held,
+                'directories': {kind: list(SourceUpdateDirectories.identity(os.fstat(fd)))
+                                for kind,fd in draft_dirs.items()},
+                'original': {name: _trueconf_state_pin(before[name]) for name in _TRUECONF_CUTOVER_FILES},
+                **staged_states,
+            }
+            write(transaction/'plan.json', encoded(plan), 0o400, parent_fd=draft_fd)
+            os.fsync(draft_fd)
+
+        plan_path = transaction/'plan.json'
+        plan_state = update_file_state(plan_path)
+        f.require(plan_state is not None and plan_state['mode'] == 0o400,
+                  'ordinary_trueconf_cutover_plan_changed')
+        plan = json.loads(plan_state['data'], object_pairs_hook=f.unique)
+        f.require(type(plan) is dict and set(plan) == {
+                    'schema', 'request_sha256', 'deadline_mono', 'held', 'directories', 'original', 'before', 'after'}
+                  and plan['schema'] == _TRUECONF_CUTOVER_SCHEMA and plan['request_sha256'] == request_ref['sha256']
+                  and set(plan['directories']) == {'', 'before', 'after'}
+                  and all(set(plan[kind]) == set(_TRUECONF_CUTOVER_FILES)
+                          for kind in ('original', 'before', 'after'))
+                  and all(plan['original'][name]['sha256'] == plan['before'][name]['sha256']
+                          == request['before'][name] for name in _TRUECONF_CUTOVER_FILES)
+                  and plan['after']['.env']['sha256'] == request['candidate_dotenv']['sha256'],
+                  'ordinary_trueconf_cutover_plan_changed')
+        old_marker_state = update_file_state(transaction/'before'/f.MARKER)
+        if old_marker_state is None:
+            old_marker_state = update_file_state(home/f.MARKER)
+        f.require(old_marker_state is not None and f.digest(old_marker_state['data']) == request['before'][f.MARKER],
+                  'ordinary_trueconf_cutover_original_marker_unproved')
+        history = ordinary.phase_binding(json.loads(old_marker_state['data'], object_pairs_hook=f.unique))['history']
+        held_before = _TRUECONF_ACTIVATION_BEFORE.difference(_TRUECONF_CUTOVER_FILES)
+        f.require(type(plan['held']) is dict and set(plan['held']) == held_before | set(history)
+                  and all((state['sha256'] if state is not None else None)
+                          == (history[name] if name in history else request['before'][name])
+                          for name, state in plan['held'].items()),
+                  'ordinary_trueconf_cutover_held_inventory_changed')
+        rel = transaction.relative_to(home)
+        tx_files = [str(rel/kind/name) for kind in ('before','after') for name in _TRUECONF_CUTOVER_FILES]
+        tx_files.extend([str(rel/'plan.json'), *plan['held']])
+        tx_dirs = stack.enter_context(SourceUpdateDirectories(home, tx_files, set()))
+        root_fd = tx_dirs.parent_fd(f.MARKER)
+        tx_fd = tx_dirs.parent_fd(str(rel/'plan.json'))
+
+        def prove(reserve=0):
+            custody(reserve)
+            tx_dirs.prove()
+            f.require(all(list(tx_dirs.identities[str(rel/kind)]) == identity
+                          for kind,identity in plan['directories'].items())
+                      and same_update_file(plan_path, plan_state, tx_fd)
+                      and all(_trueconf_state_pin(update_file_state(home/name, tx_dirs.parent_fd(name))) == pin
+                              for name,pin in plan['held'].items()),
+                      'ordinary_trueconf_cutover_retained_state_changed')
+            current = {name: _trueconf_state_pin(update_file_state(home/name, root_fd))
+                       for name in _TRUECONF_CUTOVER_FILES}
+            order = []
+            for name,state in current.items():
+                kinds = ('after', 'before', 'original')
+                f.require(state is not None and state in [plan[k][name] for k in kinds],
+                          'ordinary_trueconf_cutover_foreign_identity')
+                order.append(next(i for i,k in enumerate(kinds) if state == plan[k][name]))
+                for kind in ('before','after'):
+                    expected = None if state == plan[kind][name] else plan[kind][name]
+                    found = _trueconf_state_pin(update_file_state(transaction/kind/name,
+                        tx_dirs.parent_fd(str(rel/kind/name))))
+                    # A rollback consumes the beforeimage and overwrites the afterimage.
+                    if kind == 'after' and state == plan['before'][name]:
+                        expected = None
+                    f.require(found == expected, 'ordinary_trueconf_cutover_foreign_identity')
+            f.require(order == sorted(order), 'ordinary_trueconf_cutover_publication_order_unproved')
+            return current
+
+        def move(kind, name, required, *, reserve=0):
+            current = prove(reserve=reserve)
+            f.require(current[name] == required, 'ordinary_trueconf_cutover_publication_identity_changed')
+            origin_fd = tx_dirs.parent_fd(str(rel/kind/name))
+            os.replace(name, name, src_dir_fd=origin_fd, dst_dir_fd=root_fd)
+            os.fsync(origin_fd)
+            os.fsync(root_fd)
+            f.require(_trueconf_state_pin(update_file_state(home/name, root_fd)) == plan[kind][name],
+                      'ordinary_trueconf_cutover_published_inode_changed')
+
+        def settle(stage, outcome):
+            state = prove()
+            if outcome == 'COMMITTED':
+                f.require(state == plan['after'], 'ordinary_trueconf_cutover_incomplete_commit')
+            else:
+                f.require(all(state[name] != plan['after'][name] for name in _TRUECONF_CUTOVER_FILES),
+                          'ordinary_trueconf_cutover_incomplete_restore')
+            marker = json.loads(update_file_state(home/f.MARKER, root_fd)['data'], object_pairs_hook=f.unique)
+            _trueconf_cutover_native(home, marker, stage)
+            # A prior process may have died after its last rename and before
+            # syncing either participant. Confirm the complete stage first.
+            for fd in (root_fd, tx_dirs.parent_fd(str(rel/'before'/f.MARKER)),
+                        tx_dirs.parent_fd(str(rel/'after'/f.MARKER))):
+                os.fsync(fd)
+            f.require(prove() == state, 'ordinary_trueconf_cutover_native_readback_changed')
+            result = {'schema': _TRUECONF_CUTOVER_SCHEMA, 'state': outcome,
+                      'request_sha256': request_ref['sha256'], 'completion_stage': stage,
+                      'consumers_started': False}
+            terminal = transaction/'outcome.json'
+            existing = update_file_state(terminal, tx_fd)
+            if existing is not None:
+                f.require(recovering and existing['mode'] == 0o400 and existing['data'] == encoded(result),
+                          'ordinary_trueconf_cutover_outcome_invalid')
+                os.fsync(tx_fd)
+                f.require(prove() == state and same_update_file(terminal, existing, tx_fd),
+                          'ordinary_trueconf_cutover_outcome_readback_changed')
+                return result
+            temporary = transaction/'outcome-staged.json'
+            if not os.path.lexists(temporary):
+                write(temporary, encoded(result), 0o400, parent_fd=tx_fd)
+            staged = update_file_state(temporary, tx_fd)
+            f.require(staged is not None and staged['mode'] == 0o400 and staged['data'] == encoded(result),
+                      'ordinary_trueconf_cutover_outcome_staging_changed')
+            fd = os.open(temporary.name, os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK, dir_fd=tx_fd)
+            try:
+                info = os.fstat(fd)
+                f.require((info.st_dev, info.st_ino) == staged['identity'][:2],
+                          'ordinary_trueconf_cutover_outcome_staging_changed')
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            f.require(same_update_file(temporary, staged, tx_fd),
+                      'ordinary_trueconf_cutover_outcome_staging_changed')
+            rename_directory_noreplace(tx_fd, temporary.name, tx_fd, 'outcome.json')
+            os.fsync(tx_fd)
+            f.require(prove() == state and same_update_file(terminal, staged, tx_fd),
+                      'ordinary_trueconf_cutover_outcome_readback_changed')
+            return result
+
+        def rollback():
+            for name in reversed(_TRUECONF_CUTOVER_FILES):
+                if prove()[name] == plan['after'][name]:
+                    move('before', name, plan['after'][name])
+            return settle('TELEGRAM_ORDINARY', 'ROLLED_BACK')
+
+        if recovering:
+            try:
+                current = prove()
+                if current == plan['after']:
+                    return settle(ordinary.TRUECONF_STAGE, 'COMMITTED')
+                if os.path.lexists(transaction/'outcome.json'):
+                    return settle('TELEGRAM_ORDINARY', 'ROLLED_BACK')
+                return rollback()
+            except BaseException as cause:
+                raise StopUnconfirmed('TrueConf cutover requires reconciliation') from cause
+        try:
+            f.require(prove(12) == plan['original'], 'ordinary_trueconf_cutover_beforeimage_changed')
+            for name in _TRUECONF_CUTOVER_FILES:
+                move('after', name, plan['original'][name], reserve=12)
+            return settle(ordinary.TRUECONF_STAGE, 'COMMITTED')
+        except BaseException as primary:
+            try:
+                f.require(not os.path.lexists(transaction/'outcome.json')
+                          and not os.path.lexists(transaction/'outcome-staged.json'),
+                          'ordinary_trueconf_cutover_outcome_uncertain')
+                rollback()
+            except BaseException as cleanup:
+                f.remember_secondary(primary, cleanup)
+                raise StopUnconfirmed('TrueConf cutover requires reconciliation') from primary
+            raise
+
+
 @contextlib.contextmanager
 def inference_retaining_cleanup(fd):
     """Native custody teardown cannot replace the transaction's primary cause."""
@@ -24641,6 +25324,11 @@ def recovery_main():
     """Dedicated maintenance dispatch; the ordinary installer phases stay unchanged."""
     import sys
     import time
+    trueconf_phases = ('activate-trueconf', 'recover-trueconf-cutover')
+    if any(phase in sys.argv[1:] for phase in trueconf_phases) and not sys.dont_write_bytecode:
+        print(json.dumps({'state': 'NOT_STARTED', 'ready': False,
+            'error': 'ordinary_trueconf_native_no_bytecode_required'}), file=sys.stderr)
+        raise SystemExit(2)
     if any(phase in sys.argv[1:] for phase in ('rebind-worker-declarations',
             'observe-dsh-current')) and not sys.dont_write_bytecode:
         # Refuse before importing a product module that could populate an
@@ -24654,11 +25342,23 @@ def recovery_main():
     f = api(); started = time.monotonic()
     parser = f.SafeParser(description=__doc__,allow_abbrev=False)
     parser.add_argument('phase',choices=('recover-first-contact-config','rebind-inference',
-        'rebind-worker-declarations', 'observe-dsh-current'))
+        'rebind-worker-declarations', 'observe-dsh-current', *trueconf_phases))
     parser.add_argument('--request',required=True,type=Path)
     parser.add_argument('--request-sha256')
     args = parser.parse_args(); os.umask(0o077)
     try:
+        if args.phase in trueconf_phases:
+            request_ref = {'path': str(args.request), 'sha256': args.request_sha256}
+            f.require(type(args.request_sha256) is str and len(args.request_sha256) == 64
+                      and all(c in '0123456789abcdef' for c in args.request_sha256),
+                      'ordinary_trueconf_exact_request_sha256_required')
+            request = f.read_json(f.pin(request_ref))
+            from scripts.install_containment import Budget
+            budget = Budget(request.get('seconds'), started=started)
+            result = trueconf_cutover(request, request_ref, budget,
+                                     recovering=args.phase == 'recover-trueconf-cutover')
+            print(json.dumps(result, sort_keys=True))
+            return
         if args.phase in ('rebind-worker-declarations', 'observe-dsh-current'):
             if args.phase == 'observe-dsh-current':
                 f.require(type(args.request_sha256) is str and len(args.request_sha256) == 64
@@ -24706,7 +25406,7 @@ def recovery_main():
     except Exception as exc:
         from scripts.dsh_prepare import StopUnconfirmed
         if args.phase in ('rebind-inference','rebind-worker-declarations',
-                'observe-dsh-current') and isinstance(exc,StopUnconfirmed):
+                'observe-dsh-current', *trueconf_phases) and isinstance(exc,StopUnconfirmed):
             f.exit_retaining_cause(parser,3,exc,args.phase)
         f.exit_retaining_cause(parser,2,exc,args.phase)
 

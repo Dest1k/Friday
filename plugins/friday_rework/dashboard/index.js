@@ -212,7 +212,8 @@
     const renderUser = row => h("li", {key: row.principal_id},
       h("span", null, `${row.platform} / ${row.transport_profile} / ${row.account_id} / ${row.user_id}: ${row.enabled ? "enabled" : "disabled"} (${row.role}) `),
       button(row.enabled ? "Disable" : "Enable", () => change(row, !row.enabled)),
-      button(row.role === "admin" ? "Channel user role" : "Channel admin role", () => change(row, row.enabled, row.role === "admin" ? "user" : "admin")));
+      button(row.role === "admin" ? "Channel user role" : "Channel admin role", () => change(row, row.enabled, row.role === "admin" ? "user" : "admin"),
+        {disabled: busy || (row.role !== "admin" && row.can_grant_admin === false)}));
     return h("section", {"aria-label": "Friday administration", style: {padding: "1rem", display: "grid", gap: "1rem"}},
       h("h1", null, "Friday Administration"),
       h("label", null, "Product profile ", h("select", {value: profile, disabled: busy, onChange: e => setProfile(e.target.value)},
@@ -274,6 +275,10 @@
           prepared.browser_execution ? h("p", {role: "status"}, "Browser execution requires network isolation setup.") : null,
           button("Activate complete profile", () => onboard("activate"), {disabled: busy || prepared.enabled || prepared.setup_uncertain ||
             ((prepared.required_workers || []).length > 0 && !prepared.can_activate)})) : null) : null,
+      view === "users" && data && (data.channels || []).length ? h("ul", {"aria-label": "Channels"},
+        ...data.channels.map(channel => h("li", {key: channel.platform},
+          channel.name + " · " + channel.state, channel.account_id ? h("code", null, " " + channel.account_id) : null,
+          (channel.allowed_group_ids || []).length ? h("span", null, " · Groups " + channel.allowed_group_ids.join(", ")) : null))) : null,
       view === "users" && data ? h("ul", null, ...data.users.map(renderUser)) : null,
       view === "pairing" && data ? h("ul", null, ...data.pending.map(row => h("li", {key: row.request_id || row.user_id},
         `${row.platform} / ${row.user_id} `, button("Approve native access", () => approve(row), {disabled: busy || !row.request_id})))) : null,

@@ -108,12 +108,35 @@ class Administration:
 
     def _users(self, profile, state, *, _operator=None):
         policy = access_policy()
-        if policy is None or not any(a["transport_profile"] == profile for a in policy["accounts"]):
+        accounts = [a for a in policy["accounts"] if a["transport_profile"] == profile] if policy is not None else []
+        from gateway.trueconf_access import profile_access
+        try:
+            channel = profile_access(require_enabled=False)
+            invalid_channel = False
+        except ValueError:
+            channel = None
+            invalid_channel = True
+        if not accounts and not invalid_channel and channel is None:
             raise PermissionError("receiving_transport_authority_required")
-        accounts = [a for a in policy["accounts"] if a["transport_profile"] == profile]
-        return {"profile": profile, "authority": "RECEIVING_TRANSPORT", "accounts": accounts,
-                "users": [{"principal_id": key, **row} for key, row in
-                          ProductAccess(state, _operator=_operator).users().items()]}
+        users = [{"principal_id": key, **row} for key, row in
+                 ProductAccess(state, _operator=_operator).users().items()] if accounts else []
+        result = {"profile": profile, "authority": "RECEIVING_TRANSPORT", "accounts": accounts, "users": users}
+        if invalid_channel:
+            result["channels"] = [{"platform": "trueconf", "name": "Friday TrueConf", "state": "invalid"}]
+        if channel is not None:
+            result["channels"] = [{
+                "platform": "trueconf", "role": channel.account_role, "account_id": channel.scope_id,
+                "name": "Friday TrueConf Tester" if channel.account_role == "tester" else "Friday TrueConf",
+                "state": "enabled" if channel.enabled else "disabled",
+                "allowed_group_ids": sorted(channel.allowed_group_ids),
+            }]
+        for row in users:
+            if row["platform"] == "trueconf":
+                row["can_grant_admin"] = bool(
+                    channel is not None and row["account_id"] == channel.scope_id
+                    and channel.permits_user_role(row["user_id"], "admin")
+                )
+        return result
 
     def users(self, profile, *, session=None):
         with self.metadata_read(profile, session=session) as (_, state, operator):
@@ -223,6 +246,8 @@ class Administration:
             if policy is None or not any((a["platform"], a["transport_profile"], a["account_id"]) ==
                     (platform, transport_profile, account_id) for a in policy["accounts"]):
                 raise PermissionError("foreign_product_account")
+            if platform == "trueconf":
+                raise PermissionError("trueconf_explicit_channel_allowlist_required")
             from gateway.pairing import PairingStore
             store = PairingStore()
             # Explicit request id only: no ambiguous code/request fallback or retry.

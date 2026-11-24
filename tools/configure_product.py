@@ -101,6 +101,36 @@ def _dashboard(value):
     return copy.deepcopy(value)
 
 
+def _trueconf(value):
+    """Render only the references used by the native managed Connector."""
+    _exact(value, {'extra', 'credential_names'}, 'trueconf')
+    extra = value['extra']
+    optional = {'tester_user_id', 'tester_chat_id', 'allow_admin_from',
+                'group_allow_admin_from', 'tls_ca_file', 'token_expires_at'}
+    _exact(extra, {'server_url', 'account_id', 'account_role', 'allowed_user_ids',
+                  'allowed_group_ids', 'allowed_dm_chat_ids'} |
+           (set(extra) & optional if isinstance(extra, dict) else set()), 'trueconf_extra')
+    from gateway.trueconf_access import CREDENTIAL_SETS, TOKEN_ENV, TrueConfAccess, profile_config
+    names = value['credential_names']
+    if (not isinstance(names, list) or not all(isinstance(name, str) for name in names)
+            or len(names) != len(set(names)) or frozenset(names) not in CREDENTIAL_SETS):
+        raise ValueError('trueconf_credential_names_required')
+    if TOKEN_ENV in names:
+        expiry = extra.get('token_expires_at')
+        if type(expiry) is not int or not 0 < expiry < 2**63:
+            raise ValueError('trueconf_token_expiry_required')
+    elif 'token_expires_at' in extra:
+        raise ValueError('trueconf_token_expiry_requires_token')
+    if 'tls_ca_file' in extra:
+        ca = _text(extra['tls_ca_file'], 'trueconf_ca_path')
+        if not Path(ca).is_absolute() or os.path.normpath(ca) != ca:
+            raise ValueError('trueconf_ca_absolute_reference_required')
+    block = {'enabled': True, 'extra': copy.deepcopy(extra)}
+    access = TrueConfAccess.from_config(profile_config({'platforms': {'trueconf': block}}))
+    block['extra']['server_url'] = access.server_url
+    return block, access, list(names)
+
+
 def compose_product(spec):
     """Return native config + an installation contract; inspect no credentials.
 
@@ -108,7 +138,7 @@ def compose_product(spec):
     accepted scope; this renderer cannot expand its SAFE set or admit workers.
     """
     _exact(spec, {'profile', 'inference', 'web', 'dashboard', 'accounts', 'runtime'} |
-           (set(spec) & {'a0_deployment', 'compression_inference', 'compression_multipass'}
+           (set(spec) & {'a0_deployment', 'compression_inference', 'compression_multipass', 'trueconf'}
             if isinstance(spec, dict) else set()), 'product')
     from hermes_cli.friday_product_access import profile_name
     # Identity validation is pure; native config imports can create home state.
@@ -140,13 +170,12 @@ def compose_product(spec):
     if not isinstance(accounts, list) or not accounts:
         raise ValueError('explicit_receiving_accounts_required')
     from gateway.config import Platform, PLATFORM_TOKEN_ENV_NAMES
-    seen = set(); channel_names = {}
+    trueconf = _trueconf(spec['trueconf']) if 'trueconf' in spec else None
+    seen = set()
+    channel_names = {}
+    native_accounts = []
     for row in accounts:
         _exact(row, {'platform', 'transport_profile', 'account_id'}, 'account')
-        platform = Platform(row['platform'])
-        if platform not in PLATFORM_TOKEN_ENV_NAMES:
-            raise ValueError('channel_specific_native_input_contract_required')
-        channel_names[row['platform']] = [PLATFORM_TOKEN_ENV_NAMES[platform]]
         _text(row['account_id'], 'account_id')
         if row['transport_profile'] != profile:
             raise ValueError('receiving_transport_authority_required')
@@ -154,6 +183,19 @@ def compose_product(spec):
         if key in seen:
             raise ValueError('duplicate_receiving_account')
         seen.add(key)
+        if row['platform'] == 'trueconf':
+            if trueconf is None or row['account_id'] != trueconf[1].account_id:
+                raise ValueError('trueconf_account_binding_required')
+            channel_names['trueconf'] = trueconf[2]
+            native_accounts.append(dict(row, account_id=trueconf[1].scope_id))
+        else:
+            platform = Platform(row['platform'])
+            if platform not in PLATFORM_TOKEN_ENV_NAMES:
+                raise ValueError('channel_specific_native_input_contract_required')
+            channel_names[row['platform']] = [PLATFORM_TOKEN_ENV_NAMES[platform]]
+            native_accounts.append(dict(row))
+    if trueconf is not None and (profile != 'default' or set(channel_names) != {'telegram', 'trueconf'}):
+        raise ValueError('trueconf_managed_two_channel_profile_required')
     runtime = copy.deepcopy(spec['runtime'])
     if runtime != {'enabled': False}:
         from plugins.friday_rework.host_runtime import configured_runtimes, HostUnavailable
@@ -217,6 +259,8 @@ def compose_product(spec):
     config['compression'].update(local['compression'])
     config['display'] = {'show_reasoning': False,
                          'platforms': {'telegram': {'show_reasoning': False}}}
+    if trueconf is not None:
+        config['display']['platforms']['trueconf'] = {'show_reasoning': False}
     config['delegation'].pop('api_key', None)
     config['delegation'].update({k: v for k, v in route.items() if k != 'fallback_chain'})
     config['delegation']['fallback_providers'] = []
@@ -231,7 +275,7 @@ def compose_product(spec):
     config['plugins']['disabled'] += ['dashboard_auth/nous', 'dashboard_auth/self_hosted', 'dashboard_auth/drain']
     settings = {'runtime': runtime, 'results': {'enabled': True},
         'admin': {'enabled': True, 'operators': [dashboard['operator']], 'profiles': [profile]},
-        'product_access': {'enabled': True, 'accounts': [dict(a, runtime_profiles=[profile]) for a in accounts]}}
+        'product_access': {'enabled': True, 'accounts': [dict(a, runtime_profiles=[profile]) for a in native_accounts]}}
     config['plugins']['entries'] = {'friday_rework': {'allow_gateway_work': True,
         'allow_gateway_control': True, 'settings': settings}}
     config['dashboard'] = {'public_url': dashboard['public_url'].rstrip('/'), 'require_auth': True,
@@ -243,6 +287,8 @@ def compose_product(spec):
     configured = {a['platform'] for a in accounts}
     channel_surfaces = {p.value for p in Platform} | {p.value for p in _ENV_ENABLE_CREDENTIALS}
     config['platforms'] = {name: {'enabled': name in configured} for name in sorted(channel_surfaces) if name != 'local'}
+    if trueconf is not None:
+        config['platforms']['trueconf'] = trueconf[0]
 
     # The protected template has settings/persona only: no receiving/admin
     # authority, worker receipt, keys, history, memory files or owner skills.
@@ -267,8 +313,12 @@ def compose_product(spec):
             raise ValueError('a0_scoped_inference_key_required')
         service_names = ['FRIDAY_EMBEDDINGS_API_KEY','SEARXNG_SECRET']
         required += service_names
+    reserved_channel_names = {name for names in channel_names.values() for name in names}
+    if trueconf is not None:
+        from gateway.trueconf_access import CHANNEL_ENVS
+        reserved_channel_names.update(CHANNEL_ENVS)
     if (len(set(required)) != len(required) or any(n in AUTH_NAMES for n in inference_names)
-            or any(n in names for n in inference_names for names in channel_names.values())):
+            or reserved_channel_names.intersection(required)):
         raise ValueError('separate_scoped_credential_references_required')
     # A normal installation must carry the scoped native delegation overlay.
     # Do not render an apparently complete profile against the older denied surface.
@@ -288,7 +338,8 @@ def compose_product(spec):
     if soul != (ROOT / 'plugins/friday_rework/SOUL.md').read_bytes():
         raise ValueError('friday_persona_source_mismatch')
     return {'config': config, 'soul': soul.decode(), 'contract': {
-        'schema': 'friday.product-profile.v1', 'kind': 'normal_product', 'profile': profile,
+        'schema': 'friday.product-profile.v2' if trueconf is not None else 'friday.product-profile.v1',
+        'kind': 'normal_product', 'profile': profile,
         'state': 'TEMPLATE_INCOMPLETE', 'ready': False,
         'required_scoped_names': {'inference_web': required, 'inference': inference_names,
             'web': web_names, 'worker_service': service_names, 'dashboard': list(AUTH_NAMES), 'channels': channel_names},
@@ -310,6 +361,64 @@ def compose_product(spec):
             'Fresh user remains disabled until both own-profile worker deployments are qualified',
             'Independent review and mandatory live journeys not run'],
     }}
+
+
+def extend_managed_trueconf(config, contract, selection):
+    """Derive profiles for a protected transition from an admitted Telegram deployment.
+
+    The caller authenticates the prior configuration/contract and owns their CAS,
+    the phase marker, durable publication, rollback and any service lifecycle.
+    """
+    block, access, names = _trueconf(selection)
+    if (contract.get('schema') != 'friday.product-profile.v1'
+            or contract.get('kind') != 'normal_product' or contract.get('profile') != 'default'):
+        raise ValueError('trueconf_existing_telegram_profile_required')
+    channel_names = contract.get('required_scoped_names', {}).get('channels')
+    if channel_names != {'telegram': ['TELEGRAM_BOT_TOKEN']}:
+        raise ValueError('trueconf_existing_telegram_domain_required')
+    domains = contract['required_scoped_names']
+    from gateway.trueconf_access import CHANNEL_ENVS
+    if CHANNEL_ENVS.intersection((*domains.get('inference_web', ()), *domains.get('dashboard', ()))):
+        raise ValueError('separate_scoped_credential_references_required')
+    cfg = copy.deepcopy(config)
+    settings = cfg['plugins']['entries']['friday_rework']['settings']
+    policy = settings['product_access']
+    accounts = policy['accounts']
+    if (policy.get('enabled') is not True or not isinstance(accounts, list)
+            or len(accounts) != 1 or not isinstance(accounts[0], dict)
+            or accounts[0].get('platform') != 'telegram'
+            or accounts[0].get('transport_profile') != 'default'):
+        raise ValueError('trueconf_existing_telegram_receiver_required')
+    if cfg['platforms'].get('trueconf') not in (None, {'enabled': False}):
+        raise ValueError('trueconf_existing_channel_config_refused')
+    if cfg['platforms'].get('telegram', {}).get('enabled') is not True:
+        raise ValueError('trueconf_existing_telegram_receiver_required')
+
+    def extend_toolsets(target):
+        platform_tools = target['platform_toolsets']
+        display = target['display']['platforms']
+        if (not isinstance(platform_tools.get('telegram'), list)
+                or 'trueconf' in platform_tools or 'trueconf' in display):
+            raise ValueError('trueconf_existing_toolsets_or_display_refused')
+        platform_tools['trueconf'] = copy.deepcopy(platform_tools['telegram'])
+        display['trueconf'] = {'show_reasoning': False}
+
+    accounts.append({'platform': 'trueconf', 'transport_profile': 'default',
+                     'account_id': access.scope_id, 'runtime_profiles': ['default']})
+    cfg['platforms']['trueconf'] = block
+    extend_toolsets(cfg)
+    from plugins.friday_rework.onboarding import validate_template
+    templates = settings['onboarding']['templates']
+    if not isinstance(templates, dict) or not templates:
+        raise ValueError('trueconf_native_templates_required')
+    for template in templates.values():
+        extend_toolsets(template['config'])
+        validate_template(template)
+
+    next_contract = copy.deepcopy(contract)
+    next_contract['schema'] = 'friday.product-profile.v2'
+    next_contract['required_scoped_names']['channels']['trueconf'] = names
+    return cfg, next_contract
 
 
 def materialize_product(home, spec):

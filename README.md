@@ -56,6 +56,12 @@ Friday builds on existing projects. Our work is in their integration, local depl
 
 The [architecture notes](docs/integration-boundary.md) describe these boundaries. [sources.lock.json](sources.lock.json) records the initial selected upstream revisions; individual development records describe later changes and their validation.
 
+### TrueConf
+
+The TrueConf adapter connects the official Chatbot Connector to the same Hermes gateway, user profiles, tools, and administration used by Telegram. A local HTTPS and WebSocket fixture has exercised ordinary conversations, group messages, document custody, file delivery, and reconnect. Compatibility and user acceptance on the intended TrueConf Server remain open.
+
+Use the [disabled gateway example](config/trueconf.example.yaml) for receiver settings and the [Tester guide](tools/trueconf-tester/INTEGRATION.md) for the separate test account and its existing document scenario. Product and Tester require separate credentials and a verified direct chat. An installed managed profile uses the explicit source-pinned cutover and recovery commands, with its consumers already stopped. The cutover publishes metadata and leaves service startup to the native launcher. [TrueConf Chatbot Connector](https://trueconf.ru/docs/chatbot-connector/ru/)
+
 ## Hardware and support
 
 Our current development hardware is **one PC with an NVIDIA RTX 5090 and one NVIDIA DGX Spark**.

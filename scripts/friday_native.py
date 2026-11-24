@@ -331,7 +331,9 @@ def main():
             parser.exit(2, 'Friday native ordinary start refused: installed admission is incomplete\n')
         print(json.dumps(result,sort_keys=True));budget.check();return
     if args.phase in ('start','qualify'):
-        require(read_json(home/MARKER).get('completion_stage') not in ('CLI_HOST_ONLY','TELEGRAM_ORDINARY'), 'cli_host_full_start_refused')
+        from scripts.friday_install import CLI_STAGE, ORDINARY_RECEIVER_STAGES
+        require(read_json(home/MARKER).get('completion_stage') not in (CLI_STAGE, *ORDINARY_RECEIVER_STAGES),
+                'cli_host_full_start_refused')
         if args.a0_plan is not None or args.phase == 'qualify':
             result = budget.call(qualify,value,digest(owned_file(args.input,private=True)),
                 None if args.a0_plan is None else {'path':str(args.a0_plan),'sha256':args.a0_plan_sha256},budget)

@@ -992,6 +992,7 @@ def resume_pins_unchanged(request, claim, budget):
 
 CLI_RESUME = 'FRIDAY-INSTALL.cli-host.intent.json'
 CLI_STAGE = 'CLI_HOST_ONLY'
+ORDINARY_RECEIVER_STAGES = ('TELEGRAM_ORDINARY', 'TELEGRAM_TRUECONF_ORDINARY')
 CLI_OVERLAY = 'patches/hermes/cli-host-stage-manifest.json'
 
 
@@ -1403,7 +1404,7 @@ def inspect(value, input_hash, *, marker_override=None, project_update=None, sou
     require(marker.get('schema') == SCHEMA and marker.get('home') == str(home)
             and marker.get('input_sha256') == input_hash
             and marker.get('state') == 'INSTALLED_TEMPLATE_INCOMPLETE', 'foreign_or_partial_install')
-    home, donors = spec_checked(value, cli_only=marker.get('completion_stage') in (CLI_STAGE,'TELEGRAM_ORDINARY'),
+    home, donors = spec_checked(value, cli_only=marker.get('completion_stage') in (CLI_STAGE, *ORDINARY_RECEIVER_STAGES),
         **({'project_update':project_update} if project_update is not None else {}),
         **({'source_update':source_update} if source_update is not None else {}))
     if 'tls' in value['product']['dashboard']:
@@ -1425,7 +1426,7 @@ def inspect(value, input_hash, *, marker_override=None, project_update=None, sou
             and set(profile_files) == {'config.yaml', 'SOUL.md', 'FRIDAY-PROFILE.json'},
             'installed_profile_inventory_missing')
     for name, sha in profile_files.items():
-        if name == 'config.yaml' and marker.get('completion_stage') == 'TELEGRAM_ORDINARY':
+        if name == 'config.yaml' and marker.get('completion_stage') in ORDINARY_RECEIVER_STAGES:
             continue  # Checked below through the native semantic onboarding contract.
         require(digest(owned_file(home / name, private=True)) == sha, 'installed_profile_changed')
     expected_plugins = {name: sha for name, sha in value['project_files'].items()
@@ -1434,13 +1435,16 @@ def inspect(value, input_hash, *, marker_override=None, project_update=None, sou
     for name, sha in expected_plugins.items():
         require(digest(owned_file(home / name, private=True)) == sha, 'installed_plugin_changed')
     effective = value
-    if marker.get('completion_stage') == 'TELEGRAM_ORDINARY':
+    if marker.get('completion_stage') in ORDINARY_RECEIVER_STAGES:
         native_packages(home/'hermes-agent')
         from hermes_cli.friday_ordinary_gateway import check
         from hermes_cli.friday_user_scope import authority
         with authority(home):
             check(home,role=False)
-        return {'state':'ORDINARY_TELEGRAM_WORKERS_PENDING','ready':False,'effects':'NONE',
+        state = ('ORDINARY_TELEGRAM_TRUECONF_WORKERS_PENDING'
+                 if marker['completion_stage'] == 'TELEGRAM_TRUECONF_ORDINARY'
+                 else 'ORDINARY_TELEGRAM_WORKERS_PENDING')
+        return {'state':state,'ready':False,'effects':'NONE',
                 'full_start_allowed':False,'workers_enabled':False,'runtime_acceptance':'NOT_GRANTED'}
     if marker.get('completion_stage') == CLI_STAGE:
         require(marker.get('worker_state') == 'BOTH_WORKERS_PREPARATION_PENDING'
@@ -1478,7 +1482,7 @@ def start(value, input_hash, *, budget=None, input_path=None, plan_ref=None, pha
     budget = budget or Budget(value.get('seconds'))
     budget.call(inspect, value, input_hash)
     home = Path(value['home'])
-    require(budget.call(read_json,home/MARKER).get('completion_stage') not in (CLI_STAGE,'TELEGRAM_ORDINARY'), 'cli_host_full_start_refused')
+    require(budget.call(read_json,home/MARKER).get('completion_stage') not in (CLI_STAGE, *ORDINARY_RECEIVER_STAGES), 'cli_host_full_start_refused')
     marker = budget.call(read_json,home / MARKER) if 'worker_install' in value else {}
     pending = marker.get('worker_state') == 'BOTH_CONFIGURED_QUALIFICATION_PENDING'
     if phase == 'qualify' or (pending and plan_ref is not None):

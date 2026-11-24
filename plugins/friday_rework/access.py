@@ -30,6 +30,16 @@ class ProductAccess:
             self.require_transport(row["transport_profile"])
         return copy.deepcopy(rows)
 
+    @staticmethod
+    def trueconf_role_allowed(account_id, user_id, role, *, require_enabled=True):
+        from gateway.trueconf_access import profile_access
+        try:
+            access = profile_access(require_enabled=require_enabled)
+        except ValueError:
+            return False
+        return (access is not None and access.scope_id == account_id
+                and access.permits_user_role(user_id, role))
+
     def set_user(self, *, platform, transport_profile, account_id, user_id, enabled, role):
         if self.store._operator is not None:
             self.store._operator.require_write()
@@ -52,6 +62,10 @@ class ProductAccess:
         if self.store._operator is not None:
             self.store._operator.require_write()
         validate_access({"schema": KEY, "users": {key: row}})
+        if (row["platform"] == "trueconf" and (row["enabled"] or row["role"] == "admin")
+                and not self.trueconf_role_allowed(row["account_id"], row["user_id"], row["role"],
+                                                  require_enabled=row["enabled"])):
+            raise PermissionError("trueconf_channel_role_not_approved")
         document = self._document()
         document["users"][key] = row
         validate_access(document)
