@@ -8185,6 +8185,200 @@ CURRENT_SOURCE_CORE315_NATIVE_BEFORE_MODE = {'gateway/ordinary_f04_bridge.py': 3
 CURRENT_SOURCE_CORE315_LAYER_BYTES = {'manifest': 1516, 'patch': 16769}
 
 
+CURRENT_SOURCE_CORE316_LAYER = 'ordinary-f06-protected-odt-after-source315'
+CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.f06-protected-odt-after-source315.v1'
+CURRENT_SOURCE_CORE316_MANIFEST = '6e3ae4a616fcb467a95dbe35363d150ee7dd59bce25d2e10a1efefbe1d7ace64'
+CURRENT_SOURCE_CORE316_PATCH = 'fe28efd9846c753e96201667be73c1702c9a7e111e1f3e3d7adef98f04c654dd'
+CURRENT_SOURCE_CORE316_PREDECESSOR = {'committed': 'UNBOUND',
+ 'helper': 'UNBOUND',
+ 'input': 'UNBOUND',
+ 'intent': 'UNBOUND',
+ 'marker': 'UNBOUND',
+ 'receipt': 'UNBOUND',
+ 'request': 'UNBOUND',
+ 'root': 'UNBOUND',
+ 'stamp': 'UNBOUND'}
+CURRENT_SOURCE_CORE316_REQUEST_SCHEMA = 'friday.ordinary-telegram-source-update.f06-protected-odt-after-source315.v1'
+CURRENT_SOURCE_CORE316_PREREQUISITES = {
+    f'patches/hermes/{CURRENT_SOURCE_CORE315_LAYER}.patch': CURRENT_SOURCE_CORE315_PATCH,
+}
+CURRENT_SOURCE_CORE316_NATIVE = {'gateway/config.py': ('d41cd4857a5f6cebf9f3aa771c2b48592260394e8f87b0a772981ec2676ba531',
+                       '65e0ae5bf2a1bc451ee0002d5eecfea4f4399c98d07b27018b6019588120f60a',
+                       47798,
+                       False),
+ 'gateway/config_loader.py': ('dd3027d8f55b1871e5b80578538ce5a1cb9d78515cdfb1aa5b4c3c548bbaae43',
+                              '7ef88a0092b13438309faef07de66711e064287c683a3f4aa360169b96b7fcfc',
+                              28943,
+                              False),
+ 'gateway/ordinary_f06_authority.py': (None,
+                                       '0c96e55ca2e05eb63d7242c099387f276b3dbf6ff5b639fabf952a9c7edd2d41',
+                                       11342,
+                                       True),
+ 'gateway/ordinary_f06_confirmation.py': (None,
+                                          'e89ed2a98ba88a41ddcac3fd966c98be5628db1c486eae69ac2cb3b227b5c6dc',
+                                          13537,
+                                          True),
+ 'gateway/ordinary_f06_https.py': (None,
+                                   '892f3cb4eb6c5faef9f045e917c588e2ec3afd18a76449a2432833f3fd1b8a33',
+                                   16319,
+                                   True),
+ 'gateway/ordinary_f06_intent.py': (None,
+                                    '0480592338b2b197156f21812a4819dd85dddda5aaecaf0c9ba049dcb537e80b',
+                                    10593,
+                                    True),
+ 'gateway/ordinary_f06_producer.py': (None,
+                                      'a5b8411d9cf39b79aef89bd681944aa92de91c5a1a115e940173236435ebb14e',
+                                      5196,
+                                      True),
+ 'gateway/ordinary_f06_session.py': (None,
+                                     'fe88413ad3dfdb63a45a22be0993aa8807a1718c65ca1c669f90416087dbee7a',
+                                     20171,
+                                     True),
+ 'gateway/platforms/base.py': ('ffd75ea9db99c635d8ae95f34c8289fe4c7c20440c27e499387bb5be5b011430',
+                               'a5a3745adccc5cf1fa3011c377fe2c9fb7687f6e737517e9a66dafd490285669',
+                               311127,
+                               False),
+ 'gateway/protected_odt_reset.py': (None,
+                                    '543ae9a3fc52993a9577b0cf56c94732779dc6891668841585261878ffae70ba',
+                                    4265,
+                                    True),
+ 'gateway/run.py': ('0f8ae8327311cbc823831b07dbe3a5b96834aa9eb40b5f54efd593bcd70feb82',
+                    '457c35ad87d8a083b9d0c89ac89198a93f5cc5a649e02a301807b140a949f35a',
+                    339882,
+                    False),
+ 'gateway/run_agent_cache.py': ('b28c4847d7e1832f26cec828b1762afbd77162ddc6b80690b758ac721056c729',
+                                'e610d548e3edc23a87bfc0cc7e7966189648cff983f0fb70177dd4b534d8731b',
+                                72688,
+                                False),
+ 'gateway/run_busy.py': ('52969c5eee501a84a39238a22e5aee75fbcb714fb693d3d75b61c372d85daac6',
+                         'b716dca997a80948a33d2b79b2711439ceadfd07d576a29cbb5d1cd64da15f89',
+                         82919,
+                         False),
+ 'gateway/run_inbound.py': ('7298882886864b775d106545463861408720f9549f689b3ba06e27ab1920d4fd',
+                            '19d1cf0a385b7a6ef25c9e65f676408916d8ac4922d47997fe6bdf51d3a13715',
+                            134471,
+                            False),
+ 'gateway/run_inbound_media.py': ('9ee46173a936f72a7a2edd31d384c53ea786c33251adc687dc5d27da1fcede59',
+                                  'f6e711620f27e6e4fd2321d7504ac0623de36d9c429b81a78d44505ed4c94b13',
+                                  35199,
+                                  False),
+ 'gateway/run_plugin_delivery.py': ('f1a6133fa2722f94ceb148537b21cab5b19a2a62dca0edac62bc6621f8c7d406',
+                                    'c855958afbfee496dc2cc5044795bba490428a0fb892d125417a41f6a56dc4cf',
+                                    38246,
+                                    False),
+ 'gateway/run_shutdown.py': ('60e50719ade0cb0b66e1b31ede7d3a5f190b47d804f4c6fe4ef5c6de8a383daf',
+                             '6e6b882244928199527b5e79037f0336542ca1fad94e83d442d8ab1fd2c2501f',
+                             142407,
+                             False),
+ 'gateway/run_startup.py': ('20d85f2e8a99a635ab4dd7db692bef16ec0b3727bd7028d93a704da03f2c55a8',
+                            'dc9d57b50889bcbf20796629561f5b903862efbd2da5e2b04736bc80fb59019a',
+                            138688,
+                            False),
+ 'gateway/session.py': ('bd8342408dcec29d65f4a0ef9508642809a85b79f6ead55c98af96b858d093dc',
+                        '59117e0665acb6c5c857680d5de2628ed0b291ab062a1a127efa5ca6065059fa',
+                        68712,
+                        False),
+ 'gateway/session_lifecycle.py': ('aa541351d555fb11708e2ff55fde72d5231018075c1f659de41d997c8f235025',
+                                  'ad333aa5e8c3f0dd1e42b7795f653bb5a8bd985bc0e4e898d402678125c54741',
+                                  25529,
+                                  False),
+ 'gateway/shutdown_watchdog.py': ('f6b135c030987282e323005c362613c0a32c8c09575de8e52bdd04cbcbb5116d',
+                                  '15fe127aaa07151621738f3a1644349ad6bd61fd192d3d1d84bc27ee4dab2c32',
+                                  24207,
+                                  False),
+ 'gateway/slash_commands.py': ('8daa611c19e16ea6f161b405666c4cad6fd95b4c9bf5fa4314a624eb79c47b61',
+                               'd85c70cb30580d4b7e4288f02df0e2373dc58a69a04ff5af7918ead7164bf4bd',
+                               79232,
+                               False),
+ 'gateway/slash_commands_session.py': ('7100658fdc5c37bbbb93394d74988276a63da044f2e9235288818603a718c102',
+                                       'ca65a99119e7df969ae611782ba83be361ede0ffc9c447ca719fa54564f01d86',
+                                       85645,
+                                       False),
+ 'hermes_cli/friday_dashboard_tls.py': ('9aebb8e6a6b00ca9d170122b2fe8806045c010719ce9e6d38a37fbabd7d5dfee',
+                                        '0688e95c74cff83b22b366dcabb0d61be43c47d6ac34094570df3d59d70c54fe',
+                                        6922,
+                                        False),
+ 'hermes_cli/friday_protected_odt.py': (None,
+                                        'db030a37936cf309ba1cc5f37c534a01c8993d17d31dfc134290a5a279a70f6b',
+                                        16535,
+                                        True),
+ 'hermes_cli/friday_protected_odt_app.py': (None,
+                                            'd8c47a09644efd7eaa14cf85beadd793ad354338869e1890070a99828ad75f23',
+                                            7696,
+                                            True),
+ 'hermes_cli/friday_protected_odt_http.py': (None,
+                                             '1c4335b52212ab229708dbf20bc79852eb9461671aa0deacdc00598b6b5aa77e',
+                                             20066,
+                                             True),
+ 'hermes_cli/friday_protected_odt_telegram.py': (None,
+                                                 '3f3a34d1d9ef2be24ab7f04cebfcf1b89f0b17332ab0607d8620349d7d4e844c',
+                                                 4049,
+                                                 True),
+ 'hermes_cli/friday_user_scope.py': ('6fa376c97e1ef7e2254581b8122546e4f639aab69ae42a3c682d58d2daa5a4ee',
+                                     '42296d5654d41cad3d3a9fd3b59d1096a1ea38de3595e5ae5f78af805d5a610b',
+                                     158037,
+                                     False),
+ 'hermes_cli/friday_workspace_docx.py': ('0bc25b322c58c6a1aba5b4db2b6cf108b0b815b886d2e33f3c9cd2d02e881377',
+                                         'c749f2e37df63776bd9b53ded8e50276962b46bb55eb812cde02f71b4189c9ce',
+                                         38371,
+                                         False),
+ 'hermes_cli/friday_workspace_odf_password.py': ('8b64f5a1e420826d44bbdf0ca9e6752096baa91048af280d8a029c89f7b7c162',
+                                                 '33be78a4535e366fea8de52bbb581ddd5958a5a923f823e4102a87df9882f403',
+                                                 4157,
+                                                 False),
+ 'plugins/platforms/telegram/adapter.py': ('685802dbe56289bee30141ce7c24b98008b248e5d24c68284fe06f701afe9e3b',
+                                           '47121da84f1fd24a2999abed947c05f1b618f84eb04c724265f51ef0d170126d',
+                                           470960,
+                                           False),
+ 'tools/scoped_odt_codec.py': (None,
+                               '04249b4a810087c11f7a0e75493bdbd03f0c8ac32ca365bf31b88ecc7869548a',
+                               17735,
+                               True)}
+CURRENT_SOURCE_CORE316_NATIVE_BEFORE = {'gateway/config.py': 47559,
+ 'gateway/config_loader.py': 28869,
+ 'gateway/platforms/base.py': 307276,
+ 'gateway/run.py': 338055,
+ 'gateway/run_agent_cache.py': 70038,
+ 'gateway/run_busy.py': 82394,
+ 'gateway/run_inbound.py': 129731,
+ 'gateway/run_inbound_media.py': 29832,
+ 'gateway/run_plugin_delivery.py': 34079,
+ 'gateway/run_shutdown.py': 136689,
+ 'gateway/run_startup.py': 138601,
+ 'gateway/session.py': 68251,
+ 'gateway/session_lifecycle.py': 24752,
+ 'gateway/shutdown_watchdog.py': 23980,
+ 'gateway/slash_commands.py': 79137,
+ 'gateway/slash_commands_session.py': 82470,
+ 'hermes_cli/friday_dashboard_tls.py': 6502,
+ 'hermes_cli/friday_user_scope.py': 156306,
+ 'hermes_cli/friday_workspace_docx.py': 38137,
+ 'hermes_cli/friday_workspace_odf_password.py': 2813,
+ 'plugins/platforms/telegram/adapter.py': 467918}
+CURRENT_SOURCE_CORE316_NATIVE_BEFORE_MODE = {'gateway/config.py': 420,
+ 'gateway/config_loader.py': 420,
+ 'gateway/platforms/base.py': 384,
+ 'gateway/run.py': 384,
+ 'gateway/run_agent_cache.py': 420,
+ 'gateway/run_busy.py': 384,
+ 'gateway/run_inbound.py': 384,
+ 'gateway/run_inbound_media.py': 384,
+ 'gateway/run_plugin_delivery.py': 384,
+ 'gateway/run_shutdown.py': 384,
+ 'gateway/run_startup.py': 384,
+ 'gateway/session.py': 420,
+ 'gateway/session_lifecycle.py': 384,
+ 'gateway/shutdown_watchdog.py': 384,
+ 'gateway/slash_commands.py': 420,
+ 'gateway/slash_commands_session.py': 420,
+ 'hermes_cli/friday_dashboard_tls.py': 384,
+ 'hermes_cli/friday_user_scope.py': 384,
+ 'hermes_cli/friday_workspace_docx.py': 384,
+ 'hermes_cli/friday_workspace_odf_password.py': 420,
+ 'plugins/platforms/telegram/adapter.py': 384}
+CURRENT_SOURCE_CORE316_LAYER_BYTES = {'manifest': 10989, 'patch': 270297}
+
+
 WORD_AND_RECOVERY_SUCCESSOR_SCHEMAS = (*CORE296_SUCCESSOR_SCHEMAS, CURRENT_SOURCE_WORD_AFTER_D02_SUCCESSOR_SCHEMA,
     CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA, CURRENT_SOURCE_S08_SUCCESSOR_SCHEMA, CURRENT_SOURCE_S13_SUCCESSOR_SCHEMA,
     CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA, CURRENT_SOURCE_S14_STRICT_SUCCESSOR_SCHEMA,
@@ -8192,10 +8386,12 @@ WORD_AND_RECOVERY_SUCCESSOR_SCHEMAS = (*CORE296_SUCCESSOR_SCHEMAS, CURRENT_SOURC
     CURRENT_SOURCE_D02_F04_SUCCESSOR_SCHEMA, CURRENT_SOURCE_F04_PPTX_SUCCESSOR_SCHEMA,
     CURRENT_SOURCE_CORE309_SUCCESSOR_SCHEMA, CURRENT_SOURCE_CORE310_SUCCESSOR_SCHEMA,
     CURRENT_SOURCE_CORE311_SUCCESSOR_SCHEMA, CURRENT_SOURCE_CORE312_SUCCESSOR_SCHEMA, CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA,
-    CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA, CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA)
+    CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA, CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA, CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA)
 
 
 def _core296_predecessor_pins(schema):
+    if schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_CORE316_PREDECESSOR
     if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
         return CURRENT_SOURCE_CORE315_PREDECESSOR
     if schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA:
@@ -8245,6 +8441,9 @@ def _core296_predecessor_pins(schema):
 
 
 def _core296_source_pins(schema):
+    if schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA:
+        return (CURRENT_SOURCE_CORE316_LAYER, CURRENT_SOURCE_CORE316_MANIFEST,
+            CURRENT_SOURCE_CORE316_PATCH, CURRENT_SOURCE_CORE316_NATIVE)
     if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
         return (CURRENT_SOURCE_CORE315_LAYER, CURRENT_SOURCE_CORE315_MANIFEST,
             CURRENT_SOURCE_CORE315_PATCH, CURRENT_SOURCE_CORE315_NATIVE)
@@ -8696,6 +8895,80 @@ def _current_source_receipt_continuity_predecessor_checked(value, request, *, so
 def _current_source_receipt_continuity_checked(value, request, *, cli_only, source_update):
     _current_source_ninety_ninth_bindings_checked(CURRENT_SOURCE_RECEIPT_CONTINUITY_SUCCESSOR_SCHEMA)
     prior_edge = _current_source_receipt_continuity_predecessor_checked(value, request, source_update=source_update)
+    return _current_native_source_edge_checked(value, cli_only=cli_only,
+        source_update=source_update, prior_edge=prior_edge)
+
+
+def _current_source_core316_predecessor_checked(value, request, *, source_update):
+    """Authenticate Core315 and retain its exact images across publication of Core316."""
+    f = api()
+    home = f.canonical(value['home'])
+    pins = CURRENT_SOURCE_CORE316_PREDECESSOR
+    context = request['current_source_successor']
+    current, previous = request['current_input'], request['previous_input']
+    tx = home/'preparation'/('ordinary-source-update-v45-'+pins['request'][:16])
+    f.require(set(context) == {'schema', 'root_project_update', 'previous_native_update'}
+        and context['schema'] == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA
+        and context['previous_native_update'] == {'path': str(tx/'request.json'), 'sha256': pins['request']}
+        and type(context['root_project_update']) is dict
+        and context['root_project_update'].get('sha256') == pins['root']
+        and type(current) is dict and type(previous) is dict
+        and set(current) == set(previous) == {'path', 'sha256'}
+        and all(current[key] != previous[key] for key in ('path', 'sha256')),
+        'ordinary_current_successor_core316_context_required')
+    predecessor = _current_source_json(tx/'request.json', expected_sha256=pins['request'])
+    _current_source_request_metadata(predecessor, home)
+    predecessor_context = predecessor['current_source_successor']
+    f.require(predecessor['current_input'] == previous and previous['sha256'] == pins['input']
+        and predecessor_context['schema'] == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
+        and predecessor_context['root_project_update'] == context['root_project_update']
+        and _current_source_cp_transactions(home, previous) == tx,
+        'ordinary_current_successor_core316_predecessor_required')
+    for name in ('intent', 'committed'):
+        _current_source_json(tx/(name+'.json'), expected_sha256=pins[name])
+    _, commit = _current_source_cp_proof(home, tx, predecessor, committed=True)
+    marker = _current_source_json(tx/f.MARKER, expected_sha256=pins['marker'])
+    receipt = _current_source_json(tx/'hermes-agent.source.json', expected_sha256=pins['receipt'])
+    stamp = _current_source_json(tx/'install-stamp.json', expected_sha256=pins['stamp'])
+    prior_value = _current_source_json(_current_source_reference(previous), expected_sha256=pins['input'])
+    layer = 'patches/hermes/'+CURRENT_SOURCE_CORE315_LAYER
+    manifest_name, patch_name = layer+'-manifest.json', layer+'.patch'
+    files = prior_value['project_files']
+    f.require(len(files) == 712 and files == predecessor['project_inventory']
+        and predecessor['layer_names'] == [CURRENT_SOURCE_CORE315_LAYER]
+        and predecessor['installed_layers'] == 314 and predecessor['installed_files'] == 17931
+        and files[PROJECT_DSH_CURRENT_HELPER] == pins['helper']
+        and files[manifest_name] == CURRENT_SOURCE_CORE315_MANIFEST
+        and files[patch_name] == CURRENT_SOURCE_CORE315_PATCH
+        and commit['source_receipt_sha256'] == marker['source_receipt_sha256'] == pins['receipt']
+        and marker['input_sha256'] == pins['input']
+        and marker['ordinary_gateway']['operator_entry']['input'] == previous
+        and marker['ordinary_gateway']['source_receipt_sha256'] == pins['receipt']
+        and len(receipt['files']) == 17931 and len(receipt['layers']) == 315
+        and receipt['layers'][-1] == {'manifest': manifest_name,
+            'manifest_sha256': CURRENT_SOURCE_CORE315_MANIFEST, 'patch_sha256': CURRENT_SOURCE_CORE315_PATCH}
+        and stamp['fridaySource'] == {'baseTree': receipt['base_tree'], 'layers': receipt['layers']},
+        'ordinary_current_successor_core316_retained_predecessor_changed')
+    successor_before = None
+    live_marker = _current_source_json(home/f.MARKER)
+    if live_marker.get('input_sha256') == current['sha256']:
+        selected = _current_source_cp_transactions(home, current)
+        f.require(selected is not None, 'ordinary_current_successor_leaf_journal_required')
+        _current_source_cp_proof(home, selected, request, committed=source_update is None)
+        successor_before = selected/'before'
+    selected_before = successor_before or home
+    for name, key in ((f.MARKER, 'marker'), ('hermes-agent.source.json', 'receipt'),
+                      ('hermes-agent/install-stamp.json', 'stamp')):
+        _current_source_json(selected_before/name, expected_sha256=pins[key])
+    _current_source_core315_images_checked(home, tx, True, files, manifest_name, patch_name,
+        core316_before=successor_before)
+    return {'request': predecessor, 'value': prior_value, 'receipt': receipt,
+        'receipt_sha256': pins['receipt'], 'stamp': stamp, 'stamp_sha256': pins['stamp'], 'marker': marker}
+
+
+def _current_source_core316_checked(value, request, *, cli_only, source_update):
+    _current_source_ninety_ninth_bindings_checked(CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA)
+    prior_edge = _current_source_core316_predecessor_checked(value, request, source_update=source_update)
     return _current_native_source_edge_checked(value, cli_only=cli_only,
         source_update=source_update, prior_edge=prior_edge)
 
@@ -9631,7 +9904,7 @@ def _current_source_core314_images_checked(home, tx, leaf, files, manifest_name,
             check(home/relative, files[relative], CURRENT_SOURCE_CORE314_LAYER_BYTES[kind])
 
 
-def _current_source_core315_images_checked(home, tx, leaf, files, manifest_name, patch_name):
+def _current_source_core315_images_checked(home, tx, leaf, files, manifest_name, patch_name, *, core316_before=None):
     f = api()
     before = tx/'before' if leaf else home
 
@@ -9644,7 +9917,7 @@ def _current_source_core315_images_checked(home, tx, leaf, files, manifest_name,
     helper = PROJECT_DSH_CURRENT_HELPER
     check(before/helper, CURRENT_SOURCE_CORE315_PREDECESSOR['helper'])
     if leaf:
-        check(home/helper, files[helper])
+        check((core316_before or home)/helper, files[helper])
     for role, (old_sha, new_sha, size, _) in CURRENT_SOURCE_CORE315_NATIVE.items():
         relative = 'hermes-agent/'+role
         check(before/relative, old_sha, CURRENT_SOURCE_CORE315_NATIVE_BEFORE[role],
@@ -9655,6 +9928,35 @@ def _current_source_core315_images_checked(home, tx, leaf, files, manifest_name,
         _current_source_s08_absence_checked(before, relative)
         if leaf:
             check(home/relative, files[relative], CURRENT_SOURCE_CORE315_LAYER_BYTES[kind])
+
+
+def _current_source_core316_images_checked(home, tx, leaf, files, manifest_name, patch_name):
+    f = api()
+    before = tx/'before' if leaf else home
+
+    def check(path, pin, size=None, mode=0o600):
+        raw = f.owned_file(path, private=mode == 0o600)
+        f.require(f.digest(raw) == pin and (size is None or len(raw) == size)
+            and stat.S_IMODE(path.lstat().st_mode) == mode,
+            'ordinary_current_successor_core316_image_changed')
+
+    helper = PROJECT_DSH_CURRENT_HELPER
+    check(before/helper, CURRENT_SOURCE_CORE316_PREDECESSOR['helper'])
+    if leaf:
+        check(home/helper, files[helper])
+    for role, (old_sha, new_sha, size, new_file) in CURRENT_SOURCE_CORE316_NATIVE.items():
+        relative = 'hermes-agent/'+role
+        if new_file:
+            _current_source_s08_absence_checked(before, relative)
+        else:
+            check(before/relative, old_sha, CURRENT_SOURCE_CORE316_NATIVE_BEFORE[role],
+                0o600 if leaf else CURRENT_SOURCE_CORE316_NATIVE_BEFORE_MODE[role])
+        if leaf:
+            check(home/relative, new_sha, size)
+    for kind, relative in (('manifest', manifest_name), ('patch', patch_name)):
+        _current_source_s08_absence_checked(before, relative)
+        if leaf:
+            check(home/relative, files[relative], CURRENT_SOURCE_CORE316_LAYER_BYTES[kind])
 
 
 def _current_source_f04_pptx_images_checked(home, tx, leaf, files, manifest_name, patch_name, *, successor_before=None):
@@ -16588,6 +16890,8 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
         return _current_source_ninety_seventh_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
     if context.get('schema') == CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA:
         return _current_source_ninety_eighth_successor_checked(value,request,cli_only=cli_only,source_update=source_update)
+    if context.get('schema') == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA:
+        return _current_source_core316_checked(value, request, cli_only=cli_only, source_update=source_update)
     if context.get('schema') == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
         return _current_source_core315_checked(value, request, cli_only=cli_only, source_update=source_update)
     if context.get('schema') == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA:
@@ -16867,6 +17171,8 @@ def current_native_source_successor_checked(value, *, cli_only, source_update=No
 
 
 def _current_source_request_schema(context):
+    if context.get('schema') == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_CORE316_REQUEST_SCHEMA
     if context.get('schema') == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
         return CURRENT_SOURCE_CORE315_REQUEST_SCHEMA
     if context.get('schema') == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA:
@@ -17179,6 +17485,7 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
     s14 = continuation and core296_schema == CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA
     s14_strict = continuation and core296_schema == CURRENT_SOURCE_S14_STRICT_SUCCESSOR_SCHEMA
     d13 = continuation and core296_schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA
+    core316 = continuation and core296_schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA
     core315 = continuation and core296_schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
     core314 = continuation and core296_schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA
     core313 = continuation and core296_schema == CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA
@@ -17466,7 +17773,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
             CURRENT_SOURCE_THIRD_SUCCESSOR_SCHEMA if third else
             CURRENT_SOURCE_SECOND_SUCCESSOR_SCHEMA if second else CURRENT_SOURCE_SUCCESSOR_SCHEMA)
         and (not continuation or prior_edge['request']['current_source_successor']['schema'] ==
-             (CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA if core315 else
+             (CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA if core316 else
+             CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA if core315 else
              CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA if core314 else
              CURRENT_SOURCE_CORE312_SUCCESSOR_SCHEMA if core313 else
              CURRENT_SOURCE_CORE311_SUCCESSOR_SCHEMA if core312 else
@@ -19604,9 +19912,9 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         previous = prior_edge['value']; previous_ref = prior_edge['request']['current_input']
         expected_before_receipt = prior_edge['receipt_sha256']
         expected_before_stamp = prior_edge['stamp_sha256']
-        before_layers = 314 if core315 else 313 if core314 else 312 if core313 else 311 if core312 else 310 if core311 else 309 if core310 else 308 if core309 else 307 if f04_pptx else 306 if d02_f04 else 305 if receipt_continuity else 304 if d13 else 303 if s14_strict else 302 if s14 else 301 if s13 else 300 if s08 else 299 if d02_rights else 298 if word_after_d02 else 297 if d02 else 296 if ninety_ninth else 295 if ninety_eighth else 294 if ninety_seventh else 293 if ninety_sixth else 292 if ninety_fifth else 291 if ninety_fourth else 290 if ninety_third else 289 if ninety_second else 288 if ninety_first else 287 if ninetieth else 286 if eighty_ninth else 285 if eighty_eighth else 284 if eighty_seventh else 283 if eighty_sixth else 282 if eighty_fifth else 281 if eighty_fourth else 280 if eighty_third else 279 if eighty_second else 278 if eighty_first else 277 if eightieth else 276 if seventy_ninth else 275 if seventy_eighth else 274 if seventy_seventh else 273 if seventy_sixth else 272 if seventy_fifth else 271 if seventy_fourth else 270 if seventy_third else 269 if seventy_second else 268 if seventy_first else 267 if seventieth else 266 if sixty_ninth else 265 if sixty_eighth else 264 if sixty_seventh else 263 if sixty_sixth else 262 if sixty_fifth else 261 if sixty_fourth else 260 if sixty_third else 259 if sixty_second else 258 if sixty_first else 257 if sixtieth else 256 if fifty_ninth else 255 if fifty_eighth else 254 if fifty_seventh else 253 if fifty_sixth else 252 if fifty_fifth else 251 if fifty_fourth else 250 if fifty_third else 249 if fifty_second else 248 if fifty_first else 247 if fiftieth else 246 if forty_ninth else 245 if forty_eighth else 244 if forty_seventh else 243 if forty_sixth else 242 if forty_fifth else 241 if forty_fourth else 240 if forty_third else 239 if forty_second else 238 if forty_first else 237 if fortieth else 236 if thirty_ninth else 235 if thirty_eighth else 234 if thirty_seventh else 233 if thirty_sixth else 232 if thirty_fifth else 231 if thirty_fourth else 230 if thirty_third else 229 if thirty_second else 228 if thirty_first else 227 if thirtieth else 226 if twenty_ninth else 225 if twenty_eighth else 224 if twenty_seventh else 223 if twenty_sixth else 222 if twenty_fifth else 221 if twenty_fourth else 220 if twenty_third else 219 if twenty_second else 218 if twenty_first else 217 if twentieth else 216 if nineteenth else 215 if eighteenth else 214 if seventeenth else 213 if sixteenth else 212 if fifteenth else 211 if fourteenth else 210 if thirteenth else 209 if twelfth else 208 if eleventh else 207 if tenth else 206 if ninth else 205 if eighth else 204 if seventh else 203 if sixth else 202 if fifth else 201 if fourth else 200 if third else 199
-        before_native_count = 17931 if core315 else 17931 if core314 else 17931 if core313 else 17931 if core312 else 17929 if core311 else 17928 if core310 else 17924 if core309 or f04_pptx or receipt_continuity or d02_f04 else 17921 if d13 else 17919 if s13 or s14 or s14_strict else 17916 if s08 or word_after_d02 or d02_rights else 17911 if d02 or ninety_ninth else 17911 if ninety_eighth else 17911 if ninety_seventh else 17911 if ninety_sixth else 17911 if ninety_fifth else 17910 if ninety_fourth else 17910 if ninety_third else 17910 if ninety_second else 17909 if ninety_first or ninetieth or eighty_ninth or eighty_eighth or eighty_seventh or eighty_sixth or eighty_fifth else 17902 if eighty_fourth or eighty_third or eighty_second or eighty_first or eightieth or seventy_ninth else 17901 if seventy_eighth or seventy_seventh or seventy_sixth or seventy_fifth or seventy_fourth or seventy_third or seventy_second or seventy_first or seventieth or sixty_ninth or sixty_eighth or sixty_seventh or sixty_sixth or sixty_fifth or sixty_fourth or sixty_third else 17899 if sixty_second or sixty_first or sixtieth or fifty_ninth or fifty_eighth or fifty_seventh or fifty_sixth else 17898 if fifty_fifth else 17896 if fifty_fourth or fifty_third or fifty_second or fifty_first or fiftieth or forty_ninth or forty_eighth or forty_seventh or forty_sixth or forty_fifth or forty_fourth or forty_third or forty_second or forty_first or fortieth or thirty_ninth or thirty_eighth or thirty_seventh or thirty_sixth or thirty_fifth or thirty_fourth or thirty_third or thirty_second else 17895 if thirty_first or thirtieth or twenty_ninth else 17894 if twenty_eighth or twenty_seventh or twenty_sixth else 17893 if twenty_fifth or twenty_fourth or twenty_third else 17892 if twenty_second or twenty_first else 17891 if twentieth or nineteenth or eighteenth or seventeenth or sixteenth or fifteenth or fourteenth or thirteenth or twelfth or eleventh or tenth or ninth or eighth or seventh or sixth else 17890 if fifth else 17888
-        before_project_count = 710 if core315 else 708 if core314 else 706 if core313 else 704 if core312 else 702 if core311 else 700 if core310 else 698 if core309 else 696 if f04_pptx else 694 if d02_f04 else 692 if receipt_continuity else 690 if d13 else 688 if s14_strict else 686 if s14 else 684 if s13 else 682 if s08 else 680 if d02_rights else 678 if word_after_d02 else 675 if d02 else 673 if ninety_ninth else 671 if ninety_eighth else 669 if ninety_seventh else 667 if ninety_sixth else 665 if ninety_fifth else 663 if ninety_fourth else 661 if ninety_third else 659 if ninety_second else 657 if ninety_first else 655 if ninetieth else 653 if eighty_ninth else 651 if eighty_eighth else 649 if eighty_seventh else 647 if eighty_sixth else 645 if eighty_fifth else 643 if eighty_fourth else 641 if eighty_third else 639 if eighty_second else 637 if eighty_first else 635 if eightieth else 633 if seventy_ninth else 631 if seventy_eighth else 629 if seventy_seventh else 627 if seventy_sixth else 625 if seventy_fifth else 623 if seventy_fourth else 621 if seventy_third else 619 if seventy_second else 617 if seventy_first else 615 if seventieth else 613 if sixty_ninth else 611 if sixty_eighth else 609 if sixty_seventh else 607 if sixty_sixth else 605 if sixty_fifth else 603 if sixty_fourth else 601 if sixty_third else 599 if sixty_second else 597 if sixty_first else 595 if sixtieth else 593 if fifty_ninth else 591 if fifty_eighth else 589 if fifty_seventh else 587 if fifty_sixth else 585 if fifty_fifth else 583 if fifty_fourth else 581 if fifty_third else 579 if fifty_second else 577 if fifty_first else 575 if fiftieth else 573 if forty_ninth else 571 if forty_eighth else 569 if forty_seventh else 567 if forty_sixth else 565 if forty_fifth else 563 if forty_fourth else 561 if forty_third else 559 if forty_second else 557 if forty_first else 555 if fortieth else 553 if thirty_ninth else 551 if thirty_eighth else 549 if thirty_seventh else 547 if thirty_sixth else 545 if thirty_fifth else 543 if thirty_fourth else 541 if thirty_third else 539 if thirty_second else 537 if thirty_first else 535 if thirtieth else 533 if twenty_ninth else 531 if twenty_eighth else 529 if twenty_seventh else 527 if twenty_sixth else 525 if twenty_fifth else 523 if twenty_fourth else 521 if twenty_third else 519 if twenty_second else 517 if twenty_first else 515 if twentieth else 513 if nineteenth else 511 if eighteenth else 509 if seventeenth else 507 if sixteenth else 505 if fifteenth else 503 if fourteenth else 501 if thirteenth else 499 if twelfth else 497 if eleventh else 495 if tenth else 493 if ninth else 491 if eighth else 489 if seventh else 487 if sixth else 485 if fifth else 483 if fourth else 481 if third else 479
+        before_layers = 315 if core316 else 314 if core315 else 313 if core314 else 312 if core313 else 311 if core312 else 310 if core311 else 309 if core310 else 308 if core309 else 307 if f04_pptx else 306 if d02_f04 else 305 if receipt_continuity else 304 if d13 else 303 if s14_strict else 302 if s14 else 301 if s13 else 300 if s08 else 299 if d02_rights else 298 if word_after_d02 else 297 if d02 else 296 if ninety_ninth else 295 if ninety_eighth else 294 if ninety_seventh else 293 if ninety_sixth else 292 if ninety_fifth else 291 if ninety_fourth else 290 if ninety_third else 289 if ninety_second else 288 if ninety_first else 287 if ninetieth else 286 if eighty_ninth else 285 if eighty_eighth else 284 if eighty_seventh else 283 if eighty_sixth else 282 if eighty_fifth else 281 if eighty_fourth else 280 if eighty_third else 279 if eighty_second else 278 if eighty_first else 277 if eightieth else 276 if seventy_ninth else 275 if seventy_eighth else 274 if seventy_seventh else 273 if seventy_sixth else 272 if seventy_fifth else 271 if seventy_fourth else 270 if seventy_third else 269 if seventy_second else 268 if seventy_first else 267 if seventieth else 266 if sixty_ninth else 265 if sixty_eighth else 264 if sixty_seventh else 263 if sixty_sixth else 262 if sixty_fifth else 261 if sixty_fourth else 260 if sixty_third else 259 if sixty_second else 258 if sixty_first else 257 if sixtieth else 256 if fifty_ninth else 255 if fifty_eighth else 254 if fifty_seventh else 253 if fifty_sixth else 252 if fifty_fifth else 251 if fifty_fourth else 250 if fifty_third else 249 if fifty_second else 248 if fifty_first else 247 if fiftieth else 246 if forty_ninth else 245 if forty_eighth else 244 if forty_seventh else 243 if forty_sixth else 242 if forty_fifth else 241 if forty_fourth else 240 if forty_third else 239 if forty_second else 238 if forty_first else 237 if fortieth else 236 if thirty_ninth else 235 if thirty_eighth else 234 if thirty_seventh else 233 if thirty_sixth else 232 if thirty_fifth else 231 if thirty_fourth else 230 if thirty_third else 229 if thirty_second else 228 if thirty_first else 227 if thirtieth else 226 if twenty_ninth else 225 if twenty_eighth else 224 if twenty_seventh else 223 if twenty_sixth else 222 if twenty_fifth else 221 if twenty_fourth else 220 if twenty_third else 219 if twenty_second else 218 if twenty_first else 217 if twentieth else 216 if nineteenth else 215 if eighteenth else 214 if seventeenth else 213 if sixteenth else 212 if fifteenth else 211 if fourteenth else 210 if thirteenth else 209 if twelfth else 208 if eleventh else 207 if tenth else 206 if ninth else 205 if eighth else 204 if seventh else 203 if sixth else 202 if fifth else 201 if fourth else 200 if third else 199
+        before_native_count = 17931 if core316 else 17931 if core315 else 17931 if core314 else 17931 if core313 else 17931 if core312 else 17929 if core311 else 17928 if core310 else 17924 if core309 or f04_pptx or receipt_continuity or d02_f04 else 17921 if d13 else 17919 if s13 or s14 or s14_strict else 17916 if s08 or word_after_d02 or d02_rights else 17911 if d02 or ninety_ninth else 17911 if ninety_eighth else 17911 if ninety_seventh else 17911 if ninety_sixth else 17911 if ninety_fifth else 17910 if ninety_fourth else 17910 if ninety_third else 17910 if ninety_second else 17909 if ninety_first or ninetieth or eighty_ninth or eighty_eighth or eighty_seventh or eighty_sixth or eighty_fifth else 17902 if eighty_fourth or eighty_third or eighty_second or eighty_first or eightieth or seventy_ninth else 17901 if seventy_eighth or seventy_seventh or seventy_sixth or seventy_fifth or seventy_fourth or seventy_third or seventy_second or seventy_first or seventieth or sixty_ninth or sixty_eighth or sixty_seventh or sixty_sixth or sixty_fifth or sixty_fourth or sixty_third else 17899 if sixty_second or sixty_first or sixtieth or fifty_ninth or fifty_eighth or fifty_seventh or fifty_sixth else 17898 if fifty_fifth else 17896 if fifty_fourth or fifty_third or fifty_second or fifty_first or fiftieth or forty_ninth or forty_eighth or forty_seventh or forty_sixth or forty_fifth or forty_fourth or forty_third or forty_second or forty_first or fortieth or thirty_ninth or thirty_eighth or thirty_seventh or thirty_sixth or thirty_fifth or thirty_fourth or thirty_third or thirty_second else 17895 if thirty_first or thirtieth or twenty_ninth else 17894 if twenty_eighth or twenty_seventh or twenty_sixth else 17893 if twenty_fifth or twenty_fourth or twenty_third else 17892 if twenty_second or twenty_first else 17891 if twentieth or nineteenth or eighteenth or seventeenth or sixteenth or fifteenth or fourteenth or thirteenth or twelfth or eleventh or tenth or ninth or eighth or seventh or sixth else 17890 if fifth else 17888
+        before_project_count = 712 if core316 else 710 if core315 else 708 if core314 else 706 if core313 else 704 if core312 else 702 if core311 else 700 if core310 else 698 if core309 else 696 if f04_pptx else 694 if d02_f04 else 692 if receipt_continuity else 690 if d13 else 688 if s14_strict else 686 if s14 else 684 if s13 else 682 if s08 else 680 if d02_rights else 678 if word_after_d02 else 675 if d02 else 673 if ninety_ninth else 671 if ninety_eighth else 669 if ninety_seventh else 667 if ninety_sixth else 665 if ninety_fifth else 663 if ninety_fourth else 661 if ninety_third else 659 if ninety_second else 657 if ninety_first else 655 if ninetieth else 653 if eighty_ninth else 651 if eighty_eighth else 649 if eighty_seventh else 647 if eighty_sixth else 645 if eighty_fifth else 643 if eighty_fourth else 641 if eighty_third else 639 if eighty_second else 637 if eighty_first else 635 if eightieth else 633 if seventy_ninth else 631 if seventy_eighth else 629 if seventy_seventh else 627 if seventy_sixth else 625 if seventy_fifth else 623 if seventy_fourth else 621 if seventy_third else 619 if seventy_second else 617 if seventy_first else 615 if seventieth else 613 if sixty_ninth else 611 if sixty_eighth else 609 if sixty_seventh else 607 if sixty_sixth else 605 if sixty_fifth else 603 if sixty_fourth else 601 if sixty_third else 599 if sixty_second else 597 if sixty_first else 595 if sixtieth else 593 if fifty_ninth else 591 if fifty_eighth else 589 if fifty_seventh else 587 if fifty_sixth else 585 if fifty_fifth else 583 if fifty_fourth else 581 if fifty_third else 579 if fifty_second else 577 if fifty_first else 575 if fiftieth else 573 if forty_ninth else 571 if forty_eighth else 569 if forty_seventh else 567 if forty_sixth else 565 if forty_fifth else 563 if forty_fourth else 561 if forty_third else 559 if forty_second else 557 if forty_first else 555 if fortieth else 553 if thirty_ninth else 551 if thirty_eighth else 549 if thirty_seventh else 547 if thirty_sixth else 545 if thirty_fifth else 543 if thirty_fourth else 541 if thirty_third else 539 if thirty_second else 537 if thirty_first else 535 if thirtieth else 533 if twenty_ninth else 531 if twenty_eighth else 529 if twenty_seventh else 527 if twenty_sixth else 525 if twenty_fifth else 523 if twenty_fourth else 521 if twenty_third else 519 if twenty_second else 517 if twenty_first else 515 if twentieth else 513 if nineteenth else 511 if eighteenth else 509 if seventeenth else 507 if sixteenth else 505 if fifteenth else 503 if fourteenth else 501 if thirteenth else 499 if twelfth else 497 if eleventh else 495 if tenth else 493 if ninth else 491 if eighth else 489 if seventh else 487 if sixth else 485 if fifth else 483 if fourth else 481 if third else 479
     f.require(not fourteenth or (expected_before_receipt == CURRENT_SOURCE_FOURTEENTH_PREVIOUS_RECEIPT
         and expected_before_stamp == CURRENT_SOURCE_FOURTEENTH_PREVIOUS_STAMP),
         'ordinary_current_successor_exact_fourteenth_before_metadata_required')
@@ -20642,6 +20950,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_eighth_helper_scope_required')
     f.require(not seventh or changes == {PROJECT_DSH_CURRENT_HELPER},
         'ordinary_current_successor_exact_seventh_helper_scope_required')
+    f.require(not core316 or changes == {PROJECT_DSH_CURRENT_HELPER},
+        'ordinary_current_successor_core316_helper_scope_required')
     f.require(not core315 or changes == {PROJECT_DSH_CURRENT_HELPER},
         'ordinary_current_successor_core315_helper_scope_required')
     f.require(not core314 or changes == {PROJECT_DSH_CURRENT_HELPER},
@@ -21028,6 +21338,11 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         f.require(manifest.get('prerequisites') == CURRENT_SOURCE_S14_STRICT_PREREQUISITES
             and all(old.get(name) == pin for name, pin in CURRENT_SOURCE_S14_STRICT_PREREQUISITES.items()),
             'ordinary_current_successor_exact_s14_strict_prerequisites_required')
+    if core316:
+        prerequisites = CURRENT_SOURCE_CORE316_PREREQUISITES
+        f.require(manifest.get('prerequisites') == prerequisites
+            and all(old.get(name) == pin for name, pin in prerequisites.items()),
+            'ordinary_current_successor_core316_prerequisites_required')
     if core315:
         prerequisites = CURRENT_SOURCE_CORE315_PREREQUISITES
         f.require(manifest.get('prerequisites') == prerequisites
@@ -21143,6 +21458,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         _current_source_s14_strict_images_checked(home, tx, leaf, files, manifest_name, patch_name)
     if d13:
         _current_source_d13_images_checked(home, tx, leaf, files, manifest_name, patch_name)
+    if core316:
+        _current_source_core316_images_checked(home, tx, leaf, files, manifest_name, patch_name)
     if core315:
         _current_source_core315_images_checked(home, tx, leaf, files, manifest_name, patch_name)
     if core314:
@@ -21907,7 +22224,7 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
         'ordinary_current_successor_exact_ninety_seventh_native_count_required')
     f.require(not ninety_eighth or len(expected_files) == 17911,
         'ordinary_current_successor_exact_ninety_eighth_native_count_required')
-    f.require(not ninety_ninth or len(expected_files) == (17931 if core315 or core314 or core313 or core312 or core311 else 17929 if core310 else 17928 if core309 else 17924 if f04_pptx or d13 or receipt_continuity or d02_f04 else 17921 if s14_strict else 17919 if s08 or s13 or s14 else 17916 if word_after_d02 or d02_rights else 17911),
+    f.require(not ninety_ninth or len(expected_files) == (17943 if core316 else 17931 if core315 or core314 or core313 or core312 or core311 else 17929 if core310 else 17928 if core309 else 17924 if f04_pptx or d13 or receipt_continuity or d02_f04 else 17921 if s14_strict else 17919 if s08 or s13 or s14 else 17916 if word_after_d02 or d02_rights else 17911),
         'ordinary_current_successor_exact_ninety_ninth_native_count_required')
     f.require(not d02 or len(expected_files) == 17916,
         'ordinary_current_successor_exact_d02_native_count_required')
@@ -21934,8 +22251,8 @@ def _current_native_source_edge_checked(value, *, cli_only, source_update=None,
                 and encoded(commit['files']) == encoded(touched)), 'ordinary_current_successor_journal_native_scope_changed')
     plugins = {n:h for n,h in selected_files.items() if n.startswith('plugins/friday_rework/')}
     before_plugins = {n:h for n,h in old.items() if n.startswith('plugins/friday_rework/')} if d02 else plugins
-    f.require(len(plugins) == (53 if s08 or s13 or s14 or s14_strict or d13 or receipt_continuity or d02_f04 or f04_pptx or core315 or core314 or core313 or core312 or core311 or core310 or core309 or word_after_d02 or d02_rights or d02 and leaf else 52)
-        and len(before_plugins) == (53 if s08 or s13 or s14 or s14_strict or d13 or receipt_continuity or d02_f04 or f04_pptx or core315 or core314 or core313 or core312 or core311 or core310 or core309 or word_after_d02 or d02_rights else 52)
+    f.require(len(plugins) == (53 if s08 or s13 or s14 or s14_strict or d13 or receipt_continuity or d02_f04 or f04_pptx or core316 or core315 or core314 or core313 or core312 or core311 or core310 or core309 or word_after_d02 or d02_rights or d02 and leaf else 52)
+        and len(before_plugins) == (53 if s08 or s13 or s14 or s14_strict or d13 or receipt_continuity or d02_f04 or f04_pptx or core316 or core315 or core314 or core313 or core312 or core311 or core310 or core309 or word_after_d02 or d02_rights else 52)
         and encoded(before_marker.get('plugin_files')) == encoded(before_plugins)
         and marker.get('schema') == f.SCHEMA and marker.get('home') == str(home) and marker.get('source') == str(source)
         and marker.get('state') == 'INSTALLED_TEMPLATE_INCOMPLETE' and marker.get('completion_stage') == 'TELEGRAM_ORDINARY'

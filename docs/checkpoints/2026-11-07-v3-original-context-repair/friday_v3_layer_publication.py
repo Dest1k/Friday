@@ -42,6 +42,7 @@ SCHEMA_EXPLICIT = "friday.ordinary-telegram-source-update.v46"
 SCHEMA_S14_FINALIZE = "friday.ordinary-telegram-source-update.v47"
 SCHEMA_D13 = "friday.ordinary-telegram-source-update.v48"
 SCHEMA_CORE309 = 'friday.ordinary-telegram-source-update.v52'
+SCHEMA_CORE316 = 'friday.ordinary-telegram-source-update.f06-protected-odt-after-source315.v1'
 SCHEMA_CORE315 = 'friday.ordinary-telegram-source-update.document-outcomes-after-source314.v1'
 SCHEMA_CORE314 = 'friday.ordinary-telegram-source-update.f05-ots-tool-guidance-after-source313.v1'
 SCHEMA_CORE313 = 'friday.ordinary-telegram-source-update.state-db-idempotent-permissions-after-source312.v1'
@@ -187,6 +188,7 @@ LAYER_NAMES = (
     'ordinary-state-db-idempotent-permissions-after-source312',
     'ordinary-f05-ots-tool-guidance-after-source313',
     'ordinary-document-outcomes-after-source314',
+    'ordinary-f06-protected-odt-after-source315',
     'ordinary-f04-pptx-impress-namespace-after-source307',
     'ordinary-receiver-identity-and-calc-conversion-after-source306',
     'telegram-ordinary-receipt-continuity-after-source305',
@@ -8554,7 +8556,345 @@ CURRENT_SOURCE_CORE315_BEFORE = {'FRIDAY-INSTALL.json': (None, 'UNBOUND'),
  'scripts/friday_ordinary_install.py': (None, 'UNBOUND')}
 
 
+CURRENT_SOURCE_CORE316_LAYER = 'ordinary-f06-protected-odt-after-source315'
+CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA = 'friday.current-source-native-successor.f06-protected-odt-after-source315.v1'
+CURRENT_SOURCE_CORE316_MANIFEST = '6e3ae4a616fcb467a95dbe35363d150ee7dd59bce25d2e10a1efefbe1d7ace64'
+CURRENT_SOURCE_CORE316_PATCH = 'fe28efd9846c753e96201667be73c1702c9a7e111e1f3e3d7adef98f04c654dd'
+CURRENT_SOURCE_CORE316_PREDECESSOR = {'committed': 'UNBOUND',
+ 'helper': 'UNBOUND',
+ 'input': 'UNBOUND',
+ 'intent': 'UNBOUND',
+ 'marker': 'UNBOUND',
+ 'receipt': 'UNBOUND',
+ 'request': 'UNBOUND',
+ 'root': 'UNBOUND',
+ 'stamp': 'UNBOUND'}
+CURRENT_SOURCE_CORE316_NATIVE = ({'before_bytes': 47559,
+  'before_mode': '100644',
+  'before_sha256': 'd41cd4857a5f6cebf9f3aa771c2b48592260394e8f87b0a772981ec2676ba531',
+  'bytes': 47798,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/config.py',
+  'sha256': '65e0ae5bf2a1bc451ee0002d5eecfea4f4399c98d07b27018b6019588120f60a'},
+ {'before_bytes': 28869,
+  'before_mode': '100644',
+  'before_sha256': 'dd3027d8f55b1871e5b80578538ce5a1cb9d78515cdfb1aa5b4c3c548bbaae43',
+  'bytes': 28943,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/config_loader.py',
+  'sha256': '7ef88a0092b13438309faef07de66711e064287c683a3f4aa360169b96b7fcfc'},
+ {'before_sha256': None,
+  'bytes': 11342,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'gateway/ordinary_f06_authority.py',
+  'sha256': '0c96e55ca2e05eb63d7242c099387f276b3dbf6ff5b639fabf952a9c7edd2d41'},
+ {'before_sha256': None,
+  'bytes': 13537,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'gateway/ordinary_f06_confirmation.py',
+  'sha256': 'e89ed2a98ba88a41ddcac3fd966c98be5628db1c486eae69ac2cb3b227b5c6dc'},
+ {'before_sha256': None,
+  'bytes': 16319,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'gateway/ordinary_f06_https.py',
+  'sha256': '892f3cb4eb6c5faef9f045e917c588e2ec3afd18a76449a2432833f3fd1b8a33'},
+ {'before_sha256': None,
+  'bytes': 10593,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'gateway/ordinary_f06_intent.py',
+  'sha256': '0480592338b2b197156f21812a4819dd85dddda5aaecaf0c9ba049dcb537e80b'},
+ {'before_sha256': None,
+  'bytes': 5196,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'gateway/ordinary_f06_producer.py',
+  'sha256': 'a5b8411d9cf39b79aef89bd681944aa92de91c5a1a115e940173236435ebb14e'},
+ {'before_sha256': None,
+  'bytes': 20171,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'gateway/ordinary_f06_session.py',
+  'sha256': 'fe88413ad3dfdb63a45a22be0993aa8807a1718c65ca1c669f90416087dbee7a'},
+ {'before_bytes': 307276,
+  'before_mode': '100644',
+  'before_sha256': 'ffd75ea9db99c635d8ae95f34c8289fe4c7c20440c27e499387bb5be5b011430',
+  'bytes': 311127,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/platforms/base.py',
+  'sha256': 'a5a3745adccc5cf1fa3011c377fe2c9fb7687f6e737517e9a66dafd490285669'},
+ {'before_sha256': None,
+  'bytes': 4265,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'gateway/protected_odt_reset.py',
+  'sha256': '543ae9a3fc52993a9577b0cf56c94732779dc6891668841585261878ffae70ba'},
+ {'before_bytes': 338055,
+  'before_mode': '100644',
+  'before_sha256': '0f8ae8327311cbc823831b07dbe3a5b96834aa9eb40b5f54efd593bcd70feb82',
+  'bytes': 339882,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run.py',
+  'sha256': '457c35ad87d8a083b9d0c89ac89198a93f5cc5a649e02a301807b140a949f35a'},
+ {'before_bytes': 70038,
+  'before_mode': '100644',
+  'before_sha256': 'b28c4847d7e1832f26cec828b1762afbd77162ddc6b80690b758ac721056c729',
+  'bytes': 72688,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_agent_cache.py',
+  'sha256': 'e610d548e3edc23a87bfc0cc7e7966189648cff983f0fb70177dd4b534d8731b'},
+ {'before_bytes': 82394,
+  'before_mode': '100644',
+  'before_sha256': '52969c5eee501a84a39238a22e5aee75fbcb714fb693d3d75b61c372d85daac6',
+  'bytes': 82919,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_busy.py',
+  'sha256': 'b716dca997a80948a33d2b79b2711439ceadfd07d576a29cbb5d1cd64da15f89'},
+ {'before_bytes': 129731,
+  'before_mode': '100644',
+  'before_sha256': '7298882886864b775d106545463861408720f9549f689b3ba06e27ab1920d4fd',
+  'bytes': 134471,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_inbound.py',
+  'sha256': '19d1cf0a385b7a6ef25c9e65f676408916d8ac4922d47997fe6bdf51d3a13715'},
+ {'before_bytes': 29832,
+  'before_mode': '100644',
+  'before_sha256': '9ee46173a936f72a7a2edd31d384c53ea786c33251adc687dc5d27da1fcede59',
+  'bytes': 35199,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_inbound_media.py',
+  'sha256': 'f6e711620f27e6e4fd2321d7504ac0623de36d9c429b81a78d44505ed4c94b13'},
+ {'before_bytes': 34079,
+  'before_mode': '100644',
+  'before_sha256': 'f1a6133fa2722f94ceb148537b21cab5b19a2a62dca0edac62bc6621f8c7d406',
+  'bytes': 38246,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_plugin_delivery.py',
+  'sha256': 'c855958afbfee496dc2cc5044795bba490428a0fb892d125417a41f6a56dc4cf'},
+ {'before_bytes': 136689,
+  'before_mode': '100644',
+  'before_sha256': '60e50719ade0cb0b66e1b31ede7d3a5f190b47d804f4c6fe4ef5c6de8a383daf',
+  'bytes': 142407,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_shutdown.py',
+  'sha256': '6e6b882244928199527b5e79037f0336542ca1fad94e83d442d8ab1fd2c2501f'},
+ {'before_bytes': 138601,
+  'before_mode': '100644',
+  'before_sha256': '20d85f2e8a99a635ab4dd7db692bef16ec0b3727bd7028d93a704da03f2c55a8',
+  'bytes': 138688,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/run_startup.py',
+  'sha256': 'dc9d57b50889bcbf20796629561f5b903862efbd2da5e2b04736bc80fb59019a'},
+ {'before_bytes': 68251,
+  'before_mode': '100644',
+  'before_sha256': 'bd8342408dcec29d65f4a0ef9508642809a85b79f6ead55c98af96b858d093dc',
+  'bytes': 68712,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/session.py',
+  'sha256': '59117e0665acb6c5c857680d5de2628ed0b291ab062a1a127efa5ca6065059fa'},
+ {'before_bytes': 24752,
+  'before_mode': '100644',
+  'before_sha256': 'aa541351d555fb11708e2ff55fde72d5231018075c1f659de41d997c8f235025',
+  'bytes': 25529,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/session_lifecycle.py',
+  'sha256': 'ad333aa5e8c3f0dd1e42b7795f653bb5a8bd985bc0e4e898d402678125c54741'},
+ {'before_bytes': 23980,
+  'before_mode': '100644',
+  'before_sha256': 'f6b135c030987282e323005c362613c0a32c8c09575de8e52bdd04cbcbb5116d',
+  'bytes': 24207,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/shutdown_watchdog.py',
+  'sha256': '15fe127aaa07151621738f3a1644349ad6bd61fd192d3d1d84bc27ee4dab2c32'},
+ {'before_bytes': 79137,
+  'before_mode': '100644',
+  'before_sha256': '8daa611c19e16ea6f161b405666c4cad6fd95b4c9bf5fa4314a624eb79c47b61',
+  'bytes': 79232,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/slash_commands.py',
+  'sha256': 'd85c70cb30580d4b7e4288f02df0e2373dc58a69a04ff5af7918ead7164bf4bd'},
+ {'before_bytes': 82470,
+  'before_mode': '100644',
+  'before_sha256': '7100658fdc5c37bbbb93394d74988276a63da044f2e9235288818603a718c102',
+  'bytes': 85645,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'gateway/slash_commands_session.py',
+  'sha256': 'ca65a99119e7df969ae611782ba83be361ede0ffc9c447ca719fa54564f01d86'},
+ {'before_bytes': 6502,
+  'before_mode': '100644',
+  'before_sha256': '9aebb8e6a6b00ca9d170122b2fe8806045c010719ce9e6d38a37fbabd7d5dfee',
+  'bytes': 6922,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/friday_dashboard_tls.py',
+  'sha256': '0688e95c74cff83b22b366dcabb0d61be43c47d6ac34094570df3d59d70c54fe'},
+ {'before_sha256': None,
+  'bytes': 16535,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'hermes_cli/friday_protected_odt.py',
+  'sha256': 'db030a37936cf309ba1cc5f37c534a01c8993d17d31dfc134290a5a279a70f6b'},
+ {'before_sha256': None,
+  'bytes': 7696,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'hermes_cli/friday_protected_odt_app.py',
+  'sha256': 'd8c47a09644efd7eaa14cf85beadd793ad354338869e1890070a99828ad75f23'},
+ {'before_sha256': None,
+  'bytes': 20066,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'hermes_cli/friday_protected_odt_http.py',
+  'sha256': '1c4335b52212ab229708dbf20bc79852eb9461671aa0deacdc00598b6b5aa77e'},
+ {'before_sha256': None,
+  'bytes': 4049,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'hermes_cli/friday_protected_odt_telegram.py',
+  'sha256': '3f3a34d1d9ef2be24ab7f04cebfcf1b89f0b17332ab0607d8620349d7d4e844c'},
+ {'before_bytes': 156306,
+  'before_mode': '100644',
+  'before_sha256': '6fa376c97e1ef7e2254581b8122546e4f639aab69ae42a3c682d58d2daa5a4ee',
+  'bytes': 158037,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/friday_user_scope.py',
+  'sha256': '42296d5654d41cad3d3a9fd3b59d1096a1ea38de3595e5ae5f78af805d5a610b'},
+ {'before_bytes': 38137,
+  'before_mode': '100644',
+  'before_sha256': '0bc25b322c58c6a1aba5b4db2b6cf108b0b815b886d2e33f3c9cd2d02e881377',
+  'bytes': 38371,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/friday_workspace_docx.py',
+  'sha256': 'c749f2e37df63776bd9b53ded8e50276962b46bb55eb812cde02f71b4189c9ce'},
+ {'before_bytes': 2813,
+  'before_mode': '100644',
+  'before_sha256': '8b64f5a1e420826d44bbdf0ca9e6752096baa91048af280d8a029c89f7b7c162',
+  'bytes': 4157,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'hermes_cli/friday_workspace_odf_password.py',
+  'sha256': '33be78a4535e366fea8de52bbb581ddd5958a5a923f823e4102a87df9882f403'},
+ {'before_bytes': 467918,
+  'before_mode': '100644',
+  'before_sha256': '685802dbe56289bee30141ce7c24b98008b248e5d24c68284fe06f701afe9e3b',
+  'bytes': 470960,
+  'mode': '100644',
+  'new_file': False,
+  'path': 'plugins/platforms/telegram/adapter.py',
+  'sha256': '47121da84f1fd24a2999abed947c05f1b618f84eb04c724265f51ef0d170126d'},
+ {'before_sha256': None,
+  'bytes': 17735,
+  'mode': '100644',
+  'new_file': True,
+  'path': 'tools/scoped_odt_codec.py',
+  'sha256': '04249b4a810087c11f7a0e75493bdbd03f0c8ac32ca365bf31b88ecc7869548a'})
+CURRENT_SOURCE_CORE316_HELPER = 'UNBOUND'
+CURRENT_SOURCE_CORE316_BEFORE = {'FRIDAY-INSTALL.json': (None, 'UNBOUND'),
+ 'hermes-agent.source.json': (None, 'UNBOUND'),
+ 'hermes-agent/gateway/config.py': (47559,
+                                    'd41cd4857a5f6cebf9f3aa771c2b48592260394e8f87b0a772981ec2676ba531',
+                                    420),
+ 'hermes-agent/gateway/config_loader.py': (28869,
+                                           'dd3027d8f55b1871e5b80578538ce5a1cb9d78515cdfb1aa5b4c3c548bbaae43',
+                                           420),
+ 'hermes-agent/gateway/ordinary_f06_authority.py': None,
+ 'hermes-agent/gateway/ordinary_f06_confirmation.py': None,
+ 'hermes-agent/gateway/ordinary_f06_https.py': None,
+ 'hermes-agent/gateway/ordinary_f06_intent.py': None,
+ 'hermes-agent/gateway/ordinary_f06_producer.py': None,
+ 'hermes-agent/gateway/ordinary_f06_session.py': None,
+ 'hermes-agent/gateway/platforms/base.py': (307276,
+                                            'ffd75ea9db99c635d8ae95f34c8289fe4c7c20440c27e499387bb5be5b011430',
+                                            384),
+ 'hermes-agent/gateway/protected_odt_reset.py': None,
+ 'hermes-agent/gateway/run.py': (338055,
+                                 '0f8ae8327311cbc823831b07dbe3a5b96834aa9eb40b5f54efd593bcd70feb82',
+                                 384),
+ 'hermes-agent/gateway/run_agent_cache.py': (70038,
+                                             'b28c4847d7e1832f26cec828b1762afbd77162ddc6b80690b758ac721056c729',
+                                             420),
+ 'hermes-agent/gateway/run_busy.py': (82394,
+                                      '52969c5eee501a84a39238a22e5aee75fbcb714fb693d3d75b61c372d85daac6',
+                                      384),
+ 'hermes-agent/gateway/run_inbound.py': (129731,
+                                         '7298882886864b775d106545463861408720f9549f689b3ba06e27ab1920d4fd',
+                                         384),
+ 'hermes-agent/gateway/run_inbound_media.py': (29832,
+                                               '9ee46173a936f72a7a2edd31d384c53ea786c33251adc687dc5d27da1fcede59',
+                                               384),
+ 'hermes-agent/gateway/run_plugin_delivery.py': (34079,
+                                                 'f1a6133fa2722f94ceb148537b21cab5b19a2a62dca0edac62bc6621f8c7d406',
+                                                 384),
+ 'hermes-agent/gateway/run_shutdown.py': (136689,
+                                          '60e50719ade0cb0b66e1b31ede7d3a5f190b47d804f4c6fe4ef5c6de8a383daf',
+                                          384),
+ 'hermes-agent/gateway/run_startup.py': (138601,
+                                         '20d85f2e8a99a635ab4dd7db692bef16ec0b3727bd7028d93a704da03f2c55a8',
+                                         384),
+ 'hermes-agent/gateway/session.py': (68251,
+                                     'bd8342408dcec29d65f4a0ef9508642809a85b79f6ead55c98af96b858d093dc',
+                                     420),
+ 'hermes-agent/gateway/session_lifecycle.py': (24752,
+                                               'aa541351d555fb11708e2ff55fde72d5231018075c1f659de41d997c8f235025',
+                                               384),
+ 'hermes-agent/gateway/shutdown_watchdog.py': (23980,
+                                               'f6b135c030987282e323005c362613c0a32c8c09575de8e52bdd04cbcbb5116d',
+                                               384),
+ 'hermes-agent/gateway/slash_commands.py': (79137,
+                                            '8daa611c19e16ea6f161b405666c4cad6fd95b4c9bf5fa4314a624eb79c47b61',
+                                            420),
+ 'hermes-agent/gateway/slash_commands_session.py': (82470,
+                                                    '7100658fdc5c37bbbb93394d74988276a63da044f2e9235288818603a718c102',
+                                                    420),
+ 'hermes-agent/hermes_cli/friday_dashboard_tls.py': (6502,
+                                                     '9aebb8e6a6b00ca9d170122b2fe8806045c010719ce9e6d38a37fbabd7d5dfee',
+                                                     384),
+ 'hermes-agent/hermes_cli/friday_protected_odt.py': None,
+ 'hermes-agent/hermes_cli/friday_protected_odt_app.py': None,
+ 'hermes-agent/hermes_cli/friday_protected_odt_http.py': None,
+ 'hermes-agent/hermes_cli/friday_protected_odt_telegram.py': None,
+ 'hermes-agent/hermes_cli/friday_user_scope.py': (156306,
+                                                  '6fa376c97e1ef7e2254581b8122546e4f639aab69ae42a3c682d58d2daa5a4ee',
+                                                  384),
+ 'hermes-agent/hermes_cli/friday_workspace_docx.py': (38137,
+                                                      '0bc25b322c58c6a1aba5b4db2b6cf108b0b815b886d2e33f3c9cd2d02e881377',
+                                                      384),
+ 'hermes-agent/hermes_cli/friday_workspace_odf_password.py': (2813,
+                                                              '8b64f5a1e420826d44bbdf0ca9e6752096baa91048af280d8a029c89f7b7c162',
+                                                              420),
+ 'hermes-agent/install-stamp.json': (None, 'UNBOUND'),
+ 'hermes-agent/plugins/platforms/telegram/adapter.py': (467918,
+                                                        '685802dbe56289bee30141ce7c24b98008b248e5d24c68284fe06f701afe9e3b',
+                                                        384),
+ 'hermes-agent/tools/scoped_odt_codec.py': None,
+ 'patches/hermes/ordinary-f06-protected-odt-after-source315-manifest.json': None,
+ 'patches/hermes/ordinary-f06-protected-odt-after-source315.patch': None,
+ 'scripts/friday_ordinary_install.py': (None, 'UNBOUND')}
+
+
 STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS = {
+    CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA: SCHEMA_CORE316,
     CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA: SCHEMA_CORE315,
     CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA: SCHEMA_CORE314,
     CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA: SCHEMA_CORE313,
@@ -8577,6 +8917,8 @@ WORD_AND_RECOVERY_SUCCESSOR_SCHEMAS = (*CORE296_SUCCESSOR_SCHEMAS, CURRENT_SOURC
 
 
 def core296_successor_schema(layer_names):
+    if CURRENT_SOURCE_CORE316_LAYER in layer_names:
+        return CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA
     if CURRENT_SOURCE_CORE315_LAYER in layer_names:
         return CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
     if CURRENT_SOURCE_CORE314_LAYER in layer_names:
@@ -8619,6 +8961,8 @@ def core296_successor_schema(layer_names):
 
 
 def core296_successor_layer(schema):
+    if schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_CORE316_LAYER
     if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
         return CURRENT_SOURCE_CORE315_LAYER
     if schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA:
@@ -8657,6 +9001,8 @@ def core296_successor_layer(schema):
 
 
 def _core296_predecessor_pins(schema):
+    if schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA:
+        return CURRENT_SOURCE_CORE316_PREDECESSOR
     if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
         return CURRENT_SOURCE_CORE315_PREDECESSOR
     if schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA:
@@ -8705,6 +9051,8 @@ def _core296_predecessor_pins(schema):
 
 
 def _core296_source_pins(schema):
+    if schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA:
+        return (CURRENT_SOURCE_CORE316_MANIFEST, CURRENT_SOURCE_CORE316_PATCH, CURRENT_SOURCE_CORE316_NATIVE)
     if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
         return (CURRENT_SOURCE_CORE315_MANIFEST, CURRENT_SOURCE_CORE315_PATCH, CURRENT_SOURCE_CORE315_NATIVE)
     if schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA:
@@ -8767,6 +9115,7 @@ def ninety_ninth_metadata_refs(home, schema=CURRENT_SOURCE_NINETY_NINTH_SUCCESSO
 
 def require_strict_source_helper(schema, project_files):
     edge, pin = {
+        CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA: ("core316", CURRENT_SOURCE_CORE316_HELPER),
         CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA: ("core315", CURRENT_SOURCE_CORE315_HELPER),
         CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA: ("core314", CURRENT_SOURCE_CORE314_HELPER),
         CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA: ("core313", CURRENT_SOURCE_CORE313_HELPER),
@@ -8794,7 +9143,8 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
     context_schema = context.get("schema") if type(context) is dict else None
     request_schema = STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS.get(schema, SCHEMA_EXPLICIT)
     if request is not None and request.get("schema") in STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS.values():
-        edge = ("core315" if request.get("schema") == SCHEMA_CORE315
+        edge = ("core316" if request.get("schema") == SCHEMA_CORE316
+                else "core315" if request.get("schema") == SCHEMA_CORE315
                 else "core314" if request.get("schema") == SCHEMA_CORE314
                 else "core313" if request.get("schema") == SCHEMA_CORE313
                 else "core312" if request.get("schema") == SCHEMA_CORE312
@@ -8822,7 +9172,8 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
     patch = f"patches/hermes/{layer}.patch"
     if request is not None:
         if schema in STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS:
-            edge = ("core315" if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
+            edge = ("core316" if schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA
+                    else "core315" if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
                     else "core314" if schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA
                     else "core313" if schema == CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA
                     else "core312" if schema == CURRENT_SOURCE_CORE312_SUCCESSOR_SCHEMA
@@ -8857,6 +9208,7 @@ def require_ninety_ninth_source_binding(layer_names, project_files=None, *, requ
                     and type(root) is dict and root.get("sha256") == predecessor["root"],
                     f"transaction_current_source_{edge}_previous_input_or_root_changed")
             before_layers, native_count, project_after = (
+                (315, 17931, 714) if schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA else
                 (314, 17931, 712) if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA else
                 (313, 17931, 710) if schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA else
                 (312, 17931, 708) if schema == CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA else
@@ -8914,7 +9266,12 @@ def require_ninety_ninth_predecessor(request, previous, *, raw=None):
     schema = request["current_source_successor"]["schema"]
     pins = _core296_predecessor_pins(schema)
     predecessor_request_schema = SCHEMA_EXPLICIT
-    if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
+    if schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA:
+        predecessor_layer = CURRENT_SOURCE_CORE315_LAYER
+        predecessor_schema = CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
+        predecessor_request_schema = SCHEMA_CORE315
+        predecessor_layers, predecessor_files, predecessor_projects = 314, 17931, 712
+    elif schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
         predecessor_layer = CURRENT_SOURCE_CORE314_LAYER
         predecessor_schema = CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA
         predecessor_request_schema = SCHEMA_CORE314
@@ -8997,7 +9354,8 @@ def require_ninety_ninth_predecessor(request, previous, *, raw=None):
         predecessor_layer = CURRENT_SOURCE_NINETY_EIGHTH_LAYER
         predecessor_schema = CURRENT_SOURCE_NINETY_EIGHTH_SUCCESSOR_SCHEMA
         predecessor_layers, predecessor_files, predecessor_projects = 295, 17911, 673
-    edge = {CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA: "core315",
+    edge = {CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA: "core316",
+            CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA: "core315",
             CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA: "core314",
             CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA: "core313",
             CURRENT_SOURCE_CORE312_SUCCESSOR_SCHEMA: "core312",
@@ -9027,7 +9385,8 @@ def require_ninety_ninth_predecessor(request, previous, *, raw=None):
 
 def require_strict_source_retained_metadata(journal, schema):
     pins = _core296_predecessor_pins(schema)
-    edge = ("core315" if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
+    edge = ("core316" if schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA
+            else "core315" if schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
             else "core314" if schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA
                     else "core313" if schema == CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA
                     else "core312" if schema == CURRENT_SOURCE_CORE312_SUCCESSOR_SCHEMA
@@ -11026,7 +11385,8 @@ def check_project_inventory(request, previous_input, current_input):
         helper = CURRENT_SOURCE_NINETY_NINTH_HELPER
         if core296_schema in STRICT_SOURCE_SUCCESSOR_REQUEST_SCHEMAS:
             require_ninety_ninth_source_binding(layer_names, request=request)
-            edge = ("core315" if core296_schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
+            edge = ("core316" if core296_schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA
+                    else "core315" if core296_schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
                     else "core314" if core296_schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA
                     else "core313" if core296_schema == CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA
                     else "core312" if core296_schema == CURRENT_SOURCE_CORE312_SUCCESSOR_SCHEMA
@@ -11040,6 +11400,7 @@ def check_project_inventory(request, previous_input, current_input):
             require(sum(name.startswith("plugins/friday_rework/") for name in previous_files) == 53,
                     f"transaction_current_source_{edge}_overlay_scope_changed")
             old_count, new_count = (
+                (712, 714) if core296_schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA else
                 (710, 712) if core296_schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA else
                 (708, 710) if core296_schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA else
                 (706, 708) if core296_schema == CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA else
@@ -11853,7 +12214,12 @@ def read_layers(candidate_root, receipt, home, project_files, layer_names):
                     "transaction_current_source_ninety_ninth_native_scope_changed")
             v98 = f"patches/hermes/{CURRENT_SOURCE_NINETY_EIGHTH_LAYER}"
             prerequisites = {v98 + ".patch": CURRENT_SOURCE_NINETY_EIGHTH_PATCH_SHA256}
-            if core296_schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
+            if core296_schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA:
+                predecessor = f"patches/hermes/{CURRENT_SOURCE_CORE315_LAYER}"
+                manifest_sha256 = CURRENT_SOURCE_CORE315_MANIFEST
+                patch_sha256 = CURRENT_SOURCE_CORE315_PATCH
+                prerequisites = {predecessor + ".patch": patch_sha256}
+            elif core296_schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA:
                 predecessor = f"patches/hermes/{CURRENT_SOURCE_CORE314_LAYER}"
                 manifest_sha256 = CURRENT_SOURCE_CORE314_MANIFEST
                 patch_sha256 = CURRENT_SOURCE_CORE314_PATCH
@@ -12725,6 +13091,7 @@ def run(request, request_path, request_sha256):
     s14 = core296_schema == CURRENT_SOURCE_S14_SUCCESSOR_SCHEMA
     strict_s14 = core296_schema == CURRENT_SOURCE_S14_FINALIZE_SUCCESSOR_SCHEMA
     d13 = core296_schema == CURRENT_SOURCE_D13_SUCCESSOR_SCHEMA
+    core316 = core296_schema == CURRENT_SOURCE_CORE316_SUCCESSOR_SCHEMA
     core315 = core296_schema == CURRENT_SOURCE_CORE315_SUCCESSOR_SCHEMA
     core314 = core296_schema == CURRENT_SOURCE_CORE314_SUCCESSOR_SCHEMA
     core313 = core296_schema == CURRENT_SOURCE_CORE313_SUCCESSOR_SCHEMA
@@ -13169,7 +13536,9 @@ def run(request, request_path, request_sha256):
                             "transaction_current_source_d02_plugin_cas_changed")
             require(before_pins[helper_target]["sha256"] == CURRENT_SOURCE_D02_PREVIOUS_HELPER_SHA256,
                     "transaction_current_source_d02_helper_cas_changed")
-        if core315:
+        if core316:
+            before_pins = _exact_source_before_pins(home, before_pins, CURRENT_SOURCE_CORE316_BEFORE, "core316")
+        elif core315:
             before_pins = _exact_source_before_pins(home, before_pins, CURRENT_SOURCE_CORE315_BEFORE, "core315")
         elif core314:
             before_pins = _exact_source_before_pins(home, before_pins, CURRENT_SOURCE_CORE314_BEFORE, "core314")
@@ -14106,7 +14475,9 @@ def run(request, request_path, request_sha256):
         require(len(projected["layers"]) == 298 and len(projected["files"]) == 17916,
                 "transaction_current_source_d02_projected_inventory_count_changed")
     if ninety_ninth:
-        if core315:
+        if core316:
+            layer_count, native_count = 316, 17943
+        elif core315:
             layer_count, native_count = 315, 17931
         elif core314:
             layer_count, native_count = 314, 17931
@@ -14193,7 +14564,8 @@ def run(request, request_path, request_sha256):
                 publish(target, data, mode, _before_replace=before_replace, _no_replace=True)
             except _PublicationDestinationOccupied as conflict:
                 require(conflict.target == target and published[-1] == target,
-                        ("transaction_current_source_core315_conflict_custody_changed" if core315
+                        ("transaction_current_source_core316_conflict_custody_changed" if core316
+                         else "transaction_current_source_core315_conflict_custody_changed" if core315
                          else "transaction_current_source_core314_conflict_custody_changed" if core314
                          else "transaction_current_source_core313_conflict_custody_changed" if core313
                          else "transaction_current_source_core312_conflict_custody_changed" if core312
@@ -14278,7 +14650,7 @@ def run(request, request_path, request_sha256):
             "current_source_successor": request["current_source_successor"]} if current_context else {}),
     })
 
-    authenticated_writes = core315 or core314 or core313 or core312 or core311 or core310 or core309 or f04_pptx or d02_f04 or receipt_continuity or d13 or strict_s14 or s14 or s13 or s08 or d02 or core296_schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA
+    authenticated_writes = core316 or core315 or core314 or core313 or core312 or core311 or core310 or core309 or f04_pptx or d02_f04 or receipt_continuity or d13 or strict_s14 or s14 or s13 or s08 or d02 or core296_schema == CURRENT_SOURCE_D02_RIGHTS_SUCCESSOR_SCHEMA
     try:
         # 10a. the source files of the layers
         for path in touched:
