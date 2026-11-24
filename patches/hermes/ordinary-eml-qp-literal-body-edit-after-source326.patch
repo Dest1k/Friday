@@ -1,0 +1,342 @@
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -40,6 +40,21 @@
+     'subject', 'from', 'to', 'cc', 'bcc', 'date', 'message-id',
+     'in-reply-to', 'references', 'reply-to', 'mime-version',
+ })
++EML_EDIT_GUIDANCE = (
++    'eml_edit accepts JSON with exactly source, source_sha256, old_value and new_value '
++    'for a unique top-level Subject. For an explicitly requested body edit, add '
++    'exactly "field":"body" to those keys. Use the current own-workspace EML read '
++    'hash and a new .eml path. Body edits support one unsigned inline text/plain '
++    'UTF-8 quoted-printable MIME part. Provide a nonempty exact single-line old_value '
++    'that occurs once in the decoded body, even across quoted-printable soft wraps, '
++    'and a different single-line new_value. The headers and separator stay byte-identical '
++    'and unaffected decoded bytes stay exact. Physical body wrapping can change.'
++)
++EML_INTEGRITY_HEADERS = frozenset({
++    'dkim-signature', 'x-google-dkim-signature', 'domainkey-signature', 'arc-seal',
++    'arc-message-signature', 'arc-authentication-results', 'content-md5',
++})
++QP_LINE = re.compile(br'(?:[\t\x20-\x3c\x3e-\x7e]|=[0-9A-F]{2})*=?')
+ DATE_PROPERTIES = frozenset({'DTSTART', 'DTEND', 'DUE', 'RECURRENCE-ID', 'DTSTAMP'})
+ TEXT_PROPERTIES = frozenset({
+     'SUMMARY', 'DESCRIPTION', 'LOCATION', 'COMMENT', 'CATEGORIES', 'CONTACT',
+@@ -183,9 +198,43 @@
+     return decoded, encoding
+ 
+ 
+-def _parse_eml(data, checkpoint=None):
++def _require_qp_body_edit(message):
++    version = message.get_all('MIME-Version', ())
++    content_type = message['Content-Type']
++    disposition = message['Content-Disposition']
++    inline = disposition is None or (disposition.content_disposition == 'inline' and not disposition.params)
++    if (len(version) != 1 or version[0].version != '1.0'
++            or message.is_multipart() or message.get_content_type() != 'text/plain'
++            or content_type is None or content_type.params.keys() != {'charset'}
++            or message.get_content_charset() != 'utf-8'
++            or (message['Content-Transfer-Encoding'] or '').strip().lower() != 'quoted-printable'
++            or not inline
++            or any(name.lower() in EML_INTEGRITY_HEADERS for name in message.keys())):
++        _fail('unsupported_edit_target')
++
++
++def _require_qp_wire(data, separator):
++    boundary = separator.group()
++    if boundary == b'\r\n\r\n':
++        newline = b'\r\n'
++    elif boundary == b'\n\n':
++        newline = b'\n'
++    else:
++        _fail('malformed_mime_headers')
++    headers = data[:separator.start()].replace(newline, b'')
++    if b'\r' in headers or b'\n' in headers:
++        _fail('malformed_mime_headers')
++    wire = data[separator.end():]
++    if wire.endswith((b'=', b'=' + newline)) or any(
++        len(line) > 76 or line.endswith((b' ', b'\t')) or not QP_LINE.fullmatch(line)
++        for line in wire.split(newline)
++    ):
++        _fail('invalid_transfer_encoding')
++
++
++def _parse_eml(data, checkpoint=None, *, qp_body_edit=False):
+     _input(data, 'eml')
+-    _header_separator(data)
++    separator = _header_separator(data)
+     try:
+         message = BytesParser(policy=policy.default).parsebytes(data)
+     except (MessageError, UnicodeError, ValueError, IndexError, RecursionError):
+@@ -202,6 +251,9 @@
+             other.append({'name': lower, 'stored_value_suppressed': True})
+     if message.defects:
+         _fail('malformed_mime')
++    if qp_body_edit:
++        _require_qp_body_edit(message)
++        _require_qp_wire(data, separator)
+     state = {'parts': 0, 'decoded': 0, 'text': 0}
+     records = []
+     payloads = {}
+@@ -275,6 +327,10 @@
+         else:
+             item['text_status'] = 'not_applicable_or_attachment_not_opened'
+     visit(message, 0, [])
++    if qp_body_edit and (records[0]['text_status'] != 'stored_text_decoded' or re.search(
++        br'(?m)^-----BEGIN PGP (?:SIGNED MESSAGE|SIGNATURE)-----\r?$', payloads[()]
++    )):
++        _fail('unsupported_edit_target')
+     attachment_part_numbers = [row['part'] for row in records
+                                if row['disposition'] == 'attachment' or row.get('filename') is not None]
+     result = {
+@@ -961,6 +1017,56 @@
+     return output
+ 
+ 
++def _edit_eml_body(data, spec, checkpoint):
++    try:
++        old = _text(spec['old_value'], 'invalid_old_value', 65_536).encode('utf-8')
++    except UnicodeError:
++        _fail('invalid_old_value')
++    try:
++        new = _text(spec['new_value'], 'invalid_new_value', 65_536).encode('utf-8')
++    except UnicodeError:
++        _fail('invalid_new_value')
++    if not old:
++        _fail('invalid_old_value')
++    if old == new:
++        _fail('no_op')
++
++    _, _, payloads = _parse_eml(data, checkpoint, qp_body_edit=True)
++    body = payloads[()]
++    offset = body.find(old)
++    if offset == -1:
++        _fail('precondition_mismatch')
++    if body.find(old, offset + 1) != -1:
++        _fail('edit_target_not_unique')
++
++    revised = body[:offset] + new + body[offset + len(old):]
++    if len(revised) > MAX_TEXT:
++        _fail('decoded_text_limit')
++    _checkpoint(checkpoint)
++
++    separator = _header_separator(data)
++    newline = b'\r\n' if separator.group() == b'\r\n\r\n' else b'\n'
++    lines = revised.split(newline)
++    # Keep a decoded trailing newline quoted when the stored body ends midline.
++    if len(lines) > 1 and not lines[-1] and not data[separator.end():].endswith(newline):
++        lines.pop()
++        lines[-1] += newline
++    # Encode each hard line separately. Binary mode quotes any CR/LF octets
++    # inside that line and leaves only soft breaks to normalize for transport.
++    wire = newline.join(
++        binascii.b2a_qp(line, quotetabs=True, istext=False)
++        .replace(b'\r\n', b'\n').replace(b'\n', newline)
++        for line in lines
++    )
++    output = data[:separator.end()] + wire
++    if len(output) > MAX_BYTES:
++        _fail('output_limit')
++    _, _, decoded = _parse_eml(output, checkpoint, qp_body_edit=True)
++    if decoded[()] != revised:
++        _fail('body_edit_roundtrip_failed')
++    return output
++
++
+ def _edit_property(data, spec, format):
+     lines = _logical(data)
+     roots = _components(lines, format)
+@@ -1005,6 +1111,10 @@
+     required = {'old_value', 'new_value'}
+     if type(spec) is not dict or not required <= set(spec):
+         _fail('edit_schema')
++    if format == 'eml' and set(spec) == required | {'field'}:
++        if type(spec['field']) is not str or spec['field'] != 'body':
++            _fail('edit_schema')
++        return _edit_eml_body(data, spec, checkpoint)
+     if format == 'ics' and set(spec) != required | {'uid'}:
+         _fail('edit_schema')
+     if format != 'ics' and set(spec) != required:
+--- a/hermes_cli/friday_workspace_communication.py
++++ b/hermes_cli/friday_workspace_communication.py
+@@ -138,6 +138,31 @@
+     return json.dumps(result, ensure_ascii=False)
+ 
+ 
++def _edit_spec(spec, format):
++    edit_keys = {'old_value', 'new_value'}
++    if format == 'ics':
++        edit_keys.add('uid')
++    if format == 'eml' and spec.get('field') == 'body':
++        edit_keys.add('field')
++    if set(spec) != edit_keys | {'source', 'source_sha256'}:
++        raise CommunicationError('edit_schema')
++    expected = spec['source_sha256']
++    if type(expected) is not str or re.fullmatch(r'[0-9a-f]{64}', expected) is None:
++        raise CommunicationError('source_hash_required')
++    return expected, {key: spec[key] for key in edit_keys}
++
++
++def _edit_receipt(format, edit):
++    if edit.get('field') == 'body':
++        return dict(edit_mode='single_decoded_text_plain_utf8_qp_literal',
++                    header_bytes_preserved=True, unedited_decoded_body_preserved=True,
++                    body_transfer_reencoded=True)
++    return dict(edit_mode={'eml': 'single_top_level_Subject',
++                           'ics': 'single_UID_selected_VEVENT_SUMMARY',
++                           'vcf': 'single_VCARD_FN'}[format],
++                unselected_bytes_preserved=True)
++
++
+ def execute(cap, fd, leaf, path, content, operation):
+     _check_parent(cap, fd, path)
+     if operation == 'eml_extract_attachment':
+@@ -165,12 +190,7 @@
+             rendered = {'eml': create_eml, 'ics': create_ics, 'vcf': create_vcf}[format](
+                 spec, checkpoint=lambda: check(cap))
+         else:
+-            edit_keys = {'old_value', 'new_value'} | ({'uid'} if format == 'ics' else set())
+-            if set(spec) != edit_keys | {'source', 'source_sha256'}:
+-                raise CommunicationError('edit_schema')
+-            expected = spec['source_sha256']
+-            if type(expected) is not str or re.fullmatch(r'[0-9a-f]{64}', expected) is None:
+-                raise CommunicationError('source_hash_required')
++            expected, edit = _edit_spec(spec, format)
+             raw = spec['source']
+             if type(raw) is not str or not raw or '\x00' in raw:
+                 raise ScopeDenied()
+@@ -191,7 +211,6 @@
+             if hashlib.sha256(original).hexdigest() != expected:
+                 return json.dumps({'success': False, 'error': 'communication_edit_refused',
+                                    'reason': 'source_hash_mismatch', 'effect_disposition': 'none'})
+-            edit = {key: spec[key] for key in edit_keys}
+             rendered = edit_communication(original, edit, format,
+                                           checkpoint=lambda: check(cap))
+         check(cap)
+@@ -218,9 +237,6 @@
+         result.update(local_file_only=True, external_side_effects='none')
+         if source is not None:
+             result.update(source=relative.as_posix(), source_sha256=hashlib.sha256(original).hexdigest(),
+-                          source_unchanged=True, replacements=1,
+-                          edit_mode={'eml': 'single_top_level_Subject',
+-                                     'ics': 'single_UID_selected_VEVENT_SUMMARY',
+-                                     'vcf': 'single_VCARD_FN'}[format],
+-                          unselected_bytes_preserved=True)
++                          source_unchanged=True, replacements=1)
++            result.update(_edit_receipt(format, edit))
+     return json.dumps(result, ensure_ascii=False)
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -18,7 +18,7 @@
+ 
+ FIELD = "_friday_prompt_scope"
+ # Reviewed product-source guidance, not user-configurable identity or authority.
+-DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v2.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1.macro-spreadsheet-edit.v1.document-pdf-export.v2.vdx-read.v1.visio-opc-profiles.v1.vsd-partial-read.v1.svg-static.v1.msg-partial-read.v1.msg-native-write.v1.fb2-native.v1.legacy-openoffice-read.v1.dbf-tables.v1.xps-read.v1.dif-slk-tables.v1.abw-native.v1.lha-read-extract.v1.odf-formula-write.v1.arj-native.v1.xps-text-write.v1.vdx-native-write.v1.xlsb-write.v1.epub-native.v1.access-read.v1.pub-stored-text.v1.onenote-current-text.v1.mpp-task-name-edit.v1.mpp9-task-catalog.v1.pub-text-edit.v1.mpp12-mpp14-task-catalog.v1.onenote-text-edit.v1.eml-attachment.v1.text-edit.v1.source-semantic-edit-contract.v1.ooxml-password-edit.v1.merge-provenance.v1.necessary-source-clarification.v1.xlsx-numeric-edit.v1.ics-utc-create.v1.pdf-text-docx.v1.pdf-ocr-docx.v1.ics-embedded-timezone-create.v1.fb2-read-locations.v1.doc97-create.v1.doc97-edit.v1.csv-id-import-caption.v1'
++DIALOGUE_REVISION = 'friday.public-identity.v16.native-word-odf-profiles.v1.docx-merge.v1.xlsb.v1.word-review-layers.v2.word-report.v1.pdf-pages.v1.ods-chart-recalc.v2.pdf-form.v1.word-located-edit.v2.pdf-optimize.v1.docx-public-copy.v1.rar.v1.encrypted7z.v1.pdf-annotations.v1.encryptedzip.v1.pdf-password-read.v1.pdf-form-unicode.v1.pdf-text-edit.v1.pdf-signature-copy.v1.pdf-report.v1.odf-password.v1.odg-topology.v1.otg-read.v1.split7z.v1.odg-create.v1.ooxml-password-read.v1.word-conversion.v1.spreadsheet-conversion.v1.macro-presentation-edit.v1.delimited-table.v1.word-macro-edit.v1.macro-spreadsheet-edit.v1.document-pdf-export.v2.vdx-read.v1.visio-opc-profiles.v1.vsd-partial-read.v1.svg-static.v1.msg-partial-read.v1.msg-native-write.v1.fb2-native.v1.legacy-openoffice-read.v1.dbf-tables.v1.xps-read.v1.dif-slk-tables.v1.abw-native.v1.lha-read-extract.v1.odf-formula-write.v1.arj-native.v1.xps-text-write.v1.vdx-native-write.v1.xlsb-write.v1.epub-native.v1.access-read.v1.pub-stored-text.v1.onenote-current-text.v1.mpp-task-name-edit.v1.mpp9-task-catalog.v1.pub-text-edit.v1.mpp12-mpp14-task-catalog.v1.onenote-text-edit.v1.eml-attachment.v1.text-edit.v1.source-semantic-edit-contract.v1.ooxml-password-edit.v1.merge-provenance.v1.necessary-source-clarification.v1.xlsx-numeric-edit.v1.ics-utc-create.v1.pdf-text-docx.v1.pdf-ocr-docx.v1.ics-embedded-timezone-create.v1.fb2-read-locations.v1.doc97-create.v1.doc97-edit.v1.csv-id-import-caption.v1.eml-qp-body-edit.v1'
+ DIALOGUE_GUIDANCE = (
+     "## Продолжение разговора\n\n"
+     "Продолжай разговор с учётом предыдущих реплик. Приветствуй и представляйся, "
+@@ -683,8 +683,8 @@
+     if function['name'] == 'read_file':
+         function['description'] = 'Native EML exposes bounded stored headers, decoded plain-text bodies and attachment metadata without rendering HTML, opening attachments or sending. Native ICS exposes stored event, timezone and recurrence fields without occurrence expansion, UTC conversion or import. Native VCF exposes repeated and typed stored contact fields without fetching URIs or importing contacts. All three preserve unknown values as stored claims, enforce byte/part/depth/decoded-text limits and never follow remote resources.' + function['description']
+     if function['name'] == 'write_file':
+-        from tools.scoped_communication import ICS_NAMED_TIMEZONE_GUIDANCE
+-        function['description'] = ' Native local communication files: eml_create accepts JSON exactly from,to,subject,text for a NEW plain-text EML; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location,timezone for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive and follows start. dtstamp uses YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. ' + function['description']
++        from tools.scoped_communication import EML_EDIT_GUIDANCE, ICS_NAMED_TIMEZONE_GUIDANCE
++        function['description'] = ' Native local communication files: eml_create accepts JSON exactly from,to,subject,text for a NEW plain-text EML; ' + EML_EDIT_GUIDANCE + ' eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location,timezone for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive and follows start. dtstamp uses YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, refuses conflicts and never sends/imports. Subject, ICS and VCF edits preserve unselected source bytes. ' + function['description']
+     if function['name'] in ('read_file', 'write_file', 'patch'):
+         from tools.scoped_iwork import GUIDANCE as _IWORK_READ_GUIDANCE
+         function['description'] = _IWORK_READ_GUIDANCE + function['description']
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1422,7 +1422,7 @@
+     }
+ }
+ 
+-from tools.scoped_communication import ICS_NAMED_TIMEZONE_GUIDANCE
++from tools.scoped_communication import EML_EDIT_GUIDANCE, ICS_NAMED_TIMEZONE_GUIDANCE
+ 
+ WRITE_FILE_SCHEMA['description'] += ' Native local communication files: eml_create accepts JSON exactly from,to,subject,text for a NEW plain-text EML; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End uses the same form and follows start. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. '
+ WRITE_FILE_SCHEMA['description'] += ' Raw split 7z: read_file path=NAME.7z.001 requires archive_parts=["NAME.7z.001","NAME.7z.002",...] in exact order. For 7z_extract use {"source":"NAME.7z.001","parts":["NAME.7z.001","NAME.7z.002",...]}, with optional password, into a NEW folder. Supply the complete fixed-size set (last may be shorter), 2..128 parts, total at most 1000000 bytes. No volume discovery; missing/mixed/reordered/corrupt sets refuse before publication. Split ZIP, RAR multivolume, SFX and split-set conversion remain unsupported. '
+@@ -2299,7 +2299,7 @@
+     'content JSON exactly {source,source_sha256} from the current read_file. Source bytes '
+     'are retained verbatim; unsupported/active packages refuse without reconstruction. '
+     'Omit format for normal text files. '
+-    'Document format catalogues are returned by the tool when a document format is requested. ') + _COMMUNICATION_CREATE_GUIDANCE + _ODS_SAMEFORMAT_EDIT_GUIDANCE + _SPREADSHEET_CONVERSION_GUIDANCE + _PRESENTATION_NATIVE_GUIDANCE
++    'Document format catalogues are returned by the tool when a document format is requested. ') + _COMMUNICATION_CREATE_GUIDANCE + EML_EDIT_GUIDANCE + ' ' + _ODS_SAMEFORMAT_EDIT_GUIDANCE + _SPREADSHEET_CONVERSION_GUIDANCE + _PRESENTATION_NATIVE_GUIDANCE
+ WRITE_FILE_SCHEMA['parameters']['properties']['format']['description'] = (
+     'Document format profile from the enum. Plain text files omit this field.')
+ WRITE_FILE_SCHEMA['parameters']['properties']['content']['description'] = (
+--- /dev/null
++++ b/tests/tools/test_scoped_communication.py
+@@ -0,0 +1,70 @@
++"""Behavior of local EML revisions."""
++
++from email import policy
++from email.parser import BytesParser
++
++import pytest
++
++from tools.scoped_communication import CommunicationError, edit_communication
++
++
++_HEADERS = (
++    b"From: Irina Baranova <irina.baranova@nezabudka.invalid>\r\n"
++    b"To: Lev Mironov <lev.mironov@iris-team.invalid>\r\n"
++    b"Subject: =?utf-8?b?0J7QutC90L4g0YHQstC10YDQutC4OiDQu9Cw?=\r\n"
++    b" =?utf-8?b?0LHQvtGA0LDRgtC+0YDQuNGPIMKr0J3QtdC30LDQsdGD?=\r\n"
++    b" =?utf-8?b?0LTQutCwwrs=?=\r\n"
++    b"MIME-Version: 1.0\r\n"
++    b'Content-Type: text/plain; charset="UTF-8"\r\n'
++    b"Content-Transfer-Encoding: quoted-printable\r\n"
++    b"X-Handover-Note: Keep dock labels as issued;\r\n"
++    b" record the kit number before opening.\r\n\r\n"
++)
++_TARGET_LINE = (
++    b"=D0=A1=D0=BE=D0=B7=D0=B2=D0=BE=D0=BD =D0=B2 19:4=\r\n"
++    b"0 =D0=BF=D0=BE =D0=BC=D0=B5=D1=81=D1=82=D0=BD=D0=BE=D0=BC=D1=83 =D0=B2=D1=\r\n"
++    b"=80=D0=B5=D0=BC=D0=B5=D0=BD=D0=B8 =D0=BE=D1=81=D1=82=D0=B0=D1=91=D1=82=D1=\r\n"
++    b"=81=D1=8F =D0=B2 =D1=80=D0=B0=D1=81=D0=BF=D0=B8=D1=81=D0=B0=D0=BD=D0=B8=D0=\r\n"
++    b"=B8 =D1=81=D0=BC=D0=B5=D0=BD=D1=8B.\r\n"
++)
++_TAIL = (
++    b"\r\n=D0=90=D1=80=D1=85=D0=B8=D0=B2=D0=BD=D0=B0=D1=8F =D0=BF=D0=BB=D0=BE=D0=BC=\r\n"
++    b"=D0=B1=D0=B0 =D0=BA=D0=BE=D0=BD=D1=82=D1=80=D0=BE=D0=BB=D1=8C=D0=BD=D0=BE=\r\n"
++    b"=D0=B3=D0=BE =D1=84=D1=83=D1=82=D0=BB=D1=8F=D1=80=D0=B0 =E2=80=94 NBL-QP-90=\r\n"
++    b"73, =D0=BF=D0=BE=D0=BB=D0=BA=D0=B0 =D0=91-12.\r\n"
++)
++
++
++def test_eml_body_edit_changes_unique_decoded_literal_and_preserves_wire_headers():
++    original = _HEADERS + _TARGET_LINE + _TAIL
++    old_value = "в 19:40 по местному времени"
++    new_value = "в 20:15 по местному времени"
++    parser = BytesParser(policy=policy.default)
++    original_body = parser.parsebytes(original).get_payload(decode=True)
++    assert old_value.encode() not in original
++    assert original_body.count(old_value.encode()) == 1
++
++    edited = edit_communication(
++        original, {"field": "body", "old_value": old_value, "new_value": new_value}, "eml"
++    )
++
++    assert edited.startswith(_HEADERS)
++    assert parser.parsebytes(edited).get_payload(decode=True) == original_body.replace(
++        old_value.encode(), new_value.encode(), 1
++    )
++
++    subject = edit_communication(original, {
++        "old_value": "Окно сверки: лаборатория «Незабудка»",
++        "new_value": "Сверка завершена: лаборатория «Незабудка»",
++    }, "eml")
++    assert str(parser.parsebytes(subject)["Subject"]) == "Сверка завершена: лаборатория «Незабудка»"
++    assert subject.split(b"\r\n\r\n", 1)[1] == _TARGET_LINE + _TAIL
++
++
++def test_eml_body_edit_refuses_overlapping_decoded_literals():
++    with pytest.raises(CommunicationError, match="^edit_target_not_unique$"):
++        edit_communication(
++            _HEADERS + b"19:4=\r\n019:4019:40\r\n",
++            {"field": "body", "old_value": "19:4019:40", "new_value": "20:15"},
++            "eml",
++        )
