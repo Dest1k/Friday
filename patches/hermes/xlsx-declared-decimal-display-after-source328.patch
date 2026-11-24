@@ -1,0 +1,294 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -359,6 +359,8 @@
+     'строковый тип при открытии в табличной программе; не обещай сохранение типов по текстовому перечитыванию. '
+     'При чтении XLSX сверяй экранированные typed cell records и их limits/omissions/truncated_fields; '
+     'обычный TAB/LF preview не является точным потоком строк таблицы. '
++    'Если есть number_display, это представление записанного числа по явному формату ячейки. '
++    'Для формулы source=saved_cache обозначает сохранённое значение. '
+     'Для создания обычного XLSX используй xlsx_create с sheets/name/rows: строки буквальны, decimal/date задаются явным type/value, null — пустая ячейка. Нативные формулы только явные type=formula: C2*D2 или SUM(Orders!G2:G5); table задаёт name/ref листа, names — именованные диапазоны. Для закрепления первой строки задай freeze=A2; print_area=A1:G5 задаёт одну локальную область печати в пределах листа. Объекты decimal/formula принимают number_format=0.00 для двух знаков после запятой. Пересчитывай возвращённый файл отдельно. '
+     'Для точного текстового LEFT JOIN двух разных листов одного XLSX используй xlsx_join с source/left_sheet/right_sheet/key/sheet; уникальные текстовые ключи, без нормализации, совпадающие имена неключевых колонок отклоняются. '
+     'Для объединения двух XLSX используй write_file format=xlsx_merge с новым именем и JSON base/update/sheet/key/revision. Ключи сохраняются текстом; равные строки не дублируются; выбирается строго большая целая revision, равная revision с разным содержимым отклоняется. Сложные структуры отклоняются; кеши очищаются без пересчёта. '
+--- a/tests/tools/test_read_extract.py
++++ b/tests/tools/test_read_extract.py
+@@ -19,6 +19,7 @@
+ import zipfile
+ from pathlib import PurePosixPath
+ from unittest import mock
++from xml.etree import ElementTree
+ 
+ from tools.read_extract import (
+     ExtractionError,
+@@ -584,6 +585,34 @@
+         with self.assertRaises(ExtractionError):
+             extract_document_text(p)
+ 
++    def test_optional_xlsx_number_display_keeps_lexical_preview_budget(self):
++        from tools.read_extract import _XlsxFormulaPreview
++
++        namespace = f"{{{_NS_S}}}"
++        row = ElementTree.fromstring(
++            f'<row xmlns="{_NS_S}" r="1">'
++            '<c r="A1" s="1"><v>1.20</v></c><c r="B1" s="1"><v>2.34</v></c></row>'
++        )
++        preview = _XlsxFormulaPreview()
++        styles = {"1": ("[$-0419]0.00", ",")}
++        for column, cell in enumerate(row):
++            preview.add_cell("Data", row, 0, cell, column, [], namespace, styles)
++        wide, metadata = preview.render_cells(10000)
++        self.assertEqual(metadata["number_display"]["included"], 2)
++        without_display = []
++        for line in wide.splitlines(keepends=True):
++            if line.startswith("{"):
++                fields = json.loads(line)
++                fields.pop("number_display")
++                line = json.dumps(fields, ensure_ascii=True, separators=(",", ":")) + "\n"
++            without_display.append(line)
++        expected = "".join(without_display)
++
++        tight, metadata = preview.render_cells(len(expected.encode("utf-8")))
++        self.assertEqual(tight, expected)
++        self.assertEqual(metadata["included_records"], 2)
++        self.assertEqual(metadata["number_display"]["omitted_from_included_cells"], 2)
++
+ 
+ # ---------------------------------------------------------------------------
+ # read_file_tool integration
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -927,7 +927,7 @@
+         self.cell_bytes = 0
+         self.cells_observed = 0
+ 
+-    def add_cell(self, sheet, row, row_index, cell, col, shared, s):
++    def add_cell(self, sheet, row, row_index, cell, col, shared, s, decimal_styles):
+         """One stored source cell, never a synthetic sparse/merged display follower.
+ 
+         Text/number/date/boolean values retain their native lexical representation;
+@@ -985,7 +985,25 @@
+         if size > _MAX_XLSX_CELL_RECORD_BYTES or self.cell_bytes + size > _MAX_XLSX_CELL_PREVIEW_BYTES:
+             return
+         unresolved = record.get("literal_state") == "unresolved_shared_string"
+-        self.cell_records.append((line, bool(truncated), unresolved))
++        decorated = None
++        number_format = decimal_styles.get(record["style_index"])
++        if (typ == "n" and raw and number_format and not len(node)
++                and len(cell.findall(f"{s}v")) == 1 and len(cell.findall(f"{s}f")) <= 1):
++            # The stored number must fit two places without rounding. Wider,
++            # scientific and negative-zero values need a spreadsheet renderer.
++            match = re.fullmatch(r"(-?)([0-9]{1,12})(?:\.([0-9]{1,2})0{0,12})?", raw)
++            if match:
++                sign, whole, fraction = match.groups(default="")
++                whole = whole.lstrip("0") or "0"
++                fraction = fraction.ljust(2, "0")
++                if not (sign and whole == "0" and fraction == "00"):
++                    code, separator = number_format
++                    record["number_display"] = dict(
++                        text=f"{sign}{whole}{separator}{fraction}", format_code=code,
++                        source="saved_cache" if formula is not None else "literal_value",
++                    )
++                    decorated = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
++        self.cell_records.append((line, bool(truncated), unresolved, decorated))
+         self.cell_bytes += size
+ 
+     def render_cells(self, available_bytes):
+@@ -998,7 +1016,7 @@
+         available_bytes = min(available_bytes, _MAX_XLSX_CELL_PREVIEW_BYTES)
+         lines, used, truncated, unresolved = [], len(header.encode("utf-8")), 0, 0
+         if used <= available_bytes:
+-            for line, cut, missing in self.cell_records:
++            for line, cut, missing, _ in self.cell_records:
+                 size = len(line.encode("utf-8")) + 1
+                 if used + size > available_bytes:
+                     break
+@@ -1006,6 +1024,19 @@
+                 used += size
+                 truncated += cut
+                 unresolved += missing
++        # Spend spare space on display fields after selecting the raw records.
++        # The optional fields cannot displace any previously visible cell.
++        display_included = display_eligible = 0
++        for index, line in enumerate(lines):
++            decorated = self.cell_records[index][3]
++            if decorated is None:
++                continue
++            display_eligible += 1
++            extra = len(decorated) - len(line)  # JSON is ASCII in both forms.
++            if len(decorated) + 1 <= _MAX_XLSX_CELL_RECORD_BYTES and used + extra <= available_bytes:
++                lines[index] = decorated
++                used += extra
++                display_included += 1
+         metadata = dict(location="in_content; read_all_pages_for_available_records",
+                         scope="stored_cells_in_visible_sheet_preview_only; not_full_workbook",
+                         coordinate="cell_is_native_r_or_null; preview_positions_are_not_native_coordinates",
+@@ -1026,6 +1057,12 @@
+                         cells_omitted_by_column_limit=self.cells_omitted,
+                         hidden_rows_and_columns="not_filtered", evaluated=False,
+                         full_workbook=False)
++        if display_eligible:
++            metadata["number_display"] = dict(
++                scope="explicit_cell_xf_ru_RU_or_en_US_ungrouped_two_decimal_format",
++                included=display_included,
++                omitted_from_included_cells=display_eligible - display_included,
++            )
+         if used > available_bytes:
+             metadata["location"] = "omitted_size_limit"
+             return "", metadata
+@@ -1279,6 +1316,7 @@
+                   max_total_xml_bytes: Optional[int] = None, include_inventory: bool = False,
+                   sheet_parts: Optional[dict[str, str]] = None,
+                   shared_strings_part: Optional[str] = 'xl/sharedStrings.xml',
++                  decimal_styles_by_sheet: Optional[dict[str, dict[str, tuple[str, str]]]] = None,
+                   table_filters: Optional[dict] = None) -> str:
+     s, r, pr = f"{{{_NS_S}}}", f"{{{_NS_REL}}}", f"{{{_NS_PKG_REL}}}"
+     with _open_zip(path, "XLSX") as zf:
+@@ -1326,7 +1364,8 @@
+             try:
+                 rows = _sheet_rows(
+                     _zip_part_bytes(zf, part, max_xml_bytes, _charge=charge) if max_xml_bytes is not None
+-                    else zf.read(part), shared, formulas=formulas, sheet=sheet.get('name', 'Sheet'))
++                    else zf.read(part), shared, formulas=formulas, sheet=sheet.get('name', 'Sheet'),
++                    decimal_styles=(decimal_styles_by_sheet or {}).get(part))
+                 if formulas is not None:
+                     formulas.sheets["parsed"] += 1
+                     for node, table in (table_filters or {}).get(part, ()):
+@@ -1363,11 +1402,19 @@
+     return max(idx - 1, 0)
+ 
+ 
+-def _sheet_rows(xml_bytes: bytes, shared: list[str], *, formulas=None, sheet=None) -> list[list[str]]:
++def _sheet_rows(xml_bytes: bytes, shared: list[str], *, formulas=None, sheet=None,
++                decimal_styles=None) -> list[list[str]]:
+     root = ET.fromstring(xml_bytes)
+     s = f"{{{_NS_S}}}"
+     if formulas is not None:
+         formulas.add_structure(root, sheet, shared, s)
++    number_format_overrides = {
++        f"{s}conditionalFormatting", f"{s}extLst", f"{s}tableParts", f"{s}pivotTableParts",
++        "{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent",
++    }
++    if decimal_styles is None or (decimal_styles and any(
++            node.tag in number_format_overrides for node in root.iter())):
++        decimal_styles = {}
+     rows: list[list[str]] = []
+     for index, row in enumerate(root.iter(f"{s}row")):
+         if index >= _MAX_XLSX_ROWS_PER_SHEET:
+@@ -1382,7 +1429,7 @@
+             if col < _MAX_XLSX_COLS:
+                 if formulas is not None:
+                     formulas.add(sheet, cell, s)
+-                    formulas.add_cell(sheet, row, index, cell, col, shared, s)
++                    formulas.add_cell(sheet, row, index, cell, col, shared, s, decimal_styles)
+                 # Missing/blank formula caches are not FALSE or #ERROR results.
+                 no_cache = (formulas is not None and cell.find(f"{s}f") is not None
+                             and not cell.findtext(f"{s}v"))
+--- a/tools/scoped_spreadsheet_profiles.py
++++ b/tools/scoped_spreadsheet_profiles.py
+@@ -26,13 +26,14 @@
+ VBA_TYPE = 'application/vnd.ms-office.vbaProject'
+ RELS_TYPE = 'application/vnd.openxmlformats-package.relationships+xml'
+ TABLE_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml'
++STYLES_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml'
+ VBA_REL = 'http://schemas.microsoft.com/office/2006/relationships/vbaProject'
+ # The preserving editor admits a bounded passive worksheet package plus one
+ # opaque VBA project. Other relationships/content types need a separate profile.
+ MACRO_REL_TYPES = {
+     R+'/officeDocument': None,  # The exact source profile supplies this MIME.
+     R+'/worksheet': 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml',
+-    R+'/styles': 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml',
++    R+'/styles': STYLES_TYPE,
+     R+'/sharedStrings': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml',
+     R+'/theme': 'application/vnd.openxmlformats-officedocument.theme+xml',
+     R+'/calcChain': 'application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml',
+@@ -136,6 +137,9 @@
+                         fail('shared_string_index')
+         macro_parts = []
+         table_parts = set()
++        styles = book.targets('xl/workbook.xml', 'styles')
++        styles_part = styles[0][1] if len(styles) == 1 else None
++        styles_root = None
+         for name in book.parts:
+             typ = overrides.get('/'+name, defaults.get(name.rpartition('.')[2].lower(), '')) or ''
+             if name != '[Content_Types].xml' and not typ:
+@@ -144,6 +148,10 @@
+                 fail('relationship_content_type')
+             if typ == TABLE_TYPE:
+                 table_parts.add(name)
++            if name == styles_part and typ == STYLES_TYPE:
++                root_candidate = book.xml.get(name)
++                if root_candidate is not None and root_candidate.tag == q(S, 'styleSheet'):
++                    styles_root = root_candidate
+             if preserve_vba and name != '[Content_Types].xml' and typ not in MACRO_PASSIVE_TYPES | {OOXML[format]}:
+                 fail('unsupported_macro_preservation_part')
+             if 'vba' in typ.lower() or 'vba' in name.lower():
+@@ -198,6 +206,7 @@
+         book.sheet_parts = sheet_parts
+         book.table_parts = table_parts
+         book.shared_strings_part = shared_part
++        book.styles_root = styles_root
+         return book
+     except (PresentationError, zipfile.BadZipFile, ET.ParseError, UnicodeError, EOFError, NotImplementedError, zlib.error) as error:
+         raise ODSError('invalid_spreadsheet_package') from error
+@@ -283,15 +292,62 @@
+     return filters
+ 
+ 
++def _localized_decimal_styles(styles):
++    """Map explicit cell styles for the supported ungrouped decimal formats."""
++    known_children = {q(S, name) for name in (
++        'numFmts', 'fonts', 'fills', 'borders', 'cellStyleXfs', 'cellXfs',
++        'cellStyles', 'dxfs', 'tableStyles', 'colors',
++    )}
++    if styles is None or any(node.tag not in known_children for node in styles):
++        return {}
++    formats = styles.findall(q(S, 'numFmts'))
++    cell_styles = styles.findall(q(S, 'cellXfs'))
++    base_styles = styles.findall(q(S, 'cellStyleXfs'))
++    if (len(formats) != 1 or len(cell_styles) != 1 or len(base_styles) != 1
++            or len(base_styles[0]) != 1 or base_styles[0][0].tag != q(S, 'xf')
++            or base_styles[0][0].get('numFmtId', '0') != '0'):
++        return {}
++    ids = re.compile(r'[0-9]{1,10}')
++    declarations = []
++    for node in formats[0]:
++        number = node.get('numFmtId', '')
++        if node.tag != q(S, 'numFmt') or len(node) or not ids.fullmatch(number):
++            return {}
++        declarations.append((int(number), node.get('formatCode', '').lower()))
++    if any(node.tag != q(S, 'xf') for node in cell_styles[0]):
++        return {}
++    counts = Counter(number for number, _ in declarations)
++    separators = {'[$-0419]0.00': ',', '[$-0409]0.00': '.'}
++    supported = {
++        number: (code, separators[code]) for number, code in declarations
++        if 164 <= number <= 4294967295 and counts[number] == 1 and code in separators
++    }
++    result = {}
++    for index, style in enumerate(cell_styles[0]):
++        number = style.get('numFmtId', '')
++        if (ids.fullmatch(number)
++                and style.get('xfId') == '0' and style.get('applyNumberFormat') in ('1', 'true')
++                and style.get('quotePrefix', '0') in ('0', 'false') and not len(style)
++                and int(number) in supported):
++            result[str(index)] = supported[int(number)]
++    return result
++
++
+ def extract_spreadsheet(data, format, *, checkpoint=None):
+     if format in ODF:
+         from tools.scoped_ods import extract_spreadsheet as extract
+         return extract(data, format, checkpoint=checkpoint)
+     book = ooxml(data, format, checkpoint=checkpoint)
+     from tools.read_extract import _extract_xlsx
++    decimal_styles = _localized_decimal_styles(book.styles_root)
++    styles_by_sheet = {
++        part: decimal_styles for part in book.sheet_parts.values()
++        if decimal_styles and not (book.targets(part, 'table') or book.targets(part, 'pivotTable'))
++    }
+     text = _extract_xlsx(BytesIO(data), max_xml_bytes=1000000, max_total_xml_bytes=1000000,
+                          include_inventory=True, sheet_parts=book.sheet_parts,
+                          shared_strings_part=book.shared_strings_part,
++                         decimal_styles_by_sheet=styles_by_sheet,
+                          table_filters=_xlsx_table_filters(book, checkpoint))
+     metadata = dict(getattr(text, 'extraction_metadata', {}))
+     metadata.update(native_container=True, format=format, formulas_evaluated=False,
