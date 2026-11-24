@@ -1,0 +1,130 @@
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -456,6 +456,9 @@
+             'ODF ODT/OTT/FODT, spreadsheets XLSX/XLTX/XLSM/XLTM/ODS/OTS/FODS and RTF expose bounded '
+             'native text or cell views; images and layout are not covered. DOCX/DOTX pages also return source_sha256 of the exact package read; keep it with the selected paragraph or stored story/comment identifiers for word_located_edit. DOCM/DOTM expose inert reads and a separate source-bound word_macro_edit; '
+             'profiles: VBA remains opaque and is never executed; cached fields are never evaluated. '
++            'Ordinary DOCX main-body table paragraphs may carry table_context with one-based table, row and physical cell '
++            'ordinals in stored XML order. Grid columns and merged-cell layout are outside this field. '
++            'Paragraph text remains available when table context exceeds the extraction budget or is outside the supported structure. '
+             'Supported native ODS charts expose source ranges and verified matching local caches; chart metadata is not visual or Office acceptance. '
+             'Word review documents expose separate FINAL/ORIGINAL paragraph views, TRACKED changes and '
+             'COMMENT text/anchors for supported stored run insertions/deletions. Never call these accepted '
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2324,6 +2324,9 @@
+     'paragraph number. For the DOCX edits list, use STORY part/story_paragraph for header/footer, '
+     'also note_id for a normal footnote, or COMMENT id as comment_id for a traditional comment. '
+     'STORY-LINK/STORY-ANCHOR describe logical links, and layout and field evaluation are unverified. '
++    'Ordinary DOCX main-body table paragraphs may carry table_context with one-based table, row and physical cell '
++    'ordinals in stored XML order. Grid columns and merged-cell layout are outside this field. '
++    'Paragraph text remains available when table context exceeds the extraction budget or is outside the supported structure. '
+     'Check extraction coverage and limitations.')
+ 
+ READ_FILE_SCHEMA['description'] += (
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -554,6 +554,39 @@
+             .replace('\u0085', r'\u0085').replace('\u2028', r'\u2028').replace('\u2029', r'\u2029'))
+ 
+ 
++def _body_table_locations(body, parents, checkpoint):
++    """Locate physical cells of direct tables in the main Word body."""
++    table_tag, row_tag, cell_tag = (_q(W, name) for name in ('tbl', 'tr', 'tc'))
++    table_children = {row_tag, _q(W, 'tblPr'), _q(W, 'tblGrid')}
++    row_children = {cell_tag, _q(W, 'trPr'), _q(W, 'tblPrEx')}
++    locations = {}
++    for table_number, table in enumerate(body.iter(table_tag), 1):
++        _tick(checkpoint)
++        if parents[table] is not body or any(child.tag not in table_children for child in table):
++            continue
++        rows = table.findall(row_tag)
++        if any(child.tag not in row_children for row in rows for child in row):
++            continue
++        for row_number, row in enumerate(rows, 1):
++            for cell_number, cell in enumerate(row.iterfind(cell_tag), 1):
++                _tick(checkpoint)
++                locations[cell] = {'table': table_number, 'row': row_number, 'cell': cell_number}
++    return locations
++
++
++def _include_body_table_locations(view, rows, located_rows):
++    if not located_rows:
++        return view
++    header, separator, body_and_stories = view.partition('\n')
++    body_length = sum(map(len, rows)) + len(rows) - 1
++    body = '\n'.join(located_rows.get(index, row) for index, row in enumerate(rows))
++    expanded = header + separator + body + body_and_stories[body_length:]
++    # Optional locations share the original budget with body and story records.
++    if len(expanded.encode('utf-8')) > 900_000:
++        return view
++    return DocumentText(expanded, view.extraction_metadata)
++
++
+ def extract(data, format, *, checkpoint=None):
+     """Return only inert stored text plus explicit trusted coverage metadata."""
+     package = _Package(data, format, checkpoint)
+@@ -566,6 +599,8 @@
+     output_bytes = 0
+     paragraphs = tables = 0
+     parents = {child: parent for parent in package.body.iter() for child in parent}
++    locations = _body_table_locations(package.body, parents, checkpoint) if format == 'docx' else {}
++    located_rows = {}
+     for node in package.body.iter():
+         _tick(checkpoint)
+         if node.tag == _q(W, 'tbl'):
+@@ -594,6 +629,9 @@
+         output_bytes += len(line.encode('utf-8')) + 1
+         if output_bytes > 900_000:
+             _fail('extracted_text_limit')
++        location = locations.get(parent)
++        if location is not None:
++            located_rows[len(rows)] = '[PARAGRAPH ' + _encoded(dict(record, table_context=location)) + ']'
+         rows.append(line)
+     metadata = {'format': format, 'native_container': True,
+                 'view': 'inert_stored_word_text', 'paragraphs': paragraphs, 'tables': tables,
+@@ -608,4 +646,5 @@
+     if len(result.encode('utf-8')) > MAX_BYTES:
+         _fail('extracted_text_limit')
+     _tick(checkpoint)
+-    return append_stored_stories(package, DocumentText(result, metadata), checkpoint=checkpoint)
++    view = append_stored_stories(package, DocumentText(result, metadata), checkpoint=checkpoint)
++    return _include_body_table_locations(view, rows, located_rows)
+--- a/tests/tools/test_read_extract.py
++++ b/tests/tools/test_read_extract.py
+@@ -23,6 +23,7 @@
+ from tools.read_extract import (
+     ExtractionError,
+     extract_document_text,
++    extract_scoped_document_bytes,
+     is_extractable_document,
+ )
+ from tools.file_tools import read_file_tool
+@@ -59,6 +60,27 @@
+ _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+ 
+ 
++def test_scoped_docx_distinguishes_row_groupings_with_identical_text():
++    from tools.scoped_word_profiles import render
++
++    def records(rows):
++        document = render(json.dumps({"blocks": [{"type": "table", "rows": rows}]}),
++                          "docx", structured=True)
++        prefix = "[PARAGRAPH "
++        return [json.loads(line[len(prefix):-1])
++                for line in extract_scoped_document_bytes(document, "docx").splitlines()
++                if line.startswith(prefix)]
++
++    def legacy(items):
++        return [(row["number"], row["role"], row["text"]) for row in items]
++
++    original = records([["Gate B", "Morning", "14"], ["Gate B", "Evening", "41"]])
++    regrouped = records([["Gate B", "Morning"], ["14", "Gate B"], ["Evening", "41"]])
++    assert legacy(original) == legacy(regrouped)
++    assert original[2]["table_context"] == {"table": 1, "row": 1, "cell": 3}
++    assert regrouped[2]["table_context"] == {"table": 1, "row": 2, "cell": 1}
++
++
+ # ---------------------------------------------------------------------------
+ # is_extractable_document
+ # ---------------------------------------------------------------------------
