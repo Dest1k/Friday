@@ -1,0 +1,116 @@
+diff --git a/tests/tui_gateway/test_tui_gateway_server.py b/tests/tui_gateway/test_tui_gateway_server.py
+--- a/tests/tui_gateway/test_tui_gateway_server.py
++++ b/tests/tui_gateway/test_tui_gateway_server.py
+@@ -3457,6 +3457,55 @@
+     assert server._reconcile_display_with_live(db_display, in_memory) == db_display
+     assert server._reconcile_display_with_live([], in_memory) == in_memory
+     assert server._reconcile_display_with_live(db_display, []) == db_display
++
++
++@pytest.mark.parametrize("anchor", ["uid", "coalesced", "legacy"])
++def test_warm_resume_and_branch_keep_unflushed_turn_with_identical_reply(tmp_path, anchor):
++    from agent.message_metadata import ABSORBED_MESSAGE_UIDS
++    from hermes_state import SessionDB
++
++    user_uid, blank_uid, saved_uid, pending_uid, new_reply_uid = (str(i) * 32 for i in range(1, 6))
++    reply = "The line is recorded."
++    pending = {"role": "user", "content": "Add the accessibility desk.", "message_uid": pending_uid}
++    new_reply = {"role": "assistant", "content": reply, "message_uid": new_reply_uid}
++    with contextlib.closing(SessionDB(db_path=tmp_path / "state.db")) as db:
++        db.create_session("s1", source="tui")
++        db.append_message("s1", "user", "Set the seating line.", message_uid=user_uid)
++        if anchor == "coalesced":
++            db.append_message("s1", "assistant", "", message_uid=blank_uid)
++        row = db.append_message("s1", "assistant", reply, message_uid=saved_uid, finish_reason="stop")
++        if anchor == "legacy":
++            db._conn.execute("UPDATE messages SET message_uid = NULL WHERE id = ?", (row,))
++        model_history, display_history = db.get_resume_conversations("s1")
++        persisted_uid = None if anchor == "legacy" else saved_uid
++        assert display_history[-1].get("message_uid") == persisted_uid
++        if anchor == "coalesced":
++            assert model_history[-1]["message_uid"] == blank_uid
++            assert saved_uid in model_history[-1][ABSORBED_MESSAGE_UIDS]
++        else:
++            assert model_history[-1].get("message_uid") == persisted_uid
++
++        history = [*model_history, pending, new_reply]
++        live = server._live_visible_history({"session_key": "s1"}, db, history)
++        assert live == [*display_history, pending, new_reply]
++
++        session = {"history": history, "history_lock": threading.RLock()}
++        branch = server._branch_source_history(db, session, "s1")
++        assert [item.get("message_uid") for item in branch] == [user_uid, persisted_uid, pending_uid, new_reply_uid]
++
++
++def test_reconcile_display_uses_legacy_text_only_for_incomparable_identities():
++    saved = {"role": "assistant", "content": "Recorded.", "message_uid": "saved"}
++    other = dict(saved, message_uid="distinct")
++    pending = {"role": "user", "content": "Tail"}
++    legacy = dict(saved, message_uid=None)
++    assert server._reconcile_display_with_live([saved], [other, pending]) == [saved]
++    assert server._reconcile_display_with_live([saved], [legacy, pending]) == [saved, pending]
++    assert server._reconcile_display_with_live([saved], [saved, pending, legacy]) == [saved, pending, legacy]
++
++    persisted = dict(legacy, _row_id=4, _db_persisted=True, timestamp=10.0)
++    later = dict(other, _row_id=6, _db_persisted=True, timestamp=11.0)
++    assert server._reconcile_display_with_live([persisted], [persisted, pending, later]) == [persisted, pending, later]
+ 
+ 
+ def test_live_visible_history_matches_eager_resume_with_real_db(tmp_path):
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -38,6 +38,7 @@
+ from hermes_state_ids import new_session_id
+ from tools.environments.local import hermes_subprocess_env
+ from agent.fast_mode import STATIC_TIERS
++from agent.message_metadata import ABSORBED_MESSAGE_UIDS, message_uid_or_none, uid_list
+ from agent.replay_cleanup import canonicalize_replay_history
+ from agent.reasoning_effort import clamp_effort, route_supported_efforts
+ from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
+@@ -3211,8 +3212,9 @@
+     """Merge the persisted DISPLAY lineage with the in-memory live history: ``db_display`` is verbatim and
+     candidate-inclusive (verification rows the model history collapses out) but can lag by a flush;
+     ``in_memory`` is the recency authority but the collapsed *model* projection. Keep the DB display as base,
+-    append only the in-memory tail past the last DB row's ``(role, text)`` anchor — the verification answer
+-    survives a warm switch AND a not-yet-flushed live turn is kept."""
++    append the in-memory tail after the same durable message. Keep text matching
++    for histories without comparable message identities, preferring the native
++    persisted row when available."""
+     if not db_display:
+         return in_memory
+     if not in_memory:
+@@ -3220,8 +3222,31 @@
+ 
+     def _key(msg: dict) -> tuple:
+         return (msg.get("role"), _coerce_message_text(msg.get("content")))
+-    anchor = _key(db_display[-1])
+-    last_shared = max((idx for idx, msg in enumerate(in_memory) if isinstance(msg, dict) and _key(msg) == anchor), default=-1)
++    def _persisted_legacy_row(msg: dict) -> tuple | None:
++        row_id, timestamp = msg.get("_row_id"), msg.get("timestamp")
++        if (msg.get("_db_persisted") is True and type(row_id) is int and row_id > 0
++                and type(timestamp) in (int, float)):
++            return row_id, timestamp
++        return None
++
++    db_tail = db_display[-1]
++    anchor = _key(db_tail)
++    anchor_uid = message_uid_or_none(db_tail)
++    anchor_row = _persisted_legacy_row(db_tail)
++    exact_match = absorbed_match = persisted_match = text_match = -1
++    for idx, msg in enumerate(in_memory):
++        if not isinstance(msg, dict) or _key(msg) != anchor:
++            continue
++        uid = message_uid_or_none(msg)
++        if anchor_uid is not None and uid == anchor_uid:
++            exact_match = idx
++        elif anchor_uid is not None and anchor_uid in uid_list(msg.get(ABSORBED_MESSAGE_UIDS)):
++            absorbed_match = idx
++        elif anchor_uid is None or uid is None:
++            if anchor_row is not None and _persisted_legacy_row(msg) == anchor_row:
++                persisted_match = idx
++            text_match = idx
++    last_shared = next((idx for idx in (exact_match, absorbed_match, persisted_match, text_match) if idx >= 0), -1)
+     if last_shared == -1:
+         return db_display  # DB tail not in memory (DB ahead, or diverged) — trust it over duplicating
+     return list(db_display) + list(in_memory[last_shared + 1 :])
