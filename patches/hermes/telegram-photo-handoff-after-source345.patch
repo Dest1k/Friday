@@ -1,0 +1,171 @@
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -666,6 +666,7 @@
+         self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
+         self._pending_photo_batches: Dict[str, MessageEvent] = {}
+         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
++        self._dispatching_photos: Dict[asyncio.Task, tuple[str, MessageEvent]] = {}
+         self._media_group_events: Dict[str, MessageEvent] = {}
+         self._media_group_tasks: Dict[str, asyncio.Task] = {}
+         # Aggregate client-side splits of long messages into one MessageEvent; bounds are conservative
+@@ -3809,9 +3810,11 @@
+         """Cancel every delayed-delivery task family before disconnect completes (media-group, photo-batch, text-batch flushes plus
+         polling recovery all sit behind ``asyncio.sleep()`` and would dispatch ``handle_message`` into a torn-down session)."""
+         current_task = asyncio.current_task()
++        dispatching_photos = getattr(self, "_dispatching_photos", {})
+         pending_tasks = self._collect_live_tasks(
+             [
+                 *self._media_group_tasks.values(), *self._pending_photo_batch_tasks.values(), *self._pending_text_batch_tasks.values(),
++                *dispatching_photos,
+                 getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
+                 # Hold-queue redispatch must be cancellable+awaitable on teardown too.
+                 getattr(self, "_held_inbound_redispatch_task", None),
+@@ -3839,7 +3842,8 @@
+                     self._hold_inbound_event(event, where=where)
+         for d in (
+             self._media_group_tasks, self._media_group_events, self._pending_photo_batch_tasks,
+-            self._pending_photo_batches, self._pending_text_batch_tasks, self._pending_text_batches):
++            self._pending_photo_batches, self._pending_text_batch_tasks, self._pending_text_batches,
++            dispatching_photos):
+             d.clear()
+         self._clear_task_attrs_except(
+             current_task, "_polling_error_task", "_polling_progress_verifier_task", "_held_inbound_redispatch_task")
+@@ -7363,8 +7367,21 @@
+         the pop but before durable dispatch re-holds the event (never lose it)."""
+         current_task = asyncio.current_task()
+         event = None
++        dispatching_photos = None
+         try:
+             await asyncio.sleep(delay)
++            if (where == "text" and tasks.get(key) is current_task and key in pending
++                    and pending[key].message_type == MessageType.TEXT):
++                from .telegram_ingress import wait_for_earlier_photo_batches
++                # Keep the event in the queue while waiting. A newer chunk may
++                # re-arm this flush, and teardown still owns the pending text.
++                await wait_for_earlier_photo_batches(self, pending[key])
++            if where == "photo":
++                dispatching_photos = getattr(self, "_dispatching_photos", None)
++                if dispatching_photos:
++                    predecessors = [task for task, (batch_key, _) in dispatching_photos.items() if batch_key == key]
++                    if predecessors:
++                        await asyncio.wait(predecessors)
+             # Superseded flush (a newer chunk re-armed the timer while our sleep was already done):
+             # CancelledError only lands at the next await, so check synchronously before the pop.
+             owner = tasks.get(key)
+@@ -7379,6 +7396,10 @@
+                 return
+             if log_fn is not None:
+                 log_fn(event)
++            if where == "photo" and current_task is not None:
++                if dispatching_photos is None:
++                    self._dispatching_photos = dispatching_photos = {}
++                dispatching_photos[current_task] = (key, event)
+             await self.handle_message(event)
+             event = None
+         except asyncio.CancelledError:
+@@ -7386,6 +7407,8 @@
+                 self._hold_inbound_event(event, where=f"{where}-flush-cancelled")
+             raise
+         finally:
++            if where == "photo" and dispatching_photos is not None:
++                dispatching_photos.pop(current_task, None)
+             if tasks.get(key) is current_task:
+                 tasks.pop(key, None)
+ 
+@@ -7434,7 +7457,7 @@
+         self._merge_into_pending(self._pending_photo_batches, batch_key, event)
+         self._accept_update()
+         prior_task = self._pending_photo_batch_tasks.get(batch_key)
+-        if prior_task and not prior_task.done():
++        if prior_task and not prior_task.done() and prior_task not in getattr(self, "_dispatching_photos", {}):
+             prior_task.cancel()
+         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
+ 
+--- a/plugins/platforms/telegram/telegram_ingress.py
++++ b/plugins/platforms/telegram/telegram_ingress.py
+@@ -1,5 +1,9 @@
+ """Original Telegram event boundaries and SDK provenance, without a network call."""
+ from __future__ import annotations
++
++import asyncio
++from copy import copy
++import math
+ 
+ _ORIGINAL_MESSAGE_SEPARATOR = ":message:"
+ 
+@@ -60,6 +64,75 @@
+     group = getattr(message, "media_group_id", None)
+     key = f"{session_key}:album:{group}" if group else f"{session_key}:photo-burst"
+     return _per_event_key(key, event) if _original_event(adapter, event) else key
++
++
++def _photo_followup_scope(adapter, event):
++    source = event.source
++    message = event.raw_message
++    sender = message.from_user.id if message is not None and message.from_user is not None else source.user_id
++    if sender is None:
++        return None
++    return (source.chat_id, source.chat_type, str(sender), adapter._session_key_profile(source))
++
++
++def _photo_followup_thread_matches(adapter, text, candidates, *, recover=False):
++    """Compare routing threads without changing the queued events or their SDK origins."""
++    def thread_for(event):
++        if not recover or str((event.metadata or {}).get("gateway_session_key") or "").strip():
++            return event.source.thread_id
++        preview = copy(event)
++        adapter._apply_topic_recovery(preview)
++        return preview.source.thread_id
++
++    thread = thread_for(text)
++    return [task for task, photo in candidates if thread_for(photo) == thread]
++
++
++async def wait_for_earlier_photo_batches(adapter, text):
++    """Keep earlier buffered standalone photos ahead of text in the same route."""
++    if type(text.platform_update_id) is not int:
++        return
++    dispatching_photos = getattr(adapter, "_dispatching_photos", {})
++    if not (adapter._pending_photo_batches or dispatching_photos):
++        return
++    if getattr(text, "allow_gateway_control", False):
++        from gateway.platforms.base import coerce_plaintext_gateway_command
++        preview = copy(text)
++        coerce_plaintext_gateway_command(preview)
++        if preview.get_command():
++            return
++    scope = _photo_followup_scope(adapter, text)
++    if scope is None:
++        return
++    loop = asyncio.get_running_loop()
++    recover = text.source.chat_type == "dm" and getattr(adapter, "_topic_recovery_fn", None) is not None
++    delay = adapter._media_batch_delay_seconds
++    deadline = loop.time() + (max(0, delay) if math.isfinite(delay) else 0) + adapter._TEXT_BATCH_MAX_DELAY_S
++    while not adapter._should_drop_delayed_delivery():
++        photo_tasks = {adapter._pending_photo_batch_tasks.get(key): photo
++                       for key, photo in adapter._pending_photo_batches.items()}
++        photo_tasks.update((task, photo) for task, (_, photo) in dispatching_photos.items())
++        candidates = [(task, photo) for task, photo in photo_tasks.items()
++                      if task is not None and not task.done()
++                      and type(photo.platform_update_id) is int and photo.platform_update_id < text.platform_update_id
++                      and _photo_followup_scope(adapter, photo) == scope]
++        remaining = deadline - loop.time()
++        if not candidates or remaining <= 0:
++            return
++        # Re-arm can replace a burst timer. The text task owns neither timer;
++        # cancellation of the text waiter must not cancel the photo.
++        try:
++            async with asyncio.timeout(remaining):
++                if recover:
++                    # The stock recovery hook may read the current topic map from SQLite.
++                    tasks = await asyncio.to_thread(_photo_followup_thread_matches, adapter, text, candidates, recover=True)
++                else:
++                    tasks = _photo_followup_thread_matches(adapter, text, candidates)
++                if not tasks:
++                    return
++                await asyncio.wait(tasks)
++        except TimeoutError:
++            return
+ 
+ 
+ async def queue_media_group_event(adapter, media_group_id, event):
