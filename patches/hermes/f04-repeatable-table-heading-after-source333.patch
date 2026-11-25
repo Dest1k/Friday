@@ -1,0 +1,254 @@
+diff --git a/tests/tools/test_scoped_word_table_headers.py b/tests/tools/test_scoped_word_table_headers.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..53deb161940182f9dfe618c274034516ea0bdfca
+--- /dev/null
++++ b/tests/tools/test_scoped_word_table_headers.py
+@@ -0,0 +1,86 @@
++"""Preserve leading table-header rows in the scoped Word conversion inventory."""
++from xml.etree import ElementTree
++
++import pytest
++
++from tools import scoped_word_conversion as conversion
++
++
++def read_table(parser_type, xml):
++    parser = parser_type.__new__(parser_type)
++    parser.state = conversion._Inventory(None)
++    parser.paragraph = lambda node, **kwargs: parser.state.paragraph("".join(node.itertext()))
++    if parser_type is conversion._ODF:
++        parser.style = lambda name, family: None
++    else:
++        parser.styles = {}
++        parser._empty_numbering_property = lambda node: False
++    return parser.table(ElementTree.fromstring(xml))
++
++
++def odf_row(text):
++    return f"<t:table-row><t:table-cell><x:p>{text}</x:p></t:table-cell></t:table-row>"
++
++
++def odf_table(*rows):
++    return (
++        f'<t:table xmlns:t="{conversion.TB}" xmlns:x="{conversion.T}">'
++        '<t:table-column/>' + "".join(rows) + "</t:table>"
++    )
++
++
++def odf_header(*rows):
++    return "<t:table-header-rows>" + "".join(rows) + "</t:table-header-rows>"
++
++
++def word_row(text, header=""):
++    props = f"<w:trPr>{header}</w:trPr>" if header else ""
++    return f"<w:tr>{props}<w:tc><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc></w:tr>"
++
++
++def word_table(*rows):
++    return f'<w:tbl xmlns:w="{conversion.W}">' + "".join(rows) + "</w:tbl>"
++
++
++def test_read_odf_and_word_headers_as_the_same_leading_rows():
++    odf = odf_table(odf_header(odf_row("Name"), odf_row("ID")), odf_row("01"))
++    word = word_table(
++        word_row("Name", "<w:tblHeader/>"),
++        word_row("ID", '<w:tblHeader w:val="true"/>'),
++        word_row("01", '<w:tblHeader w:val="false"/>'),
++    )
++    before = read_table(conversion._ODF, odf)
++    after = read_table(conversion._Word, word)
++    assert before == after
++    assert before["header_rows"] == 2
++    assert [row[0][0]["text"] for row in before["rows"]] == ["Name", "ID", "01"]
++
++
++def test_absent_or_explicitly_disabled_word_header_keeps_plain_inventory():
++    odf = odf_table(odf_row("Name"), odf_row("01"))
++    word = word_table(word_row("Name", '<w:tblHeader w:val="0"/>'), word_row("01"))
++    expected = {
++        "type": "table",
++        "rows": [
++            [[{"type": "paragraph", "text": "Name"}]],
++            [[{"type": "paragraph", "text": "01"}]],
++        ],
++    }
++    assert read_table(conversion._ODF, odf) == expected
++    assert read_table(conversion._Word, word) == expected
++
++
++@pytest.mark.parametrize(
++    ("parser_type", "xml"),
++    [
++        (conversion._ODF, odf_table(odf_row("01"), odf_header(odf_row("Name")))),
++        (conversion._ODF, odf_table(odf_header(odf_row("Name")), odf_header(odf_row("ID")))),
++        (conversion._ODF, odf_table(odf_header(), odf_row("01"))),
++        (conversion._Word, word_table(word_row("01"), word_row("Name", "<w:tblHeader/>"))),
++        (conversion._Word, word_table(word_row("Name", "<w:tblHeader/><w:tblHeader/>"))),
++        (conversion._Word, word_table(word_row("Name", '<w:tblHeader w:val="maybe"/>'))),
++    ],
++)
++def test_reject_ambiguous_table_headers(parser_type, xml):
++    with pytest.raises(conversion.WordConversionError):
++        read_table(parser_type, xml)
+diff --git a/tools/scoped_word_conversion.py b/tools/scoped_word_conversion.py
+index bbf3249cdf5de44841b3e07c245032d22c8fa80c..a043916caf7b67e03589db7b2fb242f87e87be3c 100644
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -115,7 +115,7 @@ class _Inventory:
+             result['page_break_before'] = True
+         return result
+ 
+-    def table(self, rows):
++    def table(self, rows, header_rows):
+         if not rows or not 1 <= len(rows[0]) <= MAX_COLUMNS:
+             _fail('unsupported_table')
+         columns = len(rows[0])
+@@ -124,7 +124,10 @@ class _Inventory:
+         self.cells += sum(map(len, rows))
+         if self.cells > MAX_CELLS:
+             _fail('semantic_capacity')
+-        return {'type': 'table', 'rows': rows}
++        result = {'type': 'table', 'rows': rows}
++        if header_rows:
++            result['header_rows'] = header_rows
++        return result
+ 
+ 
+ # Properties below affect only the explicitly unverified visual formatting.
+@@ -158,7 +161,7 @@ def _word_paragraph_border(node):
+         _fail('unsupported_word_property')
+ 
+ 
+-def _word_properties(node, allowed, *, empty_numbering=None, title_border=False):
++def _word_properties(node, allowed, *, empty_numbering=None, title_border=False, direct_table_row=False):
+     _white(node)
+     seen = set()
+     for child in node:
+@@ -167,7 +170,9 @@ def _word_properties(node, allowed, *, empty_numbering=None, title_border=False)
+         paragraph_border = title_border and child.tag == q(W, 'pBdr')
+         unprotected = (child.tag == q(W, 'formProt') and node.tag == q(W, 'sectPr')
+                        and allowed is _SECTION_PROPERTIES)
+-        if child.tag not in {q(W, name) for name in allowed} and not (numbering or paragraph_border or unprotected):
++        table_header = direct_table_row and child.tag == q(W, 'tblHeader')
++        if (child.tag not in {q(W, name) for name in allowed}
++                and not (numbering or paragraph_border or unprotected or table_header)):
+             _fail('unsupported_word_property')
+         if child.tag in seen:
+             _fail('ambiguous_word_properties')
+@@ -187,6 +192,13 @@ def _word_properties(node, allowed, *, empty_numbering=None, title_border=False)
+                 _fail('unsupported_word_property')
+             _white(child)
+             continue
++        if table_header:
++            value = q(W, 'val')
++            if (node.attrib or len(child) or set(child.attrib) - {value}
++                    or child.get(value) not in (None, 'true', '1', 'on', 'false', '0', 'off')):
++                _fail('unsupported_table_header')
++            _white(child)
++            continue
+         if child.tag == q(W, 'gridSpan') and child.get(q(W, 'val')) != '1':
+             _fail('merged_table')
+         if child.tag == q(W, 'rPr'):
+@@ -1131,7 +1143,7 @@ class _Word:
+ 
+     def table(self, node):
+         _white(node)
+-        rows, grid = [], None
++        rows, grid, header_rows = [], None, 0
+         if len(node.findall(q(W, 'tblPr'))) > 1:
+             _fail('ambiguous_word_properties')
+         for child in node:
+@@ -1154,7 +1166,15 @@ class _Word:
+             row = []
+             for cell in child:
+                 if cell.tag == q(W, 'trPr'):
+-                    self.properties(cell, _ROW_PROPERTIES)
++                    _word_properties(cell, _ROW_PROPERTIES, direct_table_row=True)
++                    header = cell.find(q(W, 'tblHeader'))
++                    if header is not None:
++                        if row:
++                            _fail('unsupported_table_header')
++                        if header.get(q(W, 'val')) not in ('false', '0', 'off'):
++                            if header_rows != len(rows):
++                                _fail('unsupported_table_header')
++                            header_rows += 1
+                     continue
+                 if cell.tag != q(W, 'tc'):
+                     _fail('unsupported_table')
+@@ -1175,7 +1195,7 @@ class _Word:
+             rows.append(row)
+         if grid is not None and rows and grid != len(rows[0]):
+             _fail('unsupported_table')
+-        return self.state.table(rows)
++        return self.state.table(rows, header_rows)
+ 
+     def blocks(self):
+         document = self.pkg.xml['word/document.xml']
+@@ -2364,9 +2384,25 @@ class _ODF:
+         if set(node.attrib) - {q(TB, 'name'), q(TB, 'style-name')}:
+             _fail('unsupported_table')
+         self.style(node.get(q(TB, 'style-name')), 'table')
+-        rows, columns = [], 0
+-        for child in node:
+-            if child.tag == q(TB, 'table-column'):
++        columns_tag, row_tag = q(TB, 'table-column'), q(TB, 'table-row')
++        children = node
++        headers = node.findall(q(TB, 'table-header-rows'))
++        header_end = 0
++        if headers:
++            children = list(node)
++            header = headers[0]
++            start = children.index(header)
++            if (len(headers) != 1 or header.attrib or not len(header)
++                    or any(child.tag != columns_tag for child in children[:start])
++                    or any(child.tag != row_tag for child in header)
++                    or any(child.tag != row_tag for child in children[start + 1:])):
++                _fail('unsupported_table_header')
++            _white(header)
++            children[start:start + 1] = header
++            header_end = start + len(header)
++        rows, columns, header_rows = [], 0, 0
++        for index, child in enumerate(children):
++            if child.tag == columns_tag:
+                 if set(child.attrib) - {q(TB, 'style-name'), q(TB, 'number-columns-repeated'), q(TB, 'default-cell-style-name')}:
+                     _fail('unsupported_table')
+                 if len(child):
+@@ -2377,7 +2413,7 @@ class _ODF:
+                 if columns > MAX_COLUMNS:
+                     _fail('table_capacity')
+                 continue
+-            if child.tag != q(TB, 'table-row'):
++            if child.tag != row_tag:
+                 _fail('unsupported_table')
+             if set(child.attrib) - {q(TB, 'style-name'), q(TB, 'number-rows-repeated'), q(TB, 'default-cell-style-name')}:
+                 _fail('unsupported_table')
+@@ -2418,9 +2454,11 @@ class _ODF:
+             if (len(rows) + repeat) * max(1, len(row)) > MAX_CELLS:
+                 _fail('table_capacity')
+             rows.extend([row] * repeat)
++            if index < header_end:
++                header_rows += repeat
+         if columns and rows and columns != len(rows[0]):
+             _fail('unsupported_table')
+-        return self.state.table(rows)
++        return self.state.table(rows, header_rows)
+ 
+     def blocks(self):
+         _white(self.pkg.body)
+@@ -3065,7 +3103,8 @@ def validate_conversion(source, source_format, output, output_format, *, checkpo
+     lists = [b for b in before if b['type'] == 'list']
+     stories = [b for b in before if b['type'] == 'section_stories']
+     page_breaks = sum(bool(p.get('page_break_before')) for p in paragraphs)
+-    structured = bool(lists or notes or stories or page_breaks)
++    table_header_rows = sum(b.get('header_rows', 0) for b in before if b['type'] == 'table')
++    structured = bool(lists or notes or stories or page_breaks or table_header_rows)
+     encoded = json.dumps(before, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+     result = {'semantic_profile': 'structured_word_blocks_v2' if structured else 'plain_word_blocks_v1',
+               'semantic_sha256': hashlib.sha256(encoded).hexdigest(),
+@@ -3080,4 +3119,6 @@ def validate_conversion(source, source_format, output, output_format, *, checkpo
+                       footnotes=len(notes), header_stories=sum(bool(b['header']) for b in stories),
+                       footer_stories=sum(bool(b['footer']) for b in stories),
+                       explicit_page_breaks=page_breaks)
++    if table_header_rows:
++        result['table_header_rows'] = table_header_rows
+     return result
