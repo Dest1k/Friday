@@ -1,0 +1,293 @@
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -646,7 +646,7 @@
+     # stamp, which can predate admission by minutes), frozen so every request this turn
+     # sends identical bytes. Distinct from note_turn_start's _inflight_turn_started, a
+     # tripwire slot cleared at persist.
+-    from agent.web_call_context import WebTurn
++    from agent.web_call_context import WebTurn, publish_gateway_web_turn
+     previous_web = getattr(agent, "_web_turn", None)
+     inherited_web = (getattr(agent, '_friday_delegation', None) or {}).get('web_turn')
+     if previous_web is not None and previous_web is not inherited_web and previous_web.calls:
+@@ -654,6 +654,8 @@
+         if receipt["status"] != "QUIESCENT":
+             raise RuntimeError("STOP_UNCONFIRMED")
+     agent._web_turn = inherited_web or WebTurn()
++    if inherited_web is None:
++        publish_gateway_web_turn(agent, agent._web_turn)
+     agent._current_turn_timestamp = time.time()
+ 
+     # Pre-turn connection health check: clean up dead TCP connections.
+--- a/agent/web_call_context.py
++++ b/agent/web_call_context.py
+@@ -7,6 +7,7 @@
+ import time
+ 
+ _current = ContextVar('native_web_call', default=None)
++_gateway_web_turn = ContextVar('native_gateway_web_turn', default=None)
+ _child_deadline = ContextVar('native_web_child_deadline', default=None)
+ _child_diagnostics = ContextVar('native_web_child_diagnostics', default=None)
+ 
+@@ -79,6 +80,28 @@
+     return [dict(record) for record in records]
+ 
+ 
++@contextmanager
++def bind_gateway_web_turn(agent, holder):
++    """Expose the fresh native WebTurn to its owning gateway invocation."""
++    token = _gateway_web_turn.set((agent, holder))
++    try:
++        yield
++    finally:
++        _gateway_web_turn.reset(token)
++
++
++def publish_gateway_web_turn(agent, turn):
++    binding = _gateway_web_turn.get()
++    if binding is not None and binding[0] is agent:
++        binding[1][0] = turn
++
++
++class _OrdinaryPublication:
++    def __init__(self, authority):
++        self.authority = authority
++        self.outcome = None
++
++
+ class WebTurn:
+     def __init__(self):
+         self.lock = threading.RLock()
+@@ -87,6 +110,27 @@
+         # Trusted native failure metadata only; never reconstructed from tool text.
+         self.failure = None
+         self.receipt = {'status': 'QUIESCENT', 'sessions': []}
++        self._publication_lock = threading.Lock()
++        self._ordinary_publication = None
++
++    @contextmanager
++    def ordinary_publication(self, call):
++        with self.lock:
++            publication = _OrdinaryPublication(getattr(call, 'user_authority', None))
++            with self._publication_lock:
++                self._ordinary_publication = publication
++            try:
++                yield publication
++            finally:
++                with self._publication_lock:
++                    self._ordinary_publication = None
++
++    def pin_stopped_publication(self):
++        # Linearize the stop against registration and completed cleanup. The
++        # publication lock never covers file I/O or native cessation.
++        with self._publication_lock:
++            self.stopped.set()
++            return self._ordinary_publication
+ 
+     def stop(self):
+         # Admission sees the latch even while launch holds the lock. Neither a
+--- a/gateway/run_agent_cache.py
++++ b/gateway/run_agent_cache.py
+@@ -637,16 +637,30 @@
+             return
+         if pending_reset(self, session_key) is not None:
+             return {"status": "STOP_UNCONFIRMED"}
++        from gateway.run import _AGENT_PENDING_SENTINEL
++        from hermes_cli.friday_user_scope import ordinary_stop_authority, ordinary_stop_route
++
+         state = self._peek_session_state(session_key)
+         running_agent = state.turn.agent if state else None
+         running_event = state.turn.event if state else None
++        ctx = state.turn.ctx if state else None
++        native_web_turn = ctx.native_web_turn[0] if ctx is not None else None
++        publication = None
++        opening_source = getattr(running_event, 'source', None)
++        if (invalidation_reason in ('stop_command', 'stop_command_handler')
++                and running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
++                and native_web_turn is not None and native_web_turn is getattr(running_agent, '_web_turn', None)
++                and ctx.session_key == session_key and ctx.agent_holder[0] is running_agent
++                and type(ctx.run_generation) is int
++                and self._is_session_run_current(session_key, ctx.run_generation)):
++            if ordinary_stop_route(source, opening_source, ctx.source):
++                publication = native_web_turn.pin_stopped_publication()
+         protected_odt = self._protected_odt_turn(session_key, running_agent)
+         archive = self._protected_archive_turn(state)
+         _generation_at_interrupt = self._interrupt_running_turn(
+             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
+         )
+         manual = getattr(running_agent, "_gateway_manual_compression_task", None)
+-        from gateway.run import _AGENT_PENDING_SENTINEL
+         # Detached delegations are independent stop targets. Signal them before
+         # observing web cessation, even when that observation remains unknown.
+         # Pending/retained sessions also need their durable legacy selector.
+@@ -731,6 +745,20 @@
+         web_receipt = getattr(running_agent, "_web_stop_receipt", None)
+         if isinstance(web_receipt, dict) and web_receipt.get("status") == "STOP_UNCONFIRMED":
+             return web_receipt  # Keep ownership; no replacement after unknown cessation.
++        if (publication is not None and publication.outcome in ('unknown', 'published')
++                and publication.authority is not None and isinstance(web_receipt, dict)
++                and web_receipt.get('status') == 'QUIESCENT'
++                and self._is_session_run_current(session_key, _generation_at_interrupt)):
++            def publication_visible():
++                try:
++                    return (ordinary_stop_authority(source, opening_source, ctx.source) == publication.authority
++                            and self._is_user_authorized_for_source(source))
++                except Exception:
++                    return False  # Optional details must fail closed without blocking /stop.
++
++            visible = await asyncio.to_thread(publication_visible)
++            if visible and self._is_session_run_current(session_key, _generation_at_interrupt):
++                web_receipt = dict(web_receipt, ordinary_publication_outcome=publication.outcome)
+         if release_running_state:
+             # Guarded release: a message that arrived during the awaits above may already run as
+             # the successor generation — the displaced /stop tail must not wipe its slot.
+--- a/gateway/run_busy.py
++++ b/gateway/run_busy.py
+@@ -1105,14 +1105,14 @@
+     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
+         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
+         from gateway.run import _INTERRUPT_REASON_STOP
++        from hermes_cli.friday_user_scope import pending_stop_copy, settled_stop_copy
+         receipt = await self._interrupt_and_clear_session(
+             quick_key, source, interrupt_reason=_INTERRUPT_REASON_STOP, invalidation_reason="stop_command",
+         )
+         if isinstance(receipt, dict) and receipt.get("status") == "STOP_UNCONFIRMED":
+-            from hermes_cli.friday_user_scope import pending_stop_copy
+             return EphemeralReply(pending_stop_copy(source))
+         logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
+-        return EphemeralReply(t("gateway.stop.stopped"))
++        return EphemeralReply(settled_stop_copy(source, receipt))
+ 
+     @native_control("new")
+     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -1723,9 +1723,11 @@
+             if ctx.inbound_message_id is not None:
+                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+             from agent.notification_presentation import notification_turn
++            from agent.web_call_context import bind_gateway_web_turn
+             from gateway.upload_anchor import bind_upload_anchor_turn
+             with (notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""),
+-                  bind_upload_anchor_turn(getattr(self._runner, "session_store", None), ctx, agent)):
++                  bind_upload_anchor_turn(getattr(self._runner, "session_store", None), ctx, agent),
++                  bind_gateway_web_turn(agent, ctx.native_web_turn)):
+                 return agent.run_conversation(api_message, **kwargs)
+         finally:
+             unregister_gateway_notify(session_key)
+--- a/gateway/slash_commands.py
++++ b/gateway/slash_commands.py
+@@ -427,7 +427,7 @@
+         all cases.  The session is preserved so the user can continue."""
+         from gateway.protected_odt_reset import pending_reset
+         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
+-        from hermes_cli.friday_user_scope import pending_stop_copy
++        from hermes_cli.friday_user_scope import pending_stop_copy, settled_stop_copy
+ 
+         source = event.source
+         prepare = getattr(event, "_friday_session_command_prepare", None)
+@@ -463,7 +463,7 @@
+             receipt = await _stop(session_key, "stop_command_handler")
+             if receipt and receipt.get("status") == "STOP_UNCONFIRMED":
+                 return EphemeralReply(pending_stop_copy(source))
+-            return EphemeralReply(t("gateway.stop.stopped"))
++            return EphemeralReply(settled_stop_copy(source, receipt))
+ 
+         # No run under the caller's own key: a live turn in THIS chat may still carry a differently
+         # shaped key. One scan feeds both tiers; the chat tier is a superset of the thread-sibling
+--- a/gateway/turn_context.py
++++ b/gateway/turn_context.py
+@@ -36,6 +36,7 @@
+     repeat_count: list = field(default_factory=lambda: [0])
+     long_tool_hint_fired: list = field(default_factory=lambda: [False])
+     agent_holder: list = field(default_factory=lambda: [None])
++    native_web_turn: list = field(default_factory=lambda: [None])
+     _LONG_TOOL_THRESHOLD_S: float = 30.0
+     _cleanup_progress: bool = False
+     _cleanup_msg_ids: List[str] = field(default_factory=list)
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -1997,6 +1997,38 @@
+     return "Reset pending: native web process cessation is unconfirmed." if reset else "Stop pending: native web process cessation is unconfirmed."
+ 
+ 
++def ordinary_stop_route(source, opening_source, ctx_source):
++    """Check the attached principal and private route without doing I/O."""
++    if getattr(source, 'chat_type', None) != 'dm' or not source.chat_id:
++        return False
++    cap = getattr(source, '_friday_user_scope', None)
++    return all(getattr(opening, 'chat_type', None) == 'dm'
++               and opening.chat_id == source.chat_id
++               and _same_scope(cap, getattr(opening, '_friday_user_scope', None))
++               for opening in (opening_source, ctx_source))
++
++
++def ordinary_stop_authority(source, opening_source, ctx_source):
++    """Revalidate the principal and private delivery route for stop details."""
++    if not ordinary_stop_route(source, opening_source, ctx_source):
++        return None
++    cap = source._friday_user_scope
++    with authority(cap.home), scoped_source(source):
++        return delegation_authority()
++
++
++def settled_stop_copy(source, receipt=None):
++    from agent.i18n import t
++    if (isinstance(receipt, dict) and receipt.get('status') == 'QUIESCENT'
++            and getattr(source, 'chat_type', None) == 'dm' and ordinary_presentation(source)):
++        outcome = receipt.get('ordinary_publication_outcome')
++        if outcome == 'unknown':
++            return 'Остановка подтверждена. Действие могло завершиться частично. Проверьте результат перед повтором.'
++        if outcome == 'published':
++            return 'Остановка подтверждена. Файл успел сохраниться. Проверьте результат перед повтором.'
++    return t('gateway.stop.stopped')
++
++
+ def empty_response_copy():
+     return 'Ответ не получен. Часть действий могла выполниться; проверьте результат перед повтором. Если ошибка повторяется, сообщите администратору.'
+ # Exact existing registry.dispatch public wording, kept as the single source.
+--- a/hermes_cli/friday_workspace_docx.py
++++ b/hermes_cli/friday_workspace_docx.py
+@@ -231,14 +231,16 @@
+     call = _current.get()
+     # The stop latch is set before waiting on this lock, so checkpoints still
+     # cancel staging. Once publication wins, stop must observe its settlement.
+-    lock = call.turn.lock if call is not None and commit_guard is None else nullcontext()
+-    with lock:
++    publication_guard = (call.turn.ordinary_publication(call)
++                         if call is not None and commit_guard is None else nullcontext())
++    with publication_guard as publication:
+         return _publish_bytes(cap, fd, leaf, path, data, output_format=output_format,
+                               verify_source=verify_source, commit_guard=commit_guard,
+-                              verified_output=verified_output)
+-
+-
+-def _publish_bytes(cap,fd,leaf,path,data,*,output_format,verify_source,commit_guard,verified_output):
++                              verified_output=verified_output, publication=publication)
++
++
++def _publish_bytes(cap,fd,leaf,path,data,*,output_format,verify_source,commit_guard,verified_output,
++                   publication):
+     """Complete private bytes then Linux atomic NOREPLACE publication.
+ 
+     Never removes an uncertain published name: post-publication errors report
+@@ -248,7 +250,7 @@
+     if not isinstance(data,bytes) or len(data)>MAX_OUTPUT: raise ScopeDenied()
+     _check_parent(cap,fd,path)
+     stage='.friday-docx-'+uuid.uuid4().hex
+-    item=None;published=False;uncertain=False;cleanup_failed=False
++    item=None;published=False;uncertain=False;cleanup_failed=False;unknown=False
+     try:
+         # Existing files, directories, symlinks and binary documents all win.
+         try:os.stat(leaf,dir_fd=fd,follow_symlinks=False)
+@@ -314,6 +316,11 @@
+             except OSError:
+                 cleanup_failed=True
+             finally:os.close(item)
++    if publication is not None:
++        if unknown or cleanup_failed:
++            publication.outcome = 'unknown'
++        elif published:
++            publication.outcome = 'published'
+     if cleanup_failed:
+         from agent.web_call_context import _current
+         call=_current.get()
