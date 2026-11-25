@@ -1,0 +1,3035 @@
+diff --git a/c06_finalization_custody.py b/c06_finalization_custody.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..45d28d739941b71455956f873b3648d6a372b783
+--- /dev/null
++++ b/c06_finalization_custody.py
+@@ -0,0 +1,298 @@
++"""Persist and verify the C06 protected Once finalizer response."""
++
++from math import isfinite
++import os
++from pathlib import Path
++import re
++import stat
++import time
++
++
++MATCH_SCHEMA = 'frw.Root.C06.receiver-terminal-match.v1'
++REQUEST_SCHEMA = 'frw.gateway.c06-owned-receiver-control.v1'
++NATIVE_SCHEMA = 'frw.gateway.c06-native-settlement.v1'
++DRIVER_SCHEMA = 'frw.Root.C06.owned-ordinary-driver.v1'
++OPTIONS_SCHEMA = 'frw.Root.C06.receiver-options.v1'
++PHASES = {
++    'c06-context-a': ('A', '0edbaef98d5d04e37dc903ff90c72a037803bc1a4f3b0ef0922030b5e449b337'),
++    'c06-context-b': ('B', 'a3da899789ed331e75c38a51b7c0a63817abe9db4e21c6516676c994519d9146'),
++}
++CLOCK_TIMING = {'outer_seconds': 600, 'operation_seconds': 300, 'ack_seconds': 10,
++                'reply_window_seconds': 180, 'reserve_seconds': 5}
++CONTEXT_FIELDS = {'run_id', 'scenario_sha256'}
++OBSERVATION_FIELDS = {'request', 'response', 'sent_monotonic', 'observed_monotonic',
++                      'gateway', 'deadline_monotonic'}
++MATCH_FIELDS = CONTEXT_FIELDS | OBSERVATION_FIELDS | {
++    'schema', 'state', 'terminal_intent', 'native_terminal', 'caller', 'ack', 'match', 'no_retry',
++}
++REQUEST_FIELDS = {'schema', 'operator', 'action', 'query_id', 'boot_id', 'gateway', 'created_monotonic',
++                  'expires_monotonic', 'arm_intent', 'receiver_options', 'proof'}
++NATIVE_FIELDS = CONTEXT_FIELDS | {'schema', 'intent', 'claim_sha256', 'wire_sha256', 'generation',
++                                 'disposition_revision', 'route', 'observations', 'c06', 'no_retry'}
++SELECTION_FIELDS = {'role', 'sdk_update_id', 'sdk_message_id', 'tester_ack_message_id',
++                    'original_sender_proof_sha256', 'input_sha256', 'input_bytes', 'session_id',
++                    'route_created_at'}
++INTENT_FIELDS = CONTEXT_FIELDS | {'arm', 'clock', 'cutoff', 'run', 'cursor', 'invocation', 'locks', 'no_retry'}
++ROUTE_FIELDS = {'session_key', 'source_profile', 'transport_profile', 'runtime_profile'}
++HEX = re.compile('[a-f0-9]{64}')
++QUERY = re.compile('[a-f0-9]{32}')
++BOOT = re.compile('[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}')
++
++
++def _require(condition, reason):
++    if not condition:
++        raise ValueError(reason)
++
++
++def _fields(value, names):
++    return type(value) is dict and set(value) == names
++
++
++def _hex(value, shape=HEX):
++    return type(value) is str and shape.fullmatch(value) is not None
++
++
++def _integer(value, minimum=1):
++    return type(value) is int and value >= minimum
++
++
++def _monotonic(value):
++    return type(value) in (int, float) and isfinite(value) and value >= 0
++
++
++def _path(value):
++    _require(type(value) is str and '\0' not in value, 'C06_FINALIZATION_PATH_INVALID')
++    path = Path(value)
++    _require(path.is_absolute() and str(path) == value and '..' not in path.parts,
++             'C06_FINALIZATION_PATH_INVALID')
++    return path
++
++
++def _reference(value, name=None, work=None):
++    _require(_fields(value, {'path', 'bytes', 'sha256'}) and _hex(value['sha256'])
++             and _integer(value['bytes']), 'C06_FINALIZATION_REFERENCE_INVALID')
++    path = _path(value['path'])
++    _require((name is None or path.name == name) and (work is None or path.parent == work),
++             'C06_FINALIZATION_REFERENCE_WRONG_FILE')
++    return path
++
++
++def _document(reader, ref, name=None, work=None):
++    _reference(ref, name, work)
++    value = reader(ref)
++    _require(type(value) is dict, 'C06_FINALIZATION_DOCUMENT_INVALID')
++    return value
++
++
++def _same_context(value, context):
++    return value.get('no_retry') is True and all(value.get(key) == item for key, item in context.items())
++
++
++def _process(value):
++    return (_fields(value, {'pid', 'start_time', 'boot_id'}) and _integer(value['pid'])
++            and _integer(value['start_time']) and _hex(value['boot_id'], BOOT))
++
++
++def _clock_deadline(reader, work, context, intent, arm, request, options, observed):
++    clock = _document(reader, intent['clock'], 'clock.json', work)
++    bound = _document(reader, intent['cutoff'], 'receiver-cutoff.json', work)
++    original = _document(reader, bound['intent'], 'receiver-cutoff-intent.json', work)
++    receipt = arm['receipt']
++    cutoff = original.get('receiver_monotonic_cutoff')
++    ack_times = original.get('ack_monotonic')
++    start, outer = clock.get('started_monotonic'), clock.get('deadline_monotonic')
++    armed, arm_end = receipt.get('armed_monotonic'), receipt.get('expires_monotonic')
++    options_end = options.get('observer_expires_monotonic')
++    create, expires = request['created_monotonic'], request['expires_monotonic']
++    sent, received = observed['sent_monotonic'], observed['observed_monotonic']
++    _require(type(ack_times) is list and len(ack_times) == 2
++             and all(_monotonic(value) for value in (
++                 cutoff, *ack_times, start, outer, armed, arm_end, options_end, create, expires, sent, received,
++                 observed['deadline_monotonic']))
++             and _fields(clock, CONTEXT_FIELDS | {'schema', 'status', 'timing', 'old_effects_clocks_preserved',
++                                                  'started_monotonic', 'deadline_monotonic', 'receiver_arm'})
++             and all(clock[key] == value for key, value in context.items())
++             and clock['schema'] == 'frw.Root.F07.finite-operation-clock.v1'
++             and clock['status'] == 'ROOT_BOUND_FUTURE_OPERATION'
++             and clock['old_effects_clocks_preserved'] is True and clock['timing'] == CLOCK_TIMING
++             and clock['receiver_arm'] == intent['arm'] == original.get('arm')
++             and intent['clock'] == original.get('clock')
++             and _fields(bound, CONTEXT_FIELDS | {'intent', 'state', 'no_retry'})
++             and _same_context(bound, context) and bound['state'] == 'RECEIVER_CUTOFF_BOUND'
++             and _fields(original, CONTEXT_FIELDS | {'arm', 'clock', 'ack', 'send_window', 'ack_wall',
++                                                      'ack_monotonic', 'original_wall_cutoff',
++                                                      'receiver_monotonic_cutoff', 'no_retry'})
++             and _same_context(original, context) and _monotonic(original['ack_wall'])
++             and _monotonic(original['original_wall_cutoff'])
++             and original['original_wall_cutoff'] == original['ack_wall'] + CLOCK_TIMING['reply_window_seconds']
++             and armed <= start <= ack_times[0] <= ack_times[1] <= create <= sent <= received < expires
++             and cutoff == ack_times[1] + CLOCK_TIMING['reply_window_seconds'] and cutoff <= received
++             and outer == start + CLOCK_TIMING['outer_seconds'] and arm_end == options_end <= armed + 600
++             and cutoff + 25 <= min(outer, arm_end)
++             and observed['deadline_monotonic'] == expires == min(create + 25, cutoff + 25, outer,
++                                                                  arm_end, options_end),
++             'C06_FINALIZATION_ORIGINAL_CLOCK_CHANGED')
++    return original
++
++
++def _match_chain(row, reader, work, context, run_ref, *, route=None, native_ref=None):
++    role, scenario_sha = PHASES.get(context['run_id'], (None, None))
++    _require(scenario_sha is not None and scenario_sha == context['scenario_sha256']
++             and _fields(row, MATCH_FIELDS) and _same_context(row, context)
++             and row['schema'] == MATCH_SCHEMA and row['state'] == 'RECEIVER_MATCH_RETAINED'
++             and _fields(row['match'], {'message_id', 'platform_update_id'})
++             and all(_integer(value) for value in row['match'].values()), 'C06_FINALIZATION_MATCH_REQUIRED')
++    intent = _document(reader, row['terminal_intent'], 'receiver-terminal-intent.json', work)
++    request = _document(reader, row['request'], 'receiver-control-finalize.json', work)
++    native = _document(reader, row['native_terminal'], 'receiver-terminal-native.json', work)
++    caller = _document(reader, row['caller'], 'consumer-invocation.json', work)
++    _require(_fields(intent, INTENT_FIELDS) and _same_context(intent, context)
++             and intent['run'] == run_ref and intent['invocation'] == row['caller']
++             and _fields(intent['locks'], {'consumer.lock', 'tester-token'})
++             and all(type(item) is dict and bool(item) for item in intent['locks'].values()),
++             'C06_FINALIZATION_TERMINAL_INTENT_CHANGED')
++    _reference(intent['cursor'], 'cursor.json')
++    arm = _document(reader, intent['arm'], 'receiver-arm.json', work)
++    arm_intent = _document(reader, arm['intent'], 'receiver-arm-intent.json', work)
++    claim = _document(reader, arm['claim'], 'claim.json', work)
++    receipt = arm.get('receipt')
++    _require(_fields(arm, CONTEXT_FIELDS | {'parent', 'claim', 'intent', 'receipt', 'no_retry'})
++             and _same_context(arm, context)
++             and _fields(arm_intent, CONTEXT_FIELDS | {'claim', 'parent', 'binding', 'no_retry'})
++             and _same_context(arm_intent, context) and _same_context(claim, context)
++             and arm['claim'] == arm_intent['claim'] and arm['parent'] == arm_intent['parent'] == claim.get('parent')
++             and _process(arm['parent']) and arm_intent['binding'] == claim.get('binding')
++             and _fields(receipt, {'state', 'claim_sha256', 'generation', 'first_offset',
++                                   'armed_monotonic', 'expires_monotonic'})
++             and receipt['state'] == 'ARMED' and receipt['claim_sha256'] == arm['claim']['sha256']
++             and _integer(receipt['generation']) and _integer(receipt['first_offset'], 0),
++             'C06_FINALIZATION_ARM_OR_CLAIM_CHANGED')
++    _require(_fields(caller, {'schema', 'run_id', 'consumer', 'driver_binding', 'clock', 'no_retry'})
++             and caller['schema'] == 'frw.Root.F07.one-ordinary-consumer-invocation.v1'
++             and caller['run_id'] == context['run_id'] and caller['clock'] == intent['clock']
++             and caller['driver_binding'] == arm_intent['binding'] and caller['no_retry'] is True
++             and _process(caller['consumer']), 'C06_FINALIZATION_CALLER_CHANGED')
++    gateway = row['gateway']
++    _require(_fields(gateway, {'pid', 'start_time', 'boot_id', 'uid', 'socket', 'socket_identity'})
++             and _process({key: gateway[key] for key in ('pid', 'start_time', 'boot_id')})
++             and _integer(gateway['uid'], 0) and gateway['uid'] == os.getuid()
++             and type(gateway['socket_identity']) is list and len(gateway['socket_identity']) == 3
++             and _integer(gateway['socket_identity'][0], 0)
++             and all(_integer(item) for item in gateway['socket_identity'][1:])
++             and _path(gateway['socket']).name == 'gateway.sock'
++             and caller['consumer']['boot_id'] == arm['parent']['boot_id'] == gateway['boot_id'],
++             'C06_FINALIZATION_AUTHENTICATED_PEER_REQUIRED')
++    _require(_fields(request, REQUEST_FIELDS) and request['schema'] == REQUEST_SCHEMA
++             and request['operator'] == 'Root' and request['action'] == 'finalize'
++             and _hex(request['query_id'], QUERY) and request['boot_id'] == gateway['boot_id']
++             and _fields(request['gateway'], {'pid', 'start_time'})
++             and _integer(request['gateway']['pid']) and _integer(request['gateway']['start_time'])
++             and request['gateway'] == {key: gateway[key] for key in ('pid', 'start_time')}
++             and request['arm_intent'] == arm['intent'] and request['proof'] == row['terminal_intent'],
++             'C06_FINALIZATION_REQUEST_CHANGED')
++    driver = _document(reader, caller['driver_binding'], work=work.parent)
++    options = _document(reader, request['receiver_options'])
++    directory = work.lstat()
++    identity = dict(device=directory.st_dev, inode=directory.st_ino, uid=directory.st_uid,
++                    mode=stat.S_IMODE(directory.st_mode))
++    principal = options.get('principal')
++    _require(driver.get('schema') == DRIVER_SCHEMA and driver.get('operator') == 'Root'
++             and driver.get('status') == 'ROOT_BOUND_ONE_FUTURE_OPERATION'
++             and driver.get('workdir') == str(work) and driver.get('run_id') == context['run_id']
++             and driver.get('receiver_options') == request['receiver_options']
++             and work.resolve(strict=True) == work and stat.S_ISDIR(directory.st_mode)
++             and identity['mode'] == 0o700 and identity['uid'] == os.getuid()
++             and driver.get('work_identity') in (identity, dict(identity, mode=directory.st_mode))
++             and _fields(options, {'schema', 'principal', 'profile', 'rights', 'observer_expires_monotonic'})
++             and options['schema'] == OPTIONS_SCHEMA and type(principal) is dict
++             and all(type(principal.get(key)) is str and bool(principal[key])
++                     for key in ('user_id', 'account_id', 'transport_profile'))
++             and type(options['profile']) is str and bool(options['profile']),
++             'C06_FINALIZATION_DRIVER_OR_OPTIONS_CHANGED')
++    response = row['response']
++    _require(_fields(response, {'accepted', 'action', 'query_id', 'state', 'receipt'})
++             and response['accepted'] is True and response['action'] == 'finalize'
++             and response['query_id'] == request['query_id'] and response['state'] == 'RECEIVER_CLOSED_RETAINED'
++             and response['receipt'] == row['native_terminal']
++             and (native_ref is None or native_ref == row['native_terminal']),
++             'C06_FINALIZATION_EXACT_POSITIVE_RESPONSE_REQUIRED')
++    _require(_fields(native, NATIVE_FIELDS) and native['schema'] == NATIVE_SCHEMA
++             and _same_context(native, context) and native['intent'] == row['terminal_intent']
++             and native['claim_sha256'] == receipt['claim_sha256']
++             and _integer(native['generation']) and native['generation'] == receipt['generation']
++             and _hex(native['wire_sha256']) and _integer(native['disposition_revision'], 0)
++             and _fields(native['route'], ROUTE_FIELDS)
++             and all(type(part) is str for part in native['route'].values())
++             and native['route']['transport_profile'] == principal['transport_profile']
++             and native['route']['runtime_profile'] == options['profile']
++             and native['route']['session_key'] == f"agent:{options['profile']}:telegram:dm:{principal['user_id']}"
++             and (route is None or route == native['route'])
++             and type(native['observations']) is list and len(native['observations']) == 1
++             and _fields(native['c06'], SELECTION_FIELDS) and native['c06']['role'] == role,
++             'C06_FINALIZATION_NATIVE_RECEIPT_CHANGED')
++    selection = native['c06']
++    _require(all(_integer(selection[key]) for key in ('sdk_update_id', 'sdk_message_id',
++                                                       'tester_ack_message_id', 'input_bytes'))
++             and all(_hex(selection[key]) for key in ('original_sender_proof_sha256', 'input_sha256'))
++             and selection['sdk_message_id'] == row['match']['message_id']
++             and selection['sdk_update_id'] == row['match']['platform_update_id'],
++             'C06_FINALIZATION_MATCH_SELECTION_CHANGED')
++    original = _clock_deadline(reader, work, context, intent, arm, request, options, row)
++    ack = row['ack']
++    _require(type(ack) is dict and ack == original['ack']
++             and ack.get('basename') == f"send-ack-{context['run_id']}-0-1.json"
++             and _hex(ack.get('sha256')) and _integer(ack.get('bytes'))
++             and ack.get('representation') in ('botapi-wire-envelope-json', 'decoded-message-json'),
++             'C06_FINALIZATION_ORIGINAL_SEND_ACK_CHANGED')
++    return caller
++
++
++def record_match(once, observed, terminal_intent_ref, native_ref, ack_ref, match):
++    """Join the consumed socket observation with the successful Once matcher."""
++    _require(_fields(observed, OBSERVATION_FIELDS), 'C06_FINALIZATION_OBSERVATION_REQUIRED')
++    actor, work, context = once.actor, once.work, once.context
++    def read(ref):
++        raw = actor.readref(ref)
++        value = actor.parse(raw)
++        _require(actor.encoded(value) == raw, 'C06_FINALIZATION_CANONICAL_DOCUMENT_REQUIRED')
++        return value
++
++    work_identity = actor.protected_directory(work)[:5]
++    intent = _document(read, terminal_intent_ref, 'receiver-terminal-intent.json', work)
++    run_ref = intent['run']
++    _reference(run_ref, f"{context['run_id']}.json")
++    row = dict(**context, **observed, schema=MATCH_SCHEMA, state='RECEIVER_MATCH_RETAINED',
++               terminal_intent=terminal_intent_ref, native_terminal=native_ref, caller=intent['invocation'],
++               ack=ack_ref, match=match, no_retry=True)
++    caller = _match_chain(row, read, work, context, run_ref, native_ref=native_ref)
++    _require(caller['consumer'] == actor.kernel(os.getpid()), 'C06_FINALIZATION_WRITER_CHANGED')
++    _require(once.receiver_window.revalidate_finalization(observed) is True
++             and time.monotonic() < observed['deadline_monotonic'], 'C06_FINALIZATION_WRITE_DEADLINE')
++    ref = once.record('receiver-terminal-match.json', row)
++    checked = _document(read, ref, 'receiver-terminal-match.json', work)
++    _match_chain(checked, read, work, context, run_ref, native_ref=native_ref)
++    _require(actor.encoded(checked) == actor.encoded(row)
++             and actor.protected_directory(work)[:5] == work_identity
++             and caller['consumer'] == actor.kernel(os.getpid())
++             and once.receiver_window.revalidate_finalization(observed) is True
++             and time.monotonic() < observed['deadline_monotonic'], 'C06_FINALIZATION_READBACK_UNKNOWN')
++    return ref
++
++
++def read_finalization(ended_ref, read_document, *, run_id, scenario_sha256, run_sha256,
++                      route=None, native_ref=None):
++    """Validate the active predecessor with a canonical protected-document reader."""
++    work = _reference(ended_ref, 'consumer-ended.json').parent
++    context = {'run_id': run_id, 'scenario_sha256': scenario_sha256}
++    ended = _document(read_document, ended_ref, 'consumer-ended.json', work)
++    _require(_fields(ended, CONTEXT_FIELDS | {'stage', 'run', 'receiver_match', 'exception_class',
++                                             'no_retry', 'acceptance'})
++             and _same_context(ended, context) and ended['stage'] == 'RECEIVER_FINALIZE'
++             and ended['exception_class'] is None and ended['acceptance'] == 'NOT_ESTABLISHED',
++             'C06_FINALIZATION_SUCCESSFUL_CONSUMER_END_REQUIRED')
++    run_ref = ended['run']
++    _reference(run_ref, f'{run_id}.json')
++    _require(_hex(run_sha256) and run_ref['sha256'] == run_sha256, 'C06_FINALIZATION_HISTORICAL_RUN_CHANGED')
++    row = _document(read_document, ended['receiver_match'], 'receiver-terminal-match.json', work)
++    _match_chain(row, read_document, work, context, run_ref, route=route, native_ref=native_ref)
++    return row['native_terminal']
+diff --git a/c06_ingress.py b/c06_ingress.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0de7572c75a736387477334acfb7b22b454a480b
+--- /dev/null
++++ b/c06_ingress.py
+@@ -0,0 +1,441 @@
++"""C06 original Telegram upload and workspace custody for the protected owner."""
++
++import asyncio
++from dataclasses import dataclass, field, fields
++from datetime import datetime
++from pathlib import Path
++import re
++from time import monotonic as time_monotonic
++from types import SimpleNamespace
++from weakref import ref
++
++from gateway.admitted_ingress import admitted_ingress_with_telegram_payload
++from gateway.ordinary_dm_ingress import OrdinaryDMIngressOutcomes, _ingress
++from gateway.platforms.event import MessageEvent
++from gateway.run_inbound_media import (
++    PublishedXLSXInput, _read_published_input, _verify_published_input,
++    owned_attachment_display_name, owned_attachment_model_path,
++)
++from gateway.s08_document_custody import capture_document
++from gateway.session import SessionEntry, SessionStore
++from gateway.session_identity import identity_of
++from gateway.upload_anchor import AnchorUnavailable, _current_entry
++from hermes_cli.friday_user_scope import UserScope, _CURRENT, _same_scope, authority, current
++
++
++class _Refused(AnchorUnavailable):
++    """A protected observation lacks an exact C06 witness."""
++
++
++@dataclass(frozen=True, slots=True)
++class _Input:
++    role: str
++    scenario: str
++    name: str
++    mime: str
++    sha256: str
++    size: int
++    caption: str
++
++
++_A = _Input(
++    "A", "0edbaef98d5d04e37dc903ff90c72a037803bc1a4f3b0ef0922030b5e449b337",
++    "gorlitsa-handover.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++    "397bfc889ef7c29281f7e10b299a77ca32fc5a46fd0df966da20dc316e19420d", 1181,
++    "8cb2a85f1232b512b37e4ea3dadcb4e8443e593333449b15b03fd5e603502b03",
++)
++_B = _Input(
++    "B", "a3da899789ed331e75c38a51b7c0a63817abe9db4e21c6516676c994519d9146",
++    "sinyaya-arka-routes.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
++    "4580ad7ee8321611907a4ccf6e14698ce910435058b38f49582bee09101f9f54", 1875,
++    "559d60dbe994ff7d097654e75f122d85b7de47a8ee652a35f913a5b774e35a1a",
++)
++_INPUTS = {_A.scenario: _A, _B.scenario: _B}
++_PUBLICATION = "_friday_published_c06_input"
++_SDK_KEYS = ("update_id", "native_message_id", "bot_id", "actor_id", "date",
++             "caption_sha256", "file_id", "file_unique_id", "file_name", "mime_type", "declared_bytes")
++_ROUTE_KEYS = ("session_key", "source_profile", "transport_profile", "runtime_profile")
++_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
++_RECEIVED = re.compile(r"telegram_[a-f0-9]{64}_[A-Za-z0-9_.-]{1,80}\.(?:docx|xlsx)")
++
++
++def _require(condition, reason):
++    if not condition:
++        raise _Refused(reason)
++
++
++@dataclass(frozen=True, slots=True)
++class _Original:
++    ingress: OrdinaryDMIngressOutcomes
++    record: object
++    update: object
++    witness: tuple
++    fixture: _Input
++    run_id: str
++    claim_sha256: str
++    observed_monotonic: float
++
++
++@dataclass(frozen=True, slots=True)
++class _RuntimeOwner:
++    runner: object
++    adapter: object
++    app: object
++    updater: object
++    bot: object
++    generation: int
++    loop: asyncio.AbstractEventLoop
++    poller: asyncio.Task
++
++    def current(self, store):
++        try:
++            adapter = self.adapter
++            return (adapter.gateway_runner is self.runner and self.runner.adapters.get(adapter.platform) is adapter
++                    and self.runner.session_store is store and adapter._app is self.app
++                    and self.app.updater is self.updater and adapter._bot is self.bot and self.updater.bot is self.bot
++                    and adapter._polling_generation == self.generation and not adapter._teardown_started
++                    and adapter._polling_progress_accepting and self.updater.running
++                    and isinstance(self.poller, asyncio.Task) and not self.poller.done()
++                    and self.updater._Updater__polling_task is self.poller
++                    and self.poller.get_loop() is self.loop and not self.loop.is_closed())
++        except (AttributeError, RuntimeError):
++            return False
++
++
++@dataclass(frozen=True, slots=True)
++class _Custody:
++    owner: UserScope
++    store: ref
++    runtime: _RuntimeOwner
++    evidence: PublishedXLSXInput
++    directories: tuple
++    facts: tuple
++
++
++@dataclass(frozen=True, slots=True)
++class PublishedOriginal:
++    principal: tuple
++    profile: str
++    scope: str
++    session_key: str
++    session_id: str
++    route_created_at: str
++    native_message_id: int
++    sdk_date: int
++    caption_sha256: str
++    file_unique_id: str
++    file_name: str
++    mime_type: str
++    input_sha256: str
++    input_size_bytes: int
++    file_identity: tuple
++    relative_path: str
++    scenario_sha256: str
++    role: str
++    run_id: str
++    claim_sha256: str
++    update_id: int
++    file_id: str
++    observed_monotonic: float
++    _custody: _Custody = field(repr=False, compare=False)
++
++
++_FACTS = tuple(member.name for member in fields(PublishedOriginal) if member.name != "_custody")
++
++
++def _sdk(ingress, update, event, fixture):
++    sdk = capture_document(ingress.adapter, update, event, actor=ingress.claim.user_id,
++                           bot_id=ingress.scope["bot_id"], source_bytes=fixture.size)
++    _require((sdk["file_name"], sdk["mime_type"], sdk["caption_sha256"])
++             == (fixture.name, fixture.mime, fixture.caption), "c06_exact_original_caption_and_document")
++    return tuple(sdk[key] for key in _SDK_KEYS)
++
++
++def capture_original(ingress, native_update, event, *, scenario_sha256, run_id):
++    """Capture directly after the protected native builder records this event.
++
++    The protected owner supplies its exact selected scenario and run binding.
++    The stock arm currently has no C06 registration for calling this seam.
++    """
++    fixture = _INPUTS.get(scenario_sha256) if type(scenario_sha256) is str else None
++    _require(fixture is not None and type(run_id) is str and _RUN_ID.fullmatch(run_id)
++             and type(ingress) is OrdinaryDMIngressOutcomes and type(event) is MessageEvent,
++             "c06_exact_owner_and_upload_plan_required")
++    claim = ingress.claim
++    _require(not claim.require_s08_document and claim.selected_s14 is None
++             and claim.selected_d05 is None and claim.selected_d01_rtf is None,
++             "c06_wrong_selected_owner")
++    update_id = ingress._stamp(event)
++    wire = ingress._wire()
++    record = ingress._built.get(update_id)
++    _require(wire is not None and wire["state"] == "OPEN" and type(update_id) is int
++             and tuple(wire["target_update_ids"]) == (update_id,) and record is not None
++             and record.event_ref() is event and record.handoff == "unstarted"
++             and not hasattr(record, "c06_native") and not ingress._held and not ingress._commits,
++             "c06_original_native_dispatch_required")
++    try:
++        witness = _sdk(ingress, native_update, event, fixture)
++    except (AttributeError, TypeError, ValueError):
++        raise _Refused("c06_original_sdk_document_required") from None
++    original = _Original(ingress, record, native_update, witness, fixture, run_id,
++                         claim.claim_sha256, time_monotonic())
++    record.c06_native = original
++    return original
++
++
++def _selected(event):
++    identity = identity_of(event.source)
++    ingress = _ingress(identity.adapter()) if identity is not None else None
++    if type(ingress) is not OrdinaryDMIngressOutcomes:
++        return None
++    update_id = ingress._stamp(event)
++    record = ingress._built.get(update_id)
++    original = getattr(record, "c06_native", None)
++    if (type(original) is not _Original or original.ingress is not ingress
++            or original.record is not record or original.claim_sha256 != ingress.claim.claim_sha256
++            or ingress.select(event, event.source, identity, ingress.scope["session_key"]) != update_id
++            or original.witness != _sdk(ingress, original.update, event, original.fixture)):
++        return None
++    return original
++
++
++def _document_matches(original, message):
++    sdk = dict(zip(_SDK_KEYS, original.witness, strict=True))
++    media = message["media"]
++    if (len(media) != 1 or tuple(message[key] for key in (
++            "platform_update_id", "message_id", "bot_id", "user_id", "chat_id", "thread_id", "reply_to_message_id"))
++            != (sdk["update_id"], sdk["native_message_id"], sdk["bot_id"], sdk["actor_id"],
++                sdk["actor_id"], "", "")):
++        return False
++    item, = media
++    origin = item["origin"]
++    return (item["mime_type"] == sdk["mime_type"]
++            and item["content"] == {"sha256": original.fixture.sha256, "size_bytes": original.fixture.size}
++            and all(origin[key] == message[key] for key in ("bot_id", "chat_id", "thread_id", "message_id"))
++            and all(origin[key] == sdk[key] for key in ("file_id", "file_unique_id", "declared_bytes")))
++
++
++def selected_publication(event, message):
++    """Only the normal rehome writer can call this optional observation seam."""
++    if getattr(event, "_ordinary_dm_ingress_stamp", None) is None:
++        return False
++    try:
++        original = _selected(event)
++        return original is not None and _document_matches(original, message)
++    except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
++        return False
++
++
++def _route_current(store, entry, cap, session_key):
++    actor = cap.principal[3]
++    route = ("telegram", actor, actor, "dm", None)
++    _require(type(store) is SessionStore and store.sessions_dir == cap.authorization_home / "sessions"
++             and type(entry) is SessionEntry and type(entry.created_at) is datetime
++             and type(entry.session_id) is str and entry.session_id
++             and session_key == f"agent:{cap.profile}:telegram:dm:{actor}"
++             and getattr(entry.platform, "value", None) == "telegram" and entry.chat_type == "dm"
++             and entry.transport_profile == cap.principal[1] and entry.origin is not None
++             and entry.origin.profile == cap.profile and not entry.suspended and not entry.expiry_finalized,
++             "c06_native_route_unavailable")
++    ctx = SimpleNamespace(session_id=entry.session_id, session_key=session_key)
++    _require(_current_entry(store, ctx, cap, route) is entry, "c06_native_route_entry_changed")
++    return entry.session_id, entry.created_at.isoformat()
++
++
++def publish_original(ingress, original, event, *, entry, scenario_sha256):
++    """Bind the original SDK input to the live routed entry and normal published descriptor."""
++    try:
++        cap = current(required=True)
++        _require(type(original) is _Original and original.ingress is ingress
++                 and _selected(event) is original and original.fixture.scenario == scenario_sha256
++                 and not original.record.settled,
++                 "c06_same_original_native_event_required")
++        scope = ingress.scope
++        runner = ingress.adapter.gateway_runner
++        _require(type(cap) is UserScope and runner is not None
++                 and runner.adapters.get(ingress.adapter.platform) is ingress.adapter
++                 and cap.principal == ("telegram", scope["transport_profile"], str(scope["bot_id"]),
++                                       str(ingress.claim.user_id))
++                 and (cap.profile, str(cap.authorization_home), str(cap.home))
++                 == (scope["runtime_profile"], scope["authorization_home"], scope["runtime_home"]),
++                 "c06_same_admitted_owner_required")
++        store = runner.session_store
++        adapter, claim = ingress.adapter, ingress.claim
++        runtime = _RuntimeOwner(runner, adapter, adapter._app, claim.updater, ingress.bot,
++                                claim.generation, claim.loop, claim.updater._Updater__polling_task)
++        _require(runtime.current(store), "c06_original_application_changed")
++        key = scope["session_key"]
++        sid, created = _route_current(store, entry, cap, key)
++        proof, payload = admitted_ingress_with_telegram_payload(event, event.source, key)
++        sdk = dict(zip(_SDK_KEYS, original.witness, strict=True))
++        _require(proof is not None and proof["platform"] == "telegram"
++                 and all(proof[key] == scope[key] for key in _ROUTE_KEYS)
++                 and _document_matches(original, proof["message"])
++                 and payload == {"kind": "caption", "date": sdk["date"], "sha256": sdk["caption_sha256"]},
++                 "c06_same_native_document_and_payload_required")
++        evidence = _read_published_input(event, _PUBLICATION, pin_directories=True)
++        _require(type(evidence) is PublishedXLSXInput, "c06_original_workspace_publication_required")
++        record = getattr(event, _PUBLICATION)
++        directories = record[4]
++        path = str(evidence.path)
++        relative = owned_attachment_model_path(event, path)
++        _require(event.media_urls == [path] and proof["message"]["media"][0]["local_reference"] == path
++                 and relative == "received/" + evidence.path.name and _RECEIVED.fullmatch(evidence.path.name)
++                 and evidence.path.suffix == Path(original.fixture.name).suffix
++                 and owned_attachment_display_name(event, path) == original.fixture.name
++                 and (evidence.sha256, evidence.size_bytes) == (original.fixture.sha256, original.fixture.size)
++                 and _selected(event) is original and getattr(event, _PUBLICATION) is record
++                 and runtime.current(store) and _route_current(store, entry, cap, key) == (sid, created),
++                 "c06_original_workspace_or_route_changed")
++        facts = (cap.principal, cap.profile, str(store.sessions_dir), key, sid, created,
++                 int(sdk["native_message_id"]), sdk["date"], sdk["caption_sha256"], sdk["file_unique_id"],
++                 sdk["file_name"], sdk["mime_type"], evidence.sha256, evidence.size_bytes,
++                 evidence.source_identity, relative, scenario_sha256, original.fixture.role, original.run_id,
++                 original.claim_sha256, int(sdk["update_id"]), sdk["file_id"], original.observed_monotonic)
++        previous = getattr(original.record, "c06_publication", None)
++        if previous is not None:
++            _require(type(previous) is PublishedOriginal and previous._custody.facts == facts
++                     and previous._custody.evidence == evidence and previous._custody.directories == directories,
++                     "c06_original_publication_rebound")
++            revalidate_original(previous, cap, entry=entry)
++            return previous
++        publication = PublishedOriginal(*facts, _Custody(cap, ref(store), runtime, evidence, directories, facts))
++        original.record.c06_publication = publication
++        return publication
++    except _Refused:
++        raise
++    except (AttributeError, KeyError, OSError, TypeError, ValueError):
++        raise _Refused("c06_exact_workspace_publication_unavailable") from None
++
++
++def revalidate_original(publication, cap, *, entry):
++    """Reopen the retained original with the current native owner and route."""
++    _require(type(publication) is PublishedOriginal and type(cap) is UserScope
++             and type(publication._custody) is _Custody, "c06_native_publication_required")
++    retained = publication._custody
++    _require(tuple(getattr(publication, name) for name in _FACTS) == retained.facts
++             and _same_scope(retained.owner, cap) and not retained.owner.revoked
++             and (_CURRENT.get() is None or _CURRENT.get() is cap),
++             "c06_retained_publication_owner_or_facts_changed")
++    store = retained.store()
++    _require(retained.runtime.current(store), "c06_retained_application_changed")
++    expected_route = publication.session_id, publication.route_created_at
++
++    def route_matches():
++        return (retained.runtime.current(store)
++                and _route_current(store, entry, cap, publication.session_key) == expected_route)
++
++    try:
++        with authority(cap.home):
++            _require(route_matches() and _verify_published_input(
++                cap, retained.evidence, still_current=route_matches,
++                expected_directories=retained.directories) and route_matches(),
++                "c06_retained_workspace_descriptor_changed")
++    except _Refused:
++        raise
++    except (AttributeError, OSError, TypeError, ValueError):
++        raise _Refused("c06_retained_workspace_unavailable") from None
++    return True
++
++
++def validate_pair(a, b, cap, *, entry):
++    """Require same live lineage and two distinct, ordered original uploads."""
++    revalidate_original(a, cap, entry=entry)
++    revalidate_original(b, cap, entry=entry)
++    _require((a.role, b.role) == ("A", "B")
++             and (a.principal, a.profile, a.scope, a.session_key, a.session_id, a.route_created_at,
++                  a._custody.directories, a._custody.store())
++             == (b.principal, b.profile, b.scope, b.session_key, b.session_id, b.route_created_at,
++                 b._custody.directories, b._custody.store())
++             and a.update_id < b.update_id and a.native_message_id < b.native_message_id and a.sdk_date < b.sdk_date
++             and a.run_id != b.run_id and a.claim_sha256 != b.claim_sha256
++             and a.file_id != b.file_id and a.file_unique_id != b.file_unique_id
++             and a.relative_path != b.relative_path and a.file_identity[:2] != b.file_identity[:2],
++             "c06_native_original_pair_not_distinct_and_ordered")
++    return True
++
++
++def is_selected_plan(selection):
++    """Recognize only the two existing protected native upload plans."""
++    if (type(selection) is not tuple or len(selection) != 2
++            or not all(type(value) is str for value in selection)):
++        return False
++    scenario_sha256, run_id = selection
++    fixture = _INPUTS.get(scenario_sha256)
++    return fixture is not None and run_id == f"c06-context-{fixture.role.lower()}"
++
++
++def bind_worker_original(ingress, runner, event, session_id, key, generation, update):
++    """Capture the normal workspace publication in its existing admitted turn."""
++    original = _selected(event)
++    record = ingress._built.get(update)
++    state = runner._peek_session_state(key)
++    token = state.turn.lease_tokens.get(generation) if state is not None else None
++    _require(original is not None and type(original) is _Original and original.record is record
++             and original.ingress is ingress and not record.settled
++             and (original.fixture.scenario, original.run_id) == ingress.claim.selected_c06
++             and record.writer_task is not None and record.writer_task() is asyncio.current_task()
++             and not asyncio.current_task().cancelling() and update in ingress._commits
++             and runner is ingress.adapter.gateway_runner and runner._is_session_run_current(key, generation)
++             and state.turn.event is event and token is not None and token.released is False
++             and (token.session_id, token.owner_key, token.generation) == (session_id, key, generation)
++             and token.lease.holder is token and token.lease.lock.locked(),
++             "c06_current_owned_worker_required")
++    cap = current(required=True)
++    actor = cap.principal[3]
++    ctx = SimpleNamespace(session_id=session_id, session_key=key)
++    entry = _current_entry(runner.session_store, ctx, cap, ("telegram", actor, actor, "dm", None))
++    return publish_original(ingress, original, event, entry=entry, scenario_sha256=original.fixture.scenario)
++
++
++def _current_publication(publication):
++    custody = publication._custody
++    store = custody.store()
++    cap = custody.owner
++    actor = cap.principal[3]
++    ctx = SimpleNamespace(session_id=publication.session_id, session_key=publication.session_key)
++    entry = _current_entry(store, ctx, cap, ("telegram", actor, actor, "dm", None))
++    return revalidate_original(publication, cap, entry=entry)
++
++
++def close_original_dispatch(ingress, record, event):
++    """Recheck the original publication and discard the retained raw SDK object."""
++    try:
++        original = _selected(event)
++        publication = getattr(record, "c06_publication", None)
++        if (type(original) is not _Original or original.record is not record
++                or original.ingress is not ingress or type(publication) is not PublishedOriginal
++                or (publication.scenario_sha256, publication.run_id) != ingress.claim.selected_c06
++                or (publication.update_id, publication.claim_sha256)
++                != (ingress._stamp(event), ingress.claim.claim_sha256)
++                or not _current_publication(publication)):
++            return False
++        del record.c06_native
++        return True
++    except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
++        return False
++
++
++def settled_publication(arm, *, deadline):
++    """Read the exact publication while the native receiver still owns closure."""
++    ingress = arm.ingress
++    selection = arm.claim.selected_c06
++    _require(type(ingress) is OrdinaryDMIngressOutcomes and ingress.claim is arm.claim
++             and ingress.window is arm.window and ingress.adapter._ordinary_dm_wire_arm is arm
++             and is_selected_plan(selection) and time_monotonic() < deadline <= arm.claim.expires_monotonic,
++             "c06_exact_bounded_native_arm_required")
++    wire = ingress._wire()
++    _require(wire is not None and wire["state"] == "LOCAL_WIRE_CLOSED"
++             and ingress._settlement_state() == "SETTLED" and len(wire["target_update_ids"]) == 1,
++             "c06_exact_settled_native_dispatch_required")
++    update, = wire["target_update_ids"]
++    record = ingress._built[update]
++    publication = getattr(record, "c06_publication", None)
++    _require(type(publication) is PublishedOriginal and not hasattr(record, "c06_native")
++             and record.settled and record.writer_task is None
++             and (publication.scenario_sha256, publication.run_id) == selection
++             and (publication.update_id, publication.claim_sha256) == (update, arm.claim.claim_sha256)
++             and _current_publication(publication) and time_monotonic() < deadline
++             and ingress._wire() == wire and ingress._settlement_state() == "SETTLED",
++             "c06_settled_publication_or_current_owner_changed")
++    return publication
+diff --git a/c06_owner_projection.py b/c06_owner_projection.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e61c5c53b63293854c26482d26fc1a56fce52afc
+--- /dev/null
++++ b/c06_owner_projection.py
+@@ -0,0 +1,234 @@
++"""Read-only C06 producer for the ordinary observer with borrowed native handles."""
++
++from contextlib import ExitStack
++from dataclasses import dataclass, field
++from hashlib import sha256
++import json
++from math import isfinite
++from pathlib import Path
++import time
++from types import SimpleNamespace
++
++from gateway.c06_active_predecessors import read_predecessors
++from gateway.session import SessionStore
++from gateway.upload_anchor import AnchorUnavailable, _current_entry, _read_snapshot
++from hermes_cli.friday_user_scope import UserScope, authority
++from hermes_state import SessionDB
++
++from c06_ingress import PublishedOriginal, validate_pair
++from c06_settlement import settle_native_text, verify_root_grade
++
++SCHEMA = "frw.c06.current-native-scope.v1"
++PHASES = {
++    "B": ("c06-context-b", "a3da899789ed331e75c38a51b7c0a63817abe9db4e21c6516676c994519d9146", ("A",)),
++    "RETURN": ("c06-context-return", "782f3c6f20c5d543169ba7baf956a188e9b4f3bab70d115cea2f02a2c045b5cf", ("A", "B")),
++}
++STAGES = frozenset(("READONLY", "NEW", "CURSOR_AUTHORITY", "PRE_INTENT_REVALIDATION", "WIRE"))
++BOOT = Path("/proc/sys/kernel/random/boot_id")
++
++
++def require(value, reason):
++    if not value:
++        raise AnchorUnavailable(reason)
++
++
++def encoded(value):
++    return (json.dumps(value, ensure_ascii=True, sort_keys=True, allow_nan=False) + "\n").encode()
++
++
++def digest(value):
++    return sha256(encoded(value)).hexdigest()
++
++
++def phase_for(run_id, scenario):
++    scenario_hash = digest(scenario)
++    for role, (name, expected, needed) in PHASES.items():
++        if run_id == name and scenario_hash == expected:
++            return role, scenario_hash, needed
++    raise AnchorUnavailable("c06_exact_phase_scenario_required")
++
++
++def lineage_for(cap, entry):
++    transport, profile, peer, tester = cap.principal
++    origin = entry.origin
++    require(transport == "telegram" and origin is not None and origin.platform.value == transport
++            and (origin.user_id, origin.chat_id, origin.chat_type, origin.thread_id, origin.profile)
++            == (tester, tester, "dm", None, cap.profile)
++            and entry.session_key == f"agent:{cap.profile}:telegram:dm:{tester}"
++            and entry.transport_profile == profile and cap.home == cap.authorization_home / "profiles" / cap.profile,
++            "c06_exact_native_owner_and_conversation_required")
++    conversation = {
++        "platform": "telegram", "chat_type": "dm", "profile": cap.profile,
++        "tester_id": int(tester), "peer_id": int(peer), "scope": str(cap.authorization_home / "sessions"),
++        "session_key": entry.session_key, "session_id": entry.session_id,
++    }
++    return {
++        "owner": str(cap.home), "chat": int(peer), "tester": int(tester),
++        "native_conversation": digest({"conversation": conversation,
++                                       "route_created_at": entry.created_at.isoformat(),
++                                       "transport_profile": profile}),
++        "workspace": str(cap.home / "workspace"),
++    }
++
++
++def read_doc(reference, read_reference):
++    raw = read_reference(reference)
++    value = json.loads(raw)
++    require(type(value) is dict and encoded(value) == raw, "c06_canonical_protected_document_required")
++    return value
++
++
++def data_versions(connections):
++    # SQLite data_version is comparable over time on the same connection.
++    return tuple(conn.execute("PRAGMA data_version").fetchone()[0] for conn in connections)
++
++
++@dataclass(frozen=True, slots=True)
++class BorrowedOwner:
++    """Only the existing protected process can supply these native objects."""
++
++    routing_store: object
++    routing_db: SessionDB
++    profile_db: SessionDB
++    r4_store: object
++    cap: UserScope
++    entry: object
++    publications: tuple
++    expected_scope_bytes: bytes
++    # Captured by the owner when it borrows the scope, not from the permit.
++    boot_id: str
++    # The registered receiver owner supplies these after strict retirement.
++    retired_publications: tuple | None = field(default=None, kw_only=True, repr=False)
++
++    def _current_handles(self):
++        store = self.routing_store
++        if self.retired_publications is None:
++            return store._routing_db is self.routing_db
++        if type(store) is not SessionStore or store._routing_home != self.cap.authorization_home:
++            return False
++        with store._db_handles_lock:
++            return (store._db_handles.get(Path(self.routing_db.db_path)) is self.routing_db
++                    and store._db_handles.get(Path(self.profile_db.db_path)) is self.profile_db)
++
++    def _predecessors(self, needed):
++        retired = self.retired_publications
++        if retired is None:
++            require(type(self.publications) is tuple
++                    and all(type(original) is PublishedOriginal for original in self.publications)
++                    and tuple(original.role for original in self.publications) == needed,
++                    "c06_original_native_publication_required")
++            return self.publications
++
++        from gateway.c06_receiver_control import RetiredPublication
++
++        require(self.publications == () and type(retired) is tuple
++                and all(type(item) is RetiredPublication for item in retired)
++                and tuple(item.role for item in retired) == needed,
++                "c06_exact_retired_predecessors_required")
++        return tuple(item.borrow(self.cap, entry=self.entry) for item in retired)
++
++    def _current(self, scope):
++        cap, entry = self.cap, self.entry
++        require(type(cap) is UserScope and type(self.routing_db) is SessionDB and type(self.profile_db) is SessionDB
++                and Path(self.routing_db.db_path) == cap.authorization_home / "state.db"
++                and Path(self.profile_db.db_path) == cap.home / "state.db"
++                and self._current_handles()
++                and not self.routing_db._db_file_was_replaced() and not self.profile_db._db_file_was_replaced()
++                and self.boot_id == BOOT.read_text().strip() and encoded(scope) == self.expected_scope_bytes,
++                "c06_native_application_or_protected_scope_changed")
++        cap.check()
++        current = _current_entry(
++            self.routing_store, SimpleNamespace(session_id=entry.session_id, session_key=entry.session_key),
++            cap, ("telegram", cap.principal[3], cap.principal[3], "dm", None),
++        )
++        require(current is entry and entry.active_turn_token is None and not entry.suspended
++                and not entry.expiry_finalized, "c06_native_route_incarnation_changed")
++        return lineage_for(cap, entry)
++
++    def check_current(self, scope, *, scenario, read_reference, load_module):
++        """Existing ordinary check; the producer will separately check C06 artifacts."""
++        with authority(self.cap.home):
++            self._current(scope)
++        return True
++
++    def require_finalizations(self, rows, needed, *, read_reference, in_time):
++        require(self.retired_publications is not None, "c06_exact_retired_predecessors_required")
++        publications = self._predecessors(needed)
++        for row, handle in zip(rows, self.retired_publications, strict=True):
++            in_time()
++            handle.require_finalization(row, lambda ref: read_doc(ref, read_reference))
++        in_time()
++        return publications
++
++    def c06_current_projection(self, scope, *, scenario, run_id, stage, authority_ref,
++                               read_reference, read_grant, load_module, deadline_monotonic=None):
++        """Issue only the existing phase projection, using the caller's held locks."""
++        if deadline_monotonic is not None:
++            require(type(deadline_monotonic) in (int, float) and isfinite(deadline_monotonic)
++                    and time.monotonic() < deadline_monotonic,
++                    "c06_current_projection_deadline_expired")
++        require(stage in STAGES, "c06_current_stage_refused")
++        phase, scenario_hash, needed = phase_for(run_id, scenario)
++        admission = read_doc(authority_ref, read_reference)
++        now = time.time()
++        require(admission.get("schema") == "frw.Root.ordinary-independent-history-admission.v1"
++                and admission.get("operator") == "Root" and admission.get("accepted") is True
++                and admission.get("boot_id") == self.boot_id
++                and admission.get("run_scenarios") == {run_id: scenario_hash}
++                and all(type(admission.get(key)) in (int, float) and isfinite(admission[key])
++                        for key in ("created_at", "expires_at"))
++                and admission["created_at"] <= now < admission["expires_at"],
++                "c06_exact_separate_current_admission_required")
++        rows, expected_lineage = read_predecessors(admission, phase, scenario_hash, read_grant)
++        proof_dir = Path(admission["c06"]["authority"]["path"]).parent
++        deadline = time.monotonic() + (admission["expires_at"] - now)
++        if deadline_monotonic is not None:
++            deadline = min(deadline, deadline_monotonic)
++
++        def in_time():
++            require(time.monotonic() < deadline, "c06_current_projection_deadline_expired")
++
++        with authority(self.cap.home), ExitStack() as resources:
++            lineage = self._current(scope)
++            require(lineage == expected_lineage, "c06_active_predecessor_lineage_changed")
++            in_time()
++            connections = []
++            for db in (self.routing_db, self.profile_db):
++                conn = resources.enter_context(
++                    _read_snapshot(db, deadline, lambda: int(time.monotonic() >= deadline)))
++                # Track commits across the separate existing F01 read snapshots.
++                conn.rollback()
++                connections.append(conn)
++            versions = data_versions(connections)
++            publications = self.require_finalizations(rows, needed, read_reference=read_reference, in_time=in_time)
++            if len(publications) == 2:
++                validate_pair(*publications, self.cap, entry=self.entry)
++            visible = {}
++            for original, expected in zip(publications, rows, strict=True):
++                in_time()
++                require(original.run_id == expected["binding"]["run_id"] != run_id,
++                        "c06_native_publication_or_future_run_changed")
++                settled = settle_native_text(
++                    self.r4_store, original.role, expected["binding"], original, self.profile_db,
++                    self.cap, routing_store=self.routing_store, routing_db=self.routing_db, entry=self.entry,
++                )
++                in_time()
++                require(settled["ingress"]["lineage"] == lineage,
++                        "c06_settled_native_lineage_changed")
++                verify_root_grade(proof_dir, expected["review"], expected["ingress"], settled)
++                visible[original.role] = dict(expected["ingress"])
++            in_time()
++            # No source/owner admission may drift while the other role is read.
++            require(all(before is after for before, after in
++                        zip(publications, self._predecessors(needed), strict=True)),
++                    "c06_retired_predecessor_changed_during_projection")
++            require(self._current(scope) == lineage,
++                    "c06_current_projection_closed_or_changed")
++            require(data_versions(connections) == versions,
++                    "c06_native_transcript_or_route_changed_during_projection")
++            in_time()
++            checked_at = time.time()
++            require(checked_at < admission["expires_at"], "c06_current_projection_closed_or_changed")
++        return {"schema": SCHEMA, "phase": phase, "run_id": run_id,
++                "scenario_sha256": scenario_hash, "lineage": lineage,
++                "checked_at": checked_at, "visible_sources": visible}
+diff --git a/c06_r4_custody.py b/c06_r4_custody.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..27ca2d92dfd1650fd2a6a47680882cfc68998ca6
+--- /dev/null
++++ b/c06_r4_custody.py
+@@ -0,0 +1,249 @@
++"""Owner-bound, read-only access to the privately installed R4 receipt reader."""
++
++from dataclasses import dataclass
++from functools import lru_cache
++from hashlib import sha256
++import json
++import os
++from pathlib import Path
++import re
++import stat
++from types import ModuleType, SimpleNamespace
++from typing import NamedTuple
++
++
++HEX = re.compile(r'[0-9a-f]{64}')
++_RUN_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
++_OPEN_PRIVATE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
++_OPEN_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
++_READER_DIR = 'c06-r4-reader-v1'
++_R4 = ('r4-reader.py', 1153121, '44577894f0669d305d2cd713048928c7ccbce265a40f1f6d09080b1fb62228bd')
++_F03 = ('f03-history-reader.py', 1148096, 'b901b7ac63e4ff0a6e279d2e13651ec03fb6d7de93866ae3cdf1b8d7ca85e9e1')
++_FIRST_SEND = ('f03-first-send-reader.py', 19459, '52d48a7cfc6162c137569728ec024e6d2633a0d7901ef92071b47cd764af63d7')
++
++
++class Refused(ValueError):
++    pass
++
++
++def require(condition, reason):
++    if not condition:
++        raise Refused(reason)
++
++
++def _file_identity(info):
++    return (info.st_dev, info.st_ino, info.st_uid, info.st_mode, info.st_nlink,
++            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
++
++
++def _private_file(info, size):
++    return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
++            and stat.S_IMODE(info.st_mode) in (0o400, 0o600) and info.st_size == size and size > 0)
++
++
++def _dir_identity(info):
++    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
++            and stat.S_IMODE(info.st_mode) == 0o700, 'C06_R4_PROTECTED_DIRECTORY_REQUIRED')
++    return info.st_dev, info.st_ino, info.st_uid, info.st_mode
++
++
++def _snapshot_directory(path):
++    require(path.is_absolute() and path.resolve(strict=True) == path and '..' not in path.parts,
++            'C06_R4_CANONICAL_DIRECTORY_REQUIRED')
++    return _dir_identity(path.lstat())
++
++
++def read_pin(path, sha, cap):
++    """Read old evidence through the existing exact owner, mode and byte fence."""
++    require(isinstance(sha, str) and HEX.fullmatch(sha), 'Expected SHA-256 missing')
++    require(path.is_absolute() and path.resolve(strict=True) == path, 'Unprotected snapshot path')
++    with os.fdopen(os.open(path, _OPEN_PRIVATE), 'rb') as source:
++        info = os.fstat(source.fileno())
++        require(_private_file(info, info.st_size) and stat.S_IMODE(info.st_mode) == 0o600
++                and info.st_size <= cap, 'Unprotected snapshot file')
++        identity = _file_identity(info)
++        raw = source.read(info.st_size + 1)
++        require(len(raw) == info.st_size and identity == _file_identity(os.fstat(source.fileno()))
++                == _file_identity(path.lstat()), 'Snapshot changed during read')
++    require(sha256(raw).hexdigest() == sha, 'Pinned snapshot SHA-256 mismatch')
++    return raw
++
++
++def pin(r4, path, sha, cap):
++    raw = read_pin(path, sha, cap)
++    value = json.loads(raw, object_pairs_hook=r4.unique_object)
++    require(r4.encoded(value) == raw, 'Canonical protected JSON required')
++    return value
++
++
++@dataclass(frozen=True, slots=True)
++class _InstalledReader:
++    root: Path
++    root_identity: tuple
++    reader_identity: tuple
++
++    def read(self, role):
++        name, size, digest = role
++        directory = self.root / _READER_DIR
++        root_fd = directory_fd = None
++        try:
++            require(_snapshot_directory(self.root) == self.root_identity, 'C06_R4_AUTHORITY_ROOT_CHANGED')
++            root_fd = os.open(self.root, _OPEN_DIRECTORY)
++            require(_dir_identity(os.fstat(root_fd)) == self.root_identity, 'C06_R4_AUTHORITY_ROOT_CHANGED')
++            directory_fd = os.open(_READER_DIR, _OPEN_DIRECTORY, dir_fd=root_fd)
++            require(_dir_identity(os.fstat(directory_fd)) == self.reader_identity,
++                    'C06_R4_INSTALLED_DIRECTORY_CHANGED')
++            with os.fdopen(os.open(name, _OPEN_PRIVATE, dir_fd=directory_fd), 'rb') as source:
++                info = os.fstat(source.fileno())
++                require(_private_file(info, size), 'C06_R4_INSTALLED_PRIVATE_FILE_REQUIRED')
++                identity = _file_identity(info)
++                data = source.read(size + 1)
++                require(len(data) == size and identity == _file_identity(os.fstat(source.fileno()))
++                        == _file_identity(os.stat(name, dir_fd=directory_fd, follow_symlinks=False)),
++                        'C06_R4_INSTALLED_FILE_CHANGED')
++            require(_snapshot_directory(self.root) == self.root_identity
++                    and _snapshot_directory(directory) == self.reader_identity
++                    and identity == _file_identity((directory / name).lstat()), 'C06_R4_INSTALLED_PATH_CHANGED')
++            require(sha256(data).hexdigest() == digest, 'C06_R4_INSTALLED_SOURCE_PIN_CHANGED')
++            return data, directory / name
++        except OSError as exc:
++            raise Refused(f'C06_R4_INSTALLED_ROLE_UNAVAILABLE:{name}') from exc
++        finally:
++            if directory_fd is not None:
++                os.close(directory_fd)
++            if root_fd is not None:
++                os.close(root_fd)
++
++
++@dataclass(frozen=True, slots=True)
++class _BorrowedStore:
++    root: Path
++    runs: Path
++    captures: Path
++    downloads: Path
++    _read: object
++    _reader: _InstalledReader
++
++    def run_path(self, name):
++        require(type(name) is str and _RUN_ID.fullmatch(name), 'Run ID requires 1-64 simple characters')
++        return self.runs / (name + '.json')
++
++    def get(self, path, default=None):
++        path = Path(path)
++        require(path.is_relative_to(self.root) and '..' not in path.parts, 'C06_R4_BORROWED_STORE_PATH_CHANGED')
++        return self._read(path, default)
++
++
++def bind_r4_store(store, *, authority_root):
++    """Bind the existing Gateway owner's Store and exact private installation.
++
++    The owner supplies its existing protected authority directory in-process.
++    This only reads directory identities and lends the Store's existing reader.
++    """
++    try:
++        authority_root = Path(authority_root)
++        root = Path(store.root)
++        paths = tuple(root / leaf for leaf in ('runs', 'updates', 'downloads'))
++        require(paths == (store.runs, store.captures, store.downloads) and callable(store.get)
++                and not (root.is_relative_to(authority_root) or authority_root.is_relative_to(root)),
++                'C06_R4_SEPARATE_OWNER_AND_BORROWED_STORE_REQUIRED')
++        for directory in (root, *paths):
++            _snapshot_directory(directory)
++        installed = _InstalledReader(authority_root, _snapshot_directory(authority_root),
++                                     _snapshot_directory(authority_root / _READER_DIR))
++        installed.read(_R4)
++        return _BorrowedStore(root, *paths, store.get, installed)
++    except (OSError, AttributeError, TypeError) as exc:
++        raise Refused('C06_PROTECTED_INSTALLED_R4_READER_UNBOUND') from exc
++
++
++@lru_cache(maxsize=3)
++def _compiled(raw, path):
++    return compile(raw, path, 'exec')
++
++
++def _module(name, raw, real_path, *, evidence_path=None):
++    module = ModuleType(name)
++    module.__file__ = str(real_path if evidence_path is None else evidence_path)
++    exec(_compiled(raw, str(real_path)), vars(module))
++    return module
++
++
++def _first_send_reader(installed, history, history_path):
++    ref = history._F03_PHASE_SOURCE
++    require((ref['bytes'], ref['sha256']) == _FIRST_SEND[1:], 'C06_R4_FIRST_SEND_CONTRACT_CHANGED')
++    raw, path = installed.read(_FIRST_SEND)
++    original = Path(ref['path'])
++    # Preserve the archived implementation and consumer references while
++    # reading their exact source bytes through the current protected install.
++    phase = _module('_c06_exact_f03_first_send_reader', raw, path, evidence_path=original)
++    read_historical = phase.read
++
++    source_aliases = {original: _FIRST_SEND, history_path: _F03}
++
++    def read(selected, *, limit=24 * 1024**2):
++        source_role = source_aliases.get(Path(selected))
++        if source_role is None:
++            return read_historical(selected, limit=limit)
++        require(limit >= source_role[1], 'C06_R4_HISTORICAL_SOURCE_READ_LIMIT')
++        return installed.read(source_role)[0]
++
++    phase.read = read
++    return SimpleNamespace(effective_deadline=phase.effective_deadline)
++
++
++def _history_reader(installed, ref):
++    require((ref['bytes'], ref['sha256']) == _F03[1:], 'C06_R4_HISTORY_CONTRACT_CHANGED')
++    raw, path = installed.read(_F03)
++    history = _module('_c06_exact_f03_history_reader', raw, path)
++    history._f03_phase_module = lambda: _first_send_reader(installed, history, Path(ref['path']))
++    return SimpleNamespace(Runner=history.Runner)
++
++
++def _no_effect(*args, **kwargs):
++    raise Refused('C06_R4_READER_HAS_NO_EFFECT_AUTHORITY')
++
++
++class _ReceiptRunner(NamedTuple):
++    load: object
++    verify_reply_custody: object
++    receive_inventory: object
++    cursor_offsets: object
++
++
++class _ReceiptReader(NamedTuple):
++    Runner: object
++    Refused: type
++    MAX_JSON: int
++    TESTER: int
++    USERNAME: str
++    encoded: object
++    digest: object
++    unique_object: object
++    validate_scenario: object
++    read_document_input: object
++    document_multipart: object
++    input_method: object
++    valid_input_ack: object
++
++
++def load_r4(store):
++    """Open only the installed pins and expose the exact R4 receipt surface."""
++    require(type(store) is _BorrowedStore, 'C06_PROTECTED_INSTALLED_R4_READER_UNBOUND')
++    installed = store._reader
++    raw, path = installed.read(_R4)
++    r4 = _module('_c06_exact_r4_receipt_reader', raw, path)
++    r4._f03_history_source_module = lambda: _history_reader(installed, r4._F03_HISTORY_SOURCE)
++
++    def runner(selected, api):
++        require(selected is store and api is None, 'C06_R4_READONLY_EXACT_STORE_REQUIRED')
++        target = r4.Runner(selected, None, sleep=_no_effect)
++        for name in ('guard', 'send', '_send', 'save', 'capture', 'capture_reply',
++                     'process', 'commit_receive', 'keep_ack', 'terminal_drain',
++                     'poll_updates', 'observe', 'prepared_first_send'):
++            setattr(target, name, _no_effect)
++        return _ReceiptRunner(target.load, target.verify_reply_custody, target.receive_inventory, target.cursor_offsets)
++
++    return _ReceiptReader(runner, r4.Refused, r4.MAX_JSON, r4.TESTER, r4.USERNAME, r4.encoded, r4.digest,
++                          r4.unique_object, r4.validate_scenario, r4.read_document_input, r4.document_multipart,
++                          r4.input_method, r4.valid_input_ack)
+diff --git a/c06_settlement.py b/c06_settlement.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..891ddc97848f6b09cd73a6039ee2314375f524e3
+--- /dev/null
++++ b/c06_settlement.py
+@@ -0,0 +1,201 @@
++"""Reconcile one C06 native receiver publication with independently retained R4 text.
++
++The owner supplies the selected original publication and borrowed native
++handles, holds the R4 consumer fence and obtains grade pins through its
++existing protected Root path. This module only reads and joins evidence.
++"""
++
++from datetime import datetime
++import json
++import os
++from pathlib import Path
++import re
++import stat
++import time
++
++from c06_ingress import PublishedOriginal, is_selected_plan, revalidate_original
++from c06_r4_custody import HEX, load_r4, pin, read_pin, require
++from gateway.d02_receiver_control import _private_doc
++from hermes_cli.friday_dashboard_owner import read_owned
++from hermes_cli.friday_user_scope import UserScope, authority
++from native_publisher import settle_receipt
++
++REVIEW_SCHEMA = 'frw.c06.independent-phase-review.v1'
++REF_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,190}\.json')
++
++
++def _reference_path(reference, parent):
++    require(type(reference) is dict and set(reference) == {'path', 'sha256'}
++            and type(reference['path']) is str and type(reference['sha256']) is str
++            and HEX.fullmatch(reference['sha256']),
++            'Exact C06 protected JSON reference required')
++    path = Path(reference['path'])
++    require(path.is_absolute() and str(path) == reference['path'] and REF_NAME.fullmatch(path.name)
++            and path.parent == parent,
++            'C06 authority, ingress and review need separate named files under one protected directory')
++    return path
++
++
++def _outbound(r4, plan):
++    # Recheck the physical sender preimage encoded in the historical scenario.
++    step, = plan['steps']
++    digest = r4.digest(r4.encoded(plan))
++    upload = step['input']
++    payload = r4.read_document_input(upload, lambda: None)
++    body, mime = r4.document_multipart(upload, payload)
++    return dict(method=r4.input_method(upload), chat_id=r4.USERNAME, input_sha256=upload['sha256'],
++                input_bytes=len(payload), input_stat=upload['stat'], filename=upload['filename'],
++                mime_type=upload['mime_type'], caption=upload['caption'], content_type=mime,
++                body_sha256=r4.digest(body), body_bytes=len(body), scenario_sha256=digest)
++
++
++def _completed_text(r4, store, binding):
++    fields = {'run_id', 'run_sha256', 'scenario_sha256', 'sent_message_id',
++              'terminal_sha256', 'text_receipt_sha256'}
++    require(type(binding) is dict and set(binding) == fields and
++            is_selected_plan((binding['scenario_sha256'], binding['run_id'])) and
++            type(binding['sent_message_id']) is int and binding['sent_message_id'] > 0 and
++            all(type(binding[k]) is str and HEX.fullmatch(binding[k])
++                for k in fields - {'run_id', 'sent_message_id'}),
++            'Exact Run, ACK, terminal and text receipt pins required')
++    run_path = store.run_path(binding['run_id'])
++    run = pin(r4, run_path, binding['run_sha256'], r4.MAX_JSON)
++    plan = run['scenario']
++    require(r4.validate_scenario(plan) == plan, 'Exact normalized C06 plan required')
++    runner = r4.Runner(store, None)
++    require(run == runner.load(binding['run_id']) and type(run['step']) is int and run['step'] == 0
++            and run['id'] == binding['run_id']
++            and run['scenario_sha256'] == binding['scenario_sha256'] == r4.digest(r4.encoded(plan)),
++            'Exact separate predecessor run and scenario differ')
++    sent = binding['sent_message_id']
++    require(run['status'] == 'EVIDENCE_READY' and run['capture_window_complete'] is True
++            and run['send_state'] == 'sent' and type(run['send_attempts']) is int
++            and run['send_attempts'] == 1 and run['sent_message_id'] == sent and run['sent_ids'] == [sent]
++            and run['reply_outcome'] == 'RECEIVED_UNGRADED'
++            and run['artifact_acceptance'] == 'NOT_VERIFIED'
++            and run.get('product_cancelled') is False
++            and run['acceptance'] == 'NOT_ESTABLISHED' and run['operator_corroboration_required'] is True,
++            'Completed single-send R4 predecessor required')
++    created = datetime.fromisoformat(run['created_at'])
++    observed = datetime.fromisoformat(run['observed_at'])
++    require(created.tzinfo is not None and observed.tzinfo is not None and
++            abs(run['deadline'] - created.timestamp() - 300) <= 1 and
++            created.timestamp() <= run['sent_at'] and run['capture_until'] == run['sent_at'] + 180
++            and run['capture_until'] <= observed.timestamp() <= run['deadline'],
++            'Original 300-second deadline and complete 180-second capture required')
++    runner.verify_reply_custody(run)
++    captures, _, drain = runner.receive_inventory(run, terminal=True)
++    terminal = drain.get('complete')
++    require(terminal is not None and binding['terminal_sha256'] == run['receive_head']['sha256']
++            == r4.digest(r4.encoded(terminal))
++            and run['capture_until'] <= terminal['completed_at'] <= observed.timestamp(),
++            'Exact terminal receipt within original capture required')
++    require(run['request_metadata'] == _outbound(r4, plan), 'Exact outbound source bytes differ')
++    ack_ref = run['sent_api_ack_reference']
++    ack_raw = read_pin(store.root / ack_ref['basename'], ack_ref['sha256'], r4.MAX_JSON)
++    ack = json.loads(ack_raw, object_pairs_hook=r4.unique_object)
++    if ack_ref['representation'] == 'botapi-wire-envelope-json':
++        ack = ack['result']
++    require(ack.get('from', {}).get('id') == r4.TESTER and ack['from'].get('is_bot') is True,
++            'Tester send ACK sender differs')
++    step, = plan['steps']
++    if 'input' in step:
++        source = step['input']
++        require(ack.get('caption') == source['caption'] and
++                r4.valid_input_ack(ack, source, require_document_size=True),
++                'Exact source-carrying ACK differs')
++    else:
++        require(ack.get('text') == step['request'], 'Exact text request ACK differs')
++    require(len(run['observations']) == 1 and run['observations'][0]['kind'] == 'reply_text',
++            'Exactly one committed predecessor text receipt required')
++    row, = run['observations']
++    require(row['receipt_sha256'] == binding['text_receipt_sha256'], 'Exact native text receipt differs')
++    receipt = pin(r4, Path(row['receipt_path']), binding['text_receipt_sha256'], r4.MAX_JSON)
++    event = captures[row['update_id']]
++    message = pin(r4, store.captures / (str(row['update_id']) + '.json'),
++                  event['raw_update']['sha256'], r4.MAX_JSON)['message']
++    require(receipt['text'] == message['text'] and
++            message['reply_to_message']['message_id'] == sent and sent < message['message_id'] and
++            type(message['chat']['id']) is int and message['chat']['id'] == ack['chat']['id'] and
++            message['chat']['type'] == 'private' and
++            run['sent_date'] <= message['date'] <= run['capture_until'] and
++            run['sent_at'] <= event['arrived_at'] < run['capture_until'],
++            'Exact same-chat in-window reply target differs')
++    require(pin(r4, run_path, binding['run_sha256'], r4.MAX_JSON) == run, 'Predecessor run changed during read')
++    return dict(run=run, row=row, text=receipt['text'], ack=ack, terminal=terminal)
++
++
++def settle_native_text(store, role, binding, publication, profile_db, cap, *,
++                       routing_store, routing_db, entry):
++    """Return the compact C06 ingress and exact physical F01 witness for one run."""
++    require(role in ('A', 'B') and type(binding) is dict
++            and binding.get('run_id') == f'c06-context-{role.lower()}'
++            and is_selected_plan((binding.get('scenario_sha256'), binding.get('run_id'))),
++            'Exact source-carrying C06 role and run required')
++    require(type(publication) is PublishedOriginal and type(cap) is UserScope
++            and publication.role == role and publication.run_id == binding['run_id']
++            and publication.scenario_sha256 == binding['scenario_sha256'],
++            'C06 original publication belongs to a different role or run')
++    r4 = load_r4(store)
++    try:
++        evidence = _completed_text(r4, store, binding)
++    except r4.Refused as exc:
++        raise ValueError('C06 protected R4 receipt refused') from exc
++    run, observation = evidence['run'], evidence['row']
++    require(run['deadline'] <= time.time(), 'Original C06 predecessor deadline remains open')
++
++    with authority(cap.home):
++        cap.check()
++        require(revalidate_original(publication, cap, entry=entry) is True,
++                'Original C06 workspace publication unavailable')
++        native, visible = settle_receipt(routing_store, routing_db, profile_db, cap,
++                                         publication, run, evidence['ack'])
++        require(revalidate_original(publication, cap, entry=entry) is True,
++                'C06 workspace publication changed during settlement')
++        cap.check()
++
++    conversation = native['conversation']
++    require(visible == dict(conversation=conversation,
++                            retained_input_sha256=publication.input_sha256,
++                            no_intervening_session_reset=True),
++            'Current C06 conversation no longer holds the exact original source')
++    lineage = dict(owner=str(cap.home), chat=conversation['peer_id'], tester=conversation['tester_id'],
++                   native_conversation=r4.digest(r4.encoded(dict(
++                       conversation=conversation, route_created_at=publication.route_created_at,
++                       transport_profile=publication.principal[1]))),
++                   workspace=str(cap.home / 'workspace'))
++    ingress = dict(role=role, lineage=lineage, native_source_id=publication.file_unique_id,
++                   run_sha256=binding['run_sha256'], run_id=run['id'],
++                   source_sha256=publication.input_sha256, source_bytes=publication.input_size_bytes,
++                   sent_message_id=run['sent_message_id'])
++    return dict(ingress=ingress, native_receipt=native, binding=dict(binding),
++                text_sha256=observation['text_sha256'])
++
++
++def verify_root_grade(proof_dir, trusted_grade_ref, ingress_ref, settlement):
++    """Check an independently Root-pinned semantic record for the exact settled reply.
++
++    The reference comes from the trusted Root selection, outside the native
++    event and the incoming request. The function never creates a grade.
++    """
++    directory = Path(proof_dir)
++    info = directory.lstat()
++    require(directory.is_absolute() and directory.resolve(strict=True) == directory
++            and stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
++            and stat.S_IMODE(info.st_mode) == 0o700,
++            'Exact protected C06 proof directory required')
++    grade_path = _reference_path(trusted_grade_ref, directory)
++    ingress_path = _reference_path(ingress_ref, directory)
++    require(grade_path != ingress_path, 'Independent C06 grade must use a distinct named file')
++    ingress = settlement['ingress']
++    require(_private_doc(ingress_ref, read_owned, sized=False, limit=16384)[0] == ingress,
++            'C06 grade references a different original ingress')
++    binding = settlement['binding']
++    grade = _private_doc(trusted_grade_ref, read_owned, sized=False, limit=16384)[0]
++    expected = dict(schema=REVIEW_SCHEMA, role=ingress['role'], verdict='PASS',
++                    lineage=ingress['lineage'], run_sha256=binding['run_sha256'],
++                    ingress=ingress_ref, terminal_sha256=binding['terminal_sha256'],
++                    text_receipt_sha256=binding['text_receipt_sha256'],
++                    text_sha256=settlement['text_sha256'])
++    require(grade == expected, 'Independent C06 semantic PASS differs from the exact terminal receipt')
++    return grade
+diff --git a/gateway/c06_active_predecessors.py b/gateway/c06_active_predecessors.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..104a108643b6ac48a7b455ef909b13bc59c17789
+--- /dev/null
++++ b/gateway/c06_active_predecessors.py
+@@ -0,0 +1,47 @@
++"""The versioned active C06 predecessor grant used by the Gateway."""
++
++from c06_finalization_custody import PHASES
++
++from .d02_receiver_control import _hex, require
++
++
++SCHEMA = "frw.c06.active-finalized-predecessor.v2"
++ROLES = {"B": ("A",), "RETURN": ("A", "B")}
++ROW_FIELDS = {"label", "binding", "ingress", "review", "receiver_finalization"}
++BINDING_FIELDS = {"run_id", "run_sha256", "scenario_sha256", "sent_message_id",
++                  "terminal_sha256", "text_receipt_sha256"}
++
++
++def read_predecessors(admission, phase, scenario_sha256, read_grant):
++    require(admission.get("qualification_only") is False and phase in ROLES,
++            "c06_active_predecessor_admission_required")
++    held = admission.get("c06")
++    require(type(held) is dict and set(held) == {"phase", "authority", "predecessors"}
++            and held["phase"] == phase and type(held["predecessors"]) is list,
++            "c06_active_predecessor_grant_required")
++    rows = held["predecessors"]
++    require(all(type(row) is dict and set(row) == ROW_FIELDS
++                and type(row["receiver_finalization"]) is dict
++                and set(row["receiver_finalization"]) == {"path", "bytes", "sha256"} for row in rows)
++            and tuple(row["label"] for row in rows) == ROLES[phase],
++            "c06_active_finalized_predecessor_rows_required")
++    history = admission.get("history")
++    require(type(history) is dict, "c06_active_finalized_history_required")
++    for row in rows:
++        binding, finalization = row["binding"], row["receiver_finalization"]
++        require(type(binding) is dict and set(binding) == BINDING_FIELDS and type(binding["run_id"]) is str
++                and PHASES.get(binding["run_id"]) == (row["label"], binding["scenario_sha256"])
++                and type(binding["sent_message_id"]) is int and binding["sent_message_id"] > 0
++                and all(_hex(binding[key]) for key in ("run_sha256", "terminal_sha256", "text_receipt_sha256"))
++                and type(history.get(binding["run_id"])) is dict
++                and history[binding["run_id"]].get("sha256") == binding["run_sha256"],
++                "c06_active_finalized_history_required")
++        require(type(finalization["path"]) is str and type(finalization["bytes"]) is int
++                and 0 < finalization["bytes"] <= 1024 * 1024 and _hex(finalization["sha256"]),
++                "c06_active_finalized_predecessor_rows_required")
++    grant = read_grant(held["authority"])
++    require(type(grant) is dict and set(grant) == {"schema", "phase", "scenario_sha256", "lineage", "predecessors"}
++            and grant["schema"] == SCHEMA and grant["phase"] == phase
++            and grant["scenario_sha256"] == scenario_sha256 and grant["predecessors"] == rows,
++            "c06_active_finalized_grant_v2_required")
++    return rows, grant["lineage"]
+diff --git a/gateway/c06_current_authority.py b/gateway/c06_current_authority.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e76894b77ab9c002631892bb2408e3b1dcd1f38a
+--- /dev/null
++++ b/gateway/c06_current_authority.py
+@@ -0,0 +1,252 @@
++"""Gateway fence for the existing read-only C06 current observer."""
++
++from dataclasses import dataclass, field
++from hashlib import sha256
++import os
++from pathlib import Path
++import stat
++import time
++from types import MappingProxyType
++
++from .c06_active_predecessors import ROLES, read_predecessors
++from .d02_receiver_control import _encode, _held_slot, _hex, _kernel, _now, _private_bytes, require
++
++
++_MODE = 'c06-current'
++_FIELDS = {'mode', 'kind', 'proof_ref', 'contract_ref', 'prepare_ref', 'authority_ref',
++           'run_id', 'stage', 'deadline_monotonic'}
++_STAGES = {'READONLY', 'NEW', 'CURSOR_AUTHORITY', 'PRE_INTENT_REVALIDATION', 'WIRE'}
++_PHASES = {
++    'c06-context-b': ('B', 'a3da899789ed331e75c38a51b7c0a63817abe9db4e21c6516676c994519d9146', ('A',)),
++    'c06-context-return': ('RETURN', '782f3c6f20c5d543169ba7baf956a188e9b4f3bab70d115cea2f02a2c045b5cf', ('A', 'B')),
++}
++_TIMING = dict(operation_seconds=300, reply_window_seconds=180, ack_seconds=10,
++               reserve_seconds=5, outer_seconds=600)
++_DECISIONS = {'eligible_new_effect', 'old_effects_and_clocks_preserved',
++              'profile_chat_and_workspace_checked', 'privacy_and_current_stop_assessed'}
++_METADATA_SHA = '24215d1fca8d59e4109e5934464cf4cfbcf6d2dd48d33b7d44c3fc54377de47f'
++_SCOPE_SCHEMA = 'frw.Root.C06.gateway-current-observer.v1'
++_PRIVATE_LIMIT = 1024 * 1024
++_QUERY_SECONDS = 2
++
++
++@dataclass(frozen=True, slots=True)
++class CurrentOwnerPins:
++    """Exact Root selection supplied by the trusted in-process observer owner."""
++
++    contract_ref: dict
++    prepare_ref: dict
++    authority_ref: dict
++    slot_owner: dict
++
++    def __post_init__(self):
++        for name in ('contract_ref', 'prepare_ref', 'authority_ref', 'slot_owner'):
++            value = getattr(self, name)
++            require(type(value) is dict and all(type(key) is str and type(item) in (str, int)
++                    for key, item in value.items()), 'c06_current_registration_shape')
++            object.__setattr__(self, name, MappingProxyType(value.copy()))
++
++
++@dataclass(frozen=True, slots=True)
++class CurrentOwner:
++    kind: str
++    run_id: str
++    stage: str
++    scenario: dict
++    scope_ref: dict
++    authority_ref: dict
++    scope: dict
++    authority: dict
++    proof: dict
++    prepare: dict
++    contract: dict
++    consumer: dict
++    proof_ref: dict
++    cursor: dict
++    lock_identities: tuple
++    deadline: float = field(compare=False)
++
++
++def _reference_path(reference, root=None, *, limit=_PRIVATE_LIMIT):
++    require(type(reference) is dict and set(reference) == {'path', 'bytes', 'sha256'}
++            and type(reference['path']) is str and type(reference['bytes']) is int
++            and 0 < reference['bytes'] <= limit and _hex(reference['sha256']),
++            'c06_current_private_reference')
++    path = Path(reference['path'])
++    require(path.is_absolute() and str(path) == reference['path'] and '..' not in path.parts
++            and (root is None or path.is_relative_to(root)) and path.resolve(strict=True) == path,
++            'c06_current_private_reference_path')
++    return path
++
++
++def read_current_reference(controller, reference, *, root=None, limit=_PRIVATE_LIMIT):
++    """Read an exact private reference through the existing receiver custody check."""
++    path = _reference_path(reference, root, limit=limit)
++    raw = _private_bytes(path, controller.read_owned, limit)
++    require(len(raw) == reference['bytes'] and sha256(raw).hexdigest() == reference['sha256'],
++            'c06_current_private_reference_changed')
++    return raw
++
++
++def _lock_identity(path):
++    info = path.lstat()
++    return dict(device=info.st_dev, inode=info.st_ino, uid=info.st_uid,
++                mode=stat.S_IMODE(info.st_mode), nlink=info.st_nlink)
++
++
++def _locks(controller, owner, slot_owner):
++    identities = []
++    for path, holder in ((controller.slot, slot_owner), (controller.store / 'consumer.lock', owner),
++                         (controller.store / 'tester-token', owner)):
++        identity = _lock_identity(path)
++        _held_slot(path, identity, holder)
++        identities.append(identity)
++    require(not os.path.lexists(controller.store / 'observer-stop.json'), 'c06_current_observer_stopped')
++    return tuple(identities)
++
++
++def _process_parent(pid):
++    fields = (Path('/proc') / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()
++    return int(fields[1])
++
++
++def _operation_end(document, proof, scenario_sha, run_id, stage, now):
++    # Same finite-operation record and 300/180/10/5/600 clock as ordinary_current.
++    if proof['role'] == 'preclock':
++        require(stage == 'READONLY' and proof['clock'] is None and proof['once_invocation'] is None,
++                'c06_current_preclock_readonly_only')
++        return None
++    clock = document(proof['clock'])
++    invocation = document(proof['once_invocation'])
++    start, end = clock['started_monotonic'], clock['deadline_monotonic']
++    require(clock.get('schema') == 'frw.Root.F07.finite-operation-clock.v1'
++            and clock.get('status') == 'ROOT_BOUND_FUTURE_OPERATION'
++            and clock.get('run_id') == run_id and clock.get('scenario_sha256') == scenario_sha
++            and clock.get('timing') == _TIMING and clock.get('old_effects_clocks_preserved') is True
++            and _now(start) and _now(end) and 0 <= start <= now and end == start + _TIMING['outer_seconds'],
++            'c06_current_operation_clock_changed')
++    require(invocation.get('schema') == 'frw.Root.F07.one-ordinary-consumer-invocation.v1'
++            and invocation.get('run_id') == run_id and invocation.get('clock') == proof['clock']
++            and invocation.get('consumer') == proof['lock_owners']['consumer']
++            and invocation.get('no_retry') is True, 'c06_current_once_invocation_changed')
++    return end
++
++
++def _check_admission(authority, gateway, run_id, scenario_sha, wall):
++    actual = authority['gateway']
++    start, end = authority['created_at'], authority['expires_at']
++    require(authority.get('schema') == 'frw.Root.ordinary-independent-history-admission.v1'
++            and authority.get('operator') == 'Root' and authority.get('accepted') is True
++            and authority.get('run_scenarios') == {run_id: scenario_sha}
++            and type(authority.get('history')) is dict and bool(authority['history'])
++            and run_id not in authority['history']
++            and authority.get('new_independent_inputs_only') is True and authority.get('no_old_task_replay') is True
++            and all(authority.get(key) is False for key in ('new_trial_for_historical_task',
++                    'old_rows_modified', 'unknown_effects_resolved', 'product_or_B00_acceptance'))
++            and authority['boot_id'] == gateway['boot_id'] and type(actual['pid']) is int
++            and actual['pid'] == gateway['pid'] and str(actual['start_time']) == str(gateway['start_time'])
++            and _now(start) and _now(end) and start <= wall < end,
++            'c06_current_exact_separate_admission_required')
++
++
++def verify_current_owner(controller, *, params, peer, contract_observer_sha256, authority_root,
++                         socket_path, owner_pins, expected=None):
++    """Join the trusted Root selection, actual socket peer and its current named locks."""
++    mono, wall = time.monotonic(), time.time()
++    require(type(params) is dict and set(params) == _FIELDS and params['mode'] == _MODE
++            and params['kind'] in ('check', 'projection') and type(params['stage']) is str
++            and params['stage'] in _STAGES and type(params['run_id']) is str and params['run_id'] in _PHASES,
++            'c06_current_exact_parameters')
++    deadline = params['deadline_monotonic']
++    require(_now(deadline) and mono < deadline <= mono + _QUERY_SECONDS, 'c06_current_query_deadline')
++    require(type(peer) is tuple and len(peer) == 3 and all(type(value) is int for value in peer)
++            and peer[0] > 0 and peer[1] == os.getuid(), 'c06_current_kernel_socket_peer_required')
++    require(type(owner_pins) is CurrentOwnerPins
++            and params['contract_ref'] == owner_pins.contract_ref and params['prepare_ref'] == owner_pins.prepare_ref
++            and params['authority_ref'] == owner_pins.authority_ref and _hex(contract_observer_sha256),
++            'c06_current_exact_registered_owner_required')
++    root = Path(authority_root)
++    info = root.lstat()
++    require(root.is_absolute() and root.resolve(strict=True) == root and stat.S_ISDIR(info.st_mode)
++            and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700
++            and all(not root.is_relative_to(base) and not base.is_relative_to(root)
++                    for base in (controller.home, controller.store)),
++            'c06_current_protected_root_required')
++    run_id, stage = params['run_id'], params['stage']
++    phase, scenario_sha, predecessors = _PHASES[run_id]
++    proof_ref, contract_ref, prepare_ref, authority_ref = (params[key] for key in
++            ('proof_ref', 'contract_ref', 'prepare_ref', 'authority_ref'))
++
++    def document(reference):
++        _reference_path(reference, root)
++        return controller.doc(reference, limit=_PRIVATE_LIMIT)[0]
++
++    owner = _kernel(peer[0])
++    slot_owner = dict(owner_pins.slot_owner)
++    lock_identities = _locks(controller, owner, slot_owner)
++    proof, contract, prepare, authority = map(document, (proof_ref, contract_ref, prepare_ref, authority_ref))
++    for item, schema in ((proof, 'frw.Root.ordinary-current-proof.v1'),
++                         (contract, 'frw.Root.ordinary-current-contract.v1'),
++                         (prepare, 'frw.Root.ordinary-current-prepare.v1')):
++        require(item.get('schema') == schema and item.get('run_id') == run_id
++                and item.get('scenario_sha256') == scenario_sha, 'c06_current_run_scenario_changed')
++    require(proof['contract'] == contract_ref and proof['prepare'] == prepare_ref
++            and contract['authority'] == authority_ref and contract['operator'] == 'Root'
++            and type(contract['decisions']) is dict and all(contract['decisions'].get(k) is True for k in _DECISIONS)
++            and Path(contract['cursor']['path']) == controller.store / 'cursor.json',
++            'c06_current_contract_changed')
++    cursor_ref = contract['cursor']
++    _reference_path(cursor_ref, controller.store)
++    cursor = controller.doc(cursor_ref, name='cursor.json', limit=_PRIVATE_LIMIT)[0]
++    require(type(cursor.get('offset')) is int and cursor['offset'] >= 0, 'c06_current_cursor_changed')
++    require(prepare['timing'] == _TIMING and prepare['metadata_helper']['sha256'] == _METADATA_SHA
++            and prepare['current_observer']['sha256'] == contract_observer_sha256
++            and prepare['c06_scenario']['sha256'] == scenario_sha, 'c06_current_prepare_changed')
++    _reference_path(prepare['metadata_helper'])
++    read_current_reference(controller, prepare['current_observer'])
++    scenario = document(prepare['c06_scenario'])
++    require(scenario['deadline_seconds'] == _TIMING['operation_seconds'] and len(scenario['steps']) == 1
++            and scenario['steps'][0]['observe']['window_seconds'] == _TIMING['reply_window_seconds']
++            and sha256(_encode(scenario)).hexdigest() == scenario_sha, 'c06_current_exact_scenario_changed')
++
++    scope_ref = contract['scope']
++    scope = document(scope_ref)
++    gateway = dict(_kernel(os.getpid()), uid=os.getuid(), socket=str(socket_path))
++    require(set(scope) == {'schema', 'operator', 'run_id', 'scenario_sha256', 'authority', 'gateway', 'expires_monotonic'}
++            and scope['schema'] == _SCOPE_SCHEMA and scope['operator'] == 'Root'
++            and scope['run_id'] == run_id and scope['scenario_sha256'] == scenario_sha
++            and scope['authority'] == authority_ref and scope['gateway'] == gateway
++            and _now(scope['expires_monotonic']) and mono < scope['expires_monotonic'],
++            'c06_current_exact_gateway_scope_required')
++    _check_admission(authority, gateway, run_id, scenario_sha, wall)
++
++    require(predecessors == ROLES[phase], 'c06_current_exact_predecessor_set_required')
++    read_predecessors(authority, phase, scenario_sha, controller.read_predecessor_grant)
++
++    expected_locks = {'slot': slot_owner, 'consumer': owner, 'credential': owner}
++    role = proof['role']
++    require(role in ('preclock', 'owned_consumer') and proof['boot_id'] == owner['boot_id']
++            and proof['lock_owners'] == expected_locks and (slot_owner == owner if role == 'preclock'
++                else slot_owner['pid'] == _process_parent(owner['pid'])), 'c06_current_peer_owner_changed')
++    start_wall, end_wall, start_mono, end_mono = (proof[key] for key in
++            ('created_at', 'expires_at', 'created_monotonic', 'expires_monotonic'))
++    require(all(_now(value) for value in (start_wall, end_wall, start_mono, end_mono))
++            and 0 <= start_wall <= wall < end_wall <= start_wall + 120
++            and 0 <= start_mono <= mono < end_mono <= start_mono + 120, 'c06_current_proof_expired')
++    end = _operation_end(document, proof, scenario_sha, run_id, stage, mono)
++    deadline = min(deadline, scope['expires_monotonic'], end_mono,
++                   mono + min(end_wall, authority['expires_at']) - wall)
++    if end is not None:
++        required_time = (_TIMING['operation_seconds'] if stage in {'NEW', 'READONLY'} else
++                         _TIMING['reply_window_seconds'] + _TIMING['ack_seconds']) + _TIMING['reserve_seconds']
++        deadline = min(deadline, end - required_time)
++    require(_locks(controller, owner, slot_owner) == lock_identities, 'c06_current_lock_identity_changed')
++    require(time.monotonic() < deadline and time.time() < min(end_wall, authority['expires_at']),
++            'c06_current_bounded_window_expired')
++    require(role == 'preclock' or slot_owner['pid'] == _process_parent(owner['pid']),
++            'c06_current_peer_parent_changed')
++    result = CurrentOwner(params['kind'], run_id, stage, scenario, scope_ref, authority_ref, scope,
++                          authority, proof, prepare, contract, owner, proof_ref, cursor, lock_identities, deadline)
++    require(expected is None or (result == expected and time.monotonic() < expected.deadline),
++            'c06_current_owner_changed_during_query')
++    return result
+diff --git a/gateway/c06_current_provider.py b/gateway/c06_current_provider.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..86957e492393fa89ad088eaec6f34613e2e6c1f7
+--- /dev/null
++++ b/gateway/c06_current_provider.py
+@@ -0,0 +1,202 @@
++"""One process-owned C06 receiver sink and existing read-only control mode."""
++
++import asyncio
++import concurrent.futures
++from math import isfinite
++from collections.abc import Mapping
++from contextlib import contextmanager
++from pathlib import Path
++import os
++import stat
++import time
++from types import MappingProxyType
++
++from c06_ingress import PublishedOriginal, validate_pair
++from c06_owner_projection import BorrowedOwner, encoded, lineage_for, phase_for
++from .c06_active_predecessors import read_predecessors
++from .c06_current_authority import CurrentOwnerPins, read_current_reference, verify_current_owner
++from .c06_receiver_control import RetiredPublication
++from .d02_receiver_control import _kernel, _private_doc, require
++from .session import SessionStore
++
++_C06_RUNS = frozenset({"c06-context-b", "c06-context-return"})
++
++
++class C06NativeOwner:
++    """Keep only the two exact retired originals in the existing Gateway process."""
++
++    def __init__(self, runner, loop, *, authority_root, socket_path, contract_observer_sha256,
++                 r4_store, slot, read_owned, owner_pins):
++        require(type(runner.session_store) is SessionStore, "c06_exact_native_session_store_required")
++        if isinstance(owner_pins, Mapping):
++            require(set(owner_pins) <= _C06_RUNS
++                    and all(type(pin) is CurrentOwnerPins for pin in owner_pins.values()),
++                    "c06_exact_registered_root_pins_required")
++            owner_pins = MappingProxyType(dict(owner_pins)).get
++        require(callable(owner_pins), "c06_exact_registered_root_pins_required")
++        self.runner = runner
++        self.loop = loop
++        self.home = Path(runner.session_store._routing_home)
++        self.slot = Path(slot)
++        self.store = Path(r4_store.root)
++        self.r4_store = r4_store
++        self.read_owned = read_owned
++        self.authority_root = Path(authority_root)
++        self.socket_path = Path(socket_path)
++        self.contract_observer_sha256 = contract_observer_sha256
++        self._pins_for = owner_pins
++        self._retired = ()
++
++    def doc(self, reference, **options):
++        return _private_doc(reference, self.read_owned, **options)
++
++    def _native(self, handoff):
++        require(asyncio.get_running_loop() is self.loop and type(handoff) is RetiredPublication,
++                "c06_actual_native_gateway_loop_required")
++        original = handoff._publication
++        store = self.runner.session_store
++        require(type(original) is PublishedOriginal and original._custody.runtime.runner is self.runner
++                and original._custody.store() is store,
++                "c06_retired_original_owner_changed")
++        cap = original._custody.owner
++        with store._lock:
++            entry = store._entries.get(original.session_key)
++        require(entry is not None and entry.session_id == original.session_id
++                and handoff.borrow(cap, entry=entry) is original,
++                "c06_retired_original_current_route_required")
++        return store, cap, entry, original
++
++    @contextmanager
++    def accept_retained(self, handoff, *, deadline_monotonic):
++        """Expose the retired original only after the receiver confirms it synchronously."""
++        require(type(deadline_monotonic) in (int, float) and isfinite(deadline_monotonic),
++                "c06_exact_retired_handoff_deadline_required")
++        if time.monotonic() >= deadline_monotonic:
++            raise TimeoutError("c06_retired_handoff_deadline_expired")
++        _, cap, entry, original = self._native(handoff)
++        retained = self._retired
++        if not retained:
++            require(original.role == "A", "c06_A_must_be_retained_first")
++        else:
++            require(len(retained) == 1 and original.role == "B",
++                    "c06_exact_original_B_may_be_retained_once")
++            _, _, a_entry, a = self._native(retained[0])
++            require(a_entry is entry and validate_pair(a, original, cap, entry=entry) is True,
++                    "c06_ordered_distinct_retired_originals_required")
++        selected = (*retained, handoff)
++        if time.monotonic() >= deadline_monotonic:
++            raise TimeoutError("c06_retired_handoff_deadline_expired")
++        # The receiver checks its deadline inside the same synchronous gateway-loop turn.
++        # Keep the prior tuple visible until that check has succeeded.
++        yield
++        require(self._retired is retained, "c06_retired_owner_changed_during_confirmation")
++        if time.monotonic() >= deadline_monotonic:
++            raise TimeoutError("c06_retired_handoff_deadline_expired")
++        self._retired = selected
++
++    def read_predecessor_grant(self, reference):
++        root = self.authority_root
++        info = root.lstat()
++        path = Path(reference["path"])
++        require(root.is_absolute() and root.resolve(strict=True) == root and stat.S_ISDIR(info.st_mode)
++                and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700
++                and all(not root.is_relative_to(base) and not base.is_relative_to(root)
++                        for base in (self.home, self.store))
++                and path.is_relative_to(root), "c06_current_protected_grant_root_required")
++        return self.doc(reference, sized=False, limit=1024 * 1024)[0]
++
++    def require_predecessor(self, admission, scenario_sha, *, options):
++        rows, lineage = read_predecessors(admission, "B", scenario_sha, self.read_predecessor_grant)
++        row, = rows
++        retained = self._retired
++        require(retained and retained[0].role == row["label"] == "A",
++                "c06_armed_B_requires_retained_A")
++        handoff = retained[0]
++        _, cap, entry, original = self._native(handoff)
++        principal = options["principal"]
++        require(original.principal == ("telegram", principal["transport_profile"],
++                                      principal["account_id"], principal["user_id"])
++                and original.profile == options["profile"]
++                and lineage_for(cap, entry) == lineage, "c06_armed_B_predecessor_scope_changed")
++        handoff.require_finalization(row, lambda ref: self.doc(ref, limit=1024 * 1024)[0])
++        require(self._retired is retained and self._native(handoff)[-1] is original,
++                "c06_armed_B_predecessor_changed")
++
++    def _borrowed(self, query):
++        _, _, needed = phase_for(query.run_id, query.scenario)
++        handles = self._retired[:len(needed)]
++        require(tuple(item.role for item in handles) == needed,
++                "c06_exact_original_receivers_not_retained")
++        store, cap, entry, _ = self._native(handles[0])
++        with store._db_handles_lock:
++            route_db = store._db_handles.get(cap.authorization_home / "state.db")
++            profile_db = store._db_handles.get(cap.home / "state.db")
++        return BorrowedOwner(store, route_db, profile_db, self.r4_store, cap, entry, (),
++                             encoded(query.scope_ref), query.scope["gateway"]["boot_id"],
++                             retired_publications=handles)
++
++    def _verify(self, params, peer, *, expected=None):
++        run_id = params.get("run_id") if type(params) is dict else None
++        require(type(run_id) is str and run_id in _C06_RUNS, "c06_exact_current_phase_unbound")
++        pins = self._pins_for(run_id)
++        require(type(pins) is CurrentOwnerPins, "c06_exact_current_phase_unbound")
++        return verify_current_owner(
++            self, params=params, peer=peer, contract_observer_sha256=self.contract_observer_sha256,
++            authority_root=self.authority_root, socket_path=self.socket_path,
++            owner_pins=pins, expected=expected,
++        )
++
++    @staticmethod
++    def _no_remote_code(*args, **kwargs):
++        raise ValueError("c06_remote_provider_code_is_fixed")
++
++    async def _project(self, query):
++        require(time.monotonic() < query.deadline, "c06_current_projection_expired")
++        owner = self._borrowed(query)
++
++        def read(reference):
++            return read_current_reference(self, reference)
++
++        if query.kind == "check":
++            phase, scenario_sha, needed = phase_for(query.run_id, query.scenario)
++            rows, lineage = read_predecessors(query.authority, phase, scenario_sha, self.read_predecessor_grant)
++            require(owner.check_current(query.scope_ref, scenario=query.scenario, read_reference=read,
++                                        load_module=self._no_remote_code) is True
++                    and lineage_for(owner.cap, owner.entry) == lineage,
++                    "c06_current_route_unavailable")
++
++            def in_time():
++                require(time.monotonic() < query.deadline, "c06_current_projection_expired")
++
++            owner.require_finalizations(rows, needed, read_reference=read, in_time=in_time)
++            projection = None
++        else:
++            projection = owner.c06_current_projection(
++                query.scope_ref, scenario=query.scenario, run_id=query.run_id, stage=query.stage,
++                authority_ref=query.authority_ref, read_reference=read, read_grant=self.read_predecessor_grant,
++                load_module=self._no_remote_code,
++                deadline_monotonic=query.deadline,
++            )
++        require(time.monotonic() < query.deadline, "c06_current_projection_expired")
++        return projection
++
++    def handle(self, params, *, peer):
++        """Called from the existing GatewayControlServer executor with kernel peer credentials."""
++        pending = None
++        try:
++            query = self._verify(params, peer)
++            pending = asyncio.run_coroutine_threadsafe(self._project(query), self.loop)
++            projection = pending.result(timeout=max(0, query.deadline - time.monotonic()))
++            fresh = self._verify(params, peer, expected=query)
++            observed = time.monotonic()
++            require(observed < min(query.deadline, fresh.deadline),
++                    "c06_current_projection_expired")
++            return {"accepted": True, "identity": _kernel(query.scope["gateway"]["pid"]),
++                    "observed_monotonic": observed, "read_only": True, "projection": projection}
++        except concurrent.futures.TimeoutError:
++            if pending is not None:
++                pending.cancel()
++            return {"accepted": False, "error": "c06_current_projection_unknown"}
++        except (OSError, RuntimeError, ValueError, TypeError, KeyError, IndexError, AttributeError,
++                concurrent.futures.CancelledError):
++            return {"accepted": False, "error": "c06_current_projection_refused"}
+diff --git a/gateway/c06_receiver_control.py b/gateway/c06_receiver_control.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b99cea536deb5ce9f21d414a89f1ac98c1405598
+--- /dev/null
++++ b/gateway/c06_receiver_control.py
+@@ -0,0 +1,276 @@
++"""C06 selection for the existing bounded owner receiver."""
++
++from dataclasses import dataclass, field
++from datetime import datetime
++from functools import partial
++from hashlib import sha256
++from inspect import iscoroutinefunction
++import time
++
++from c06_ingress import (
++    PublishedOriginal, _INPUTS, _current_publication, is_selected_plan,
++    revalidate_original, settled_publication,
++)
++from c06_finalization_custody import read_finalization
++
++from .d02_receiver_control import (
++    ReceiverControl, _encode, _now, _ordinary_receiver_verb, _private_doc, require,
++)
++
++_BINDING_SCHEMA = "frw.gateway.c06-native-settlement.v1"
++_CURRENT_CONTRACT = "frw.Root.ordinary-current-contract.v1"
++_MAX_RECEIPT = 1024 * 1024
++_ROUTE = ("session_key", "source_profile", "transport_profile", "runtime_profile")
++_ACK_FIELDS = ("date", "caption_sha256", "file_unique_id", "file_name", "mime_type", "declared_bytes")
++
++
++@dataclass(frozen=True, slots=True)
++class _Cutoff:
++    selection: tuple
++    sender: tuple
++    started: float
++    completed: float
++    cutoff: float
++    provenance: str
++
++
++def _bound_cutoff(cutoff, verified, scenario):
++    run = verified["run"]
++    selection = (run["scenario_sha256"], run["id"])
++    require(is_selected_plan(selection) and run["scenario"] == scenario,
++            "c06_exact_original_selection_required")
++    fixture = _INPUTS[selection[0]]
++    sender = ReceiverControl._ordinary_document_ack(run, verified["ack"], scenario,
++                                                     "c06_original_document_ack_required")
++    before, after = verified["ack_monotonic"]
++    created = datetime.fromisoformat(run["created_at"])
++    require(created.utcoffset() is not None and scenario["deadline_seconds"] == 300
++            and scenario["steps"][0]["observe"]["window_seconds"] == 180
++            and abs(run["deadline"] - created.timestamp() - 300) <= 1
++            and cutoff == after + 180 and before <= after
++            and type(sender["date"]) is int and sender["date"] == run["sent_date"]
++            and sender["caption_sha256"] == fixture.caption,
++            "c06_original_300_180_clock_or_ack_changed")
++    proof = {"ack": run["sent_api_ack_reference"], "task": run["sent_task_reference"],
++             "window": run["sent_window_reference"], "clock": verified["original_clock"],
++             "sent_message_id": run["sent_message_id"], "wall_cutoff": run["capture_until"],
++             "ordinary_authority_sha256": run.get("ordinary_c06_authority_sha256")}
++    return _Cutoff(selection, tuple(sender[key] for key in _ACK_FIELDS), before, after, cutoff,
++                   sha256(_encode(proof)).hexdigest())
++
++
++@dataclass(frozen=True, slots=True)
++class RetiredPublication:
++    """Process-local handle with a fresh check of the exact protected receipt."""
++
++    _publication: PublishedOriginal = field(repr=False)
++    _reference: tuple = field(repr=False)
++    _evidence_bytes: bytes = field(repr=False)
++    _read_owned: object = field(repr=False, compare=False)
++
++    @property
++    def role(self):
++        return self._publication.role
++
++    def _check_receipt(self):
++        reference = dict(zip(("path", "bytes", "sha256"), self._reference, strict=True))
++        value, _ = _private_doc(reference, self._read_owned, name="receiver-terminal-native.json",
++                                limit=_MAX_RECEIPT)
++        original = self._publication
++        native = value["c06"]
++        route = value["route"]
++        require(_encode(value) == self._evidence_bytes and value.get("schema") == _BINDING_SCHEMA
++                and type(original) is PublishedOriginal
++                and (value["run_id"], value["scenario_sha256"], value["claim_sha256"], value["generation"])
++                == (original.run_id, original.scenario_sha256, original.claim_sha256,
++                    original._custody.runtime.generation)
++                and (route["session_key"], route["transport_profile"], route["runtime_profile"])
++                == (original.session_key, original.principal[1], original.profile)
++                and (native["role"], native["sdk_update_id"], native["sdk_message_id"],
++                     native["input_sha256"], native["input_bytes"], native["session_id"], native["route_created_at"])
++                == (original.role, original.update_id, original.native_message_id, original.input_sha256,
++                    original.input_size_bytes, original.session_id, original.route_created_at),
++                "c06_retired_receiver_receipt_changed")
++        return value
++
++    def require_finalization(self, row, read_document):
++        original = self._publication
++        binding = row["binding"]
++        value = self._check_receipt()
++        reference = dict(zip(("path", "bytes", "sha256"), self._reference, strict=True))
++        require(binding["run_id"] == original.run_id
++                and binding["scenario_sha256"] == original.scenario_sha256
++                and binding["sent_message_id"] == value["c06"]["tester_ack_message_id"],
++                "c06_confirmed_finalization_predecessor_changed")
++        result = read_finalization(row["receiver_finalization"], read_document, run_id=original.run_id,
++                                   scenario_sha256=original.scenario_sha256, run_sha256=binding["run_sha256"],
++                                   route=value["route"], native_ref=reference)
++        require(result == reference and self._check_receipt() == value,
++                "c06_confirmed_finalization_predecessor_changed")
++
++    def borrow(self, cap, *, entry):
++        self._check_receipt()
++        original = self._publication
++        require(revalidate_original(original, cap, entry=entry) is True,
++                "c06_retired_native_publication_changed")
++        self._check_receipt()
++        return original
++
++
++class C06ReceiverControl(ReceiverControl):
++    """Use the shared owner, original cutoff, private write and retirement."""
++
++    request_schema = "frw.gateway.c06-owned-receiver-control.v1"
++    options_schema = "frw.Root.C06.receiver-options.v1"
++    driver_schema = "frw.Root.C06.owned-ordinary-driver.v1"
++    exact_phases = frozenset(_INPUTS)
++    terminal_schema = _BINDING_SCHEMA
++    strict_terminal_extra = True
++
++    def __init__(self, *, accept_retained, require_predecessor, **kwargs):
++        require(callable(accept_retained) and not iscoroutinefunction(accept_retained)
++                and not iscoroutinefunction(getattr(accept_retained, "__call__", None)),
++                "c06_existing_native_observer_owner_required")
++        require(callable(require_predecessor) and not iscoroutinefunction(require_predecessor),
++                "c06_existing_native_predecessor_owner_required")
++        self._require_predecessor = require_predecessor
++        super().__init__(**kwargs)
++        self._accept_retained = accept_retained
++
++    def _owner(self, request):
++        owner = super()._owner(request)
++        intent, driver, options, scenario, _ = owner
++        run, scenario_sha = intent["run_id"], intent["scenario_sha256"]
++        self._wire_options(intent)
++        authority, _ = self.doc(driver["authority"], limit=_MAX_RECEIPT)
++        contract, _ = self.doc(driver["contract"])
++        gateway = authority["gateway"]
++        created, expires = authority["created_at"], authority["expires_at"]
++        require(contract.get("schema") == _CURRENT_CONTRACT and contract.get("operator") == "Root"
++                and contract.get("run_id") == run and contract.get("scenario_sha256") == scenario_sha
++                and contract.get("authority") == driver["authority"]
++                and authority["boot_id"] == request["boot_id"]
++                and {key: gateway[key] for key in ("pid", "start_time")} == request["gateway"]
++                and _now(created) and _now(expires) and created < expires
++                and created <= time.time() and (request["action"] != "arm" or time.time() < expires)
++                and scenario["deadline_seconds"] == 300 and len(scenario["steps"]) == 1
++                and scenario["steps"][0]["observe"]["window_seconds"] == 180,
++                "c06_exact_protected_current_owner_or_clock_required")
++        selected = _INPUTS[scenario_sha]
++        if selected.role == "A":
++            require(authority.get("c06") is None, "c06_A_and_B_require_separate_admissions")
++        else:
++            self._require_predecessor(authority, scenario_sha, options=options)
++        return owner
++
++    def _wire_options(self, intent):
++        selection = (intent["scenario_sha256"], intent["run_id"])
++        require(is_selected_plan(selection), "c06_exact_separately_selected_original_required")
++        return {"selected_c06": selection}
++
++    def _original_cutoff(self, reference, intent, work, scenario, receipt, *, terminal_run=None, verified=None):
++        captured = {}
++        cutoff = super()._original_cutoff(reference, intent, work, scenario, receipt,
++                                          terminal_run=terminal_run, verified=captured)
++        if _INPUTS[intent["scenario_sha256"]].role == "B":
++            driver, _ = self.doc(intent["binding"])
++            require(captured["run"].get("ordinary_c06_authority_sha256") == driver["authority"]["sha256"],
++                    "c06_B_sender_differs_from_original_receiver_grant")
++        if verified is not None:
++            verified.update(captured)
++        return cutoff
++
++    def _bind_terminal_cutoff(self, arm, window, cutoff, verified):
++        bound = _bound_cutoff(cutoff, verified, verified["run"]["scenario"])
++        ingress = arm.ingress
++        wire = ingress._wire()
++        require(arm.claim.selected_c06 == bound.selection
++                and arm.window is window is ingress.window and window._cutoff is None
++                and getattr(ingress, "_c06_cutoff", None) is None
++                and wire is not None and wire["state"] == "OPEN" and time.monotonic() < cutoff,
++                "c06_exact_open_original_cutoff_required")
++        window.bind_cutoff(cutoff)
++        ingress._c06_cutoff = bound
++
++    def _terminal_extra(self, arm, route, scenario, joined, verified, deadline):
++        publication = settled_publication(arm, deadline=deadline)
++        ingress = arm.ingress
++        wire = ingress._wire()
++        bound = getattr(ingress, "_c06_cutoff", None)
++        require(bound is not None and bound == _bound_cutoff(arm.window._cutoff, verified, scenario)
++                and wire is not None and wire["empty_boundary"][0] >= bound.cutoff
++                and bound.started <= publication.observed_monotonic < bound.cutoff
++                and len(joined["observations"]) == 1,
++                "c06_exact_original_ACK_and_closed_native_window_required")
++        observed = (publication.sdk_date, publication.caption_sha256, publication.file_unique_id,
++                    publication.file_name, publication.mime_type, publication.input_size_bytes)
++        require(observed == bound.sender, "c06_original_ACK_and_SDK_document_mismatch")
++        (receipt, caption), = joined["observations"]
++        message = receipt["message"]
++        (media,) = message["media"]
++        origin = media["origin"]
++        ids = {
++            "platform_update_id": str(publication.update_id),
++            "message_id": str(publication.native_message_id),
++            "bot_id": publication.principal[2], "user_id": publication.principal[3],
++            "chat_id": publication.principal[3], "thread_id": "", "reply_to_message_id": "",
++        }
++        source = publication._custody.evidence
++        require(receipt["platform"] == "telegram" and receipt["chat_type"] == "dm"
++                and all(receipt[key] == route[key] == ingress.scope[key] for key in _ROUTE)
++                and all(message[key] == value for key, value in ids.items())
++                and caption == {"kind": "caption", "date": publication.sdk_date,
++                                "sha256": publication.caption_sha256}
++                and media["mime_type"] == publication.mime_type and media["local_reference"] == str(source.path)
++                and media["content"] == {"sha256": publication.input_sha256,
++                                         "size_bytes": publication.input_size_bytes}
++                and all(origin[key] == ids[key] for key in ("bot_id", "chat_id", "thread_id", "message_id"))
++                and (origin["file_id"], origin["file_unique_id"], origin["declared_bytes"])
++                == (publication.file_id, publication.file_unique_id, publication.input_size_bytes)
++                and publication is settled_publication(arm, deadline=deadline),
++                "c06_exact_protected_settled_pair_and_publication_required")
++        return {"c06": {
++            "role": publication.role, "sdk_update_id": publication.update_id,
++            "sdk_message_id": publication.native_message_id,
++            "tester_ack_message_id": verified["run"]["sent_message_id"],
++            "original_sender_proof_sha256": bound.provenance,
++            "input_sha256": publication.input_sha256, "input_bytes": publication.input_size_bytes,
++            "session_id": publication.session_id, "route_created_at": publication.route_created_at,
++        }}
++
++    def _prepare_terminal_handoff(self, arm, reference, evidence, deadline):
++        original = settled_publication(arm, deadline=deadline)
++        handoff = RetiredPublication(original, (reference["path"], reference["bytes"], reference["sha256"]),
++                                     _encode(evidence), self.read_owned)
++        handoff._check_receipt()
++
++        def commit():
++            adapter = arm.ingress.adapter
++            if time.monotonic() >= deadline:
++                raise TimeoutError("c06_retired_handoff_deadline_expired")
++            require(adapter._ordinary_dm_wire_arm is None and adapter._ordinary_dm_wire_window is None
++                    and arm.ingress._unknown == "ingress_window_retired"
++                    and arm.claim.owner_is_current() is True and _current_publication(original),
++                    "c06_strict_native_retirement_unproved")
++            handoff._check_receipt()
++            if time.monotonic() >= deadline:
++                raise TimeoutError("c06_retired_handoff_deadline_expired")
++            with self._accept_retained(handoff, deadline_monotonic=deadline):
++                if time.monotonic() >= deadline:
++                    raise TimeoutError("c06_retired_handoff_deadline_expired")
++
++        return commit
++
++
++def ordinary_c06_receiver_verb(runner, loop, *, accept_retained):
++    """Bind the receiver and predecessor reader to the same native owner."""
++    from .c06_current_provider import C06NativeOwner
++
++    owner = getattr(accept_retained, "__self__", None)
++    require(type(owner) is C06NativeOwner and owner.runner is runner and owner.loop is loop
++            and getattr(accept_retained, "__func__", None) is C06NativeOwner.accept_retained,
++            "c06_existing_native_observer_owner_required")
++    return _ordinary_receiver_verb(
++        runner, loop, control_type=partial(C06ReceiverControl, accept_retained=accept_retained,
++                                          require_predecessor=owner.require_predecessor),
++    )
+diff --git a/gateway/control_socket.py b/gateway/control_socket.py
+index f5621e29b47f8b767582fda0adf4a496277353a4..7744e108d3683a19fe7ac906d9cedd52c65ffbce 100644
+--- a/gateway/control_socket.py
++++ b/gateway/control_socket.py
+@@ -11,12 +11,14 @@ from __future__ import annotations
+ 
+ import asyncio
+ import contextlib
++from functools import partial
+ import hashlib
+ import inspect
+ import json
+ import logging
+ import os
+ import socket
++import struct
+ import sys
+ import tempfile
+ import time
+@@ -200,7 +202,7 @@ class GatewayControlServer:
+             with contextlib.suppress(OSError):
+                 path.unlink(missing_ok=True)
+ 
+-    def handle_request_line(self, raw: bytes) -> bytes:
++    def handle_request_line(self, raw: bytes, *, peer=None) -> bytes:
+         """One JSON request line -> one JSON response line. Never raises (shared by POSIX + pipe)."""
+         request_id: Any = None
+         try:
+@@ -217,8 +219,15 @@ class GatewayControlServer:
+                 # parameter; argument-less verbs (identify/status/rescan) keep their bare signature.
+                 params = request.get("params") if isinstance(request.get("params"), dict) else {}
+                 wants_params = "params" in inspect.signature(handler).parameters
+-                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
+-                            "result": handler(params) if wants_params else handler()}
++                if verb == "ordinary-turn-readonly" and params.get("mode") == "c06-current":
++                    if peer is None or "peer" not in inspect.signature(handler).parameters:
++                        result = {"accepted": False, "error": "c06_local_peer_required"}
++                    else:
++                        _c06_exact_envelope(raw)
++                        result = handler(params, peer=peer)
++                else:
++                    result = handler(params) if wants_params else handler()
++                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION, "result": result}
+         except Exception as exc:
+             response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
+         if request_id is not None:
+@@ -238,8 +247,14 @@ class GatewayControlServer:
+                 return
+             # Handlers read disk; keep that off the loop that drives every platform
+             # adapter so a fast-polling consumer can't stall heartbeats.
+-            response = await asyncio.get_running_loop().run_in_executor(
+-                None, self.handle_request_line, raw.rstrip(b"\n"))
++            peer = None
++            sock = writer.get_extra_info("socket")
++            if sock is not None and sock.family == socket.AF_UNIX and hasattr(socket, "SO_PEERCRED"):
++                with contextlib.suppress(OSError, struct.error):
++                    peer = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
++                                                             struct.calcsize("3i")))
++            handler = partial(self.handle_request_line, raw.rstrip(b"\n"), peer=peer)
++            response = await asyncio.get_running_loop().run_in_executor(None, handler)
+             writer.write(response)
+             await writer.drain()
+         except (asyncio.TimeoutError, ConnectionError, OSError):
+@@ -251,6 +266,22 @@ class GatewayControlServer:
+                 writer.close()
+ 
+ 
++def _c06_exact_envelope(raw):
++    def unique(pairs):
++        keys = {}
++        for key, value in pairs:
++            if key in keys:
++                raise ValueError("c06_duplicate_request_key")
++            keys[key] = value
++        return keys
++    value = json.loads(raw, object_pairs_hook=unique)
++    if (set(value) != {"verb", "id", "protocol", "params"}
++            or type(value["protocol"]) is not int or value["protocol"] != CONTROL_PROTOCOL_VERSION
++            or type(value["id"]) is not str or len(value["id"]) != 32
++            or any(char not in "0123456789abcdef" for char in value["id"])):
++        raise ValueError("c06_exact_request_envelope_required")
++
++
+ class _PipeControlProtocol(asyncio.Protocol):
+     """One-shot request/response protocol for the Windows named pipe."""
+     def __init__(self, server: GatewayControlServer) -> None:
+diff --git a/gateway/d02_receiver_control.py b/gateway/d02_receiver_control.py
+index 566c055cbf2596ae7274f657068cfe1cf0057711..2159c963f88824c8f623621610baa5e154f48009 100644
+--- a/gateway/d02_receiver_control.py
++++ b/gateway/d02_receiver_control.py
+@@ -613,6 +613,10 @@ class ReceiverControl:
+     def _terminal_extra(self, arm, route, scenario, joined, verified, deadline):
+         return {}
+ 
++    def _prepare_terminal_handoff(self, arm, reference, evidence, deadline):
++        """Return an optional private commit after exact strict retirement."""
++        return None
++
+     @staticmethod
+     def _s14_terminal(arm, intent, observations, sender):
+         from .s14_pair_custody import read_terminal
+@@ -792,6 +796,7 @@ class ReceiverControl:
+                     "d05_control_original_sender_changed_after_write")
+             require_d05_finalize_binding(arm.ingress, claim_sha, intent["run_id"], fresh_sender["d05_ack"],
+                                          fresh_sender["run"]["capture_until"], fresh_cutoff)
++        handoff = None
+         if self.strict_terminal_extra:
+             fresh_sender = {}
+             fresh_cutoff = self._original_cutoff(cutoff_record["intent"], intent, work, scenario, retained,
+@@ -800,6 +805,7 @@ class ReceiverControl:
+                     and self._terminal_extra(arm, evidence["route"], scenario, joined,
+                                              fresh_sender, deadline) == terminal_extra,
+                     "ordinary_control_selected_terminal_changed_after_write")
++            handoff = self._prepare_terminal_handoff(arm, reference, evidence, deadline)
+         retire = {"selected_arm": arm, "accept_before": deadline} if strict else {}
+         require(arm.ingress._settlement_state() == "SETTLED"
+                 and self._closed_snapshot(adapter, claim_sha) == (revision, wire)
+@@ -808,6 +814,8 @@ class ReceiverControl:
+                 "d02_control_exact_terminal_retirement_unproved")
+         if strict:
+             current(witness, retired=True)
++        if handoff is not None:
++            handoff()
+         return reference
+ 
+     def _d05_prewire_worker_deadline(self, reference, request, intent, scenario, work, receipt):
+diff --git a/gateway/ordinary_dm_dispatch_closure.py b/gateway/ordinary_dm_dispatch_closure.py
+index fa604cf6f94dc9ec5e851f72f38217ffd027477e..888831178901428c1d80201ae37bced74c756bcf 100644
+--- a/gateway/ordinary_dm_dispatch_closure.py
++++ b/gateway/ordinary_dm_dispatch_closure.py
+@@ -169,6 +169,10 @@ async def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, dispos
+             return _unknown("d02_exact_routed_writer_required"), None
+         home, profile, routed, principal = _exact_route(adapter, evidence, options, scenario)
+         retained_scope = _retained_d16_scope(arm, before["wire"], home, profile, routed, principal)
++        selected_c06 = getattr(arm.claim, "selected_c06", None) is not None
++        c06_source = evidence._receipt_source if selected_c06 else None
++        if selected_c06 and (c06_source is None or retained_scope is not None):
++            raise ValueError("c06_original_admitted_receipt_source_scope_changed")
+         package, separator, name = type(admissions).__module__.rpartition(".")
+         if not separator or name != "admission":
+             return _unknown("d02_exact_routed_writer_package_required"), None
+@@ -187,6 +191,8 @@ async def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, dispos
+                 source, capability, check_scope = retained_scope
+                 check_scope()
+                 native_scope = scope.scoped_source(source)
++            elif c06_source is not None:
++                native_scope = scope.scoped_source(c06_source)
+ 
+             def read_verified(selected_state, bound):
+                 nonlocal witness
+@@ -204,6 +210,17 @@ async def join_settled_ordinary_dm(adapter, *, claim_sha256, wire_sha256, dispos
+                     check_scope()
+                     if admitted is not capability:
+                         raise ValueError("d16_exact_receipt_scope_unproved")
++                if c06_source is not None and (
++                    evidence._receipt_source is not c06_source
++                    or type(admitted) is not scope.UserScope
++                    or admitted is not getattr(c06_source, "_friday_user_scope", None)
++                    or admitted.home != routed or admitted.authorization_home != home
++                    or admitted.profile != profile
++                    or admitted.principal != ("telegram", principal["transport_profile"],
++                                              principal["account_id"], principal["user_id"])
++                    or time.monotonic() >= deadline
++                ):
++                    raise ValueError("c06_original_admitted_receipt_source_scope_changed")
+                 if Path(get_hermes_home()) != routed:
+                     raise ValueError("d02_receipt_join_home_not_bound")
+                 storage = _storage_signature(state)
+diff --git a/gateway/ordinary_dm_ingress.py b/gateway/ordinary_dm_ingress.py
+index 0a18f544c68254b00832de16deb9072fcc5f60b1..7a03c73de4449654272aa4f66f2e23999290defc 100644
+--- a/gateway/ordinary_dm_ingress.py
++++ b/gateway/ordinary_dm_ingress.py
+@@ -274,6 +274,10 @@ class OrdinaryDMIngressOutcomes:
+     def lost(self, reason):
+         if self._unknown is None:
+             self._unknown = reason
++            if getattr(self.claim, "selected_c06", None) is not None:
++                for record in self._built.values():
++                    if hasattr(record, "c06_native"):
++                        del record.c06_native
+             self._revision += 1
+             self._changed.set()
+             if self._d05_wait is not None:
+@@ -358,6 +362,11 @@ class OrdinaryDMIngressOutcomes:
+                                        d01_rtf_native=d01_rtf_native, d16_seed_native=d16_native,
+                                        d16_followon_native=d16_followon)
+         event._ordinary_dm_ingress_stamp = (self._seal, update)
++        if getattr(self.claim, "selected_c06", None) is not None:
++            from c06_ingress import capture_original
++
++            scenario, run_id = self.claim.selected_c06
++            capture_original(self, native_update, event, scenario_sha256=scenario, run_id=run_id)
+         self._revision += 1
+ 
+     def _stamp(self, event):
+@@ -458,6 +467,12 @@ class OrdinaryDMIngressOutcomes:
+                 or event._ingress_update_id != update or not self._selected_source(event.source)):
+             self.lost("ingress_background_writer_not_same_task")
+             return
++        if getattr(self.claim, "selected_c06", None) is not None:
++            from c06_ingress import close_original_dispatch
++
++            if not close_original_dispatch(self, record, event):
++                self.lost("ingress_c06_original_dispatch_unproved")
++                return
+         record.writer_task = None
+         record.s08_raw = None
+         if record.xlsx_native is not None:
+@@ -937,6 +952,22 @@ def selected_xlsx_publication(event):
+     return update is not None and evidence._built[update].xlsx_native is not None
+ 
+ 
++def _capture_c06_worker_input(runner, event, source, session_id, key, generation):
++    identity = identity_of(source)
++    evidence = _ingress(identity.adapter()) if identity is not None else None
++    if evidence is None or getattr(evidence.claim, "selected_c06", None) is None:
++        return
++    update = evidence.select(event, source, identity, key)
++    if update is None:
++        return
++    try:
++        from c06_ingress import bind_worker_original
++
++        bind_worker_original(evidence, runner, event, session_id, key, generation, update)
++    except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
++        evidence.lost("ingress_c06_original_worker_input_unproved")
++
++
+ def _select_xlsx_worker(runner, event, source, session_id, key, generation):
+     """Bind only the exact admitted SDK event in its original background writer."""
+     evidence = None
+diff --git a/gateway/ordinary_turn_projection.py b/gateway/ordinary_turn_projection.py
+index 3b99242fe95c0e43c615335238fce00dd56795f1..18a6d341bb6ea421eaeccff041a3f0a3348a2722 100644
+--- a/gateway/ordinary_turn_projection.py
++++ b/gateway/ordinary_turn_projection.py
+@@ -214,8 +214,12 @@ def snapshot(runner):
+         own_web_inflight=own_web,terminal_custody=terminal)
+ 
+ 
+-def ordinary_turn_readonly_verb(runner, loop):
+-    def handler(params):
++def ordinary_turn_readonly_verb(runner, loop, *, c06_owner=None):
++    def handler(params, *, peer=None):
++        if type(params) is dict and params.get('mode') == 'c06-current':
++            if c06_owner is None or peer is None:
++                return {'accepted': False, 'error': 'c06_current_owner_unbound'}
++            return c06_owner.handle(params, peer=peer)
+         if type(params) is dict and str(params.get('mode', '')).startswith('f04-'):
+             return _f04_readonly_control(runner, loop, params)
+         if type(params) is dict and set(params) == {'mode', 'root_request'} and params['mode'] == 'm09-current':
+diff --git a/gateway/run.py b/gateway/run.py
+index 1e2c724e61acf91fcb8b028ff39e6980b941df20..5d82646ba713637b1ecf7648c6dd10f7bfe8753e 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -5657,7 +5657,7 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
+     return None
+ 
+ 
+-async def _start_gateway_start_control_socket(runner):
++async def _start_gateway_start_control_socket(runner, *, c06_owner=None):
+     """Start the gateway control socket (identify/status/pause-for-update); None when unavailable."""
+     import atexit
+     _control_server = None
+@@ -5725,8 +5725,21 @@ async def _start_gateway_start_control_socket(runner):
+         from gateway.d01_rtf_receiver_control import ordinary_d01_rtf_receiver_verb
+         from gateway.d16_seed_receiver_control import ordinary_d16_seed_receiver_verb
+         from gateway.d16_followon_receiver_control import ordinary_d16_followon_receiver_verb
++        c06_handlers = {}
++        if c06_owner is not None:
++            from gateway.c06_current_provider import C06NativeOwner
++            from gateway.c06_receiver_control import ordinary_c06_receiver_verb
++
++            if (type(c06_owner) is C06NativeOwner and c06_owner.runner is runner
++                    and c06_owner.loop is _main_loop):
++                c06_handlers["ordinary-c06-receiver"] = ordinary_c06_receiver_verb(
++                    runner, _main_loop, accept_retained=c06_owner.accept_retained)
++            else:
++                c06_owner = None
++        readonly = (ordinary_turn_readonly_verb(runner, _main_loop) if c06_owner is None
++                    else ordinary_turn_readonly_verb(runner, _main_loop, c06_owner=c06_owner))
+         _control_server = GatewayControlServer(
+-            verb_handlers={"ordinary-turn-readonly": ordinary_turn_readonly_verb(runner, _main_loop),
++            verb_handlers={**c06_handlers, "ordinary-turn-readonly": readonly,
+                            "ordinary-turn-cancel": ordinary_turn_cancel_verb(runner, _main_loop),
+                            "ordinary-d02-receiver": ordinary_d02_receiver_verb(runner, _main_loop),
+                            "ordinary-s08-receiver": ordinary_s08_receiver_verb(runner, _main_loop),
+diff --git a/gateway/run_inbound_media.py b/gateway/run_inbound_media.py
+index b1f7a9d5dae2da8b7ee6df5b81c638d55464b288..551d906f1f34dae28b2c627c80f419e9f0569410 100644
+--- a/gateway/run_inbound_media.py
++++ b/gateway/run_inbound_media.py
+@@ -400,8 +400,15 @@ def _rehome_user_attachments(event, cap):
+     early_pdf = (f04_target is None and not hasattr(event, '_friday_owned_attachment_paths') and len(staged) == 1
+                  and staged[0][1].suffix == '.pdf' and original_scan_publication(event, message))
+     observe_pdf = capture_pdf or early_pdf
++    capture_c06 = False
++    if (len(staged) == 1 and not (capture_xlsx or capture_d16 or capture_docx or capture_rtf or capture_odt or observe_pdf)
++            and getattr(event, '_ordinary_dm_ingress_stamp', None) is not None):
++        from c06_ingress import selected_publication as selected_c06_publication
++
++        capture_c06 = selected_c06_publication(event, message)
+     # Supplemental observation cannot prevent the ordinary attachment from being admitted.
+-    optional_capture = capture_docx or capture_d16 or capture_rtf or capture_odt or observe_pdf or (capture_xlsx and not capture_s14)
++    optional_capture = (capture_c06 or capture_docx or capture_d16 or capture_rtf or capture_odt
++                        or observe_pdf or (capture_xlsx and not capture_s14))
+     published_input = None
+     directories = None
+     cap.check()
+@@ -439,7 +446,7 @@ def _rehome_user_attachments(event, cap):
+                         if (not os.path.samestat(workspace_info, os.fstat(current_workspace))
+                                 or not os.path.samestat(workspace_info, named_workspace)):
+                             raise ScopeDenied()
+-                        if capture_docx or capture_d16 or capture_rtf or capture_odt or observe_pdf:
++                        if capture_docx or capture_d16 or capture_rtf or capture_odt or observe_pdf or capture_c06:
+                             directories = (_directory_identity(workspace_info), _directory_identity(pinned))
+                     finally:
+                         os.close(current_workspace)
+@@ -540,6 +547,12 @@ def _rehome_user_attachments(event, cap):
+         else:
+             _remember_published_input(event, cap, staged[0][1], published_input,
+                                       _ODT_PUBLICATION, directories, odt_upload)
++    elif capture_c06:
++        if published_input is None:
++            event._friday_published_c06_input = None
++        else:
++            _remember_published_input(event, cap, staged[0][1], published_input,
++                                      '_friday_published_c06_input', directories)
+     elif published_input is not None:
+         _remember_published_input(event, cap, staged[0][1], published_input,
+                                   '_friday_published_xlsx_input')
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+index 3c15ba90254ae49f723e5c1a4c5cce93cdbbb72e..2530bb4034c183c029099329463ab559694e07d5 100644
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -4544,9 +4544,11 @@ class GatewayTurnMixin:
+             selected_turn = None
+             if _selected_sdk_event is not None and hasattr(_selected_sdk_event, "_ordinary_dm_ingress_stamp"):
+                 from gateway.ordinary_dm_ingress import (
+-                    _select_d05_worker, _select_xlsx_worker, wait_d05_original_cutoff,
++                    _capture_c06_worker_input, _select_d05_worker, _select_xlsx_worker,
++                    wait_d05_original_cutoff,
+                 )
+ 
++                _capture_c06_worker_input(self, _selected_sdk_event, source, session_id, session_key, run_generation)
+                 selected_turn = _select_xlsx_worker(self, _selected_sdk_event, source, session_id,
+                                                     session_key, run_generation)
+                 if selected_turn is None and await wait_d05_original_cutoff(
+diff --git a/native_publisher.py b/native_publisher.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..10a1ecf972361f57f1eb7c64a56916f2f2869bab
+--- /dev/null
++++ b/native_publisher.py
+@@ -0,0 +1,187 @@
++"""Detached owner adapter for the existing selected ordinary receiver.
++
++Only the authenticated receiver owner may call the original-event entry point.
++The current path requires the live admitted capability and borrowed handles;
++it never reconstructs either from receipt bytes.
++"""
++from dataclasses import dataclass
++from hashlib import sha256
++from pathlib import Path
++import time
++
++from gateway.run_inbound_media import (
++    d01_rtf_publication_current,
++    verify_published_d01_rtf_input,
++)
++from gateway.s08_document_custody import capture_document
++from gateway.upload_anchor import AnchorUnavailable, _object, _read_snapshot
++from hermes_cli.friday_user_scope import UserScope, authority
++
++from native_reader import read_retained_text_input
++
++
++@dataclass(frozen=True)
++class OriginalUpload:
++    principal: tuple
++    profile: str
++    scope: str
++    session_key: str
++    session_id: str
++    route_created_at: str
++    native_message_id: int
++    sdk_date: int
++    caption_sha256: str
++    file_unique_id: str
++    file_name: str
++    mime_type: str
++    input_sha256: str
++    input_size_bytes: int
++    file_identity: tuple
++    relative_path: str
++    scenario_sha256: str
++
++
++def capture_original_upload(adapter, update, event, entry, publication, scenario_sha256):
++    """Consume the actual SDK event and protected descriptor before owner unwind.
++
++    Use the existing selected receiver's publication contract. Stock D01 is
++    its owner, so no stock F01 event reaches this detached candidate today.
++    """
++    cap = publication.owner
++    item = publication.evidence
++    if type(cap) is not UserScope or not d01_rtf_publication_current(event, publication):
++        raise AnchorUnavailable('original_owned_publication_required')
++    transport, profile, peer, tester = cap.principal
++    sdk = capture_document(adapter, update, event, actor=int(tester), bot_id=int(peer),
++                           source_bytes=item.size_bytes)
++    origin = entry.origin
++    route_key = f'agent:{cap.profile}:telegram:dm:{tester}'
++    if (transport != 'telegram' or origin is None or origin.platform.value != transport
++            or (origin.user_id, origin.chat_id, origin.chat_type, origin.thread_id, origin.profile)
++               != (tester, tester, 'dm', None, cap.profile)
++            or entry.session_key != route_key or entry.transport_profile != profile
++            or event.media_urls != [str(item.path)]
++            or item.path.parent != cap.home / 'workspace' / 'received'):
++        raise AnchorUnavailable('original_owner_route_required')
++    download = event._telegram_media_receipts[str(item.path)]
++    if (download['content'] != {'sha256': item.sha256, 'size_bytes': item.size_bytes}
++            or any(download['origin'].get(key) != sdk[key]
++                   for key in ('bot_id', 'file_id', 'file_unique_id', 'declared_bytes'))
++            or download['origin'].get('chat_id') != sdk['actor_id']
++            or download['origin'].get('message_id') != sdk['native_message_id']
++            or download['presentation'].get('original_filename') != sdk['file_name']
++            or not verify_published_d01_rtf_input(
++                publication, still_current=lambda: d01_rtf_publication_current(event, publication))):
++        raise AnchorUnavailable('original_sdk_publication_changed')
++    return OriginalUpload(cap.principal, cap.profile, str(cap.authorization_home / 'sessions'),
++                          route_key, entry.session_id, entry.created_at.isoformat(),
++                          int(sdk['native_message_id']), sdk['date'], sdk['caption_sha256'],
++                          sdk['file_unique_id'], sdk['file_name'], sdk['mime_type'], item.sha256,
++                          item.size_bytes, item.source_identity,
++                          item.path.relative_to(cap.home / 'workspace').as_posix(), scenario_sha256)
++
++
++def _physical_read(profile_db, upload, cutoff):
++    """Identify one original active USER and one physical own-file read."""
++    deadline = time.monotonic() + 0.3
++    progress = lambda: int(time.monotonic() >= deadline)
++    active = ('active=1 AND compacted=0 AND observed=0 AND _compressed_summary=0 '
++              'AND display_kind IS NULL')
++    sid = upload.session_id
++    with _read_snapshot(profile_db, deadline, progress) as conn:
++        users = conn.execute(
++            f"SELECT id FROM messages WHERE session_id=? AND role='user' AND {active} "
++            "AND platform_message_id=? AND timestamp>=? AND timestamp<? LIMIT 2",
++            (sid, str(upload.native_message_id), upload.sdk_date, cutoff)).fetchall()
++        if len(users) != 1:
++            raise AnchorUnavailable('exact_original_native_user_required')
++        user_id = users[0]['id']
++        next_user = conn.execute(
++            "SELECT id FROM messages WHERE session_id=? AND role='user' AND active=1 "
++            "AND id>? ORDER BY id LIMIT 1", (sid, user_id)).fetchone()
++        rows = conn.execute(
++            f"SELECT id,role,tool_call_id,tool_call_uid,tool_call_uids,content FROM messages "
++            f"WHERE session_id=? AND id>? AND id<? AND {active} AND timestamp>=? AND timestamp<? "
++            "AND (role='assistant' OR (role='tool' AND tool_name='read_file')) "
++            "AND COALESCE(length(CAST(tool_call_uids AS BLOB)),0)<=65536 "
++            "AND COALESCE(length(CAST(content AS BLOB)),0)<=1048576 ORDER BY id LIMIT 65",
++            (sid, user_id, next_user['id'] if next_user is not None else 2**63-1,
++             upload.sdk_date, cutoff)).fetchall()
++    if len(rows) > 64 or time.monotonic() >= deadline:
++        raise AnchorUnavailable('original_read_scan_exceeded')
++    assistants = []
++    found = []
++    for row in rows:
++        if row['role'] == 'assistant':
++            if row['tool_call_uids'] is not None:
++                assistants.append((row['id'], _object(row['tool_call_uids'])))
++            continue
++        answer = _object(row['content'])
++        if (answer.get('success') is not True or answer.get('scope') != 'own_user_workspace'
++                or answer.get('path') != upload.relative_path
++                or answer.get('source_sha256') != upload.input_sha256):
++            continue
++        calls = [id_ for id_, uids in assistants
++                 if row['tool_call_uid'] and uids.get(row['tool_call_id']) == row['tool_call_uid']]
++        if len(calls) != 1:
++            raise AnchorUnavailable('original_read_occurrence_ambiguous')
++        found.append(dict(call_row=calls[0], result_row=row['id'], call_id=row['tool_call_id'],
++                          result_sha256=sha256(row['content'].encode()).hexdigest()))
++    if len(found) != 1:
++        raise AnchorUnavailable('exact_original_read_required')
++    return user_id, found[0]
++
++
++def current_projection(store, routing_db, profile_db, cap, receipt):
++    """Run on the current Gateway owner with its actual admitted UserScope."""
++    if type(cap) is not UserScope:
++        raise AnchorUnavailable('current_user_scope_required')
++    with authority(cap.home):
++        cap.check()
++        value = read_retained_text_input(store, routing_db, profile_db, cap, receipt)
++        cap.check()
++    return dict(conversation=value['conversation'], retained_input_sha256=value['retained_input_sha256'],
++                no_intervening_session_reset=value['route_incarnation_matches'])
++
++
++def settle_receipt(store, routing_db, profile_db, cap, original, previous, ack):
++    """Bind current original physical ingress/read to the already checked R4 ACK.
++
++    The caller must pass the exact R4 custody result, not a supplied HTTP or
++    model payload. No previous-run, Gateway, or Telegram state changes here.
++    """
++    transport, profile, peer, tester = original.principal
++    upload = previous['scenario']['steps'][0]['input']
++    ack_fields = (ack['chat']['id'], ack['from']['id'], ack['date'], ack['document']['file_unique_id'],
++                  ack['document']['file_name'], ack['document']['mime_type'], ack['document']['file_size'],
++                  sha256(b'friday.telegram.payload.v1\x00caption\x00' + ack['caption'].encode()).hexdigest())
++    native_fields = (int(peer), int(tester), original.sdk_date, original.file_unique_id,
++                     original.file_name, original.mime_type, original.input_size_bytes, original.caption_sha256)
++    if (type(cap) is not UserScope or cap.principal != original.principal
++            or transport != 'telegram' or ack_fields != native_fields
++            or ack['message_id'] != previous['sent_message_id']
++            or previous['scenario_sha256'] != original.scenario_sha256
++            or upload['sha256'] != original.input_sha256):
++        raise AnchorUnavailable('exact_independent_ack_original_sdk_join_required')
++    if (Path(profile_db.db_path) != cap.home / 'state.db'
++            or original.profile != cap.profile or original.scope != str(cap.authorization_home / 'sessions')):
++        raise AnchorUnavailable('exact_original_user_store_required')
++    with authority(cap.home):
++        cap.check()
++        user_id, read = _physical_read(profile_db, original, previous['capture_until'])
++    receipt = dict(schema='frw.gateway.ordinary-text-summary-ingress.v1',
++                   native=dict(namespace='native.telegram', message_id=original.native_message_id,
++                               input_row=user_id),
++                   tester_ack=dict(namespace='tester.telegram', message_id=ack['message_id'],
++                                   sha256=previous['sent_api_ack_reference']['sha256']),
++                   conversation=dict(tester_id=int(tester), peer_id=int(peer), platform=transport,
++                                     chat_type='dm', scope=original.scope, profile=original.profile,
++                                     session_key=original.session_key, session_id=original.session_id),
++                   input_sha256=original.input_sha256, input_size_bytes=original.input_size_bytes,
++                   file_name=original.file_name, caption_sha256=original.caption_sha256,
++                   sdk_date=original.sdk_date, file_unique_id=original.file_unique_id,
++                   original_scenario_sha256=original.scenario_sha256, transport_profile=profile,
++                   route_created_at=original.route_created_at, file_identity=list(original.file_identity),
++                   capture_until=previous['capture_until'], read=read)
++    projection = current_projection(store, routing_db, profile_db, cap, receipt)
++    return receipt, projection
+diff --git a/native_reader.py b/native_reader.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1ec2e9dbf4ffaff8ecd4df57ae12d82c8d24e0c5
+--- /dev/null
++++ b/native_reader.py
+@@ -0,0 +1,161 @@
++"""Corroborate an authenticated native text-summary receipt in the running store.
++
++The owner of the existing control socket must authenticate the original
++SDK/ACK receipt and supply the current admitted UserScope before calling this
++predicate. It returns no Telegram authority or R4 dispatch grant.
++"""
++from hashlib import sha256
++import json
++import os
++from pathlib import Path
++import re
++import time
++from types import SimpleNamespace
++
++from gateway.run_inbound_media import _absolute_directory, _file_identity, _verified_bytes
++from gateway.upload_anchor import (
++    AnchorUnavailable, _current_entry, _file, _object, _read_anchor, _read_snapshot,
++    _route, _selector,
++)
++from hermes_cli.friday_user_scope import UserScope
++
++
++def _original_read(db, sid, native_row, read, file, workspace, window, deadline):
++    call_row, result_row = read['call_row'], read['result_row']
++    if (type(call_row) is not int or type(result_row) is not int
++            or not native_row < call_row < result_row):
++        raise AnchorUnavailable('ordinary_text_read_row_order')
++    with _read_snapshot(db, deadline, lambda: int(time.monotonic() >= deadline)) as conn:
++        rows = conn.execute(
++            """SELECT id, role, timestamp, tool_name, tool_calls, tool_call_uids,
++                      tool_call_id, tool_call_uid, content, message_uid
++               FROM messages WHERE session_id = ? AND id IN (?,?,?)
++                 AND active=1 AND compacted=0 AND observed=0 AND _compressed_summary=0
++                 AND display_kind IS NULL AND length(CAST(content AS BLOB)) <= 1048576
++                 AND COALESCE(length(CAST(tool_calls AS BLOB)), 0) <= 65536
++                 AND COALESCE(length(CAST(tool_call_uids AS BLOB)), 0) <= 65536
++               ORDER BY id""", (sid, native_row, call_row, result_row)).fetchall()
++        # Do not let an exact-looking tool call from a different USER turn qualify.
++        intervening = conn.execute('SELECT 1 FROM messages WHERE session_id=? AND id>? AND id<? '
++                                   "AND role='user' AND active=1 LIMIT 1", (sid, native_row, result_row)).fetchone()
++    if len(rows) != 3 or intervening is not None or any(not row['message_uid'] for row in rows):
++        raise AnchorUnavailable('ordinary_text_read_occurrence_unavailable')
++    user, call, result = rows
++    if ((user['role'], call['role'], result['role']) != ('user', 'assistant', 'tool')
++            or not window[0] <= user['timestamp'] <= call['timestamp'] <= result['timestamp'] < window[1]
++            or result['tool_name'] != 'read_file' or result['tool_call_id'] != read['call_id']
++            or not result['tool_call_uid']
++            or _object(call['tool_call_uids']).get(read['call_id']) != result['tool_call_uid']):
++        raise AnchorUnavailable('ordinary_text_read_occurrence_changed')
++    matches = [item for item in json.loads(call['tool_calls'] or '[]') if item.get('id') == read['call_id']]
++    if len(matches) != 1:
++        raise AnchorUnavailable('ordinary_text_read_call_ambiguous')
++    function = matches[0]['function']
++    paths = {file['path'], str(workspace / file['path'])}
++    if function['name'] != 'read_file' or _object(function['arguments']).get('path') not in paths:
++        raise AnchorUnavailable('ordinary_text_read_call_changed')
++    answer = _object(result['content'])
++    result_digest = sha256(result['content'].encode()).hexdigest()
++    if (answer.get('success') is not True or answer.get('scope') != 'own_user_workspace'
++            or answer.get('source_sha256') != file['sha256'] or answer.get('path') != file['path']
++            or result_digest != read['result_sha256']):
++        raise AnchorUnavailable('ordinary_text_read_result_changed')
++    return tuple(tuple(row) for row in rows)
++
++
++def read_retained_text_input(store, routing_db, profile_db, cap, receipt):
++    """Check one exact active DM transcript, retained input and route incarnation."""
++    if type(cap) is not UserScope or cap.revoked:
++        raise AnchorUnavailable('current_user_scope_required')
++    conversation = receipt['conversation']
++    tester = str(conversation['tester_id'])
++    peer = str(conversation['peer_id'])
++    key = conversation['session_key']
++    sid = conversation['session_id']
++    home = cap.authorization_home
++    profile = conversation['profile']
++    scope = conversation['scope']
++    if (conversation['platform'] != 'telegram' or conversation['chat_type'] != 'dm'
++            or key != f'agent:{profile}:telegram:dm:{tester}' or cap.profile != profile
++            or cap.principal != ('telegram', receipt['transport_profile'], peer, tester)
++            or cap.home != home / 'profiles' / profile or scope != str(home / 'sessions')
++            or Path(routing_db.db_path) != home / 'state.db'
++            or Path(profile_db.db_path) != cap.home / 'state.db'):
++        raise AnchorUnavailable('ordinary_text_owner_scope_changed')
++    route = ('telegram', tester, tester, 'dm', None)
++    ctx = SimpleNamespace(session_id=sid, session_key=key)
++    native = receipt['native']
++    if (native['namespace'] != 'native.telegram' or type(native['message_id']) is not int
++            or native['message_id'] <= 0):
++        raise AnchorUnavailable('native_telegram_message_required')
++    selector = _selector(dict(source_session_id=sid, native_row_id=native['input_row'],
++                              file_name=receipt['file_name']))
++    deadline = time.monotonic() + 0.3
++
++    def current_route():
++        if (time.monotonic() >= deadline or routing_db._db_file_was_replaced()
++                or profile_db._db_file_was_replaced()):
++            raise AnchorUnavailable('ordinary_text_store_unavailable')
++        entry = _current_entry(store, ctx, cap, route)
++        if (getattr(entry.platform, 'value', None) != 'telegram' or entry.chat_type != 'dm'
++                or entry.origin.profile != profile
++                or entry.transport_profile != cap.principal[1]
++                or entry.created_at.isoformat() != receipt['route_created_at']
++                or entry.suspended or entry.active_turn_token is not None or entry.expiry_finalized):
++            raise AnchorUnavailable('ordinary_text_route_incarnation_changed')
++        with _read_snapshot(routing_db, deadline, lambda: int(time.monotonic() >= deadline)) as conn:
++            found = conn.execute(
++                'SELECT entry_json FROM gateway_routing WHERE scope=? AND session_key=? '
++                'AND length(CAST(entry_json AS BLOB)) <= 65536', (scope, key)).fetchone()
++        if found is None:
++            raise AnchorUnavailable('ordinary_text_durable_route_missing')
++        stored = _object(found['entry_json'])
++        origin = stored.get('origin')
++        if (stored.get('created_at') != receipt['route_created_at']
++                or stored.get('session_id') != sid or stored.get('session_key') != key
++                or stored.get('platform') != 'telegram' or stored.get('chat_type') != 'dm'
++                or stored.get('suspended') is not False or stored.get('expiry_finalized') is not False
++                or stored.get('active_turn_token') is not None
++                or stored.get('transport_profile') != cap.principal[1]
++                or not isinstance(origin, dict)
++                or tuple(origin.get(k) for k in ('platform','user_id','chat_id','chat_type','thread_id')) != route
++                or origin.get('profile') != profile):
++            raise AnchorUnavailable('ordinary_text_durable_route_changed')
++        return entry
++
++    entry = current_route()
++    original = _read_anchor(profile_db, cap, ctx, route, selector, deadline)
++    _, row = original
++    if row[0] != str(native['message_id']) or row[2:4] != (1, 0):
++        raise AnchorUnavailable('ordinary_text_active_native_input_changed')
++    file = _file(row, cap, receipt['file_name'])
++    if file['sha256'] != receipt['input_sha256'] or file['size_bytes'] != receipt['input_size_bytes']:
++        raise AnchorUnavailable('ordinary_text_direct_upload_changed')
++    def checked_read():
++        return _original_read(profile_db, sid, native['input_row'], receipt['read'], file,
++                              cap.home / 'workspace', (receipt['sdk_date'], receipt['capture_until']), deadline)
++
++    before_read = checked_read()
++    # _file requires the stock received-path syntax. Open through the exact
++    # protected owner directory and reject replacement, links and byte drift.
++    parent = cap.home / 'workspace' / 'received'
++    leaf = Path(file['path']).name
++    if re.fullmatch(r'telegram_[a-f0-9]{64}_[A-Za-z0-9_.-]{1,80}\.[a-z0-9]{1,12}', leaf) is None:
++        raise AnchorUnavailable('ordinary_text_received_leaf_required')
++    directory = _absolute_directory(parent)
++    try:
++        before = _file_identity(os.stat(leaf, dir_fd=directory, follow_symlinks=False))
++        if tuple(receipt['file_identity']) != before:
++            raise AnchorUnavailable('ordinary_text_retained_file_identity_changed')
++        raw = _verified_bytes(directory, (leaf,), dict(size_bytes=file['size_bytes'], sha256=file['sha256']))
++        after = _file_identity(os.stat(leaf, dir_fd=directory, follow_symlinks=False))
++        if before != after or not os.path.samestat(os.fstat(directory), parent.stat(follow_symlinks=False)):
++            raise AnchorUnavailable('ordinary_text_retained_file_changed')
++    finally:
++        os.close(directory)
++    if (_read_anchor(profile_db, cap, ctx, route, selector, deadline) != original
++            or checked_read() != before_read
++            or current_route() is not entry or time.monotonic() >= deadline):
++        raise AnchorUnavailable('ordinary_text_current_snapshot_changed')
++    return {'conversation': conversation, 'retained_input_sha256': sha256(raw).hexdigest(),
++            'route_incarnation_matches': True}
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+index 12bd98553655636cea992ce0d3944ff1463fe009..dd21a21bda9afc5b61497c6e81355f9b70890198 100644
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -526,6 +526,7 @@ class _OrdinaryDMWireClaim:
+     selected_d01_rtf: tuple[str, str] | None = None
+     selected_d16_seed: tuple[str, str] | None = None
+     selected_d16_followon: object = None
++    selected_c06: tuple[str, str] | None = None
+ 
+ 
+ @dataclasses.dataclass(frozen=True, slots=True)
+@@ -1805,7 +1806,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+     def _reserve_ordinary_dm_wire_window(self, *, claim_sha256, user_id, generation,
+                                         expires_monotonic, max_updates, owner_is_current, ingress_scope=None,
+                                         require_s08_document=False, selected_s14=None, selected_d05=None,
+-                                        selected_d01_rtf=None, selected_d16_seed=None, selected_d16_followon=None):
++                                        selected_d01_rtf=None, selected_d16_seed=None, selected_d16_followon=None,
++                                        selected_c06=None):
+         """Queue an already authorized claim on the gateway loop. None means pending only."""
+         now = time.monotonic()
+         updater = self._ordinary_dm_wire_updater(generation)
+@@ -1859,6 +1861,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                     or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", selected_d16_followon.run_id) is None):
+                 raise ValueError("Invalid selected D16 follow-on wire claim")
+             selected_d16_followon.check_route(ingress_scope, actor=user_id)
++        if selected_c06 is not None:
++            from c06_ingress import is_selected_plan
++
++            if (ingress_scope is None or require_s08_document or selected_s14 is not None
++                    or selected_d05 is not None or selected_d01_rtf is not None
++                    or selected_d16_seed is not None or selected_d16_followon is not None
++                    or not is_selected_plan(selected_c06)):
++                raise ValueError("Invalid selected C06 wire claim")
+         pending = getattr(self, "_ordinary_dm_wire_pending", None)
+         if (pending is not None and (pending.updater is not updater or pending.generation != generation
+                                     or now >= pending.expires_monotonic)):
+@@ -1876,7 +1886,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         self._ordinary_dm_wire_pending = _OrdinaryDMWireClaim(
+             claim_sha256, user_id, generation, expires_monotonic, max_updates,
+             owner_is_current, updater, asyncio.get_running_loop(), ingress_scope, require_s08_document, selected_s14,
+-            selected_d05, selected_d01_rtf, selected_d16_seed, selected_d16_followon,
++            selected_d05, selected_d01_rtf, selected_d16_seed, selected_d16_followon, selected_c06,
+         )
+ 
+     def _ordinary_dm_wire_native_parameters(self, request, generation, kwargs):
+@@ -2038,7 +2048,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                     or getattr(self, "_ordinary_dm_wire_window", None) is not window):
+                 return False
+             strict = (claim.selected_d05 is not None or claim.selected_d01_rtf is not None
+-                      or claim.selected_d16_seed is not None or claim.selected_d16_followon is not None)
++                      or claim.selected_d16_seed is not None or claim.selected_d16_followon is not None
++                      or getattr(claim, "selected_c06", None) is not None)
+             if strict and (selected_arm is None
+                     or type(accept_before) not in (int, float)
+                     or not 0 < accept_before <= claim.expires_monotonic):
+@@ -2057,6 +2068,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+                     return False
+             elif state not in ("UNKNOWN", "LOCAL_WIRE_CLOSED"):
+                 return False
++            if getattr(claim, "selected_c06", None) is not None:
++                from c06_ingress import settled_publication
++
++                settled_publication(arm, deadline=accept_before)
+         except Exception:
+             return False
+         self._ordinary_dm_wire_window = self._ordinary_dm_wire_arm = None
+@@ -7518,6 +7533,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+         capture_native = arm is not None and (arm.claim.require_s08_document or arm.claim.selected_d05 is not None
+                                               or arm.claim.selected_d01_rtf is not None
+                                               or arm.claim.selected_d16_seed is not None
++                                              or getattr(arm.claim, "selected_c06", None) is not None
+                                               or arm.ingress is not None and arm.ingress._xlsx_input is not None)
+         if not capture_native:
+             event = self._build_message_event(msg, message_type, update_id=update.update_id)
