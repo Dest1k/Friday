@@ -9,9 +9,16 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import stat
 import sys
+import time
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+_GATEWAY_STARTUP_TIMEOUT_DROPIN = b"[Service]\nTimeoutStartSec=180s\n"
+_GATEWAY_COLD_START_SECONDS = 180
 
 
 def prerequisites(value, budget):
@@ -134,7 +141,65 @@ def unchanged(pins, budget):
             budget.call(source_identity, Path(path).parent, source=Path(path).parent / "hermes-agent")
 
 
-def gateway_preflight(home, profile, budget):
+@contextmanager
+def _gateway_timeout_dropin_custody(unit, fragment):
+    from scripts.friday_install import require
+
+    reason = "gateway_dropin_requires_reconciliation"
+    require(unit.anchor == "/" and ".." not in unit.parts, reason)
+    uid = os.getuid()
+    directories = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    files = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    identity = ("st_dev", "st_ino", "st_mode", "st_uid", "st_ctime_ns")
+    revision = identity + ("st_nlink", "st_size", "st_mtime_ns")
+    with ExitStack() as opened:
+        retained = []
+
+        def retain(name, parent, flags, fields):
+            fd = os.open(name, flags, dir_fd=parent)
+            opened.callback(os.close, fd)
+            before = os.fstat(fd)
+            retained.append((fd, parent, name, fields, before))
+            return fd, before
+
+        parent = None
+        parts = unit.parent.parts
+        for index, part in enumerate(parts):
+            fields = revision if index == len(parts) - 1 else identity
+            parent, info = retain(part, parent, directories, fields)
+            require(info.st_uid in (0, uid) and not info.st_mode & 0o022, reason)
+        require(info.st_uid == uid, reason)
+        dropins, info = retain(fragment.parent.name, parent, directories, revision)
+        require(info.st_uid == uid and not info.st_mode & 0o022, reason)
+        require(os.listdir(dropins) == [fragment.name], reason)
+
+        def read(name, parent, limit):
+            fd, before = retain(name, parent, files, revision)
+            require(stat.S_ISREG(before.st_mode) and before.st_uid == uid
+                    and before.st_nlink == 1 and not before.st_mode & 0o022
+                    and 0 <= before.st_size <= limit, reason)
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                data = stream.read(before.st_size + 1)
+            require(len(data) == before.st_size, reason)
+            return data
+
+        actual = read(unit.name, parent, 64 * 1024**2)
+        require(read(fragment.name, dropins, len(_GATEWAY_STARTUP_TIMEOUT_DROPIN))
+                == _GATEWAY_STARTUP_TIMEOUT_DROPIN, reason)
+
+        def unchanged():
+            for fd, parent_fd, name, fields, before in retained:
+                current = os.fstat(fd)
+                named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                require(all(getattr(before, field) == getattr(current, field) == getattr(named, field)
+                            for field in fields), reason)
+
+        unchanged()
+        yield actual.decode("utf-8-sig")
+        unchanged()
+
+
+def gateway_preflight(home, profile, budget, timeout_readback=None):
     """Native exact user unit only; never adopt, refresh, replace or reap foreign."""
     from gateway import host_rendezvous as hr
     from hermes_cli import gateway as gw
@@ -150,18 +215,36 @@ def gateway_preflight(home, profile, budget):
     unit = gw.get_systemd_unit_path(system=False)
     require(not gw.get_systemd_unit_path(system=True).exists(), "system_gateway_unit_not_adopted")
     dropins = unit.parent / (unit.name + ".d")
-    require(
-        not dropins.is_symlink() and (not dropins.exists() or not any(dropins.iterdir())),
-        "gateway_dropin_requires_reconciliation",
-    )
+    require(not dropins.is_symlink(), "gateway_dropin_requires_reconciliation")
+    populated = dropins.exists() and any(dropins.iterdir())
+    require(not populated or timeout_readback is not None, "gateway_dropin_requires_reconciliation")
     expected = budget.call(gw.generate_systemd_unit, system=False)
-    if unit.exists() or unit.is_symlink():
+    normalize = gw._normalize_service_definition
+    strip_optional = gw._strip_optional_systemd_directives
+    if populated:
+        fragment = dropins / "20-startup-timeout.conf"
+        with _gateway_timeout_dropin_custody(unit, fragment) as actual:
+            # The generated definition embeds the checked home. Compare the
+            # bytes from the held FD without opening a second path for HOME.
+            require(normalize(strip_optional(actual)) == normalize(strip_optional(expected)),
+                    "foreign_or_changed_gateway_unit")
+            expected_properties = {
+                "Id": unit.name,
+                "LoadState": "loaded",
+                "FragmentPath": str(unit),
+                "DropInPaths": str(fragment),
+                "NeedDaemonReload": "no",
+                "TimeoutStartUSec": "3min",
+            }
+            require(budget.call(timeout_readback, unit, tuple(expected_properties)) == expected_properties,
+                    "gateway_timeout_dropin_effective_unproved")
+        budget.check()
+    elif unit.exists() or unit.is_symlink():
         require(not unit.stat().st_mode & 0o022, "writable_gateway_unit_refused")
         actual = budget.call(owned_file, unit).decode("utf-8-sig")
         require(
             gw._hermes_home_pinned_by_unit(unit) == str(home)
-            and gw._normalize_service_definition(gw._strip_optional_systemd_directives(actual))
-            == gw._normalize_service_definition(gw._strip_optional_systemd_directives(expected)),
+            and normalize(strip_optional(actual)) == normalize(strip_optional(expected)),
             "foreign_or_changed_gateway_unit",
         )
     # Existing live native owners must have proved exact home/profile/incarnation.
@@ -177,7 +260,7 @@ def gateway_preflight(home, profile, budget):
     return unit, record
 
 
-def gateway_observation(home, budget):
+def gateway_observation(home, budget, read_properties=None):
     from gateway import host_rendezvous as hr
     from gateway.control_socket import CONTROL_PROTOCOL_VERSION, identify_gateway
     from gateway.status import normalize_updated_at, runtime_status_is_stale
@@ -193,11 +276,11 @@ def gateway_observation(home, budget):
         hr.liveness_is_proven(record) and hr.record_token_is_consistent(record),
         "native_gateway_incarnation_unproved",
     )
-    props = budget.call(
-        gw._read_systemd_unit_properties,
-        system=False,
-        properties=("ActiveState", "SubState", "MainPID", "InvocationID"),
-    )
+    if read_properties is None:
+        def read_properties(properties):
+            return gw._read_systemd_unit_properties(system=False, properties=properties)
+    properties = ("ActiveState", "SubState", "MainPID", "InvocationID")
+    props = budget.call(read_properties, properties)
     state = budget.call(gw._read_gateway_runtime_status)
     source = budget.call(read_json, home / "hermes-agent.source.json")
     updated = normalize_updated_at(state.get("updated_at")) if isinstance(state, dict) else None
@@ -246,11 +329,7 @@ def gateway_observation(home, budget):
     # incarnation. Reconcile the retained native owner after that exchange.
     observed = budget.call(hr.read_record, hr.ROLE_GATEWAY, include_stale=True)
     require(observed == record, "native_gateway_owner_changed_during_probe")
-    current_props = budget.call(
-        gw._read_systemd_unit_properties,
-        system=False,
-        properties=("ActiveState", "SubState", "MainPID", "InvocationID"),
-    )
+    current_props = budget.call(read_properties, properties)
     require(current_props == props, "native_gateway_unit_changed_during_probe")
     require(
         budget.call(hr.liveness_is_proven, record)
@@ -365,6 +444,66 @@ def start(value, budget, *, raw=None):
     launch(value if raw is None else raw, budget, pins=pins)
 
 
+def _ordinary_user_bus():
+    from scripts.friday_install import directory, require
+
+    runtime = directory(Path("/run/user") / str(os.getuid()))
+    bus = runtime / "bus"
+    info = bus.lstat()
+    require(stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1,
+            "ordinary_start_owned_user_bus_required")
+    return runtime, bus, info
+
+
+def _ordinary_systemctl(runtime, bus):
+    return ["/usr/bin/env", "XDG_RUNTIME_DIR=" + str(runtime),
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=" + str(bus), "SYSTEMCTL_FORCE_BUS=1",
+            "LC_ALL=C", "/usr/bin/systemctl", "--user"]
+
+
+class _OrdinaryTimeoutManager:
+    """Use one checked local manager for effective admission, Start and observation."""
+
+    def __init__(self, unit, source):
+        from hermes_cli import gateway as gw
+        from scripts.friday_install import require
+
+        require(unit.name == gw.get_service_name() + ".service", "ordinary_start_exact_native_unit_required")
+        self.unit, self.source = unit, source
+        self.runtime, self.bus, info = _ordinary_user_bus()
+        self.identity = self._identity(self.runtime.lstat(), info)
+        self.prefix = _ordinary_systemctl(self.runtime, self.bus)
+
+    @staticmethod
+    def _identity(runtime, bus):
+        return tuple((s.st_dev, s.st_ino, s.st_mode, s.st_uid, s.st_nlink) for s in (runtime, bus))
+
+    def check_bus(self):
+        from scripts.friday_install import require
+
+        runtime, bus, info = _ordinary_user_bus()
+        require(runtime == self.runtime and bus == self.bus
+                and self._identity(runtime.lstat(), info) == self.identity,
+                "ordinary_start_owned_user_bus_required")
+
+    def command(self, action):
+        self.check_bus()
+        return [*self.prefix, action, self.unit.name]
+
+    def properties(self, custody, properties):
+        from scripts.friday_install import require
+
+        command = self.command("show")
+        output, _ = custody.run([*command, "--property=" + ",".join(properties)], self.source, timeout=15)
+        self.check_bus()
+        rows = [line.split("=", 1) for line in output.splitlines()]
+        require(len(rows) == len(properties) and all(len(row) == 2 for row in rows),
+                "gateway_timeout_dropin_effective_unproved")
+        result = dict(rows)
+        require(set(result) == set(properties), "gateway_timeout_dropin_effective_unproved")
+        return result
+
+
 def ordinary_start(value, budget):
     """Ordinary receiving service only; native operator Dashboard is separate.
 
@@ -377,7 +516,7 @@ def ordinary_start(value, budget):
     from hermes_cli.friday_ordinary_gateway import check
     from hermes_cli.friday_credential_admission import bootstrap, scoped, route_inputs, channel_inputs
     from scripts.friday_install import clean_environment, require
-    from scripts.install_containment import Containment
+    from scripts.install_containment import Budget, Containment
     from scripts.dsh_prepare import StopUnconfirmed
     from hermes_constants import get_hermes_home
     from pm.paths import repo_root
@@ -392,13 +531,47 @@ def ordinary_start(value, budget):
     with scoped(home):
         budget.call(route_inputs)
         contract,_ = budget.call(channel_inputs)
-        unit,old = gateway_preflight(home,'default',budget)
+        environment = clean_environment(home)
+        custody = None
+        manager = None
+
+        def process_custody():
+            nonlocal custody
+            if custody is None:
+                custody = Containment(value["containment"], budget, environment)
+            return custody
+
+        def preflight(*, initial=False):
+            nonlocal manager
+            previously_approved = manager is not None
+            approved = False
+
+            def readback(unit, properties):
+                nonlocal approved, manager
+                if manager is None:
+                    manager = _OrdinaryTimeoutManager(unit, source)
+                require(manager.unit == unit, "ordinary_start_exact_native_unit_required")
+                approved = True
+                return manager.properties(process_custody(), properties)
+
+            result = gateway_preflight(home, "default", budget, readback)
+            require(initial or approved == previously_approved,
+                    "gateway_dropin_requires_reconciliation")
+            return result
+
+        unit,old = preflight(initial=True)
         require(budget.call(gw.get_systemd_linger_status)[0] is True, 'ordinary_existing_user_linger_required')
         unchanged(pins,budget)
         if old is not None:
-            gateway_observation(home,budget)
+            if manager is None:
+                gateway_observation(home,budget)
+            else:
+                gateway_observation(home,budget,lambda keys: manager.properties(custody, keys))
             return {'state':'ORDINARY_NATIVE_GATEWAY_ALREADY_RUNNING','ready':False,'workers_enabled':False}
-        props = budget.call(gw._read_systemd_unit_properties,system=False)
+        if manager is None:
+            props = budget.call(gw._read_systemd_unit_properties,system=False)
+        else:
+            props = budget.call(manager.properties, custody, ("ActiveState", "MainPID"))
         require(props.get('ActiveState') in ('inactive','failed','') and str(props.get('MainPID','0')) == '0'
                 and not budget.call(gw.find_gateway_pids), 'gateway_start_requires_reconciliation')
         launcher = source/'.hermes/bin/hermes'
@@ -409,9 +582,9 @@ def ordinary_start(value, budget):
             shlex.join([str(python),'-I','-c',_launcher_script('hermes',source,None)])+' "$@"\n').encode()
             and os.access(launcher,os.X_OK) and not launcher.stat().st_mode & 0o022,
             'native_launcher_generation_changed')
-        custody = Containment(value['containment'],budget,clean_environment(home))
+        custody = process_custody()
         custody.probe(value['bootstrap_python']['path'],source)
-        _unit,current = gateway_preflight(home,'default',budget)
+        _unit,current = preflight()
         require(current is None,'gateway_owner_changed_before_handoff')
         stage = 'gateway_install'
         try:
@@ -420,28 +593,38 @@ def ordinary_start(value, budget):
             stage = 'input_snapshot'
             unchanged(pins,budget)
             stage = 'gateway_preflight'
-            _unit,current = gateway_preflight(home,'default',budget)
+            _unit,current = preflight()
             stage = 'gateway_owner'
             require(current is None,'gateway_owner_changed_before_handoff')
-            # The CLI's fixed30s wait can expire before a valid Type=notify unit
-            # completes. Hand this exact checked unit once to its native user
-            # manager, which waits for job completion within the original budget.
-            # No unit refresh, retry, polling or credential environment crosses it.
-            from scripts.friday_install import directory
-            import stat
             stage = 'user_bus'
-            runtime = directory(Path('/run/user')/str(os.getuid()))
-            bus = runtime/'bus'; info = bus.lstat()
-            require(stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1,
-                    'ordinary_start_owned_user_bus_required')
+            if manager is None:
+                runtime, bus, _ = _ordinary_user_bus()
+                command = [*_ordinary_systemctl(runtime, bus), "start", unit.name]
+            else:
+                manager.check_bus()
             stage = 'native_unit_identity'
-            require(unit.name == gw.get_service_name()+'.service', 'ordinary_start_exact_native_unit_required')
+            require(unit == _unit and unit.name == gw.get_service_name()+'.service',
+                    'ordinary_start_exact_native_unit_required')
             stage = 'native_unit_start'
-            custody.run(['/usr/bin/env','XDG_RUNTIME_DIR='+str(runtime),
-                'DBUS_SESSION_BUS_ADDRESS=unix:path='+str(bus),'SYSTEMCTL_FORCE_BUS=1','/usr/bin/systemctl','--user','start',unit.name],
-                source,timeout=90)
+            observation_budget = budget
+            observation_readback = None
+            if manager is None:
+                custody.run(command, source, timeout=90)
+            else:
+                now = time.monotonic()
+                observation_budget = Budget(_GATEWAY_COLD_START_SECONDS, started=now,
+                    deadline=min(budget.deadline, now + _GATEWAY_COLD_START_SECONDS))
+                cold_custody = Containment(value["containment"], observation_budget, environment)
+                # Keep time for the runtime identity check. Containment also
+                # bounds command and cancellation by this same cold deadline.
+                cold_custody.run(manager.command("start"), source, timeout=observation_budget.check(reserve=5))
+                def observation_readback(keys):
+                    return manager.properties(cold_custody, keys)
             stage = 'gateway_observation'
-            gateway_observation(home,budget)
+            if observation_readback is None:
+                gateway_observation(home,budget)
+            else:
+                observation_budget.call(gateway_observation, home, observation_budget, observation_readback)
         except BaseException as exc:
             # Keep the existing uncertainty boundary and original command owner.
             # Only source-defined stage/reason and existing safe observations
