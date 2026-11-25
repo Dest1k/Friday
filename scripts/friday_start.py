@@ -21,6 +21,10 @@ _GATEWAY_STARTUP_TIMEOUT_DROPIN = b"[Service]\nTimeoutStartSec=180s\n"
 _GATEWAY_START_COMMAND_SECONDS = 210
 _GATEWAY_START_PROOF_SECONDS = 60
 _GATEWAY_START_PROOF_RESERVE_SECONDS = 5
+_GATEWAY_START_IDENTIFY_SECONDS = 20
+_GATEWAY_START_IDENTIFY_MANIFEST = (
+    "patches/hermes/ordinary-start-identify-cutoff-after-source341-manifest.json"
+)
 
 
 def prerequisites(value, budget):
@@ -262,7 +266,7 @@ def gateway_preflight(home, profile, budget, timeout_readback=None):
     return unit, record
 
 
-def gateway_observation(home, budget, read_properties=None):
+def gateway_observation(home, budget, read_properties=None, *, identify_with_cutoff=None):
     from gateway import host_rendezvous as hr
     from gateway.control_socket import CONTROL_PROTOCOL_VERSION, identify_gateway
     from gateway.status import normalize_updated_at, runtime_status_is_stale
@@ -309,7 +313,11 @@ def gateway_observation(home, budget, read_properties=None):
     )
     generation = budget.call(expected_gateway, home)
     diagnostic = {}
-    live = budget.call(identify_gateway, home, timeout=min(5.0, budget.check()), diagnostic=diagnostic)
+    if identify_with_cutoff is None:
+        live = budget.call(identify_gateway, home, timeout=min(5.0, budget.check()), diagnostic=diagnostic)
+    else:
+        cutoff = min(budget.deadline, time.monotonic() + _GATEWAY_START_IDENTIFY_SECONDS)
+        live = budget.call(identify_with_cutoff, home, cutoff=cutoff, diagnostic=diagnostic)
     identity = live if isinstance(live, dict) else {}
     fields = {
         "response": isinstance(live, dict),
@@ -570,6 +578,21 @@ def ordinary_start(value, budget):
             else:
                 gateway_observation(home,budget,lambda keys: manager.properties(custody, keys))
             return {'state':'ORDINARY_NATIVE_GATEWAY_ALREADY_RUNNING','ready':False,'workers_enabled':False}
+        identify_with_cutoff = None
+        # The entry points already matched the pinned project overlay set and
+        # exported source bytes to the receipt. A selected layer requires its
+        # native client before a service effect can be admitted.
+        if manager is not None and _GATEWAY_START_IDENTIFY_MANIFEST in value.get("project_files", {}):
+            from inspect import Parameter, signature
+            from gateway import control_socket
+
+            client = getattr(control_socket, "identify_gateway", None)
+            parameter = signature(client).parameters.get("cutoff") if callable(client) else None
+            require(getattr(control_socket, "__file__", None) == str(source / "gateway/control_socket.py")
+                    and getattr(control_socket, "_IS_WINDOWS", None) is False
+                    and parameter is not None and parameter.kind is Parameter.KEYWORD_ONLY,
+                    "ordinary_start_native_identify_cutoff_required")
+            identify_with_cutoff = client
         if manager is None:
             props = budget.call(gw._read_systemd_unit_properties,system=False)
         else:
@@ -625,7 +648,8 @@ def ordinary_start(value, budget):
                     deadline=min(budget.deadline, now + _GATEWAY_START_PROOF_SECONDS))
                 proof_custody = Containment(value["containment"], proof_budget, environment)
                 proof_budget.call(gateway_observation, home, proof_budget,
-                    lambda keys: manager.properties(proof_custody, keys))
+                    lambda keys: manager.properties(proof_custody, keys),
+                    identify_with_cutoff=identify_with_cutoff)
         except BaseException as exc:
             # Keep the existing uncertainty boundary and original command owner.
             # Only source-defined stage/reason and existing safe observations

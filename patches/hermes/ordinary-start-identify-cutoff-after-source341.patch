@@ -1,0 +1,123 @@
+--- a/gateway/control_socket.py
++++ b/gateway/control_socket.py
+@@ -17,6 +17,7 @@
+ import inspect
+ import json
+ import logging
++import math
+ import os
+ import socket
+ import struct
+@@ -381,43 +382,80 @@
+     """Ask the gateway serving ``home`` a control verb; returns its ``result`` payload. Any failure (no/stale
+     socket, timeout, malformed answer, ``ok: false``) returns None so callers fall back to the scan layer.
+     ``params`` carries verb arguments (e.g. ``{"old": ..., "new": ...}``). Never raises."""
++    return _query_gateway_control(home, verb, params=params, timeout=timeout)
++
++
++def _query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,
++                           timeout: float, cutoff: Optional[float] = None) -> Optional[dict[str, Any]]:
+     payload: dict[str, Any] = {"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION}
+     if params:
+         payload["params"] = params
+     request = json.dumps(payload).encode("utf-8") + b"\n"
+-    query = _query_windows_pipe if _IS_WINDOWS else _query_unix_socket
+     try:
+-        raw = query(Path(home), request, timeout)
++        if cutoff is None:
++            query = _query_windows_pipe if _IS_WINDOWS else _query_unix_socket
++            raw = query(Path(home), request, timeout)
++        else:
++            if (_IS_WINDOWS or type(cutoff) not in (int, float)
++                    or not math.isfinite(cutoff) or time.monotonic() >= cutoff):
++                return None
++            raw = _query_unix_socket(Path(home), request, timeout, cutoff=cutoff)
+         response = json.loads(raw.decode("utf-8")) if raw else None
+     except Exception:
+         return None
+     result = response.get("result") if isinstance(response, dict) and response.get("ok") is True else None
++    if cutoff is not None and time.monotonic() >= cutoff:
++        return None
+     return result if isinstance(result, dict) else None
+ 
+ 
+-def _read_response_line(read: Callable[[], bytes], deadline: float) -> Optional[bytes]:
++def _read_response_line(read: Callable[[], bytes], deadline: float, *,
++                        enforce_cutoff: bool = False) -> Optional[bytes]:
+     """Read chunks until a newline, EOF, deadline, or the size cap (-> None)."""
+-    chunks: list[bytes] = []
++    line = bytearray()
+     while time.monotonic() < deadline:
+         chunk = read()
+-        chunks.append(chunk)
+-        if not chunk or b"\n" in chunk:
+-            break
+-        if sum(len(c) for c in chunks) > _MAX_RESPONSE_BYTES:
++        payload, newline, _ = chunk.partition(b"\n")
++        if enforce_cutoff and (time.monotonic() >= deadline
++                               or len(line) + len(payload) > _MAX_RESPONSE_BYTES):
++            return None
++        line.extend(payload)
++        if newline or (not chunk and not enforce_cutoff):
++            return bytes(line) or None
++        if not chunk or len(line) > _MAX_RESPONSE_BYTES:
+             return None
+-    return b"".join(chunks).partition(b"\n")[0] or None
++    return None if enforce_cutoff else bytes(line) or None
+ 
+ 
+-def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[bytes]:
++def _query_unix_socket(home: Path, request: bytes, timeout: float, *,
++                       cutoff: Optional[float] = None) -> Optional[bytes]:
+     path = resolve_client_socket_path(home)
+     if path is None:
+         return None
+     # OSError covers ConnectionRefusedError / FileNotFoundError on connect and socket.timeout on read.
+     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock, contextlib.suppress(OSError):
+-        sock.settimeout(timeout)
++        def set_remaining_timeout(deadline: float) -> None:
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                raise TimeoutError
++            sock.settimeout(remaining)
++
++        if cutoff is None:
++            sock.settimeout(timeout)
++        else:
++            set_remaining_timeout(cutoff)
+         sock.connect(str(path))
++        if cutoff is not None:
++            set_remaining_timeout(cutoff)
+         sock.sendall(request)
+-        return _read_response_line(lambda: sock.recv(65536), time.monotonic() + timeout)
++        if cutoff is None:
++            return _read_response_line(lambda: sock.recv(65536), time.monotonic() + timeout)
++
++        def recv() -> bytes:
++            set_remaining_timeout(cutoff)
++            return sock.recv(65536)
++
++        return _read_response_line(recv, cutoff, enforce_cutoff=True)
+     return None
+ 
+ 
+@@ -456,9 +494,17 @@
+ def identify_gateway(
+     home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT,
+     diagnostic: Optional[dict[str, str]] = None,
++    cutoff: Optional[float] = None,
+ ) -> Optional[dict[str, Any]]:
+-    """Identify the gateway and optionally report whether a usable reply arrived."""
+-    result = query_gateway_control(home, "identify", timeout=timeout)
++    """Identify the gateway and optionally report whether a usable reply arrived.
++
++    On Unix an absolute ``time.monotonic()`` cutoff governs the exchange in place of ``timeout``.
++    A cutoff request on Windows returns None.
++    """
++    if cutoff is None:
++        result = query_gateway_control(home, "identify", timeout=timeout)
++    else:
++        result = _query_gateway_control(home, "identify", timeout=timeout, cutoff=cutoff)
+     if diagnostic is not None:
+         diagnostic.update(transport="windows" if _IS_WINDOWS else "unix",
+                           outcome="no_response" if result is None else "ok")
