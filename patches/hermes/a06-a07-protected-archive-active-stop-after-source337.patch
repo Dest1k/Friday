@@ -1,0 +1,647 @@
+diff --git a/agent/web_call_context.py b/agent/web_call_context.py
+index 58e2f9d6c66e6713973f523dbc5edbfc4cf7826d..cf8f4ceaf3ec4caf8e30717805f3ef883b36cb6e 100644
+--- a/agent/web_call_context.py
++++ b/agent/web_call_context.py
+@@ -164,6 +164,7 @@ class WebCall:
+         self.session = None
+         self.registry = None
+         self.uses_web = False
++        self._protected_archive_owner = None
+         self.receipt = {'status': 'QUIESCENT', 'session_id': None}
+         with turn.lock:
+             turn.calls.add(self)
+@@ -186,14 +187,39 @@ class WebCall:
+         if time.monotonic() >= self.deadline():
+             raise TimeoutError('web_original_deadline')
+ 
++    def bind_protected_archive(self, owner):
++        """Retain one protected archive owner on this exact native call."""
++        from hermes_cli.friday_protected_archive import NativeArchiveOwner
++
++        with self.turn.lock:
++            self.check()
++            if (_current.get() is not self or type(owner) is not NativeArchiveOwner
++                    or self not in self.turn.calls or self._protected_archive_owner is not None
++                    or self.session is not None or self.registry is not None or self.uses_web):
++                raise RuntimeError('web_archive_owner_unavailable')
++            self._protected_archive_owner = owner
++
+     def stop(self):
+         self.stopped.set()
++        owner = self._protected_archive_owner
++        if owner is not None:
++            owner.request_stop()
+         if not self.turn.lock.acquire(timeout=2):
+             self.receipt = {'status':'STOP_UNCONFIRMED','reason':'web_launch_unsettled'}
+             return self.receipt
+         try:
+             if self.session is not None:
+                 self.receipt = self.registry.settle_web(self.session, stop=True)
++            owner = self._protected_archive_owner
++            if owner is not None:
++                archive_status = owner.stop()
++                if archive_status != 'QUIESCENT':
++                    self.receipt = {'status': 'STOP_UNCONFIRMED', 'session_id': None,
++                                    'reason': ('archive_effect_uncertain' if archive_status == 'UNKNOWN'
++                                               else 'archive_stop_pending')}
++                    return self.receipt
++                if self.session is None:
++                    self.receipt = {'status': 'QUIESCENT', 'session_id': None}
+             if self.receipt['status'] == 'QUIESCENT':
+                 self.turn.calls.discard(self)
+             return self.receipt
+@@ -252,7 +278,8 @@ def bind_web_call(call):
+     finally:
+         _current.reset(token)
+         with call.turn.lock:
+-            if call.session is None:
++            owner = call._protected_archive_owner
++            if call.session is None and (owner is None or owner.stop_status() == 'QUIESCENT'):
+                 call.turn.calls.discard(call)
+ 
+ 
+diff --git a/hermes_cli/friday_protected_archive.py b/hermes_cli/friday_protected_archive.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3bf242045ed8442a090237fcd06a65f07f83f488
+--- /dev/null
++++ b/hermes_cli/friday_protected_archive.py
+@@ -0,0 +1,283 @@
++"""Pre-model one-use encrypted archive creation in the native user workspace."""
++
++from contextlib import contextmanager
++from dataclasses import dataclass
++from hmac import compare_digest
++import json
++from pathlib import PurePosixPath
++import re
++import secrets
++from threading import Event, RLock
++import time
++
++from agent.web_call_context import _current, same_web_authority
++from hermes_cli.friday_protected_odt import Binding, TTL_SECONDS
++from hermes_cli.friday_user_scope import current, guard_tool
++from hermes_cli.friday_workspace_revision import check
++
++
++ZIP_AES = 'zip_aes256'
++SEVEN_AES = '7z_aes256'
++SEVEN_PRIVATE = '7z_aes256_private'
++_PROFILES = {
++    ZIP_AES: ('zip', 'WinZip AES-256 AE-2', False),
++    SEVEN_AES: ('7z', '7z AES-256', False),
++    SEVEN_PRIVATE: ('7z', '7z AES-256', True),
++}
++_HASH = re.compile(r'[0-9a-f]{64}')
++_ERRORS = frozenset(('archive_input_refused', 'archive_scope_refused', 'archive_intake_unavailable',
++                     'archive_source_changed', 'archive_protected_commit_unavailable'))
++
++
++class ArchiveRefused(RuntimeError):
++    pass
++
++
++def _need(condition, code):
++    if not condition:
++        raise ArchiveRefused(code)
++
++
++def _refusal(code, *, unknown=False):
++    return {'success': False, 'error': code,
++            'effect_disposition': 'unknown' if unknown else 'none'}
++
++
++@dataclass(frozen=True, slots=True)
++class Attachment:
++    upload_message: str
++    file_unique_id: str
++    source: str
++    member: str
++    source_sha256: str
++    file_identity: tuple
++
++
++@dataclass(frozen=True, slots=True)
++class Approval:
++    binding: Binding
++    attachments: tuple[Attachment, ...]
++    destination: str
++    profile: str
++
++    def check_shape(self):
++        from hermes_cli.friday_workspace_zip import MAX_ENTRIES, _path
++
++        _need(type(self.binding) is Binding and type(self.profile) is str and self.profile in _PROFILES
++              and type(self.attachments) is tuple and 1 <= len(self.attachments) <= MAX_ENTRIES,
++              'archive_scope_refused')
++        try:
++            destination = _path(self.destination)
++            _need(PurePosixPath(destination).suffix.lower() == '.' + _PROFILES[self.profile][0],
++                  'archive_scope_refused')
++            names = set()
++            for entry in self.attachments:
++                _need(type(entry) is Attachment
++                      and all(type(value) is str and 0 < len(value) <= 256
++                              for value in (entry.upload_message, entry.file_unique_id))
++                      and type(entry.source_sha256) is str and _HASH.fullmatch(entry.source_sha256)
++                      and type(entry.file_identity) is tuple and len(entry.file_identity) == 9
++                      and all(type(value) is int for value in entry.file_identity),
++                      'archive_scope_refused')
++                source, member = _path(entry.source), _path(entry.member)
++                _need(source != destination and member not in names, 'archive_scope_refused')
++                names.add(member)
++            _need(not any(str(parent) in names for name in names
++                          for parent in PurePosixPath(name).parents), 'archive_scope_refused')
++        except ArchiveRefused:
++            raise
++        except (ValueError, PermissionError, UnicodeError):
++            raise ArchiveRefused('archive_scope_refused') from None
++
++
++def _scope(approval, call, authorize):
++    cap = current(required=True)
++    binding = approval.binding
++    _need(call is not None and _current.get() is call and same_web_authority(call)
++          and call.session_id == binding.session_id
++          and (cap.principal, cap.profile, cap.admission_generation, cap.directory_identity)
++          == (binding.principal, binding.profile, binding.admission_generation, binding.home_identity)
++          and authorize(approval) is True, 'archive_scope_refused')
++    call.check()
++    check(cap)
++    return cap
++
++
++class _Invocation:
++    __slots__ = ('owner', 'ticket', 'approval', 'deadline', 'call', 'cancelled',
++                 'commit_attempted', '_codec_unsettled')
++
++    def __init__(self, owner, ticket, approval, deadline, call):
++        self.owner = owner
++        self.ticket = ticket
++        self.approval = approval
++        self.deadline = deadline
++        self.call = call
++        self.cancelled = self.commit_attempted = self._codec_unsettled = False
++
++    def _active(self):
++        _need(self.owner._active is self and not self.cancelled and not self.owner._stopped.is_set()
++              and self.owner._clock() < self.deadline, 'archive_intake_unavailable')
++
++    def codec_checkpoint(self):
++        """Poll original call STOP/deadline without taking the publication lock."""
++        self._active()
++        self.call.check()
++
++    def mark_codec_unsettled(self):
++        self._codec_unsettled = True
++
++    def checkpoint(self):
++        with self.owner._lock:
++            self.codec_checkpoint()
++            cap = _scope(self.approval, self.call, self.owner._authorize)
++            self.codec_checkpoint()
++            return cap
++
++    def before_codec(self):
++        from hermes_cli.friday_workspace_7z_codec import WALL_SECONDS
++
++        self.checkpoint()
++        _need(self.deadline - self.owner._clock() > WALL_SECONDS + 2, 'archive_intake_unavailable')
++
++    @contextmanager
++    def commit(self, verify):
++        with self.owner._lock:
++            self.checkpoint()
++            verify()
++            self.checkpoint()
++            self.commit_attempted = True
++            yield
++
++
++class NativeArchiveOwner:
++    """One ephemeral grant for an authenticated native operation."""
++
++    def __init__(self, authorize, *, clock=time.monotonic):
++        self._authorize = authorize
++        self._clock = clock
++        self._lock = RLock()
++        self._stopped = Event()
++        self._pending = self._active = None
++        self._issued = False
++        self._unknown = False
++
++    def issue(self, approval):
++        """The native producer calls this after confirming attachment and profile."""
++        _need(type(approval) is Approval, 'archive_scope_refused')
++        approval.check_shape()
++        call = _current.get()
++        with self._lock:
++            now = self._clock()
++            if self._pending is not None and now >= self._pending[2]:
++                self._pending = None
++            _need(not self._issued and not self._stopped.is_set() and not self._unknown
++                  and self._active is None and self._pending is None, 'archive_intake_unavailable')
++            _scope(approval, call, self._authorize)
++            deadline = min(now + TTL_SECONDS, call.deadline())
++            _need(self._clock() < deadline and not self._stopped.is_set(), 'archive_intake_unavailable')
++            ticket = secrets.token_urlsafe(32)
++            call.bind_protected_archive(self)
++            call.check()
++            _need(not self._stopped.is_set() and self._clock() < deadline,
++                  'archive_intake_unavailable')
++            self._pending = (ticket, approval, deadline, call)
++            self._issued = True
++            return ticket
++
++    def cancel(self, authenticated, ticket):
++        if type(authenticated) is not Binding or type(ticket) is not str or not ticket.isascii():
++            return
++        with self._lock:
++            pending = self._pending
++            if (pending is not None and authenticated == pending[1].binding
++                    and compare_digest(ticket, pending[0])):
++                self._pending = None
++            active = self._active
++            if (active is not None and authenticated == active.approval.binding
++                    and compare_digest(ticket, active.ticket)):
++                active.cancelled = True
++
++    def request_stop(self):
++        self._stopped.set()
++
++    def stop_status(self):
++        """Observe settlement without waiting for scope revalidation or rename."""
++        if not self._lock.acquire(blocking=False):
++            return 'PENDING'
++        try:
++            if self._pending is not None and (
++                    self._stopped.is_set() or self._clock() >= self._pending[2]):
++                self._pending = None
++            if self._active is not None:
++                return 'PENDING'
++            if self._unknown:
++                return 'UNKNOWN'
++            return 'PENDING' if self._pending is not None else 'QUIESCENT'
++        finally:
++            self._lock.release()
++
++    def stop(self):
++        self.request_stop()
++        return self.stop_status()
++
++    def submit(self, authenticated, ticket, secret):
++        """Accept only the owned protected buffer; the ticket stores no password."""
++        if type(secret) is not bytearray:
++            return _refusal('archive_input_refused')
++        invocation = None
++        outcome = None
++        try:
++            from hermes_cli.friday_workspace_zip import _create_protected_archive
++
++            with self._lock:
++                pending = self._pending
++                _need(type(authenticated) is Binding and type(ticket) is str and ticket.isascii()
++                      and pending is not None and self._active is None and not self._unknown
++                      and not self._stopped.is_set() and authenticated == pending[1].binding
++                      and compare_digest(ticket, pending[0]), 'archive_intake_unavailable')
++                _need(_current.get() is pending[3], 'archive_scope_refused')
++                self._pending = None
++                invocation = self._active = _Invocation(self, *pending)
++            cap = invocation.checkpoint()
++            invocation.before_codec()
++            _need(0 < len(secret) <= 1024 and 0 not in secret, 'archive_input_refused')
++            approval = invocation.approval
++            archive_format, encryption, private = _PROFILES[approval.profile]
++            guard_tool('write_file', {'path': approval.destination, 'format': archive_format})
++            result = json.loads(_create_protected_archive(cap, invocation, secret.decode('utf-8'),
++                                                          archive_format, private))
++            if result.get('success') is not True or invocation._codec_unsettled:
++                unknown = invocation._codec_unsettled or result.get('effect_disposition') == 'unknown'
++                outcome = _refusal('archive_effect_uncertain' if unknown else 'archive_input_refused',
++                                   unknown=unknown)
++            else:
++                # The native writer verified the committed archive before returning.
++                # A later stop cannot unsettle the write; delivery checks its own authority.
++                _need(invocation.commit_attempted and result['path'] == approval.destination
++                      and result['format'] == archive_format and result['scope'] == 'own_user_workspace'
++                      and result['create_only'] is True and result['verified'] is True
++                      and type(result['bytes_written']) is int and result['bytes_written'] > 0
++                      and type(result['sha256']) is str and _HASH.fullmatch(result['sha256']),
++                      'archive_input_refused')
++                outcome = {'success': True, 'effect_disposition': 'committed', 'artifact': {
++                    'path': approval.destination, 'sha256': result['sha256'], 'bytes': result['bytes_written'],
++                    'format': archive_format, 'encryption': encryption, 'member_names_encrypted': private,
++                }}
++        except Exception as error:
++            unknown = invocation is not None and (invocation.commit_attempted or invocation._codec_unsettled)
++            code = error.args[0] if type(error) is ArchiveRefused and len(error.args) == 1 else None
++            outcome = _refusal('archive_effect_uncertain' if unknown else
++                               code if type(code) is str and code in _ERRORS else 'archive_input_refused',
++                               unknown=unknown)
++        finally:
++            secret[:] = bytes(len(secret))
++            if invocation is not None:
++                with self._lock:
++                    if outcome is None or outcome.get('effect_disposition') == 'unknown':
++                        self._unknown = True
++                        if hasattr(invocation.call, 'agent'):
++                            invocation.call.agent._friday_reply_effect_unknown = True
++                    if self._active is invocation:
++                        self._active = None
++        return outcome
+diff --git a/hermes_cli/friday_workspace_7z_codec.py b/hermes_cli/friday_workspace_7z_codec.py
+index 1f68f2674d9d55339ce1cbe08a7065b36d4d51b4..bcf7e2950c373e3eb5db0a1f391a8e9ced6597a8 100644
+--- a/hermes_cli/friday_workspace_7z_codec.py
++++ b/hermes_cli/friday_workspace_7z_codec.py
+@@ -2,8 +2,8 @@
+ 
+ The dependency is imported only in an isolated, resource-limited child. Public
+ calls accept bytes, never host paths. Unsupported names are refused, not fixed.
+-This is a codec, not a product authority/cancellation adapter: its caller retains
+-the existing workspace checks and original native call deadline/stop boundary.
++The caller retains workspace authority and can checkpoint its own deadline and
++stop signal during encoding.
+ """
+ import base64
+ import io
+@@ -95,7 +95,8 @@ def _paths(items):
+ 
+ 
+ def encode_7z(members: list[tuple[str, bytes]], *, max_bytes=MAX_BYTES,
+-              max_entries=MAX_ENTRIES, password=None, header_encryption=False) -> bytes:
++              max_entries=MAX_ENTRIES, password=None, header_encryption=False,
++              checkpoint=None) -> bytes:
+     """Encode regular files, preserving order, names and bytes exactly.
+ 
+     Empty lists produce genuine empty 7z archives. Directory input is outside
+@@ -125,7 +126,8 @@ def encode_7z(members: list[tuple[str, bytes]], *, max_bytes=MAX_BYTES,
+     _paths((name, False) for name, _ in members)
+     value = _run({'operation': 'encode', 'max_bytes': max_bytes,
+                  'max_entries': max_entries, 'members': payload,
+-                 'password': password, 'header_encryption': header_encryption})
++                 'password': password, 'header_encryption': header_encryption},
++                 checkpoint=checkpoint)
+     try:
+         data = base64.b64decode(value, validate=True)
+         if len(data) > max_bytes:
+@@ -171,7 +173,7 @@ def decode_7z(data: bytes, *, max_bytes=MAX_BYTES,
+         raise CodecRefused('worker_failed') from None
+ 
+ 
+-def _exchange(process, request, deadline):
++def _exchange(process, request, deadline, checkpoint):
+     """Bound both directions without communicate()'s unbounded stdout buffer."""
+     output, sent = bytearray(), 0
+     with selectors.DefaultSelector() as selector:
+@@ -180,6 +182,8 @@ def _exchange(process, request, deadline):
+         selector.register(process.stdin, selectors.EVENT_WRITE)
+         selector.register(process.stdout, selectors.EVENT_READ)
+         while selector.get_map():
++            if checkpoint is not None:
++                checkpoint()
+             remaining = deadline - time.monotonic()
+             if remaining <= 0:
+                 raise CodecRefused('resource_limit')
+@@ -234,7 +238,24 @@ def _worker_python(project_root):
+         raise CodecUnavailable('codec_unavailable') from None
+ 
+ 
+-def _run(request):
++def _wait(process, deadline, checkpoint):
++    if checkpoint is None:
++        try:
++            return process.wait(timeout=max(.001, deadline - time.monotonic()))
++        except subprocess.TimeoutExpired:
++            raise CodecRefused('resource_limit') from None
++    while True:
++        checkpoint()
++        remaining = deadline - time.monotonic()
++        if remaining <= 0:
++            raise CodecRefused('resource_limit')
++        try:
++            return process.wait(timeout=min(.05, remaining))
++        except subprocess.TimeoutExpired:
++            continue
++
++
++def _run(request, *, checkpoint=None):
+     if not sys.platform.startswith('linux'):
+         raise CodecUnavailable('containment_unavailable')
+     raw = json.dumps(request, ensure_ascii=True, separators=(',', ':')).encode('ascii')
+@@ -246,16 +267,17 @@ def _run(request):
+         # No shell, inherited secrets, user site/PYTHONPATH, scratch or host path
+         # from the archive. Bind the already activated dependency generation.
+         python = _worker_python(Path(__file__).resolve().parents[1])
++        if checkpoint is not None:
++            checkpoint()
+         process = subprocess.Popen([python, '-I', '-B',
+             str(Path(__file__).resolve()), '--worker', str(os.getpid())],
+             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+             env={'LANG': 'C.UTF-8', 'PATH': '/usr/bin:/bin'}, cwd='/',
+             close_fds=True, start_new_session=True)
+-        output = _exchange(process, raw, deadline)
+-        try:
+-            code = process.wait(timeout=max(.001, deadline-time.monotonic()))
+-        except subprocess.TimeoutExpired:
+-            raise CodecRefused('resource_limit') from None
++        output = _exchange(process, raw, deadline, checkpoint)
++        code = _wait(process, deadline, checkpoint)
++        if checkpoint is not None:
++            checkpoint()
+         if code != 0:
+             raise CodecRefused('resource_limit' if code < 0 else 'worker_failed')
+         try:
+diff --git a/hermes_cli/friday_workspace_zip.py b/hermes_cli/friday_workspace_zip.py
+index 650ea327152ea8a4053c79e5b3b47aa6fce813ab..39678142c6284db959864086603435127009323b 100644
+--- a/hermes_cli/friday_workspace_zip.py
++++ b/hermes_cli/friday_workspace_zip.py
+@@ -363,7 +363,7 @@ def _codec_guard(cap, call, deadline):
+         raise TimeoutError('archive_original_deadline')
+ 
+ 
+-def _codec(cap, operation, value, *, password=None, header_encryption=False):
++def _codec(cap, operation, value, *, password=None, header_encryption=False, protected=None):
+     from agent.web_call_context import _current
+     from hermes_cli import friday_workspace_7z_codec as codec
+     check(cap)
+@@ -374,10 +374,15 @@ def _codec(cap, operation, value, *, password=None, header_encryption=False):
+     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+             or deadline - time.monotonic() <= codec.WALL_SECONDS + 2):
+         raise _CodecFailure('archive_codec_budget_insufficient')
+-    _codec_guard(cap, call, deadline)
++    def guard():
++        _codec_guard(cap, call, deadline)
++        if protected is not None:
++            protected.checkpoint()
++    guard()
++    worker = {} if protected is None else {'checkpoint': protected.codec_checkpoint}
+     try:
+         result = (codec.encode_7z(value, max_bytes=MAX_BYTES, max_entries=MAX_ENTRIES,
+-                                  password=password, header_encryption=header_encryption)
++                                  password=password, header_encryption=header_encryption, **worker)
+                   if operation == 'encode' else
+                   codec.decode_7z(value, max_bytes=MAX_BYTES, max_entries=MAX_ENTRIES, password=password))
+     except codec.CodecUnavailable:
+@@ -387,11 +392,13 @@ def _codec(cap, operation, value, *, password=None, header_encryption=False):
+         # itself never publishes files. Preserve UNKNOWN and suppress blind retry.
+         if str(exc) == 'encrypted_archive':
+             raise _CodecFailure('archive_password_required') from None
+-        raise _CodecFailure('archive_codec_cleanup_unconfirmed' if
+-            str(exc) == 'cleanup_unconfirmed' else 'archive_codec_refused',
+-            unknown=str(exc) == 'cleanup_unconfirmed') from None
+-    _codec_guard(cap, call, deadline)
+-    return result, lambda: _codec_guard(cap, call, deadline)
++        cleanup_unconfirmed = str(exc) == 'cleanup_unconfirmed'
++        if cleanup_unconfirmed and protected is not None:
++            protected.mark_codec_unsettled()
++        raise _CodecFailure('archive_codec_cleanup_unconfirmed' if cleanup_unconfirmed else
++                            'archive_codec_refused', unknown=cleanup_unconfirmed) from None
++    guard()
++    return result, guard
+ 
+ 
+ def _seven_rows(cap, data, *, password=None):
+@@ -458,7 +465,7 @@ def _zip_encrypted(data):
+         raise ScopeDenied() from None
+ 
+ 
+-def _zip_crypto(cap, operation, value, password):
++def _zip_crypto(cap, operation, value, password, *, protected=None):
+     from agent.web_call_context import _current
+     from hermes_cli import friday_workspace_zip_aes as codec
+     check(cap)
+@@ -469,16 +476,22 @@ def _zip_crypto(cap, operation, value, password):
+     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+             or deadline-time.monotonic() <= codec.WALL_SECONDS+2):
+         raise _CodecFailure('archive_codec_budget_insufficient')
+-    guard = lambda: _codec_guard(cap, call, deadline)
++    def guard():
++        _codec_guard(cap, call, deadline)
++        if protected is not None:
++            protected.checkpoint()
+     guard()
++    checkpoint = guard if protected is None else protected.codec_checkpoint
+     try:
+-        result = (codec.encode_zip(value, password=password, checkpoint=guard)
++        result = (codec.encode_zip(value, password=password, checkpoint=checkpoint)
+                   if operation == 'encode' else
+-                  codec.decode_zip(value, password=password, checkpoint=guard))
++                  codec.decode_zip(value, password=password, checkpoint=checkpoint))
+     except codec.CodecUnavailable:
+         raise _CodecFailure('archive_codec_unavailable') from None
+     except codec.CodecRefused as exc:
+         code = str(exc)
++        if code == 'cleanup_unconfirmed' and protected is not None:
++            protected.mark_codec_unsettled()
+         error = {'password_required': 'archive_password_required',
+                  'password_or_archive_invalid': 'archive_password_or_data_invalid',
+                  'authentication_failed': 'archive_authentication_failed',
+@@ -871,7 +884,9 @@ def _new_zip(cap, rows):
+ 
+ 
+ def _publish_archive(cap, fd, leaf, relative, rows, sources, output_format, budget,
+-                     *, guard=lambda: None, password=None, header_encryption=False):
++                     *, guard=lambda: None, password=None, header_encryption=False, protected=None):
++    if protected is not None:
++        protected.before_codec()
+     if output_format == '7z':
+         _password_path(password, relative, *(name for name, _, _ in rows))
+         # File-only S494 API cannot represent any explicit directory record.
+@@ -880,7 +895,8 @@ def _publish_archive(cap, fd, leaf, relative, rows, sources, output_format, budg
+             return _codec_failure(_CodecFailure('archive_directory_encode_unsupported'))
+         try:
+             data, guard = _codec(cap, 'encode', [(name, payload) for name, _, payload in rows],
+-                                 password=password, header_encryption=header_encryption)
++                                 password=password, header_encryption=header_encryption,
++                                 protected=protected)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+     elif output_format in TAR_FORMATS:
+@@ -896,7 +912,7 @@ def _publish_archive(cap, fd, leaf, relative, rows, sources, output_format, budg
+                 if any(directory for _, directory, _ in rows):
+                     return _codec_failure(_CodecFailure('archive_directory_encode_unsupported'))
+                 data, guard = _zip_crypto(cap, 'encode',
+-                    [(name, payload) for name, _, payload in rows], password)
++                    [(name, payload) for name, _, payload in rows], password, protected=protected)
+         except _CodecFailure as failure:
+             return _codec_failure(failure)
+     receipt = dict(success=True, format=output_format, path=relative,
+@@ -908,13 +924,21 @@ def _publish_archive(cap, fd, leaf, relative, rows, sources, output_format, budg
+         return _capacity(budget)
+     def verify():
+         guard()
++        if protected is not None:
++            protected.checkpoint()
+         _verify(cap, sources)
+         guard()
++        if protected is not None:
++            _check_parent(cap, fd, relative)
++            protected.checkpoint()
+     verify()
++    commit = {} if protected is None else {'commit_guard': lambda: protected.commit(verify)}
+     result = json.loads(_create_bytes(cap, fd, leaf, relative, data,
+-        output_format=output_format, verify_source=verify))
++        output_format=output_format, verify_source=verify, **commit))
+     if result.get('success') and output_format == 'zip' and password is not None:
+         result.update(encryption='WinZip AES-256 AE-2', member_names_encrypted=False)
++    if protected is not None:
++        return _encode(result)
+     return _effect_receipt(result, rows, relative, budget)
+ 
+ 
+@@ -951,6 +975,55 @@ def create_7z(cap, fd, leaf, relative, content):
+                             password=password, header_encryption=header_encryption)
+ 
+ 
++def _create_protected_archive(cap, invocation, password, output_format, header_encryption):
++    """Use the native codecs with attachment revisions from a consumed grant."""
++    from inspect import signature
++    from hermes_cli.friday_protected_archive import ArchiveRefused, _Invocation, _PROFILES
++    from hermes_cli.friday_user_scope import _workspace_directory
++
++    if type(invocation) is not _Invocation or invocation.checkpoint() is not cap:
++        raise ScopeDenied()
++    if 'commit_guard' not in signature(_create_bytes).parameters:
++        raise ArchiveRefused('archive_protected_commit_unavailable')
++    approval = invocation.approval
++    expected_format, _, expected_header = _PROFILES[approval.profile]
++    if output_format != expected_format or header_encryption is not expected_header:
++        raise ScopeDenied()
++    password = _archive_password(password)
++    if not password:
++        raise ScopeDenied()
++    relative = _path(approval.destination)
++    _password_path(password, relative, *(value for entry in approval.attachments
++                                        for value in (entry.source, entry.member)))
++    rows, sources, total = [], [], 0
++    scan_budget = [MAX_SECRET_SCAN]
++    for entry in approval.attachments:
++        invocation.checkpoint()
++        data, identity = _source(cap, entry.source)
++        if identity != entry.file_identity or hashlib.sha256(data).hexdigest() != entry.source_sha256:
++            raise ArchiveRefused('archive_source_changed')
++        _check_secrets(data, budget=scan_budget)
++        total += len(data)
++        if total > MAX_BYTES:
++            raise ScopeDenied()
++        sources.append((entry.source, data, identity))
++        rows.append((entry.member, False, data))
++
++    parts = PurePosixPath(relative).parts
++    fd = _workspace_directory(cap)
++    try:
++        for part in parts[:-1]:
++            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
++            os.close(fd)
++            fd = child
++        _check_parent(cap, fd, relative)
++        invocation.checkpoint()
++        return _publish_archive(cap, fd, parts[-1], relative, rows, sources, output_format, _inline_budget(),
++                                password=password, header_encryption=header_encryption, protected=invocation)
++    finally:
++        os.close(fd)
++
++
+ def create_tar(cap, fd, leaf, relative, content, *, format):
+     _check_parent(cap, fd, relative)
+     if format not in TAR_FORMATS or archive_format(relative) != format:
