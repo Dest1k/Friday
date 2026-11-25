@@ -1,0 +1,152 @@
+--- a/gateway/run_agent_cache.py
++++ b/gateway/run_agent_cache.py
+@@ -638,6 +638,7 @@
+         if pending_reset(self, session_key) is not None:
+             return {"status": "STOP_UNCONFIRMED"}
+         from gateway.run import _AGENT_PENDING_SENTINEL
++        from gateway.run_native_controls import native_stop_reply_requested
+         from hermes_cli.friday_user_scope import ordinary_stop_authority, ordinary_stop_route
+ 
+         state = self._peek_session_state(session_key)
+@@ -648,6 +649,7 @@
+         publication = None
+         opening_source = getattr(running_event, 'source', None)
+         if (invalidation_reason in ('stop_command', 'stop_command_handler')
++                and native_stop_reply_requested(source)
+                 and running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
+                 and native_web_turn is not None and native_web_turn is getattr(running_agent, '_web_turn', None)
+                 and ctx.session_key == session_key and ctx.agent_holder[0] is running_agent
+@@ -749,16 +751,21 @@
+                 and publication.authority is not None and isinstance(web_receipt, dict)
+                 and web_receipt.get('status') == 'QUIESCENT'
+                 and self._is_session_run_current(session_key, _generation_at_interrupt)):
+-            def publication_visible():
++            def revalidate_publication():
+                 try:
+                     return (ordinary_stop_authority(source, opening_source, ctx.source) == publication.authority
+                             and self._is_user_authorized_for_source(source))
+                 except Exception:
+                     return False  # Optional details must fail closed without blocking /stop.
+ 
+-            visible = await asyncio.to_thread(publication_visible)
+-            if visible and self._is_session_run_current(session_key, _generation_at_interrupt):
+-                web_receipt = dict(web_receipt, ordinary_publication_outcome=publication.outcome)
++            async def publication_visible():
++                if not self._is_session_run_current(session_key, _generation_at_interrupt):
++                    return False
++                return (await asyncio.to_thread(revalidate_publication)
++                        and self._is_session_run_current(session_key, _generation_at_interrupt))
++
++            web_receipt = dict(web_receipt, ordinary_publication_outcome=publication.outcome,
++                               ordinary_publication_visible=publication_visible)
+         if release_running_state:
+             # Guarded release: a message that arrived during the awaits above may already run as
+             # the successor generation — the displaced /stop tail must not wipe its slot.
+--- a/gateway/run_busy.py
++++ b/gateway/run_busy.py
+@@ -1105,14 +1105,14 @@
+     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
+         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
+         from gateway.run import _INTERRUPT_REASON_STOP
+-        from hermes_cli.friday_user_scope import pending_stop_copy, settled_stop_copy
++        from hermes_cli.friday_user_scope import pending_stop_copy, settled_stop_reply
+         receipt = await self._interrupt_and_clear_session(
+             quick_key, source, interrupt_reason=_INTERRUPT_REASON_STOP, invalidation_reason="stop_command",
+         )
+         if isinstance(receipt, dict) and receipt.get("status") == "STOP_UNCONFIRMED":
+             return EphemeralReply(pending_stop_copy(source))
+         logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
+-        return EphemeralReply(settled_stop_copy(source, receipt))
++        return settled_stop_reply(source, receipt)
+ 
+     @native_control("new")
+     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
+--- a/gateway/run_native_controls.py
++++ b/gateway/run_native_controls.py
+@@ -71,6 +71,13 @@
+         _binding.reset(token)
+ 
+ 
++def native_stop_reply_requested(source):
++    """True only inside the actual native /stop reply handler for this source."""
++    active = _binding.get()
++    return (active is not None and active[2] and active[1] is not None
++            and active[1].operation == "stop" and active[0].source is source)
++
++
+ def _consume_completion(task):
+     if not task.cancelled():
+         task.exception()  # A timed-out coroutine may finish later; never leak its exception text.
+@@ -105,15 +112,24 @@
+ 
+ 
+ async def _append_results(runner, event, binding, result):
+-    if binding is None or not binding.targets:
+-        return result
+-    notices = await asyncio.gather(*(_notify(runner, event, binding, target)
+-                                    for target in binding.targets))
+-    notices = [notice for notice in notices if notice]
++    from gateway.platforms.base import EphemeralReply
++
++    notices = []
++    if binding is not None and binding.targets:
++        notices = await asyncio.gather(*(_notify(runner, event, binding, target)
++                                        for target in binding.targets))
++        notices = [notice for notice in notices if notice]
++    if isinstance(result, EphemeralReply):
++        detail = getattr(result, "_friday_publication_detail", None)
++        if detail is not None:
++            text, visible = detail
++            # Plugin callbacks can yield after the stop has already settled.
++            # Recheck the original private recipient at the final reply boundary.
++            result = EphemeralReply(text if await visible() else str(result),
++                                    ttl_seconds=result.ttl_seconds)
+     if not notices:
+         return result
+     text = "\n\n".join([str(result or ""), *notices]).lstrip()
+-    from gateway.platforms.base import EphemeralReply
+     if isinstance(result, EphemeralReply):
+         return EphemeralReply(text, ttl_seconds=result.ttl_seconds)
+     return text
+--- a/gateway/slash_commands.py
++++ b/gateway/slash_commands.py
+@@ -427,7 +427,7 @@
+         all cases.  The session is preserved so the user can continue."""
+         from gateway.protected_odt_reset import pending_reset
+         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
+-        from hermes_cli.friday_user_scope import pending_stop_copy, settled_stop_copy
++        from hermes_cli.friday_user_scope import pending_stop_copy, settled_stop_reply
+ 
+         source = event.source
+         prepare = getattr(event, "_friday_session_command_prepare", None)
+@@ -463,7 +463,7 @@
+             receipt = await _stop(session_key, "stop_command_handler")
+             if receipt and receipt.get("status") == "STOP_UNCONFIRMED":
+                 return EphemeralReply(pending_stop_copy(source))
+-            return EphemeralReply(settled_stop_copy(source, receipt))
++            return settled_stop_reply(source, receipt)
+ 
+         # No run under the caller's own key: a live turn in THIS chat may still carry a differently
+         # shaped key. One scan feeds both tiers; the chat tier is a superset of the thread-sibling
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -2029,6 +2029,19 @@
+     return t('gateway.stop.stopped')
+ 
+ 
++def settled_stop_reply(source, receipt):
++    from gateway.platforms.base import EphemeralReply
++
++    reply = EphemeralReply(settled_stop_copy(source))
++    if isinstance(receipt, dict):
++        visible = receipt.get('ordinary_publication_visible')
++        if callable(visible):
++            detail = settled_stop_copy(source, receipt)
++            if detail != reply:
++                reply._friday_publication_detail = (detail, visible)
++    return reply
++
++
+ def empty_response_copy():
+     return 'Ответ не получен. Часть действий могла выполниться; проверьте результат перед повтором. Если ошибка повторяется, сообщите администратору.'
+ # Exact existing registry.dispatch public wording, kept as the single source.
