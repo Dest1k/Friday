@@ -1,0 +1,655 @@
+diff --git a/c06_r4_custody.py b/c06_r4_custody.py
+index 27ca2d92dfd1650fd2a6a47680882cfc68998ca6..63aa2df4b0cad6a2e6e85f72a2f3b19d66b0c7dc 100644
+--- a/c06_r4_custody.py
++++ b/c06_r4_custody.py
+@@ -1,7 +1,7 @@
+ """Owner-bound, read-only access to the privately installed R4 receipt reader."""
+ 
+ from dataclasses import dataclass
+-from functools import lru_cache
++from functools import lru_cache, partial
+ from hashlib import sha256
+ import json
+ import os
+@@ -123,6 +123,27 @@ class _BorrowedStore:
+     downloads: Path
+     _read: object
+     _reader: _InstalledReader
++    _identities: tuple
++
++    def _verify_directories(self):
++        reason = 'C06_R4_BORROWED_STORE_DIRECTORY_CHANGED'
++        directories = (self.root, self.runs, self.captures, self.downloads)
++        for directory, expected in zip(directories, self._identities, strict=True):
++            try:
++                current = _snapshot_directory(directory)
++            except OSError as exc:
++                raise Refused(reason) from exc
++            require(current == expected, reason)
++
++    def _read_checked(self, read, *args, **kwargs):
++        self._verify_directories()
++        try:
++            return read(*args, **kwargs)
++        finally:
++            self._verify_directories()
++
++    def _read_r4(self):
++        return self._read_checked(self._reader.read, _R4)
+ 
+     def run_path(self, name):
+         require(type(name) is str and _RUN_ID.fullmatch(name), 'Run ID requires 1-64 simple characters')
+@@ -131,7 +152,7 @@ class _BorrowedStore:
+     def get(self, path, default=None):
+         path = Path(path)
+         require(path.is_relative_to(self.root) and '..' not in path.parts, 'C06_R4_BORROWED_STORE_PATH_CHANGED')
+-        return self._read(path, default)
++        return self._read_checked(self._read, path, default)
+ 
+ 
+ def bind_r4_store(store, *, authority_root):
+@@ -144,15 +165,16 @@ def bind_r4_store(store, *, authority_root):
+         authority_root = Path(authority_root)
+         root = Path(store.root)
+         paths = tuple(root / leaf for leaf in ('runs', 'updates', 'downloads'))
+-        require(paths == (store.runs, store.captures, store.downloads) and callable(store.get)
++        read = store.get
++        require(paths == (store.runs, store.captures, store.downloads) and callable(read)
+                 and not (root.is_relative_to(authority_root) or authority_root.is_relative_to(root)),
+                 'C06_R4_SEPARATE_OWNER_AND_BORROWED_STORE_REQUIRED')
+-        for directory in (root, *paths):
+-            _snapshot_directory(directory)
++        identities = tuple(_snapshot_directory(directory) for directory in (root, *paths))
+         installed = _InstalledReader(authority_root, _snapshot_directory(authority_root),
+                                      _snapshot_directory(authority_root / _READER_DIR))
+-        installed.read(_R4)
+-        return _BorrowedStore(root, *paths, store.get, installed)
++        borrowed = _BorrowedStore(root, *paths, read, installed, identities)
++        borrowed._read_r4()
++        return borrowed
+     except (OSError, AttributeError, TypeError) as exc:
+         raise Refused('C06_PROTECTED_INSTALLED_R4_READER_UNBOUND') from exc
+ 
+@@ -227,11 +249,25 @@ class _ReceiptReader(NamedTuple):
+     valid_input_ack: object
+ 
+ 
++def verify_store_binding(store, *, root):
++    """Check the exact borrowed directories for direct phase reads such as cursor and stop."""
++    require(type(store) is _BorrowedStore and store.root == root,
++            'C06_PROTECTED_INSTALLED_R4_READER_UNBOUND')
++    store._verify_directories()
++
++
++def verify_reader_binding(store, *, authority_root):
++    """Check the borrowed reader still belongs to the same protected owner."""
++    require(type(store) is _BorrowedStore and store._reader.root == Path(authority_root),
++            'C06_PROTECTED_INSTALLED_R4_READER_UNBOUND')
++    store._read_r4()
++
++
+ def load_r4(store):
+     """Open only the installed pins and expose the exact R4 receipt surface."""
+     require(type(store) is _BorrowedStore, 'C06_PROTECTED_INSTALLED_R4_READER_UNBOUND')
+     installed = store._reader
+-    raw, path = installed.read(_R4)
++    raw, path = store._read_r4()
+     r4 = _module('_c06_exact_r4_receipt_reader', raw, path)
+     r4._f03_history_source_module = lambda: _history_reader(installed, r4._F03_HISTORY_SOURCE)
+ 
+@@ -242,7 +278,11 @@ def load_r4(store):
+                      'process', 'commit_receive', 'keep_ack', 'terminal_drain',
+                      'poll_updates', 'observe', 'prepared_first_send'):
+             setattr(target, name, _no_effect)
+-        return _ReceiptRunner(target.load, target.verify_reply_custody, target.receive_inventory, target.cursor_offsets)
++        # The exact receipt methods can also read Store paths directly.
++        return _ReceiptRunner(load=partial(store._read_checked, target.load),
++                              verify_reply_custody=partial(store._read_checked, target.verify_reply_custody),
++                              receive_inventory=partial(store._read_checked, target.receive_inventory),
++                              cursor_offsets=partial(store._read_checked, target.cursor_offsets))
+ 
+     return _ReceiptReader(runner, r4.Refused, r4.MAX_JSON, r4.TESTER, r4.USERNAME, r4.encoded, r4.digest,
+                           r4.unique_object, r4.validate_scenario, r4.read_document_input, r4.document_multipart,
+diff --git a/gateway/c06_current_authority.py b/gateway/c06_current_authority.py
+index e76894b77ab9c002631892bb2408e3b1dcd1f38a..624885712b6b683b7c2613899a14fc8cfb4d4437 100644
+--- a/gateway/c06_current_authority.py
++++ b/gateway/c06_current_authority.py
+@@ -149,22 +149,7 @@ def _check_admission(authority, gateway, run_id, scenario_sha, wall):
+             'c06_current_exact_separate_admission_required')
+ 
+ 
+-def verify_current_owner(controller, *, params, peer, contract_observer_sha256, authority_root,
+-                         socket_path, owner_pins, expected=None):
+-    """Join the trusted Root selection, actual socket peer and its current named locks."""
+-    mono, wall = time.monotonic(), time.time()
+-    require(type(params) is dict and set(params) == _FIELDS and params['mode'] == _MODE
+-            and params['kind'] in ('check', 'projection') and type(params['stage']) is str
+-            and params['stage'] in _STAGES and type(params['run_id']) is str and params['run_id'] in _PHASES,
+-            'c06_current_exact_parameters')
+-    deadline = params['deadline_monotonic']
+-    require(_now(deadline) and mono < deadline <= mono + _QUERY_SECONDS, 'c06_current_query_deadline')
+-    require(type(peer) is tuple and len(peer) == 3 and all(type(value) is int for value in peer)
+-            and peer[0] > 0 and peer[1] == os.getuid(), 'c06_current_kernel_socket_peer_required')
+-    require(type(owner_pins) is CurrentOwnerPins
+-            and params['contract_ref'] == owner_pins.contract_ref and params['prepare_ref'] == owner_pins.prepare_ref
+-            and params['authority_ref'] == owner_pins.authority_ref and _hex(contract_observer_sha256),
+-            'c06_current_exact_registered_owner_required')
++def _protected_root(controller, authority_root):
+     root = Path(authority_root)
+     info = root.lstat()
+     require(root.is_absolute() and root.resolve(strict=True) == root and stat.S_ISDIR(info.st_mode)
+@@ -172,26 +157,17 @@ def verify_current_owner(controller, *, params, peer, contract_observer_sha256,
+             and all(not root.is_relative_to(base) and not base.is_relative_to(root)
+                     for base in (controller.home, controller.store)),
+             'c06_current_protected_root_required')
+-    run_id, stage = params['run_id'], params['stage']
+-    phase, scenario_sha, predecessors = _PHASES[run_id]
+-    proof_ref, contract_ref, prepare_ref, authority_ref = (params[key] for key in
+-            ('proof_ref', 'contract_ref', 'prepare_ref', 'authority_ref'))
++    return root
+ 
+-    def document(reference):
+-        _reference_path(reference, root)
+-        return controller.doc(reference, limit=_PRIVATE_LIMIT)[0]
+ 
+-    owner = _kernel(peer[0])
+-    slot_owner = dict(owner_pins.slot_owner)
+-    lock_identities = _locks(controller, owner, slot_owner)
+-    proof, contract, prepare, authority = map(document, (proof_ref, contract_ref, prepare_ref, authority_ref))
+-    for item, schema in ((proof, 'frw.Root.ordinary-current-proof.v1'),
+-                         (contract, 'frw.Root.ordinary-current-contract.v1'),
++def _phase_documents(controller, document, run_id, contract, prepare, authority, authority_ref,
++                     contract_observer_sha256, gateway, mono, wall):
++    phase, scenario_sha, predecessors = _PHASES[run_id]
++    for item, schema in ((contract, 'frw.Root.ordinary-current-contract.v1'),
+                          (prepare, 'frw.Root.ordinary-current-prepare.v1')):
+         require(item.get('schema') == schema and item.get('run_id') == run_id
+                 and item.get('scenario_sha256') == scenario_sha, 'c06_current_run_scenario_changed')
+-    require(proof['contract'] == contract_ref and proof['prepare'] == prepare_ref
+-            and contract['authority'] == authority_ref and contract['operator'] == 'Root'
++    require(contract['authority'] == authority_ref and contract['operator'] == 'Root'
+             and type(contract['decisions']) is dict and all(contract['decisions'].get(k) is True for k in _DECISIONS)
+             and Path(contract['cursor']['path']) == controller.store / 'cursor.json',
+             'c06_current_contract_changed')
+@@ -211,7 +187,6 @@ def verify_current_owner(controller, *, params, peer, contract_observer_sha256,
+ 
+     scope_ref = contract['scope']
+     scope = document(scope_ref)
+-    gateway = dict(_kernel(os.getpid()), uid=os.getuid(), socket=str(socket_path))
+     require(set(scope) == {'schema', 'operator', 'run_id', 'scenario_sha256', 'authority', 'gateway', 'expires_monotonic'}
+             and scope['schema'] == _SCOPE_SCHEMA and scope['operator'] == 'Root'
+             and scope['run_id'] == run_id and scope['scenario_sha256'] == scenario_sha
+@@ -223,6 +198,94 @@ def verify_current_owner(controller, *, params, peer, contract_observer_sha256,
+     require(predecessors == ROLES[phase], 'c06_current_exact_predecessor_set_required')
+     read_predecessors(authority, phase, scenario_sha, controller.read_predecessor_grant)
+ 
++    return cursor, scope_ref, scope, scenario
++
++
++@dataclass(frozen=True, slots=True)
++class _StartupPhase:
++    run_id: str
++    scenario: dict
++    scope_ref: dict
++    scope: dict
++    authority: dict
++    cursor: dict
++    deadline: float = field(compare=False)
++    kind: str = 'check'
++
++
++def verify_startup_phase(controller, run_id, pins):
++    """Verify provisioned Root pins in-process without a request or an operation clock."""
++    mono, wall = time.monotonic(), time.time()
++    require(type(run_id) is str and run_id in _PHASES and type(pins) is CurrentOwnerPins
++            and _hex(controller.contract_observer_sha256), 'c06_exact_current_phase_unbound')
++    root = _protected_root(controller, controller.authority_root)
++
++    def document(reference):
++        _reference_path(reference, root)
++        return controller.doc(reference, limit=_PRIVATE_LIMIT)[0]
++
++    slot_owner = dict(pins.slot_owner)
++    slot_identity = _lock_identity(controller.slot)
++    _held_slot(controller.slot, slot_identity, slot_owner)
++    require(not os.path.lexists(controller.store / 'observer-stop.json'), 'c06_current_observer_stopped')
++
++    contract_ref, prepare_ref, authority_ref = (dict(ref) for ref in
++                                                (pins.contract_ref, pins.prepare_ref, pins.authority_ref))
++    contract, prepare, authority = map(document, (contract_ref, prepare_ref, authority_ref))
++    gateway = dict(_kernel(os.getpid()), uid=os.getuid(), socket=str(controller.socket_path))
++    cursor, scope_ref, scope, scenario = _phase_documents(
++        controller, document, run_id, contract, prepare, authority, authority_ref,
++        controller.contract_observer_sha256, gateway, mono, wall,
++    )
++    _held_slot(controller.slot, slot_identity, slot_owner)
++    deadline = min(scope['expires_monotonic'], mono + authority['expires_at'] - wall)
++    require(time.monotonic() < deadline and time.time() < authority['expires_at']
++            and not os.path.lexists(controller.store / 'observer-stop.json'),
++            'c06_startup_scope_unavailable')
++    return _StartupPhase(run_id, scenario, scope_ref, scope, authority, cursor, deadline), slot_identity
++
++
++def verify_current_owner(controller, *, params, peer, contract_observer_sha256, authority_root,
++                         socket_path, owner_pins, expected=None):
++    """Join the trusted Root selection, actual socket peer and its current named locks."""
++    mono, wall = time.monotonic(), time.time()
++    require(type(params) is dict and set(params) == _FIELDS and params['mode'] == _MODE
++            and params['kind'] in ('check', 'projection') and type(params['stage']) is str
++            and params['stage'] in _STAGES and type(params['run_id']) is str and params['run_id'] in _PHASES,
++            'c06_current_exact_parameters')
++    deadline = params['deadline_monotonic']
++    require(_now(deadline) and mono < deadline <= mono + _QUERY_SECONDS, 'c06_current_query_deadline')
++    require(type(peer) is tuple and len(peer) == 3 and all(type(value) is int for value in peer)
++            and peer[0] > 0 and peer[1] == os.getuid(), 'c06_current_kernel_socket_peer_required')
++    require(type(owner_pins) is CurrentOwnerPins
++            and params['contract_ref'] == owner_pins.contract_ref and params['prepare_ref'] == owner_pins.prepare_ref
++            and params['authority_ref'] == owner_pins.authority_ref and _hex(contract_observer_sha256),
++            'c06_current_exact_registered_owner_required')
++    root = _protected_root(controller, authority_root)
++    run_id, stage = params['run_id'], params['stage']
++    _, scenario_sha, _ = _PHASES[run_id]
++    proof_ref, contract_ref, prepare_ref, authority_ref = (params[key] for key in
++            ('proof_ref', 'contract_ref', 'prepare_ref', 'authority_ref'))
++
++    def document(reference):
++        _reference_path(reference, root)
++        return controller.doc(reference, limit=_PRIVATE_LIMIT)[0]
++
++    owner = _kernel(peer[0])
++    slot_owner = dict(owner_pins.slot_owner)
++    lock_identities = _locks(controller, owner, slot_owner)
++    proof, contract, prepare, authority = map(document, (proof_ref, contract_ref, prepare_ref, authority_ref))
++    require(proof.get('schema') == 'frw.Root.ordinary-current-proof.v1'
++            and proof.get('run_id') == run_id and proof.get('scenario_sha256') == scenario_sha,
++            'c06_current_run_scenario_changed')
++    require(proof['contract'] == contract_ref and proof['prepare'] == prepare_ref,
++            'c06_current_contract_changed')
++    gateway = dict(_kernel(os.getpid()), uid=os.getuid(), socket=str(socket_path))
++    cursor, scope_ref, scope, scenario = _phase_documents(
++        controller, document, run_id, contract, prepare, authority, authority_ref,
++        contract_observer_sha256, gateway, mono, wall,
++    )
++
+     expected_locks = {'slot': slot_owner, 'consumer': owner, 'credential': owner}
+     role = proof['role']
+     require(role in ('preclock', 'owned_consumer') and proof['boot_id'] == owner['boot_id']
+diff --git a/gateway/c06_current_provider.py b/gateway/c06_current_provider.py
+index 86957e492393fa89ad088eaec6f34613e2e6c1f7..23202239d8fcd45a78913bf97f09aa79b5f9b8f6 100644
+--- a/gateway/c06_current_provider.py
++++ b/gateway/c06_current_provider.py
+@@ -13,8 +13,10 @@ from types import MappingProxyType
+ 
+ from c06_ingress import PublishedOriginal, validate_pair
+ from c06_owner_projection import BorrowedOwner, encoded, lineage_for, phase_for
++from c06_r4_custody import verify_reader_binding, verify_store_binding
+ from .c06_active_predecessors import read_predecessors
+-from .c06_current_authority import CurrentOwnerPins, read_current_reference, verify_current_owner
++from .c06_current_authority import (CurrentOwnerPins, read_current_reference, verify_current_owner,
++                                    verify_startup_phase)
+ from .c06_receiver_control import RetiredPublication
+ from .d02_receiver_control import _kernel, _private_doc, require
+ from .session import SessionStore
+@@ -38,14 +40,99 @@ class C06NativeOwner:
+         self.loop = loop
+         self.home = Path(runner.session_store._routing_home)
+         self.slot = Path(slot)
+-        self.store = Path(r4_store.root)
+-        self.r4_store = r4_store
++        self._r4_store = r4_store
++        self._store_root = Path(r4_store.root)
+         self.read_owned = read_owned
+         self.authority_root = Path(authority_root)
+         self.socket_path = Path(socket_path)
+         self.contract_observer_sha256 = contract_observer_sha256
+         self._pins_for = owner_pins
+         self._retired = ()
++        self._gateway_epoch = _kernel(os.getpid())
++        self._startup_control = None
++
++    @property
++    def store(self):
++        return self._store_root
++
++    @property
++    def r4_store(self):
++        return self._r4_store
++
++    async def bind_startup_control(self, control, *, receiver, readonly):
++        """Capture the factory's listener only after its exact native accept."""
++        from .control_socket import _DEFAULT_CLIENT_TIMEOUT
++
++        if self._startup_control is not None or asyncio.get_running_loop() is not self.loop:
++            return False
++        deadline = time.monotonic() + _DEFAULT_CLIENT_TIMEOUT
++        try:
++            state = self._startup_listener_state(control)
++            if not await control._prove_posix_listener(state[2], deadline=deadline):
++                return False
++            if (state != self._startup_listener_state(control) or self._startup_control is not None
++                    or control._handlers.get("ordinary-c06-receiver") is not receiver
++                    or control._handlers.get("ordinary-turn-readonly") is not readonly
++                    or _kernel(os.getpid()) != self._gateway_epoch or time.monotonic() >= deadline):
++                return False
++        except (OSError, ValueError):
++            return False
++        self._startup_control = (control, state, receiver, readonly)
++        return True
++
++    def _startup_listener_state(self, control):
++        from .control_socket import GatewayControlServer
++
++        require(type(control) is GatewayControlServer and control._bind_path == self.socket_path,
++                "c06_startup_native_listener_required")
++        listener = control._server
++        generation = control._posix_generation
++        require(listener is not None and listener.get_loop() is self.loop and listener.is_serving()
++                and tuple(sock.getsockname() for sock in listener.sockets) == (str(self.socket_path),)
++                and self.socket_path.resolve(strict=True) == self.socket_path,
++                "c06_startup_native_listener_required")
++        info = self.socket_path.lstat()
++        require(stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
++                and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1,
++                "c06_startup_protected_listener_required")
++        identity = (info.st_dev, info.st_ino, info.st_ctime_ns)
++        require(control._posix_bind_identity == identity, "c06_startup_listener_binding_changed")
++        return listener, identity, generation
++
++    def _startup_listener(self, control):
++        state = self._startup_listener_state(control)
++        bound = self._startup_control
++        require(bound is not None and bound[0] is control and bound[1] == state
++                and bound[2] is control._handlers.get("ordinary-c06-receiver")
++                and bound[3] is control._handlers.get("ordinary-turn-readonly"),
++                "c06_startup_listener_not_owned")
++        return state
++
++    async def preflight_startup_phase(self, run_id, *, control):
++        """Check a single provisioned post-boot phase without exposing a verb."""
++        require(asyncio.get_running_loop() is self.loop and _kernel(os.getpid()) == self._gateway_epoch,
++                "c06_startup_gateway_epoch_changed")
++        require(type(run_id) is str and run_id in _C06_RUNS, "c06_exact_current_phase_unbound")
++        pins = self._pins_for(run_id)
++        retained = self._retired
++        reader = self.r4_store
++        listener = self._startup_listener(control)
++        verify_store_binding(reader, root=self.store)
++        phase, slot = verify_startup_phase(self, run_id, pins)
++        verify_reader_binding(reader, authority_root=self.authority_root)
++        require(await control._prove_posix_listener(listener[2], deadline=phase.deadline),
++                "c06_startup_listener_acceptance_unproved")
++        await self._project(phase)
++        verify_reader_binding(reader, authority_root=self.authority_root)
++        current_pins = self._pins_for(run_id)
++        fresh, fresh_slot = verify_startup_phase(self, run_id, current_pins)
++        verify_store_binding(reader, root=self.store)
++        require(current_pins == pins and fresh == phase and fresh_slot == slot
++                and self._retired is retained and self.r4_store is reader
++                and self._startup_listener(control) == listener and _kernel(os.getpid()) == self._gateway_epoch
++                and time.monotonic() < min(phase.deadline, fresh.deadline),
++                "c06_startup_phase_changed")
++        return True
+ 
+     def doc(self, reference, **options):
+         return _private_doc(reference, self.read_owned, **options)
+@@ -105,7 +192,16 @@ class C06NativeOwner:
+                 and path.is_relative_to(root), "c06_current_protected_grant_root_required")
+         return self.doc(reference, sized=False, limit=1024 * 1024)[0]
+ 
+-    def require_predecessor(self, admission, scenario_sha, *, options):
++    def require_predecessor(self, admission, scenario_sha, *, options, run_id,
++                            contract_ref, authority_ref, slot, slot_owner, slot_identity, initial):
++        require(run_id == "c06-context-b" and asyncio.get_running_loop() is self.loop
++                and _kernel(os.getpid()) == self._gateway_epoch, "c06_B_receiver_gateway_changed")
++        pins = self._pins_for(run_id)
++        require(type(pins) is CurrentOwnerPins, "c06_exact_current_phase_unbound")
++        require(contract_ref == pins.contract_ref and authority_ref == pins.authority_ref
++                and slot == self.slot and slot_owner == pins.slot_owner,
++                "c06_B_exact_registered_receiver_authority_required")
++        verify_store_binding(self.r4_store, root=self.store)
+         rows, lineage = read_predecessors(admission, "B", scenario_sha, self.read_predecessor_grant)
+         row, = rows
+         retained = self._retired
+@@ -121,6 +217,18 @@ class C06NativeOwner:
+         handoff.require_finalization(row, lambda ref: self.doc(ref, limit=1024 * 1024)[0])
+         require(self._retired is retained and self._native(handoff)[-1] is original,
+                 "c06_armed_B_predecessor_changed")
++        # Only arm still belongs to the READONLY cursor and fresh admission window.
++        if initial:
++            phase, held_identity = verify_startup_phase(self, run_id, pins)
++            require(held_identity == slot_identity, "c06_B_registered_receiver_slot_changed")
++        current_pins = self._pins_for(run_id)
++        require(type(current_pins) is CurrentOwnerPins and current_pins == pins,
++                "c06_B_registered_receiver_authority_changed")
++        verify_store_binding(self.r4_store, root=self.store)
++        if initial:
++            require(time.monotonic() < phase.deadline and time.time() < phase.authority["expires_at"]
++                    and not os.path.lexists(self.store / "observer-stop.json"),
++                    "c06_startup_scope_unavailable")
+ 
+     def _borrowed(self, query):
+         _, _, needed = phase_for(query.run_id, query.scenario)
+@@ -140,11 +248,16 @@ class C06NativeOwner:
+         require(type(run_id) is str and run_id in _C06_RUNS, "c06_exact_current_phase_unbound")
+         pins = self._pins_for(run_id)
+         require(type(pins) is CurrentOwnerPins, "c06_exact_current_phase_unbound")
+-        return verify_current_owner(
++        reader = self.r4_store
++        verify_store_binding(reader, root=self.store)
++        query = verify_current_owner(
+             self, params=params, peer=peer, contract_observer_sha256=self.contract_observer_sha256,
+             authority_root=self.authority_root, socket_path=self.socket_path,
+             owner_pins=pins, expected=expected,
+         )
++        verify_store_binding(reader, root=self.store)
++        require(self.r4_store is reader, "c06_current_store_binding_changed")
++        return query
+ 
+     @staticmethod
+     def _no_remote_code(*args, **kwargs):
+diff --git a/gateway/c06_receiver_control.py b/gateway/c06_receiver_control.py
+index b99cea536deb5ce9f21d414a89f1ac98c1405598..2fdb4978f7a68abd78f913000fdfa76a12c276b5 100644
+--- a/gateway/c06_receiver_control.py
++++ b/gateway/c06_receiver_control.py
+@@ -160,7 +160,12 @@ class C06ReceiverControl(ReceiverControl):
+         if selected.role == "A":
+             require(authority.get("c06") is None, "c06_A_and_B_require_separate_admissions")
+         else:
+-            self._require_predecessor(authority, scenario_sha, options=options)
++            self._require_predecessor(
++                authority, scenario_sha, options=options, run_id=run,
++                contract_ref=driver["contract"], authority_ref=driver["authority"],
++                slot=self.slot, slot_owner=intent["parent"], slot_identity=driver["slot_identity"],
++                initial=request["action"] == "arm",
++            )
+         return owner
+ 
+     def _wire_options(self, intent):
+diff --git a/gateway/control_socket.py b/gateway/control_socket.py
+index 7744e108d3683a19fe7ac906d9cedd52c65ffbce..3cf5cdb65b506bbbab255d5a076c48982a9c32f7 100644
+--- a/gateway/control_socket.py
++++ b/gateway/control_socket.py
+@@ -11,6 +11,7 @@ from __future__ import annotations
+ 
+ import asyncio
+ import contextlib
++from dataclasses import dataclass
+ from functools import partial
+ import hashlib
+ import inspect
+@@ -121,6 +122,21 @@ def build_status_payload() -> dict[str, Any]:
+             "answered_at": time.time(), "answering_pid": os.getpid()}
+ 
+ 
++def _unix_peer(sock):
++    if sock is not None and sock.family == socket.AF_UNIX and hasattr(socket, "SO_PEERCRED"):
++        with contextlib.suppress(OSError, struct.error):
++            return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
++    return None
++
++
++@dataclass(frozen=True, slots=True)
++class _ListenerProbe:
++    generation: object
++    address: bytes
++    peer: tuple[int, int, int]
++    accepted: asyncio.Future
++
++
+ class GatewayControlServer:
+     """Gateway-owned control socket server (identify/status, v1): ``start()`` after the PID-file claim,
+     ``stop()`` on shutdown. All failures are non-fatal — the gateway never refuses to serve messaging
+@@ -135,6 +151,9 @@ class GatewayControlServer:
+         self._server: Optional[asyncio.AbstractServer] = None
+         self._pipe_server: Any = None  # Windows proactor pipe server
+         self._bind_path: Optional[Path] = None
++        self._posix_bind_identity: tuple[int, int, int] | None = None
++        self._posix_generation: object | None = None
++        self._listener_probe: _ListenerProbe | None = None
+         self._pointer_file: Optional[Path] = None
+         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
+             "identify": build_identify_payload, "status": build_status_payload, **(verb_handlers or {})}
+@@ -150,6 +169,8 @@ class GatewayControlServer:
+             return False
+ 
+     async def _start_posix(self) -> bool:
++        self._posix_bind_identity = None
++        self._posix_generation = None
+         bind_path, pointer_file = resolve_server_socket_path(self._home)
+         # We only get here after winning the PID-file O_EXCL race, so any existing
+         # file is stale or a collision — never a live sibling.
+@@ -157,20 +178,70 @@ class GatewayControlServer:
+             if bind_path.exists():
+                 bind_path.unlink()
+         # Restrictive umask so the socket is never world-connectable, even for the instant before chmod.
++        generation = object() if "ordinary-c06-receiver" in self._handlers else None
++
++        async def on_connection(reader, writer):
++            probe = self._listener_probe
++            if (probe is not None and probe.generation is generation is self._posix_generation
++                    and writer.get_extra_info("peername") == probe.address
++                    and _unix_peer(writer.get_extra_info("socket")) == probe.peer):
++                if not probe.accepted.done():
++                    probe.accepted.set_result(True)
++                writer.close()
++                return
++            await self._handle_connection(reader, writer)
++
++        accept = self._handle_connection if generation is None else on_connection
+         old_umask = os.umask(0o177)
+         try:
+-            self._server = await asyncio.start_unix_server(self._handle_connection, path=str(bind_path))
++            self._server = await asyncio.start_unix_server(accept, path=str(bind_path))
+         finally:
+             os.umask(old_umask)
++        self._posix_generation = generation
+         with contextlib.suppress(OSError):
+             os.chmod(bind_path, 0o600)
+         self._bind_path = bind_path
++        with contextlib.suppress(OSError):
++            info = bind_path.lstat()
++            self._posix_bind_identity = (info.st_dev, info.st_ino, info.st_ctime_ns)
+         if pointer_file is not None:
+             pointer_file.write_text(str(bind_path), encoding="utf-8")
+             self._pointer_file = pointer_file
+         logger.info("Gateway control socket listening at %s", bind_path)
+         return True
+ 
++    async def _prove_posix_listener(self, generation, *, deadline: float) -> bool:
++        """Observe one payload-free self-connection at this listener's accept callback."""
++        loop = asyncio.get_running_loop()
++        end = min(deadline, time.monotonic() + _DEFAULT_CLIENT_TIMEOUT)
++        if (not sys.platform.startswith("linux") or generation is None or generation is not self._posix_generation
++                or self._listener_probe is not None or self._server is None or self._server.get_loop() is not loop
++                or self._bind_path is None or time.monotonic() >= end):
++            return False
++        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
++            client.setblocking(False)
++            try:
++                # Linux assigns a unique abstract address and retains it until this FD closes.
++                client.bind("")
++                address = client.getsockname()
++                if type(address) is not bytes or not address.startswith(b"\0"):
++                    return False
++                peer = (os.getpid(), os.getuid(), os.getgid())
++                probe = _ListenerProbe(generation, address, peer, loop.create_future())
++                self._listener_probe = probe
++                try:
++                    async with asyncio.timeout(max(0, end - time.monotonic())):
++                        await loop.sock_connect(client, str(self._bind_path))
++                        if _unix_peer(client) != peer:
++                            return False
++                        return (await probe.accepted) is True and time.monotonic() < end
++                finally:
++                    if self._listener_probe is probe:
++                        self._listener_probe = None
++                    probe.accepted.cancel()
++            except (OSError, TimeoutError):
++                return False
++
+     async def _start_windows(self) -> bool:
+         loop = asyncio.get_running_loop()
+         start_serving_pipe = getattr(loop, "start_serving_pipe", None)
+@@ -184,16 +255,23 @@ class GatewayControlServer:
+         logger.info("Gateway control pipe listening at %s", pipe_name)
+         return self._pipe_server is not None
+ 
+-    async def stop(self) -> None:
++    async def stop(self, *, drain: bool = True) -> None:
+         """Stop serving and remove the socket/pointer files."""
+         if self._server is not None:
+             self._server.close()
+-            with contextlib.suppress(Exception):
+-                await self._server.wait_closed()
++            if drain:
++                with contextlib.suppress(Exception):
++                    await self._server.wait_closed()
++            else:
++                abort_clients = getattr(self._server, "abort_clients", None)
++                if abort_clients is not None:
++                    abort_clients()
+         if self._pipe_server is not None:
+             with contextlib.suppress(Exception):
+                 self._pipe_server.close()
+         self._server = self._pipe_server = None
++        self._posix_bind_identity = None
++        self._posix_generation = None
+         self.cleanup_files()
+ 
+     def cleanup_files(self) -> None:
+@@ -247,12 +325,7 @@ class GatewayControlServer:
+                 return
+             # Handlers read disk; keep that off the loop that drives every platform
+             # adapter so a fast-polling consumer can't stall heartbeats.
+-            peer = None
+-            sock = writer.get_extra_info("socket")
+-            if sock is not None and sock.family == socket.AF_UNIX and hasattr(socket, "SO_PEERCRED"):
+-                with contextlib.suppress(OSError, struct.error):
+-                    peer = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+-                                                             struct.calcsize("3i")))
++            peer = _unix_peer(writer.get_extra_info("socket"))
+             handler = partial(self.handle_request_line, raw.rstrip(b"\n"), peer=peer)
+             response = await asyncio.get_running_loop().run_in_executor(None, handler)
+             writer.write(response)
+diff --git a/gateway/run.py b/gateway/run.py
+index 5d82646ba713637b1ecf7648c6dd10f7bfe8753e..b945ec690677a832ba395402d21bed35a42ddb01 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -5761,6 +5761,17 @@ async def _start_gateway_start_control_socket(runner, *, c06_owner=None):
+         if not await _control_server.start():
+             _control_server = None
+         else:
++            if c06_owner is not None:
++                try:
++                    await c06_owner.bind_startup_control(
++                        _control_server, receiver=c06_handlers["ordinary-c06-receiver"], readonly=readonly,
++                    )
++                except (Exception, asyncio.CancelledError):
++                    try:
++                        await _control_server.stop(drain=False)
++                    except Exception:
++                        logger.debug("Could not stop the control socket after C06 startup failed", exc_info=True)
++                    raise
+             atexit.register(_control_server.cleanup_files)
+     except Exception as _cs_exc:
+         logger.debug("Control socket startup failed (non-fatal): %s", _cs_exc)
