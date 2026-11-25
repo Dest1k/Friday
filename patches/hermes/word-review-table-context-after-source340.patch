@@ -1,0 +1,85 @@
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -587,6 +587,31 @@
+     return DocumentText(expanded, view.extraction_metadata)
+ 
+ 
++def _include_review_table_locations(package, review, view, checkpoint):
++    if package.format != 'docx' or not review.extraction_metadata['main_text_projections_complete']:
++        return view
++    parents = {child: parent for parent in package.body.iter() for child in parent}
++    locations = _body_table_locations(package.body, parents, checkpoint)
++    if not locations:
++        return view
++    paragraph_locations = {
++        number: locations[parent]
++        for number, paragraph in enumerate(package.body.iter(_q(W, 'p')), 1)
++        if (parent := parents.get(paragraph)) in locations
++    }
++    rows = review.split('\n')[1:]
++    located_rows = {}
++    for index, row in enumerate(rows):
++        label, _, raw = row.partition(' ')
++        if label in ('[FINAL', '[ORIGINAL'):
++            record = json.loads(raw[:-1])
++            location = paragraph_locations.get(record['number'])
++            if location is not None:
++                record['table_context'] = location
++                located_rows[index] = label + ' ' + _encoded(record) + ']'
++    return _include_body_table_locations(view, rows, located_rows)
++
++
+ def extract(data, format, *, checkpoint=None):
+     """Return only inert stored text plus explicit trusted coverage metadata."""
+     package = _Package(data, format, checkpoint)
+@@ -594,7 +619,8 @@
+     from tools.scoped_word_stories import append_stored_stories
+     if has_review_layers(package):
+         review = extract_review_layers(package, checkpoint=checkpoint, allow_comment_ranges_in_revisions=True)
+-        return append_stored_stories(package, review, checkpoint=checkpoint)
++        view = append_stored_stories(package, review, checkpoint=checkpoint)
++        return _include_review_table_locations(package, review, view, checkpoint)
+     rows = []
+     output_bytes = 0
+     paragraphs = tables = 0
+--- a/tests/tools/test_read_extract.py
++++ b/tests/tools/test_read_extract.py
+@@ -82,6 +82,38 @@
+     assert regrouped[2]["table_context"] == {"table": 1, "row": 2, "cell": 1}
+ 
+ 
++def test_scoped_docx_review_locates_both_views_of_a_table_cell():
++    from tools.scoped_word_profiles import _rewrite, render
++
++    document = render(json.dumps({"blocks": [
++        {"type": "paragraph", "text": "Body"},
++        {"type": "table", "rows": [["Previous"]]},
++    ]}), "docx", structured=True)
++    document_xml = f"""
++        <w:document xmlns:w="{_NS_W}"><w:body>
++          <w:p><w:r><w:t>Body</w:t></w:r></w:p>
++          <w:tbl><w:tr><w:tc><w:p>
++            <w:del w:id="1"><w:r><w:delText>Previous</w:delText></w:r></w:del>
++            <w:ins w:id="2"><w:r><w:t>Current</w:t></w:r></w:ins>
++          </w:p></w:tc></w:tr></w:tbl>
++        </w:body></w:document>
++    """.strip().encode()
++    reviewed = _rewrite(document, {"word/document.xml": document_xml})
++    records = {}
++    for line in extract_scoped_document_bytes(reviewed, "docx").split("\n"):
++        label, _, raw = line.partition(" ")
++        if label in ("[FINAL", "[ORIGINAL"):
++            record = json.loads(raw[:-1])
++            records[label, record["number"]] = record
++
++    location = {"table": 1, "row": 1, "cell": 1}
++    for label, text in (("[FINAL", "Current"), ("[ORIGINAL", "Previous")):
++        assert records[label, 1] == {"number": 1, "role": "body", "text": "Body"}
++        assert records[label, 2] == {
++            "number": 2, "role": "table_cell", "text": text, "table_context": location,
++        }
++
++
+ # ---------------------------------------------------------------------------
+ # is_extractable_document
+ # ---------------------------------------------------------------------------
