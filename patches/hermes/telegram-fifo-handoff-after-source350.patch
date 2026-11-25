@@ -1,0 +1,58 @@
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -5135,7 +5135,9 @@
+                     delay = self._requeue_backoff_delay(session_key, pending_event, event)
+                     if not delay:  # a backed-off event stays queued until the drain task wakes
+                         self._pending_messages.pop(session_key)
+-                        self._promote_external_word_tail(pending_event, session_key)
++                        self._promote_external_word_tail(
++                            pending_event, session_key, ordinary_handoff=not interrupt_event.is_set(),
++                        )
+                     logger.debug("[%s] Processing queued follow-up message", self.name)
+                     self._spawn_drain_task(pending_event, session_key, delay=delay)
+                     dispatch_returned = True
+@@ -5305,11 +5307,13 @@
+             if pending_event is None:  # consumed elsewhere before this task took the slot
+                 self._cleanup_finished_session_task(session_key, guard)
+                 return
+-            self._promote_external_word_tail(pending_event, session_key)
++            self._promote_external_word_tail(
++                pending_event, session_key, ordinary_handoff=guard is not None and not guard.is_set(),
++            )
+         pending_event._friday_document_guard = (session_key, guard) if guard is not None else None
+         await self._process_message_background(pending_event, session_key)
+
+-    def _promote_external_word_tail(self, event, session_key, *, force=False):
++    def _promote_external_word_tail(self, event, session_key, *, force=False, ordinary_handoff=False):
+         # This head has its own adapter task and reply anchor. Keep the next
+         # FIFO item in the slot so orphan rescue cannot substitute that item.
+         from gateway.external_word_intent import is_external_word_request
+@@ -5326,6 +5330,28 @@
+             following = runner._promote_queued_event(session_key, self, None)
+             following._external_word_fifo_head = True
+             self._pending_messages[session_key] = following
++        elif (ordinary_handoff and overflow
++              and self._same_ordinary_fifo_route(runner, event, overflow[0], session_key)):
++            # While the guard still belongs to the drain, reserve the vacated
++            # slot for the oldest admitted event before a new busy input arrives.
++            self._pending_messages[session_key] = runner._promote_queued_event(session_key, self, None)
++
++    def _same_ordinary_fifo_route(self, runner, event, following, session_key):
++        if self.platform != Platform.TELEGRAM or event.internal or following.internal:
++            return False
++        if (getattr(event.source, "platform", None) != self.platform
++                or getattr(following.source, "platform", None) != self.platform):
++            return False
++
++        from hermes_cli.friday_user_scope import _same_scope
++
++        current_scope = getattr(event.source, "_friday_user_scope", None)
++        next_scope = getattr(following.source, "_friday_user_scope", None)
++        return (_same_scope(current_scope, next_scope)
++                and not current_scope.revoked and not next_scope.revoked
++                and runner._intake_adapter_for(event.source) is self
++                and runner._intake_adapter_for(following.source) is self
++                and self._event_session_key(event) == self._event_session_key(following) == session_key)
+
+     def _clear_session_guard(self, session_key: str) -> None:
+         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""
