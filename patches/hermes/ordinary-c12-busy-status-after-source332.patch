@@ -1,0 +1,165 @@
+diff --git a/gateway/run_busy.py b/gateway/run_busy.py
+index c79d5a92deae2fac54b9702fed286218332e5c12..5be532ef1bf51763284189e60160e44dbf64b8cb 100644
+--- a/gateway/run_busy.py
++++ b/gateway/run_busy.py
+@@ -820,6 +820,53 @@ class GatewayBusySessionMixin:
+         except Exception as e:
+             logger.debug("Failed to send busy-ack: %s", e)
+ 
++    def _ordinary_busy_status(self, event: MessageEvent, session_key: str, adapter) -> Optional[str]:
++        """Describe the currently owned ordinary turn without dispatching a new turn."""
++        source = event.source
++        raw_message = getattr(event, "raw_message", None)
++        if (source.platform != Platform.TELEGRAM or getattr(adapter, "platform", None) != Platform.TELEGRAM
++                or source.chat_type != "dm" or source.is_bot
++                or event.message_type != MessageType.TEXT or not event.allow_gateway_control
++                or event.internal or event.media_urls or event.media_types or event._ingress_merged
++                or (event.text or "").strip().casefold() != "что сейчас происходит?"
++                or any(getattr(raw_message, field, None) for field in
++                       ("forward_origin", "forward_from", "forward_from_chat", "edit_date"))):
++            return None
++        if any(entity.type in {"blockquote", "expandable_blockquote", "code", "pre"}
++               for entity in (getattr(raw_message, "entities", None) or ())):
++            return None
++
++        from hermes_cli.friday_user_scope import UserScope, _same_scope
++        capability = getattr(source, "_friday_user_scope", None)
++        if not isinstance(capability, UserScope):
++            return None  # Native admission must have bound this ordinary user.
++
++        state = self._peek_session_state(session_key)
++        task = adapter._session_tasks.get(session_key)
++        guard = adapter._active_sessions.get(session_key)
++        unknown = "Не могу подтвердить, что предыдущий запрос ещё выполняется."
++        if (state is None or not isinstance(task, asyncio.Task) or task.done() or task.cancelling()
++                or guard is None or guard.is_set()):
++            return unknown
++        turn = state.turn
++        opening = turn.event
++        opening_scope = getattr(opening.source, "_friday_user_scope", None) if opening is not None else None
++        generation = self._current_session_run_generation(session_key)
++        token = turn.lease_tokens.get(generation)
++        if (opening is None or turn.agent is None
++                or getattr(opening, "_friday_document_guard", None) != (session_key, guard)
++                or getattr(guard, "_hermes_run_generation", None) != generation
++                or token is None or token.released or token.lease.holder is not token
++                or not _same_scope(capability, opening_scope) or capability.revoked or opening_scope.revoked):
++            return unknown
++
++        if (opening.message_type == MessageType.DOCUMENT
++                and getattr(turn.agent, "_executing_tools", False) is True):
++            with contextlib.suppress(Exception):
++                if turn.agent.get_activity_summary().get("current_tool") == "read_file":
++                    return "Читаю файл по этому запросу. Время завершения пока неизвестно."
++        return "Запрос ещё выполняется. Точный этап и время завершения пока неизвестны."
++
+     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
+         # handling, without merging their text into an already queued human message.
+@@ -873,6 +920,10 @@ class GatewayBusySessionMixin:
+         if getattr(event, "internal", False):
+             self._queue_or_replace_pending_event(session_key, event)
+             return True
++        status = self._ordinary_busy_status(event, session_key, adapter)
++        if status is not None:
++            await self._send_busy_ack_reply(event, adapter, status)
++            return True
+         if (
+             event.message_type == MessageType.TEXT
+             and self._effective_busy_text_mode(event.source) == "queue"
+diff --git a/tests/gateway/test_ordinary_busy_status.py b/tests/gateway/test_ordinary_busy_status.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..38a5528c574fe371264a36e190d63797a842e32f
+--- /dev/null
++++ b/tests/gateway/test_ordinary_busy_status.py
+@@ -0,0 +1,90 @@
++"""The ordinary Telegram status question excludes quoted or literal body text."""
++
++import asyncio
++from dataclasses import replace
++from datetime import datetime, timezone
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.config import Platform, PlatformConfig
++from gateway.platforms.event import MessageType
++from gateway.run import GatewayRunner
++from gateway.session import SessionSource
++from hermes_cli.friday_user_scope import UserScope
++from plugins.platforms.telegram.adapter import TelegramAdapter
++from plugins.platforms.telegram.telegram_message_event import build_message_event
++
++
++QUESTION = "Что сейчас происходит?"
++READING = "Читаю файл по этому запросу. Время завершения пока неизвестно."
++UNKNOWN = "Не могу подтвердить, что предыдущий запрос ещё выполняется."
++
++
++def _telegram_event(entity_type):
++    entities = (SimpleNamespace(type=entity_type),) if entity_type else ()
++    quote = "Текст из предыдущего сообщения."
++    chat = SimpleNamespace(id=1001, type="private", full_name="Fixture", title=None)
++    previous = SimpleNamespace(message_id=20, text=quote + " Остаток.")
++    raw = SimpleNamespace(message_id=21, date=datetime.now(timezone.utc), chat=chat,
++                          from_user=SimpleNamespace(id=1001, full_name="Fixture", is_bot=False),
++                          text=QUESTION, entities=entities, reply_to_message=previous,
++                          quote=SimpleNamespace(text=quote))
++    adapter = SimpleNamespace(
++        config=PlatformConfig(),
++        _chat_type_str=lambda chat: chat.type,
++        _is_group_chat=lambda message: message.chat.type in {"group", "supergroup"},
++        _effective_message_thread_id=lambda message: None,
++        _resolve_topic_binding=lambda *args: (None, None),
++        _reply_context=lambda message: TelegramAdapter._reply_context(adapter, message),
++        build_source=lambda **kwargs: SessionSource(platform=Platform.TELEGRAM, **kwargs),
++    )
++    return build_message_event(adapter, raw, MessageType.TEXT, update_id=2001)
++
++
++async def _status(tmp_path, entity_type, *, stale=False, revoked=False, delivery=Platform.TELEGRAM):
++    event = _telegram_event(entity_type)
++    assert event.text == QUESTION
++    assert event.reply_to_message_id == "20"
++    assert event.reply_to_text == "Текст из предыдущего сообщения."
++    capability = UserScope(tmp_path, tmp_path, "fixture", ("telegram", "default", "5001", "1001"), {}, ())
++    event.source._friday_user_scope = capability
++    guard = asyncio.Event()
++    guard._hermes_run_generation = 6 if stale else 7
++    until_done = asyncio.Event()
++    task = asyncio.create_task(until_done.wait())
++    try:
++        opening_scope = replace(capability, revoked=revoked)
++        opening_source = SimpleNamespace(_friday_user_scope=opening_scope)
++        opening = SimpleNamespace(source=opening_source, message_type=MessageType.DOCUMENT,
++                                  _friday_document_guard=("own-session", guard))
++        agent = SimpleNamespace(_executing_tools=True, get_activity_summary=lambda: {"current_tool": "read_file"})
++        lease = SimpleNamespace()
++        token = SimpleNamespace(lease=lease, released=False)
++        lease.holder = token
++        state = SimpleNamespace(turn=SimpleNamespace(event=opening, agent=agent, lease_tokens={7: token}))
++        runner = SimpleNamespace(_peek_session_state=lambda key: state, _current_session_run_generation=lambda key: 7)
++        adapter = SimpleNamespace(platform=delivery, _session_tasks={"own-session": task},
++                                  _active_sessions={"own-session": guard})
++        return GatewayRunner._ordinary_busy_status(runner, event, "own-session", adapter)
++    finally:
++        until_done.set()
++        await task
++
++
++@pytest.mark.parametrize("entity_type", ("blockquote", "expandable_blockquote", "code", "pre"))
++def test_literal_telegram_body_stays_ordinary_busy_input(tmp_path, entity_type):
++    assert asyncio.run(_status(tmp_path, entity_type)) is None
++
++
++def test_plain_status_in_reply_reports_current_document_read(tmp_path):
++    assert asyncio.run(_status(tmp_path, None)) == READING
++
++
++@pytest.mark.parametrize(("stale", "revoked"), ((True, False), (False, True)))
++def test_stale_or_revoked_operation_gets_an_uncertain_status(tmp_path, stale, revoked):
++    assert asyncio.run(_status(tmp_path, None, stale=stale, revoked=revoked)) == UNKNOWN
++
++
++def test_relay_with_telegram_logical_source_keeps_normal_handling(tmp_path):
++    assert asyncio.run(_status(tmp_path, None, delivery=Platform.RELAY)) is None
