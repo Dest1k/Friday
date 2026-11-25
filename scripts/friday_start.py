@@ -18,7 +18,9 @@ from pathlib import Path
 
 
 _GATEWAY_STARTUP_TIMEOUT_DROPIN = b"[Service]\nTimeoutStartSec=180s\n"
-_GATEWAY_COLD_START_SECONDS = 180
+_GATEWAY_START_COMMAND_SECONDS = 210
+_GATEWAY_START_PROOF_SECONDS = 60
+_GATEWAY_START_PROOF_RESERVE_SECONDS = 5
 
 
 def prerequisites(value, budget):
@@ -606,25 +608,24 @@ def ordinary_start(value, budget):
             require(unit == _unit and unit.name == gw.get_service_name()+'.service',
                     'ordinary_start_exact_native_unit_required')
             stage = 'native_unit_start'
-            observation_budget = budget
-            observation_readback = None
             if manager is None:
                 custody.run(command, source, timeout=90)
             else:
-                now = time.monotonic()
-                observation_budget = Budget(_GATEWAY_COLD_START_SECONDS, started=now,
-                    deadline=min(budget.deadline, now + _GATEWAY_COLD_START_SECONDS))
-                cold_custody = Containment(value["containment"], observation_budget, environment)
-                # Keep time for the runtime identity check. Containment also
-                # bounds command and cancellation by this same cold deadline.
-                cold_custody.run(manager.command("start"), source, timeout=observation_budget.check(reserve=5))
-                def observation_readback(keys):
-                    return manager.properties(cold_custody, keys)
+                # systemd owns the service's 180s. The client also allows time
+                # for job delivery and leaves room for proof in a short outer budget.
+                timeout = min(_GATEWAY_START_COMMAND_SECONDS,
+                              budget.check(reserve=_GATEWAY_START_PROOF_RESERVE_SECONDS))
+                custody.run(manager.command("start"), source, timeout=timeout)
             stage = 'gateway_observation'
-            if observation_readback is None:
+            if manager is None:
                 gateway_observation(home,budget)
             else:
-                observation_budget.call(gateway_observation, home, observation_budget, observation_readback)
+                now = time.monotonic()
+                proof_budget = Budget(_GATEWAY_START_PROOF_SECONDS, started=now,
+                    deadline=min(budget.deadline, now + _GATEWAY_START_PROOF_SECONDS))
+                proof_custody = Containment(value["containment"], proof_budget, environment)
+                proof_budget.call(gateway_observation, home, proof_budget,
+                    lambda keys: manager.properties(proof_custody, keys))
         except BaseException as exc:
             # Keep the existing uncertainty boundary and original command owner.
             # Only source-defined stage/reason and existing safe observations
