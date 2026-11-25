@@ -1,0 +1,23 @@
+--- a/hermes_cli/friday_workspace_docx.py
++++ b/hermes_cli/friday_workspace_docx.py
+@@ -225,6 +225,20 @@
+ 
+ def _create_bytes(cap,fd,leaf,path,data,*,output_format="docx",verify_source=None,commit_guard=None,
+                   verified_output=None):
++    """Keep the ordinary turn responsible until its staged output is settled."""
++    from agent.web_call_context import _current
++
++    call = _current.get()
++    # The stop latch is set before waiting on this lock, so checkpoints still
++    # cancel staging. Once publication wins, stop must observe its settlement.
++    lock = call.turn.lock if call is not None and commit_guard is None else nullcontext()
++    with lock:
++        return _publish_bytes(cap, fd, leaf, path, data, output_format=output_format,
++                              verify_source=verify_source, commit_guard=commit_guard,
++                              verified_output=verified_output)
++
++
++def _publish_bytes(cap,fd,leaf,path,data,*,output_format,verify_source,commit_guard,verified_output):
+     """Complete private bytes then Linux atomic NOREPLACE publication.
+ 
+     Never removes an uncertain published name: post-publication errors report
