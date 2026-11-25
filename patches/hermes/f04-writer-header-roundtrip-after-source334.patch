@@ -1,0 +1,341 @@
+diff --git a/tests/tools/test_scoped_word_table_headers.py b/tests/tools/test_scoped_word_table_headers.py
+index 53deb161940182f9dfe618c274034516ea0bdfca..b163d5eaa29e90d86c36c936cd24ea9bc94897e8 100644
+--- a/tests/tools/test_scoped_word_table_headers.py
++++ b/tests/tools/test_scoped_word_table_headers.py
+@@ -84,3 +84,49 @@ def test_absent_or_explicitly_disabled_word_header_keeps_plain_inventory():
+ def test_reject_ambiguous_table_headers(parser_type, xml):
+     with pytest.raises(conversion.WordConversionError):
+         read_table(parser_type, xml)
++
++
++def make_heading_inventory(roundtrip, nested_outline):
++    c = conversion
++    parser = c._ODF.__new__(c._ODF)
++    parser._writer_roundtrip = roundtrip
++    parser.native_output = True
++    checked = []
++
++    def style(name, family):
++        checked.append((name, family))
++
++    parser.style = style
++    parser.paragraph = lambda node, **context: (node.get(c.q(c.T, 'outline-level')), context)
++    prefix = f'xmlns:t="{c.T}" xmlns:s="{c.S}"'
++    levels = ''.join(
++        f'<t:list-level-style-number t:level="{level}" t:style-name="Label{level}" s:num-format="">'
++        '<s:list-level-properties t:list-level-position-and-space-mode="label-alignment">'
++        '<s:list-level-label-alignment t:label-followed-by="nothing"/>'
++        '</s:list-level-properties></t:list-level-style-number>'
++        for level in (1, 2)
++    )
++    parser.list_styles = {
++        'Numbering': ElementTree.fromstring(f'<t:list-style {prefix} s:name="Numbering">{levels}</t:list-style>')
++    }
++    wrapper = ElementTree.fromstring(
++        f'<t:list {prefix} t:style-name="Numbering"><t:list-item><t:list><t:list-item>'
++        f'<t:h t:outline-level="{nested_outline}">Second heading</t:h>'
++        '</t:list-item></t:list></t:list-item></t:list>'
++    )
++    return parser, wrapper, checked
++
++
++def test_verified_writer_roundtrip_consumes_both_empty_heading_levels():
++    parser, wrapper, checked = make_heading_inventory(True, 2)
++    assert parser.empty_heading_list(wrapper) == (
++        '2', {'empty_list': 'Numbering', 'list_level': '2'}
++    )
++    assert checked == [('Label1', 'text'), ('Label2', 'text')]
++
++
++@pytest.mark.parametrize(('roundtrip', 'level'), [(False, 2), (True, 3)])
++def test_nested_empty_heading_must_match_verified_writer_shape(roundtrip, level):
++    parser, wrapper, _ = make_heading_inventory(roundtrip, level)
++    with pytest.raises(conversion.WordConversionError):
++        parser.empty_heading_list(wrapper)
+diff --git a/tools/scoped_word_conversion.py b/tools/scoped_word_conversion.py
+index a043916caf7b67e03589db7b2fb242f87e87be3c..240d05a46ceaff8a43d98ae01ce6aabe5c907c46 100644
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -28,6 +28,7 @@ XL = 'http://www.w3.org/1999/xlink'
+ LO = 'urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0'
+ DRAW = 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0'
+ META = 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0'
++_WORD2247_SETTINGS_SHA = '9ea6f6d5852d7df55a39e134459488f3b653a3619aebb381b2d973cd21b67ee0'
+ MAX_TEXT = 100_000
+ MAX_PARAGRAPHS = 8192
+ MAX_CELLS = 4096
+@@ -1310,6 +1311,7 @@ class _ODF:
+                                   and _structured_writer_styles(self.pkg))
+         self._paint_opacity = set()
+         self._paint_color = set()
++        self._writer_roundtrip = False
+         # The shared bounded preflight discards processing instructions. Refuse
+         # those syntactic events before admitting any of their XML containers;
+         # escaped text, CDATA and comments containing '<?' remain ordinary data.
+@@ -1477,12 +1479,19 @@ class _ODF:
+         if self.structured_output:
+             try:
+                 word = _Word(paired_docx, _Inventory(state.checkpoint))
+-                _validate_docx_odt_stock_source(word, state.checkpoint)
+-                _word2247_source_links(word)
+-                selected = _word2247_source_paint(word)
++                writer_roundtrip = _writer_roundtrip_source(word, state.checkpoint)
++                if not writer_roundtrip:
++                    _validate_docx_odt_stock_source(word, state.checkpoint)
++                    _word2247_source_links(word)
++                    selected = _word2247_source_paint(word)
+             except (WordConversionError, WordProfileError) as error:
+                 raise WordConversionError(str(error), 'source_inventory') from None
+-            self._structured_paint(selected)
++            if writer_roundtrip:
++                self._writer_roundtrip_paint()
++                self._writer_roundtrip = True
++                self.structured_output = False
++            else:
++                self._structured_paint(selected)
+         if self.structured_output:
+             self._word2247_output_links_and_charsets(parents)
+         # Resolve the complete graph once: an unused cycle/dangling definition
+@@ -1737,7 +1746,37 @@ class _ODF:
+                for family, node in self.default_styles.items() if family.startswith('table')):
+             _fail('unsupported_odt_paint')
+ 
+-    def _structured_layout_envelope(self):
++    def _writer_roundtrip_paint(self):
++        # The exact native Writer envelope proves the two fully opaque default
++        # text styles. Neither named nor content-local opacity is admitted.
++        self._structured_layout_envelope(
++            styles_sha='02262ff0c16c9ac6542a18fa6d46333e1d0f4a9d4f8aacaa8a506d8b9b8bffca',
++            settings_sha='d820565d4e098db73f24cac45632322ca34eda4472b67fbe747a3484985cbb7c',
++            content_sha='a6c81386b16c0d5a5f30335cd1cf04f127c10c898cbcc9410979001d2ffcddfa',
++        )
++        metadata = self.pkg.xml['meta.xml']
++        generators = metadata.findall(q(O, 'meta') + '/' + q(META, 'generator'))
++        if (len(generators) != 1 or generators[0].attrib or len(generators[0])
++                or generators[0].text != 'LibreOffice/26.2.5.2$Linux_X86_64 LibreOffice_project/620$Build-2'):
++            _fail('unsupported_odt_visibility_envelope')
++        opacity = q(LO, 'opacity')
++        for family in ('paragraph', 'graphic'):
++            node = self.default_styles.get(family)
++            text = None if node is None else node.find(q(S, 'text-properties'))
++            if (text is None or text.get(opacity) != '100%' or len(text)
++                    or text.get(q(self._FO, 'color')) != '#000000'):
++                _fail('unsupported_odt_paint')
++            self._paint_opacity.add(text)
++        if any(opacity in node.attrib and node not in self._paint_opacity
++               for root in self.pkg.xml.values() for node in root.iter()):
++            _fail('unsupported_odt_paint')
++
++    def _structured_layout_envelope(
++        self, *,
++        styles_sha='93e8df56ea7cb68ba0520b08a1a18d4620690109e819d70cbd25c61597c8173d',
++        settings_sha=_WORD2247_SETTINGS_SHA,
++        content_sha='fce8e4dcb436d143f4f8d7685a431cbb4b73afa5002ba7cd625e4ed783ed64c4',
++    ):
+         # Visibility was established only for this saved Writer layout and
+         # settings. Keep all non-body-text XML in the comparison. Visible
+         # ordered text is checked separately by the two semantic inventories.
+@@ -1748,10 +1787,9 @@ class _ODF:
+                 for name in ('styles.xml', 'content.xml', 'settings.xml', 'meta.xml'))
+                 or manifest is None
+                 or manifest.get(q('urn:oasis:names:tc:opendocument:xmlns:manifest:1.0', 'version')) != '1.4'
+-                or hashlib.sha256(parts['styles.xml']).hexdigest()
+-                != '93e8df56ea7cb68ba0520b08a1a18d4620690109e819d70cbd25c61597c8173d'
++                or hashlib.sha256(parts['styles.xml']).hexdigest() != styles_sha
+                 or not _writer_settings_match(parts['settings.xml'], roots['settings.xml'],
+-                                              self.state.checkpoint)):
++                                              self.state.checkpoint, expected_sha=settings_sha)):
+             _fail('unsupported_odt_visibility_envelope')
+         body_text = {node for node in self.pkg.body.iter() if node.tag in (q(T, 'p'), q(T, 'h'))}
+         projection = []
+@@ -1760,7 +1798,7 @@ class _ODF:
+             projection.append((node.tag, len(node), sorted(node.attrib.items()),
+                                None if node in body_text else node.text, node.tail))
+         raw = json.dumps(projection, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+-        if hashlib.sha256(raw).hexdigest() != 'fce8e4dcb436d143f4f8d7685a431cbb4b73afa5002ba7cd625e4ed783ed64c4':
++        if hashlib.sha256(raw).hexdigest() != content_sha:
+             _fail('unsupported_odt_visibility_envelope')
+ 
+     def visual_properties(self, node):
+@@ -2083,35 +2121,50 @@ class _ODF:
+                 _fail('unsupported_list')
+             _white(align)
+             levels[key] = level
+-        level = levels.get('1')
+-        if (level is None or set(level.attrib) - {
+-                q(T, 'level'), q(T, 'style-name'), q(S, 'num-format'), q(LO, 'num-list-format')}
+-                or level.get(q(LO, 'num-list-format')) not in (None, '%1%')
+-                or level.get(q(S, 'num-format')) != '' or len(level) != 1):
+-            _fail('unsupported_list')
+-        _white(level)
+-        self.style(level.get(q(T, 'style-name')), 'text')
+-        properties = level[0]
+-        if (properties.tag != q(S, 'list-level-properties') or properties.attrib != {
+-                q(T, 'list-level-position-and-space-mode'): 'label-alignment'}
+-                or len(properties) != 1):
+-            _fail('unsupported_list')
+-        _white(properties)
+-        alignment = properties[0]
+-        if (alignment.tag != q(S, 'list-level-label-alignment') or alignment.attrib != {
+-                q(T, 'label-followed-by'): 'nothing'} or len(alignment)):
+-            _fail('unsupported_list')
+-        _white(alignment)
+         item = node[0]
+         if item.tag != q(T, 'list-item') or item.attrib or len(item) != 1:
+             _fail('unsupported_list')
+         _white(item)
+         heading = item[0]
++        used_levels = ('1',)
++        if self._writer_roundtrip and heading.tag == q(T, 'list'):
++            nested = heading
++            _white(nested)
++            if nested.attrib or len(nested) != 1:
++                _fail('unsupported_list')
++            item = nested[0]
++            if item.tag != q(T, 'list-item') or item.attrib or len(item) != 1:
++                _fail('unsupported_list')
++            _white(item)
++            heading = item[0]
++            used_levels = ('1', '2')
++            if heading.get(q(T, 'outline-level')) != '2':
++                _fail('unsupported_list')
+         if heading.tag != q(T, 'h'):
+             _fail('unsupported_list')
+-        return self.paragraph(heading, empty_list=identity)
++        for used in used_levels:
++            level = levels.get(used)
++            if (level is None or set(level.attrib) - {
++                    q(T, 'level'), q(T, 'style-name'), q(S, 'num-format'), q(LO, 'num-list-format')}
++                    or level.get(q(LO, 'num-list-format')) not in (None, '%' + used + '%')
++                    or level.get(q(S, 'num-format')) != '' or len(level) != 1):
++                _fail('unsupported_list')
++            _white(level)
++            self.style(level.get(q(T, 'style-name')), 'text')
++            properties = level[0]
++            if (properties.tag != q(S, 'list-level-properties') or properties.attrib != {
++                    q(T, 'list-level-position-and-space-mode'): 'label-alignment'}
++                    or len(properties) != 1):
++                _fail('unsupported_list')
++            _white(properties)
++            alignment = properties[0]
++            if (alignment.tag != q(S, 'list-level-label-alignment') or alignment.attrib != {
++                    q(T, 'label-followed-by'): 'nothing'} or len(alignment)):
++                _fail('unsupported_list')
++            _white(alignment)
++        return self.paragraph(heading, empty_list=identity, list_level=used_levels[-1])
+ 
+-    def style(self, identity, family, *, empty_list=None, bullet_list=None, definition=False):
++    def style(self, identity, family, *, empty_list=None, bullet_list=None, list_level='1', definition=False):
+         original = identity
+         cache_key = (family, identity)
+         if cache_key not in self._style_cache:
+@@ -2199,7 +2252,7 @@ class _ODF:
+             list_name = effective.get('list-style-name')
+             if list_name and list_name not in (empty_list, bullet_list):
+                 _fail('unsupported_list')
+-            if (empty_list is not None or bullet_list is not None) and effective.get('list-level') not in (None, '1'):
++            if (empty_list is not None or bullet_list is not None) and effective.get('list-level') not in (None, list_level):
+                 _fail('unsupported_list')
+             if original is not None:
+                 self.identity(original)
+@@ -2285,14 +2338,14 @@ class _ODF:
+             paragraphs.append(self.paragraph(paragraph, context='note'))
+         return {'offset': offset, 'class': 'footnote', 'citation': str(self.note_count), 'body': paragraphs}
+ 
+-    def paragraph(self, node, *, empty_list=None, bullet_list=None, context='body'):
++    def paragraph(self, node, *, empty_list=None, bullet_list=None, context='body', list_level='1'):
+         allowed = {q(T, 'style-name'), q('http://www.w3.org/XML/1998/namespace', 'id')}
+         if node.tag == q(T, 'h'):
+             allowed |= {q(T, 'outline-level'), q(T, 'is-list-header')}
+         if set(node.attrib) - allowed:
+             _fail('unsupported_odt_paragraph')
+         effective = self.style(node.get(q(T, 'style-name')), 'paragraph',
+-                               empty_list=empty_list, bullet_list=bullet_list)
++                               empty_list=empty_list, bullet_list=bullet_list, list_level=list_level)
+         if node.get(q(T, 'conditional-style-name')) is not None:
+             _fail('conditional_style')
+         level = None
+@@ -2519,6 +2572,63 @@ class _ODF:
+             self.style(node.get(q(T, 'citation-body-style-name')), 'text')
+ 
+ 
++def _writer_roundtrip_source(word, checkpoint):
++    # Exact passive metadata emitted by Writer for this bounded structured
++    # DOCX profile. Text and table values are checked by the usual inventory.
++    package = word.pkg
++    stock = {
++        'word/settings.xml': ('settings', 'wordprocessingml.settings',
++                              '76a170254663378c1f09c71f1efc532b38c16388ba851f5f47bedb4c9cb9cdbf'),
++        'word/theme/theme1.xml': ('theme', 'theme',
++                                  '8c817dba7260b1c6e49fc7937dd857b5f42d834bc8c33769d788ea824cb2c29f'),
++        'word/styles.xml': ('styles', 'wordprocessingml.styles',
++                            '15a4e1eac55d9daa74d8c2b4fc3986f121f2172cf00a31397f3e677ad96f6523'),
++        'word/numbering.xml': ('numbering', 'wordprocessingml.numbering',
++                               '26ce28a2f539b8c00ee191c8f4c9af9eec055513e16416d7d5ea4059cf98a2af'),
++        'word/fontTable.xml': ('fontTable', 'wordprocessingml.fontTable',
++                               '5c05b4701b8e543609a75ad8f68c51baf76d57bb6e3b5acd79fa2ff3bf840c23'),
++    }
++    for name, (relationship, content_type, digest) in stock.items():
++        _tick(checkpoint)
++        kind = R + '/' + relationship
++        links = [(owner, selected, target) for owner, rows in package.relationships.items()
++                 for selected, target in rows.values() if target == name or selected == kind]
++        if (links != [('word/document.xml', kind, name)]
++                or package.types.get(name) != 'application/vnd.openxmlformats-officedocument.' + content_type + '+xml'
++                or hashlib.sha256(package.parts.get(name, b'')).hexdigest() != digest):
++            return False
++    document_part = 'word/document.xml'
++    expected_parts = set(stock) | {
++        document_part, 'word/_rels/document.xml.rels', '_rels/.rels',
++        'docProps/core.xml', 'docProps/app.xml', '[Content_Types].xml',
++    }
++    if set(package.parts) != expected_parts:
++        return False
++    raw = package.parts[document_part]
++    without_declaration = re.sub(rb'\A<\?xml[ \t\r\n][^?]*\?>', b'', raw, count=1)
++    if b'<?' in without_declaration:
++        return False
++    namespaces = {}
++    for event, value in iterparse(BytesIO(raw), events=('start-ns', 'start')):
++        if event == 'start':
++            break
++        prefix, namespace = value
++        namespaces[prefix] = namespace
++    if any(namespaces.get(prefix) != expected for prefix, expected in {
++            'w14': 'http://schemas.microsoft.com/office/word/2010/wordml',
++            'wp14': 'http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing',
++            'w15': 'http://schemas.microsoft.com/office/word/2012/wordml',
++    }.items()):
++        return False
++    projection = []
++    for node in package.xml[document_part].iter():
++        _tick(checkpoint)
++        projection.append((node.tag, len(node), sorted(node.attrib.items()),
++                           None if node.tag == q(W, 't') else node.text, node.tail))
++    body = json.dumps(projection, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
++    return hashlib.sha256(body).hexdigest() == '8f48e2b142080d9c9f089241b05d17259acaaf2573249e48397ead51d97ab116'
++
++
+ def _validate_docx_odt_stock_source(word, checkpoint):
+     # These exact settings and theme parts were inspected together. Math
+     # defaults and drawing shadow effects are passive when no Word story or
+@@ -2788,7 +2898,7 @@ def _native_xml_edits(raw, edits, checkpoint):
+ 
+ 
+ 
+-def _writer_settings_match(raw, root, checkpoint):
++def _writer_settings_match(raw, root, checkpoint, *, expected_sha=_WORD2247_SETTINGS_SHA):
+     """Compare stock Writer settings with only the two revision values masked."""
+     config = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
+     name = q(config, 'name')
+@@ -2817,9 +2927,7 @@ def _writer_settings_match(raw, root, checkpoint):
+         edits.append((start, stop, b'1829913'))
+     # Hash a comparison buffer only. Keep the package and revision values as emitted.
+     comparison = _native_xml_edits(raw, edits, checkpoint)
+-    return hashlib.sha256(comparison).hexdigest() == (
+-        '9ea6f6d5852d7df55a39e134459488f3b653a3619aebb381b2d973cd21b67ee0'
+-    )
++    return hashlib.sha256(comparison).hexdigest() == expected_sha
+ 
+ 
+ def restore_docx_odt_output(source, output, *, checkpoint=None):
