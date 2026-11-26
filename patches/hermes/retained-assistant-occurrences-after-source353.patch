@@ -1,0 +1,565 @@
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -374,6 +374,11 @@
+ 
+ def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
+     """Copy a message for compaction assembly without persistence markers (``_strip_persistence_markers`` is authoritative)."""
++    # The rotated handoff is assembled before the parent flush. Keep the same
++    # logical UID on both copies, even when two replies have identical payloads.
++    if msg.get("role") == "assistant" and not msg.get(_DB_PERSISTED_MARKER) and not msg.get("tool_calls"):
++        from agent.message_metadata import stamp_message_uid
++        stamp_message_uid(msg)
+     fresh = msg.copy()
+     fresh.pop(_DB_PERSISTED_MARKER, None)
+     return fresh
+--- a/agent/message_metadata.py
++++ b/agent/message_metadata.py
+@@ -29,6 +29,8 @@
+ # clone, replace re-issue, rewrite in place). Unlike ``_row_id`` (a physical id re-issued per copy, opt-in on
+ # restore) it is restored unconditionally, so context engines can key on it across restarts and boundaries.
+ MESSAGE_UID = "message_uid"
++# Only UIDs assigned to known assistant occurrences may replace the historical display key.
++DISPLAY_OCCURRENCE_UID = "display_occurrence_uid"
+ # The merge witness on a consecutive-user merge survivor: the ``message_uid`` of each absorbed row, in
+ # absorption order (the uid sibling of ``_absorbed_row_ids``; persisted as ``messages.absorbed_message_uids``).
+ # The survivor keeps the FIRST constituent's uid.
+@@ -44,7 +46,7 @@
+     # to sweep underscore keys, but turn_context.py pops this set from every outgoing copy and a strict
+     # backend 400s on any key it does not know.
+     {"timestamp", "display_kind", "display_metadata", "_row_id", "_submit_row_session_id",
+-     MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID,
++     MERGED_TURN_PREFIX, MESSAGE_UID, DISPLAY_OCCURRENCE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID,
+      # The alternation repair's row counts: an in-place compaction reads them off the live dict.
+      MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS}
+ ) | REPAIR_BOOKKEEPING_FIELDS
+@@ -93,6 +95,9 @@
+ def copy_identity_fields(src: Mapping[str, Any], dst: MutableMapping[str, Any]) -> None:
+     """Copy the non-empty identity fields (uid, merge witness, tool-call uids) from *src* onto *dst*: the
+     live dict to its flush row, and the committed row back onto the live dict."""
++    # NULL is explicit for a restored legacy row; its synthetic UID is not proof of a separate occurrence.
++    if DISPLAY_OCCURRENCE_UID in src:
++        dst[DISPLAY_OCCURRENCE_UID] = src[DISPLAY_OCCURRENCE_UID]
+     for key, kind in _IDENTITY_FIELD_TYPES:
+         value = src.get(key)
+         if isinstance(value, kind) and value:
+--- a/agent/transcript_repair.py
++++ b/agent/transcript_repair.py
+@@ -10,7 +10,7 @@
+ 
+ from agent.context_compressor import _DB_PERSISTED_MARKER
+ from agent.message_metadata import (
+-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields, message_uid_or_none)
++    CANONICAL_ROW, DB_ROW_SNAPSHOT, DISPLAY_OCCURRENCE_UID, MESSAGE_UID, copy_identity_fields, message_uid_or_none)
+ from hermes_state_common import _id_chunks, _placeholders
+ from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
+ from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
+@@ -22,7 +22,7 @@
+ # which logical message (or which call occurrence) the row is. ``tool_call_uids`` IS payload: it follows
+ # ``tool_calls`` (an assistant merge unions both), so it is rewritten with the row.
+ _NON_PAYLOAD_COLUMNS = frozenset(
+-    {"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID, "tool_call_uid"})
++    {"session_id", "role", "timestamp", "active", "display_identity", DISPLAY_OCCURRENCE_UID, MESSAGE_UID, "tool_call_uid"})
+ _REPAIR_COLUMNS = tuple(c for c in _MESSAGE_WRITE_COLUMNS if c not in _NON_PAYLOAD_COLUMNS)
+ # Columns same-process writers update after our flush (reactions / display-kind stamps, api_content
+ # backfill, codex reasoning backfill + checkpoint pruning, platform message ids). They are not part of the
+@@ -154,7 +154,9 @@
+             # the payload after our flush; adopt its durable version.
+             adopt = transcript_row_snapshot(target_row) != expected
+             if not adopt:
+-                serialized = serialize_message_fn(msg, float(target_row["timestamp"]))
++                identity = {MESSAGE_UID: target_row[MESSAGE_UID],
++                            DISPLAY_OCCURRENCE_UID: target_row[DISPLAY_OCCURRENCE_UID]}
++                serialized = serialize_message_fn({**msg, **identity}, float(target_row["timestamp"]))
+                 if serialized["token_count"] is None:
+                     # Replays never decode token_count (the agent flush row sets it to None): None means
+                     # "unknown", not NULL.
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -40,7 +40,7 @@
+ from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+ from agent.interrupt_compat import request_hard_interrupt
+-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
++from agent.message_metadata import ABSORBED_MESSAGE_UIDS, DISPLAY_OCCURRENCE_UID, MESSAGE_UID, copy_identity_fields
+ from agent.turn_context import compression_made_progress
+ from agent.session_activity import ActivityProvenance
+ from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
+@@ -1159,7 +1159,8 @@
+     # Replay rebuilds the SAME conversation for its next turn: every role keeps its uid and merge witness, so a
+     # context engine sees the uids the store holds. Tool-call uid maps stay with the rows that still carry
+     # their calls (those pass through whole); on a plain row a leftover map would name calls it no longer has.
+-    copy_identity_fields({key: msg[key] for key in (MESSAGE_UID, ABSORBED_MESSAGE_UIDS) if key in msg}, entry)
++    identity = (MESSAGE_UID, ABSORBED_MESSAGE_UIDS, DISPLAY_OCCURRENCE_UID)
++    copy_identity_fields({key: msg[key] for key in identity if key in msg}, entry)
+     # Replay rewrites are view-only: keep the durable-row stamp so marker-only
+     # flushes skip rows already in state.db (#121462/#123462).
+     if msg.get("_db_persisted"):
+--- a/gateway/slash_commands_session.py
++++ b/gateway/slash_commands_session.py
+@@ -123,6 +123,8 @@
+     row["role"] = msg.get("role", "user")
+     row["tool_name"] = msg.get("tool_name") or msg.get("name")
+     row["api_content"] = extract_api_content_sidecar(msg)
++    from agent.message_metadata import copy_identity_fields
++    copy_identity_fields(msg, row)
+     return row
+ 
+ 
+--- a/hermes_state_common.py
++++ b/hermes_state_common.py
+@@ -474,6 +474,7 @@
+     display_metadata TEXT,
+     display_identity BLOB,
+     display_order INTEGER,
++    display_occurrence_uid TEXT,
+     message_uid TEXT,
+     absorbed_message_uids TEXT,
+     tool_call_uids TEXT,
+@@ -694,7 +695,7 @@
+ DROP TRIGGER IF EXISTS messages_display_identity_update;
+ CREATE TRIGGER IF NOT EXISTS messages_display_identity_update
+ AFTER UPDATE OF role, content, timestamp, tool_call_id, tool_calls, tool_name,
+-                display_kind ON messages
++                display_kind, display_occurrence_uid, message_uid ON messages
+ WHEN new.role IS NOT old.role
+   OR new.content IS NOT old.content
+   OR new.timestamp IS NOT old.timestamp
+@@ -702,6 +703,8 @@
+   OR new.tool_calls IS NOT old.tool_calls
+   OR new.tool_name IS NOT old.tool_name
+   OR new.display_kind IS NOT old.display_kind
++  OR new.display_occurrence_uid IS NOT old.display_occurrence_uid
++  OR (old.display_occurrence_uid IS NOT NULL AND new.message_uid IS NOT old.message_uid)
+ BEGIN
+     UPDATE messages SET display_identity = NULL, display_order = NULL
+     WHERE id = new.id OR (
+--- a/hermes_state_identity.py
++++ b/hermes_state_identity.py
+@@ -7,7 +7,7 @@
+ import json
+ from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple
+ 
+-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
++from agent.message_metadata import ABSORBED_MESSAGE_UIDS, DISPLAY_OCCURRENCE_UID, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
+ from agent.message_sanitization import coalesce_tool_call_id
+ from hermes_state_common import _json_or
+ 
+@@ -80,6 +80,8 @@
+     with yet, and replacing it with the stored single uid would strip the later occurrence."""
+     if row[MESSAGE_UID]:
+         msg[MESSAGE_UID] = row[MESSAGE_UID]
++    if row["role"] == "assistant":
++        msg[DISPLAY_OCCURRENCE_UID] = row[DISPLAY_OCCURRENCE_UID] if DISPLAY_OCCURRENCE_UID in row.keys() else None
+     if row["tool_call_uids"] and (stored := _uid_map(row["tool_call_uids"])):
+         live = msg.get(TOOL_CALL_UIDS)
+         live = live if isinstance(live, dict) else {}
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -15,7 +15,7 @@
+     _newest_checkpoint_carrier, split_user_originated_turn)
+ from agent.memory_manager import sanitize_context
+ from agent.message_metadata import (
+-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
++    CANONICAL_ROW, DB_ROW_SNAPSHOT, DISPLAY_OCCURRENCE_UID, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
+     index_tool_call_uids, message_uid_or_none, resolve_tool_call_uid, mint_uid, stamp_message_uid)
+ from agent.message_sanitization import (
+     _sanitize_surrogates, coalesce_tool_call_id, redact_protected_file_tool_calls_for_persistence)
+@@ -34,8 +34,8 @@
+                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
+                    display_metadata, display_identity, message_uid, absorbed_message_uids, tool_call_uids,
+-                   tool_call_uid)
+-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
++                   tool_call_uid, display_occurrence_uid)
++                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+ # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
+ # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
+ # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
+@@ -43,6 +43,7 @@
+     re.findall(r"\w+", _INSERT_MESSAGE_SQL.split("(", 1)[1].split(")", 1)[0])
+ )
+ _MESSAGE_SCHEMA_KEYS = frozenset(_MESSAGE_WRITE_COLUMNS) | {"id", "compacted", "display_order"}
++_NEW_DISPLAY_OCCURRENCE = object()
+ _BUMP_GENERATION_SQL = """
+             INSERT INTO conversation_generations (source, session_key, generation)
+             VALUES (?, ?, 1)
+@@ -275,11 +276,17 @@
+         encoded_tool_calls = _persisted_tool_calls_json(tool_calls)
+         encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
+         display_metadata = self._encode_display_metadata(msg.get("display_metadata"))
++        message_uid = message_uid_or_none(msg)
++        occurrence_uid = msg.get(DISPLAY_OCCURRENCE_UID)
++        if (role != "assistant" or encoded_tool_calls or msg.get("tool_call_id") or encoded_tool_name
++                or occurrence_uid != message_uid):
++            occurrence_uid = None
+         identity_row = {
+             "role": role, "content": encoded_content, "timestamp": message_timestamp,
+             "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
+             "tool_name": encoded_tool_name, "display_kind": msg.get("display_kind"),
+-            "display_metadata": display_metadata,
++            "display_metadata": display_metadata, MESSAGE_UID: message_uid,
++            DISPLAY_OCCURRENCE_UID: occurrence_uid,
+         }
+         return (session_id, role, encoded_content, msg.get("tool_call_id"),
+             encoded_tool_calls, encoded_tool_name,
+@@ -291,8 +298,8 @@
+             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
+             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
+             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
+-            message_uid_or_none(msg), _absorbed_uids_json(msg),
+-            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))
++            message_uid, _absorbed_uids_json(msg),
++            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg), occurrence_uid)
+ 
+     @staticmethod
+     def _stamp_tool_call_uids(msg: Dict[str, Any], tool_calls: Any, batch_index: Dict[str, str]) -> None:
+@@ -395,7 +402,8 @@
+         api_content: Optional[str] = None, display_kind: Optional[str] = None,
+         display_metadata: Optional[Dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
+         turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
+-        message_uid: Optional[str] = None) -> int:
++        message_uid: Optional[str] = None,
++        display_occurrence_uid: Any = _NEW_DISPLAY_OCCURRENCE) -> int:
+         """Append one message; returns the row id and bumps the session counters. ``platform_message_id``:
+         the platform's own id. ``api_content``: byte-fidelity sidecar, the exact string sent to the API when
+         it differed from ``content``, stored as sent except lone surrogates. ``message_uid``: the id a caller
+@@ -407,6 +415,8 @@
+         tool_calls = _parse_tool_calls(tool_calls)
+         message_timestamp = _coerce_timestamp(timestamp, time.time())
+         stamp_message_uid(msg)  # a fresh occurrence: mint its durable id
++        if display_occurrence_uid is _NEW_DISPLAY_OCCURRENCE:
++            msg[DISPLAY_OCCURRENCE_UID] = None if _compressed_summary else msg[MESSAGE_UID]
+         self._stamp_tool_call_uids(msg, tool_calls, {})
+         params = self._message_row_params(
+             session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=True)
+@@ -493,18 +503,19 @@
+                 ),
+                 decode_row_fn=self._decoded_repair_row,
+             )
+-            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
++            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows, new_occurrences=True)
+             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+             return inserted
+         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+ 
+-    _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp", "display_metadata", "_friday_summary_carrier_proof")
++    _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp", "display_metadata",
++                       "_friday_summary_carrier_proof", MESSAGE_UID, DISPLAY_OCCURRENCE_UID)
+ 
+     def _execute_transcript_write(self, fn, messages: List[Dict[str, Any]], **kwargs):
+         """``_execute_write(fn)`` for callbacks that stamp row state onto the caller's *messages* (every
+         :meth:`_insert_message_rows` caller that passes caller-owned dicts; rewind and import insert fresh copies). Each attempt, and a final failure, restores the caller's
+-        ``_row_id`` / digest / timestamp: a rolled-back insert's id is reused by SQLite, so a stale stamp
+-        would make a later flush adopt another writer's row and drop this message."""
++        row ids, digests, timestamps and message identity. A rolled-back insert's id can be reused, and
++        an adopted parent UID belongs to that write attempt until its new generation commits."""
+         _absent = object()
+         pre_state = [tuple(m.get(k, _absent) for k in self._ROW_STATE_KEYS) for m in messages]
+ 
+@@ -767,41 +778,60 @@
+         return row[0] if row else None
+ 
+     def _carry_parent_timestamps(self, conn, parent_session_id: str, messages: List[Dict[str, Any]]) -> None:
+-        """Adopt the durable parent row's timestamp onto carried handoff rows so the re-inserted child row keeps
+-        the original's display identity (see _display_dedupe_key). Idempotent; never overwrites a timestamp the
+-        dict already carries; rows with no match keep their caller-supplied/now_ts value.
+-
+-        Content identity = _display_dedupe_key's content key minus the timestamp (role, encoded content,
+-        tool_call_id, encoded tool_calls, tool_name). Donors are the parent's ACTIVE rows, consumed first-match-wins in id
+-        order so two identical-content turns cannot both grab the same parent row. Best-effort: on any error
+-        the insert falls back to today's behavior (publish-time stamp) and never breaks publish.
++        """Carry timestamp and established display identity from an active parent row.
++
++        Preserve explicit timestamps. The historical unkeyed handoff consumes donors in
++        row order for timestamps. Only an exact UID, or a single compatible donor for a
++        UID-less message, can establish an assistant occurrence.
+         """
+         try:
+-            candidates = [i for i, msg in enumerate(messages)
+-                if isinstance(msg, dict) and coerce_epoch(msg.get("timestamp"), field="message timestamp") is None]
++            candidates = []
++            for msg in messages:
++                if isinstance(msg, dict):
++                    timestamp = coerce_epoch(msg.get("timestamp"), field="message timestamp")
++                    needs_identity = msg.get("role") == "assistant" and DISPLAY_OCCURRENCE_UID not in msg
++                    if timestamp is None or needs_identity:
++                        candidates.append((msg, timestamp, needs_identity))
+             if not candidates:
+                 return
+             donors: Dict[Tuple[Any, ...], List[Any]] = {}
+             for row in conn.execute(
+-                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name FROM messages "
+-                    "WHERE session_id = ? AND active = 1 ORDER BY id", (parent_session_id,)).fetchall():
+-                donors.setdefault((row["role"], row["content"], row["tool_call_id"], _persisted_tool_calls_json(row["tool_calls"]),
+-                    row["tool_name"]), []).append(row["timestamp"])
+-            for i in candidates:
+-                msg = messages[i]
+-                tool_calls = _parse_tool_calls(msg.get("tool_calls"))
++                    "SELECT role, content, timestamp, tool_call_id, tool_calls, tool_name, "
++                    "message_uid, display_occurrence_uid FROM messages "
++                    "WHERE session_id = ? AND active = 1 ORDER BY id", (parent_session_id,)):
++                key = (row["role"], row["content"], row["tool_call_id"],
++                       _persisted_tool_calls_json(row["tool_calls"]), row["tool_name"])
++                donors.setdefault(key, []).append(row)
++            for msg, timestamp, needs_identity in candidates:
+                 key = (msg.get("role", "unknown"), self._encode_content(msg.get("content")),
+-                    msg.get("tool_call_id"), _persisted_tool_calls_json(tool_calls),
+-                    _scrub_surrogates(msg.get("tool_name")))
++                       msg.get("tool_call_id"), _persisted_tool_calls_json(_parse_tool_calls(msg.get("tool_calls"))),
++                       _scrub_surrogates(msg.get("tool_name")))
+                 queue = donors.get(key)
+-                if queue:
+-                    msg["timestamp"] = queue.pop(0)
++                if not queue:
++                    continue
++                uid = message_uid_or_none(msg)
++                matching = [(i, row) for i, row in enumerate(queue)
++                            if (not uid or row[MESSAGE_UID] == uid)
++                            and (timestamp is None or row["timestamp"] == timestamp)]
++                if matching:
++                    index, donor = matching[0]
++                elif timestamp is None:
++                    index, donor = 0, queue[0]
++                else:
++                    continue
++                queue.pop(index)
++                if timestamp is None:
++                    msg["timestamp"] = donor["timestamp"]
++                if needs_identity and len(matching) == 1 and donor[DISPLAY_OCCURRENCE_UID]:
++                    msg[MESSAGE_UID] = donor[MESSAGE_UID]
++                    msg[DISPLAY_OCCURRENCE_UID] = donor[DISPLAY_OCCURRENCE_UID]
+         except Exception:
+-            return  # Best-effort: a failed carry falls back to the publish-time stamp, never breaks publish.
++            return  # A missing donor does not prevent publication.
+ 
+     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]], *,
+                              prune_checkpoints: bool = True, summary_producer: Any = None,
+-                             summary_source_session_id: Optional[str] = None) -> tuple[int, int]:
++                             summary_source_session_id: Optional[str] = None,
++                             new_occurrences: bool = False) -> tuple[int, int]:
+         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
+         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows.
+         A caller that re-archives some rows afterwards passes ``prune_checkpoints=False`` and prunes once they
+@@ -817,6 +847,10 @@
+             # message), minted and stamped on the dict otherwise. Stamped BEFORE the bind so the row and
+             # the live dict never disagree. Tool calls get their per-occurrence ids the same way.
+             stamp_message_uid(msg)
++            if role == "assistant" and DISPLAY_OCCURRENCE_UID not in msg:
++                if (new_occurrences and not msg.get("_row_id") and not msg.get(DB_ROW_SNAPSHOT)
++                        and not msg.get(_DB_PERSISTED_MARKER_KEY) and not msg.get("_compressed_summary")):
++                    msg[DISPLAY_OCCURRENCE_UID] = msg[MESSAGE_UID]
+             self._stamp_tool_call_uids(msg, tool_calls, batch_tool_index)
+             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
+                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
+@@ -1238,7 +1272,12 @@
+             (session_id, _scrub_surrogates(display_kind)))
+ 
+     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
+-        """Historical display identity, including normalized live content from user handoff carriers."""
++        """Use a proved occurrence for a plain assistant reply, else preserve the historical key."""
++        if DISPLAY_OCCURRENCE_UID in row.keys():
++            uid = row[DISPLAY_OCCURRENCE_UID]
++            if (uid and uid == row[MESSAGE_UID] and row["role"] == "assistant"
++                    and not (row["tool_calls"] or row["tool_call_id"] or row["tool_name"])):
++                return ("assistant-occurrence", uid)
+         dedupe_content = row["content"]
+         if row["role"] == "user":
+             handoff, live_view = split_user_originated_turn({
+@@ -1291,7 +1330,7 @@
+         while True:
+             rows = conn.execute(
+                 "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+-                "display_kind, display_metadata, display_order, display_identity "
++                "display_kind, display_metadata, display_order, display_identity, message_uid, display_occurrence_uid "
+                 "FROM messages INDEXED BY idx_messages_session_id "
+                 "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
+                 "ORDER BY id LIMIT 1000",
+@@ -1344,7 +1383,9 @@
+                 index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
+                 rows = conn.execute(
+                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
+-                    f"display_kind, display_metadata FROM messages {index_hint} "
++                    f"display_kind, display_metadata, "
++                    f"{self._legacy_display_columns(conn, MESSAGE_UID, DISPLAY_OCCURRENCE_UID)} "
++                    f"FROM messages {index_hint} "
+                     f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
+                     (session_id,))
+                 for row in rows:
+@@ -1378,6 +1419,8 @@
+         msg = dict(row)
+         msg.pop("display_identity", None)
+         msg.pop("display_order", None)
++        if msg.get(DISPLAY_OCCURRENCE_UID) is None:
++            msg.pop(DISPLAY_OCCURRENCE_UID, None)
+         if summary_flag and msg.pop("_compressed_summary", 0):
+             msg["_compressed_summary"] = True
+         msg["content"] = self._decode_content(msg["content"])
+@@ -1592,11 +1635,21 @@
+                 seen.add(current)
+             return best if best is not None else session_id
+ 
++    @staticmethod
++    def _legacy_display_columns(conn, *columns: str) -> str:
++        """Read optional identity data without altering an archived SQLite file."""
++        available = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
++        return ", ".join(column if column in available else f"NULL AS {column}" for column in columns)
++
+     def _fetch_conversation_rows(self, session_ids: List[str], active_clause: str, *, with_session_id: bool):
+         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
+         and would break tool-call adjacency)."""
++        occurrence_column = DISPLAY_OCCURRENCE_UID
++        if self.read_only:
++            with self._read_ctx() as conn:
++                occurrence_column = self._legacy_display_columns(conn, DISPLAY_OCCURRENCE_UID)
+         return self._read_all(
+-            f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS} "
++            f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS}, {occurrence_column} "
+             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
+             f"{active_clause} ORDER BY id", tuple(session_ids))
+ 
+--- a/hermes_state_timeline.py
++++ b/hermes_state_timeline.py
+@@ -74,13 +74,28 @@
+             FROM messages m WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
+             GROUP BY m.display_order
+         )"""
+-    return f"""WITH ranked AS (
++    occurrence = "NULL"
++    columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
++    if {"display_occurrence_uid", "message_uid"} <= columns:
++        occurrence = ("CASE WHEN role = 'assistant' AND display_occurrence_uid = message_uid "
++                      "AND COALESCE(tool_call_id, '') = '' AND COALESCE(tool_calls, '') = '' "
++                      "AND COALESCE(tool_name, '') = '' "
++                      "THEN display_occurrence_uid END")
++    return f"""WITH candidates AS (
++        SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, display_kind, active,
++               {occurrence} AS occurrence
++        FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
++    ), ranked AS (
+         SELECT id, MIN(id) OVER identity AS sort_id,
+                ROW_NUMBER() OVER (identity ORDER BY active DESC, id DESC) AS preference
+-        FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
+-        WINDOW identity AS (PARTITION BY role,
+-            CASE WHEN role = 'user' THEN timeline_identity_content(content, display_kind) ELSE content END,
+-            timestamp, tool_call_id, tool_calls, tool_name)
++        FROM candidates
++        WINDOW identity AS (PARTITION BY role, occurrence,
++            CASE WHEN occurrence IS NULL THEN
++                CASE WHEN role = 'user' THEN timeline_identity_content(content, display_kind) ELSE content END
++            END, CASE WHEN occurrence IS NULL THEN timestamp END,
++            CASE WHEN occurrence IS NULL THEN tool_call_id END,
++            CASE WHEN occurrence IS NULL THEN tool_calls END,
++            CASE WHEN occurrence IS NULL THEN tool_name END)
+     ), display_rows AS (SELECT id AS row_id, sort_id FROM ranked WHERE preference = 1)"""
+ 
+ 
+--- a/tests/hermes_state/test_get_messages_include_compacted.py
++++ b/tests/hermes_state/test_get_messages_include_compacted.py
+@@ -152,8 +152,7 @@
+ 
+     def _copy_tail_as_new_generation(self, db, sid, ids):
+         """Simulate one compaction epoch: duplicate rows as active=0,
+-        compacted=1 with the SAME content and timestamp (the real
+-        copy-protected-tail behaviour)."""
++        compacted=1 with the original content, timestamp and durable identity."""
+ 
+         def _do(conn):
+             placeholders = ",".join("?" * len(ids))
+@@ -161,9 +160,9 @@
+                 f"""
+                 INSERT INTO messages
+                     (session_id, role, content, tool_call_id, tool_calls,
+-                     tool_name, timestamp, active, compacted)
++                     tool_name, timestamp, active, compacted, message_uid, display_occurrence_uid, display_identity)
+                 SELECT session_id, role, content, tool_call_id, tool_calls,
+-                       tool_name, timestamp, 0, 1
++                       tool_name, timestamp, 0, 1, message_uid, display_occurrence_uid, display_identity
+                 FROM messages
+                 WHERE session_id = ? AND id IN ({placeholders})
+                 """,
+@@ -384,9 +383,9 @@
+         # Index columns never escape the message dict (BLOB identity is not JSON-serializable).
+         assert not {"display_identity", "display_order"} & set(messages[0])
+         json.dumps(messages)
+-        # SQLite stores -0.0 and 0.0 as one value; the hashed identity must agree with that.
+-        db.append_message(sid, role="assistant", content="same", timestamp=-0.0)
+-        newest_id = db.append_message(sid, role="assistant", content="same", timestamp=0.0)
++        # SQLite stores -0.0 and 0.0 as one value. A legacy copy still uses that hashed timestamp.
++        db.append_message(sid, role="assistant", content="same", timestamp=-0.0, display_occurrence_uid=None)
++        newest_id = db.append_message(sid, role="assistant", content="same", timestamp=0.0, display_occurrence_uid=None)
+         assert [m["id"] for m in db.get_messages(sid, include_compacted=True)][-1:] == [newest_id]
+         assert len([m for m in db.get_messages(sid, include_compacted=True) if m["content"] == "same"]) == 1
+ 
+@@ -434,8 +433,8 @@
+     def test_display_backfill_rewrites_only_changed_identity_group(self, db):
+         sid = "identity-update"
+         db.create_session(sid, source="desktop")
+-        first = db.append_message(sid, role="assistant", content="same", timestamp=100.0)
+-        db.append_message(sid, role="assistant", content="same", timestamp=100.0)
++        first = db.append_message(sid, role="assistant", content="same", timestamp=100.0, display_occurrence_uid=None)
++        db.append_message(sid, role="assistant", content="same", timestamp=100.0, display_occurrence_uid=None)
+         unaffected = db.append_message(sid, role="assistant", content="other", timestamp=100.0)
+         unaffected_before = db._conn.execute(
+             "SELECT display_order, display_identity FROM messages WHERE id = ?", (unaffected,)
+@@ -476,8 +475,10 @@
+         conn.execute("DROP INDEX IF EXISTS idx_messages_display_backfill")
+         conn.execute("DROP INDEX IF EXISTS idx_messages_display_identity")
+         conn.execute("DROP INDEX IF EXISTS idx_messages_session_id")
++        conn.execute("DROP TRIGGER IF EXISTS messages_message_uid_insert")
++        conn.execute("DROP INDEX IF EXISTS idx_messages_session_uid")
+         columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+-        for column in ("display_order", "display_identity"):
++        for column in ("display_order", "display_identity", "display_occurrence_uid", "message_uid"):
+             if column in columns:
+                 conn.execute(f"ALTER TABLE messages DROP COLUMN {column}")
+         conn.commit()
+@@ -596,6 +597,49 @@
+         assert [m["id"] for m in page] == all_ids[2:]
+         assert len(page) == 2
+ 
++    def test_independent_assistant_replies_with_equal_content_and_time_are_visible(self, db):
++        sid = "independent-replies"
++        db.create_session(sid, source="cli")
++        first = db.append_message(sid, role="assistant", content="ok", timestamp=100.0)
++        second = {"role": "assistant", "content": "ok", "timestamp": 100.0}
++        db.append_messages_batch(sid, [second])
++        self._copy_tail_as_new_generation(db, sid, [first])
++
++        expected = [first, second["_row_id"]]
++        assert db.display_message_count(sid) == 2
++        assert _row_ids(db, sid, include_compacted=True) == expected
++        assert [row["id"] for row in db.get_messages(sid, include_compacted=True, limit=1, offset=1)] == expected[1:]
++        conversation = db.get_messages_as_conversation(sid, include_compacted=True, include_row_ids=True)
++        assert [row["_row_id"] for row in conversation] == expected
++
++    def test_failed_rotation_restores_unkeyed_assistant_handoff(self, db, monkeypatch):
++        for parent in ("before", "after"):
++            db.create_session(parent, source="cli")
++            db.append_message(parent, role="assistant", content="ok", timestamp=100.0)
++        handoff = [{"role": "assistant", "content": "ok"}]
++        insert = db._insert_message_rows
++
++        def fail_after_insert(*args, **kwargs):
++            insert(*args, **kwargs)
++            assert handoff[0].get("display_occurrence_uid") == handoff[0].get("message_uid")
++            assert handoff[0].get("message_uid")
++            raise RuntimeError("publication failed after the rows were staged")
++
++        with monkeypatch.context() as patch:
++            patch.setattr(db, "_insert_message_rows", fail_after_insert)
++            with pytest.raises(RuntimeError, match="publication failed"):
++                db.publish_compression_child(parent_session_id="before", child_session_id="failed",
++                                             source="cli", messages=handoff, require_compression_lease=False)
++
++        assert handoff == [{"role": "assistant", "content": "ok"}]
++        assert db.get_session("failed") is None
++        db.publish_compression_child(parent_session_id="after", child_session_id="successful",
++                                     source="cli", messages=handoff, require_compression_lease=False)
++        stored = db.get_messages("after")[0]
++        assert handoff[0]["message_uid"] == stored["message_uid"]
++        assert handoff[0]["display_occurrence_uid"] == stored["display_occurrence_uid"]
++        assert len(db.get_messages("successful", include_ancestors=True)) == 1
++
+     def test_distinct_tool_calls_with_same_content_are_not_merged(self, db):
+         """Two real tool messages that happen to share role/content/timestamp
+         must stay separate: the dedupe key includes the tool fields, so only
