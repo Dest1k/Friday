@@ -1,0 +1,67 @@
+--- a/tools/scoped_word_conversion.py
++++ b/tools/scoped_word_conversion.py
+@@ -943,6 +943,10 @@
+                     if set(part.attrib) - {q('http://www.w3.org/XML/1998/namespace', 'space')} or part.get(q('http://www.w3.org/XML/1998/namespace', 'space'), 'default') not in ('preserve', 'default'):
+                         _fail('unsupported_word_inline')
+                     value = part.text or ''
++                elif part.tag == q(W, 'noBreakHyphen'):
++                    if part.attrib or part.text:
++                        _fail('unsupported_word_inline')
++                    value = '\u2011'
+                 elif part.tag == q(W, 'tab'):
+                     if part.attrib or (part.text or '').strip():
+                         _fail('unsupported_word_inline')
+--- a/tools/scoped_word_profiles.py
++++ b/tools/scoped_word_profiles.py
+@@ -627,6 +627,10 @@
+     parents = {child: parent for parent in package.body.iter() for child in parent}
+     locations = _body_table_locations(package.body, parents, checkpoint) if format == 'docx' else {}
+     located_rows = {}
++    text_tag = _q(W, 't')
++    run_tag = _q(W, 'r')
++    hyphen_tag = _q(W, 'noBreakHyphen')
++    spacing = {_q(W, 'tab'): '\t', _q(W, 'br'): '\n', _q(W, 'cr'): '\n'}
+     for node in package.body.iter():
+         _tick(checkpoint)
+         if node.tag == _q(W, 'tbl'):
+@@ -639,10 +643,18 @@
+         guide = {child for ruby in node.iter(_q(W, 'rt')) for child in ruby.iter()}
+         guide.update(child for properties in node.iter(_q(W, 'pPr'))
+                      for child in properties.iter())
+-        value = ''.join((item.text or '') if item.tag == _q(W, 't')
+-                        else '\t' if item.tag == _q(W, 'tab')
+-                        else '\n' if item.tag in (_q(W, 'br'), _q(W, 'cr')) else ''
+-                        for item in node.iter() if item not in guide)
++        pieces = []
++        for item in node.iter():
++            if item in guide:
++                continue
++            if item.tag == text_tag:
++                pieces.append(item.text or '')
++            elif item.tag in spacing:
++                pieces.append(spacing[item.tag])
++            elif (item.tag == hyphen_tag and parents[item].tag == run_tag
++                  and not (item.attrib or item.text or len(item))):
++                pieces.append('\u2011')
++        value = ''.join(pieces)
+         # Nested paragraphs (e.g. text boxes) do not become text in their outer
+         # paragraph as well. Their distinct placement is not a rendered view.
+         nested = any(child is not node and child.tag == _q(W, 'p') for child in node.iter())
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -842,8 +842,14 @@
+     for para in root.iter(f"{w}p"):
+         # w:rt is the ruby (phonetic) guide over w:rubyBase; it annotates the text, it is not text.
+         guide = {n for rt in para.iter(f"{w}rt") for n in rt.iter()}
++        no_break_hyphens = {
++            node for run in para.iter(f"{w}r")
++            for node in run.iterfind(f"{w}noBreakHyphen")
++            if not (node.attrib or node.text or len(node))
++        }
+         text = "".join(
+-            (n.text or "") if n.tag == f"{w}t" else breaks.get(n.tag, "")
++            (n.text or "") if n.tag == f"{w}t" else
++            "\u2011" if n in no_break_hyphens else breaks.get(n.tag, "")
+             for n in para.iter() if n not in guide)
+         lines.extend(text.split("\n"))
+     return _joined(lines, "DOCX contains no extractable text")
