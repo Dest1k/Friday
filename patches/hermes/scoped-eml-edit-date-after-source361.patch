@@ -1,0 +1,138 @@
+diff --git a/hermes_cli/friday_workspace_communication.py b/hermes_cli/friday_workspace_communication.py
+--- a/hermes_cli/friday_workspace_communication.py
++++ b/hermes_cli/friday_workspace_communication.py
+@@ -193,7 +193,7 @@
+     edit_keys = {'old_value', 'new_value'}
+     if format == 'ics':
+         edit_keys.add('uid')
+-    if format == 'eml' and spec.get('field') == 'body':
++    if format == 'eml' and spec.get('field') in ('body', 'date'):
+         edit_keys.add('field')
+     if set(spec) != edit_keys | {'source', 'source_sha256'}:
+         raise CommunicationError('edit_schema')
+@@ -208,6 +208,10 @@
+         return dict(edit_mode='single_decoded_text_plain_utf8_qp_literal',
+                     header_bytes_preserved=True, unedited_decoded_body_preserved=True,
+                     body_transfer_reencoded=True)
++    if edit.get('field') == 'date':
++        return dict(edit_mode='single_raw_top_level_date',
++                    header_bytes_outside_date_preserved=True,
++                    raw_mime_body_preserved=True, date_verified_post_output=True)
+     return dict(edit_mode={'eml': 'single_top_level_Subject',
+                            'ics': 'single_UID_selected_VEVENT_SUMMARY',
+                            'vcf': 'single_VCARD_FN'}[format],
+@@ -234,6 +238,7 @@
+     if operation == 'eml_extract_attachment':
+         return extract_attachment(cap, fd, leaf, path, content)
+     source = original = identity = relative = None
++    date_edit = False
+     try:
+         check(cap)
+         spec = _object(content)
+@@ -245,6 +250,7 @@
+                 spec, checkpoint=lambda: check(cap))
+         else:
+             expected, edit = _edit_spec(spec, format)
++            date_edit = format == 'eml' and edit.get('field') == 'date'
+             raw = spec['source']
+             if type(raw) is not str or not raw or '\x00' in raw:
+                 raise ScopeDenied()
+@@ -260,6 +266,8 @@
+                     or any(p in ('.', '..') or p.startswith('.') for p in relative.parts)
+                     or relative.as_posix() == path):
+                 raise ScopeDenied()
++            if date_edit:
++                guard_tool('read_file', {'path': str(source)}, registry_scope=str(cap.home))
+             original, _, identity = workspace_document(str(source), max_bytes=1_000_000,
+                                                        with_identity=True)
+             if hashlib.sha256(original).hexdigest() != expected:
+@@ -282,6 +290,8 @@
+         def verify():
+             check(cap)
+             if source is not None:
++                if date_edit:
++                    guard_tool('read_file', {'path': str(source)}, registry_scope=str(cap.home))
+                 current, _, current_identity = workspace_document(str(source), max_bytes=1_000_000,
+                                                                   with_identity=True)
+                 if current != original or current_identity != identity:
+diff --git a/tools/scoped_communication.py b/tools/scoped_communication.py
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -49,7 +49,10 @@
+ EML_EDIT_GUIDANCE = (
+     'eml_edit accepts JSON with exactly source, source_sha256, old_value and new_value '
+     'for a unique top-level Subject. For an explicitly requested body edit, add '
+-    'exactly "field":"body" to those keys. Use the current own-workspace EML read '
++    'exactly "field":"body" to those keys. For an explicitly requested Date edit, add '
++    'exactly "field":"date"; old_value/new_value are raw one-line RFC-5322 Date '
++    'strings with explicit numeric offsets (old must equal the unique top-level Date; '
++    'folded/obsolete Date unsupported). Use the current own-workspace EML read '
+     'hash and a new .eml path. Body edits support one unsigned inline text/plain '
+     'UTF-8 quoted-printable MIME part. Provide a nonempty exact single-line old_value '
+     'that occurs once in the decoded body, even across quoted-printable soft wraps, '
+@@ -1062,6 +1065,51 @@
+     return output
+ 
+ 
++def _edit_eml_date(data, spec, checkpoint):
++    old = _eml_date(spec['old_value'])
++    new = _eml_date(spec['new_value'])
++    if old == new:
++        _fail('no_op')
++    match = _header_separator(data)
++    header = data[:match.start()]
++    lines = header.splitlines(keepends=True)
++    found = []
++    offset = 0
++    for index, line in enumerate(lines):
++        raw = line.rstrip(b'\r\n')
++        start, end = offset, offset + len(line)
++        offset = end
++        if raw.lower().startswith(b'date:'):
++            colon = raw.find(b':')
++            value_start = colon + 1
++            while value_start < len(raw) and raw[value_start:value_start + 1] in (b' ', b'\t'):
++                value_start += 1
++            value = raw[value_start:]
++            if index + 1 < len(lines) and lines[index + 1][:1] in (b' ', b'\t'):
++                _fail('unsupported_date_folding')
++            found.append((start, end, value, raw[:value_start], line[len(raw):]))
++    if len(found) != 1:
++        _fail('date_target_not_unique')
++    start, end, value, prefix, ending = found[0]
++    if value != old.encode('ascii'):
++        _fail('precondition_mismatch')
++    # Verify the actual parsed source Date and raw header through the existing
++    # Source361 readback before accepting the target.
++    _read_eml(data, checkpoint, expected_date=old)
++    message = BytesParser(policy=policy.default).parsebytes(data, headersonly=True)
++    if (message.get_content_type() in ('multipart/signed', 'multipart/encrypted',
++                                        'application/pkcs7-mime', 'application/pkcs7-signature',
++                                        'application/x-pkcs7-mime', 'application/x-pkcs7-signature')
++            or any(name.lower() in EML_INTEGRITY_HEADERS for name in message.keys())):
++        _fail('unsupported_date_edit_target')
++    output = data[:start] + prefix + new.encode('ascii') + ending + data[end:]
++    if len(output) > MAX_BYTES:
++        _fail('output_limit')
++    _checkpoint(checkpoint)
++    _read_eml(output, checkpoint, expected_date=new)
++    return output
++
++
+ def _edit_header(data, spec):
+     expected = spec['old_value']
+     new = _text(spec['new_value'], 'invalid_new_value', 16_384)
+@@ -1193,9 +1241,11 @@
+     if type(spec) is not dict or not required <= set(spec):
+         _fail('edit_schema')
+     if format == 'eml' and set(spec) == required | {'field'}:
+-        if type(spec['field']) is not str or spec['field'] != 'body':
++        if type(spec['field']) is not str or spec['field'] not in ('body', 'date'):
+             _fail('edit_schema')
+-        return _edit_eml_body(data, spec, checkpoint)
++        if spec['field'] == 'body':
++            return _edit_eml_body(data, spec, checkpoint)
++        return _edit_eml_date(data, spec, checkpoint)
+     if format == 'ics' and set(spec) != required | {'uid'}:
+         _fail('edit_schema')
+     if format != 'ics' and set(spec) != required:
