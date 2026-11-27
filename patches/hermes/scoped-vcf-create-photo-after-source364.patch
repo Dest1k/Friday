@@ -1,0 +1,267 @@
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -699,8 +699,8 @@
+     if function['name'] == 'read_file':
+         function['description'] = 'Native EML exposes bounded stored headers, decoded plain-text bodies and attachment metadata without rendering HTML, opening attachments or sending. Native ICS exposes stored event, timezone and recurrence fields without occurrence expansion, UTC conversion or import. Native VCF exposes repeated and typed stored contact fields without fetching URIs or importing contacts. All three preserve unknown values as stored claims, enforce byte/part/depth/decoded-text limits and never follow remote resources.' + function['description']
+     if function['name'] == 'write_file':
+-        from tools.scoped_communication import EML_EDIT_GUIDANCE, ICS_NAMED_TIMEZONE_GUIDANCE
+-        function['description'] = ' Native local communication files: eml_create accepts JSON from,to,subject,text with optional date (exact RFC-5322 "Tue, 14 Jan 2025 23:50:00 -0015": ASCII weekday/wall clock and numeric +/-HHMM offset without colon; explicit only, -0000 ambiguous, no automatic time/locale), optional cc and reply_to arrays (1-100 one-mailbox strings each, order preserved; repeated display names/different addresses and same address in To and Reply-To allowed; Bcc/other fields refused) and optional attachments (0-16 objects with exactly source,source_sha256,content_type; safe own-workspace sources bound to current SHA; exact inert bytes in native multipart/mixed) for a NEW EML; the body remains UTF-8 text/plain; ' + EML_EDIT_GUIDANCE + ' eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location,timezone for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive and follows start. dtstamp uses YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, refuses conflicts and never sends/imports. Subject, ICS and VCF edits preserve unselected source bytes. ' + function['description']
++        from tools.scoped_communication import EML_EDIT_GUIDANCE, ICS_NAMED_TIMEZONE_GUIDANCE, VCF_PHOTO_GUIDANCE
++        function['description'] = ' Native local communication files: eml_create accepts JSON from,to,subject,text with optional date (exact RFC-5322 "Tue, 14 Jan 2025 23:50:00 -0015": ASCII weekday/wall clock and numeric +/-HHMM offset without colon; explicit only, -0000 ambiguous, no automatic time/locale), optional cc and reply_to arrays (1-100 one-mailbox strings each, order preserved; repeated display names/different addresses and same address in To and Reply-To allowed; Bcc/other fields refused) and optional attachments (0-16 objects with exactly source,source_sha256,content_type; safe own-workspace sources bound to current SHA; exact inert bytes in native multipart/mixed) for a NEW EML; the body remains UTF-8 text/plain; ' + EML_EDIT_GUIDANCE + ' eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location,timezone for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive and follows start. dtstamp uses YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. ' + VCF_PHOTO_GUIDANCE + 'vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, refuses conflicts and never sends/imports. Subject, ICS and VCF edits preserve unselected source bytes. ' + function['description']
+     if function['name'] in ('read_file', 'write_file', 'patch'):
+         from tools.scoped_iwork import GUIDANCE as _IWORK_READ_GUIDANCE
+         function['description'] = _IWORK_READ_GUIDANCE + function['description']
+diff --git a/hermes_cli/friday_workspace_communication.py b/hermes_cli/friday_workspace_communication.py
+--- a/hermes_cli/friday_workspace_communication.py
++++ b/hermes_cli/friday_workspace_communication.py
+@@ -10,7 +10,7 @@
+ from hermes_cli.friday_workspace_revision import check
+ from hermes_cli.friday_workspace_zip import _path as _attachment_path
+ from tools.scoped_communication import (
+-    MAX_ATTACHMENTS, MAX_ATTACHMENT_TOTAL, CommunicationError, create_eml, create_ics,
++    MAX_ATTACHMENTS, MAX_ATTACHMENT_TOTAL, VCF_PHOTO_GUIDANCE, CommunicationError, create_eml, create_ics,
+     create_vcf, edit_communication, extract_eml_attachment,
+ )
+ 
+@@ -41,13 +41,20 @@
+     'vcf': ('vcf_create content must be a JSON string encoding fn:string and optional '
+             'uid,organization,title,note strings; all supplied scalar strings are nonempty. '
+             'Optional emails/phones are arrays of strings or objects with value:string and '
+-            'optional types:array[string]. Use a NEW .vcf path. Local file only; no contact import.'),
++            'optional types:array[string]. Use a NEW .vcf path. ' + VCF_PHOTO_GUIDANCE),
+ }
+ 
+ 
+ def _object(content):
+-    if type(content) is not str or len(content.encode('utf-8')) > 100_000:
++    if type(content) is not str or len(content) > 100_000:
+         raise ScopeDenied()
++    try:
++        size = len(content.encode('utf-8'))
++    except UnicodeEncodeError:
++        raise ScopeDenied() from None
++    if size > 100_000:
++        raise ScopeDenied()
++
+     def pairs(items):
+         result = {}
+         for key, value in items:
+@@ -290,7 +297,8 @@
+         date_input_error = format == 'ics' and error.code in {'invalid_start_date', 'invalid_end_date', 'invalid_dtstamp'}
+         timezone_input_error = format == 'ics' and ('timezone' in error.code or error.code in {
+             'ambiguous_wall_time', 'nonexistent_wall_time'})
+-        if action == 'create' and (error.code == 'create_schema' or date_input_error or timezone_input_error):
++        if action == 'create' and (error.code in {'create_schema', 'invalid_photo'}
++                                   or date_input_error or timezone_input_error):
+             refusal['hint'] = _CREATE_SCHEMA_HINTS[format]
+         return json.dumps(refusal)
+     verify = None
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1433,7 +1433,7 @@
+     }
+ }
+ 
+-from tools.scoped_communication import EML_EDIT_GUIDANCE, ICS_NAMED_TIMEZONE_GUIDANCE
++from tools.scoped_communication import EML_EDIT_GUIDANCE, ICS_NAMED_TIMEZONE_GUIDANCE, VCF_PHOTO_GUIDANCE
+ 
+ WRITE_FILE_SCHEMA['description'] += ' Native local communication files: eml_create accepts JSON from,to,subject,text with optional date (exact RFC-5322 "Tue, 14 Jan 2025 23:50:00 -0015": ASCII weekday/wall clock, numeric +/-HHMM offset without colon; explicit only, no automatic time/locale; -0000 ambiguous and invalid), optional cc and reply_to arrays (1-100 one-mailbox strings each, order preserved; repeated display names/different addresses and same address in To and Reply-To are allowed; Bcc/other fields refused) and optional attachments (0-16 objects with exactly source,source_sha256,content_type; safe own-workspace source paths bound to current SHA; exact inert bytes in native multipart/mixed) for a NEW local EML with a UTF-8 text/plain body; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End uses the same form and follows start. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. '
+ WRITE_FILE_SCHEMA['description'] += ' Raw split 7z: read_file path=NAME.7z.001 requires archive_parts=["NAME.7z.001","NAME.7z.002",...] in exact order. For 7z_extract use {"source":"NAME.7z.001","parts":["NAME.7z.001","NAME.7z.002",...]}, with optional password, into a NEW folder. Supply the complete fixed-size set (last may be shorter), 2..128 parts, total at most 1000000 bytes. No volume discovery; missing/mixed/reordered/corrupt sets refuse before publication. Split ZIP, RAR multivolume, SFX and split-set conversion remain unsupported. '
+@@ -2315,6 +2315,7 @@
+     'vcf_create requires fn:string; optional uid,organization,title,note are strings. '
+     'Optional emails/phones are arrays (at most 100 each) of strings or objects with value:string '
+     'and optional types:array[string] (at most 8 type tokens). Supplied scalar strings are nonempty. '
++    + VCF_PHOTO_GUIDANCE +
+     'Other fields and all existing profile/size violations refuse. Creates local files only; '
+     'no mail is sent and no calendar/contact is imported. Existing paths never overwrite. '
+ )
+diff --git a/tools/scoped_communication.py b/tools/scoped_communication.py
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -19,6 +19,8 @@
+ import json
+ import quopri
+ import re
++import struct
++import zlib
+ 
+ MAX_BYTES = 1_000_000
+ MAX_PARTS = 128
+@@ -28,6 +30,7 @@
+ MAX_DECODED = 1_000_000
+ MAX_TEXT = 400_000
+ MAX_LINES = 4096
++MAX_LOGICAL_LINE_BYTES = 65_536
+ MAX_COMPONENTS = 256
+ MAX_ATTACHMENTS = 16
+ MAX_ATTACHMENT_TOTAL = 1_000_000
+@@ -107,7 +110,13 @@
+ 
+ 
+ def _text(value, code='invalid_text', limit=100_000, newlines=False):
+-    if type(value) is not str or len(value.encode('utf-8')) > limit:
++    if type(value) is not str or len(value) > limit:
++        _fail(code)
++    try:
++        encoded_size = len(value.encode('utf-8'))
++    except UnicodeEncodeError:
++        _fail(code)
++    if encoded_size > limit:
+         _fail(code)
+     if newlines and '\r' in value.replace('\r\n', ''):
+         _fail(code)
+@@ -438,7 +447,7 @@
+             result[-1]['newline'] = line['newline']
+         else:
+             result.append(dict(line))
+-        if len(result[-1]['text'].encode('utf-8')) > 65_536:
++        if len(result[-1]['text'].encode('utf-8')) > MAX_LOGICAL_LINE_BYTES:
+             _fail('logical_line_limit')
+     return result
+ 
+@@ -1121,9 +1130,131 @@
+     return result
+ 
+ 
++VCF_PHOTO_PROPERTY_PREFIX = 'PHOTO;VALUE=URI;MEDIATYPE=image/png:'
++VCF_PHOTO_URI_PREFIX = 'data:image/png;base64,'
++VCF_PHOTO_MAX_URI = MAX_LOGICAL_LINE_BYTES - len(VCF_PHOTO_PROPERTY_PREFIX)
++VCF_PHOTO_MAX_DECODED = (VCF_PHOTO_MAX_URI - len(VCF_PHOTO_URI_PREFIX)) // 4 * 3
++VCF_PHOTO_MAX_CHUNKS = 64
++VCF_PHOTO_MAX_DIMENSION = 4096
++VCF_PHOTO_MAX_PIXELS = 4_194_304
++VCF_PHOTO_SIGNATURE = b'\x89PNG\r\n\x1a\n'
++VCF_PHOTO_GUIDANCE = (
++    f'Optional photo is one string with the {VCF_PHOTO_URI_PREFIX} prefix and canonical '
++    f'base64. URI <= {VCF_PHOTO_MAX_URI} ASCII bytes including its prefix, decoded PNG '
++    f'1..{VCF_PHOTO_MAX_DECODED} bytes. A static noninterlaced PNG with 8/16-bit samples, colour '
++    f'types 0/2/4/6 and dimensions 1..{VCF_PHOTO_MAX_DIMENSION} each, '
++    f'<= {VCF_PHOTO_MAX_PIXELS} pixels. At most {VCF_PHOTO_MAX_CHUNKS} chunks: '
++    'IHDR, consecutive IDAT, IEND, and optional uncompressed tEXt before or after IDAT. '
++    'All chunk CRCs and the single zlib image stream must be valid. Scanline filters 0..4. '
++    f'It writes {VCF_PHOTO_PROPERTY_PREFIX} followed by the exact URI. Local only, '
++    'with no fetch, render or contact import. Reopen suppresses the PHOTO value. '
++)
++
++
++def _validate_vcf_photo(photo, checkpoint):
++    # Validate the static PNG payload without rendering or fetching it.
++    if (type(photo) is not str or len(photo) > VCF_PHOTO_MAX_URI
++            or not photo.startswith(VCF_PHOTO_URI_PREFIX) or not photo.isascii()):
++        _fail('invalid_photo')
++    payload = photo[len(VCF_PHOTO_URI_PREFIX):]
++    try:
++        decoded = base64.b64decode(payload, validate=True)
++    except (ValueError, binascii.Error):
++        _fail('invalid_photo')
++    if not decoded or len(decoded) > VCF_PHOTO_MAX_DECODED:
++        _fail('invalid_photo')
++    if base64.b64encode(decoded).decode('ascii') != payload:
++        _fail('invalid_photo')
++    if not decoded.startswith(VCF_PHOTO_SIGNATURE):
++        _fail('invalid_photo')
++    position = len(VCF_PHOTO_SIGNATURE)
++    dimensions = None
++    idat = []
++    saw_idat = False
++    idat_done = False
++    saw_iend = False
++    chunk_count = 0
++    while position < len(decoded):
++        _checkpoint(checkpoint)
++        if position + 12 > len(decoded):
++            _fail('invalid_photo')
++        length = struct.unpack('>I', decoded[position:position + 4])[0]
++        if position + 12 + length > len(decoded):
++            _fail('invalid_photo')
++        kind = decoded[position + 4:position + 8]
++        data = decoded[position + 8:position + 8 + length]
++        crc = struct.unpack('>I', decoded[position + 8 + length:position + 12 + length])[0]
++        if zlib.crc32(kind + data) & 0xffffffff != crc:
++            _fail('invalid_photo')
++        chunk_count += 1
++        if chunk_count > VCF_PHOTO_MAX_CHUNKS:
++            _fail('invalid_photo')
++        if dimensions is None and kind != b'IHDR':
++            _fail('invalid_photo')
++        if kind == b'IHDR':
++            if dimensions is not None or length != 13:
++                _fail('invalid_photo')
++            width, height, depth, colour, compression, filter_method, interlace = struct.unpack('>IIBBBBB', data)
++            if (not 1 <= width <= VCF_PHOTO_MAX_DIMENSION
++                    or not 1 <= height <= VCF_PHOTO_MAX_DIMENSION
++                    or width * height > VCF_PHOTO_MAX_PIXELS
++                    or depth not in (8, 16) or colour not in (0, 2, 4, 6)
++                    or compression != 0 or filter_method != 0 or interlace != 0):
++                _fail('invalid_photo')
++            dimensions = (width, height, depth, colour)
++        elif kind == b'IDAT':
++            if idat_done:
++                _fail('invalid_photo')
++            saw_idat = True
++            idat.append(data)
++        elif kind == b'IEND':
++            if length != 0 or position + 12 != len(decoded):
++                _fail('invalid_photo')
++            saw_iend = True
++        elif kind == b'tEXt':
++            keyword, separator, value = data.partition(b'\0')
++            if (not separator or not 1 <= len(keyword) <= 79
++                    or any(byte < 32 or 126 < byte < 161 for byte in keyword)
++                    or keyword.startswith(b' ') or keyword.endswith(b' ') or b'  ' in keyword
++                    or b'\0' in value):
++                _fail('invalid_photo')
++            if saw_idat:
++                idat_done = True
++        else:
++            _fail('invalid_photo')
++        position += 12 + length
++        if saw_iend:
++            break
++    if dimensions is None or not saw_idat or not saw_iend or position != len(decoded):
++        _fail('invalid_photo')
++    width, height, depth, colour = dimensions
++    channels = {0: 1, 2: 3, 4: 2, 6: 4}[colour]
++    stride = 1 + width * channels * (depth // 8)
++    expected = height * stride
++    inflater = zlib.decompressobj()
++    pending = b''.join(idat)
++    produced = 0
++    while not inflater.eof:
++        _checkpoint(checkpoint)
++        try:
++            scanlines = inflater.decompress(pending, min(65_536, expected - produced + 1))
++        except zlib.error:
++            _fail('invalid_photo')
++        pending = inflater.unconsumed_tail
++        if produced + len(scanlines) > expected or inflater.unused_data:
++            _fail('invalid_photo')
++        if any(value > 4 for value in scanlines[(-produced) % stride::stride]):
++            _fail('invalid_photo')
++        produced += len(scanlines)
++        if not inflater.eof and not scanlines and not pending:
++            _fail('invalid_photo')
++    if produced != expected or pending:
++        _fail('invalid_photo')
++
++
+ def create_vcf(spec, *, checkpoint=None):
+     required = {'fn'}
+-    optional = {'uid', 'emails', 'phones', 'organization', 'title', 'note'}
++    optional = {'uid', 'emails', 'phones', 'organization', 'title', 'note', 'photo'}
+     if type(spec) is not dict or not required <= set(spec) or not set(spec) <= required | optional:
+         _fail('create_schema')
+     lines = [b'BEGIN:VCARD', b'VERSION:4.0', _fold('FN:' + _escape(_field(spec, 'fn')))]
+@@ -1136,6 +1267,10 @@
+     for key, prop in (('organization', 'ORG'), ('title', 'TITLE'), ('note', 'NOTE')):
+         if key in spec:
+             lines.append(_fold(prop + ':' + _escape(_field(spec, key))))
++    if 'photo' in spec:
++        photo = spec['photo']
++        _validate_vcf_photo(photo, checkpoint)
++        lines.append(_fold(VCF_PHOTO_PROPERTY_PREFIX + photo))
+     lines.append(b'END:VCARD')
+     _checkpoint(checkpoint)
+     output = _created(lines)
