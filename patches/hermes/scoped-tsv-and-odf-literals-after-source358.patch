@@ -1,0 +1,243 @@
+diff --git a/hermes_cli/friday_workspace_text.py b/hermes_cli/friday_workspace_text.py
+--- a/hermes_cli/friday_workspace_text.py
++++ b/hermes_cli/friday_workspace_text.py
+@@ -1,5 +1,7 @@
+ """Hash-bound, byte-preserving literal text copies through the existing publisher."""
++import csv
+ import hashlib
++from io import StringIO
+ import json
+ from pathlib import PurePosixPath
+ import re
+@@ -10,18 +12,19 @@
+ from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
+ from hermes_cli.friday_workspace_zip import _archive_spec, _path, _source, _verify, _inline_budget, _fits, _encode
+ 
+-TEXT_SUFFIXES = frozenset({'.txt', '.md', '.markdown', '.html', '.htm'})
++TEXT_SUFFIXES = frozenset({'.txt', '.md', '.markdown', '.html', '.htm', '.tsv'})
+ 
+ GUIDANCE = (
+-    'For an explicitly requested raw literal correction of existing UTF-8 TXT, Markdown or safe explicit-metadata Windows-1251 HTML, '
++    'For an explicitly requested raw literal correction of existing UTF-8 TXT, Markdown, TSV or safe explicit-metadata Windows-1251 HTML, '
+     'use format=text_edit and a NEW output path with the same case-insensitive suffix '
+-    '(.txt/.md/.markdown/.html/.htm). Content is JSON exactly '
++    '(.txt/.md/.markdown/.html/.htm/.tsv). Content is JSON exactly '
+     '{source,source_sha256,old_text,new_text}; '
+     'use the current read_file hash and explicitly requested old/new literals. '
+     'The old literal must occur exactly once. Every other source byte, including BOM, '
+     'line endings and the presence or absence of a final newline, is retained. '
+     'Do not reconstruct the entire file from a displayed excerpt or decode entities/escapes. '
+     'HTML is raw text: no rendering or validity guarantee. Windows-1251 is accepted only with an early explicit meta charset in a genuine head; filename/comments/scripts/other attributes never select encoding. '
++    'TSV is accepted only as UTF-8 with TAB delimiters; a UTF-8 BOM is preserved and is not cell data. The source and new copy must parse as the same rectangular TSV shape. The raw source span may include a stable row-identifying context, but exactly one logical cell value must change; a quote-only rewrite (including redundant-quote removal with no parsed value change) refuses. Every source byte outside the exact changed TSV cell lexeme is retained, even when the supplied old/new span crosses fields. Invalid tables, changed shape, BOM change, or a multi-cell value change refuse. '
+     'Changing the meta charset, unsupported encodings and unencodable replacements refuse. '
+     'Never execute, render or fetch its content. The source stays unchanged. '
+ )
+@@ -31,7 +34,92 @@
+     pass
+ 
+ 
+-def replace_literal(original, expected_sha256, old_text, new_text, *, suffix=None):
++def _tsv_cell_bounds(record, column):
++    """Find the requested raw field in an already validated TSV record."""
++    end = 0
++    for index in range(column + 1):
++        start = end
++        if record.startswith('"', start):
++            end = start + 1
++            while True:
++                quote = record.find('"', end)
++                if quote < 0:
++                    raise TextEditRefused('tsv_table_invalid')
++                end = quote + 1
++                if not record.startswith('"', end):
++                    break
++                end += 1
++        else:
++            while end < len(record) and record[end] not in '\t\r\n':
++                end += 1
++        if index == column:
++            return start, end
++        if not record.startswith('\t', end):
++            raise TextEditRefused('tsv_table_invalid')
++        end += 1
++
++
++def _tsv_cell_context(data, row, column, expected, checkpoint):
++    # newline="" preserves physical CRLF, bare CR, and quoted newlines.
++    text = data.decode('utf-8-sig')
++    stream = StringIO(text, newline='')
++    reader = csv.reader(stream, delimiter='\t', strict=True)
++    while row:
++        if checkpoint is not None:
++            checkpoint()
++        next(reader)
++        row -= 1
++    start = stream.tell()
++    if checkpoint is not None:
++        checkpoint()
++    if next(reader) != expected:
++        raise TextEditRefused('tsv_table_invalid')
++    left, right = _tsv_cell_bounds(text[start:stream.tell()], column)
++    if checkpoint is not None:
++        checkpoint()
++    return text[:start + left], text[start + right:]
++
++
++def _read_tsv_rows(data, checkpoint=None):
++    """Use the existing bounded delimited reader; only its typed refusal is mapped."""
++    from tools.scoped_delimited_table import DelimitedRefused, _read_rows
++    try:
++        return _read_rows(data, {'encoding': 'utf-8-sig' if data.startswith(b'\xef\xbb\xbf')
++                                 else 'utf-8', 'delimiter': '\t', 'type_policy': 'text'},
++                          checkpoint)
++    except DelimitedRefused:
++        raise TextEditRefused('tsv_table_invalid') from None
++
++
++def _validate_tsv_edit(original, result, checkpoint=None):
++    """Require same shape, unchanged BOM, one changed cell and no lexeme drift."""
++    if original.startswith(b'\xef\xbb\xbf') != result.startswith(b'\xef\xbb\xbf'):
++        raise TextEditRefused('tsv_bom_changed')
++    before = _read_tsv_rows(original, checkpoint)
++    after = _read_tsv_rows(result, checkpoint)
++    if len(before) != len(after) or any(len(a) != len(b) for a, b in zip(before, after)):
++        raise TextEditRefused('tsv_shape_changed')
++    changed = 0
++    changed_at = None
++    for row, (left_row, right_row) in enumerate(zip(before, after)):
++        for column, (left, right) in enumerate(zip(left_row, right_row)):
++            if left != right:
++                changed += 1
++                changed_at = (row, column)
++                if changed > 1:
++                    raise TextEditRefused('tsv_multi_cell')
++    if changed != 1:
++        raise TextEditRefused('tsv_no_logical_change')
++    # The changed cell is identified by the strict logical parser. Locate the
++    # corresponding raw lexeme in both files; old/new may span other fields.
++    row, column = changed_at
++    source_context = _tsv_cell_context(original, row, column, before[row], checkpoint)
++    result_context = _tsv_cell_context(result, row, column, after[row], checkpoint)
++    if source_context != result_context:
++        raise TextEditRefused('tsv_lexeme_drift')
++
++
++def replace_literal(original, expected_sha256, old_text, new_text, *, suffix=None, checkpoint=None):
+     """Change one explicitly identified UTF-8 byte span, with no newline normalization."""
+     if (type(original) is not bytes or len(original) > 1000000
+             or type(expected_sha256) is not str
+@@ -81,6 +169,8 @@
+             raise TextEditRefused('edit_charset_changed')
+     if len(result) > 1000000:
+         raise TextEditRefused('output_capacity')
++    if suffix == '.tsv':
++        _validate_tsv_edit(original, result, checkpoint)
+     return result
+ 
+ 
+@@ -97,8 +187,13 @@
+         raise ScopeDenied()
+     check(cap)
+     original, identity = _source(cap, source)
++
++    def checkpoint():
++        check(cap)
++
+     try:
+-        data = replace_literal(original, spec['source_sha256'], spec['old_text'], spec['new_text'], suffix=suffix)
++        data = replace_literal(original, spec['source_sha256'], spec['old_text'], spec['new_text'],
++                               suffix=suffix, checkpoint=checkpoint)
+     except TextEditRefused as error:
+         return _encode(dict(success=False, error='text_edit_refused', reason=str(error),
+                             effect_disposition='none'))
+diff --git a/tools/scoped_ods.py b/tools/scoped_ods.py
+--- a/tools/scoped_ods.py
++++ b/tools/scoped_ods.py
+@@ -34,6 +34,8 @@
+ MAX_ROWS = 1048576
+ MAX_COLS = 16384
+ MAX_READ_OUTPUT = 900000
++_LITERAL_WHITESPACE = {' ': 's', '\t': 'tab', '\n': 'line-break'}
++_LITERAL_WHITESPACE_TAGS = {q(T, name) for name in _LITERAL_WHITESPACE.values()}
+ 
+ 
+ class ODSError(ValueError):
+@@ -590,7 +592,8 @@
+         fail('invalid_text')
+     if any(not (ord(c) in (9, 10, 13) or 32 <= ord(c) <= 0xD7FF or 0xE000 <= ord(c) <= 0xFFFD or 0x10000 <= ord(c) <= 0x10FFFF) for c in value):
+         fail('invalid_text')
+-    return ''.join('<text:s/>' if c == ' ' else '<text:tab/>' if c == '\t' else '<text:line-break/>' if c == '\n' else '&#13;' if c == '\r' else escape(c) for c in value)
++    return ''.join(f'<text:{_LITERAL_WHITESPACE[c]}/>' if c in _LITERAL_WHITESPACE
++                   else '&#13;' if c == '\r' else escape(c) for c in value)
+ 
+ 
+ def create_spreadsheet(spec, *, checkpoint=None):
+@@ -712,7 +715,7 @@
+     fail('cell_span_invalid')
+ 
+ 
+-def _edited_cell_content(raw, display):
++def _edited_cell_content(raw, display, *, literal_whitespace=False):
+     """Keep comments at unambiguous cell/paragraph boundaries, byte for byte.
+ 
+     The caller has already checked expanded names and plain paragraph content.
+@@ -723,12 +726,18 @@
+     parser = expat.ParserCreate()
+     depth = 0; paragraphs = []; events = []; comments = 0
+     body_begin = body_end = None; outside_text = False
++    outside_whitespace = ' \t\r\n' if literal_whitespace else None
+     def begin(name, attrs):
+         nonlocal depth, body_begin
+         depth += 1
+         offset = parser.CurrentByteIndex
+         if depth == 1: body_begin = _tag_end(raw, offset)
+         elif depth == 2: paragraphs.append([offset, _tag_end(raw, offset), None])
++        elif (depth == 3 and literal_whitespace and not attrs
++              and raw[offset:_tag_end(raw, offset)].endswith(b'/>')):
++            # A literal space, tab, or line break is part of the old text run.
++            # Require an empty tag so comments and other hidden payloads cannot be lost.
++            events.append(('text', ''))
+         else: fail('unsupported_target_content')
+     def end(name):
+         nonlocal depth, body_end
+@@ -741,7 +750,7 @@
+     def text(value):
+         nonlocal outside_text
+         if depth == 2 and value: events.append(('text', value))
+-        elif depth == 1 and value.strip(): outside_text = True
++        elif depth == 1 and value.strip(outside_whitespace): outside_text = True
+     def comment(value):
+         nonlocal comments
+         comments += 1
+@@ -757,6 +766,7 @@
+     parser.ProcessingInstructionHandler = refuse
+     try: parser.Parse(raw, True)
+     except expat.ExpatError: fail('invalid_xml')
++    if literal_whitespace and outside_text: fail('unsupported_target_content')
+     literal = _literal(display).encode()
+     if not comments: return b'<text:p>' + literal + b'</text:p>'
+     if len(paragraphs) != 1 or outside_text: fail('unsupported_target_content')
+@@ -910,7 +920,13 @@
+     retained = {q(TB, 'content-validation-name')} if rich_profile is not None else set()
+     if set(target.attrib) - {q(O, k) for k in ('value-type', 'value', 'string-value', 'boolean-value')} - {q(TB, 'style-name'), q(CALCEXT, 'value-type')} - retained:
+         fail('unsupported_target_attributes')
+-    if any(child.tag != q(T, 'p') or len(child) or child.attrib for child in target):
++    if any(child.tag != q(T, 'p') or child.attrib for child in target):
++        fail('unsupported_target_content')
++    literal_whitespace = any(len(child) for child in target)
++    if literal_whitespace and (
++            old['type'] != 'string' or len(target) != 1
++            or any(q(O, name) in target.attrib for name in ('value', 'string-value', 'boolean-value'))
++            or any(child.tag not in _LITERAL_WHITESPACE_TAGS for child in target[0])):
+         fail('unsupported_target_content')
+     if q(TB, 'style-name') in target.attrib: attrs[q(TB, 'style-name')] = target.get(q(TB, 'style-name'))
+     for key in retained:
+@@ -921,7 +937,7 @@
+         attrs[q(CALCEXT, 'value-type')] = old['type']
+     root = book.xml['content.xml']; cells = [n for n in root.iter() if n.tag in (q(TB, 'table-cell'), q(TB, 'covered-table-cell'))]
+     raw = book.parts['content.xml']; begin, end = _cell_span(raw, cells.index(target))
+-    content = _edited_cell_content(raw[begin:end], display)
++    content = _edited_cell_content(raw[begin:end], display, literal_whitespace=literal_whitespace)
+     # Local namespace declarations make this independent of the source prefixes.
+     attributes = ''.join(' ' + ('office:' if key.startswith('{'+O+'}') else 'calcext:' if key.startswith('{'+CALCEXT+'}') else 'table:') + key.split('}', 1)[1] + '="' + escape(text, {'"': '&quot;'}) + '"' for key, text in attrs.items())
+     replacement = ('<table:table-cell xmlns:table="'+TB+'" xmlns:office="'+O+'" xmlns:text="'+T+'" xmlns:calcext="'+CALCEXT+'"'+attributes+'>').encode() + content + b'</table:table-cell>'
