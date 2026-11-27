@@ -1,0 +1,857 @@
+--- a/hermes_cli/friday_workspace_document_pdf.py
++++ b/hermes_cli/friday_workspace_document_pdf.py
+@@ -34,6 +34,27 @@
+ _WRITER_FONT_LIMIT = 24_000_000
+ _WRITER_FONT_DIR = '/friday-writer-fonts'
+ _WRITER_FONT_CONFIG_PATH = '/work/writer-fonts.conf'
++_WRITER_LIST_PROJECTED_SHA = '150d555d1074085dc7d634e5bddd7898999ec5e4f14f90aee99caa8c67bdd463'
++_WRITER_LIST_SOURCE_SHA = '5c72ca0aa6cadada5ed338d6ccfbe21f738aaa54eea1345a870d709f4bdf6fb3'
++_WRITER_LIST_SOURCE = 'original.odt'
++_WRITER_LIST_FONT_DIR = '/friday-odt-list-fonts'
++_WRITER_LIST_FONTS = {
++    '/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf':
++        'bb033fae52dcbf67a55494a08829aaa788324624d72a195af7f93da3061c928f',
++    '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf':
++        '350f4ffd773cae53560c63dca3d89a5070595614fde12f772bf43feb63d81064',
++}
++_WRITER_LIST_FONT_CONFIG = b'''<?xml version="1.0"?>
++<fontconfig>
++  <dir>/friday-odt-list-fonts</dir>
++  <cachedir>/work/home/cache/fontconfig</cachedir>
++  <match target="pattern"><edit name="family" mode="prepend" binding="strong"><string>Liberation Serif</string></edit></match>
++</fontconfig>
++'''
++_WRITER_LIST_MODULE = ('friday_writer_odt_list.py', '/writer-odt-list.py', '353b3837efc8760feb9cce167529bb04d723db6e1a95cc56e5ab94036fbe7302')
++_WRITER_LIST_PROFILE = 'writer_odt_list_splash_gray300_v1'
++_WRITER_LIST_PAGE_SHA = 'e06464c14275c423b0cd09e085e62e9fb0f92b79025c45f3bc83be7e78cb3f58'
++_WRITER_LIST_RASTER_SHA = 'b214618cf86dcf39f288ac2e75d9e8da9a00f9020d5719ad91ccd5498fcf8d7f'
+ _WRITER_TYPE1_FILE = 'friday_writer_type1.py'
+ _WRITER_TYPE1_MOUNT = '/writer-type1.py'
+ _WRITER_TYPE1_SHA256 = '1752113be677ce958c67ece6c895070ddbd45218e367fbfe1c7ab6f96e9587db'
+@@ -123,6 +144,14 @@
+             '--convert-to', filter_name, '--outdir', '/work/out', '/work/input.' + source]
+
+
++def _writer_modules(intent):
++    if 'list_input_sha256' in intent:
++        return _WRITER_LIST_MODULE, _WRITER_SPLASH_MODULE, _WRITER_BANK_MODULE
++    if 'bank_sha256' in intent:
++        return _WRITER_MODULES + (_WRITER_BANK_MODULE,)
++    return _WRITER_MODULES
++
++
+ def _argv(work, toolchain, operation, *, calc_receipt=None, writer_intent=None):
+     # Keep this adapter local; the existing DOCX renderer is not widened.
+     from hermes_cli.friday_workspace_pdf import _PREFIX, ExportRefused
+@@ -132,6 +161,7 @@
+                                       or not _valid_writer_intent(writer_intent)):
+         raise ExportRefused('pdf_writer_output_custody')
+     writer_tagged = writer_intent is not None and 'font_identities' in writer_intent
++    writer_list = writer_tagged and 'list_input_sha256' in writer_intent
+     source = OPERATIONS[operation][0]
+     argv = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--new-session',
+             '--as-pid-1', '--cap-drop', 'ALL', '--clearenv', '--ro-bind', '/usr', '/usr']
+@@ -155,24 +185,26 @@
+         for path in ('/usr/share/fonts', '/usr/local/share/fonts', _PREFIX + '/.host-share/fonts',
+                      _PREFIX + '/.host-share/fontconfig', _PREFIX + '/share-merged/fonts',
+                      _PREFIX + '/root/usr/share/fonts', _PREFIX + '/root/usr/lib/libreoffice/share/fonts'):
+-            if not writer_tagged or path != _PREFIX + '/.host-share/fontconfig':
++            if not writer_tagged or writer_list or path != _PREFIX + '/.host-share/fontconfig':
+                 argv += ['--tmpfs', path, '--remount-ro', path]
+     if calc_receipt is not None:
+         argv += ['--dir', _CALC_FONT_DIR, '--ro-bind', _CALC_FONT, _CALC_FONT_MOUNT]
+     elif writer_tagged:
+-        argv += ['--dir', _WRITER_FONT_DIR]
+-        for path in _WRITER_FONTS:
+-            argv += ['--ro-bind', path, _WRITER_FONT_DIR + '/' + os.path.basename(path)]
++        font_dir = _WRITER_LIST_FONT_DIR if writer_list else _WRITER_FONT_DIR
++        fonts = _WRITER_LIST_FONTS if writer_list else _WRITER_FONTS
++        argv += ['--dir', font_dir]
++        for path in fonts:
++            argv += ['--ro-bind', path, font_dir + '/' + os.path.basename(path)]
+     argv += ['--bind', str(work), '/work']
+     if calc_receipt is not None:
+         argv += ['--ro-bind', str(work / 'fonts.conf'), '/work/fonts.conf']
+     elif writer_tagged:
+         argv += ['--ro-bind', str(work / 'writer-fonts.conf'), _WRITER_FONT_CONFIG_PATH]
+-        modules = _WRITER_MODULES
+         if 'bank_sha256' in writer_intent:
+             argv += ['--ro-bind', str(toolchain), _WRITER_BANK_PROOF_MOUNT]
+-            modules += (_WRITER_BANK_MODULE,)
+-        for filename, mount, _ in modules:
++        if writer_list:
++            argv += ['--ro-bind', str(work / _WRITER_LIST_SOURCE), '/work/' + _WRITER_LIST_SOURCE]
++        for filename, mount, _ in _writer_modules(writer_intent):
+             argv += ['--ro-bind', str(work / filename), mount]
+     mode = '--render' if writer_intent is None else '--render-writer'
+     argv += ['--ro-bind', str(work / ('input.' + source)), '/work/input.' + source,
+@@ -277,7 +309,7 @@
+ def _valid_writer_intent(intent):
+     keys = {'invocation', 'producer_sha256'}
+     if (type(intent) is not dict
+-            or set(intent)-keys-{'font_identities','bank_sha256'}
++            or set(intent)-keys-{'font_identities','bank_sha256','list_input_sha256'}
+             or keys-set(intent)
+             or ('bank_sha256' in intent and (type(intent['bank_sha256']) is not str
+                 or re.fullmatch('[0-9a-f]{64}',intent['bank_sha256']) is None))
+@@ -285,10 +317,15 @@
+                    for key, pattern in (('invocation', '[0-9a-f]{32}'),
+                                         ('producer_sha256', '[0-9a-f]{64}')))):
+         return False
++    writer_list = 'list_input_sha256' in intent
++    if writer_list and (intent['list_input_sha256'] != _WRITER_LIST_PROJECTED_SHA
++                        or 'bank_sha256' not in intent):
++        return False
+     if 'font_identities' not in intent:
+         return True
+     identities = intent['font_identities']
+-    return (type(identities) is list and len(identities) == len(_WRITER_FONTS)
++    count = len(_WRITER_LIST_FONTS) if writer_list else len(_WRITER_FONTS)
++    return (type(identities) is list and len(identities) == count
+             and all(type(identity) is list and len(identity) == 7
+                     and all(type(value) is int and 0 <= value < 1 << 64 for value in identity)
+                     for identity in identities))
+@@ -319,6 +356,10 @@
+         custody['font_identities'] = intent['font_identities']
+     if 'bank_sha256' in intent:
+         custody['bank_sha256'] = intent['bank_sha256']
++    if 'list_input_sha256' in intent:
++        if source_sha != _WRITER_LIST_SOURCE_SHA or not fonts:
++            raise ValueError('pdf_writer_output_custody')
++        custody['render_input_sha256'] = intent['list_input_sha256']
+     return custody
+
+
+@@ -355,6 +396,24 @@
+         raise ValueError('pdf_writer_viewer_receipt')
+
+
++def _check_writer_output_profile(structure, pdf_sha, native_sha, intent):
++    if 'list_input_sha256' not in intent:
++        _check_writer_viewer_receipt(structure, pdf_sha, native_sha)
++        return
++    if (type(structure) is not dict or set(structure) != {'pages', 'engine', 'visibility'}
++            or type(structure['pages']) is not int or structure['pages'] != 1
++            or structure['engine'] != 'libqpdf-12.3.2'):
++        raise ValueError('pdf_writer_viewer_receipt')
++    proof = structure['visibility']
++    expected = dict(profile=_WRITER_LIST_PROFILE, page_sha256=_WRITER_LIST_PAGE_SHA,
++                    gray_sha256=_WRITER_LIST_RASTER_SHA, pdf_sha256=pdf_sha, native_sha256=native_sha)
++    if (type(proof) is not dict or set(proof) != set(expected) | {'words'}
++            or any(proof[key] != value for key, value in expected.items())
++            or type(proof['words']) is not list or len(proof['words']) != 36
++            or any(type(word) is not str or not 0 < len(word) <= 128 for word in proof['words'])):
++        raise ValueError('pdf_writer_viewer_receipt')
++
++
+ def _writer_observation_custody(info, bbox):
+     return dict(pdfinfo_sha256=hashlib.sha256(info).hexdigest(), bbox_sha256=hashlib.sha256(bbox).hexdigest())
+
+@@ -368,7 +427,8 @@
+         custody = _writer_custody(writer_intent, receipt['source_sha256'],
+                                   receipt['pdf_sha256'], writer_evidence)
+         if 'font_identities' in writer_intent:
+-            _check_writer_viewer_receipt(receipt['structure'], custody['pdf_sha256'], custody['native_sha256'])
++            _check_writer_output_profile(receipt['structure'], custody['pdf_sha256'], custody['native_sha256'],
++                                         writer_intent)
+             custody.update(_writer_observation_custody(_read_writer_file(work/'pdfinfo',8192),
+                                                        _read_writer_file(work/'bbox.xhtml',MAX_EVIDENCE)))
+         with (work / _WRITER_EVIDENCE).open('xb') as output:
+@@ -407,9 +467,15 @@
+             if expected_render_sha is not None:
+                 raise ExportRefused('invalid_pdf_output')
+             fields.add('writer_custody')
+-            original = _private_bytes(root, 'input.odt', _WRITER_SOURCE_LIMIT)
++            writer_list = 'list_input_sha256' in writer_intent
++            original_name = _WRITER_LIST_SOURCE if writer_list else 'input.odt'
++            original = _private_bytes(root, original_name, _WRITER_SOURCE_LIMIT)
+             if hashlib.sha256(original).hexdigest() != expected_source_sha:
+                 raise ExportRefused('invalid_pdf_output')
++            if writer_list:
++                staged = _private_bytes(root, 'input.odt', _WRITER_SOURCE_LIMIT)
++                if hashlib.sha256(staged).hexdigest() != writer_intent['list_input_sha256']:
++                    raise ExportRefused('invalid_pdf_output')
+             evidence = _private_bytes(root, _WRITER_EVIDENCE, MAX_EVIDENCE)
+             if evidence != _private_bytes(root, _WRITER_NATIVE, MAX_EVIDENCE):
+                 raise ExportRefused('invalid_pdf_output')
+@@ -419,7 +485,8 @@
+             if type(receipt) is not dict or receipt.get('writer_custody') != custody:
+                 raise ExportRefused('invalid_pdf_output')
+             if 'font_identities' in writer_intent:
+-                _check_writer_viewer_receipt(receipt.get('structure'), pdf_sha, custody['native_sha256'])
++                _check_writer_output_profile(receipt.get('structure'), pdf_sha, custody['native_sha256'],
++                                             writer_intent)
+         if expected_render_sha is not None:
+             fields.add('render_input_sha256')
+             staged = _private_bytes(root, 'input.xlsx', _CALC_INPUT_LIMIT)
+@@ -462,8 +529,9 @@
+     with contextlib.ExitStack() as files:
+         donors = []
+         try:
+-            for path, digest in _WRITER_FONTS.items():
+-                fd, identity = _open_host_font(path, digest, allowlist=_WRITER_FONTS,
++            fonts = _WRITER_LIST_FONTS if 'list_input_sha256' in writer_intent else _WRITER_FONTS
++            for path, digest in fonts.items():
++                fd, identity = _open_host_font(path, digest, allowlist=fonts,
+                                                size_limit=_WRITER_FONT_LIMIT)
+                 files.callback(os.close, fd)
+                 donors.append((fd, identity))
+@@ -538,7 +606,7 @@
+ def render(cap, data, operation, *, writer_producer_sha=None, writer_tagged=False, writer_bank=None):
+     from hermes_cli.friday_workspace_pdf import _run, _toolchain, ExportRefused
+     from hermes_cli.friday_workspace_revision import check
+-    from tools.scoped_document_pdf import plain_prose_paragraphs, preflight, verify
++    from tools.scoped_document_pdf import odt_writer_list_projection, plain_prose_paragraphs, preflight, verify
+     if operation not in OPERATIONS:
+         raise ExportRefused('pdf_operation_unsupported')
+     writer_intent = None
+@@ -555,9 +623,18 @@
+         writer_intent['bank_sha256'] = MANIFEST_SHA
+     check(cap)
+     checkpoint = lambda: check(cap)
+-    plan = preflight(data, OPERATIONS[operation][0], checkpoint=checkpoint)
++    writer_list = (writer_bank is not None and operation == 'odt_pdf'
++                   and hashlib.sha256(data).hexdigest() == _WRITER_LIST_SOURCE_SHA)
++    plan = preflight(data, OPERATIONS[operation][0], checkpoint=checkpoint, writer_odt_list=writer_list)
+     staged = None
+-    if operation == 'odt_pdf' and writer_intent is None:
++    writer_projection = None
++    if writer_list:
++        writer_projection = odt_writer_list_projection(data, plan, checkpoint=checkpoint)
++        if (type(writer_projection) is not bytes
++                or hashlib.sha256(writer_projection).hexdigest() != _WRITER_LIST_PROJECTED_SHA):
++            raise ExportRefused('pdf_writer_list_render_input')
++        writer_intent['list_input_sha256'] = _WRITER_LIST_PROJECTED_SHA
++    elif operation == 'odt_pdf' and writer_intent is None:
+         from tools.scoped_pdf_report import plain_prose_spec
+         prose = plain_prose_spec(plain_prose_paragraphs(data, plan, checkpoint=checkpoint))
+         if prose is not None:
+@@ -573,6 +650,8 @@
+             # The existing Calc path still governs workbooks outside this layout.
+             pass
+     render_input = data if staged is None else staged
++    if writer_list:
++        render_input = writer_projection
+     render_sha = None if staged is None else hashlib.sha256(staged).hexdigest()
+     if staged is not None and (not 0 < len(staged) <= _CALC_INPUT_LIMIT or render_sha == plan['source_sha256']):
+         raise ExportRefused('pdf_calc_print_input')
+@@ -587,9 +666,12 @@
+         if staged is not None:
+             files.append(('fonts.conf', _CALC_FONT_CONFIG))
+         elif writer_tagged:
+-            files.append(('writer-fonts.conf', _WRITER_FONT_CONFIG))
+-            modules = _WRITER_MODULES if writer_bank is None else _WRITER_MODULES + (_WRITER_BANK_MODULE,)
+-            files.extend((name, Path(__file__).with_name(name).read_bytes()) for name, _, _ in modules)
++            font_config = _WRITER_LIST_FONT_CONFIG if writer_list else _WRITER_FONT_CONFIG
++            files.append(('writer-fonts.conf', font_config))
++            if writer_list:
++                files.append((_WRITER_LIST_SOURCE, data))
++            files.extend((name, Path(__file__).with_name(name).read_bytes())
++                         for name, _, _ in _writer_modules(writer_intent))
+         for name, value in files:
+             (work / name).write_bytes(value)
+             (work / name).chmod(0o600)
+@@ -602,7 +684,9 @@
+         pdf, info, bbox, structure = _read_output(work, plan['source_sha256'],
+                                                   expected_render_sha=render_sha,
+                                                   writer_intent=writer_intent)
+-        if writer_tagged:
++        if writer_list:
++            details = verify(plan, info, bbox, structure, checkpoint=checkpoint, writer_odt_list=True)
++        elif writer_tagged:
+             details = verify(plan, info, bbox, structure, checkpoint=checkpoint, writer_viewer=True)
+         else:
+             details = verify(plan, info, bbox, structure, checkpoint=checkpoint)
+@@ -733,7 +817,10 @@
+
+
+ def _pdf_structure(path, *, calc_font=None, exact_font=None, writer_evidence=None, writer_pdf=None,
+-                   writer_tagged=False, writer_outline=None, writer_viewer=None):
++                   writer_tagged=False, writer_outline=None, writer_viewer=None, writer_list_viewer=None):
++    if (writer_list_viewer is not None and
++            (not writer_tagged or writer_outline is not None or writer_viewer is not None)):
++        raise ValueError('pdf_writer_font_receipt')
+     if calc_font is not None and exact_font is not None:
+         raise ValueError('pdf_font_unsupported')
+     if ((writer_evidence is None) != (writer_pdf is None) or writer_tagged and writer_evidence is None
+@@ -753,6 +840,9 @@
+                 raise ValueError('pdf_writer_font_receipt')
+             if fonts:
+                 _bind_writer_fonts(lib, handle, pages, writer_pdf, dictionary, fonts)
++                if writer_list_viewer is not None:
++                    visibility = writer_list_viewer(lib, handle, pages, writer_pdf, writer_evidence, fonts)
++                    return dict(pages=pages, engine='libqpdf-12.3.2', visibility=visibility)
+                 if writer_tagged:
+                     writer_fonts = fonts
+                     if writer_outline is not None:
+@@ -2657,20 +2747,26 @@
+     return data
+
+
+-def _verify_writer_profile(identities):
+-    if _calc_mounted_bytes(_WRITER_FONT_CONFIG_PATH, 8192) != _WRITER_FONT_CONFIG:
++def _verify_writer_profile(identities, *, writer_list=False):
++    config = _WRITER_LIST_FONT_CONFIG if writer_list else _WRITER_FONT_CONFIG
++    if _calc_mounted_bytes(_WRITER_FONT_CONFIG_PATH, 8192) != config:
+         raise ValueError('pdf_writer_font_config')
++    font_dir = _WRITER_LIST_FONT_DIR if writer_list else _WRITER_FONT_DIR
++    fonts = _WRITER_LIST_FONTS if writer_list else _WRITER_FONTS
++    list_slots = dict(zip(_WRITER_LIST_FONTS, (b'F1', b'F2'), strict=True))
+     donors = {}
+-    parent = os.open(_WRITER_FONT_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++    parent = os.open(font_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+     try:
+-        for (path, digest), identity in zip(_WRITER_FONTS.items(), identities, strict=True):
++        for (path, digest), identity in zip(fonts.items(), identities, strict=True):
+             leaf = os.path.basename(path)
+             fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+             try:
+-                _calc_mount_readonly(fd, _WRITER_FONT_DIR + '/' + leaf)
++                _calc_mount_readonly(fd, font_dir + '/' + leaf)
+                 data = _font_bytes_checked(fd, parent, leaf, digest, tuple(identity), host=False,
+                                            size_limit=_WRITER_FONT_LIMIT)
+-                if leaf in _WRITER_TYPE1_DONOR_SLOTS:
++                if writer_list:
++                    donors[list_slots[path]] = data
++                elif leaf in _WRITER_TYPE1_DONOR_SLOTS:
+                     donors[_WRITER_TYPE1_DONOR_SLOTS[leaf]] = data
+             finally:
+                 os.close(fd)
+@@ -2687,17 +2783,21 @@
+     if stamp[0] != writer_intent['producer_sha256']:
+         raise ValueError('pdf_writer_producer_changed')
+     identities = writer_intent.get('font_identities')
++    writer_list = 'list_input_sha256' in writer_intent
+     env = dict(env, FRIDAY_PDF_FONT_RECEIPT='1')
+     if identities is not None:
+-        _verify_writer_profile(identities)
+-        env.update(FONTCONFIG_FILE=_WRITER_FONT_CONFIG_PATH, FONTCONFIG_PATH='/etc/fonts')
++        _verify_writer_profile(identities, writer_list=writer_list)
++        fc_path = '/work' if writer_list else '/etc/fonts'
++        env.update(FONTCONFIG_FILE=_WRITER_FONT_CONFIG_PATH, FONTCONFIG_PATH=fc_path)
++    if writer_list:
++        _writer_list_input_sha(work, writer_intent)
+     subprocess.run(_office_command('odt_pdf', writer_tagged=identities is not None), env=env,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=30, check=True)
+     if _writer_build_stamp(program) != stamp:
+         raise ValueError('pdf_writer_producer_changed')
+     if identities is not None:
+-        donors = _verify_writer_profile(identities)
++        donors = _verify_writer_profile(identities, writer_list=writer_list)
+         if writer_donors is not None:
+             writer_donors.update(donors)
+     data = _read_writer_file(path, MAX_EVIDENCE)
+@@ -2713,6 +2813,25 @@
+     scope = {'__name__': filename.removesuffix('.py'), '__file__': mount}
+     exec(compile(raw, mount, 'exec', dont_inherit=True), scope)
+     return scope
++
++
++def _writer_list_input_sha(work, intent):
++    original = _calc_mounted_bytes(str(work / _WRITER_LIST_SOURCE), _WRITER_SOURCE_LIMIT)
++    projected = _calc_mounted_bytes(str(work / 'input.odt'), _WRITER_SOURCE_LIMIT)
++    sha = hashlib.sha256(original).hexdigest()
++    if (sha != _WRITER_LIST_SOURCE_SHA
++            or hashlib.sha256(projected).hexdigest() != intent['list_input_sha256']):
++        raise ValueError('pdf_writer_list_render_input')
++    return sha
++
++
++def _writer_list_verifier(donors, deadline):
++    verifier = _load_writer_module(_WRITER_LIST_MODULE)
++    splash = _load_writer_module(_WRITER_SPLASH_MODULE)
++    def proof(lib, handle, pages, pdf, native, fonts):
++        return verifier['verify'](lib, handle, pages, pdf, native, donors, fonts, writer=globals(),
++                                  render=splash['render_splash'], deadline=deadline)
++    return proof
+
+
+ def _writer_outline_verifier(donors, type1):
+@@ -2776,7 +2895,9 @@
+     writer_evidence = None
+     writer_outline = None
+     writer_viewer = None
++    writer_list_viewer = None
+     writer_tagged = writer_intent is not None and 'font_identities' in writer_intent
++    writer_list = writer_tagged and 'list_input_sha256' in writer_intent
+     if writer_intent is None:
+         subprocess.run(_office_command(operation, projected=calc_receipt is not None), env=env, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=True)
+@@ -2789,7 +2910,9 @@
+                 raise ValueError('pdf_writer_bank_manifest')
+         donors = {} if writer_tagged else None
+         writer_evidence = _run_writer_child(Path('/work'), Path(program), env, writer_intent, writer_donors=donors)
+-        if writer_tagged:
++        if writer_list:
++            writer_list_viewer = _writer_list_verifier(donors, min(writer_deadline, time.monotonic()+3))
++        elif writer_tagged:
+             type1 = _load_writer_module(_WRITER_TYPE1_MODULE)
+             writer_outline = _writer_outline_verifier(donors, type1)
+             writer_viewer = _writer_viewer_verifier(type1, min(writer_deadline, time.monotonic()+3))
+@@ -2800,7 +2923,7 @@
+     structure = _pdf_structure(path, calc_font=calc_font,
+                                writer_evidence=writer_evidence, writer_pdf=writer_pdf,
+                                writer_tagged=writer_tagged, writer_outline=writer_outline,
+-                               writer_viewer=writer_viewer)
++                               writer_viewer=writer_viewer, writer_list_viewer=writer_list_viewer)
+     evidence_input = '-' if writer_tagged else '/work/out/input.pdf'
+     evidence_stdin = {'input': writer_pdf} if writer_tagged else {'stdin': subprocess.DEVNULL}
+     for command, name, limit in (
+@@ -2818,7 +2941,9 @@
+     if structure['visibility']['profile'] == WRITER_ANALYTIC_PROFILE:
+         raise ValueError('pdf_writer_viewer_geometry_unproven')
+     receipt = dict(pdf_sha256=hashlib.sha256(pdf).hexdigest(), structure=structure)
+-    if calc_receipt is None:
++    if writer_list:
++        receipt['source_sha256'] = _writer_list_input_sha(Path('/work'), writer_intent)
++    elif calc_receipt is None:
+         source = Path('/work/input.' + OPERATIONS[operation][0]).read_bytes()
+         receipt['source_sha256'] = hashlib.sha256(source).hexdigest()
+     else:
+diff --git a/hermes_cli/friday_writer_odt_list.py b/hermes_cli/friday_writer_odt_list.py
+new file mode 100644
+--- /dev/null
++++ b/hermes_cli/friday_writer_odt_list.py
+@@ -0,0 +1,203 @@
++"""Prove the qualified stock-font Writer PDF for the source-bound ODT/v02 list.
++
++The caller uses the same PDF bytes for qpdf inspection, native receipt binding,
++this proof and publication. This profile is specific to the tagged one-page
++Writer output with two Liberation Serif subsets.
++"""
++import ctypes as C
++from hashlib import sha256
++import re
++import struct
++from time import monotonic
++
++
++PROFILE = 'writer_odt_list_splash_gray300_v1'
++PAGE_SHA256 = 'e06464c14275c423b0cd09e085e62e9fb0f92b79025c45f3bc83be7e78cb3f58'
++GRAY_SHA256 = 'b214618cf86dcf39f288ac2e75d9e8da9a00f9020d5719ad91ccd5498fcf8d7f'
++NATIVE_SHA256 = 'b4e5280c2e42267d33f1ccda89e9a08a92924971a0ba5b5b7fefabdf5f66f6bc'
++_PDF_SHA256_WITHOUT_VOLATILE_FIELDS = '142fccc33df5fc1d9ff80fa8c71b32a409861f522749db516148075941a8f4ac'
++_WIDTH, _HEIGHT = 2481, 3508
++_FONT_PROFILES = {
++    b'F1': (
++        'bb033fae52dcbf67a55494a08829aaa788324624d72a195af7f93da3061c928f',
++        'f4975cf447653bf037db8ae6dd1355c04182a697d33777e4b107d8bd40b1dcbe',
++        'd38aa15f7cf9488eb69229d7b7c3514b87f7306cef8ea167091c7fd366ba1deb',
++    ),
++    b'F2': (
++        '350f4ffd773cae53560c63dca3d89a5070595614fde12f772bf43feb63d81064',
++        'f3d981b6d1cc9f1a9c4c19dfbef174a4810326a993246e0393dff068571f60a6',
++        'ff7368749e9d39b587db4201f73eb043016cc3190aecc134383d9321ebbb28c9',
++    ),
++}
++
++
++def _need(condition, reason):
++    if not condition:
++        raise ValueError('pdf_writer_odt_list_' + reason)
++
++
++def _sha(raw):
++    return sha256(raw).hexdigest()
++
++
++def _check_topology(pdf):
++    """Pin every object, reference, and serialization outside metadata payloads."""
++    _need(type(pdf) is bytes and len(pdf) == 30222, 'topology')
++    canonical = bytearray(pdf)
++    # The identical xref layouts from the qualified normal and optimized
++    # Writer exports fix these payloads in objects 46, 50, and the trailer.
++    xmp_date = rb'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'
++    for offset in (20554, 20611, 20670):
++        _need(re.fullmatch(xmp_date, pdf[offset:offset+20]), 'metadata')
++        canonical[offset:offset+20] = b'0000-00-00T00:00:00Z'
++    _need(re.fullmatch(rb'[0-9]{14}', pdf[28970:28984]), 'metadata')
++    canonical[28970:28984] = b'0' * 14
++    _need(pdf[30079:30111] == pdf[30114:30146], 'metadata')
++    for offset in (30079, 30114, 30164):
++        _need(re.fullmatch(rb'[0-9A-F]{32}', pdf[offset:offset+32]), 'metadata')
++        canonical[offset:offset+32] = b'0' * 32
++    # Includes the catalogue, tag tree, resource dictionaries, page and
++    # crop geometry, xref and all object boundaries and compressed streams.
++    _need(_sha(canonical) == _PDF_SHA256_WITHOUT_VOLATILE_FIELDS, 'topology')
++
++
++def _stream_bytes(lib, handle, node, limit):
++    _need(lib.qpdf_oh_is_stream(handle, node), 'stream')
++    data, size, filtered = C.c_void_p(), C.c_size_t(), C.c_int()
++    try:
++        status = lib.qpdf_oh_get_stream_data(handle, node, 1, C.byref(filtered),
++                                             C.byref(data), C.byref(size))
++        _need(status == 0 and filtered.value == 1 and data.value and 0 < size.value <= limit, 'stream')
++        return C.string_at(data, size.value)
++    finally:
++        if data.value:
++            lib.qpdf_oh_free_buffer(C.byref(data))
++
++
++def _native_gids(native):
++    """Read the glyph claims from the previously bound, byte-pinned receipt."""
++    slots = {}
++    for row in native.splitlines()[1:-1]:
++        fields = row.split(b'\t')
++        slot = fields[1]
++        if fields[0] == b'font':
++            _need(fields[7:9] == [b'truetype', b'0']
++                  and fields[9].decode('ascii') == _FONT_PROFILES[slot][0], 'native_font')
++            slots[slot] = {}
++        else:
++            _need(fields[0] == b'glyph', 'native_font')
++            slots[slot][int(fields[2])] = int(fields[3])
++    return slots
++
++
++def _map_font(lib, handle, font, donor, record, slot, gids, proof, writer):
++    donor_sha, subset_sha, cmap_sha = _FONT_PROFILES[slot]
++    _need(type(donor) is bytes and 0 < len(donor) <= 4_000_000
++          and _sha(donor) == donor_sha, 'donor')
++    descriptor = lib.qpdf_oh_get_key(handle, font, b'/FontDescriptor')
++    subset_ref = lib.qpdf_oh_get_key(handle, descriptor, b'/FontFile2')
++    cmap_ref = lib.qpdf_oh_get_key(handle, font, b'/ToUnicode')
++    subset = _stream_bytes(lib, handle, subset_ref, 20_000)
++    cmap = _stream_bytes(lib, handle, cmap_ref, 8192)
++    _need(not record['type1'] and _sha(subset) == subset_sha
++          and record['decoded_sha'] == subset_sha.encode('ascii') and _sha(cmap) == cmap_sha, 'font_program')
++    mapping = writer['_to_unicode'](cmap, 1)
++    _need(mapping.keys() == record['codes'].keys() == gids.keys(), 'code_inventory')
++
++    donor_face = proof.face(donor)
++    subset_face = proof.face(subset)
++    _need(proof.lib.FT_Select_Charmap(donor_face, int.from_bytes(b'unic', 'big')) == 0, 'donor_charmap')
++    donor_font = proof.sfnts[donor_face.value]
++    subset_font = proof.sfnts[subset_face.value]
++    encoding = subset_font.tables.get(b'cmap', b'')
++    # Writer's single Macintosh Roman format-0 cmap maps byte codes to subset GIDs.
++    header = struct.pack('>HHHHIHHH', 0, 1, 1, 0, 12, 0, 262, 0)
++    _need(len(encoding) == 274 and encoding.startswith(header), 'subset_encoding')
++    for code, character in mapping.items():
++        donor_gid = proof.lib.FT_Get_Char_Index(donor_face, ord(character))
++        subset_gid = encoding[len(header) + code]
++        _need(donor_gid > 0 and donor_gid == gids[code], 'native_gid')
++        _need(subset_gid > 0 and proof.outline(donor_face, donor_gid) == proof.outline(subset_face, subset_gid)
++              and donor_font.program(donor_gid) == subset_font.program(subset_gid), 'glyph_identity')
++    return mapping
++
++
++def _words(content, mappings, tokens):
++    """Read the Tj/TJ operands of the pinned page in page content order."""
++    operands, words = [], []
++    used = {slot: set() for slot in mappings}
++    slot = None
++    shows = 0
++    for kind, value in tokens(content):
++        if kind != 'operator':
++            operands.append((kind, value))
++            continue
++        if value in ('BT', 'ET'):
++            slot = None
++        elif value == 'Tf':
++            _need(len(operands) == 2 and [kind for kind, _ in operands] == ['name', 'number'], 'font_selection')
++            slot = operands[0][1][1:].encode('ascii')
++            _need(slot in mappings, 'font_selection')
++        elif value in ('Tj', 'TJ'):
++            _need(slot in mappings, 'text_show')
++            if value == 'TJ':
++                _need(len(operands) >= 3 and operands[0][0] == 'array_start'
++                      and operands[-1][0] == 'array_end'
++                      and all(kind in ('number', 'string') for kind, _ in operands[1:-1]), 'text_show')
++                runs = operands[1:-1]
++            else:
++                _need(len(operands) == 1 and operands[0][0] == 'string', 'text_show')
++                runs = operands
++            codes = b''.join(raw for kind, raw in runs if kind == 'string')
++            _need(bool(codes) and all(code in mappings[slot] for code in codes), 'code_inventory')
++            used[slot].update(codes)
++            shows += 1
++            text = ''.join(mappings[slot][code] for code in codes)
++            if shows in (9, 11):
++                _need(text == '\u2022 ', 'list_label')
++            else:
++                _need('\u2022' not in text, 'list_label')
++            words.extend(text.split())
++        operands.clear()
++    _need(shows == 13 and len(words) == 36
++          and all(used[slot] == mapping.keys() for slot, mapping in mappings.items()), 'word_inventory')
++    return words
++
++
++def verify(lib, handle, pages, pdf, native, donor_fonts, font_records, *, writer, render, deadline):
++    """Confirm exact stock paint and return the visible native word sequence.
++
++    Invoke after the caller's _inspect_pdf and _bind_writer_fonts. Supplied
++    donors are keyed by the native F1 (Bold) and F2 (Regular) slots.
++    """
++    _need(monotonic() < deadline, 'deadline')
++    _need(pages == 1, 'page_count')
++    _check_topology(pdf)
++    _need(type(native) is bytes and len(native) == 1718 and _sha(native) == NATIVE_SHA256, 'native_receipt')
++    _need(type(donor_fonts) is dict and donor_fonts.keys() == _FONT_PROFILES.keys()
++          and font_records.keys() == _FONT_PROFILES.keys(), 'font_inventory')
++    gids = _native_gids(native)
++    page = lib.qpdf_get_page_n(handle, 0)
++    contents = lib.qpdf_oh_get_key(handle, page, b'/Contents')
++    resources = lib.qpdf_oh_get_key(handle, page, b'/Resources')
++    fonts = lib.qpdf_oh_get_key(handle, resources, b'/Font')
++
++    content = _stream_bytes(lib, handle, contents, 4096)
++    _need(_sha(content) == PAGE_SHA256, 'page_program')
++    proof = writer['_GlyphProof']()
++    try:
++        mappings = {}
++        for slot, donor in donor_fonts.items():
++            font = lib.qpdf_oh_get_key(handle, fonts, b'/' + slot)
++            mappings[slot] = _map_font(lib, handle, font, donor, font_records[slot], slot, gids[slot], proof, writer)
++    finally:
++        proof.close()
++    words = _words(content, mappings, writer['_content_tokens'])
++
++    pdf_sha = _sha(pdf)
++    pixels = render(pdf, expected_sha256=pdf_sha, width=_WIDTH, height=_HEIGHT, deadline=deadline)
++    _need(type(pixels) is bytes and len(pixels) == _WIDTH * _HEIGHT
++          and _sha(pixels) == GRAY_SHA256, 'paint')
++    _need(monotonic() < deadline, 'deadline')
++    return dict(profile=PROFILE, words=words, page_sha256=PAGE_SHA256, gray_sha256=GRAY_SHA256,
++                pdf_sha256=pdf_sha, native_sha256=NATIVE_SHA256)
+--- a/tools/scoped_document_pdf.py
++++ b/tools/scoped_document_pdf.py
+@@ -27,6 +27,8 @@
+ TRUSTED_PROFILE = 'trusted_embedded_glyphs_v1'
+ WRITER_ANALYTIC_PROFILE = 'writer_type1_analytic_v1'
+ WRITER_VIEWER_PROFILE = 'writer_type1_splash_gray300_v1'
++WRITER_ODT_LIST_PROFILE = 'writer_odt_list_splash_gray300_v1'
++WRITER_ODT_LIST_SOURCE_SHA256 = '5c72ca0aa6cadada5ed338d6ccfbe21f738aaa54eea1345a870d709f4bdf6fb3'
+ PLAIN_PROSE_INPUT_LIMIT = 65_536
+ LAYOUT_LIMITS = (
+     'ODT: single-column visual reading order, ordered text including table cells; '
+@@ -82,27 +84,76 @@
+     return value.split()
+
+
+-def preflight(data, source, *, checkpoint=None):
++def _odt_list_paragraphs(blocks, checkpoint):
++    for block in blocks:
++        _tick(checkpoint)
++        kind = block['type']
++        if kind in ('paragraph', 'heading'):
++            yield block, False
++        elif kind == 'table':
++            for row in block['rows']:
++                for cell in row:
++                    for paragraph in cell:
++                        yield paragraph, False
++        elif kind == 'list':
++            # The ODT inventory admits only single-level U+2022 lists.
++            if block['ordered'] is not False or not block['items']:
++                fail('pdf_odt_list_unsupported')
++            for item in block['items']:
++                _tick(checkpoint)
++                if len(item) != 1:
++                    fail('pdf_odt_list_unsupported')
++                paragraph, = item
++                if (paragraph['type'] != 'paragraph' or paragraph.get('notes')
++                        or not paragraph['text'].strip()):
++                    fail('pdf_odt_list_unsupported')
++                yield paragraph, True
++        else:
++            fail('pdf_odt_block_unsupported')
++
++
++def _odt_plan(data, checkpoint, *, writer_odt_list):
++    from tools.scoped_word_conversion import inventory, WordConversionError
++
++    try:
++        blocks = inventory(data, 'odt', checkpoint=checkpoint)
++    except WordConversionError as error:
++        raise DocumentPDFError(str(error)) from None
++    if writer_odt_list:
++        paragraphs = list(_odt_list_paragraphs(blocks, checkpoint))
++        words, bullet_offsets = [], []
++        for paragraph, marker in paragraphs:
++            if marker:
++                bullet_offsets.append(len(words))
++                words.append('•')
++            words.extend(_tokens(paragraph['text']))
++        if not bullet_offsets:
++            fail('pdf_odt_list_unsupported')
++    else:
++        paragraphs = [p for b in blocks for p in ([b] if b['type'] != 'table' else
++                      [p for row in b['rows'] for cell in row for p in cell])]
++        words = [word for p in paragraphs for word in _tokens(p['text'])]
++    if not words or len(words) > MAX_WORDS:
++        fail('pdf_text_capacity_or_empty')
++    canonical = json.dumps(blocks, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
++    plan = dict(source='odt', words=words, source_semantic_sha256=hashlib.sha256(canonical).hexdigest(),
++                source_counts=dict(paragraphs=len(paragraphs),
++                    tables=sum(b['type'] == 'table' for b in blocks),
++                    cells=sum(len(row) for b in blocks if b['type'] == 'table' for row in b['rows'])))
++    if writer_odt_list:
++        plan['odt_bullet_offsets'] = bullet_offsets
++    return plan
++
++
++def preflight(data, source, *, checkpoint=None, writer_odt_list=False):
+     """Return private source expectations; never a substitute for native export."""
+     if source not in ('odt', 'xlsx', 'ods'):
+         fail('pdf_source_format_unsupported')
+     _tick(checkpoint)
++    if writer_odt_list and (source != 'odt' or hashlib.sha256(data).hexdigest() != WRITER_ODT_LIST_SOURCE_SHA256):
++        fail('pdf_odt_list_source_unproven')
+     if source == 'odt':
+-        from tools.scoped_word_conversion import inventory, WordConversionError
+-        try:
+-            blocks = inventory(data, 'odt', checkpoint=checkpoint)
+-        except WordConversionError as error:
+-            raise DocumentPDFError(str(error)) from None
+-        paragraphs = [p for b in blocks for p in ([b] if b['type'] != 'table' else
+-                      [p for row in b['rows'] for cell in row for p in cell])]
+-        words = [word for p in paragraphs for word in _tokens(p['text'])]
+-        if not words or len(words) > MAX_WORDS:
+-            fail('pdf_text_capacity_or_empty')
+-        canonical = json.dumps(blocks, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
+-        plan = dict(source=source, words=words, source_semantic_sha256=hashlib.sha256(canonical).hexdigest(),
+-                    source_counts=dict(paragraphs=len(paragraphs),
+-                        tables=sum(b['type'] == 'table' for b in blocks),
+-                        cells=sum(len(row) for b in blocks if b['type'] == 'table' for row in b['rows'])))
++        plan = _odt_plan(data, checkpoint, writer_odt_list=writer_odt_list)
+     else:
+         from tools.scoped_spreadsheet_conversion import inventory, evaluate, ConversionRefused
+         from tools.scoped_ods import Spreadsheet, TB, q
+@@ -148,6 +199,64 @@
+     plan['source_sha256'] = hashlib.sha256(data).hexdigest()
+     _tick(checkpoint)
+     return plan
++
++
++def odt_writer_list_projection(data, plan, *, checkpoint=None):
++    """Stage Writer's label separator on the admitted ODT's single local bullet style."""
++    from copy import copy
++    from xml.parsers.expat import ExpatError
++
++    from tools.scoped_odt import DocumentPackage, ODTError, O, T, q
++    from tools.scoped_word_conversion import S, WordConversionError, _native_xml_edits, _native_xml_ranges
++
++    if (plan.get('source') != 'odt' or plan.get('source_sha256') != WRITER_ODT_LIST_SOURCE_SHA256
++            or hashlib.sha256(data).hexdigest() != WRITER_ODT_LIST_SOURCE_SHA256):
++        fail('pdf_odt_list_projection')
++    try:
++        package = DocumentPackage(data, checkpoint=checkpoint)
++        content = package.content
++        used = {node.get(q(T, 'style-name')) for node in package.body.findall(q(T, 'list'))}
++        local_styles = content.findall(q(O, 'automatic-styles') + '/' + q(T, 'list-style'))
++        levels = [style[0] for style in local_styles
++                  if style.get(q(S, 'name')) in used and len(style) == 1
++                  and style[0].tag == q(T, 'list-level-style-bullet')
++                  and style[0].attrib == {q(T, 'level'): '1', q(T, 'bullet-char'): '•'}
++                  and not len(style[0])]
++        if len(used) != 1 or len(levels) != 1:
++            fail('pdf_odt_list_projection')
++
++        level, = levels
++        raw = package.parts['content.xml']
++        start, opening_end, _, empty = _native_xml_ranges(raw, content, checkpoint)[id(level)]
++        if not empty:
++            fail('pdf_odt_list_projection')
++        opening = raw[start:opening_end]
++        name = re.match(rb'<([^\s/>]+)', opening)
++        if name is None:
++            fail('pdf_odt_list_projection')
++        alignment = (
++            f'<style:list-level-properties xmlns:style="{S}" xmlns:text="{T}" '
++            'text:list-level-position-and-space-mode="label-alignment">'
++            '<style:list-level-label-alignment text:label-followed-by="space"/>'
++            '</style:list-level-properties>'
++        ).encode('ascii')
++        replacement = opening[:-2] + b'>' + alignment + b'</' + name[1] + b'>'
++        changed = _native_xml_edits(raw, [(start, opening_end, replacement)], checkpoint)
++
++        output = BytesIO()
++        with ZipFile(BytesIO(data)) as original, ZipFile(output, 'w') as derived:
++            derived.comment = original.comment
++            for entry in original.infolist():
++                _tick(checkpoint)
++                value = changed if entry.filename == 'content.xml' else original.read(entry)
++                derived.writestr(copy(entry), value)
++        projected = output.getvalue()
++        projected_plan = _odt_plan(projected, checkpoint, writer_odt_list=True)
++        if dict(projected_plan, source_sha256=WRITER_ODT_LIST_SOURCE_SHA256) != plan:
++            fail('pdf_odt_list_projection')
++        return projected
++    except (ODTError, WordConversionError, ExpatError, BadZipFile):
++        fail('pdf_odt_list_projection')
+
+
+ def plain_prose_paragraphs(data, plan, *, checkpoint=None):
+@@ -597,10 +706,40 @@
+     return dict(text_words=len(words), unhinted_ink_glyphs=glyphs)
+
+
+-def verify(plan, info, bbox, structure, *, checkpoint=None, plain_prose=None, writer_viewer=False):
++def _verify_writer_odt_list(plan, proof, words, checkpoint):
++    digests = ('page_sha256', 'gray_sha256', 'pdf_sha256', 'native_sha256')
++    if (plan['source'] != 'odt' or plan.get('source_sha256') != WRITER_ODT_LIST_SOURCE_SHA256
++            or type(proof) is not dict or set(proof) != {'profile', 'words', *digests}
++            or proof['profile'] != WRITER_ODT_LIST_PROFILE or type(proof['words']) is not list
++            or any(type(proof[key]) is not str or re.fullmatch('[0-9a-f]{64}', proof[key]) is None
++                   for key in digests)):
++        fail('pdf_visibility_unproven')
++    offsets = plan.get('odt_bullet_offsets')
++    expected = plan['words']
++    if len(expected) != 36 or offsets != [i for i, text in enumerate(expected) if text == '•'] or not offsets:
++        fail('pdf_odt_list_separator')
++    for offset in offsets:
++        _tick(checkpoint)
++        if offset + 1 >= min(len(expected), len(words)):
++            fail('pdf_odt_list_separator')
++        marker, body = words[offset:offset + 2]
++        if (marker['text'] != '•' or body['text'] != expected[offset + 1]
++                or body['line'] != marker['line'] or body['bounds'][0] <= marker['bounds'][2]
++                or (offset > 0 and words[offset - 1]['line'] == marker['line'])):
++            fail('pdf_odt_list_separator')
++    if proof['words'] != [word['text'] for word in words]:
++        fail('pdf_painted_text_disagreement')
++
++
++def verify(plan, info, bbox, structure, *, checkpoint=None, plain_prose=None, writer_viewer=False,
++           writer_odt_list=False):
+     """Check independent native parser evidence before create-only publication."""
+     pages, geometry = _document_observations(info, bbox, structure, checkpoint)
+-    if writer_viewer:
++    if writer_odt_list:
++        if writer_viewer or plain_prose is not None or len(pages) != 1:
++            fail('pdf_visibility_unproven')
++        _verify_writer_odt_list(plan, structure['visibility'], pages[0], checkpoint)
++    elif writer_viewer:
+         proof = structure['visibility']
+         if (plan['source'] != 'odt' or plain_prose is not None or len(pages)!=1 or type(proof) is not dict
+                 or set(proof)!={'profile','pages','viewer'} or proof['profile']!=WRITER_VIEWER_PROFILE
+@@ -648,6 +787,15 @@
+             if offset != len(words):
+                 fail('pdf_extra_cell_or_page_text')
+         matched = dict(matched_cells=len(evidence), text_words=sum(map(len, pages)))
++    layout_limits = LAYOUT_LIMITS
++    if writer_odt_list:
++        layout_limits = ('Tagged single-page ODT derivative with searchable bullet markers. Ordered source words '
++                         'and black glyph visibility are checked against the pinned 300 dpi Splash renderer. '
++                         'The unchanged source retains the editable document structure.')
++    elif writer_viewer:
++        layout_limits = ('Tagged single-page ODT derivative. Ordered source words and black glyph visibility '
++                         'are checked against the pinned 300 dpi Splash renderer. The unchanged source retains '
++                         'the editable document structure.')
+     _tick(checkpoint)
+     return dict(profile=PROFILE, pages=len(pages), searchable_text_verified=True,
+                 cell_values_verified=plan['source'] != 'odt',
+@@ -657,8 +805,5 @@
+                     [[(w['text'], w['bounds']) for w in p] for p in pages],
+                     ensure_ascii=False, separators=(',', ':')).encode()).hexdigest(),
+                 visible_text_verified=True, visible_profile=structure['visibility']['profile'],
+-                visual_fidelity_verified=False, layout_limits=(
+-                    'Tagged single-page ODT derivative. Ordered source words and black glyph visibility '
+-                    'are checked against the pinned 300 dpi Splash renderer. The unchanged source retains '
+-                    'the editable document structure.' if writer_viewer else LAYOUT_LIMITS),
++                visual_fidelity_verified=False, layout_limits=layout_limits,
+                 **plan['source_counts'], **matched)
