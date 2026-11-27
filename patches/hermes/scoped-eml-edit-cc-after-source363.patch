@@ -1,0 +1,242 @@
+diff --git a/hermes_cli/friday_workspace_communication.py b/hermes_cli/friday_workspace_communication.py
+--- a/hermes_cli/friday_workspace_communication.py
++++ b/hermes_cli/friday_workspace_communication.py
+@@ -196,7 +196,7 @@
+     edit_keys = {'old_value', 'new_value'}
+     if format == 'ics':
+         edit_keys.add('uid')
+-    if format == 'eml' and spec.get('field') in ('body', 'date'):
++    if format == 'eml' and spec.get('field') in ('body', 'date', 'cc'):
+         edit_keys.add('field')
+     if set(spec) != edit_keys | {'source', 'source_sha256'}:
+         raise CommunicationError('edit_schema')
+@@ -215,6 +215,11 @@
+         return dict(edit_mode='single_raw_top_level_date',
+                     header_bytes_outside_date_preserved=True,
+                     raw_mime_body_preserved=True, date_verified_post_output=True)
++    if edit.get('field') == 'cc':
++        return dict(edit_mode='single_ordered_cc_mailbox',
++                    header_bytes_outside_cc_preserved=True,
++                    remaining_mailboxes_order_preserved=True,
++                    raw_mime_body_preserved=True)
+     return dict(edit_mode={'eml': 'single_top_level_Subject',
+                            'ics': 'single_UID_selected_VEVENT_SUMMARY',
+                            'vcf': 'single_VCARD_FN'}[format],
+@@ -241,7 +246,7 @@
+     if operation == 'eml_extract_attachment':
+         return extract_attachment(cap, fd, leaf, path, content)
+     source = original = identity = relative = None
+-    date_edit = False
++    guarded_edit = False
+     try:
+         check(cap)
+         spec = _object(content)
+@@ -253,7 +258,7 @@
+                 spec, checkpoint=lambda: check(cap))
+         else:
+             expected, edit = _edit_spec(spec, format)
+-            date_edit = format == 'eml' and edit.get('field') == 'date'
++            guarded_edit = format == 'eml' and edit.get('field') in ('date', 'cc')
+             raw = spec['source']
+             if type(raw) is not str or not raw or '\x00' in raw:
+                 raise ScopeDenied()
+@@ -269,7 +274,7 @@
+                     or any(p in ('.', '..') or p.startswith('.') for p in relative.parts)
+                     or relative.as_posix() == path):
+                 raise ScopeDenied()
+-            if date_edit:
++            if guarded_edit:
+                 guard_tool('read_file', {'path': str(source)}, registry_scope=str(cap.home))
+             original, _, identity = workspace_document(str(source), max_bytes=1_000_000,
+                                                        with_identity=True)
+@@ -293,7 +298,7 @@
+         def verify():
+             check(cap)
+             if source is not None:
+-                if date_edit:
++                if guarded_edit:
+                     guard_tool('read_file', {'path': str(source)}, registry_scope=str(cap.home))
+                 current, _, current_identity = workspace_document(str(source), max_bytes=1_000_000,
+                                                                   with_identity=True)
+diff --git a/tools/scoped_communication.py b/tools/scoped_communication.py
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -12,6 +12,7 @@
+ from email import policy
+ from email.errors import MessageError
+ from email.header import Header, decode_header
++from email.headerregistry import Address
+ from email.message import EmailMessage
+ from email.parser import BytesParser
+ import hashlib
+@@ -52,7 +53,9 @@
+     'exactly "field":"body" to those keys. For an explicitly requested Date edit, add '
+     'exactly "field":"date"; old_value/new_value are raw one-line RFC-5322 Date '
+     'strings with explicit numeric offsets (old must equal the unique top-level Date; '
+-    'folded/obsolete Date unsupported). Use the current own-workspace EML read '
++    'folded/obsolete Date unsupported). For one Cc mailbox edit, add exactly '
++    '"field":"cc"; old_value/new_value are one-mailbox strings in exact '
++    '"Display Name <address>" form. Use the current own-workspace EML read '
+     'hash and a new .eml path. Body edits support one unsigned inline text/plain '
+     'UTF-8 quoted-printable MIME part. Provide a nonempty exact single-line old_value '
+     'that occurs once in the decoded body, even across quoted-printable soft wraps, '
+@@ -807,6 +810,21 @@
+     return address.display_name, address.addr_spec
+ 
+ 
++
++
++def _mailbox_item(value):
++    """Strict one-mailbox item used by both create lists and Cc edit targets."""
++    if type(value) is not str or not value:
++        _fail('invalid_address')
++    try:
++        _text(value, 'invalid_address', 4096)
++    except UnicodeError:
++        _fail('invalid_address')
++    if value.rstrip().endswith(','):
++        _fail('invalid_address')
++    return _address_header(value)
++
++
+ def _mailbox_lists(spec, name):
+     """Validate one concrete, non-group mailbox per optional-field item."""
+     if name not in spec:
+@@ -818,14 +836,7 @@
+     for value in values:
+         if type(value) is not str or not value:
+             _fail('contact_list_schema')
+-        try:
+-            _text(value, 'invalid_address', 4096)
+-        except UnicodeError:
+-            _fail('invalid_address')
+-        # The header parser accepts a terminal comma without reporting an empty item.
+-        if value.rstrip().endswith(','):
+-            _fail('invalid_address')
+-        parsed.append(_address_header(value))
++        parsed.append(_mailbox_item(value))
+     return values, parsed
+ 
+ 
+@@ -1132,6 +1143,95 @@
+     return output
+ 
+ 
++def _eml_protected_target(message):
++    return (message.get_content_type() in ('multipart/signed', 'multipart/encrypted',
++                                            'application/pkcs7-mime', 'application/pkcs7-signature',
++                                            'application/x-pkcs7-mime', 'application/x-pkcs7-signature')
++            or any(name.lower() in EML_INTEGRITY_HEADERS for name in message.keys()))
++
++
++def _cc_mailboxes(message):
++    values = message.get_all('Cc', [])
++    if len(values) != 1 or message['Cc'] is None:
++        _fail('cc_target_not_unique')
++    raw_values = [value for name, value in message.raw_items() if name.lower() == 'cc']
++    if len(raw_values) != 1 or raw_values[0].rstrip().endswith(','):
++        _fail('invalid_address')
++    header = message['Cc']
++    if getattr(header, 'defects', ()):
++        _fail('invalid_address')
++    groups = header.groups
++    if not groups or any(group.display_name is not None for group in groups):
++        _fail('invalid_address')
++    mailboxes = []
++    for group in groups:
++        for address in group.addresses:
++            if not address.username or not address.domain:
++                _fail('invalid_address')
++            mailboxes.append((address.display_name, address.addr_spec))
++    return mailboxes
++
++
++def _edit_eml_cc(data, spec, checkpoint):
++    old = _mailbox_item(spec['old_value'])
++    new = _mailbox_item(spec['new_value'])
++    if old == new:
++        _fail('no_op')
++    _read_eml(data, checkpoint)
++    try:
++        message = BytesParser(policy=policy.default).parsebytes(data)
++    except (MessageError, ValueError, TypeError, IndexError, RecursionError):
++        _fail('malformed_mime_headers')
++    if _eml_protected_target(message):
++        _fail('unsupported_contact_edit_target')
++    mailboxes = _cc_mailboxes(message)
++    matches = [index for index, value in enumerate(mailboxes) if value == old]
++    if not matches:
++        _fail('precondition_mismatch')
++    if len(matches) > 1:
++        _fail('cc_target_not_unique')
++    if new in mailboxes:
++        _fail('cc_target_not_unique')
++    revised = list(mailboxes)
++    revised[matches[0]] = new
++    match = _header_separator(data)
++    header = data[:match.start()]
++    lines = header.splitlines(keepends=True)
++    found = []
++    offset = 0
++    for index, line in enumerate(lines):
++        raw = line.rstrip(b'\r\n')
++        start, end = offset, offset + len(line)
++        offset = end
++        if raw.lower().startswith(b'cc:'):
++            last = index
++            while last + 1 < len(lines) and lines[last + 1][:1] in (b' ', b'\t'):
++                last += 1
++            found.append((start, start + len(b''.join(lines[index:last + 1])),
++                          lines[last][len(lines[last].rstrip(b'\r\n')):]))
++    if len(found) != 1:
++        _fail('cc_target_not_unique')
++    start, end, ending = found[0]
++    newline = '\r\n' if match.group().startswith(b'\r\n') else '\n'
++    try:
++        message_out = EmailMessage(policy=policy.SMTP.clone(linesep=newline))
++        message_out['Cc'] = ', '.join(
++            str(Address(display_name=name or None, addr_spec=address))
++            for name, address in revised)
++        folded = message_out['Cc'].fold(policy=policy.SMTP.clone(linesep=newline)).rstrip('\r\n').encode('ascii')
++    except (MessageError, ValueError, TypeError, UnicodeError, IndexError, RecursionError):
++        _fail('contact_roundtrip_changed')
++    output = data[:start] + folded + ending + data[end:]
++    if len(output) > MAX_BYTES:
++        _fail('output_limit')
++    _checkpoint(checkpoint)
++    parsed = BytesParser(policy=policy.default).parsebytes(output)
++    if _cc_mailboxes(parsed) != revised:
++        _fail('contact_roundtrip_changed')
++    _read_eml(output, checkpoint)
++    return output
++
++
+ def _edit_eml_date(data, spec, checkpoint):
+     old = _eml_date(spec['old_value'])
+     new = _eml_date(spec['new_value'])
+@@ -1164,10 +1264,7 @@
+     # Source361 readback before accepting the target.
+     _read_eml(data, checkpoint, expected_date=old)
+     message = BytesParser(policy=policy.default).parsebytes(data, headersonly=True)
+-    if (message.get_content_type() in ('multipart/signed', 'multipart/encrypted',
+-                                        'application/pkcs7-mime', 'application/pkcs7-signature',
+-                                        'application/x-pkcs7-mime', 'application/x-pkcs7-signature')
+-            or any(name.lower() in EML_INTEGRITY_HEADERS for name in message.keys())):
++    if _eml_protected_target(message):
+         _fail('unsupported_date_edit_target')
+     output = data[:start] + prefix + new.encode('ascii') + ending + data[end:]
+     if len(output) > MAX_BYTES:
+@@ -1308,10 +1405,12 @@
+     if type(spec) is not dict or not required <= set(spec):
+         _fail('edit_schema')
+     if format == 'eml' and set(spec) == required | {'field'}:
+-        if type(spec['field']) is not str or spec['field'] not in ('body', 'date'):
++        if type(spec['field']) is not str or spec['field'] not in ('body', 'date', 'cc'):
+             _fail('edit_schema')
+         if spec['field'] == 'body':
+             return _edit_eml_body(data, spec, checkpoint)
++        if spec['field'] == 'cc':
++            return _edit_eml_cc(data, spec, checkpoint)
+         return _edit_eml_date(data, spec, checkpoint)
+     if format == 'ics' and set(spec) != required | {'uid'}:
+         _fail('edit_schema')
