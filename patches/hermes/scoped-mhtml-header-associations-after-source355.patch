@@ -1,0 +1,379 @@
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -1235,7 +1235,25 @@
+                     if extraction_metadata is not None:
+                         result.update(extraction=extraction_metadata,
+                                       coverage=extraction_metadata['coverage'])
+-                encode = lambda: json.dumps(result, ensure_ascii=False, separators=(',', ':'))
++                encode = lambda payload=result: json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
++                include_table_structure = (document_format in ('mhtml', 'mht')
++                                           and 'table_structure' in result.get('extraction', {}))
++                if include_table_structure:
++                    # Optional table locators must leave room for ordinary text
++                    # pagination under the caller's existing inline budget.
++                    first_unit = dict(result)
++                    if offset <= len(lines):
++                        line = lines[offset - 1]
++                        more = char_offset + 1 < len(line)
++                        first_unit.update(content=f'{offset}: {line[char_offset:char_offset + 1]}',
++                                          partial=more or offset < len(lines),
++                                          next_offset=offset if more else offset + 1,
++                                          next_char_offset=char_offset + 1 if more else 0)
++                    if max(serialized_bytes(encode()), serialized_bytes(encode(first_unit))) > budget:
++                        extraction = dict(result['extraction'])
++                        del extraction['table_structure']
++                        result['extraction'] = extraction
++                        include_table_structure = False
+                 if serialized_bytes(encode()) > budget:
+                     if document_format: check_document()
+                     return json.dumps({'success': False, 'error': 'capacity: file metadata exceeds inline budget'})
+@@ -1261,6 +1279,15 @@
+                         if prior:
+                             break
+                     low, high = 0, len(text)
++                    if include_table_structure:
++                        # A completed line resets the character offset and has
++                        # a different byte cost than the final partial trial.
++                        result.update(content=prior+prefix+text, partial=n+1 != len(lines),
++                                      next_offset=n+2, next_char_offset=0)
++                        if serialized_bytes(encode()) <= budget:
++                            low = high
++                        else:
++                            high = max(0, high - 1)
+                     while low < high:
+                         mid = (low + high + 1) // 2
+                         result.update(content=prior+prefix+text[:mid], partial=True,
+--- a/tools/scoped_mhtml.py
++++ b/tools/scoped_mhtml.py
+@@ -23,6 +23,12 @@
+ MAX_NODES = 50_000
+ MAX_DEPTH = 64
+ MAX_HEADER = 32_768
++MAX_TABLE_SLOTS = 512
++MAX_TABLE_REFS = 1024
++MAX_TABLES = 8
++MAX_TABLE_METADATA = 2048
++TABLE_CELL_FIELDS = ('row', 'column', 'rowspan', 'colspan', 'line', 'field',
++                     'kind', 'column_headers', 'row_headers', 'column_group_headers')
+ CHARSETS = {
+     'utf-8': 'utf-8', 'utf8': 'utf-8',
+     'us-ascii': 'ascii', 'ascii': 'ascii',
+@@ -147,8 +153,186 @@
+     return result
+
+
++class _Table:
++    """Map authored cells to the flat text and to their occupied grid slots."""
++
++    def __init__(self, depth):
++        self.depth = depth
++        self.rows = []
++        self.row_ends = {}
++        self.cell_count = 0
++        self.group = 0
++        self.section = 'table'
++        self.sections = set()
++        self.column_groups = []
++        self.declared_group_span = None
++        self.column_child_span = 0
++        self.invalid = False
++
++    def span(self, attrs, attribute):
++        value = attrs.get(attribute, '1')
++        if not re.fullmatch(r'[0-9]{1,3}', value) or not 1 <= int(value) <= MAX_TABLE_SLOTS:
++            self.invalid = True
++            return 0
++        return int(value)
++
++    def start(self, tag, parent, attrs, out_index):
++        if tag == 'colgroup':
++            if parent != 'table' or self.sections or len(self.column_groups) == MAX_TABLE_SLOTS:
++                self.invalid = True
++                return
++            self.declared_group_span = self.span(attrs, 'span') if 'span' in attrs else None
++            self.column_child_span = 0
++        elif tag == 'col':
++            if parent != 'colgroup' or self.declared_group_span is not None:
++                self.invalid = True
++                return
++            self.column_child_span += self.span(attrs, 'span')
++            self.invalid |= self.column_child_span > MAX_TABLE_SLOTS
++        elif tag in ('thead', 'tbody', 'tfoot'):
++            self.invalid |= (parent != 'table' or 'direct_rows' in self.sections
++                             or 'tfoot' in self.sections or tag == 'thead' and bool(self.sections))
++            self.sections.add(tag)
++            self.group += 1
++            self.section = tag
++        elif tag == 'tr':
++            self.invalid |= parent not in ('table', self.section)
++            if parent == 'table':
++                self.invalid |= bool(self.sections - {'direct_rows'})
++                self.sections.add('direct_rows')
++            if len(self.rows) == MAX_TABLE_SLOTS:
++                self.invalid = True
++                return
++            self.rows.append((self.group, self.section, out_index, []))
++        elif tag in ('th', 'td'):
++            self.cell_count += 1
++            if (parent != 'tr' or not self.rows or 'headers' in attrs
++                    or self.cell_count > MAX_TABLE_SLOTS):
++                self.invalid = True
++                return
++            scope = attrs.get('scope', '').lower()
++            if scope not in ('', 'row', 'col', 'colgroup') or tag == 'td' and scope:
++                self.invalid = True
++            rowspan, colspan = (self.span(attrs, name) for name in ('rowspan', 'colspan'))
++            if not self.invalid:
++                self.rows[-1][3].append((tag, scope, rowspan, colspan, out_index))
++        elif parent in ('table', 'thead', 'tbody', 'tfoot', 'tr', 'colgroup'):
++            self.invalid |= (parent, tag) not in (('table', 'caption'), ('table', 'colgroup'), ('colgroup', 'col'))
++
++    def end(self, tag, out):
++        if tag in ('td', 'th'):
++            start = self.rows[-1][3][-1][-1]
++            value = ''.join(out[start:])
++            if '\t' in value or len((value + '.').splitlines()) != 1:
++                self.invalid = True
++        if tag == 'tr':
++            self.row_ends[self.rows[-1][2]] = len(out)
++        if tag == 'colgroup':
++            self.column_groups.append(self.declared_group_span or self.column_child_span or 1)
++            self.invalid |= sum(self.column_groups) > MAX_TABLE_SLOTS
++        if tag in ('thead', 'tbody', 'tfoot'):
++            self.group += 1
++            self.section = 'table'
++
++    def project(self, lines, flat, out):
++        if self.invalid or not self.rows:
++            return None
++        # Use the authored row sections and positive spans. Do not repair holes
++        # or overlaps as a browser might, or infer from repeated header text.
++        grid, cells = set(), []
++        first_cells = self.rows[0][3]
++        leading_headers = (self.rows[0][1] == 'table' and first_cells
++                           and all(tag == 'th' and scope != 'row' for tag, scope, *_ in first_cells))
++        for row, (group, section, start, authored) in enumerate(self.rows, 1):
++            line = lines[start]
++            rendered = re.sub(r' +', ' ', ''.join(out[start:self.row_ends[start]])).strip()
++            if (not authored or not line or not rendered or flat[line - 1] != rendered
++                    or len(rendered.split('\t')) != len(authored)):
++                return None
++            header_row = section == 'thead' or row == 1 and leading_headers
++            column = 1
++            for field, (tag, scope, rowspan, colspan, _) in enumerate(authored, 1):
++                while (row, column) in grid:
++                    column += 1
++                if (row + rowspan - 1 > len(self.rows) or self.rows[row + rowspan - 2][0] != group
++                        or len(grid) + rowspan * colspan > MAX_TABLE_SLOTS):
++                    return None
++                if tag == 'th':
++                    if scope == 'colgroup':
++                        scope = 'column_group'
++                    elif scope == 'col' or not scope and header_row:
++                        scope = 'column'
++                    elif scope == 'row' or (not scope and field == rowspan == colspan == 1
++                                            and section in ('table', 'tbody')):
++                        scope = 'row'
++                    else:
++                        return None
++                if header_row != (scope in ('column', 'column_group')):
++                    return None
++                for y in range(row, row + rowspan):
++                    for x in range(column, column + colspan):
++                        if (y, x) in grid:
++                            return None
++                        grid.add((y, x))
++                cell = dict(row=row, column=column, rowspan=rowspan, colspan=colspan,
++                            line=line, field=field, kind=scope or 'data', column_headers=[],
++                            row_headers=[], column_group_headers=[])
++                cells.append(cell)
++                column += colspan
++        width = max(column for _, column in grid)
++        if len(grid) != len(self.rows) * width or sum(self.column_groups) > width:
++            return None
++
++        membership = [None] * (width + 1)
++        first = 1
++        for index, span in enumerate(self.column_groups):
++            membership[first:first + span] = [index] * span
++            first += span
++        group_headers = [[] for _ in self.column_groups]
++        columns = [[] for _ in range(width + 1)]
++        rows = [[] for _ in range(len(self.rows) + 1)]
++        refs = 0
++        for cell in cells:
++            y, x = cell['row'], cell['column']
++            if cell['kind'] in ('column', 'column_group'):
++                for column in range(x, x + cell['colspan']):
++                    columns[column].append((y, x))
++                if cell['kind'] == 'column_group':
++                    group = membership[x]
++                    if group is None:
++                        return None
++                    group_headers[group].append((y, x))
++            elif cell['kind'] == 'row':
++                if x != 1:
++                    return None
++                for row in range(y, y + cell['rowspan']):
++                    rows[row].append((y, x))
++        for cell in cells:
++            if cell['kind'] in ('column', 'column_group'):
++                continue
++            y, x = cell['row'], cell['column']
++            column_headers = sorted({anchor
++                for column in range(x, x + cell['colspan']) for anchor in columns[column]})
++            row_headers = (sorted({anchor
++                for row in range(y, y + cell['rowspan']) for anchor in rows[row]})
++                if cell['kind'] == 'data' else [])
++            group = membership[x]
++            scoped_groups = [] if group is None else [
++                (row, col) for row, col in group_headers[group]
++                if row < y + cell['rowspan'] and col < x + cell['colspan']
++            ]
++            refs += len(column_headers) + len(row_headers) + len(scoped_groups)
++            if refs > MAX_TABLE_REFS:
++                return None
++            cell.update(column_headers=column_headers, row_headers=row_headers,
++                        column_group_headers=scoped_groups)
++        return dict(status='AVAILABLE',
++                    row_sections=[section for _, section, _, _ in self.rows],
++                    cells=[[cell[key] for key in TABLE_CELL_FIELDS] for cell in cells])
++
++
+ class _HTML(HTMLParser):
+-    def __init__(self, source, charset):
++    def __init__(self, source, charset, *, project_tables=False):
+         super().__init__(convert_charrefs=False)
+         self.source, self.charset = source, charset
+         self.lines = [0] + [m.end() for m in re.finditer('\n', source)]
+@@ -157,6 +341,8 @@
+         self.css = self.comments = self.links = 0
+         self.out, self.runs, self.pending, self.resources = [], [], [], []
+         self.seen_end = False
++        self.project_tables = project_tables
++        self.table_models, self.table = [], None
+         if any(ord(c) < 32 and c not in '\t\r\n' for c in source):
+             _fail('invalid_html_text')
+         try:
+@@ -170,8 +356,41 @@
+         if self.stack or self.html_count != 1 or self.body_count != 1 or not self.seen_end:
+             _fail('unsupported_html_structure')
+         self.text = '\n'.join(re.sub(r' +', ' ', line).strip() for line in ''.join(self.out).splitlines() if line.strip())
++        if not project_tables or not self.tables:
++            self.table_structure = None
++        elif self.tables > MAX_TABLES:
++            self.table_structure = dict(version=1, status='WITHHELD', reason='table_count_limit')
++        else:
++            self.table_structure = self._table_structure()
+         if len(self.text.encode('utf-8')) > MAX_BYTES:
+             _fail('text_limit')
++
++    def _table_structure(self):
++        flat = self.text.split('\n')
++        # Every row starts after an emitted LF. Count flat (nonblank) lines at
++        # each boundary once, using the same line rules as the text projection.
++        anchors = sorted({row[2] for table in self.table_models if not table.invalid for row in table.rows})
++        lines = {}
++        previous = count = 0
++        for anchor in anchors:
++            count += sum(bool(line.strip()) for line in ''.join(self.out[previous:anchor]).splitlines())
++            lines[anchor] = count + 1 if count < len(flat) else None
++            previous = anchor
++        tables = []
++        for index, table in enumerate(self.table_models, 1):
++            projected = table.project(lines, flat, self.out)
++            if projected is None:
++                projected = dict(status='WITHHELD', reason='unsupported_or_ambiguous_structure')
++            tables.append(dict(index=index, **projected))
++        available = sum(table['status'] == 'AVAILABLE' for table in tables)
++        result = dict(version=1, status=('AVAILABLE' if available == len(tables) else
++                                        'PARTIAL' if available else 'WITHHELD'),
++                      tables=tables, coordinate_base=1, text_field_separator='tab',
++                      header_reference=['row', 'column'], column_header_basis='visible_cell_spans',
++                      cell_fields=TABLE_CELL_FIELDS)
++        if len(json.dumps(result, separators=(',', ':'))) > MAX_TABLE_METADATA:
++            return dict(version=1, status='WITHHELD', reason='table_metadata_limit')
++        return result
+
+     def _position(self):
+         line, col = self.getpos()
+@@ -186,6 +405,9 @@
+             text = ''.join(unit[0] for unit in self.pending)
+             if 'pre' not in self.stack:
+                 text = re.sub(r'[\t\r\n\f ]+', ' ', text)
++            if self.table is not None and text.strip() and self.stack[-1] in (
++                    'table', 'thead', 'tbody', 'tfoot', 'tr', 'colgroup'):
++                self.table.invalid = True
+             # Pretty-print indentation between table cells is not a cell value.
+             if not (not text.strip() and self.stack and self.stack[-1] in
+                     ('html', 'body', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'ul', 'ol')):
+@@ -264,6 +486,15 @@
+                     self.out.append('[image alt: ' + attrs['alt'] + ']')
+             if tag == 'table':
+                 self.tables += 1
++                if self.tables <= MAX_TABLES and self.project_tables:
++                    model = _Table(len(self.stack))
++                    self.table_models.append(model)
++                    if self.table is not None:
++                        self.table.invalid = model.invalid = True
++                    else:
++                        self.table = model
++            elif self.table is not None and not self.table.invalid:
++                self.table.start(tag, self.stack[-1], attrs, len(self.out))
+         if tag not in VOID:
+             self.stack.append(tag)
+
+@@ -277,6 +508,10 @@
+         if not self.stack or self.stack[-1] != tag:
+             _fail('unsupported_html_structure')
+         if self._visible():
++            if self.table is not None and not self.table.invalid:
++                self.table.end(tag, self.out)
++            if tag == 'table' and self.table is not None and self.table.depth == len(self.stack) - 1:
++                self.table = None
+             if tag in ('td', 'th'):
+                 self.out.append('\t')
+             if tag in BLOCK:
+@@ -328,7 +563,7 @@
+
+
+ class _Package:
+-    def __init__(self, data):
++    def __init__(self, data, *, project_tables=False):
+         if type(data) is not bytes or not data or len(data) > MAX_BYTES:
+             _fail('input_limit')
+         self.data = data
+@@ -401,7 +636,7 @@
+             self.source = self.root['payload'].decode(self.charset)
+         except UnicodeError:
+             _fail('invalid_charset_payload')
+-        self.html = _HTML(self.source, self.charset)
++        self.html = _HTML(self.source, self.charset, project_tables=project_tables)
+         self.decoded_bytes = decoded
+         self._resources()
+
+@@ -449,6 +684,7 @@
+             'charset': self.charset, 'transfer_encoding': self.root['encoding'],
+             'decoded_payload_bytes': self.decoded_bytes,
+             'table_count': self.html.tables, 'image_count': self.html.images,
++            **({'table_structure': self.html.table_structure} if self.html.table_structure is not None else {}),
+             'embedded_resource_references': self.embedded,
+             'missing_resource_references': self.missing,
+             'remote_unresolved_resource_references': self.remote,
+@@ -464,6 +700,14 @@
+
+
+ def extract_mhtml(data):
+-    """Return DocumentText (a str) with extraction_metadata and scoped_metadata."""
+-    package = _Package(data)
++    """Return flat DocumentText and metadata for bounded authored tables.
++
++    table_structure v1 references 1-based rendered line and tab field, and
++    identifies headers by 1-based grid anchor. row_sections lists the authored
++    HTML section for each grid row in order. column_headers describes visible
++    spanning headings. column_group_headers reports explicit scope=colgroup
++    links from the authored column groups and cell anchors. Unsupported
++    associations leave the flat document available.
++    """
++    package = _Package(data, project_tables=True)
+     return DocumentText(package.html.text, package.metadata())
