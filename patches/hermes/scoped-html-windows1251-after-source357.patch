@@ -1,0 +1,339 @@
+diff --git a/hermes_cli/friday_html_encoding.py b/hermes_cli/friday_html_encoding.py
+new file mode 100644
+--- /dev/null
++++ b/hermes_cli/friday_html_encoding.py
+@@ -0,0 +1,169 @@
++"""Recognize a bounded explicit Windows-1251 declaration without rendering HTML."""
++from dataclasses import dataclass
++from html.parser import HTMLParser
++import re
++
++from codecs import BOM_UTF8
++
++_ALIASES = frozenset({'windows-1251', 'cp1251', 'x-cp1251'})
++_MAX_HEAD_BYTES = 65536
++_DECLARATION_LIMIT = 1024
++_ASCII_SPACE = ' \t\r\n\f'
++_DIRECT = re.compile(
++    r'''<meta[ \t\r\n\f]+charset[ \t\r\n\f]*=[ \t\r\n\f]*'''
++    r'''(?:"([a-z0-9._:-]+)"|'([a-z0-9._:-]+)'|([a-z0-9._:-]+))[ \t\r\n\f]*/?>''',
++    re.ASCII | re.IGNORECASE,
++)
++_ALTERNATE = re.compile(r"""(?:^|;)\s*charset\s*=\s*["']?([a-z0-9._:-]+)""",
++                        re.ASCII | re.IGNORECASE)
++_INERT = frozenset({'title', 'script', 'style', 'template', 'object', 'noscript'})
++_OPAQUE = frozenset({'title', 'script', 'style', 'noscript'})
++_VOID = frozenset({'area','base','br','col','embed','hr','img','input','link',
++                   'meta','param','source','track','wbr'})
++
++
++class HtmlEncodingError(ValueError):
++    def __init__(self, code):
++        self.code = code
++        super().__init__(code)
++
++
++@dataclass(frozen=True)
++class LegacyEncoding:
++    codec: str
++    label: str
++    meta_tag: bytes
++    offset: int
++
++
++class _HeadFinished(Exception):
++    pass
++
++
++class _HeadParser(HTMLParser):
++    def __init__(self, source, initial_offset):
++        super().__init__(convert_charrefs=False)
++        self.line_starts = [initial_offset]
++        self.line_starts.extend(initial_offset + i + 1 for i, ch in enumerate(source) if ch == '\n')
++        self.expected = 'html'
++        self.opaque = []
++        self.closed = False
++        self.claims = 0
++        self.saw_legacy = False
++        self.declaration = None
++
++    def _start(self, tag, attrs, self_closing):
++        if self.expected is not None:
++            if tag != self.expected or self_closing:
++                raise _HeadFinished()
++            self.expected = 'head' if tag == 'html' else None
++            return
++        if self.opaque:
++            if self.opaque[-1] in _OPAQUE:
++                return
++            if not self_closing and tag not in _VOID:
++                if len(self.opaque) >= 64:
++                    raise _HeadFinished()
++                self.opaque.append(tag)
++            return
++        if tag in _INERT and not self_closing:
++            self.opaque.append(tag)
++        elif tag == 'meta':
++            self._meta(attrs)
++        elif tag not in ('base', 'link'):
++            raise _HeadFinished()
++
++    def handle_starttag(self, tag, attrs):
++        self._start(tag, attrs, False)
++
++    def handle_startendtag(self, tag, attrs):
++        self._start(tag, attrs, True)
++
++    def handle_endtag(self, tag):
++        if self.opaque:
++            top = self.opaque[-1]
++            if top == tag:
++                self.opaque.pop()
++            elif top not in _OPAQUE:
++                raise _HeadFinished()
++            return
++        if self.expected is None and tag == 'head':
++            self.closed = True
++        raise _HeadFinished()
++
++    def handle_data(self, data):
++        if not self.opaque and data.strip(_ASCII_SPACE):
++            raise _HeadFinished()
++
++    def handle_entityref(self, name):
++        if not self.opaque:
++            raise _HeadFinished()
++
++    handle_charref = handle_entityref
++
++    def _meta(self, attrs):
++        direct = [value or '' for key, value in attrs if key == 'charset']
++        equiv = {value.casefold() for key, value in attrs if key == 'http-equiv' and value}
++        alternate = []
++        if 'content-type' in equiv:
++            for key, value in attrs:
++                if key == 'content' and value:
++                    alternate.extend(_ALTERNATE.findall(value))
++        claims = direct + alternate
++        self.claims += len(claims)
++        self.saw_legacy |= any(value.strip(_ASCII_SPACE).casefold() in _ALIASES for value in claims)
++        raw = self.get_starttag_text()
++        match = _DIRECT.fullmatch(raw) if raw else None
++        if match is None:
++            return
++        label = next(value for value in match.groups() if value is not None)
++        if label.casefold() in _ALIASES:
++            line, column = self.getpos()
++            self.declaration = LegacyEncoding('cp1251', label, raw.encode('latin-1'),
++                                               self.line_starts[line - 1] + column)
++
++
++def explicit_meta_charset(data):
++    """Return one literal declaration within the prefix, or retain the UTF-8 lane."""
++    if type(data) is not bytes or len(data) > 1000000:
++        raise HtmlEncodingError('invalid_html_encoding')
++    if not data:
++        return None
++    bom = len(BOM_UTF8) if data.startswith(BOM_UTF8) else 0
++    source = data[bom:_MAX_HEAD_BYTES].decode('latin-1')
++    parser = _HeadParser(source, bom)
++    try:
++        parser.feed(source)
++        parser.close()
++    except _HeadFinished:
++        pass
++    if not parser.saw_legacy:
++        return None
++    declaration = parser.declaration
++    if bom or parser.claims != 1:
++        raise HtmlEncodingError('conflicting_html_encoding')
++    if (b'\x00' in data or not parser.closed or declaration is None
++            or declaration.offset + len(declaration.meta_tag) > _DECLARATION_LIMIT):
++        raise HtmlEncodingError('invalid_html_encoding')
++    return declaration
++
++
++def read_dispatch(data, suffix):
++    """Select legacy only for a supported declaration; keep strict UTF-8 otherwise."""
++    if suffix not in ('.html', '.htm'):
++        return 'utf8', None
++    try:
++        legacy = explicit_meta_charset(data)
++    except HtmlEncodingError:
++        return 'legacy_error', None
++    return ('legacy', legacy) if legacy is not None else ('utf8', None)
++
++
++def decode_explicit_html(data):
++    legacy = explicit_meta_charset(data)
++    if legacy is None:
++        return None
++    try:
++        return data.decode(legacy.codec)
++    except UnicodeError:
++        raise HtmlEncodingError('invalid_html_encoding') from None
+diff --git a/hermes_cli/friday_user_scope.py b/hermes_cli/friday_user_scope.py
+--- a/hermes_cli/friday_user_scope.py
++++ b/hermes_cli/friday_user_scope.py
+@@ -1005,6 +1005,7 @@
+             document_format = path.suffix.lower().lstrip('.') if path.suffix.lower() in {'.mpp', '.mpt', '.djvu', '.djv', '.wpd', '.wps', '.pages', '.numbers', '.key', '.msg', '.pub', '.vsdx', '.vstx', '.vsd', '.vst', '.vdx', '.vsdm', '.vstm', '.vss', '.vssx', '.vssm', '.svg', '.mhtml', '.mht', '.eml', '.ics', '.vcf', '.doc', '.dot', '.xls', '.xlsb', '.mdb', '.accdb', '.xlt', '.sxw', '.stw', '.sxc', '.stc', '.sxi', '.sti', '.dbf', '.dif', '.slk', '.xps', '.oxps', '.epub', '.fb2', '.abw', '.docx', '.dotx', '.docm', '.dotm', '.odt', '.ott', '.fodt', '.odm', '.odf', '.ods', '.ots', '.fods', '.rtf', '.pdf', '.xlsx', '.xltx', '.xlsm', '.xltm', '.ppt', '.pot', '.pps', '.pptx', '.potx', '.ppsx', '.pptm', '.potm', '.ppsm', '.odp', '.otp', '.fodp', '.odg', '.otg', '.fodg', '.odb'} else None
+             extraction_metadata = None
+             encryption_metadata = None
++            non_utf8_html = False
+             source_sha256 = None
+             fb2_locations = None
+             xlsx_call = None
+@@ -1158,10 +1159,28 @@
+             else:
+                 data, version = revision.snapshot(fd, parts[-1], require_utf8=False)
+                 cap.check()
+-                try:
+-                    utf8_text = data.decode('utf-8')
+-                except UnicodeDecodeError:
+-                    utf8_text = None
++                utf8_text = None
++                if path.suffix.lower() in ('.html', '.htm'):
++                    from hermes_cli.friday_html_encoding import read_dispatch
++                    state, legacy_html = read_dispatch(data, path.suffix.lower())
++                    if state == 'legacy':
++                        try:
++                            utf8_text = data.decode(legacy_html.codec)
++                            non_utf8_html = True
++                        except UnicodeError:
++                            utf8_text = None
++                    elif state == 'utf8':
++                        try:
++                            utf8_text = data.decode('utf-8')
++                        except UnicodeDecodeError:
++                            utf8_text = None
++                    else:
++                        utf8_text = None  # typed legacy ambiguity: refuse, do not UTF-8 fallback
++                else:
++                    try:
++                        utf8_text = data.decode('utf-8')
++                    except UnicodeDecodeError:
++                        utf8_text = None
+                 # Every supported stored/deflated ZIP local header has a NUL
+                 # compression-method high byte. A literal UTF-8 PK marker alone
+                 # does not establish a container or justify rejecting text.
+@@ -1201,6 +1220,8 @@
+                     if _native_odt is None:
+                         check_document()
+                     return  # Extracted text never grants raw binary overwrite coverage.
++                if non_utf8_html:
++                    return  # Non-UTF-8 display text does not grant raw UTF-8 write coverage.
+                 revision.note_read(cap,task_id,path.as_posix(),version,
+                                    seen if lines else [(1,1)],total_units,rendered)
+ 
+@@ -1222,6 +1243,8 @@
+                           'partial': offset <= len(lines), 'next_offset': offset,
+                           'next_char_offset': char_offset,
+                           'source_sha256': hashlib.sha256(data).hexdigest()}
++                if non_utf8_html:
++                    result['text_encoding'] = 'windows-1251'
+                 if document_format:
+                     result.update(extracted_document=True, format=document_format,
+                                   source_sha256=hashlib.sha256(data).hexdigest(),
+@@ -1326,6 +1349,8 @@
+             result = {'success': True, 'content': content, 'total_lines': len(lines),
+                       'path': path.as_posix(), 'scope': 'own_user_workspace',
+                       'source_sha256': hashlib.sha256(data).hexdigest()}
++            if non_utf8_html:
++                result['text_encoding'] = 'windows-1251'
+             rendered = json.dumps(result)
+             record_read(rendered)
+             return rendered
+diff --git a/hermes_cli/friday_workspace_text.py b/hermes_cli/friday_workspace_text.py
+--- a/hermes_cli/friday_workspace_text.py
++++ b/hermes_cli/friday_workspace_text.py
+@@ -6,13 +6,14 @@
+ 
+ from hermes_cli.friday_user_scope import ScopeDenied
+ from hermes_cli.friday_workspace_revision import check
++from hermes_cli.friday_html_encoding import HtmlEncodingError, explicit_meta_charset
+ from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
+ from hermes_cli.friday_workspace_zip import _archive_spec, _path, _source, _verify, _inline_budget, _fits, _encode
+ 
+ TEXT_SUFFIXES = frozenset({'.txt', '.md', '.markdown', '.html', '.htm'})
+ 
+ GUIDANCE = (
+-    'For an explicitly requested raw literal correction of existing UTF-8 TXT, Markdown or HTML, '
++    'For an explicitly requested raw literal correction of existing UTF-8 TXT, Markdown or safe explicit-metadata Windows-1251 HTML, '
+     'use format=text_edit and a NEW output path with the same case-insensitive suffix '
+     '(.txt/.md/.markdown/.html/.htm). Content is JSON exactly '
+     '{source,source_sha256,old_text,new_text}; '
+@@ -20,7 +21,8 @@
+     'The old literal must occur exactly once. Every other source byte, including BOM, '
+     'line endings and the presence or absence of a final newline, is retained. '
+     'Do not reconstruct the entire file from a displayed excerpt or decode entities/escapes. '
+-    'HTML is raw text: no parsing, rendering, validity or rendered-semantics guarantee. '
++    'HTML is raw text: no rendering or validity guarantee. Windows-1251 is accepted only with an early explicit meta charset in a genuine head; filename/comments/scripts/other attributes never select encoding. '
++    'Changing the meta charset, unsupported encodings and unencodable replacements refuse. '
+     'Never execute, render or fetch its content. The source stays unchanged. '
+ )
+ 
+@@ -29,7 +31,7 @@
+     pass
+ 
+ 
+-def replace_literal(original, expected_sha256, old_text, new_text):
++def replace_literal(original, expected_sha256, old_text, new_text, *, suffix=None):
+     """Change one explicitly identified UTF-8 byte span, with no newline normalization."""
+     if (type(original) is not bytes or len(original) > 1000000
+             or type(expected_sha256) is not str
+@@ -41,11 +43,27 @@
+         raise TextEditRefused('literal_required')
+     if old_text == new_text:
+         raise TextEditRefused('edit_is_unchanged')
+-    try:
+-        original.decode('utf-8')
+-        old, new = old_text.encode('utf-8'), new_text.encode('utf-8')
+-    except UnicodeError:
+-        raise TextEditRefused('utf8_required') from None
++    legacy = None
++    if suffix in ('.html', '.htm'):
++        try:
++            legacy = explicit_meta_charset(original)
++        except HtmlEncodingError as error:
++            raise TextEditRefused(error.code) from None
++    cp1251_html = legacy is not None
++    if cp1251_html:
++        if original.startswith(b'\xef\xbb\xbf'):
++            raise TextEditRefused('conflicting_html_encoding')
++        try:
++            original.decode('cp1251')
++            old, new = old_text.encode('cp1251'), new_text.encode('cp1251')
++        except UnicodeError:
++            raise TextEditRefused('edit_unencodable_charset') from None
++    else:
++        try:
++            original.decode('utf-8')
++            old, new = old_text.encode('utf-8'), new_text.encode('utf-8')
++        except UnicodeError:
++            raise TextEditRefused('utf8_required') from None
+     if b'\x00' in original or b'\x00' in old or b'\x00' in new:
+         raise TextEditRefused('plain_text_required')
+     start = original.find(old)
+@@ -54,6 +72,13 @@
+     if original.find(old, start + 1) >= 0:
+         raise TextEditRefused('literal_ambiguous')
+     result = original[:start] + new + original[start + len(old):]
++    if cp1251_html:
++        try:
++            after = explicit_meta_charset(result)
++        except HtmlEncodingError as error:
++            raise TextEditRefused(error.code) from None
++        if after is None or after.meta_tag != legacy.meta_tag:
++            raise TextEditRefused('edit_charset_changed')
+     if len(result) > 1000000:
+         raise TextEditRefused('output_capacity')
+     return result
+@@ -73,7 +98,7 @@
+     check(cap)
+     original, identity = _source(cap, source)
+     try:
+-        data = replace_literal(original, spec['source_sha256'], spec['old_text'], spec['new_text'])
++        data = replace_literal(original, spec['source_sha256'], spec['old_text'], spec['new_text'], suffix=suffix)
+     except TextEditRefused as error:
+         return _encode(dict(success=False, error='text_edit_refused', reason=str(error),
+                             effect_disposition='none'))
