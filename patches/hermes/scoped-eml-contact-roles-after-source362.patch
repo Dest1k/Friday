@@ -1,0 +1,151 @@
+diff --git a/hermes_cli/friday_prompt_scope.py b/hermes_cli/friday_prompt_scope.py
+--- a/hermes_cli/friday_prompt_scope.py
++++ b/hermes_cli/friday_prompt_scope.py
+@@ -700,7 +700,7 @@
+         function['description'] = 'Native EML exposes bounded stored headers, decoded plain-text bodies and attachment metadata without rendering HTML, opening attachments or sending. Native ICS exposes stored event, timezone and recurrence fields without occurrence expansion, UTC conversion or import. Native VCF exposes repeated and typed stored contact fields without fetching URIs or importing contacts. All three preserve unknown values as stored claims, enforce byte/part/depth/decoded-text limits and never follow remote resources.' + function['description']
+     if function['name'] == 'write_file':
+         from tools.scoped_communication import EML_EDIT_GUIDANCE, ICS_NAMED_TIMEZONE_GUIDANCE
+-        function['description'] = ' Native local communication files: eml_create accepts JSON from,to,subject,text with optional date (exact RFC-5322 "Tue, 14 Jan 2025 23:50:00 -0015": ASCII weekday/wall clock and numeric +/-HHMM offset without colon; explicit only, -0000 ambiguous, no automatic time/locale) and optional attachments (0-16 objects with exactly source,source_sha256,content_type; safe own-workspace sources bound to current SHA; exact inert bytes in native multipart/mixed) for a NEW EML; the body remains UTF-8 text/plain; ' + EML_EDIT_GUIDANCE + ' eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location,timezone for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive and follows start. dtstamp uses YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, refuses conflicts and never sends/imports. Subject, ICS and VCF edits preserve unselected source bytes. ' + function['description']
++        function['description'] = ' Native local communication files: eml_create accepts JSON from,to,subject,text with optional date (exact RFC-5322 "Tue, 14 Jan 2025 23:50:00 -0015": ASCII weekday/wall clock and numeric +/-HHMM offset without colon; explicit only, -0000 ambiguous, no automatic time/locale), optional cc and reply_to arrays (1-100 one-mailbox strings each, order preserved; repeated display names/different addresses and same address in To and Reply-To allowed; Bcc/other fields refused) and optional attachments (0-16 objects with exactly source,source_sha256,content_type; safe own-workspace sources bound to current SHA; exact inert bytes in native multipart/mixed) for a NEW EML; the body remains UTF-8 text/plain; ' + EML_EDIT_GUIDANCE + ' eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location,timezone for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive and follows start. dtstamp uses YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, refuses conflicts and never sends/imports. Subject, ICS and VCF edits preserve unselected source bytes. ' + function['description']
+     if function['name'] in ('read_file', 'write_file', 'patch'):
+         from tools.scoped_iwork import GUIDANCE as _IWORK_READ_GUIDANCE
+         function['description'] = _IWORK_READ_GUIDANCE + function['description']
+diff --git a/hermes_cli/friday_workspace_communication.py b/hermes_cli/friday_workspace_communication.py
+--- a/hermes_cli/friday_workspace_communication.py
++++ b/hermes_cli/friday_workspace_communication.py
+@@ -25,7 +25,10 @@
+             'with exactly source:string (safe own-workspace path), source_sha256:string (64 lowercase '
+             'hex of current source), content_type:string (explicit type/subtype); filenames are safe '
+             'source leaves without edge whitespace, duplicate names refuse, total source bytes <=1000000. from, subject and '
+-            'text are nonempty; text is one string with JSON newline escapes, not an array. Body is '
++            'text are nonempty; text is one string with JSON newline escapes, not an array. Optional '
++            'cc:array[string] and reply_to:array[string] contain 1-100 one-mailbox strings each, '
++            'preserve item order, allow repeated display names/different addresses and the same '
++            'address in To and Reply-To, reject Bcc and other fields. Body is '
+             'UTF-8 text/plain; attachments are inert exact bytes in a native multipart/mixed EML. '
+             'Use a NEW .eml path. Local file only; no mail is sent or fetched.'),
+     'ics': ('ics_create content must be a JSON string encoding required uid,summary,start_date,dtstamp '
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1435,7 +1435,7 @@
+ 
+ from tools.scoped_communication import EML_EDIT_GUIDANCE, ICS_NAMED_TIMEZONE_GUIDANCE
+ 
+-WRITE_FILE_SCHEMA['description'] += ' Native local communication files: eml_create accepts JSON from,to,subject,text with optional date (exact RFC-5322 "Tue, 14 Jan 2025 23:50:00 -0015": ASCII weekday/wall clock, numeric +/-HHMM offset without colon; explicit only, no automatic time/locale; -0000 ambiguous and invalid) and optional attachments (0-16 objects with exactly source,source_sha256,content_type; safe own-workspace source paths bound to current SHA; exact inert bytes in native multipart/mixed) for a NEW local EML with a UTF-8 text/plain body; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End uses the same form and follows start. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. '
++WRITE_FILE_SCHEMA['description'] += ' Native local communication files: eml_create accepts JSON from,to,subject,text with optional date (exact RFC-5322 "Tue, 14 Jan 2025 23:50:00 -0015": ASCII weekday/wall clock, numeric +/-HHMM offset without colon; explicit only, no automatic time/locale; -0000 ambiguous and invalid), optional cc and reply_to arrays (1-100 one-mailbox strings each, order preserved; repeated display names/different addresses and same address in To and Reply-To are allowed; Bcc/other fields refused) and optional attachments (0-16 objects with exactly source,source_sha256,content_type; safe own-workspace source paths bound to current SHA; exact inert bytes in native multipart/mixed) for a NEW local EML with a UTF-8 text/plain body; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End uses the same form and follows start. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. '
+ WRITE_FILE_SCHEMA['description'] += ' Raw split 7z: read_file path=NAME.7z.001 requires archive_parts=["NAME.7z.001","NAME.7z.002",...] in exact order. For 7z_extract use {"source":"NAME.7z.001","parts":["NAME.7z.001","NAME.7z.002",...]}, with optional password, into a NEW folder. Supply the complete fixed-size set (last may be shorter), 2..128 parts, total at most 1000000 bytes. No volume discovery; missing/mixed/reordered/corrupt sets refuse before publication. Split ZIP, RAR multivolume, SFX and split-set conversion remain unsupported. '
+ 
+ 
+@@ -2307,7 +2307,8 @@
+     '65536 bytes each, and output at most 1000000 bytes. Optional eml attachments: 0-16 objects '
+     'with exactly source, source_sha256, content_type; source paths are safe own-workspace paths, '
+     'hashes bind current bytes and existing read_file permission applies; use explicit non-container type/subtype. Filenames are source leaves; '
+-    'duplicate names refuse and total attachment bytes are at most 1000000. Header fields forbid CR/LF. '
++    'duplicate names refuse and total attachment bytes are at most 1000000. Optional cc and reply_to are 1-100 one-mailbox strings each; '
++    'their order is preserved, repeated display names/different addresses and the same address in To and Reply-To are allowed; Bcc and other fields refuse. Header fields forbid CR/LF. '
+     'ics_create requires uid,summary,start_date,dtstamp strings, optional end_date,description,location and timezone. '
+     'Without timezone, use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive '
+     'and follows start. dtstamp is YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE +
+diff --git a/tools/scoped_communication.py b/tools/scoped_communication.py
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -788,6 +788,47 @@
+     return spec
+ 
+ 
++def _address_header(value):
++    """Parse one header value through the existing EmailMessage header factory."""
++    message = EmailMessage(policy=policy.SMTP)
++    try:
++        message['Cc'] = value
++        header = message['Cc']
++    except (MessageError, ValueError, TypeError, IndexError, RecursionError):
++        _fail('invalid_address')
++    if header is None or getattr(header, 'defects', ()):
++        _fail('invalid_address')
++    groups = header.groups
++    if len(groups) != 1 or groups[0].display_name is not None or len(groups[0].addresses) != 1:
++        _fail('invalid_address')
++    address = groups[0].addresses[0]
++    if not address.username or not address.domain:
++        _fail('invalid_address')
++    return address.display_name, address.addr_spec
++
++
++def _mailbox_lists(spec, name):
++    """Validate one concrete, non-group mailbox per optional-field item."""
++    if name not in spec:
++        return [], []
++    values = spec[name]
++    if type(values) is not list or not 1 <= len(values) <= 100:
++        _fail('contact_list_limit')
++    parsed = []
++    for value in values:
++        if type(value) is not str or not value:
++            _fail('contact_list_schema')
++        try:
++            _text(value, 'invalid_address', 4096)
++        except UnicodeError:
++            _fail('invalid_address')
++        # The header parser accepts a terminal comma without reporting an empty item.
++        if value.rstrip().endswith(','):
++            _fail('invalid_address')
++        parsed.append(_address_header(value))
++    return values, parsed
++
++
+ def _eml_attachments(spec):
+     attachments = spec.get('attachments', [])
+     if type(attachments) is not list or len(attachments) > MAX_ATTACHMENTS:
+@@ -823,9 +864,11 @@
+ 
+ def create_eml(spec, *, checkpoint=None):
+     required = {'from', 'to', 'subject', 'text'}
+-    if type(spec) is not dict or not required <= set(spec) <= required | {'attachments', 'date'}:
++    if type(spec) is not dict or not required <= set(spec) <= required | {'attachments', 'date', 'cc', 'reply_to'}:
+         _fail('create_schema')
+     date = _eml_date(spec['date']) if 'date' in spec else None
++    cc_values, cc_mailboxes = _mailbox_lists(spec, 'cc')
++    reply_values, reply_mailboxes = _mailbox_lists(spec, 'reply_to')
+     sender = _field(spec, 'from')
+     recipients = spec['to']
+     if type(recipients) is not list or not 1 <= len(recipients) <= 100 or any(type(x) is not str or not x for x in recipients):
+@@ -838,6 +881,10 @@
+         message['Date'] = date
+     message['From'] = sender
+     message['To'] = ', '.join(recipients)
++    if cc_values:
++        message['Cc'] = ', '.join(cc_values)
++    if reply_values:
++        message['Reply-To'] = ', '.join(reply_values)
+     message['Subject'] = _field(spec, 'subject')
+     message.set_content(_field(spec, 'text'), subtype='plain', charset='utf-8', cte='quoted-printable')
+     attachments = _eml_attachments(spec)
+@@ -850,6 +897,26 @@
+     if len(output) > MAX_BYTES:
+         _fail('output_limit')
+     parsed, _ = _read_eml(output, checkpoint, expected_date=date)
++    for header, expected_mailboxes in (('cc', cc_mailboxes), ('reply-to', reply_mailboxes)):
++        if expected_mailboxes:
++            raw_headers = parsed['headers'].get(header, [])
++            if len(raw_headers) != 1:
++                _fail('contact_roundtrip_changed')
++            group_message = EmailMessage(policy=policy.SMTP)
++            try:
++                group_message['Cc'] = raw_headers[0]
++                parsed_header = group_message['Cc']
++            except (ValueError, TypeError):
++                _fail('contact_roundtrip_changed')
++            groups = parsed_header.groups if parsed_header is not None else []
++            observed = []
++            if not groups or any(group.display_name is not None for group in groups):
++                _fail('contact_roundtrip_changed')
++            for group in groups:
++                observed.extend((address.display_name, address.addr_spec)
++                                for address in group.addresses)
++            if observed != expected_mailboxes:
++                _fail('contact_roundtrip_changed')
+     if attachments:
+         expected = [(name, main + '/' + sub, len(data), hashlib.sha256(data).hexdigest())
+                     for name, main, sub, data in attachments]
