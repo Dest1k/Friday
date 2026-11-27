@@ -1,0 +1,231 @@
+diff --git a/hermes_cli/friday_workspace_communication.py b/hermes_cli/friday_workspace_communication.py
+--- a/hermes_cli/friday_workspace_communication.py
++++ b/hermes_cli/friday_workspace_communication.py
+@@ -5,21 +5,26 @@
+ from pathlib import Path
+ import re
+ 
+-from hermes_cli.friday_user_scope import ScopeDenied, workspace_document
++from hermes_cli.friday_user_scope import ScopeDenied, guard_tool, workspace_document
+ from hermes_cli.friday_workspace_docx import _check_parent, _create_bytes
+ from hermes_cli.friday_workspace_revision import check
+ from hermes_cli.friday_workspace_zip import _path as _attachment_path
+ from tools.scoped_communication import (
+-    CommunicationError, create_eml, create_ics, create_vcf, edit_communication,
+-    extract_eml_attachment,
++    MAX_ATTACHMENTS, MAX_ATTACHMENT_TOTAL, CommunicationError, create_eml, create_ics,
++    create_vcf, edit_communication, extract_eml_attachment,
+ )
+ 
+ 
+ _CREATE_SCHEMA_HINTS = {
+     'eml': ('eml_create content must be a JSON string encoding exactly from:string, '
+-            'to:array[string] with 1-100 nonempty address strings, subject:string, text:string. '
+-            'from, subject and text must be nonempty; text is one string with JSON newline escapes, '
+-            'not an array. Use a NEW .eml path. Local file only; no mail is sent.'),
++            'to:array[string] with 1-100 nonempty address strings, subject:string, text:string '
++            'and optional attachments:array[attachment]. Attachments are optional 0-16 objects '
++            'with exactly source:string (safe own-workspace path), source_sha256:string (64 lowercase '
++            'hex of current source), content_type:string (explicit type/subtype); filenames are safe '
++            'source leaves without edge whitespace, duplicate names refuse, total source bytes <=1000000. from, subject and '
++            'text are nonempty; text is one string with JSON newline escapes, not an array. Body is '
++            'UTF-8 text/plain; attachments are inert exact bytes in a native multipart/mixed EML. '
++            'Use a NEW .eml path. Local file only; no mail is sent or fetched.'),
+     'ics': ('ics_create content must be a JSON string encoding required uid,summary,start_date,dtstamp '
+             'and optional end_date,description,location,timezone. Use YYYY-MM-DD for all-day, '
+             'YYYY-MM-DDTHH:MM:SSZ for UTC, or YYYY-MM-DDTHH:MM:SS with an explicit timezone object. '
+@@ -52,6 +57,49 @@
+         raise ScopeDenied()
+     return value
+ 
++
++def _resolve_eml_attachments(cap, spec):
++    """Resolve refs with capped reads and return resolved entries plus custody records."""
++    refs = spec.get('attachments', [])
++    if type(refs) is not list or len(refs) > MAX_ATTACHMENTS:
++        raise CommunicationError('attachment_schema')
++    root = cap.home / 'workspace'
++    entries, sources = [], []
++    total = 0
++    for ref in refs:
++        check(cap)
++        if type(ref) is not dict or set(ref) != {'source', 'source_sha256', 'content_type'}:
++            raise CommunicationError('attachment_schema')
++        expected = ref['source_sha256']
++        if type(expected) is not str or re.fullmatch(r'[0-9a-f]{64}', expected) is None:
++            raise CommunicationError('source_hash_required')
++        raw = ref['source']
++        if type(raw) is not str or not raw or '\x00' in raw:
++            raise ScopeDenied()
++        source = Path(raw)
++        if not source.is_absolute():
++            source = root / source
++        try:
++            relative = source.relative_to(root)
++            _attachment_path(relative.as_posix())
++        except (ValueError, ScopeDenied):
++            raise ScopeDenied() from None
++        remaining = MAX_ATTACHMENT_TOTAL - total
++        if remaining <= 0:
++            raise CommunicationError('attachment_total_limit')
++        guard_tool('read_file', {'path': str(source)}, registry_scope=str(cap.home))
++        data, actual, identity = workspace_document(str(source), max_bytes=remaining,
++                                                    with_identity=True)
++        if actual != relative.as_posix():
++            raise ScopeDenied()
++        if hashlib.sha256(data).hexdigest() != expected:
++            raise CommunicationError('source_hash_mismatch')
++        total += len(data)
++        if total > MAX_ATTACHMENT_TOTAL:
++            raise CommunicationError('attachment_total_limit')
++        entries.append({'filename': relative.name, 'content_type': ref['content_type'], 'data': data})
++        sources.append((relative.as_posix(), data, identity))
++    return dict(spec, attachments=entries), sources
+ 
+ def extract_attachment(cap, fd, leaf, path, content):
+     _check_parent(cap, fd, path)
+@@ -186,6 +234,9 @@
+     try:
+         check(cap)
+         spec = _object(content)
++        attachment_sources = []
++        if action == 'create' and format == 'eml' and 'attachments' in spec:
++            spec, attachment_sources = _resolve_eml_attachments(cap, spec)
+         if action == 'create':
+             rendered = {'eml': create_eml, 'ics': create_ics, 'vcf': create_vcf}[format](
+                 spec, checkpoint=lambda: check(cap))
+@@ -224,13 +275,23 @@
+             refusal['hint'] = _CREATE_SCHEMA_HINTS[format]
+         return json.dumps(refusal)
+     verify = None
+-    if source is not None:
++    if source is not None or attachment_sources:
+         def verify():
+             check(cap)
+-            current, _, current_identity = workspace_document(str(source), max_bytes=1_000_000,
+-                                                              with_identity=True)
+-            if current != original or current_identity != identity:
+-                raise ScopeDenied()
++            if source is not None:
++                current, _, current_identity = workspace_document(str(source), max_bytes=1_000_000,
++                                                                  with_identity=True)
++                if current != original or current_identity != identity:
++                    raise ScopeDenied()
++            for attachment_relative, attachment_data, attachment_identity in attachment_sources:
++                check(cap)
++                attachment_path = str(cap.home / 'workspace' / attachment_relative)
++                guard_tool('read_file', {'path': attachment_path}, registry_scope=str(cap.home))
++                current, actual, current_identity = workspace_document(
++                    attachment_path, max_bytes=max(1, len(attachment_data)), with_identity=True)
++                if (actual != attachment_relative or current != attachment_data
++                        or current_identity != attachment_identity):
++                    raise ScopeDenied()
+     result = json.loads(_create_bytes(cap, fd, leaf, path, rendered,
+                                      output_format=operation, verify_source=verify))
+     if result.get('success'):
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -1435,7 +1435,7 @@
+ 
+ from tools.scoped_communication import EML_EDIT_GUIDANCE, ICS_NAMED_TIMEZONE_GUIDANCE
+ 
+-WRITE_FILE_SCHEMA['description'] += ' Native local communication files: eml_create accepts JSON exactly from,to,subject,text for a NEW plain-text EML; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End uses the same form and follows start. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. '
++WRITE_FILE_SCHEMA['description'] += ' Native local communication files: eml_create accepts JSON from,to,subject,text with optional attachments (0-16 objects with exactly source,source_sha256,content_type; safe own-workspace source paths bound to current SHA; exact inert bytes in native multipart/mixed) for a NEW local EML with a UTF-8 plain body; eml_edit accepts JSON exactly source,source_sha256,old_value,new_value and changes only the unique top-level Subject. eml_extract_attachment accepts exactly source,source_sha256,part_path,expected_decoded_sha256 from a current ordinary EML read and writes only that decoded attachment leaf to one explicitly named NEW own-workspace file; MIME filenames never choose the destination. This is extraction only, not document interoperability, execution, rendering, sending or import. ics_create accepts uid,summary,start_date,dtstamp plus optional end_date,description,location for one NEW nonrecurring event. Use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End uses the same form and follows start. ' + ICS_NAMED_TIMEZONE_GUIDANCE + 'ics_edit uses source,source_sha256,uid,old_value,new_value for one selected VEVENT SUMMARY. vcf_create accepts fn plus optional uid,emails,phones,organization,title,note for a NEW simple vCard; typed email/phone rows use value/types. vcf_edit uses source,source_sha256,old_value,new_value for one single-card FN. Every edit creates a NEW same-format file, preserves unselected source bytes, refuses conflicts and never sends/imports. '
+ WRITE_FILE_SCHEMA['description'] += ' Raw split 7z: read_file path=NAME.7z.001 requires archive_parts=["NAME.7z.001","NAME.7z.002",...] in exact order. For 7z_extract use {"source":"NAME.7z.001","parts":["NAME.7z.001","NAME.7z.002",...]}, with optional password, into a NEW folder. Supply the complete fixed-size set (last may be shorter), 2..128 parts, total at most 1000000 bytes. No volume discovery; missing/mixed/reordered/corrupt sets refuse before publication. Split ZIP, RAR multivolume, SFX and split-set conversion remain unsupported. '
+ 
+ 
+@@ -2301,7 +2301,10 @@
+     r'Example content JSON: {"from":"writer@example.invalid","to":["reader@example.invalid"],"subject":"Local note","text":"First line.\nSecond line."}. '
+     'Pass that serialized JSON as content with format="eml_create", path="note.eml". '
+     'At most 100000 UTF-8 content bytes; each address at most 4096 bytes, subject/text at most '
+-    '65536 bytes each, and output at most 1000000 bytes. Header fields forbid CR/LF. '
++    '65536 bytes each, and output at most 1000000 bytes. Optional eml attachments: 0-16 objects '
++    'with exactly source, source_sha256, content_type; source paths are safe own-workspace paths, '
++    'hashes bind current bytes and existing read_file permission applies; use explicit non-container type/subtype. Filenames are source leaves; '
++    'duplicate names refuse and total attachment bytes are at most 1000000. Header fields forbid CR/LF. '
+     'ics_create requires uid,summary,start_date,dtstamp strings, optional end_date,description,location and timezone. '
+     'Without timezone, use YYYY-MM-DD for all-day or YYYY-MM-DDTHH:MM:SSZ for explicit UTC. End is exclusive '
+     'and follows start. dtstamp is YYYYMMDDTHHMMSSZ. ' + ICS_NAMED_TIMEZONE_GUIDANCE +
+diff --git a/tools/scoped_communication.py b/tools/scoped_communication.py
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -28,6 +28,9 @@
+ MAX_TEXT = 400_000
+ MAX_LINES = 4096
+ MAX_COMPONENTS = 256
++MAX_ATTACHMENTS = 16
++MAX_ATTACHMENT_TOTAL = 1_000_000
++ATTACHMENT_TYPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*$")
+ FORMATS = frozenset({'eml', 'ics', 'vcf'})
+ CHARSETS = {
+     'utf-8': 'utf-8', 'utf8': 'utf-8', 'us-ascii': 'ascii', 'ascii': 'ascii',
+@@ -752,8 +755,42 @@
+     return value
+ 
+ 
++def _eml_attachments(spec):
++    attachments = spec.get('attachments', [])
++    if type(attachments) is not list or len(attachments) > MAX_ATTACHMENTS:
++        _fail('attachment_schema')
++    entries = []
++    names = set()
++    total = 0
++    for item in attachments:
++        if type(item) is not dict or set(item) != {'filename', 'content_type', 'data'}:
++            _fail('attachment_schema')
++        filename, content_type, data = item['filename'], item['content_type'], item['data']
++        if (type(filename) is not str or not filename or len(filename) > 255
++                or filename != filename.strip() or filename in ('.', '..') or any(c in filename for c in ('/', '\\', '\r', '\n', '\x00'))):
++            _fail('attachment_filename')
++        if (type(content_type) is not str or len(content_type) > 127
++                or ATTACHMENT_TYPE.fullmatch(content_type) is None):
++            _fail('attachment_content_type')
++        if type(data) is not bytes or len(data) > MAX_BYTES:
++            _fail('attachment_bytes')
++        total += len(data)
++        if total > MAX_ATTACHMENT_TOTAL:
++            _fail('attachment_total_limit')
++        folded = filename.casefold()
++        if folded in names:
++            _fail('attachment_name_collision')
++        names.add(folded)
++        maintype, subtype = content_type.lower().split('/', 1)
++        if maintype in ('multipart', 'message'):
++            _fail('attachment_content_type')
++        entries.append((filename, maintype, subtype, data))
++    return entries
++
++
+ def create_eml(spec, *, checkpoint=None):
+-    if type(spec) is not dict or set(spec) != {'from', 'to', 'subject', 'text'}:
++    required = {'from', 'to', 'subject', 'text'}
++    if type(spec) is not dict or not required <= set(spec) <= required | {'attachments'}:
+         _fail('create_schema')
+     sender = _field(spec, 'from')
+     recipients = spec['to']
+@@ -767,12 +804,23 @@
+     message['To'] = ', '.join(recipients)
+     message['Subject'] = _field(spec, 'subject')
+     message.set_content(_field(spec, 'text'), subtype='plain', charset='utf-8', cte='quoted-printable')
++    attachments = _eml_attachments(spec)
++    for filename, maintype, subtype, data in attachments:
++        _checkpoint(checkpoint)
++        message.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
+     _checkpoint(checkpoint)
+     # Keep the existing SMTP header folding and CRLF when serializing.
+     output = message.as_bytes(policy=policy.SMTP)
+     if len(output) > MAX_BYTES:
+         _fail('output_limit')
+-    _read_eml(output, checkpoint)
++    parsed, _ = _read_eml(output, checkpoint)
++    if attachments:
++        expected = [(name, main + '/' + sub, len(data), hashlib.sha256(data).hexdigest())
++                    for name, main, sub, data in attachments]
++        observed = [(row['filename'], row['content_type'], row['decoded_bytes'], row['decoded_sha256'])
++                    for row in parsed['parts'] if row['disposition'] == 'attachment']
++        if observed != expected:
++            _fail('attachment_roundtrip_changed')
+     return output
+ 
+ 
