@@ -1,0 +1,166 @@
+diff --git a/tools/scoped_communication.py b/tools/scoped_communication.py
+--- a/tools/scoped_communication.py
++++ b/tools/scoped_communication.py
+@@ -1145,10 +1145,133 @@
+     f'types 0/2/4/6 and dimensions 1..{VCF_PHOTO_MAX_DIMENSION} each, '
+     f'<= {VCF_PHOTO_MAX_PIXELS} pixels. At most {VCF_PHOTO_MAX_CHUNKS} chunks: '
+     'IHDR, consecutive IDAT, IEND, and optional uncompressed tEXt before or after IDAT. '
++    'tEXt values accept printable Latin-1 and line feeds. '
+     'All chunk CRCs and the single zlib image stream must be valid. Scanline filters 0..4. '
+     f'It writes {VCF_PHOTO_PROPERTY_PREFIX} followed by the exact URI. Local only, '
+     'with no fetch, render or contact import. Reopen suppresses the PHOTO value. '
+ )
++
++
++class _DeflateBits:
++    def __init__(self, stream):
++        self.data = stream
++        self.position = 16  # Skip the zlib header.
++        self.limit = (len(stream) - 4) * 8  # Exclude the Adler-32 trailer.
++
++    def read(self, width):
++        start, offset = divmod(self.position, 8)
++        self.position += width
++        if self.position > self.limit:
++            _fail('invalid_photo')
++        end = (self.position + 7) // 8
++        return (int.from_bytes(self.data[start:end], 'little') >> offset) & ((1 << width) - 1)
++
++    def symbol(self, table):
++        codes, max_width = table
++        # Huffman codes are transmitted most-significant bit first. The leading
++        # 1 keeps prefixes of different widths distinct in the lookup table.
++        prefix = 1
++        for _ in range(max_width):
++            prefix = (prefix << 1) | self.read(1)
++            symbol = codes.get(prefix)
++            if symbol is not None:
++                return symbol
++        _fail('invalid_photo')
++
++
++def _deflate_huffman(lengths):
++    counts = [0] * 16
++    for width in lengths:
++        if width:
++            counts[width] += 1
++    next_codes = [0] * 16
++    for width in range(1, 16):
++        next_codes[width] = (next_codes[width - 1] + counts[width - 1]) << 1
++    codes = {}
++    for symbol, width in enumerate(lengths):
++        if width:
++            codes[(1 << width) | next_codes[width]] = symbol
++            next_codes[width] += 1
++    return codes, max(lengths)
++
++
++_DEFLATE_FIXED_LITERALS = _deflate_huffman([8] * 144 + [9] * 112 + [7] * 24 + [8] * 8)
++_DEFLATE_FIXED_DISTANCES = _deflate_huffman([5] * 32)
++
++
++def _deflate_dynamic_tables(bits):
++    literal_count = bits.read(5) + 257
++    distance_count = bits.read(5) + 1
++    code_count = bits.read(4) + 4
++    code_lengths = [0] * 19
++    code_order = (16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15)
++    for symbol in code_order[:code_count]:
++        code_lengths[symbol] = bits.read(3)
++    code_table = _deflate_huffman(code_lengths)
++    lengths = []
++    total = literal_count + distance_count
++    while len(lengths) < total:
++        symbol = bits.symbol(code_table)
++        if symbol < 16:
++            lengths.append(symbol)
++        elif symbol == 16 and lengths:
++            lengths.extend([lengths[-1]] * (3 + bits.read(2)))
++        elif symbol == 17:
++            lengths.extend([0] * (3 + bits.read(3)))
++        elif symbol == 18:
++            lengths.extend([0] * (11 + bits.read(7)))
++        else:
++            _fail('invalid_photo')
++    if len(lengths) != total:
++        _fail('invalid_photo')
++    return _deflate_huffman(lengths[:literal_count]), _deflate_huffman(lengths[literal_count:])
++
++
++def _check_deflate_window(stream, max_distance, checkpoint):
++    # zlib has verified the dictionary-free stream, output and checksum. Some
++    # builds permit distances above CINFO, so scan RFC 1951 codes for that limit.
++    bits = _DeflateBits(stream)
++    final = False
++    while not final:
++        _checkpoint(checkpoint)
++        final = bits.read(1)
++        block_type = bits.read(2)
++        if block_type == 0:
++            bits.position = (bits.position + 7) & ~7
++            length = bits.read(16)
++            bits.position += 16 + 8 * length  # Skip NLEN and the stored bytes.
++            if bits.position > bits.limit:
++                _fail('invalid_photo')
++            continue
++        if block_type == 1:
++            literals, distances = _DEFLATE_FIXED_LITERALS, _DEFLATE_FIXED_DISTANCES
++        elif block_type == 2:
++            literals, distances = _deflate_dynamic_tables(bits)
++        else:
++            _fail('invalid_photo')
++        tokens = 0
++        while True:
++            if tokens == 256:
++                _checkpoint(checkpoint)
++                tokens = 0
++            symbol = bits.symbol(literals)
++            tokens += 1
++            if symbol < 256:
++                continue
++            if symbol == 256:
++                break
++            if 265 <= symbol <= 284:
++                bits.read((symbol - 261) // 4)
++            distance_code = bits.symbol(distances)
++            if distance_code < 4:
++                distance = 1 + distance_code
++            else:
++                extra = distance_code // 2 - 1
++                distance = 1 + ((2 + (distance_code % 2)) << extra) + bits.read(extra)
++            if distance > max_distance:
++                _fail('invalid_photo')
++    if ((bits.position + 7) & ~7) != bits.limit:
++        _fail('invalid_photo')
+ 
+ 
+ def _validate_vcf_photo(photo, checkpoint):
+@@ -1216,7 +1339,7 @@
+             if (not separator or not 1 <= len(keyword) <= 79
+                     or any(byte < 32 or 126 < byte < 161 for byte in keyword)
+                     or keyword.startswith(b' ') or keyword.endswith(b' ') or b'  ' in keyword
+-                    or b'\0' in value):
++                    or any(byte != 10 and (byte < 32 or 126 < byte < 160) for byte in value)):
+                 _fail('invalid_photo')
+             if saw_idat:
+                 idat_done = True
+@@ -1232,7 +1355,8 @@
+     stride = 1 + width * channels * (depth // 8)
+     expected = height * stride
+     inflater = zlib.decompressobj()
+-    pending = b''.join(idat)
++    compressed = b''.join(idat)
++    pending = compressed
+     produced = 0
+     while not inflater.eof:
+         _checkpoint(checkpoint)
+@@ -1250,6 +1374,9 @@
+             _fail('invalid_photo')
+     if produced != expected or pending:
+         _fail('invalid_photo')
++    cinfo = compressed[0] >> 4
++    if cinfo < 7:
++        _check_deflate_window(compressed, 1 << (cinfo + 8), checkpoint)
+ 
+ 
+ def create_vcf(spec, *, checkpoint=None):
