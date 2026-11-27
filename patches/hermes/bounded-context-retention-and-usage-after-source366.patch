@@ -1,0 +1,1051 @@
+diff --git a/agent/bounded_context.py b/agent/bounded_context.py
+--- a/agent/bounded_context.py
++++ b/agent/bounded_context.py
+@@ -30,6 +30,19 @@
+ 
+ class BoundedContextError(ValueError):
+     """A bounded TEST request cannot be admitted; no physical call is permitted."""
++
++
++class BoundedParentFlushUnsettled(BoundedContextError):
++    """The bounded rotation cannot establish the outcome of its parent flush."""
++
++    def __init__(self, message):
++        super().__init__(message)
++        self.confirmed_parent_rows = []
++
++
++def require_settled_bounded_parent_flush(agent):
++    if getattr(agent, "_bounded_parent_flush_unsettled", False) is True:
++        raise BoundedParentFlushUnsettled("bounded_context: compression parent flush is unsettled")
+ 
+ 
+ class BoundedSummaryHeadroomError(BoundedContextError):
+@@ -579,6 +592,7 @@
+ 
+ 
+ def guard_main_request(agent: Any, request: dict, client: Any = None) -> None:
++    require_settled_bounded_parent_flush(agent)
+     from hermes_cli.friday_credential_admission import ordinary_readonly_request
+     ordinary_readonly_request(request)
+     policy = getattr(agent, "_bounded_context_policy", None)
+diff --git a/agent/compression_facade.py b/agent/compression_facade.py
+--- a/agent/compression_facade.py
++++ b/agent/compression_facade.py
+@@ -141,10 +141,25 @@
+         # caller-visible state only via the returned value of an ADMITTED commit (the host discards results
+         # on timeout/cancel); durable SessionDB mutation is already gated behind the commit fence inside
+         # compress_context.
+-        snapshot = copy.deepcopy(messages)
+-        result_msgs, result_prompt = run(
+-            fence, target_messages=snapshot, same_turn_fallback_recovery=same_turn_fallback_recovery
+-        )
++        from agent.bounded_context import BoundedContextPolicy, BoundedParentFlushUnsettled
++
++        live_rows = list(messages)
++        snapshot = copy.deepcopy(live_rows)
++        origins = None
++        if isinstance(getattr(agent, "_bounded_context_policy", None), BoundedContextPolicy):
++            from agent.session_persistence import bounded_parent_row_origins
++
++            origins = bounded_parent_row_origins(snapshot, live_rows)
++        try:
++            result_msgs, result_prompt = run(
++                fence, target_messages=snapshot, same_turn_fallback_recovery=same_turn_fallback_recovery
++            )
++        except BoundedParentFlushUnsettled as failure:
++            if origins:
++                from agent.session_persistence import rebind_confirmed_parent_rows
++
++                rebind_confirmed_parent_rows(failure, origins)
++            raise
+         return (messages if result_msgs is snapshot else result_msgs), result_prompt
+ 
+     # The stall-fallback retry is the same recovery attempt as the stalled primary, but the cancelled primary
+@@ -243,6 +258,7 @@
+             resolve_context_compression_timeouts,
+         )
+         reset_context_compression_timeout_outcome(self)
++        from agent.bounded_context import BoundedParentFlushUnsettled
+         from agent.portal_tags import (
+             get_affinity_scope, get_conversation_context, reset_affinity_scope, reset_conversation_context,
+             set_affinity_scope, set_conversation_context,
+@@ -303,6 +319,12 @@
+             _mirror_result_onto_live_lists(self, result, messages, direct_path=direct_path)
+             _rebind_caller_session_context(self)
+             return result
++        except BoundedParentFlushUnsettled as failure:
++            from agent.session_persistence import _persist_lock, apply_confirmed_parent_rows
++
++            with _persist_lock(self):
++                apply_confirmed_parent_rows(failure)
++            raise
+         finally:
+             # Remove only THIS attempt's registration. Completion order is not registration
+             # order: restoring a saved "previous" fence would resurrect a dead fence over a
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -372,11 +372,13 @@
+ _BACKGROUND_PROCESS_NOTIFICATION_PREFIX = "[IMPORTANT: Background process "
+ 
+ 
+-def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
+-    """Copy a message for compaction assembly without persistence markers (``_strip_persistence_markers`` is authoritative)."""
+-    # The rotated handoff is assembled before the parent flush. Keep the same
+-    # logical UID on both copies, even when two replies have identical payloads.
+-    if msg.get("role") == "assistant" and not msg.get(_DB_PERSISTED_MARKER) and not msg.get("tool_calls"):
++def _fresh_compaction_message_copy(msg: Dict[str, Any], *, assign_missing_uid: bool = True) -> Dict[str, Any]:
++    """Copy a row for compaction assembly without its persistence marker."""
++    # The legacy handoff is assembled before the parent flush and shares its
++    # source row, so the UID can be assigned once for both copies. Bounded
++    # head and tail rows are immutable snapshots, even when they have no UID.
++    if (assign_missing_uid and msg.get("role") == "assistant"
++            and not msg.get(_DB_PERSISTED_MARKER) and not msg.get("tool_calls")):
+         from agent.message_metadata import stamp_message_uid
+         stamp_message_uid(msg)
+     fresh = msg.copy()
+@@ -5523,7 +5525,7 @@
+     def _assemble_head(self, messages: List[Dict[str, Any]], compress_start: int) -> List[Dict[str, Any]]:
+         """Protected head with the compaction note on the system prompt and stale handoffs stripped."""
+         if getattr(self, "bounded_context_policy", None) is not None:
+-            return [_fresh_compaction_message_copy(msg) for msg in messages[:compress_start]]
++            return [_fresh_compaction_message_copy(msg, assign_missing_uid=False) for msg in messages[:compress_start]]
+         compressed = []
+         for i in range(compress_start):
+             # Head handoff already lives in _previous_summary: strip it (standalone dropped, merged
+@@ -5576,7 +5578,7 @@
+             if tail_start != compress_end or any(i >= compress_end for i in summary_indices):
+                 from agent.bounded_context import BoundedContextError
+                 raise BoundedContextError("bounded_context: handoff scan crossed protected boundary")
+-            return [_fresh_compaction_message_copy(msg) for msg in messages[compress_end:]]
++            return [_fresh_compaction_message_copy(msg, assign_missing_uid=False) for msg in messages[compress_end:]]
+         tail_messages: List[Dict[str, Any]] = []
+         # Start at tail_start, not compress_end: the rehydration scan may have advanced it (#57835).
+         for i in range(max(compress_end, tail_start), len(messages)):
+diff --git a/agent/conversation_compression.py b/agent/conversation_compression.py
+--- a/agent/conversation_compression.py
++++ b/agent/conversation_compression.py
+@@ -2933,9 +2933,18 @@
+     # No un-persisted tail means the transcript is fully durable: adopting the longer parent cannot drop input.
+     _preflush_ok = True
+     if isinstance(_preflush_idx, int) and 0 <= _preflush_idx < len(messages):
+-        _preflush_ok = False
+-        with contextlib.suppress(Exception):
+-            _preflush_ok = agent._flush_messages_to_session_db(messages, conversation_history=messages[:_preflush_idx])
++        from agent.bounded_context import BoundedContextPolicy
++
++        if isinstance(getattr(agent, "_bounded_context_policy", None), BoundedContextPolicy):
++            agent._flush_bounded_compression_parent(
++                messages, messages[:_preflush_idx], lease.sid, lease.holder, lease.ttl,
++            )
++        else:
++            _preflush_ok = False
++            with contextlib.suppress(Exception):
++                _preflush_ok = agent._flush_messages_to_session_db(
++                    messages, conversation_history=messages[:_preflush_idx],
++                )
+     if not _preflush_ok:
+         logger.warning(
+             "compression: session=%s grew before lease (%d → %d msgs) but the pre-adoption flush of the "
+@@ -3359,6 +3368,7 @@
+ def _publish_rotated_compaction(
+     agent: Any, messages: list, compressed: list, *, new_system_prompt: str, lease: _CompressionLease,
+     old_session_id: str, compressed_user_turn_outcome: str,
++    on_parent_flushed: Optional[Callable[[list], None]] = None,
+ ) -> None:
+     """Rotate the session: flush the parent, publish the child, re-point the agent.
+     Flushes current-turn msgs to the OLD session, passing the durable prefix (messages[:persist idx]) so
+@@ -3379,8 +3389,20 @@
+     _foreign_tail_ceiling = None
+     with contextlib.suppress(Exception):
+         _foreign_tail_ceiling = agent._session_db.get_active_message_watermark(agent.session_id)
+-    with contextlib.suppress(Exception):  # best-effort — don't block compression on a flush error
+-        agent._flush_messages_to_session_db(messages, conversation_history=persisted_history)
++    if on_parent_flushed is not None:
++        if _foreign_tail_ceiling is None:
++            from agent.bounded_context import BoundedParentFlushUnsettled
++
++            raise BoundedParentFlushUnsettled("bounded_context: compression parent watermark is unavailable")
++        try:
++            agent._flush_bounded_compression_parent(
++                messages, persisted_history, old_session_id, lease.holder, lease.ttl,
++            )
++        finally:
++            on_parent_flushed(messages)
++    else:
++        with contextlib.suppress(Exception):  # legacy rotation keeps its best-effort parent flush
++            agent._flush_messages_to_session_db(messages, conversation_history=persisted_history)
+     # Publish closure + child + handoff in one transaction so no reader sees an
+     # empty child. Child stays on the parent's profile ("default" persists as NULL);
+     # publish also COALESCEs from the parent row for threads lacking HERMES_HOME.
+@@ -3745,11 +3767,21 @@
+     ``refused_prompt`` so the caller hands back the input unchanged. ``verbatim_tail`` (``/compress here N``) is
+     re-inserted after the compacted head by either commit and stamped once durable.
+     """
++    from agent.bounded_context import BoundedParentFlushUnsettled, require_settled_bounded_parent_flush
++
++    require_settled_bounded_parent_flush(agent)
+     session_commit_succeeded = False
+     compacted_in_place = False
+     commit_started_at = time.monotonic()
+     split_status = "not_applicable"
+     old_session_id: Optional[str] = None  # bound only once rotation begins
++
++    def retain_confirmed_parent(rows):
++        nonlocal messages_before_compression
++        # The parent write survives child publication failure. Keep its row
++        # ids, CAS snapshots and persistence markers on the rollback list.
++        messages_before_compression = copy.deepcopy(rows)
++
+     if agent._session_db:
+         split_status = "pending"
+         try:
+@@ -3869,9 +3901,11 @@
+                     # Publish the kept exchanges with the head, as the in-place branch stores them: the
+                     # gateway no longer rewrites a published child, so a head-only handoff loses the tail.
+                     compressed = rejoin_compressed_head_and_tail(compressed, verbatim_tail)
++                options = {"on_parent_flushed": retain_confirmed_parent} if bounded else {}
+                 _publish_rotated_compaction(
+                     agent, messages, compressed, new_system_prompt=new_system_prompt, lease=lease,
+                     old_session_id=old_session_id, compressed_user_turn_outcome=compressed_user_turn_outcome,
++                    **options,
+                 )
+                 if verbatim_tail:
+                     stamp_db_persisted_markers(verbatim_tail)
+@@ -3923,6 +3957,11 @@
+                 )
+             else:
+                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
++            if isinstance(e, BoundedParentFlushUnsettled):
++                from agent.summary_provenance import clear_summary_carrier_proofs
++
++                clear_summary_carrier_proofs(compressed)
++                raise
+             # Arm the failure cooldown so the next turn can't rerun the doomed compression;
+             # try/except so a stub compressor can't mask the original error in this handler.
+             with _swallow('could not record split-failure cooldown', exc_info=True):
+@@ -3949,6 +3988,25 @@
+     approx_tokens: Optional[int] = None
+     pre_msg_count: int = 0
+     abort_prompt: Optional[str] = None
++    unstamped_rotation_rows: Optional[list] = None
++    rotation_row_origins: Optional[dict] = None
++
++
++def _prepare_bounded_rotation_assistant_rows(messages):
++    """Share each pending assistant occurrence between the parent and new child."""
++    from agent.context_compressor import _DB_PERSISTED_MARKER
++    from agent.message_metadata import MESSAGE_UID, stamp_message_uid
++
++    prepared = messages
++    for i, row in enumerate(messages):
++        if (isinstance(row, dict) and row.get("role") == "assistant"
++                and MESSAGE_UID not in row and not row.get(_DB_PERSISTED_MARKER)
++                and not row.get("tool_calls")):
++            if prepared is messages:
++                prepared = list(messages)
++            prepared[i] = dict(row)
++            stamp_message_uid(prepared[i])
++    return prepared
+ 
+ 
+ def _run_summary_phase(
+@@ -3964,6 +4022,8 @@
+     pre_msg_count = len(messages)
+     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
+     messages_before_compression = None
++    unstamped_rotation_rows = None
++    rotation_row_origins = None
+ 
+     def _stop_heartbeat(desc: str) -> None:
+         nonlocal _activity_heartbeat
+@@ -3991,6 +4051,16 @@
+         from agent.bounded_context import bounded_summary_headroom, BoundedContextPolicy
+         from hermes_cli.friday_user_scope import public_identity_request_view, managed_reply_stream
+         bounded = isinstance(getattr(agent, "_bounded_context_policy", None), BoundedContextPolicy)
++        if bounded and not in_place and agent._session_db is not None:
++            # Prepare identities before the compressor takes its exact head
++            # and tail snapshots, on the same rows the parent flush will use.
++            prepared = _prepare_bounded_rotation_assistant_rows(messages)
++            if prepared is not messages:
++                from agent.session_persistence import bounded_parent_row_origins
++
++                unstamped_rotation_rows = messages
++                rotation_row_origins = bounded_parent_row_origins(prepared, messages, prepared_uid=True)
++                messages = prepared
+         # Operational receipts remain non-speech in every managed summary mode;
+         # retain the existing bounded callback for other routes.
+         if bounded or managed_reply_stream(agent):
+@@ -4036,7 +4106,8 @@
+             STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff
+             else "commit_fence_cancelled" if _host_cancel else "explicit_interrupt",
+         )
+-        return _SummaryPhase(messages=messages, abort_prompt=_existing_system_prompt(agent, system_message))
++        original = messages if unstamped_rotation_rows is None else unstamped_rotation_rows
++        return _SummaryPhase(messages=original, abort_prompt=_existing_system_prompt(agent, system_message))
+     except BoundedSummaryHeadroomError as exc:
+         # Computed fixed authority/tools/anchors already exhaust the unchanged
+         # target. This is a transient structural no-op, before any model call,
+@@ -4055,7 +4126,8 @@
+         finally:
+             _stop_heartbeat("context compression has no summary headroom")
+             lease.release()
+-        return _SummaryPhase(messages=messages, abort_prompt=_existing_system_prompt(agent, system_message))
++        original = messages if unstamped_rotation_rows is None else unstamped_rotation_rows
++        return _SummaryPhase(messages=original, abort_prompt=_existing_system_prompt(agent, system_message))
+     except BaseException as _compress_exc:
+         # Any failure after lock acquisition must release it or the session is permanently blocked from compression.
+         _stop_heartbeat("context compression failed")
+@@ -4067,6 +4139,7 @@
+     return _SummaryPhase(
+         messages=messages, compressed=compressed, messages_before_compression=messages_before_compression,
+         approx_tokens=approx_tokens, pre_msg_count=pre_msg_count,
++        unstamped_rotation_rows=unstamped_rotation_rows, rotation_row_origins=rotation_row_origins,
+     )
+ 
+ 
+@@ -4196,6 +4269,9 @@
+     snapshot_is_current: Optional host snapshot validation after durable lease admission. This protects
+     edits completed before admission; it is not a substitute for the host's final publication fence.
+     """
++    from agent.bounded_context import BoundedParentFlushUnsettled, require_settled_bounded_parent_flush
++
++    require_settled_bounded_parent_flush(agent)
+     attempt = _begin_compression_attempt(
+         agent, force=force, defer_notification=defer_context_engine_notification, trigger=trigger,
+         approx_tokens=approx_tokens,
+@@ -4306,6 +4382,7 @@
+     if phase.abort_prompt is not None:
+         return phase.messages, phase.abort_prompt
+     messages, compressed = phase.messages, phase.compressed
++    original = messages if phase.unstamped_rotation_rows is None else phase.unstamped_rotation_rows
+     messages_before_compression = phase.messages_before_compression
+     approx_tokens, _pre_msg_count = phase.approx_tokens, phase.pre_msg_count
+     _commit_fence_entered = False
+@@ -4320,7 +4397,7 @@
+             agent, compressed, messages, messages_before_compression, attempt_generation=attempt.generation,
+             attempt_started_at=attempt.started_at,
+         ):
+-            return messages, _existing_system_prompt(agent, system_message)
++            return original, _existing_system_prompt(agent, system_message)
+         if commit_fence is not None:
+             _commit_fence_entered = commit_fence.begin_commit(_hard_cancel_event)
+             if not _commit_fence_entered:
+@@ -4339,7 +4416,7 @@
+                     agent, attempt.started_at,
+                     STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "commit_fence_cancelled",
+                 )
+-                return messages, _existing_sp
++                return original, _existing_sp
+         _warn_summary_or_aux_fallback(agent)
+         # A just-delivered reply the engine folded away must stay live or the
+         # next render drops it from the surface (#118900). It runs FIRST: the
+@@ -4414,7 +4491,7 @@
+             _emit_aborted_attempt_telemetry(
+                 agent, attempt.started_at, "would_grow" if _bounded_would_grow else "bounded_candidate_does_not_fit",
+             )
+-            return messages, _fit_old_prompt
++            return original, _fit_old_prompt
+         commit = _commit_compaction(
+             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
+             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
+@@ -4427,7 +4504,7 @@
+             carried_messages=[reinserted_reply] if reinserted_reply is not None else None,
+         )
+         if commit.refused_prompt is not None:
+-            return messages, commit.refused_prompt
++            return original, commit.refused_prompt
+         compressed = commit.compressed
+         split_status = commit.split_status
+         _compressed_est = _finish_compaction_boundary(
+@@ -4451,6 +4528,14 @@
+             commit_started_at=commit.commit_started_at,
+         )
+         return compressed, new_system_prompt
++    except BoundedParentFlushUnsettled as failure:
++        if phase.rotation_row_origins:
++            from agent.session_persistence import _persist_lock, apply_confirmed_parent_rows, rebind_confirmed_parent_rows
++
++            rebind_confirmed_parent_rows(failure, phase.rotation_row_origins)
++            with _persist_lock(agent):
++                apply_confirmed_parent_rows(failure)
++        raise
+     finally:
+         # Release the OLD session's lock only after rotation and all post-rotation
+         # bookkeeping; a waking contender then sees the NEW id and acquires on that.
+diff --git a/agent/session_persistence.py b/agent/session_persistence.py
+--- a/agent/session_persistence.py
++++ b/agent/session_persistence.py
+@@ -7,7 +7,11 @@
+ import logging
+ import re
+ import sys
++from collections import Counter
+ from contextlib import nullcontext
++from contextvars import ContextVar
++from dataclasses import dataclass
++from copy import deepcopy
+ 
+ from typing import Any, Dict, List, Optional, Tuple
+ 
+@@ -26,8 +30,8 @@
+ from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
+ from agent.trajectory import save_trajectory as _save_trajectory_to_file
+ from agent.message_metadata import (
+-    DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS, TOOL_CALL_UID, copy_identity_fields,
+-    tool_call_uid_from_history)
++    DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, MESSAGE_UID, REPAIR_BOOKKEEPING_FIELDS, TOOL_CALL_UID, copy_identity_fields,
++    message_uid_or_none, tool_call_uid_from_history)
+ from agent.transcript_repair import sync_flushed_message_markers
+ from agent.message_sanitization import redact_protected_file_tool_calls_for_persistence
+ 
+@@ -341,6 +345,90 @@
+     return batch_rows, batch_msgs
+ 
+ 
++def bounded_parent_row_origins(working_rows, live_rows, *, prepared_uid=False):
++    """Remember exact copied occurrences before a bounded rotation can change them."""
++    origins = {}
++    for working, live in zip(working_rows, live_rows):
++        if (working is live or not isinstance(working, dict) or not isinstance(live, dict)
++                or working.get(_DB_PERSISTED_MARKER)):
++            continue
++        before = deepcopy(working)
++        if prepared_uid:
++            before.pop(MESSAGE_UID, None)
++        origins[id(working)] = (working, live, before)
++    return origins
++
++def rebind_confirmed_parent_rows(failure, origins):
++    """Follow only copy provenance established before the bounded rotation."""
++    rebound = []
++    for written, receipt, before in failure.confirmed_parent_rows:
++        origin = origins.get(id(written))
++        if origin is not None and origin[0] is written:
++            _, written, before = origin
++        rebound.append((written, receipt, before))
++    failure.confirmed_parent_rows = rebound
++
++
++def apply_confirmed_parent_rows(failure):
++    """Apply only proven rows whose live copy still matches its captured state."""
++    for written, receipt, before in failure.confirmed_parent_rows:
++        if before is None or written == before:
++            sync_flushed_message_markers([written], [receipt])
++
++
++def _db_flush_receipt(row):
++    return (row.get("_row_id"), row.get("role"), message_uid_or_none(row),
++            row.get("timestamp"), row.get(DB_ROW_SNAPSHOT))
++
++
++@dataclass
++class _BoundedParentFlush:
++    agent: Any
++    messages: list
++    db: Any
++    session_id: str
++    holder: str
++    ttl: float
++    batch: Optional[tuple] = None
++    append_returned: bool = False
++    finished: bool = False
++
++    def retain_confirmed_rows(self, db, session_id):
++        if self.batch is None:
++            return []
++        batch_msgs, batch_rows, before = self.batch
++        receipts = [_db_flush_receipt(row) for row in batch_rows]
++        counts = Counter(row_id for row_id, *_ in receipts if type(row_id) is int)
++        candidates = {}
++        for receipt, previous in zip(receipts, before):
++            row_id, _, uid, timestamp, digest = receipt
++            if (type(row_id) is int and row_id > 0 and counts[row_id] == 1 and uid is not None
++                    and type(timestamp) in (float, int) and isinstance(digest, str)
++                    and (self.append_returned or receipt != previous)):
++                candidates[row_id] = receipt
++        # A post-append callback can fail after the normal marker sync. Keep
++        # only the pending rows independently confirmed by the durable store.
++        for msg in batch_msgs:
++            msg.pop(_DB_PERSISTED_MARKER, None)
++        confirmed = db.confirm_compression_parent_rows(session_id, self.holder, candidates)
++        settled = []
++        for msg, row, receipt in zip(batch_msgs, batch_rows, receipts):
++            if receipt[0] in confirmed:
++                sync_flushed_message_markers([msg], [row])
++                settled.append((msg, row, None))
++        return settled
++
++
++_BOUNDED_PARENT_FLUSH = ContextVar("bounded_parent_flush", default=None)
++
++
++def _bounded_parent_flush(agent, messages):
++    attempt = _BOUNDED_PARENT_FLUSH.get()
++    if attempt is not None and attempt.agent is agent and attempt.messages is messages:
++        return attempt
++    return None
++
++
+ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict], messages: List[Dict]) -> None:
+     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
+     if not batch_rows:
+@@ -350,13 +438,27 @@
+     agent._db_flush_phase = "append_messages_batch"
+     db, session_id = agent._session_db, agent.session_id
+     holder = getattr(agent, "_active_session_turn_lease_holder", None)
++    attempt = _bounded_parent_flush(agent, messages)
++    compression_holder = getattr(agent, "_active_compression_lock_holder", None)
++    append_options = {}
++    if attempt is not None:
++        if db is not attempt.db or session_id != attempt.session_id or compression_holder != attempt.holder:
++            raise RuntimeError("Bounded compression parent changed before append")
++        append_options["compression_lease_ttl_seconds"] = attempt.ttl
+     capture = before_canonical_append(agent, batch_rows, db, session_id, holder)
++    if attempt is not None:
++        attempt.batch = (batch_msgs, batch_rows, [_db_flush_receipt(row) for row in batch_rows])
+     inserted = db.append_messages_batch(
+         session_id=session_id, messages=batch_rows,
+-        compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
++        compression_lock_holder=compression_holder,
+         turn_lease_holder=holder,
+         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
++        **append_options,
+     )
++    if attempt is not None:
++        if type(inserted) is not int:
++            raise RuntimeError("Bounded compression parent append returned no row count")
++        attempt.append_returned = True
+     agent._db_flush_phase = "sync_flushed_markers"
+     sync_flushed_message_markers(batch_msgs, batch_rows)
+     after_canonical_append(capture, agent, batch_rows, batch_msgs, inserted)
+@@ -407,7 +509,7 @@
+ 
+ 
+ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adoption_budget: int,
+-                     messages: List[Dict]) -> Optional[str]:
++                     messages: List[Dict], *, allow_divert: bool = True) -> Optional[str]:
+     """Classify a failed flush and name the one retry the caller should take, or None to fail closed.
+ 
+     ``"adopted"``: a compression-closed session moved onto its live tip. ``"healed"``: the session row was
+@@ -467,7 +569,7 @@
+         logger.warning("Session DB row for %s was removed under the live agent; recreated it and replaying the transcript",
+                        getattr(agent, "session_id", None))
+         return "healed"
+-    if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
++    if allow_divert and isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
+         # A replaced/quarantined handle will not take this batch again — keep it on disk.
+         try:
+             # The CAS digest / adopted row are local repair bookkeeping, not transcript payload.
+@@ -520,6 +622,8 @@
+         """
+         from agent.agent_runtime_helpers import note_turn_persisted
+         with _persist_lock(self):
++            if getattr(self, "_bounded_parent_flush_unsettled", False) is True:
++                return
+             # Only the scaffolding goes here. Closing a tool tail this uncovers is the exit
+             # owner's job (``_close_transcript_tail``, ``abort_turn_on_interrupt``): only it knows
+             # the reason to record.
+@@ -544,6 +648,48 @@
+ 
+     _repair_message_sequence = _forward("agent.agent_runtime_helpers", "repair_message_sequence")
+ 
++    def _flush_bounded_compression_parent(self, messages, conversation_history, session_id, holder, ttl):
++        """Flush once under the rotation owner and retain the exact durable part on failure."""
++        from agent.bounded_context import BoundedParentFlushUnsettled, require_settled_bounded_parent_flush
++
++        with _persist_lock(self):
++            require_settled_bounded_parent_flush(self)
++            db = self._session_db
++            attempt = _BoundedParentFlush(self, messages, db, session_id, holder, ttl)
++            token = _BOUNDED_PARENT_FLUSH.set(attempt)
++            # Keep other native persistence and physical sends out even if a
++            # compression caller catches the failure or has a stale live list.
++            self._bounded_parent_flush_unsettled = True
++            try:
++                if (self.session_id != session_id or not holder
++                        or getattr(self, "_active_compression_lock_holder", None) != holder):
++                    raise BoundedParentFlushUnsettled("bounded_context: compression parent holder is unavailable")
++                if (db.get_compression_lock_holder(session_id) != holder
++                        and not db.refresh_compression_lock(session_id, holder, ttl_seconds=ttl)):
++                    raise BoundedParentFlushUnsettled("bounded_context: compression parent holder is unavailable")
++                flushed = self._flush_messages_to_session_db(messages, conversation_history=conversation_history)
++                if (flushed is not True or not attempt.finished or self._session_db is not db
++                        or self.session_id != session_id):
++                    raise BoundedParentFlushUnsettled("bounded_context: compression parent flush was not acknowledged")
++            except BaseException as failure:
++                self._db_flush_scan_prefix = None
++                confirmed = []
++                try:
++                    confirmed = attempt.retain_confirmed_rows(db, session_id)
++                except Exception:
++                    logger.warning("Could not verify bounded compression parent row receipts", exc_info=True)
++                if not isinstance(failure, Exception):
++                    raise
++                if isinstance(failure, BoundedParentFlushUnsettled):
++                    failure.confirmed_parent_rows = confirmed
++                    raise
++                unsettled = BoundedParentFlushUnsettled("bounded_context: compression parent flush failed")
++                unsettled.confirmed_parent_rows = confirmed
++                raise unsettled from failure
++            finally:
++                _BOUNDED_PARENT_FLUSH.reset(token)
++            self._bounded_parent_flush_unsettled = False
++
+     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None):
+         """Serialize direct and turn-boundary session flushes per agent."""
+         with _persist_lock(self):
+@@ -564,6 +710,9 @@
+         freed-then-reused address (#50372). The ``_flushed_db_message_ids`` attribute is now only a one-shot
+         seed (translated to markers, then cleared each flush), not a persisted set.
+         """
++        parent_flush = _bounded_parent_flush(self, messages)
++        if parent_flush is None and getattr(self, "_bounded_parent_flush_unsettled", False) is True:
++            return False
+         # Persistence-isolated agents (background review fork) share the parent's session_id for cache warmth;
+         # a write here would land the curator's turn in the user's real history.
+         if getattr(self, "_persist_disabled", False) or not self._session_db:
+@@ -585,9 +734,14 @@
+             self._db_flush_scan_prefix = messages[:]
+             self._friday_withheld_tool_call_flush = False
+             self._friday_withheld_tool_call_close_pending = False
++            if parent_flush is not None:
++                parent_flush.finished = True
+             return True
+         except Exception as e:
+-            retry = _db_flush_failed(self, e, batch_rows, _adoption_budget, messages)
++            retry = _db_flush_failed(
++                self, e, batch_rows, 0 if parent_flush is not None else _adoption_budget, messages,
++                allow_divert=parent_flush is None,
++            )
+             if retry is None:
+                 return False
+             # After a heal the pending replay re-sends the history prefix instead of stamping it durable.
+diff --git a/agent/usage_anchor.py b/agent/usage_anchor.py
+--- a/agent/usage_anchor.py
++++ b/agent/usage_anchor.py
+@@ -20,10 +20,64 @@
+ import json
+ import logging
+ from typing import Any, Dict, List, Optional
++from urllib.parse import urlsplit
+ 
+ logger = logging.getLogger(__name__)
+ 
+ USAGE_ANCHOR_MODEL_CONFIG_KEY = "_usage_anchor"
++
++
++def usage_route_binding(session_id, model, provider, base_url, api_mode, requested_provider=None) -> str | None:
++    """Identify a provider route whose endpoint Hermes can verify from its runtime."""
++    if not all(isinstance(value, str) and value for value in (session_id, model, provider, base_url, api_mode)):
++        return None
++    if requested_provider is not None and not isinstance(requested_provider, str):
++        return None
++    if api_mode == "codex_app_server" or provider == "moa":
++        # Those providers can determine the effective upstream outside this runtime.
++        return None
++    from hermes_cli.route_identity import normalize_route_base_url
++    from hermes_cli.runtime_provider_backends import _is_external_process_provider
++    from hermes_constants import hermes_home_key
++
++    # ACP accepts HTTPS marker URLs too, but selects the upstream in its subprocess.
++    if _is_external_process_provider(provider):
++        return None
++    try:
++        endpoint = normalize_route_base_url(base_url)
++        parsed = urlsplit(endpoint)
++        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
++                or "@" in parsed.netloc or "?" in endpoint):
++            return None
++    except ValueError:
++        return None
++    identity = [1, hermes_home_key(), session_id, model, provider, requested_provider or provider, endpoint, api_mode]
++    encoded = json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode("ascii")
++    return hashlib.sha256(encoded).hexdigest()
++
++
++def _agent_usage_route_binding(agent: Any) -> str | None:
++    if usage_request_overrides_input(getattr(agent, "request_overrides", None)):
++        return None
++    return usage_route_binding(
++        getattr(agent, "session_id", None), getattr(agent, "model", None),
++        getattr(agent, "provider", None), getattr(agent, "base_url", None),
++        getattr(agent, "api_mode", None), getattr(agent, "requested_provider", None),
++    )
++
++
++def usage_request_overrides_input(overrides: Any) -> bool:
++    """Whether request kwargs can replace the priced model or transcript."""
++    if overrides is None:
++        return False
++    if not isinstance(overrides, dict):
++        return True
++    input_fields = {"model", "messages", "input", "prompt"}
++    if input_fields.intersection(overrides):
++        return True
++    body = overrides.get("extra_body")
++    return isinstance(body, dict) and bool(input_fields.intersection(body))
++
+ 
+ # Identity of a priced message = the provider-visible fields that round-trip the session DB
+ # byte-for-byte. Display/persistence metadata (timestamps, row ids, display kinds) is rewritten
+@@ -141,11 +195,13 @@
+         or not prefix_fp
+     ):
+         return None
+-    return {"prompt_tokens": pt, "completion_tokens": max(0, ct), "base_count": base_count,
+-            "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp,
+-            "base_prefix_fp": prefix_fp,
+-            **({"bounded_route_binding": anchor["bounded_route_binding"]}
+-               if isinstance(anchor.get("bounded_route_binding"), str) else {})}
++    result = {"prompt_tokens": pt, "completion_tokens": max(0, ct), "base_count": base_count,
++              "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp,
++              "base_prefix_fp": prefix_fp}
++    for key in ("bounded_route_binding", "usage_route_binding"):
++        if isinstance(anchor.get(key), str):
++            result[key] = anchor[key]
++    return result
+ 
+ 
+ def persist_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]]) -> None:
+@@ -164,9 +220,14 @@
+ 
+ def set_usage_anchor(agent: Any, anchor: Optional[Dict[str, Any]], *, turn_base: bool = False) -> None:
+     """Install ``anchor`` on the agent (``None`` clears) and mirror it to the session row."""
+-    binding = getattr(agent, "_bounded_usage_route_binding", None)
+-    if isinstance(anchor, dict) and binding:
+-        anchor = {**anchor, "bounded_route_binding": binding}
++    if isinstance(anchor, dict):
++        anchor = dict(anchor)
++        binding = getattr(agent, "_bounded_usage_route_binding", None)
++        if binding:
++            anchor["bounded_route_binding"] = binding
++        route = _agent_usage_route_binding(agent)
++        if route:
++            anchor["usage_route_binding"] = route
+     agent._usage_anchor = anchor
+     if turn_base or anchor is None:
+         agent._turn_base_usage_anchor = anchor
+@@ -178,8 +239,16 @@
+     the priced prefix; otherwise clear the stale blob so it can never suppress compression."""
+     current = getattr(agent, "_usage_anchor", None)
+     binding = getattr(agent, "_bounded_usage_route_binding", None)
+-    if isinstance(current, dict) and binding and current.get("bounded_route_binding") != binding:
+-        set_usage_anchor(agent, None)
++    def matches_route(anchor):
++        route = anchor.get("usage_route_binding")
++        return anchor.get("bounded_route_binding") == binding and (
++            route is None or route == _agent_usage_route_binding(agent)
++        )
++
++    if isinstance(current, dict) and not matches_route(current):
++        # A cached agent can hold an obsolete anchor while SQLite already has a fresh one.
++        agent._usage_anchor = None
++        agent._turn_base_usage_anchor = None
+     if getattr(agent, "_usage_anchor", None) is not None or getattr(agent, "_persist_disabled", False):
+         return
+     session_id = getattr(agent, "session_id", None)
+@@ -193,31 +262,38 @@
+         return
+     if anchor is None:
+         return
+-    if (not binding or anchor.get("bounded_route_binding") == binding) and _anchor_matches(conversation_history, anchor):
++    if matches_route(anchor) and _anchor_matches(conversation_history, anchor):
+         agent._usage_anchor = anchor
+     else:
+         persist_usage_anchor(agent, None)
+ 
+ 
++def load_persisted_usage_anchor(
++    session_db: Any, session_id: Any, *, required_route: str | None = None,
++) -> Optional[Dict[str, Any]]:
++    """Read a persisted anchor bound to current config and, when required, its runtime route."""
++    if not session_id:
++        return None
++    getter = getattr(session_db, "get_session_model_config_value", None)
++    try:
++        stored = getter(session_id, USAGE_ANCHOR_MODEL_CONFIG_KEY, None) if callable(getter) else None
++    except Exception:
++        logger.debug("usage anchor load failed", exc_info=True)
++        return None
++    anchor = _serialize(stored)
++    if anchor is None or (required_route is not None and anchor.get("usage_route_binding") != required_route):
++        return None
++
++    try:
++        from agent.bounded_context import bounded_usage_route_binding
++        from hermes_cli.config import load_config_readonly
++        binding = bounded_usage_route_binding(load_config_readonly())
++    except Exception:
++        # An unknown current route cannot authorize a historical token count.
++        return None
++    return anchor if anchor.get("bounded_route_binding") == binding else None
++
++
+ def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any) -> Optional[int]:
+-    """Anchored token figure from the session row's persisted anchor, for callers without a live
+-    agent (gateway hygiene); None when absent, unreadable, or stale against ``messages``."""
+-    getter = getattr(session_db, "get_session_model_config_value", None)
+-    if not session_id or not callable(getter) or not isinstance(messages, list):
+-        return None
+-    try:
+-        anchor = _serialize(getter(session_id, USAGE_ANCHOR_MODEL_CONFIG_KEY, None))
+-    except Exception:
+-        logger.debug("usage anchor load failed", exc_info=True)
+-        return None
+-    if anchor:
+-        try:
+-            from agent.bounded_context import bounded_usage_route_binding
+-            from hermes_cli.config import load_config_readonly
+-            binding = bounded_usage_route_binding(load_config_readonly())
+-            if binding and anchor.get("bounded_route_binding") != binding:
+-                return None
+-        except Exception:
+-            # An unknown current route cannot authorize a historical token count.
+-            return None
+-    return anchored_context_tokens(messages, anchor) if anchor else None
++    """Anchored token figure from the session row without a live agent."""
++    return anchored_context_tokens(messages, load_persisted_usage_anchor(session_db, session_id))
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -4229,6 +4229,7 @@
+         base_url: Optional[str]
+         api_key: Optional[str]
+         data: Any
++        usage_route: Optional[tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]] = None
+ 
+     @dataclasses.dataclass
+     class _HygieneAttempt:
+diff --git a/gateway/run_inbound.py b/gateway/run_inbound.py
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -1643,12 +1643,16 @@
+                         _quick_key, exc.session_id,
+                     )
+                     return t("gateway.busy.another_turn_running")
+-                try:
+-                    await self._run_post_turn_hooks(
+-                        agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
+-                    )
+-                except Exception as _goal_exc:
+-                    logger.debug("post-turn hook failed: %s", _goal_exc)
++                # Preserve an uncertain turn for reconciliation. Its notice is
++                # sent normally, but cannot drive a goal judge or reschedule a loop.
++                unsettled_generation = getattr(event, "_bounded_parent_flush_unsettled_generation", None)
++                if unsettled_generation is None or unsettled_generation != _run_generation:
++                    try:
++                        await self._run_post_turn_hooks(
++                            agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
++                        )
++                    except Exception as _goal_exc:
++                        logger.debug("post-turn hook failed: %s", _goal_exc)
+             if (fifo_delivery is not None
+                     and getattr(dispatch_event, "_friday_document_guard", None) is None
+                     and getattr(event, "_friday_document_guard", None) is dispatch_guard_binding):
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -667,6 +667,7 @@
+         for sessions that grew between turns. ``max_turn_hold_seconds`` bounds the TURN wait
+         (compressor keeps running detached, commit fenced); kept below transport idle-timeouts."""
+         from gateway.run import _load_gateway_config
++        from agent.usage_anchor import usage_request_overrides_input
+         hs = self._HygieneSettings(
+             model="anthropic/claude-sonnet-4.6", threshold_pct=0.85, compression_enabled=True,
+             hard_msg_limit=5000, timeout_seconds=30.0, total_ceiling_seconds=600.0,
+@@ -684,6 +685,11 @@
+                     source=source, session_key=session_key,
+                     user_config=hs.data if isinstance(hs.data, dict) else None,
+                 )
++                if not usage_request_overrides_input(_hyg_runtime.get("request_overrides")):
++                    hs.usage_route = (
++                        hs.model, _hyg_runtime.get("provider"), _hyg_runtime.get("base_url"),
++                        _hyg_runtime.get("api_mode"), _hyg_runtime.get("requested_provider"),
++                    )
+                 hs.provider = _hyg_runtime.get("provider") or hs.provider
+                 hs.base_url = _hyg_runtime.get("base_url") or hs.base_url
+                 hs.api_key = _hyg_runtime.get("api_key") or hs.api_key
+@@ -734,26 +740,31 @@
+         _warn_token_threshold = int(_hyg_context_length * 0.95)
+         _msg_count = len(history)
+ 
+-        # Real usage decides: the API-reported prompt count, else the anchor persisted on the session
+-        # row (real count + delta of what was appended since, survives gateway restarts), else the
+-        # rough estimate (runs 30-50% high, which only fires hygiene early — safe). Do NOT compensate
+-        # with a threshold multiplier.
++        # The session-entry counter can retain an estimate or usage from an
++        # earlier route. Use the provider anchor only for the same replay prefix.
+         from agent.image_token_cost import image_cost_context, learned_image_token_cost
+-        _anchored = None
++        from agent.usage_anchor import anchored_context_tokens, load_persisted_usage_anchor, usage_route_binding
++        from gateway.run import _build_gateway_agent_history, _message_timestamps_enabled
++        _session_db = getattr(self, "_session_db", None)
+         # Images in any local delta/estimate are priced at the cost learned from this model's usage.
+         with image_cost_context(learned_image_token_cost(hs.model, hs.base_url)):
+-            if session_entry.last_prompt_tokens <= 0:
+-                from agent.usage_anchor import persisted_anchor_tokens
+-                _session_db = getattr(self, "_session_db", None)
+-                _anchored = persisted_anchor_tokens(
+-                    getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
++            _approx_tokens = None
++            _token_source = "estimated"
++            route = usage_route_binding(session_entry.session_id, *hs.usage_route) if hs.usage_route else None
++            if route is not None:
++                anchor = load_persisted_usage_anchor(
++                    getattr(_session_db, "_db", _session_db), session_entry.session_id, required_route=route,
+                 )
+-            if session_entry.last_prompt_tokens > 0:
+-                _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
+-            elif _anchored is not None:
+-                _approx_tokens, _token_source = _anchored, "anchored"
++                # Observed group messages can be relocated into the next addressed turn.
++                if anchor is not None and not any(row.get("observed") for row in history):
++                    replay, _ = _build_gateway_agent_history(
++                        history, inject_timestamps=_message_timestamps_enabled(hs.data),
++                    )
++                    _approx_tokens = anchored_context_tokens(replay, anchor)
++            if _approx_tokens is None:
++                _approx_tokens = estimate_messages_tokens_rough(history)
+             else:
+-                _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
++                _token_source = "anchored"
+ 
+         # Hard safety valve: force compression at an extreme message count regardless of tokens,
+         # breaking the disconnect → no token data → no compression spiral. 5000 clears 1M+ sessions.
+@@ -1334,9 +1345,11 @@
+     async def _hmwa_run_session_hygiene(
+         self, event, source, session_entry, session_key, history, _quick_key, run_generation,
+     ):
+-        """Auto-compress pathologically large transcripts before the agent starts so oversized
+-        histories don't cause repeated truncation/context failures. Token source: the API's
+-        prompt_tokens from the last turn, else a char/4 estimate."""
++        """Check transcript pressure before starting the agent.
++
++        Account from a provider reading and local delta when the current route
++        and replay still match. Otherwise estimate from the loaded transcript.
++        """
+         from gateway.run import HygieneTurnHoldExceeded
+         if not history or len(history) < 4:
+             return history
+@@ -2009,19 +2022,24 @@
+ 
+     async def _hmwa_agent_error_reply(self, e, event, source, session_entry, session_key, prepared):
+         """``except Exception`` body of the agent turn: stop typing, log, persist the inbound user
+-        turn once and close it, and build the sanitized user-facing error reply."""
++        turn once and close it when safe, and build the sanitized user-facing error reply."""
++        from agent.bounded_context import BoundedParentFlushUnsettled
++
+         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
+         await self._hmwa_stop_typing_for_turn(event, source)
+         logger.exception("Agent error in session %s", session_key)
++        parent_flush_unsettled = isinstance(e, BoundedParentFlushUnsettled)
+         status_code = getattr(e, "status_code", None)
+         if status_code in {400, 500} and len(prepared.history) > 50:
+             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
+             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
+             from gateway.run import _context_overflow_reply
+             return _context_overflow_reply()
+-        # Replay can coalesce inputs; only this input's durable marker establishes ownership.
++        # A failed parent flush can leave the owner marker absent despite committing rows.
++        # Neither fallback append nor tail closure can establish what the original write did.
+         try:
+-            if prepared.message_text is not None and session_entry is not None:
++            if not parent_flush_unsettled and prepared.message_text is not None and session_entry is not None:
++                # Replay can coalesce inputs; only this input's durable marker establishes ownership.
+                 _owned = await self.async_session_store.has_input_owner(
+                     prepared.persistence_session_id, prepared.persistence_owner,
+                 )
+@@ -2036,6 +2054,8 @@
+         from hermes_cli.friday_user_scope import ordinary_presentation
+         if ordinary_presentation(source):
+             return "Не удалось завершить запрос. Часть действий могла выполниться. Проверьте результат перед повтором; при повторной ошибке сообщите администратору."
++        if parent_flush_unsettled:
++            return PARTIAL_FAILED_TURN_NOTICE
+         # Never expose raw exception types/messages to end users (info-leakage risk).
+         _hint_key = self._STATUS_HINTS.get(status_code)
+         status_hint = t(_hint_key) if _hint_key and status_code != 401 else ""
+@@ -2373,6 +2393,10 @@
+             )
+ 
+         except Exception as e:
++            from agent.bounded_context import BoundedParentFlushUnsettled
++
++            if isinstance(e, BoundedParentFlushUnsettled):
++                event._bounded_parent_flush_unsettled_generation = run_generation
+             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
+         finally:
+             # Restore session context variables to their pre-handler state
+diff --git a/hermes_state_messages.py b/hermes_state_messages.py
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -475,9 +475,14 @@
+     def append_messages_batch(
+         self, session_id: str, messages: List[Dict[str, Any]], compression_lock_holder: Optional[str] = None,
+         turn_lease_holder: Optional[str] = None, chunk_rows: Optional[int] = None,
+-        turn_lease_ttl_seconds: float = 300.0) -> int:
++        turn_lease_ttl_seconds: float = 300.0, compression_lease_ttl_seconds: Optional[float] = None) -> int:
+         """Append *messages* in ONE write txn (all rows land or none, guards run once); returns the inserted
+-        count. ``chunk_rows`` bounds txn size for LARGE copies (branch seeds; FTS triggers run per row)."""
++        count. ``chunk_rows`` bounds txn size for LARGE copies (branch seeds; FTS triggers run per row).
++        Bounded parent rotation passes its lease TTL to verify and, if needed, refresh its exact holder
++        inside the same transaction as the append.
++        """
++        if compression_lease_ttl_seconds is not None and not 0 < compression_lease_ttl_seconds < float("inf"):
++            raise ValueError("Compression parent append requires a positive finite lease TTL")
+         if not messages:
+             return 0
+         if chunk_rows is not None and len(messages) > chunk_rows:
+@@ -486,9 +491,22 @@
+                 self._stamp_tool_call_uids(msg, _parse_tool_calls(msg.get("tool_calls")), tool_uid_index)
+             return sum(self.append_messages_batch(session_id, messages[start:start + chunk_rows],
+                     compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
+-                    turn_lease_ttl_seconds=turn_lease_ttl_seconds)
++                    turn_lease_ttl_seconds=turn_lease_ttl_seconds,
++                    compression_lease_ttl_seconds=compression_lease_ttl_seconds)
+                 for start in range(0, len(messages), chunk_rows))
+         def _do(conn):
++            if compression_lease_ttl_seconds is not None:
++                from hermes_state_errors import CompressionSessionBusyError
++
++                owner = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
++                if owner is None or not compression_lock_holder or owner["holder"] != compression_lock_holder:
++                    raise CompressionSessionBusyError("Compression lease lost before parent append")
++                now = time.time()
++                if float(owner["expires_at"]) <= now:
++                    conn.execute(
++                        "UPDATE compression_locks SET expires_at = ? WHERE session_id = ? AND holder = ?",
++                        (now + compression_lease_ttl_seconds, session_id, compression_lock_holder),
++                    )
+             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
+                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+             from agent.transcript_repair import resolve_and_repair_transcript_batch
+@@ -507,6 +525,27 @@
+             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+             return inserted
+         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
++
++    def confirm_compression_parent_rows(self, session_id, holder, receipts):
++        """Read exact active row receipts from the same store under the rotation holder."""
++        from agent.transcript_repair import transcript_row_snapshot
++
++        if not holder or not receipts:
++            return set()
++        self._raise_if_db_corrupt(storage=True)
++        with self._lock:
++            self._raise_if_db_replaced()
++            if self._conn is None or self._conn.in_transaction:
++                return set()
++            rows = self._conn.execute(
++                "SELECT messages.* FROM messages JOIN compression_locks USING (session_id) "
++                "WHERE session_id = ? AND holder = ? AND expires_at > ? AND active = 1 "
++                "AND messages.id IN (SELECT value FROM json_each(?))",
++                (session_id, holder, time.time(), json.dumps(list(receipts))),
++            ).fetchall()
++        return {row["id"] for row in rows if receipts[row["id"]] == (
++            row["id"], row["role"], row[MESSAGE_UID], row["timestamp"], transcript_row_snapshot(row)
++        )}
+ 
+     _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp", "display_metadata",
+                        "_friday_summary_carrier_proof", MESSAGE_UID, DISPLAY_OCCURRENCE_UID)
