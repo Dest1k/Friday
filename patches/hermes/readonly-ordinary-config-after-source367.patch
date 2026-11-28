@@ -1,0 +1,81 @@
+diff --git a/hermes_cli/config_effective.py b/hermes_cli/config_effective.py
+--- a/hermes_cli/config_effective.py
++++ b/hermes_cli/config_effective.py
+@@ -15,6 +15,7 @@
+ from __future__ import annotations
+ 
+ import copy
++import io
+ from pathlib import Path
+ from typing import Any, Dict, Optional, Tuple
+ 
+@@ -109,6 +110,19 @@
+         return effective
+ 
+ 
++def _read_effective_mapping(stream) -> Dict[str, Any]:
++    raw = fast_safe_load(stream)
++    if not isinstance(raw, dict):
++        raise ValueError("effective_config_mapping_required")
++    return _effective(raw)
++
++
++def parse_user_config_effective_readonly(data: bytes) -> Dict[str, Any]:
++    """Parse an already-read protected snapshot without reopening its path."""
++    with io.StringIO(data.decode("utf-8-sig"), newline=None) as stream:
++        return _read_effective_mapping(stream)
++
++
+ def read_user_config_effective_readonly(config_path: Path) -> Dict[str, Any]:
+     """Current effective mapping without home seeding, backup or recovery writes.
+ 
+@@ -116,7 +130,4 @@
+     malformed or non-mapping input refuses instead of silently showing defaults.
+     """
+     with open(config_path, encoding="utf-8-sig") as stream:
+-        raw = fast_safe_load(stream)
+-    if not isinstance(raw, dict):
+-        raise ValueError("effective_config_mapping_required")
+-    return _effective(raw)
++        return _read_effective_mapping(stream)
+diff --git a/hermes_cli/friday_credential_admission.py b/hermes_cli/friday_credential_admission.py
+--- a/hermes_cli/friday_credential_admission.py
++++ b/hermes_cli/friday_credential_admission.py
+@@ -48,14 +48,20 @@
+     return home
+ 
+ 
+-def configuration(home):
+-    from hermes_cli.config_effective import load_user_config_effective
++def configuration(home, *, read_only=False):
++    from hermes_cli.config_effective import load_user_config_effective, parse_user_config_effective_readonly
+     from hermes_yaml import YAMLError
+-    private_home(home)
++    path = private_home(home) / 'config.yaml'
+     from hermes_cli.friday_dashboard_owner import read_owned
+-    require(b'${' not in read_owned(home / 'config.yaml', private=True), 'config_interpolation_refused')
++    raw = read_owned(path, private=True)
++    require(b'${' not in raw, 'config_interpolation_refused')
++    if read_only:
++        try:
++            return parse_user_config_effective_readonly(raw)
++        except (YAMLError, ValueError):
++            raise CredentialDenied('config_unreadable') from None
+     try:
+-        return load_user_config_effective(home / 'config.yaml', fail_closed=True)
++        return load_user_config_effective(path, fail_closed=True)
+     except YAMLError:
+         raise CredentialDenied('config_unreadable') from None
+ 
+diff --git a/hermes_cli/friday_ordinary_gateway.py b/hermes_cli/friday_ordinary_gateway.py
+--- a/hermes_cli/friday_ordinary_gateway.py
++++ b/hermes_cli/friday_ordinary_gateway.py
+@@ -426,7 +426,7 @@
+             and old.get('original_attempt') == marker.get('original_attempt')
+             and old.get('cli_segment') == marker.get('cli_segment'), 'historical_scope_changed')
+     allowlist_current(home, phase['baseline']['telegram_allowed_users'])
+-    cfg = configuration(home)
++    cfg = configuration(home, read_only=not role)
+     require(configuration_matches(cfg, phase['configuration_sha256']), 'configuration_changed')
+     contract = configuration_contract(cfg, phase['baseline'], phase=phase)
+     if role:
