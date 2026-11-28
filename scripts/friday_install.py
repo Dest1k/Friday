@@ -1417,7 +1417,10 @@ def inspect(value, input_hash, *, marker_override=None, project_update=None, sou
     require(digest(owned_file(receipt_path)) == marker.get('source_receipt_sha256'),
             'source_receipt_changed')
     composition_checked(value, home / 'hermes-agent', read_json(receipt_path), donors['hermes'])
-    import plugins  # bind the ROOT namespace package before the source path is added
+    ordinary_receiver = marker.get('completion_stage') in ORDINARY_RECEIVER_STAGES
+    if not ordinary_receiver:
+        import plugins  # Preserve ROOT namespace binding for the full and CLI-host paths.
+    # Ordinary receivers first bind plugins through the checked native package loader below.
     installed_source = str(home / 'hermes-agent')
     if installed_source not in sys.path:
         sys.path.append(installed_source)
@@ -1426,7 +1429,7 @@ def inspect(value, input_hash, *, marker_override=None, project_update=None, sou
             and set(profile_files) == {'config.yaml', 'SOUL.md', 'FRIDAY-PROFILE.json'},
             'installed_profile_inventory_missing')
     for name, sha in profile_files.items():
-        if name == 'config.yaml' and marker.get('completion_stage') in ORDINARY_RECEIVER_STAGES:
+        if name == 'config.yaml' and ordinary_receiver:
             continue  # Checked below through the native semantic onboarding contract.
         require(digest(owned_file(home / name, private=True)) == sha, 'installed_profile_changed')
     expected_plugins = {name: sha for name, sha in value['project_files'].items()
@@ -1435,7 +1438,7 @@ def inspect(value, input_hash, *, marker_override=None, project_update=None, sou
     for name, sha in expected_plugins.items():
         require(digest(owned_file(home / name, private=True)) == sha, 'installed_plugin_changed')
     effective = value
-    if marker.get('completion_stage') in ORDINARY_RECEIVER_STAGES:
+    if ordinary_receiver:
         native_packages(home/'hermes-agent')
         from hermes_cli.friday_ordinary_gateway import check
         from hermes_cli.friday_user_scope import authority
