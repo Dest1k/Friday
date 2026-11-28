@@ -1407,6 +1407,11 @@ def inspect(value, input_hash, *, marker_override=None, project_update=None, sou
     home, donors = spec_checked(value, cli_only=marker.get('completion_stage') in (CLI_STAGE, *ORDINARY_RECEIVER_STAGES),
         **({'project_update':project_update} if project_update is not None else {}),
         **({'source_update':source_update} if source_update is not None else {}))
+    return _inspect_installed_bound(value, home, marker, donors)
+
+
+def _inspect_installed_bound(value, home, marker, donors):
+    """Inspect the installation after its exact source has been admitted."""
     if 'tls' in value['product']['dashboard']:
         expected = {path: value['dashboard_tls'][key]['sha256']
             for key, path in value['product']['dashboard']['tls'].items()}
