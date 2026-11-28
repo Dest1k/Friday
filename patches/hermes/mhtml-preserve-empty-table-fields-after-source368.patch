@@ -1,0 +1,153 @@
+diff --git a/tools/read_extract.py b/tools/read_extract.py
+--- a/tools/read_extract.py
++++ b/tools/read_extract.py
+@@ -418,7 +418,8 @@
+         raise ScopedExtractionError('unsupported_format')
+     if checkpoint is not None:
+         checkpoint()
+-    if not isinstance(text, str) or not text.strip():
++    # The MHTML extractor emits whitespace-only text for recognized blank table rows.
++    if not isinstance(text, str) or (not text.strip() and (format not in ('mhtml', 'mht') or not text)):
+         raise ScopedExtractionError('no_extractable_text')
+     if len(text.encode('utf-8')) > 1000000:
+         raise ScopedExtractionError('extracted_text_limit')
+diff --git a/tools/scoped_mhtml.py b/tools/scoped_mhtml.py
+--- a/tools/scoped_mhtml.py
++++ b/tools/scoped_mhtml.py
+@@ -234,21 +234,26 @@
+             self.group += 1
+             self.section = 'table'
+ 
+-    def project(self, lines, flat, out):
++    def project(self, out):
+         if self.invalid or not self.rows:
+             return None
+         # Use the authored row sections and positive spans. Do not repair holes
+         # or overlaps as a browser might, or infer from repeated header text.
+-        grid, cells = set(), []
++        grid, cells, rendered_rows = set(), [], {}
+         first_cells = self.rows[0][3]
+         leading_headers = (self.rows[0][1] == 'table' and first_cells
+                            and all(tag == 'th' and scope != 'row' for tag, scope, *_ in first_cells))
+         for row, (group, section, start, authored) in enumerate(self.rows, 1):
+-            line = lines[start]
+-            rendered = re.sub(r' +', ' ', ''.join(out[start:self.row_ends[start]])).strip()
+-            if (not authored or not line or not rendered or flat[line - 1] != rendered
+-                    or len(rendered.split('\t')) != len(authored)):
++            end = self.row_ends[start]
++            rendered = re.sub(r' +', ' ', ''.join(out[start:end]))
++            # Each cell appends a tab on close. Remove the final delimiter only.
++            fields = rendered.removesuffix('\t').split('\t')
++            if (not rendered.endswith('\t') or len(fields) != len(authored)
++                    or len((rendered + '.').splitlines()) != 1):
+                 return None
++            fields[0] = fields[0].lstrip()
++            fields[-1] = fields[-1].rstrip()
++            rendered_rows[start] = (end, '\t'.join(fields))
+             header_row = section == 'thead' or row == 1 and leading_headers
+             column = 1
+             for field, (tag, scope, rowspan, colspan, _) in enumerate(authored, 1):
+@@ -275,7 +280,7 @@
+                             return None
+                         grid.add((y, x))
+                 cell = dict(row=row, column=column, rowspan=rowspan, colspan=colspan,
+-                            line=line, field=field, kind=scope or 'data', column_headers=[],
++                            out_index=start, field=field, kind=scope or 'data', column_headers=[],
+                             row_headers=[], column_group_headers=[])
+                 cells.append(cell)
+                 column += colspan
+@@ -326,9 +331,7 @@
+                 return None
+             cell.update(column_headers=column_headers, row_headers=row_headers,
+                         column_group_headers=scoped_groups)
+-        return dict(status='AVAILABLE',
+-                    row_sections=[section for _, section, _, _ in self.rows],
+-                    cells=[[cell[key] for key in TABLE_CELL_FIELDS] for cell in cells])
++        return rendered_rows, cells
+ 
+ 
+ class _HTML(HTMLParser):
+@@ -355,33 +358,50 @@
+         self._flush()
+         if self.stack or self.html_count != 1 or self.body_count != 1 or not self.seen_end:
+             _fail('unsupported_html_structure')
+-        self.text = '\n'.join(re.sub(r' +', ' ', line).strip() for line in ''.join(self.out).splitlines() if line.strip())
+-        if not project_tables or not self.tables:
++        if project_tables and 0 < self.tables <= MAX_TABLES:
++            self.text, self.table_structure = self._project_tables()
++        else:
++            self.text, _ = self._document_text({})
+             self.table_structure = None
+-        elif self.tables > MAX_TABLES:
+-            self.table_structure = dict(version=1, status='WITHHELD', reason='table_count_limit')
+-        else:
+-            self.table_structure = self._table_structure()
++            if project_tables and self.tables > MAX_TABLES:
++                self.table_structure = dict(version=1, status='WITHHELD', reason='table_count_limit')
+         if len(self.text.encode('utf-8')) > MAX_BYTES:
+             _fail('text_limit')
+ 
+-    def _table_structure(self):
+-        flat = self.text.split('\n')
+-        # Every row starts after an emitted LF. Count flat (nonblank) lines at
+-        # each boundary once, using the same line rules as the text projection.
+-        anchors = sorted({row[2] for table in self.table_models if not table.invalid for row in table.rows})
+-        lines = {}
+-        previous = count = 0
+-        for anchor in anchors:
+-            count += sum(bool(line.strip()) for line in ''.join(self.out[previous:anchor]).splitlines())
+-            lines[anchor] = count + 1 if count < len(flat) else None
+-            previous = anchor
++    def _document_text(self, rendered_rows):
++        lines, anchors = [], {}
++        previous = 0
++        # Authored row ranges begin and end at line breaks emitted for <tr>.
++        for start, (end, row) in sorted(rendered_rows.items()):
++            lines.extend(self._flat_lines(previous, start))
++            lines.append(row)
++            anchors[start] = len(lines)
++            previous = end
++        lines.extend(self._flat_lines(previous, len(self.out)))
++        # Keep a final one-cell blank row visible to splitlines() callers.
++        text = '\n'.join(lines) + ('\n' if lines and lines[-1] == '' else '')
++        return text, anchors
++
++    def _flat_lines(self, start, end):
++        return (re.sub(r' +', ' ', line).strip()
++                for line in ''.join(self.out[start:end]).splitlines() if line.strip())
++
++    def _project_tables(self):
++        projections = [table.project(self.out) for table in self.table_models]
++        rendered_rows = {start: row for projection in projections if projection is not None
++                         for start, row in projection[0].items()}
++        text, anchors = self._document_text(rendered_rows)
+         tables = []
+-        for index, table in enumerate(self.table_models, 1):
+-            projected = table.project(lines, flat, self.out)
+-            if projected is None:
+-                projected = dict(status='WITHHELD', reason='unsupported_or_ambiguous_structure')
+-            tables.append(dict(index=index, **projected))
++        for index, (table, projection) in enumerate(zip(self.table_models, projections), 1):
++            if projection is None:
++                tables.append(dict(index=index, status='WITHHELD', reason='unsupported_or_ambiguous_structure'))
++                continue
++            _, cells = projection
++            for cell in cells:
++                cell['line'] = anchors[cell['out_index']]
++            tables.append(dict(index=index, status='AVAILABLE',
++                               row_sections=[section for _, section, _, _ in table.rows],
++                               cells=[[cell[key] for key in TABLE_CELL_FIELDS] for cell in cells]))
+         available = sum(table['status'] == 'AVAILABLE' for table in tables)
+         result = dict(version=1, status=('AVAILABLE' if available == len(tables) else
+                                         'PARTIAL' if available else 'WITHHELD'),
+@@ -389,8 +409,8 @@
+                       header_reference=['row', 'column'], column_header_basis='visible_cell_spans',
+                       cell_fields=TABLE_CELL_FIELDS)
+         if len(json.dumps(result, separators=(',', ':'))) > MAX_TABLE_METADATA:
+-            return dict(version=1, status='WITHHELD', reason='table_metadata_limit')
+-        return result
++            result = dict(version=1, status='WITHHELD', reason='table_metadata_limit')
++        return text, result
+ 
+     def _position(self):
+         line, col = self.getpos()
